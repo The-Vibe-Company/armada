@@ -415,3 +415,29 @@ test("clone diagnostics finish in repository order and an empty failed checkout 
   expect(result.status).toBe(128);
   expect(result.stderr).toBe("ARMADA_GIT_FAILURE 1 auth_denied\nARMADA_GIT_FAILURE 2 unknown\n");
 });
+
+test.each([false, true])(
+  "per-repository history overrides checkout default without changing other repositories (shallowDefault=%s)",
+  async (shallow) => {
+    const { goldenCheckoutScript } = await import("../src/server.ts");
+    const script = goldenCheckoutScript(
+      [
+        { owner: "acme", repo: "default", dir: "default", branch: "main" },
+        { owner: "acme", repo: "full", dir: "full", branch: "main", history: "full" },
+        { owner: "acme", repo: "short", dir: "short", branch: "main", history: "shallow" },
+      ],
+      { shallow },
+    );
+    const result = spawnSync("/bin/bash", ["-c", `set -euo pipefail\ngit() { printf '%s\\n' "$*"; }\n${script}`], {
+      env: { PATH: process.env.PATH ?? "", ARMADA_GIT_TOKEN: "fixture_only" },
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    const invocations = result.stdout
+      .trim()
+      .split("\n")
+      .map((line) => line.split(" "));
+    expect(invocations.map((args) => args.includes("--depth=1"))).toEqual([shallow, false, true]);
+    expect(invocations.every((args) => args.includes("--single-branch"))).toBe(true);
+  },
+);

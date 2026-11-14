@@ -683,15 +683,6 @@ export function createSqlData(sql: Sql): DataSource {
         );
         if (!result.rows.length) throw new DataError("The turn changed or this sandbox is not reportable.");
       },
-      async listBefore(cutoff) {
-        const result = await sql.query<SandboxViewRow>(
-          `select ${SANDBOX_COLUMNS} from public.sandboxes s join public.goldens g on g.id = s.golden_id
-           where ${SANDBOX_VISIBLE} and s.created_at < $3::timestamptz and s.status <> 'deleted'
-           order by s.created_at`,
-          [...scope, cutoff],
-        );
-        return result.rows.map(mapView);
-      },
       async get(id) {
         if (!UUID.test(id)) return null;
         const result = await sql.query<SandboxViewRow>(

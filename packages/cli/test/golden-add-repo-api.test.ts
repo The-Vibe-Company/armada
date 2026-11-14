@@ -3,7 +3,11 @@ import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
 const token = "fixture-armada-token";
-async function invoke(args: string[], reply: (path: string, body: Record<string, unknown>) => Response) {
+async function invoke(
+  args: string[],
+  reply: (path: string, body: Record<string, unknown>) => Response,
+  config?: unknown,
+) {
   const calls: { path: string; body: Record<string, unknown> }[] = [];
   let output = "",
     errors = "";
@@ -19,7 +23,9 @@ async function invoke(args: string[], reply: (path: string, body: Record<string,
     },
     {
       readFile: async () =>
-        JSON.stringify({ repos: [{ url: "https://github.com/acme/new.git", branch: "main", dir: "new" }], init: [] }),
+        JSON.stringify(
+          config ?? { repos: [{ url: "https://github.com/acme/new.git", branch: "main", dir: "new" }], init: [] },
+        ),
       auth: {
         out: () => {},
         err: () => {},
@@ -181,3 +187,21 @@ test.each([true, false])(
     );
   },
 );
+
+test("update --config retains the explicit per-repository history and every other entry", async () => {
+  const config = {
+    repos: [
+      { url: "https://github.com/acme/armada.git", branch: "main", dir: "armada", history: "shallow" },
+      { url: "https://github.com/acme/private.git", branch: "main", dir: "private" },
+    ],
+    init: ["bun install"],
+  };
+  const result = await invoke(
+    ["--config", "golden.json", "--replace", "--timeout", "0"],
+    () =>
+      Response.json({ jobId: "job", state: "queued", phase: "queued", errorCode: null, result: null }, { status: 202 }),
+    config,
+  );
+  expect(result.code, result.errors).toBe(0);
+  expect(result.calls[0]?.body.config).toEqual(config);
+});

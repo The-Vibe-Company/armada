@@ -1,5 +1,41 @@
 # Changelog
 
+## [2.32.0](https://github.com/The-Vibe-Company/armada/compare/v2.31.0...v2.32.0) (2026-11-14)
+
+
+### Features
+
+* **boat:** deliver frozen runtime readable variables ([#1760](https://github.com/The-Vibe-Company/armada/issues/1760)) ([06e9f4e](https://github.com/The-Vibe-Company/armada/commit/06e9f4e56da5285be8d79a29b03ef221e079cdc0))
+* **cli:** isolate named login profiles and server selection ([#1750](https://github.com/The-Vibe-Company/armada/issues/1750)) ([e98aded](https://github.com/The-Vibe-Company/armada/commit/e98adedd0d22147d96530306a45e40892bd483d1))
+* **golden:** find active rebuilds without an admission receipt ([#1747](https://github.com/The-Vibe-Company/armada/issues/1747)) ([3d7e02a](https://github.com/The-Vibe-Company/armada/commit/3d7e02aeadb54f7cb6af241d69ffa9f9cfee03b9))
+* **golden:** support explicit per-repository shallow history ([#1761](https://github.com/The-Vibe-Company/armada/issues/1761)) ([030c66a](https://github.com/The-Vibe-Company/armada/commit/030c66a94aa1f994969b1f753e5ad1d66d34487c))
+* **modal:** support promptless launch and durable first send ([#1753](https://github.com/The-Vibe-Company/armada/issues/1753)) ([0d4e1f7](https://github.com/The-Vibe-Company/armada/commit/0d4e1f79791b6b755269285d4f01fcbd230106a9))
+* **modal:** support promptless pinned template launches ([#1758](https://github.com/The-Vibe-Company/armada/issues/1758)) ([2fe2e81](https://github.com/The-Vibe-Company/armada/commit/2fe2e8161fc4de9202e2b76815f5f6cff13d0690))
+* **smoke:** observe natural idle pause and ordinary-send wake ([#1715](https://github.com/The-Vibe-Company/armada/issues/1715)) ([b161259](https://github.com/The-Vibe-Company/armada/commit/b1612592d484eda6a66a96be6c68f6912896f6f0))
+* **smoke:** print per-feature account and cost details ([#1702](https://github.com/The-Vibe-Company/armada/issues/1702)) ([5bffe25](https://github.com/The-Vibe-Company/armada/commit/5bffe2591d7fd00a46680d357548ddea895e7532))
+* **smoke:** prove configured template revision launches ([#1724](https://github.com/The-Vibe-Company/armada/issues/1724)) ([d9e022b](https://github.com/The-Vibe-Company/armada/commit/d9e022b7a67e28945409b14f512cfe3c3c2e5493))
+* **smoke:** prove launch from provider golden snapshots ([#1720](https://github.com/The-Vibe-Company/armada/issues/1720)) ([646f02c](https://github.com/The-Vibe-Company/armada/commit/646f02c50d5b6ed08395f8112880b26f9e82eadd))
+* **smoke:** prove scheduled routine initial execution ([#1752](https://github.com/The-Vibe-Company/armada/issues/1752)) ([39fcf5c](https://github.com/The-Vibe-Company/armada/commit/39fcf5caf638cd677ff9103c881f1a32d3aa1a3e))
+
+
+### Bug Fixes
+
+* **cli:** explain org-scoped token UUID retries ([#1736](https://github.com/The-Vibe-Company/armada/issues/1736)) ([4e5dc41](https://github.com/The-Vibe-Company/armada/commit/4e5dc41e34305c94b0f19f9649b05fab5ece8123))
+* **cli:** make status recorded by default with live opt-in ([#1738](https://github.com/The-Vibe-Company/armada/issues/1738)) ([d1867ff](https://github.com/The-Vibe-Company/armada/commit/d1867ff12dbfe26972fd8569db8161d4f859860d))
+* **cli:** prompt for credentials without terminal echo ([#1730](https://github.com/The-Vibe-Company/armada/issues/1730)) ([6ca5eb8](https://github.com/The-Vibe-Company/armada/commit/6ca5eb8937c1a44b828378497477ce3b9b5ba613))
+* **cli:** require consent for golden config replacement ([#1740](https://github.com/The-Vibe-Company/armada/issues/1740)) ([6c20368](https://github.com/The-Vibe-Company/armada/commit/6c20368e7b803ad4f819126eb293b8e274a1b136))
+* **cli:** resolve golden removal names without guessing ([#1759](https://github.com/The-Vibe-Company/armada/issues/1759)) ([b6eaa54](https://github.com/The-Vibe-Company/armada/commit/b6eaa54b1dc68d59c735c957d1c1390c50acd4f1))
+* **core:** preserve golden operation admission cause ([#1717](https://github.com/The-Vibe-Company/armada/issues/1717)) ([08e822f](https://github.com/The-Vibe-Company/armada/commit/08e822f2550bd9f3a72cd81986c8793c6a399801))
+* **dashboard:** clarify snapshot recovery states ([#1746](https://github.com/The-Vibe-Company/armada/issues/1746)) ([2f589e0](https://github.com/The-Vibe-Company/armada/commit/2f589e07e40bd63711ce9c75b090194d2487d55e))
+* **github:** distinguish caller connection from runtime delivery failures ([#1749](https://github.com/The-Vibe-Company/armada/issues/1749)) ([e29072c](https://github.com/The-Vibe-Company/armada/commit/e29072c2315f571412fa52555f190c9fc9522387))
+* **golden:** report safe secret scan locations and history evidence ([#1757](https://github.com/The-Vibe-Company/armada/issues/1757)) ([da06b25](https://github.com/The-Vibe-Company/armada/commit/da06b25dda4f47e573c454dc1461ef19430e9e72))
+* **lifecycle:** isolate stalled provider recovery capacity ([#1764](https://github.com/The-Vibe-Company/armada/issues/1764)) ([9a9a892](https://github.com/The-Vibe-Company/armada/commit/9a9a892c7790d552941852135244d432816300ef))
+* **lint:** eliminate baseline warning and info noise ([#1763](https://github.com/The-Vibe-Company/armada/issues/1763)) ([afd6ee2](https://github.com/The-Vibe-Company/armada/commit/afd6ee21c285ce34d894ec05bdb87d021c0823f0))
+* **mcp:** add durable ordinary launch idempotency receipts ([#1748](https://github.com/The-Vibe-Company/armada/issues/1748)) ([f01e58c](https://github.com/The-Vibe-Company/armada/commit/f01e58c0b15b4272db16e2df32d688fb0ce0aa79))
+* **runtime:** batch event archive queries under sandbox fence ([#1762](https://github.com/The-Vibe-Company/armada/issues/1762)) ([22476c4](https://github.com/The-Vibe-Company/armada/commit/22476c43aa6ba0e13f368816e8414065e8724881))
+* **runtime:** bound command bodies before buffering ([#1756](https://github.com/The-Vibe-Company/armada/issues/1756)) ([388b4e5](https://github.com/The-Vibe-Company/armada/commit/388b4e56fbf96901afb18d00b9e7fd565d82417d))
+* **runtime:** retain managed GitHub tools in login shells ([#1754](https://github.com/The-Vibe-Company/armada/issues/1754)) ([c19f1ea](https://github.com/The-Vibe-Company/armada/commit/c19f1ea3483f1499c176fa0683703f35d6f92881))
+
 ## [2.31.0](https://github.com/The-Vibe-Company/armada/compare/v2.30.0...v2.31.0) (2026-11-14)
 
 

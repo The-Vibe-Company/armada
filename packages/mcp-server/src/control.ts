@@ -1,90 +1,75 @@
 import type { AuthStore } from "@armada/auth";
-import type { Harness } from "@armada/core";
 import {
   CLAUDE_ENDPOINT_ENV,
   CODEX_ENDPOINT_ENV,
-  dedupeEvents,
-  goldenCompatibilityIds,
   goldenForSettings,
-  goldenResponse,
-  isHarness,
   isModelConnectionTestResult,
-  launchGitHubResponse,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
-  parseMachineSize,
   parseMachineSizePolicy,
-  sandboxIdentity,
   VERSION,
 } from "@armada/core";
 import {
   type ApplicationVault,
-  addGoldenRepositories,
   addMember,
-  assertGoldenMutation,
-  connectGolden,
   createOrg,
   createSkillCatalog,
   type GitHubApp,
   type GoldenActor,
   type GoldenBuildJobs,
   GoldenError,
-  type GoldenRecord,
-  goldenForLaunch,
   isSandboxProvider,
-  LaunchError,
   type LaunchOptions,
-  type LaunchResult,
   type LaunchStores,
-  launchSandbox,
   listConnectionModels,
   listCredentials,
   listMembers,
   listOrgs,
-  type ModelChoice,
   mutateCredentialAccount,
-  normalizeGitHubGoldenConfig,
   type Provider,
   type ProviderRegistry,
-  ProviderRoutingError,
   type ProviderTarget,
   parseCredentialKind,
-  parseGoldenConfig,
   parseRole,
   type RoutineService,
   removeCredential,
   removeMember,
-  resolveBoatKey,
   resolveModelChoice,
   resolveOrg,
-  resolveRepositoryDir,
   resolveSkillpackCredential,
   type SkillDefaultsService,
   sandboxActivity,
-  scanGoldenSandbox,
   setCredential,
   setMemberRole,
-  snapshotGolden,
   type TemplateService,
   VaultError,
   type VaultStore,
-  type Visibility,
 } from "@armada/core/server";
 import { validateAzureModelAccount } from "./azure-model-account.ts";
 import type { Caller, SupabaseProject } from "./caller.ts";
 import { readBody, readVaultBody } from "./control-body.ts";
 import { authenticatedCaller, scopedOrg } from "./control-caller.ts";
 import { controlFailureResponse } from "./control-errors.ts";
-import { optional, required, UUID } from "./control-input.ts";
+import { optional, required, requiredNumber, UUID } from "./control-input.ts";
+import { readLogs } from "./control-logs.ts";
 import { fail } from "./control-response.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
-import type { DataSource, ScopedData } from "./data.ts";
+import type { DataSource } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
+import {
+  connectGoldenRoute,
+  createGoldenRoute,
+  listGoldens,
+  selectGolden,
+  snapshotGoldenRoute,
+  updateGoldenRoute,
+} from "./golden-control.ts";
 import type { Invitations } from "./invitations.ts";
+import { launchActor, launchRoute, templateRuntime } from "./launch-control.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions, launchProviderOptions } from "./launch-options.ts";
 import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
 import { type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
-import { isPrivateModelEvent, type ModelUsageApi } from "./model-usage.ts";
+import type { ModelUsageApi } from "./model-usage.ts";
 import {
   connectOrgProvider,
   disconnectOrgProvider,
@@ -101,7 +86,7 @@ import {
   exchangeRoute,
   refreshRoute,
 } from "./public-auth-control.ts";
-import { RequestTiming, withRequestTiming } from "./request-timing.ts";
+import { measureRequestPhase, RequestTiming, withRequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
@@ -543,15 +528,17 @@ async function dispatch(
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: options.data(scopedCaller),
-        measure: (phase, work) => measured(options, phase, work),
-        ...(options.storedProviderFor
+        measure: (phase, work) => measureRequestPhase(options.timing, phase, work),
+        storedProviders: options.storedProviderFor
           ? {
-              storedProvider: (target: ProviderTarget) =>
-                measured(options, "stored_provider", () => options.storedProviderFor!(target, scopedCaller)),
+              modal: (target) =>
+                measureRequestPhase(options.timing, "stored_provider", () =>
+                  options.storedProviderFor!(target, scopedCaller),
+                ),
             }
-          : {}),
+          : {},
         provider: (target) =>
-          measured(options, "provider", () =>
+          measureRequestPhase(options.timing, "provider", () =>
             options.providers
               ? options.providers.resolve(target, scopedCaller)
               : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
@@ -986,553 +973,10 @@ async function dispatch(
   }
 }
 
-/** The same visibility-filtered representation returned by MCP golden_list. */
-async function listGoldens(options: ControlOptions, caller: Caller): Promise<{ goldens: GoldenJson[] }> {
-  if (!options.data) throw new VaultError("unavailable", "Golden listing is not configured on this server.");
-  const data = options.data(caller);
-  const goldens = [];
-  for (const { orgId } of caller.orgs) goldens.push(...(await data.goldens.list(orgId)));
-  return { goldens: goldens.map(goldenJson) };
-}
-
-export type GoldenJson = ReturnType<typeof goldenResponse> & { buildWarnings: string[] };
-
-function goldenJson(row: GoldenRecord): GoldenJson {
-  return { ...goldenResponse(row), buildWarnings: row.buildWarnings ?? [] };
-}
-
-/**
- * `armada golden create --name`: securely builds a golden from one or more GitHub repositories in a
- * disposable, no-env builder, over the caller's own cached GitHub connection, and persists it only
- * once a fail-closed secret scan and the snapshot both succeed. The caller needs no boat.dev key.
- */
-async function createGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
-  if (!options.goldenBuilds || (!options.providers && !options.providerFor)) {
-    throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
-  }
-  required(body, "idempotencyKey");
-  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
-  const visibility: Visibility = requiredBoolean(body, "private", false) ? "private" : "org";
-  if (body.provider !== undefined && !isSandboxProvider(body.provider))
-    throw new VaultError("invalid", "Provider is boat or modal.");
-  if (visibility === "org" && org.role !== "admin")
-    throw new VaultError("forbidden", "Only an admin can create an org golden.");
-  const targetInput = { orgId: org.id, visibility, provider: (body.provider ?? "boat") as "boat" | "modal" };
-  const target = options.goldenTarget
-    ? await options.goldenTarget(targetInput, caller)
-    : { ...targetInput, modal: null };
-  if (target.provider === "modal" && !target.modal)
-    throw new ProviderRoutingError("provider_not_configured", "modal", "Modal is not configured.");
-  const name = required(body, "name");
-  const config = body.config === undefined ? undefined : normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
-  const repos = config ? [] : requiredRepos(body);
-  const setup = optional(body, "setup");
-  const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
-  assertGoldenMutation(actor, { orgId: org.id, visibility, ownerId: caller.userId, name });
-  if (target.provider === "modal" && !options.providers)
-    throw new ProviderRoutingError("provider_not_configured", "modal", "Modal resource routing is not configured.");
-  const provider = options.providers
-    ? await options.providers.resolve(target, caller)
-    : options.providerFor!(
-        (
-          await resolveBoatKey(options.store, options.encryptionKey, {
-            userId: caller.userId,
-            orgId: org.id,
-            visibility,
-          })
-        ).key,
-        { userId: caller.userId, orgId: org.id },
-      );
-  return options.goldenBuilds.admit(
-    provider,
-    actor,
-    {
-      ...(target.modal ? { modal: target.modal } : {}),
-      name,
-      visibility,
-      repos,
-      ...(config === undefined ? {} : { config }),
-      ...(setup !== undefined ? { setup } : {}),
-    },
-    required(body, "idempotencyKey"),
-  );
-}
-
-/** Rebuild an existing visible golden in place. The row, owner and visibility come from storage, never the body. */
-async function updateGoldenRoute(
-  options: ControlOptions,
-  caller: Caller,
-  body: Record<string, unknown>,
-  additive = false,
-) {
-  if (!options.goldenBuilds || (!options.providers && !options.providerFor) || !options.data)
-    throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
-  required(body, "idempotencyKey");
-  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
-  const name = required(body, "name");
-  const rows = await options.data(caller).goldens.findByName(org.id, name);
-  const existingGolden = selectGolden(rows, body);
-  if (!existingGolden) throw new GoldenError("not_found", `No golden named '${name}'.`);
-  const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
-  assertGoldenMutation(actor, existingGolden);
-  if (additive && (body.config !== undefined || body.setup !== undefined))
-    throw new VaultError(
-      "invalid",
-      "--add-repo cannot replace config or setup. Use --config with the complete desired configuration for replacement.",
-    );
-  if (!additive && body.addRepos !== undefined)
-    throw new VaultError(
-      "invalid",
-      "Additive repository updates require the golden/update-add-repos route. Upgrade the CLI; do not retry as a replacement.",
-    );
-  if (!additive && body.config === undefined) throw new VaultError("invalid", "config is required.");
-  if (additive && (!Array.isArray(body.addRepos) || !body.addRepos.every((repo) => typeof repo === "string")))
-    throw new VaultError("invalid", "addRepos must be a non-empty list of repository URLs.");
-  const config = normalizeGitHubGoldenConfig(
-    additive ? addGoldenRepositories(existingGolden.config, body.addRepos as string[]) : parseGoldenConfig(body.config),
-  );
-  const provider = await providerForGolden(options, caller, existingGolden);
-  return options.goldenBuilds.admit(
-    provider,
-    actor,
-    {
-      name: existingGolden.name,
-      visibility: existingGolden.visibility,
-      repos: [],
-      config,
-      ...(optional(body, "setup") === undefined ? {} : { setup: optional(body, "setup")! }),
-      existingGolden,
-    },
-    required(body, "idempotencyKey"),
-  );
-}
-
-async function snapshotGoldenRoute(
-  options: ControlOptions,
-  caller: Caller,
-  body: Record<string, unknown>,
-): Promise<{ name: string; snapshot: string }> {
-  if (!options.providerFor || !options.data)
-    throw new VaultError("unavailable", "Golden snapshots are not configured on this server.");
-  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
-  const name = required(body, "name");
-  const data = options.data(caller);
-  const rows = await data.goldens.findByName(org.id, name);
-  const golden = selectGolden(rows, body);
-  if (!golden) throw new GoldenError("not_found", `No golden named '${name}'.`);
-  const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
-  assertGoldenMutation(actor, golden);
-  const provider = await providerForGolden(options, caller, golden);
-  await data.goldens.assertBackendBinding?.(golden, provider);
-  const target = (await connectGolden(provider, data.goldens, actor, golden.name)).golden;
-  if (!target.providerSandboxId) throw new GoldenError("conflict", `Golden '${target.name}' has no sandbox yet.`);
-  await scanGoldenSandbox(provider, target.providerSandboxId, {
-    repositories: target.config.repos.map((repo) => repo.dir),
-  });
-  const saved = await snapshotGolden(provider, data.goldens, actor, target.name, options.launch ?? {});
-  return { name: saved.golden.name, snapshot: saved.snapshotName };
-}
-
-async function connectGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
-  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
-  if (!options.providerFor) throw new VaultError("unavailable", "Golden connection is not configured on this server.");
-  const name = required(body, "name");
-  const data = options.data?.(caller);
-  if (!data) throw new VaultError("unavailable", "Golden connection is not configured on this server.");
-  const rows = await data.goldens.findByName(org.id, name);
-  const golden = selectGolden(rows, body);
-  if (!golden) throw new GoldenError("not_found", `No golden named '${name}'.`);
-  const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
-  assertGoldenMutation(actor, golden);
-  const provider = await providerForGolden(options, caller, golden);
-  await data.goldens.assertBackendBinding?.(golden, provider);
-  const connected = await connectGolden(provider, data.goldens, actor, name);
-  return { golden: connected.golden.name, sandboxId: connected.sandbox.id, webUrl: null };
-}
-
-async function measured<T>(
-  options: ControlOptions,
-  phase: import("./request-timing.ts").TimingPhase,
-  work: () => Promise<T>,
-): Promise<T> {
-  return options.timing ? options.timing.measure(phase, work) : work();
-}
-
-async function readLogs(
-  options: ControlOptions,
-  caller: Caller,
-  id: string,
-  body: Record<string, unknown>,
-): Promise<{
-  events: Awaited<ReturnType<Provider["events"]>>["events"];
-  cursor: string | null;
-  hasMore: boolean;
-  settled: boolean;
-  source?: "armada-runtime";
-  runtimeFailure?: { status: "failed"; reason: string };
-  olderCursor?: string;
-}> {
-  if (options.dockerControls) {
-    const routed = await options.dockerControls.invoke(caller, "logs", {
-      id,
-      ...(body.cursor === undefined ? {} : { since_cursor: body.cursor }),
-      ...(body.conversationId === undefined ? {} : { conversation_id: body.conversationId }),
-      ...Object.fromEntries(
-        ["limit", "all", "direction", "maxBytes", "coalesce", "follow"]
-          .filter((key) => body[key] !== undefined)
-          .map((key) => [key, body[key]]),
-      ),
-    });
-    if (routed.handled) return routed.result as Awaited<ReturnType<typeof readLogs>>;
-  }
-  if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
-  const target = await measured(options, "logs_target", () => options.logs!(caller, id));
-  if (body.direction !== undefined && body.direction !== "forward" && body.direction !== "backward")
-    throw new VaultError("invalid", "Invalid event direction.");
-  for (const key of ["limit", "maxBytes"])
-    if (body[key] !== undefined && typeof body[key] !== "number")
-      throw new VaultError("invalid", "Invalid event pagination.");
-  if (body.coalesce !== undefined && typeof body.coalesce !== "boolean")
-    throw new VaultError("invalid", "Invalid coalesce option.");
-  const backward = body.direction === "backward";
-  const all = body.all === true;
-  if (backward && all) throw new VaultError("invalid", "Backward reads cannot drain all pages.");
-  let olderCursor: string | undefined;
-  const follow = body.follow === true;
-  const maxPages = 100;
-  let cursor = optional(body, "cursor");
-  let hasMore = false;
-  let source: "armada-runtime" | undefined;
-  let runtimeFailure: { status: "failed"; reason: string } | undefined;
-  const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
-  for (let pageNumber = 0; pageNumber < (all ? maxPages : 1); pageNumber += 1) {
-    const page = await measured(options, "events", () =>
-      target.provider.events({
-        sandboxId: target.providerSandboxId,
-        ...(cursor ? { cursor } : {}),
-        ...(backward ? { direction: "backward" as const } : {}),
-        ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
-        ...(typeof body.maxBytes === "number" ? { maxBytes: body.maxBytes } : {}),
-        ...(typeof body.coalesce === "boolean" ? { coalesce: body.coalesce } : {}),
-        ...(optional(body, "conversationId") ? { conversationId: optional(body, "conversationId")! } : {}),
-      }),
-    );
-    if (page.source) source = page.source;
-    runtimeFailure = page.runtimeFailure ?? runtimeFailure;
-    olderCursor = page.olderCursor;
-    events.push(...page.events);
-    hasMore = page.hasMore;
-    const next = page.cursor ?? cursor;
-    if (!page.hasMore || !next || next === cursor) {
-      cursor = next;
-      break;
-    }
-    cursor = next;
-  }
-  // Ordinary history reads need only the authorized event stream. Live compute is
-  // consulted solely to decide whether a follow request should keep waiting.
-  const info =
-    follow && !runtimeFailure
-      ? await measured(options, "state", () => target.provider.get(target.providerSandboxId))
-      : null;
-  const latest = latestPrompt(events);
-  // A live sandbox with no turn is idle, so following has nothing to wait for.
-  const prompt =
-    follow && !runtimeFailure && latest && info?.state !== "stopped" && info?.state !== "failed"
-      ? await measured(options, "prompt", () =>
-          target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest }),
-        )
-      : null;
-  return {
-    ...(source ? { source } : {}),
-    ...(runtimeFailure ? { runtimeFailure } : {}),
-    ...(olderCursor ? { olderCursor } : {}),
-    events: dedupeEvents(events).filter((event) => !isPrivateModelEvent(event)),
-    cursor: cursor ?? null,
-    hasMore,
-    settled:
-      !follow ||
-      runtimeFailure !== undefined ||
-      info?.state === "stopped" ||
-      info?.state === "failed" ||
-      (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true),
-  };
-}
-
-function latestPrompt(events: Awaited<ReturnType<Provider["events"]>>["events"]): string | null {
-  let latest: (typeof events)[number] | undefined;
-  for (const event of events) {
-    if (event.kind !== "prompt" || !event.promptId) continue;
-    if (!latest || event.at >= latest.at) latest = event;
-  }
-  return latest?.promptId ?? null;
-}
-
-async function launchRoute(
-  options: ControlOptions,
-  caller: Caller,
-  body: Record<string, unknown>,
-  runtime: boolean | "modal" = false,
-): Promise<unknown> {
-  const modalRuntime = runtime === "modal";
-  const runtimePolicy = modalRuntime ? options.modalRuntimeLaunch : runtime ? options.boatRuntimeLaunch : undefined;
-  const runtimeHost = runtime && !modalRuntime ? options.runtimeHostFor : undefined;
-  if (runtime && (!runtimePolicy || (!modalRuntime && !runtimeHost)))
-    throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-  if (!runtime && (body.boatRuntime !== undefined || body.runtimeTransport !== undefined))
-    throw new VaultError("invalid", "Use sandbox/launch-runtime-v1 for experimental runtime selection.");
-  if (!options.data || !options.providerFor)
-    throw new VaultError("unavailable", "Launching is not configured on this server.");
-  if (body.visibility !== undefined && body.visibility !== "private" && body.visibility !== "org")
-    throw new VaultError("invalid", "Visibility is private or org.");
-  if (
-    body.connections !== undefined &&
-    (!Array.isArray(body.connections) ||
-      body.connections.length > 100 ||
-      body.connections.some((id) => typeof id !== "string" || !UUID.test(id)))
-  )
-    throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");
-  const armadaAccess = parseSandboxArmadaAccess(body.armadaAccess);
-  if (armadaAccess && !options.sandboxArmadaAccess)
-    throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
-  if (armadaAccess && (typeof body.credentialId !== "string" || !UUID.test(body.credentialId)))
-    throw new VaultError("invalid", "Sandbox Armada access requires an explicit credentialId.");
-  const name = required(body, "golden");
-  const repo = body.repo === undefined ? undefined : required(body, "repo");
-  const harness = required(body, "harness");
-  if (!isHarness(harness)) throw new VaultError("invalid", "The agent is claude or codex.");
-  const data = options.data(caller);
-  const actor = await launchActor(data, caller, name, optional(body, "org"));
-  const golden = await goldenForLaunch(
-    data.goldens,
-    actor,
-    name,
-    optional(body, "provider") as "boat" | "modal" | undefined,
-  );
-  resolveRepositoryDir(golden, optional(body, "repo"));
-  if (armadaAccess && harness !== "codex")
-    throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
-  if (runtime && golden.provider !== (modalRuntime ? "modal" : "boat"))
-    throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
-  const provider = modalRuntime
-    ? await options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller)
-    : runtimeHost
-      ? runtimeHost(
-          (
-            await resolveBoatKey(options.store, options.encryptionKey, {
-              userId: caller.userId,
-              orgId: actor.orgId,
-              visibility: golden.visibility,
-            })
-          ).key,
-        )
-      : await providerForGolden(
-          options,
-          caller,
-          modalRuntime
-            ? { ...golden, runtimeTransport: "dialout" }
-            : armadaAccess
-              ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
-              : golden,
-        );
-  const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
-  const result = await launchSandbox(
-    provider,
-    {
-      ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
-      goldens: data.goldens,
-      sandboxes: data.sandboxes,
-      ...(connectionLifecycle ? { connections: connectionLifecycle } : {}),
-      credentials: launchCredentials(
-        options.store,
-        options.encryptionKey,
-        runtime
-          ? undefined
-          : {
-              store: options.store,
-              app: options.github?.app ?? null,
-              ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
-              ...(options.github?.now ? { now: options.github.now } : {}),
-            },
-        options.modelAuth,
-      ),
-    },
-    actor,
-    {
-      ...(body.credentialId !== undefined ? { credentialId: required(body, "credentialId") } : {}),
-      golden: name,
-      ...(body.size === undefined ? {} : { size: parseMachineSize(body.size) }),
-      provider: golden.provider,
-      ...(repo === undefined ? {} : { repo }),
-      ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
-      ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
-      ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
-      ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities as string[] }),
-      ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
-      ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
-      harness,
-      ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
-      ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: requiredNumber(body, "ttlSeconds") }),
-    },
-    {
-      ...options.launch,
-      ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
-      ...(armadaAccess
-        ? {
-            privateVisibility: true as const,
-            beforeStart: async (provider: Provider, sandbox: import("@armada/core").SandboxRecord) => {
-              await options.launch?.beforeStart?.(provider, sandbox);
-              await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess);
-            },
-          }
-        : {}),
-    },
-  );
-  return {
-    ...launchJson(result),
-    ...(armadaAccess
-      ? { armadaAccess: { enabled: true, maxActiveChildren: armadaAccess.maxActiveChildren ?? 3 } }
-      : {}),
-  };
-}
-
-async function launchActor(
-  data: ScopedData,
-  caller: Caller,
-  name: string,
-  org: string | undefined,
-): Promise<GoldenActor> {
-  const selected = org === undefined ? undefined : scopedOrg(caller, org);
-  if (selected !== undefined) {
-    const member = caller.orgs.find((item) => item.orgId === selected);
-    if (!member) throw new VaultError("forbidden", "This token is scoped to another org.");
-    return { userId: caller.userId, orgId: member.orgId, role: member.role };
-  }
-  const holders: string[] = [];
-  for (const member of caller.orgs)
-    if ((await data.goldens.findByName(member.orgId, name)).length > 0) holders.push(member.orgId);
-  if (holders.length > 1) throw new VaultError("invalid", "Name the org for this golden.");
-  const member = caller.orgs.find((item) => item.orgId === (holders[0] ?? caller.orgs[0]?.orgId));
-  if (!member) throw new VaultError("not_found", "You are not a member of an org.");
-  return { userId: caller.userId, orgId: member.orgId, role: member.role };
-}
-
-/** One launch path for interactive templates and unattended owner-scoped routines. */
-export function templateRuntime(options: ControlOptions, caller: Caller) {
-  const stores = options.data?.(caller);
-  if (!stores) return undefined;
-  return {
-    stores: {
-      goldens: stores.goldens,
-      sandboxes: stores.sandboxes,
-      credentials: launchCredentials(
-        options.store,
-        options.encryptionKey,
-        options.github ? { ...options.github, store: options.store } : undefined,
-        options.modelAuth,
-      ),
-      ...(options.connections ? { connections: options.connections } : {}),
-    },
-    ...(options.dockerLaunch
-      ? {
-          launchDocker: (
-            body: Record<string, unknown>,
-            admission: {
-              beforeReserve(tx: import("@armada/core").Sql): Promise<void>;
-              beforeStart(): Promise<void>;
-            },
-          ) => options.dockerLaunch!.launch(caller, body, admission),
-        }
-      : {}),
-    provider: (golden: GoldenRecord) => providerForGolden(options, caller, golden),
-    ...(options.launch ? { options: options.launch } : {}),
-  };
-}
-
-async function providerForGolden(
-  options: ControlOptions,
-  caller: Caller,
-  golden: GoldenRecord & { sourceGoldenVisibility?: Visibility; runtimeTransport?: "dialout" },
-): Promise<Provider> {
-  if (options.providers) return options.providers.resolve(golden, caller);
-  if (golden.provider !== "boat")
-    throw new ProviderRoutingError("provider_not_configured", "modal", "Modal is not configured.");
-  const key = await resolveBoatKey(options.store, options.encryptionKey, {
-    userId: caller.userId,
-    orgId: golden.orgId,
-    visibility: golden.sourceGoldenVisibility ?? golden.visibility,
-  });
-  return (
-    options.providerFor?.(key.key, { userId: caller.userId, orgId: golden.orgId }) ??
-    Promise.reject(new VaultError("unavailable", "Launching is not configured on this server."))
-  );
-}
-
-function launchJson(result: LaunchResult) {
-  return {
-    ...(result.runtime ? { runtime: result.runtime } : {}),
-    helper: result.helper,
-    sandbox: {
-      ...result.sandbox,
-      ...sandboxIdentity(result.sandbox),
-    },
-    golden: {
-      ...result.golden,
-      ...goldenCompatibilityIds(result.golden),
-    },
-    promptId: result.promptId ?? null,
-    conversationId: result.conversationId ?? null,
-    ttlSeconds: result.ttlSeconds,
-    expiresAt: result.expiresAt?.toISOString() ?? null,
-    github: launchGitHubResponse(result.github),
-  };
-}
-
-function modelChoice(harness: Harness, model: string | undefined, reasoningEffort: string | undefined): ModelChoice {
-  try {
-    return resolveModelChoice(harness, { model, reasoningEffort });
-  } catch (error) {
-    if (error instanceof LaunchError) throw new VaultError("invalid", error.message);
-    throw error;
-  }
-}
-
-function requiredRepos(body: Record<string, unknown>): string[] {
-  const value = body.repos;
-  if (!Array.isArray(value) || value.length === 0 || !value.every((item) => typeof item === "string" && item !== "")) {
-    throw new VaultError("invalid", "repos must be a non-empty array of non-empty strings.");
-  }
-  return value;
-}
-
-function requiredNumber(body: Record<string, unknown>, key: string): number {
-  const value = body[key];
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1)
-    throw new VaultError("invalid", `${key} must be a positive integer.`);
-  return value;
-}
-
-function requiredBoolean(body: Record<string, unknown>, key: string, fallback: boolean): boolean {
-  const value = body[key];
-  if (value === undefined || value === null) return fallback;
-  if (typeof value !== "boolean") throw new VaultError("invalid", `${key} must be a boolean.`);
-  return value;
-}
-
 function scope(body: Record<string, unknown>): "user" | "org" {
   const value = required(body, "scope");
   if (value === "user" || value === "org") return value;
   throw new VaultError("invalid", "scope is user or org.");
-}
-
-function selectGolden(rows: GoldenRecord[], body: Record<string, unknown>): GoldenRecord | undefined {
-  const provider = optional(body, "provider");
-  if (provider !== undefined && !isSandboxProvider(provider))
-    throw new VaultError("invalid", "Provider is boat or modal.");
-  const selected = rows.filter((row) => provider === undefined || row.provider === provider);
-  if (selected.length > 1)
-    throw new GoldenError("conflict", "Golden exists on boat and modal. Pass --provider boat or modal.");
-  return selected[0];
 }
 
 async function selectedCaller(options: ControlOptions, caller: Caller, ref: string | undefined): Promise<Caller> {
@@ -1543,3 +987,7 @@ async function selectedCaller(options: ControlOptions, caller: Caller, ref: stri
 
 export { authenticatedControlCaller } from "./control-caller.ts";
 export { controlOptionsFromEnv } from "./control-config.ts";
+
+export type { GoldenJson } from "./golden-control.ts";
+
+export { templateRuntime } from "./launch-control.ts";

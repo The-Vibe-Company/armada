@@ -169,8 +169,8 @@ export interface LaunchOptions extends GoldenLimits {
   };
   /** Frozen template account version, not a public launch override. */
   credentialVersion?: number;
-  /** Templates with native-only readable/secret environment delivery. */
-  nativeEnvironmentBindings?: boolean;
+  /** Templates requiring native-only application-secret delivery. */
+  nativeSecretBindings?: boolean;
 
   /** Trusted per-launch opt-in, never public request configuration. Codex
    * snapshot launch: no native setup/refresh or runner fallback. */
@@ -256,7 +256,7 @@ export async function launchSandbox(
         `Boat runtime default cannot launch ${feature}; no native fallback. Set ARMADA_BOAT_AGENT_PATH=native for rollback.`,
       );
     };
-    if (options.nativeEnvironmentBindings) refuse("template readable-variable or application-secret bindings");
+    if (options.nativeSecretBindings) refuse("template application-secret bindings");
     provider = await defaultRuntime.provider(actor, golden);
     stores = { ...stores, credentials: defaultRuntime.credentials, connections: defaultRuntime.connections };
     options = { ...options, boatRuntime: defaultRuntime.policy };

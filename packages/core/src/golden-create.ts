@@ -250,6 +250,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
             url: `https://github.com/${repo.owner}/${repo.repo}.git`,
             branch: repo.branch ?? "main",
             dir: repo.dir,
+            ...(repo.history !== undefined ? { history: repo.history } : {}),
           }),
         ),
         init,

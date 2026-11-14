@@ -88,7 +88,7 @@ for (const mobile of [false, true]) {
     expect(scrolls).toBe(mobile);
     if (!mobile) {
       await expect(form.getByLabel("Name")).toBeInViewport({ ratio: 1 });
-      await expect(form.getByRole("button", { name: "Build golden" })).toBeInViewport({ ratio: 1 });
+      await expect(form.getByRole("button", { name: "Build snapshot" })).toBeInViewport({ ratio: 1 });
       await expect(form.getByRole("button", { name: "Recover admission by key" })).toBeInViewport({ ratio: 1 });
     }
     await page.keyboard.press("Escape");

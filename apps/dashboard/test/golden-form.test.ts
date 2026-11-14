@@ -5,7 +5,7 @@ const ORG = "11111111-1111-4111-8111-111111111111";
 const base = { mode: "create", name: "web", org: ORG, provider: "boat", visibility: "org", init: "", setup: "" };
 const row = (url: string, branch = "", dir = "") => ({ url, branch, dir });
 
-describe("the golden form request", () => {
+describe("the snapshot form request", () => {
   test("several repositories become one config with branch, directory, init and setup", () => {
     const parsed = goldenRequest({
       ...base,
@@ -35,6 +35,30 @@ describe("the golden form request", () => {
     });
   });
 
+  test.each(["full", "shallow"] as const)(
+    "repository history %s survives editing and form serialization",
+    (history) => {
+      const defaults = editDefaults({
+        config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web", history }], init: [] },
+      });
+      expect(defaults.repos[0]?.history).toBe(history);
+      const parsed = goldenRequest({ ...base, mode: "update", ...defaults });
+      expect(parsed.ok && parsed.value.body.config.repos[0]).toEqual({
+        url: "https://github.com/acme/web.git",
+        branch: "main",
+        dir: "web",
+        history,
+      });
+    },
+  );
+
+  test("invalid repository history is refused before submission", () => {
+    expect(goldenRequest({ ...base, repos: [{ ...row("acme/web"), history: "arbitrary" }] })).toEqual({
+      ok: false,
+      error: "Repository 1 history must be full or shallow.",
+    });
+  });
+
   test("the provider is sent as given, and anything but Boat or Modal is refused", () => {
     const modal = goldenRequest({ ...base, provider: "modal", repos: [row("acme/web")] });
     expect(modal.ok && modal.value.body.provider).toBe("modal");
@@ -43,7 +67,7 @@ describe("the golden form request", () => {
     for (const provider of ["", "Boat", "docker"]) {
       expect(goldenRequest({ ...base, provider, repos: [row("acme/web")] })).toEqual({
         ok: false,
-        error: "Choose where the golden is built.",
+        error: "Choose where the snapshot is built.",
       });
     }
   });
@@ -73,7 +97,7 @@ describe("the golden form request", () => {
     expect(error({ repos: [row("acme/web", "", "x"), row("acme/api", "", "x")] })).toBeTruthy();
     expect(error({ init: "export GITHUB_TOKEN=abc" })).toContain("secrets");
     expect(error({ name: "  " })).toContain("1 to 120");
-    expect(error({ visibility: "public" })).toBe("Choose who sees the golden.");
+    expect(error({ visibility: "public" })).toBe("Choose who sees the snapshot.");
     expect(error({ repos: Array.from({ length: 17 }, (_, i) => row(`acme/r${i}`)) })).toContain("at most 16");
     expect(error({ mode: "delete" })).toBe("That request is not valid.");
   });

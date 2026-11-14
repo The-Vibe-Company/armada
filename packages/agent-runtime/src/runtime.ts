@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES, validateReadableVariables } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
@@ -9,8 +9,10 @@ import { execCredentialValues, validateExecEnvironment, validateExecReadables } 
 import { githubRuntimeEnvironment } from "./github-tools.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import type { Journal } from "./journal.ts";
-import { mcpDigest, mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
+import { mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
+import { recordMcpRevision } from "./mcp-revisions.ts";
 import { NativeEpoch } from "./native-epoch.ts";
+import { observeRuntime } from "./observation.ts";
 import { groupState, type ProcessIdentity, processIdentity } from "./processes.ts";
 import {
   AUTH_HEADER,
@@ -24,6 +26,7 @@ import {
   type StoredPrompt,
   type Turn,
 } from "./protocol.ts";
+import { readRuntimeJson } from "./request-framing.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills } from "./skills.ts";
 import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
@@ -162,36 +165,7 @@ export class Runner {
     )
       return Response.json({ error: "unauthorized" }, { status: 401 });
     try {
-      if (Number(request.headers.get("content-length") ?? 0) > 1048576) throw Error("request_too_large");
-      const reader = request.body?.getReader();
-      const decoder = new TextDecoder();
-      let raw = "";
-      let bytes = 0;
-      try {
-        if (reader) {
-          while (true) {
-            const chunk = await reader.read();
-            if (chunk.done) break;
-            bytes += chunk.value.byteLength;
-            if (bytes > 1048576) {
-              // Cancellation is advisory; a producer must not hold the refusal open.
-              void reader.cancel().catch(() => {});
-              throw Error("request_too_large");
-            }
-            raw += decoder.decode(chunk.value, { stream: true });
-          }
-          raw += decoder.decode();
-        }
-      } finally {
-        reader?.releaseLock();
-      }
-      if (Buffer.byteLength(raw) > 1048576) throw Error("request_too_large");
-      let r: RunnerRequest;
-      try {
-        r = JSON.parse(raw) as RunnerRequest;
-      } catch {
-        throw Error("invalid_request");
-      }
+      const r = (await readRuntimeJson(request)) as RunnerRequest;
       if (this.closing) throw Error("sandbox_not_ready");
       if (!r || typeof r !== "object" || Array.isArray(r)) throw Error("invalid_request");
       if (r.version !== 1 || r.sandboxId !== this.grant.sandboxId || typeof r.requestId !== "string" || !r.requestId)
@@ -340,35 +314,7 @@ export class Runner {
     if (this.credentialFreeBuilder && Object.keys(configuration.servers).length)
       throw Error("builder_credentials_forbidden");
     if (values.some((v) => v === configuration.revision)) throw Error("invalid_mcp_configuration");
-    const prefix = `mcp:v2:${checkpointIdentityKey(this.grant)}:`,
-      key = prefix + mcpDigest(configuration.revision),
-      digest = mcpDigest(configuration);
-    const previous = this.journal.db.query("SELECT value FROM metadata WHERE key=?").get(key) as {
-      value: string;
-    } | null;
-    const current = this.journal.db.query("SELECT value FROM metadata WHERE key=?").get(`${prefix}current`) as {
-      value: string;
-    } | null;
-    if (previous && previous.value !== digest) throw Error("mcp_revision_conflict");
-    if (previous && current && current.value !== key) throw Error("stale_mcp_revision");
-    if (
-      !previous &&
-      Number(
-        (
-          this.journal.db
-            .query("SELECT count(*) AS n FROM metadata WHERE substr(key,1,?)=? AND key<>?")
-            .get(prefix.length, prefix, `${prefix}current`) as { n: number }
-        ).n,
-      ) >= 4096
-    )
-      throw Error("mcp_revision_limit");
-    if (Date.now() >= this.grant.expiresAt) throw Error("unauthorized");
-    // Register before SQL metadata, snapshot replacement, events, native stderr or any acknowledgement.
-    this.journal.registerSecrets(values);
-    this.journal.db.transaction(() => {
-      this.journal.db.query("INSERT OR REPLACE INTO metadata VALUES(?,?)").run(key, digest);
-      this.journal.db.query("INSERT OR REPLACE INTO metadata VALUES(?,?)").run(`${prefix}current`, key);
-    })();
+    recordMcpRevision(this.journal, this.grant, configuration, values);
     this.mcp = configuration;
     return { revision: configuration.revision };
   }
@@ -394,47 +340,14 @@ export class Runner {
         (typeof r.conversationId !== "string" || !r.conversationId || r.conversationId.length > 256)
       )
         throw Error("invalid_request");
-      const watermark = Number(
-        (this.journal.db.query("SELECT coalesce(max(seq),0) AS watermark FROM events").get() as { watermark: number })
-          .watermark,
-      );
-      let state: "active" | "quiescent" | "unknown" =
-        this.barrier || this.journal.checkpointPending(this.grant) ? "unknown" : "quiescent";
-      const processes: Array<{ pid: number; state: string }> = [];
-      for (const row of this.journal.db.query("SELECT pid,body FROM processes").all() as {
-        pid: number;
-        body: string;
-      }[]) {
-        const saved = JSON.parse(row.body) as { status: string; identity?: ProcessIdentity };
-        if (!["running", "running_after_restart", "unknown_after_restart"].includes(saved.status)) continue;
-        const status = groupState(row.pid, saved.identity);
-        processes.push({ pid: row.pid, state: status });
-        if (status === "unverifiable") state = "unknown";
-        else if (status === "live" && state !== "unknown") state = "active";
-      }
-      if ((this.active.size > 0 || this.commands.size > 0) && state !== "unknown") state = "active";
-      const acknowledgedSequence = this.journal.ack;
-      if (state === "quiescent" && acknowledgedSequence < watermark) state = "unknown";
-      const evidence = createHash("sha256")
-        .update(
-          JSON.stringify({
-            generation: this.grant.generation,
-            watermark,
-            acknowledgedSequence,
-            active: [...this.active.keys()].sort(),
-            commands: this.commands.size,
-            processes,
-          }),
-        )
-        .digest("hex");
-      return {
-        physicalGeneration: this.grant.generation,
-        state,
-        evidence,
-        eventWatermark: watermark,
-        acknowledgedSequence,
-        nativeSessionId: r.conversationId ? (this.journal.session(r.conversationId) ?? null) : null,
-      };
+      return observeRuntime({
+        journal: this.journal,
+        grant: this.grant,
+        barrier: this.barrier,
+        active: this.active,
+        commands: this.commands,
+        conversationId: r.conversationId,
+      });
     }
     if (r.op === "resumeNativeSession") {
       if (this.credentialFreeBuilder || this.barrier || this.active.size || this.commands.size || this.resumingNative)

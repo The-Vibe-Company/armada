@@ -183,7 +183,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
   const environment = definition
     ? definition.provider === "docker"
       ? `${definition.hostId} on Docker`
-      : `${golden?.name ?? "Unavailable environment"} on ${PROVIDER_LABELS[definition.provider]}`
+      : `${golden?.name ?? "Unavailable snapshot"} on ${PROVIDER_LABELS[definition.provider]}`
     : null;
   const meta = definition
     ? [
@@ -221,16 +221,14 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
       </div>
       {definition && target ? (
         <>
-          <PanelSection title="Environment">
+          <PanelSection title="Snapshot">
             {golden ? (
-              <IngredientLink href={`/environments?item=${encodeURIComponent(golden.id)}`}>
-                {environment}
-              </IngredientLink>
+              <IngredientLink href={`/snapshots?item=${encodeURIComponent(golden.id)}`}>{environment}</IngredientLink>
             ) : (
               <p className="text-sm">{environment}</p>
             )}
             {definition.provider === "docker" && (
-              <p className="text-xs text-muted-foreground">Official Armada environment</p>
+              <p className="text-xs text-muted-foreground">Official Armada snapshot</p>
             )}
           </PanelSection>
           <PanelSection title="Agent">

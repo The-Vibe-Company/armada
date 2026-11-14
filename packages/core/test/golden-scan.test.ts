@@ -691,3 +691,29 @@ linuxScanTest(
     }
   },
 );
+
+linuxScanTest("a shallow checkout excludes an old fixture object without relaxing the secret scan", async () => {
+  const { base, roots } = sandbox();
+  const token = "ghu_" + "K".repeat(36);
+  try {
+    const origin = join(base, "source");
+    mkdirSync(origin);
+    git(origin, "init", "-q");
+    git(origin, "config", "user.email", "fixture@example.com");
+    git(origin, "config", "user.name", "Fixture");
+    writeFileSync(join(origin, "fixture.txt"), token);
+    git(origin, "add", "fixture.txt");
+    git(origin, "commit", "-qm", "add fixture");
+    const object = spawnSync("git", ["rev-parse", "HEAD:fixture.txt"], { cwd: origin, encoding: "utf8" }).stdout.trim();
+    git(origin, "rm", "-q", "fixture.txt");
+    git(origin, "commit", "-qm", "remove fixture");
+    const checkout = join(roots.home, "armada");
+    git(base, "clone", "-q", "--depth=1", "--single-branch", `file://${origin}`, checkout);
+    expect(spawnSync("git", ["cat-file", "-e", object], { cwd: checkout, stdio: "ignore" }).status).not.toBe(0);
+    expect(runAgainst(await capturedScript(), roots).status).toBe(0);
+    writeFileSync(join(checkout, "live-fixture.txt"), token);
+    expect(runAgainst(await capturedScript(), roots).status).toBe(97);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});

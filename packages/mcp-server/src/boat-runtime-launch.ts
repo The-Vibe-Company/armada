@@ -21,14 +21,17 @@ export function boatRuntimeLaunch(
       return startRuntime({
         input,
         configure: () =>
-          boatRuntimeConfiguration({
-            actor,
-            sandbox,
-            credentials,
-            manifest,
-            architecture,
-            ...(modelAuth ? { modelAuth } : {}),
-          }),
+          boatRuntimeConfiguration(
+            {
+              actor,
+              sandbox,
+              credentials,
+              manifest,
+              architecture,
+              ...(modelAuth ? { modelAuth } : {}),
+            },
+            options.sql,
+          ),
         bootstrap: () => (request) => startBoatRuntime(host, request),
       });
     },

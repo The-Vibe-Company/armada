@@ -22,10 +22,10 @@ export async function setGoldenVisibility(_previous: ActionResult | null, data: 
   if (!isUuid(golden) || (visibility !== "org" && visibility !== "private")) return fail("That request is not valid.");
   const supabase = await createClient();
   if (!(await listGoldens(supabase)).some((row) => row.id === golden))
-    return fail("That golden is not available in this scope.");
+    return fail("That snapshot is not available in this scope.");
   const { error } = await supabase.rpc("set_golden_visibility", { target_golden: golden, new_visibility: visibility });
   if (error) return fail(explainDbError(error));
-  revalidatePath("/environments");
+  revalidatePath("/snapshots");
   return done(visibility === "org" ? "Shared with the org." : "Now private to you.");
 }
 
@@ -53,10 +53,10 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
     const supabase = await createClient();
     const [goldens, memberships] = await Promise.all([listGoldens(supabase), listMemberships(supabase, viewer.id)]);
     target = goldens.find((row) => row.id === goldenId && row.org_id === org);
-    if (!target || !isSandboxProvider(target.provider)) return fail("That golden is not available in this scope.");
+    if (!target || !isSandboxProvider(target.provider)) return fail("That snapshot is not available in this scope.");
     const isAdmin = memberships.some((item) => item.org.id === target?.org_id && item.role === "admin");
     const state = goldenRowState(target, goldens, { id: viewer.id, isAdmin });
-    if (!state.canRebuild) return fail(state.reason ?? "This golden cannot be rebuilt here.");
+    if (!state.canRebuild) return fail(state.reason ?? "This snapshot cannot be rebuilt here.");
   }
   const parsed = goldenRequest({
     mode,
@@ -91,7 +91,7 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
   }
   if (!isGoldenBuildStatus(result)) return fail("The Armada server sent an unexpected answer.");
   if (result.state === "succeeded") {
-    revalidatePath("/environments");
+    revalidatePath("/snapshots");
     revalidatePath("/sandboxes");
   }
   // An admitted job, not a finished build: the form polls its status. No snapshot is assumed here.
@@ -111,7 +111,7 @@ export async function goldenBuildStatus(jobId: string) {
   const result = await createControlClient({ serverUrl, token: viewer.token }).post("golden/build/status", { jobId });
   if (!isGoldenBuildStatus(result)) throw new Error("Unexpected build status.");
   if (result.state === "succeeded") {
-    revalidatePath("/environments");
+    revalidatePath("/snapshots");
     revalidatePath("/sandboxes");
   }
   return result;
@@ -126,7 +126,7 @@ export async function findActiveGoldenBuild(goldenId: string, org: string): Prom
   if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
   const supabase = await createClient();
   const target = (await listGoldens(supabase)).find((row) => row.id === goldenId && row.org_id === org);
-  if (!target || !isSandboxProvider(target.provider)) return fail("That golden is not available in this scope.");
+  if (!target || !isSandboxProvider(target.provider)) return fail("That snapshot is not available in this scope.");
   try {
     const result: unknown = await createControlClient({ serverUrl, token: viewer.token }).post("golden/build/find", {
       name: target.name,
@@ -201,7 +201,7 @@ export async function removeGolden(_previous: ActionResult | null, data: FormDat
   const supabase = await createClient();
   const [goldens, memberships] = await Promise.all([listGoldens(supabase), listMemberships(supabase, viewer.id)]);
   const target = goldens.find((row) => row.id === goldenId && row.org_id === org);
-  if (!target || !isSandboxProvider(target.provider)) return fail("That golden is not available in this scope.");
+  if (!target || !isSandboxProvider(target.provider)) return fail("That snapshot is not available in this scope.");
   const isAdmin = memberships.some((item) => item.org.id === org && item.role === "admin");
   const blocker = goldenRemoveBlocker(target, { id: viewer.id, isAdmin });
   if (blocker) return fail(blocker);
@@ -214,13 +214,13 @@ export async function removeGolden(_previous: ActionResult | null, data: FormDat
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     if (error.status === 404 && error.code === undefined)
-      return fail("This Armada server does not offer removing goldens yet.");
+      return fail("This Armada server does not offer removing snapshots yet.");
     return fail(error.message);
   }
   if (!isGoldenRemoval(result) || result.id !== target.id) return fail("The Armada server sent an unexpected answer.");
-  revalidatePath("/environments");
+  revalidatePath("/snapshots");
   revalidatePath("/sandboxes");
-  redirect(`/environments?removed=${target.id}`);
+  redirect(`/snapshots?removed=${target.id}`);
 }
 
 /** The server's idempotency key shape: 16–128 letters, digits, underscores or hyphens. */
@@ -230,18 +230,22 @@ function repoRows(data: FormData): RepoRow[] {
   const urls = data.getAll("repo_url");
   const branches = data.getAll("repo_branch");
   const dirs = data.getAll("repo_dir");
+  const histories = data.getAll("repo_history");
   return urls.map((url, index) => ({
     url: typeof url === "string" ? url : "",
     branch: typeof branches[index] === "string" ? (branches[index] as string) : "",
     dir: typeof dirs[index] === "string" ? (dirs[index] as string) : "",
+    ...(histories[index] === undefined || histories[index] === ""
+      ? {}
+      : { history: typeof histories[index] === "string" ? (histories[index] as string) : "" }),
   }));
 }
 
 function explainBuildError(error: ControlError, provider: SandboxProviderId): string {
   if (provider === "boat" && error.code === "conflict" && /golden capacity/i.test(error.message))
-    return `${error.message} A Boat account holds one golden: rebuild the existing golden instead of creating another.`;
+    return `${error.message} A Boat account holds one snapshot: rebuild the existing snapshot instead of creating another.`;
   if (error.status === 404 && error.code === undefined)
-    return "This Armada server does not offer secure golden builds yet.";
+    return "This Armada server does not offer secure snapshot builds yet.";
   // A gateway in front of the server gave up, not the server: the build may still be running.
   if ((error.status === 502 || error.status === 504) && error.code === undefined)
     return "The Armada server did not answer in time. The build may still finish: refresh before trying again.";
@@ -265,12 +269,12 @@ export async function saveSizePolicy(_previous: ActionResult | null, data: FormD
   const supabase = await createClient();
   const [goldens, memberships] = await Promise.all([listGoldens(supabase), listMemberships(supabase, viewer.id)]);
   const target = goldens.find((row) => row.id === goldenId && row.org_id === org);
-  if (!target || !isSandboxProvider(target.provider)) return fail("That golden is not available in this scope.");
+  if (!target || !isSandboxProvider(target.provider)) return fail("That snapshot is not available in this scope.");
   const isAdmin = memberships.some((item) => item.org.id === org && item.role === "admin");
   const blocker = sizePolicyBlocker(target, { id: viewer.id, isAdmin });
   if (blocker) return fail(blocker);
   if (goldenRowState(target, goldens, { id: viewer.id, isAdmin }).duplicateName)
-    return fail(`Two visible ${PROVIDER_LABELS[target.provider]} goldens share this name; rename one first.`);
+    return fail(`Two visible ${PROVIDER_LABELS[target.provider]} snapshots share this name; rename one first.`);
   const form = policyFromForm((field) => formString(data, field), goldenRepositoryDirs(target.config));
   if (!form.ok) return fail(form.error);
   let result: unknown;
@@ -290,6 +294,6 @@ export async function saveSizePolicy(_previous: ActionResult | null, data: FormD
   }
   if (!isSizePolicyResult(result) || result.goldenId !== target.id)
     return fail("The Armada server sent an unexpected answer.");
-  revalidatePath("/environments");
+  revalidatePath("/snapshots");
   return done("Size defaults saved. They apply to the next launch; running sandboxes keep their size.");
 }
