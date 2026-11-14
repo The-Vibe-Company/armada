@@ -9,6 +9,13 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "idle_wake",
+  "idle_pause",
+  "idle_wrong_reason",
+  "idle_expiry",
+  "idle_conversation",
+  "idle_recall",
+  "idle_budget",
   "subscription",
   "subscription_priced",
   "subscription_bad_billing",
@@ -58,6 +65,9 @@ for (const mode of [
   "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
+    let clock = 0;
+    const woken = new Set<string>();
+    const idleReads = new Map<string, number>();
     const debtFeature =
       mode === "unimplemented" ? "mcp" : mode === "idle-pause" || mode === "wake-on-send" ? mode : undefined;
     const lines: string[] = [];
@@ -95,22 +105,26 @@ for (const mode of [
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode.startsWith("github")
-        ? ["--parity", "--feature", "github"]
-        : mode.startsWith("accounts")
-          ? ["--parity", "--accounts"]
-          : mode === "usage_filter"
-            ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-            : mode === "filtered"
-              ? ["--parity", "--only", "docker", "--feature", "exec"]
-              : debtFeature
-                ? ["--parity", "--feature", debtFeature]
-                : mode === "invalid_filter"
-                  ? ["--parity", "--feature", "typo"]
-                  : ["--parity"],
+      mode.startsWith("idle_")
+        ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
+        : mode.startsWith("github")
+          ? ["--parity", "--feature", "github"]
+          : mode.startsWith("accounts")
+            ? ["--parity", "--accounts"]
+            : mode === "usage_filter"
+              ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+              : mode === "filtered"
+                ? ["--parity", "--only", "docker", "--feature", "exec"]
+                : debtFeature
+                  ? ["--parity", "--feature", debtFeature]
+                  : mode === "invalid_filter"
+                    ? ["--parity", "--feature", "typo"]
+                    : ["--parity"],
       {
-        now: () => 0,
-        sleep: async () => {},
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
         out: (line) => lines.push(line),
         recordSandbox: async (org, _id, requestKey, provider) => {
           // Exercise the real journal validator, not a permissive callback.
@@ -119,6 +133,10 @@ for (const mode of [
           if (mode === "journal_failure") throw new Error("journal_unwritable");
         },
         fetch: async (url, init) => {
+          if (url.endsWith("/healthz"))
+            return Response.json(
+              mode.startsWith("idle_") ? { idlePauseDelayMs: mode === "idle_budget" ? 35 * 60_000 : 1000 } : {},
+            );
           const path = url.split("/api/v1/")[1]!;
           const body = JSON.parse(String(init.body));
           const p = body.org;
@@ -201,6 +219,11 @@ for (const mode of [
               result = { sandbox: { id: p, provider: p } };
               break;
             case "sandbox/send": {
+              if (mode.startsWith("idle_") && body.prompt.startsWith("What PARITY_")) {
+                expect(states.get(p)).toBe("stopped");
+                woken.add(p);
+                if (mode === "idle_recall") prompts.delete(p);
+              }
               if (mode === "docker_send_pending" && p === "docker")
                 return Response.json(
                   { error: { code: "sandbox_not_ready", message: "Docker launch preparation is pending." } },
@@ -219,7 +242,12 @@ for (const mode of [
               result = {
                 events: [
                   { kind: "prompt", promptId: turns.get(p)?.at(-1), status: "finished" },
-                  { kind: "message", promptId: turns.get(p)?.at(-1), text: `SMOKE_OK ${prompts.get(p)}` },
+                  {
+                    kind: "message",
+                    promptId: turns.get(p)?.at(-1),
+                    partial: false,
+                    text: mode.startsWith("idle_") && woken.has(p) ? prompts.get(p) : `SMOKE_OK ${prompts.get(p)}`,
+                  },
                 ],
               };
               break;
@@ -245,6 +273,23 @@ for (const mode of [
               break;
             case "sandbox/detail":
             case "sandbox/status":
+              if (mode.startsWith("idle_")) {
+                const n = (idleReads.get(p) ?? 0) + 1;
+                idleReads.set(p, n);
+                const paused = !woken.has(p) && n > 2;
+                if (paused) states.set(p, "stopped");
+                result = {
+                  id: p,
+                  status: paused ? "stopped" : states.get(p),
+                  idlePaused: paused,
+                  statusReason: paused ? (mode === "idle_wrong_reason" ? "explicit_stop" : "idle_paused") : null,
+                  expiresAt: paused && mode === "idle_expiry" ? "2099-02-01T00:00:00Z" : "2099-01-01T00:00:00Z",
+                  conversationIds: [
+                    woken.has(p) && mode === "idle_conversation" ? "new-conversation" : "original-conversation",
+                  ],
+                };
+                break;
+              }
               detailReads.set(p, (detailReads.get(p) ?? 0) + 1);
               if (mode === "baseline_quota" && path === "sandbox/detail" && detailReads.get(p) === 1)
                 return Response.json(
@@ -461,7 +506,7 @@ for (const mode of [
         for (const provider of providers)
           expect(report.features[debtFeature][provider]).toEqual({
             status: "not-run",
-            reason: "probe_not_implemented",
+            reason: debtFeature === "mcp" ? "probe_not_implemented" : "idle_delay_not_advertised",
           });
       } else {
         expect(report.features.exec.docker.status).toBe("pass");
@@ -513,6 +558,25 @@ for (const mode of [
             reason: mode.startsWith("subscription") ? "included in subscription" : "unknown: price",
           });
         expect(turns.get(provider)).toHaveLength(2);
+      }
+      return;
+    }
+    if (mode.startsWith("idle_")) {
+      const failure = ["idle_wrong_reason", "idle_expiry", "idle_conversation", "idle_recall"].includes(mode);
+      expect(passed).toBe(!failure);
+      if (mode === "idle_budget") {
+        expect(report.starts).toBe(0);
+        expect(report.features["wake-on-send"].docker.reason).toBe("idle_observation_exceeds_run_budget");
+        return;
+      }
+      for (const provider of ["modal", "docker"]) {
+        const selected = mode === "idle_pause" ? "idle-pause" : "wake-on-send";
+        expect(report.features[selected][provider].status).toBe(failure ? "fail" : "pass");
+        expect(report.features.cleanup[provider].status).toBe("pass");
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(calls).not.toContain(`${provider}:sandbox/resume`);
+        const firstDetail = calls.indexOf(`${provider}:sandbox/detail`);
+        expect(calls.indexOf(`${provider}:sandbox/stop`)).toBeGreaterThan(firstDetail);
       }
       return;
     }
