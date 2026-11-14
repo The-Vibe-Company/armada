@@ -1177,8 +1177,21 @@ The `exact-cost` feature name remains for compatibility; in account mode its
 reason explicitly says `unknown` when appropriate. The strict provider parity
 mode is unchanged.
 
+The accounts run prints two Markdown tables (also appended together to
+`GITHUB_STEP_SUMMARY`): an account/provider overview, then **Account feature and
+cost details**. The second table shows every reported feature, including explicit
+not-implemented debt and before/after resume usage and cost checks independently. The historical `exact-cost` feature
+name means fixed-point quote validation, not invoice validation. Its reason
+retains `included in subscription`, a validated `estimated`/`api_equivalent` USD
+reference, or `unknown` and its reason. Subscription inclusion is never a
+zero-dollar pay-as-you-go charge. An optional API-equivalent reference is not
+the subscription payment or an inferred invoice. A failed cost check
+never becomes a displayed verified price. Unconfigured/undeclared cells have an
+explicit `all` not-run row, without synthetic feature passes or zero costs.
+This is reporting only; it makes no extra provider calls.
+
 The `accounts_parity` JSON contains independent per-account/provider feature
-reports; the summary table never overwrites one account with another. A cell
+reports unchanged; neither table overwrites one account with another. A cell
 passes only when the required lifecycle, usage, cost and cleanup observations
 pass. Unsupported or quota-limited prerequisites cannot become a passing cell.
 A successful process exit means no observed failures, not that missing accounts

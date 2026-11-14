@@ -1571,6 +1571,24 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
   const accounts: Record<string, Partial<Record<Provider, unknown>>> = {};
   let passed = true;
   const table = ["## Accounts parity", "", "| Account | Provider | Result |", "| --- | --- | --- |"];
+  const details = [
+    "",
+    "## Account feature and cost details",
+    "",
+    "Cost reasons retain subscription inclusion, estimated/API-equivalent basis or explicit unknown; a passing quote check is not an invoice.",
+    "",
+    "| Account | Provider | Feature | Result |",
+    "| --- | --- | --- | --- |",
+  ];
+  const markdown = (value: string) =>
+    value
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll("|", "\\|")
+      .replace(/[\r\n]+/g, " ");
+  const detail = (account: string, provider: Provider, feature: string, result: string) =>
+    details.push(`| ${account} | ${provider} | ${feature} | ${markdown(result)} |`);
   for (const account of Object.keys(accountMatrix) as Array<keyof typeof accountMatrix>) {
     accounts[account] = {};
     for (const provider of providers) {
@@ -1603,13 +1621,25 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
         const outcome = !ok ? "fail" : complete ? "pass" : "not-run";
         result = { status: outcome, features: receipt };
         status = `${outcome} (see per-feature diagnostics and cost classification)`;
-      }
+        if (receipt) {
+          for (const [feature, providers] of Object.entries(receipt)) {
+            const cell = providers[provider];
+            detail(
+              account,
+              provider,
+              feature,
+              cell ? `${cell.status}${cell.reason ? `: ${cell.reason}` : ""}` : "not-run: no observation",
+            );
+          }
+        } else detail(account, provider, "probe", `${outcome}: no provider receipt`);
+      } else detail(account, provider, "all", status);
       accounts[account]![provider] = result;
       table.push(`| ${account} | ${provider} | ${status} |`);
     }
   }
   io.out(JSON.stringify({ step: "accounts_parity", version: 1, accounts }));
-  if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${table.join("\n")}\n`);
-  else io.out(table.join("\n"));
+  const summary = [...table, ...details].join("\n");
+  if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${summary}\n`);
+  else io.out(summary);
   return passed;
 }

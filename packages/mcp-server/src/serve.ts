@@ -55,6 +55,7 @@ import { modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
+import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOttoApi } from "./otto/api.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
@@ -533,6 +534,7 @@ export async function startServer(
     idlePauseDelayMs: idleDelayMs,
     ...(env.RAILWAY_GIT_COMMIT_SHA ? { commitSha: env.RAILWAY_GIT_COMMIT_SHA } : {}),
     runtimeProviderFor,
+    ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(sql),
     launch,
     modelAuth,
     publicUrl: config.publicUrl,
