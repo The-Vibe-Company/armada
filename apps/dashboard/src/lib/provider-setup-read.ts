@@ -12,6 +12,8 @@ export type ProviderSetup =
 
 const UNSUPPORTED = "This Armada server does not offer organization provider setup yet.";
 const TEMPORARY = "The Armada server could not be reached just now. Check again in a moment.";
+const UNCONFIRMED =
+  "Provider setup could not be confirmed. Reload Providers to check its current state before trying again.";
 
 /** Asks `org/provider/status` once. Any failure is `unavailable`: a missing status never counts as configured. */
 export async function readSetupWith(client: ControlClient, org: string): Promise<ProviderSetup> {
@@ -33,7 +35,8 @@ export async function readSetupWith(client: ControlClient, org: string): Promise
  * `not_found` "Unknown route." or its top-level `{ "error": "not_found" }`. A 404 without these (an edge or proxy page while no deployment
  * serves, an unreadable body) is a temporary outage, never a missing capability.
  */
-export function explainSetupError(error: ControlError): string {
+export function explainSetupError(error: ControlError, replacingNoun?: string): string {
+  if (error.outcomeUnknown) return UNCONFIRMED;
   if (error.status === undefined && error.message.startsWith("The Armada server did not answer in time"))
     return "The Armada server did not answer in time. Reload this page before trying again.";
   if (error.status === 404) {
@@ -44,5 +47,13 @@ export function explainSetupError(error: ControlError): string {
     if (unknownRoute) return UNSUPPORTED;
     if (error.code === undefined) return TEMPORARY;
   }
-  return error.message;
+  if (error.status === 400)
+    return `The provider credentials were not accepted. Check them in your provider account, then try again.${replacingNoun ? ` The connected ${replacingNoun} is unchanged.` : ""}`;
+  if (error.status === 401) return "Your session ended. Sign in again, then reload Providers.";
+  if (error.status === 403)
+    return "Only an organization admin manages providers. Reload Providers to check your access.";
+  if (error.status === 404)
+    return "This organization is no longer available. Reload Providers and choose an organization.";
+  if (error.status === 409) return "Provider setup changed. Reload Providers before trying again.";
+  return UNCONFIRMED;
 }
