@@ -166,6 +166,8 @@ describe("database", () => {
         "orgs SELECT(created_at,id,name)",
         "orgs UPDATE(boat_api_key_enc,name)",
         "otto_engine_preferences SELECT",
+        "otto_interview_revisions SELECT",
+        "otto_interviews SELECT",
         "otto_objective_messages SELECT(body,created_at,id,objective_id,org_id,owner_id,revision)",
         "otto_objectives SELECT(created_at,id,org_id,owner_id,repository,request,revision,updated_at)",
         "otto_ticket_graphs SELECT(brief_revision,created_at,graph,objective_id,org_id,owner_id)",

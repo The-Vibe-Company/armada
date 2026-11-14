@@ -5,6 +5,7 @@ import { Empty, PageHeader } from "@/components/page-header";
 import { isUuid } from "@/lib/action";
 import { ObjectiveError, type ObjectiveThread, objectiveRequest } from "@/lib/data/otto-objectives";
 import { selectedOrganization } from "@/lib/data/selected-org";
+import { InterviewPanel } from "../interview-panel";
 import { ObjectiveMessageForm } from "../objective-forms";
 
 import { TicketGraphForm } from "./ticket-graph-form";
@@ -82,6 +83,7 @@ export default async function ObjectivePage({ params }: { params: Promise<{ id: 
         <Link href="/otto/your-turn" className="inline-block underline underline-offset-4">
           Answer pending questions in Your turn
         </Link>
+        <InterviewPanel orgId={selected.org.id} id={id} />
         <ObjectiveMessageForm orgId={selected.org.id} id={id} />
       </div>
     </>

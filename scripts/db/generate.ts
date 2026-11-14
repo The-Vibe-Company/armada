@@ -28,6 +28,9 @@ type Schema = {
 
 const ROW_ALIASES: Record<string, string> = {
   otto_waits: "OttoWaitRow",
+  otto_interviews: "OttoInterviewRow",
+  otto_interview_revisions: "OttoInterviewRevisionRow",
+  otto_intentions: "OttoIntentionRow",
   otto_engine_preferences: "OttoEnginePreferenceRow",
   otto_objectives: "OttoObjectiveRow",
   otto_ticket_graphs: "OttoTicketGraphRow",

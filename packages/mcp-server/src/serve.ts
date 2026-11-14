@@ -55,6 +55,8 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
+import { createOttoEngineSessions } from "./otto/engine-session.ts";
+import { createOttoRepositoryFileReader } from "./otto/interview-tools.ts";
 import { createOttoRoutes } from "./otto/routes.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
@@ -622,6 +624,32 @@ export async function startServer(
         : []),
       ...(otto ? [otto.route] : []),
       ...createOttoRoutes({
+        interview: {
+          sessions: createOttoEngineSessions({
+            sql,
+            key: config.encryptionKey,
+            origin: config.publicUrl,
+            data,
+            credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
+              store,
+              app: githubApp,
+            }),
+            provider: (golden, caller) => providers.resolve(golden, caller),
+            sandboxProvider: (sandbox, caller) =>
+              sandbox.provider === "modal"
+                ? modal.storedProviderFor(sandbox, caller)
+                : providers.resolve(sandbox, caller),
+            launch,
+            commands: runtimeCommands,
+            runtimeSend,
+          }),
+          readFile: createOttoRepositoryFileReader((caller) =>
+            resolveGitHubAccess(
+              { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
+              caller.userId,
+            ),
+          ),
+        },
         reader: store,
         sql: ottoSql ?? sql,
         scopes: otto?.scopes ?? [],
