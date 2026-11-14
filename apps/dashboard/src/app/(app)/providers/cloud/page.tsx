@@ -19,7 +19,7 @@ import { createClient } from "@/lib/supabase/server";
 export const metadata: Metadata = { title: "Providers" };
 export const dynamic = "force-dynamic";
 
-const DESCRIPTION = "Choose where your sandboxes run: cloud accounts or Linux machines you own.";
+const DESCRIPTION = "Cloud accounts and self-hosted machines for your organization.";
 
 /**
  * Cloud sandbox providers (#1474, moved out of Settings): the active organization's Boat and Modal accounts, which an
@@ -62,9 +62,13 @@ function SandboxProviders({
     <Card data-settings="providers" aria-labelledby="sandbox-providers-title" id="sandbox-providers">
       <CardHeader>
         <CardTitle id="sandbox-providers-title" role="heading" aria-level={2} className="flex items-center gap-2">
-          {selected ? `Sandbox providers for ${selected.org.name}` : "Sandbox providers"}
+          Cloud accounts
         </CardTitle>
-        {selected && !isAdmin && <CardDescription>Only an admin changes them.</CardDescription>}
+        {selected && (
+          <CardDescription>
+            Accounts shared with {selected.org.name}. Only administrators change cloud connections.
+          </CardDescription>
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         {!selected || !setup ? (
@@ -99,7 +103,7 @@ function SandboxProviders({
                 </AlertDescription>
               </Alert>
             )}
-            <ul className="divide-y rounded-lg border" data-setup-state={setup.state}>
+            <ul className="divide-y rounded-lg border" data-setup-state={setup.state} aria-label="Cloud accounts">
               {SETUP_PROVIDERS.map((provider) => {
                 const state: ProviderRowState =
                   setup.state === "unavailable"
@@ -149,12 +153,13 @@ function MachineProviders({ selected, hosts }: { selected: Membership | null; ho
     hosts.state === "ready"
       ? hosts.list.hosts.filter((host) => host.state === "online" || host.state === "offline")
       : [];
-  const pending = hosts.state === "ready" ? hosts.list.hosts.filter((host) => host.state === "pending").length : 0;
   return (
     <Card data-provider-machines>
       <CardHeader>
-        <CardTitle>Self-hosted machines</CardTitle>
-        <CardDescription>Run sandboxes in Docker on machines shared with {selected.org.name}.</CardDescription>
+        <CardTitle role="heading" aria-level={2}>
+          Self-hosted machines
+        </CardTitle>
+        <CardDescription>Machines shared with {selected.org.name}. Sandboxes run in Docker.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {hosts.state === "ready" && !hosts.list.placement && (
@@ -183,16 +188,14 @@ function MachineProviders({ selected, hosts }: { selected: Membership | null; ho
             title={hosts.list.skipped > 0 ? "No machines available to show" : "No machines connected yet"}
             action={
               <Button asChild variant="outline" size="sm">
-                <Link href={HOSTS_PATH}>
-                  {admin && hosts.list.skipped === 0 ? "Set up a machine" : "View machines"}
-                </Link>
+                <Link href={HOSTS_PATH}>{admin && hosts.list.skipped === 0 ? "Manage machines" : "View machines"}</Link>
               </Button>
             }
           >
             {hosts.list.skipped > 0
               ? "Open Self-hosted to check your machines before setting up another."
               : admin
-                ? "Connect a Linux machine running Docker with one install command."
+                ? "Open machine management to connect a Linux machine running Docker."
                 : "Ask an organization admin to connect a Linux machine running Docker."}
           </Empty>
         ) : (
@@ -217,14 +220,6 @@ function MachineProviders({ selected, hosts }: { selected: Membership | null; ho
               );
             })}
           </ul>
-        )}
-        {pending > 0 && (
-          <p className="text-sm text-muted-foreground">
-            <Link href={`${HOSTS_PATH}?setup=unfinished`} className="underline underline-offset-4">
-              Unfinished setup ({pending})
-            </Link>{" "}
-            — these machines have not connected yet.
-          </p>
         )}
       </CardContent>
     </Card>
