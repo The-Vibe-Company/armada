@@ -28,6 +28,7 @@ test.skipIf(process.platform !== "linux")(
       );
     const absent = async () => {
       const r = await call("exec", {
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Shell parameter expansion, not JavaScript interpolation.
         input: { sandboxId: "s", cwd: root, command: 'test -z "${APP_REGION+x}" && test -z "${APP_EMPTY+x}"' },
       });
       const b = (await r.json()) as { result: { exitCode: number } };
