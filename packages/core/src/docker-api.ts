@@ -94,6 +94,7 @@ export interface LaunchOptionsResponse {
     enabled: boolean;
     followupVersion?: number;
     idleLaunchVersion?: number;
+    idleTemplateVersion?: number;
     resumeVersion?: number;
     mcpVersion?: number;
     skillsVersion?: number;

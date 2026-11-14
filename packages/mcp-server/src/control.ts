@@ -1,20 +1,4 @@
-import {
-  AuthError,
-  type AuthStore,
-  assertEmail,
-  assertEmailCode,
-  assertProvider,
-  BodyTooLargeError,
-  createServiceToken,
-  exchangeSupabaseCode,
-  listServiceTokens,
-  refreshSupabaseSession,
-  revokeServiceToken,
-  type Session,
-  sendEmailLink,
-  supabaseAuthorizeUrl,
-  verifyEmailCode,
-} from "@armada/auth";
+import { type AuthStore, BodyTooLargeError } from "@armada/auth";
 import type { Harness } from "@armada/core";
 import {
   API_FAILURE_STATUS,
@@ -88,16 +72,17 @@ import {
   snapshotGolden,
   type TemplateService,
   VaultError,
-  type VaultErrorCode,
   type VaultStore,
   type Visibility,
 } from "@armada/core/server";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
 import { apiFailureCode, providerFailureResponse } from "./api-failure.ts";
 import { validateAzureModelAccount } from "./azure-model-account.ts";
-import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
+import { AuthUnavailable, type Caller, type SupabaseProject } from "./caller.ts";
 import { readBody, readVaultBody } from "./control-body.ts";
+import { authenticatedCaller, scopedOrg, Unauthorized } from "./control-caller.ts";
 import { optional, required, UUID } from "./control-input.ts";
+import { fail, VAULT_STATUS as STATUS } from "./control-response.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import type { DataSource, ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
@@ -115,6 +100,14 @@ import {
   validateOrgProvider,
 } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
+import {
+  authMethodsRoute,
+  authorizeRoute,
+  emailStartRoute,
+  emailVerifyRoute,
+  exchangeRoute,
+  refreshRoute,
+} from "./public-auth-control.ts";
 import { RequestTiming, withRequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
@@ -122,6 +115,7 @@ import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
@@ -211,20 +205,6 @@ export interface ControlOptions {
 }
 
 export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecovery: CredentialBindingRecovery };
-
-const STATUS: Record<VaultErrorCode, number> = {
-  credential_busy: 409,
-  credential_binding_required: 409,
-  credential_binding_unsafe: 409,
-  credential_binding_unsupported: 409,
-  invalid: 400,
-  forbidden: 403,
-  not_found: 404,
-  missing_credential: 404,
-  conflict: 409,
-  unavailable: 503,
-  credential_refused: 422,
-};
 
 const GOLDEN_STATUS: Record<GoldenErrorCode, number> = {
   invalid_config: 400,
@@ -404,327 +384,6 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   }
 }
 
-/** Only store I/O is a dependency failure; policy/validation errors stay outside this boundary. */
-function tokenRouteStore(store: AuthStore): AuthStore {
-  const dependency = async <T>(operation: () => Promise<T>): Promise<T> => {
-    try {
-      return await operation();
-    } catch {
-      throw new AuthUnavailable("Token store unavailable.");
-    }
-  };
-  return {
-    ...store,
-    memberships: (...args) => dependency(() => store.memberships(...args)),
-    listServiceTokens: (...args) => dependency(() => store.listServiceTokens(...args)),
-    insertToken: (...args) => dependency(() => store.insertToken(...args)),
-    revokeToken: (...args) => dependency(() => store.revokeToken(...args)),
-  };
-}
-
-function tokenRouteFailure(error: unknown, revoking = false): Response {
-  if (error instanceof AuthUnavailable)
-    return fail(503, "dependency_unavailable", "Token service is temporarily unavailable.");
-  if (error instanceof Unauthorized) return fail(401, "unauthorized", "Run armada login.");
-  if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
-  if (error instanceof AuthError)
-    return revoking
-      ? fail(403, "forbidden", "Token revocation was refused.")
-      : fail(400, "invalid", "Invalid token request.");
-  return fail(500, "internal", "The server could not complete the request.");
-}
-
-async function tokenRevokeRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const caller = await authenticatedCaller(request, options);
-    const store = tokenRouteStore(options.authStore);
-    const body = await readBody(request);
-    const id = required(body, "id");
-    if (!UUID.test(id)) throw new VaultError("invalid", "id must be a token UUID.");
-    if (caller.via !== "supabase") {
-      const visible = await listServiceTokens(store, caller.userId);
-      const target = visible.find((token) => token.id === id);
-      const members = await store.memberships(caller.userId);
-      const org = caller.orgs[0];
-      if (!target || !org || !members.some((member) => member.orgId === org.orgId && member.name === target.orgName))
-        return fail(403, "forbidden", "This token is scoped to another org.");
-    }
-    await revokeServiceToken(store, {
-      userId: caller.userId,
-      id,
-      now: (options.now ?? (() => new Date()))(),
-    });
-    return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    return tokenRouteFailure(error, true);
-  }
-}
-
-async function tokenCreateRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const caller = await authenticatedCaller(request, options);
-    const store = tokenRouteStore(options.authStore);
-    const body = await readBody(request);
-    const ref = optional(body, "org") ?? optional(body, "orgName");
-    if (body.org !== undefined && body.orgName !== undefined && body.org !== body.orgName)
-      return fail(400, "invalid", "Conflicting org selectors.");
-    const memberships = await store.memberships(caller.userId);
-    const selected =
-      ref === undefined
-        ? undefined
-        : memberships.find(
-            (item) =>
-              (item.orgId === ref || item.name.toLowerCase() === ref.toLowerCase()) &&
-              caller.orgs.some((scope) => scope.orgId === item.orgId),
-          );
-    if (ref !== undefined && !selected) return fail(403, "forbidden", "This organization is not in your scope.");
-    if (caller.via !== "supabase" && !selected)
-      return fail(403, "forbidden", "A scoped token cannot create an unscoped token.");
-    const org = selected?.name;
-    const created = await createServiceToken(store, {
-      userId: caller.userId,
-      ...(org ? { orgName: org } : {}),
-      ...(optional(body, "label") ? { label: optional(body, "label")! } : {}),
-      now: (options.now ?? (() => new Date()))(),
-    });
-    return Response.json(
-      { id: created.id, label: created.label, orgName: created.orgName, token: created.token },
-      { headers: { "cache-control": "no-store" } },
-    );
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    return tokenRouteFailure(error);
-  }
-}
-
-async function tokenListRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const caller = await authenticatedCaller(request, options);
-    const store = tokenRouteStore(options.authStore);
-    const tokens = await listServiceTokens(store, caller.userId);
-    const allowed = caller.via !== "supabase" ? new Set(caller.orgs.map((org) => org.orgId)) : null;
-    const memberships = allowed ? await store.memberships(caller.userId) : [];
-    const names = new Set(
-      memberships.filter((membership) => allowed?.has(membership.orgId)).map((membership) => membership.name),
-    );
-    return Response.json(
-      {
-        tokens: tokens
-          .filter((token) => !allowed || names.has(token.orgName))
-          .map(({ id, label, orgName, createdAt, revokedAt }) => ({ id, label, orgName, createdAt, revokedAt })),
-      },
-      { headers: { "cache-control": "no-store" } },
-    );
-  } catch (error) {
-    return tokenRouteFailure(error);
-  }
-}
-
-/** Expose only supported sign-in methods, never upstream configuration. */
-async function authMethodsRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "GET") return fail(405, "invalid", "Use GET.");
-  try {
-    const response = await (options.supabase.fetch ?? fetch)(
-      new URL("/auth/v1/settings", options.supabase.supabaseUrl),
-      { headers: { apikey: options.supabase.anonKey }, signal: AbortSignal.timeout(10_000) },
-    );
-    if (!response.ok) throw new Error();
-    const settings = (await response.json()) as { external?: Record<string, unknown> };
-    if (!settings.external || typeof settings.external !== "object") throw new Error();
-    const methods = ["email", "github", "google"].filter((method) => settings.external?.[method] === true);
-    return Response.json({ methods }, { headers: { "cache-control": "no-store" } });
-  } catch {
-    return fail(503, "unavailable", "Sign-in methods are unavailable; try again later.");
-  }
-}
-
-async function emailVerifyRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const body = await readBody(request);
-    const email = assertEmail(required(body, "email"));
-    const code = assertEmailCode(required(body, "code"));
-    const session = await verifyEmailCode({
-      fetch: options.supabase.fetch ?? fetch,
-      supabaseUrl: options.supabase.supabaseUrl,
-      anonKey: options.supabase.anonKey,
-      email,
-      code,
-      now: options.now?.() ?? new Date(),
-    });
-    return Response.json(
-      { accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt },
-      { headers: { "cache-control": "no-store" } },
-    );
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    return fail(401, "unauthorized", "Email code was refused.");
-  }
-}
-
-async function emailStartRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const body = await readBody(request);
-    const email = assertEmail(required(body, "email"));
-    const redirectTo = required(body, "redirect_uri");
-    const challenge = required(body, "code_challenge");
-    const state = required(body, "state");
-    const callback = new URL(redirectTo);
-    if (body.cli_email_link !== undefined && typeof body.cli_email_link !== "boolean") throw new Error();
-    const cliEmailLink = body.cli_email_link === true;
-    if (
-      callback.protocol !== "http:" ||
-      !["127.0.0.1", "localhost"].includes(callback.hostname) ||
-      !callback.port ||
-      callback.username ||
-      callback.password ||
-      callback.hash ||
-      (cliEmailLink && (callback.pathname !== "/callback" || callback.search)) ||
-      !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) ||
-      !/^[A-Za-z0-9._~-]{8,512}$/.test(state)
-    )
-      throw new Error();
-    if (cliEmailLink) callback.searchParams.set("state", state);
-    await sendEmailLink({
-      fetch: options.supabase.fetch ?? fetch,
-      supabaseUrl: options.supabase.supabaseUrl,
-      anonKey: options.supabase.anonKey,
-      email,
-      // Existing clients (including iOS) remain numeric-code-only unless explicitly opted in.
-      redirectTo: cliEmailLink
-        ? callback.toString()
-        : new URL("/login?flow=code", options.publicUrl ?? "https://armada.thevibecompany.co").toString(),
-      challenge,
-    });
-    return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    const status = error instanceof Error && error.message.includes("Too many") ? 429 : 400;
-    return fail(
-      status,
-      status === 429 ? "rate_limited" : "invalid",
-      status === 429 ? "Try again later." : "Invalid email login request.",
-    );
-  }
-}
-
-async function exchangeRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const body = await readBody(request);
-    const code = required(body, "code");
-    const verifier = required(body, "verifier");
-    if (code.length > 4096 || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier))
-      throw new VaultError("invalid", "Invalid login exchange.");
-    const result = options.exchangeNative
-      ? await options.exchangeNative(code, verifier)
-      : await nativeExchange(options, code, verifier);
-    return Response.json(result, { headers: { "cache-control": "no-store" } });
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError)
-      return fail(
-        400,
-        error.code,
-        error.message,
-        error.reason ? { reason: error.reason, action: error.action } : undefined,
-      );
-    if (error instanceof VaultError) return fail(400, error.code, error.message);
-    return fail(401, "unauthorized", "Login exchange was refused.");
-  }
-}
-
-async function nativeExchange(options: ControlOptions, code: string, verifier: string) {
-  const session = await exchangeSupabaseCode({
-    fetch: options.supabase.fetch ?? fetch,
-    supabaseUrl: options.supabase.supabaseUrl,
-    anonKey: options.supabase.anonKey,
-    code,
-    verifier,
-    now: options.now?.() ?? new Date(),
-  });
-  return { accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt };
-}
-
-function authorizeRoute(request: Request, options: ControlOptions): Response {
-  if (request.method !== "GET") return fail(405, "invalid", "Use GET.");
-  const url = new URL(request.url);
-  const provider = url.searchParams.get("provider") ?? "";
-  const redirectTo = url.searchParams.get("redirect_uri") ?? "";
-  const challenge = url.searchParams.get("code_challenge") ?? "";
-  const state = url.searchParams.get("state") ?? "";
-  try {
-    assertProvider(provider);
-    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) || !/^[A-Za-z0-9._~-]{8,512}$/.test(state)) throw new Error();
-    const callback = new URL(redirectTo);
-    if (
-      callback.protocol !== "http:" ||
-      !["127.0.0.1", "localhost"].includes(callback.hostname) ||
-      !callback.port ||
-      callback.username ||
-      callback.password ||
-      callback.hash
-    )
-      throw new Error();
-    const location = supabaseAuthorizeUrl({
-      supabaseUrl: options.supabase.supabaseUrl,
-      anonKey: options.supabase.anonKey,
-      provider: assertProvider(provider),
-      redirectTo: callback.toString(),
-      challenge,
-    });
-    return new Response(null, { status: 302, headers: { location, "cache-control": "no-store" } });
-  } catch {
-    return fail(400, "invalid", "Invalid browser login request.");
-  }
-}
-
-async function refreshRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const body = await readBody(request);
-    const token = required(body, "refreshToken");
-    const refreshed = options.refreshNative ? await options.refreshNative(token) : await nativeRefresh(options, token);
-    return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError)
-      return fail(
-        400,
-        error.code,
-        error.message,
-        error.reason ? { reason: error.reason, action: error.action } : undefined,
-      );
-    if (error instanceof VaultError) return fail(400, error.code, error.message);
-    return fail(401, "unauthorized", "Refresh token was refused.");
-  }
-}
-
-async function nativeRefresh(options: ControlOptions, refreshToken: string) {
-  const session: Session = {
-    supabaseUrl: options.supabase.supabaseUrl,
-    anonKey: options.supabase.anonKey,
-    accessToken: "expired",
-    refreshToken,
-    expiresAt: new Date(0).toISOString(),
-    userId: "",
-  };
-  const next = await refreshSupabaseSession({
-    fetch: options.supabase.fetch ?? fetch,
-    anonKey: options.supabase.anonKey,
-    session,
-    now: options.now?.() ?? new Date(),
-  });
-  return { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt };
-}
-
 async function dispatch(
   route: string,
   caller: Caller,
@@ -767,6 +426,8 @@ async function dispatch(
         enabled: Boolean(options.modalRuntimeLaunch),
         followupVersion: options.runtimeSend ? 1 : 0,
         idleLaunchVersion: options.modalRuntimeLaunch && options.runtimeSend ? 1 : 0,
+        idleTemplateVersion:
+          options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor && options.runtimeSend ? 1 : 0,
         resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
@@ -1233,8 +894,8 @@ async function dispatch(
         );
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
-      if (body.prompt !== undefined || body.id !== undefined) required(body, "prompt");
-      if (body.id === undefined && body.prompt === undefined && !options.runtimeSend)
+      if (body.prompt !== undefined) required(body, "prompt");
+      if (body.prompt === undefined && !options.runtimeSend)
         throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
       if (body.id !== undefined) {
         const standard = [
@@ -1916,38 +1577,6 @@ function modelChoice(harness: Harness, model: string | undefined, reasoningEffor
   }
 }
 
-class Unauthorized extends Error {}
-
-/** Shared MCP/control bearer boundary. Callers receive only the orgs embedded in the verified principal. */
-export async function authenticatedControlCaller(request: Request, options: ControlOptions): Promise<Caller | null> {
-  const result = await authenticateCaller(request.headers.get("authorization"), {
-    store: options.authStore,
-    supabase: options.supabase,
-    now: (options.now ?? (() => new Date()))(),
-  });
-  return result.ok ? result.caller : null;
-}
-
-async function authenticatedCaller(request: Request, options: ControlOptions): Promise<Caller> {
-  const caller = await authenticatedControlCaller(request, options);
-  if (!caller) throw new Unauthorized("Run armada login.");
-  return caller;
-}
-
-/** A service/OAuth token has exactly one org; never widen that scope from database memberships. */
-function scopedOrg(caller: Caller, requested: string | undefined): string | undefined {
-  if (caller.via === "supabase") return requested;
-  const orgId = caller.orgs[0]?.orgId;
-  if (!orgId) throw new Unauthorized("Run armada login.");
-  if (requested !== undefined && requested.trim() !== "" && requested.trim().toLowerCase() !== orgId) {
-    throw new VaultError(
-      "forbidden",
-      `This token is scoped to org ${orgId}. Retry with --org ${orgId} (the UUID, not its name).`,
-    );
-  }
-  return orgId;
-}
-
 function requiredRepos(body: Record<string, unknown>): string[] {
   const value = body.repos;
   if (!Array.isArray(value) || value.length === 0 || !value.every((item) => typeof item === "string" && item !== "")) {
@@ -1976,18 +1605,6 @@ function scope(body: Record<string, unknown>): "user" | "org" {
   throw new VaultError("invalid", "scope is user or org.");
 }
 
-function fail(
-  status: number,
-  code: string,
-  message: string,
-  details?: ToolApiError["details"] | Pick<LaunchError, "reason" | "action">,
-): Response {
-  return Response.json(
-    { error: { code, message, ...(details ? { details } : {}) } },
-    { status, headers: { "cache-control": "no-store" } },
-  );
-}
-
 function selectGolden(rows: GoldenRecord[], body: Record<string, unknown>): GoldenRecord | undefined {
   const provider = optional(body, "provider");
   if (provider !== undefined && !isSandboxProvider(provider))
@@ -2004,4 +1621,5 @@ async function selectedCaller(options: ControlOptions, caller: Caller, ref: stri
   return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === org.id) };
 }
 
+export { authenticatedControlCaller } from "./control-caller.ts";
 export { controlOptionsFromEnv } from "./control-config.ts";
