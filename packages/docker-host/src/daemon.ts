@@ -43,6 +43,8 @@ export type State = {
   ][];
   cleanupLimit?: number;
   lastPollAt?: string;
+  /** Receipt identities for unique active generations, in fair sweep order. */
+  activeTtl?: string[];
   /** Fair bounded retries across retained confirmations and process restarts. */
   expiryReportAfter?: string;
 };
@@ -89,6 +91,33 @@ function fingerprint(job: Pick<Job, "request">): string {
     ...(r.snapshot ? [r.snapshot] : []),
   ]);
 }
+function updateActiveTtl(state: State, receipt: Receipt): void {
+  const active = state.activeTtl;
+  if (!active) return;
+  const same = (id: string) => {
+    const other = state.receipts.find((item) => item.requestId === id);
+    return (
+      other?.request.sandboxId === receipt.request.sandboxId && other.request.generation === receipt.request.generation
+    );
+  };
+  if (
+    receipt.expired ||
+    ((receipt.operation === "stop" || receipt.operation === "delete") && receipt.outcome === "completed")
+  ) {
+    state.activeTtl = active.filter((id) => !same(id));
+  } else if (
+    (receipt.operation === "create" || receipt.operation === "bootstrap" || receipt.operation === "resume") &&
+    !active.some(same) &&
+    !state.receipts.some(
+      (item) =>
+        item.expired &&
+        item.request.sandboxId === receipt.request.sandboxId &&
+        item.request.generation === receipt.request.generation,
+    )
+  ) {
+    active.push(receipt.requestId);
+  }
+}
 export async function register(store: Store, api: Api, server: string, token: string): Promise<void> {
   if (!validToken(token)) throw new Error("Invalid registration token");
   const origin = serverOrigin(server);
@@ -106,22 +135,38 @@ export async function register(store: Store, api: Api, server: string, token: st
 /** One serialized production iteration. Durable receipts precede all machine operations. */
 export async function tick(store: Store, api: Api, executor: Executor, skipSnapshots = false): Promise<void> {
   const state = await store.load();
-  // Sweep even when the server is offline or has revoked the credential. One failed sweep cannot block others.
-  for (const receipt of state.receipts.filter(
-    (r) => r.operation === "create" || r.operation === "bootstrap" || r.operation === "resume",
-  )) {
+  // Upgrade legacy state once. Replay identity is retained independently of TTL work.
+  if (!state.activeTtl) {
+    state.activeTtl = [];
+    for (const receipt of state.receipts) updateActiveTtl(state, receipt);
+  }
+  // One generation per tick bounds the serial Docker prefix. Rotate durably before
+  // attempting I/O, so a failing generation cannot monopolize subsequent ticks.
+  const id = state.activeTtl.shift();
+  if (id) {
+    state.activeTtl.push(id);
     try {
-      if ((await executor.stopIfExpired(receipt.request)) === true && !receipt.expired) {
-        receipt.expired = true;
-        try {
-          await store.save(state);
-        } catch {
-          // Never publish a confirmation that has not survived persistence.
-          delete receipt.expired;
-        }
-      }
+      await store.save(state);
     } catch {
-      /* retry the sweep; an earlier durable confirmation can still be reported */
+      // Disk failure must not disable local physical expiry.
+    }
+    const receipt = state.receipts.find((r) => r.requestId === id);
+    if (receipt) {
+      try {
+        if ((await executor.stopIfExpired(receipt.request)) === true) {
+          receipt.expired = true;
+          state.activeTtl = state.activeTtl.filter((item) => item !== id);
+          try {
+            await store.save(state);
+          } catch {
+            // No durable proof: retain the retry and never publish confirmation.
+            delete receipt.expired;
+            state.activeTtl.push(id);
+          }
+        }
+      } catch {
+        /* uncertain ownership/stop: retry on a later fair turn */
+      }
     }
   }
   // Never let offline reporting delay another machine's physical TTL sweep.
@@ -185,6 +230,7 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
     const saved = latest.receipts.find((item) => item.requestId === receipt.requestId);
     if (!saved) throw Error("Missing durable receipt");
     Object.assign(saved, receipt);
+    updateActiveTtl(latest, saved);
     Object.assign(state, latest);
     await store.save(state);
   }
@@ -271,6 +317,7 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
           : { ...base, operation: job.operation };
     receipt = created;
     state.receipts.push(created);
+    updateActiveTtl(state, created);
     await store.save(state);
     admitted = true;
   }
