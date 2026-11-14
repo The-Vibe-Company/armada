@@ -174,28 +174,7 @@ export interface TokenUsageTotals {
   cacheWriteTokens: number | null;
   reasoningTokens: number | null;
 }
-export interface SandboxUsageSummary extends TokenUsageTotals {
-  computeSeconds: number | null;
-  turnCount: number | null;
-}
-
 const TOKEN_FIELDS = ["inputTokens", "outputTokens", "cachedTokens", "cacheWriteTokens", "reasoningTokens"] as const;
-
-/** A missing turn/field makes that total unknown, not a falsely complete subtotal. */
-export function summarizeSandboxUsage(usage: SandboxUsage | null | undefined): SandboxUsageSummary {
-  const complete =
-    usage?.turnCount !== null &&
-    usage?.turnCount !== undefined &&
-    new Set(usage.turns.map((turn) => turn.promptId)).size === usage.turnCount;
-  const tokens = Object.fromEntries(
-    TOKEN_FIELDS.map((key) => {
-      const values = usage?.turns.map((turn) => count(turn[key])) ?? [];
-      const sum = values.reduce<number>((total, value) => total + (value ?? 0), 0);
-      return [key, complete && values.every((value) => value !== null) && Number.isSafeInteger(sum) ? sum : null];
-    }),
-  ) as unknown as TokenUsageTotals;
-  return { ...tokens, computeSeconds: usage?.computeSeconds ?? null, turnCount: usage?.turnCount ?? null };
-}
 
 /** Add totals at read time, including persisted observations predating these fields. */
 export function withUsageTotals(usage: SandboxUsage | null | undefined): SandboxUsage | null {

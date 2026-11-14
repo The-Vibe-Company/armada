@@ -396,8 +396,6 @@ export {
 export {
   reportedTurnUsage,
   type SandboxUsage,
-  type SandboxUsageSummary,
-  summarizeSandboxUsage,
   type TokenUsageTotals,
   type TurnTokenUsage,
   USAGE_UNAVAILABLE_CODES,
