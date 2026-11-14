@@ -192,6 +192,21 @@ export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecov
 export async function handleControlRequest(request: Request, options: ControlOptions): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith(CONTROL_PREFIX)) return null;
+  const timing = new RequestTiming();
+  const response = await withRequestTiming(timing, () =>
+    timing.measure("total", () => timedControlRequest(request, { ...options, timing })),
+  );
+  const headers = new Headers(response.headers);
+  headers.set("server-timing", timing.header());
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+async function timedControlRequest(
+  request: Request,
+  options: ControlOptions & { timing: RequestTiming },
+): Promise<Response> {
+  const url = new URL(request.url);
+  const timing = options.timing;
   const route = url.pathname.slice(CONTROL_PREFIX.length);
   if (route === "github/oauth/callback") {
     if (request.method !== "GET" && request.method !== "POST") return fail(405, "invalid", "Use POST or GET.");
@@ -211,8 +226,6 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
   if (deletion ? request.method !== "DELETE" : request.method !== "POST")
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
-  const timing = new RequestTiming();
-  options = { ...options, timing };
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
     if (

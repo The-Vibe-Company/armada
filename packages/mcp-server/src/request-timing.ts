@@ -4,6 +4,8 @@ import type { ModalPromptPhase } from "@armada/provider-modal";
 /** Fixed, secret-free server phase names. Durations overlap: dispatch contains its subphases. */
 export type TimingPhase =
   | ModalPromptPhase
+  | "sql"
+  | "total"
   | "auth"
   | "dispatch"
   | "tool_register"
@@ -54,4 +56,9 @@ export function measureRequestPhase<T>(
   work: () => Promise<T>,
 ): Promise<T> {
   return timing ? timing.measure(phase, work) : work();
+}
+
+/** Includes pool queue and database round trip, but never SQL text or parameters. */
+export function measureSqlQuery<T>(work: () => Promise<T>): Promise<T> {
+  return measureRequestPhase(current.getStore(), "sql", work);
 }
