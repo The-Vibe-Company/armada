@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
 import { dockerHostResources } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
-import { type Api, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
+import { type Api, compactReceipts, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
 const MAX_STATE_BYTES = 16 * 1024 * 1024;
 
@@ -67,6 +67,7 @@ export async function fileStore(
     load,
     exists,
     async save(state) {
+      compactReceipts(state);
       const serialized = JSON.stringify(state);
       if (Buffer.byteLength(serialized) > MAX_STATE_BYTES) throw new Error("Host state capacity reached");
       if (await exists()) await load(); // Refuse unsafe existing configuration rather than replacing it.
