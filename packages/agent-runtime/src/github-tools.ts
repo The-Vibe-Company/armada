@@ -1,6 +1,25 @@
 import { chmod, chown, lstat, mkdir, rename, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { shellQuote as q } from "../../core/src/shell-quote.ts";
+
+/** Trusted runtime process controls only; user readable/exec environments cannot set BASH_ENV. */
+export function githubRuntimeEnvironment(
+  env: { PATH?: string | undefined },
+  root: string,
+): { PATH: string; BASH_ENV: string } {
+  if (!isAbsolute(root) || resolve(root) !== root) throw Error("github_tools_denied");
+  const bin = join(root, "bin"),
+    path = env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
+  return {
+    PATH: [bin, ...path.split(":").filter((entry) => entry !== bin)].join(":"),
+    BASH_ENV: join(root, "shell-env.sh"),
+  };
+}
+/** Bash reads this after login profiles as well as for ordinary noninteractive commands. No secret values. */
+function githubShellEnvironmentScript(root: string): string {
+  const bin = join(root, "bin");
+  return `case "\${PATH-}" in ${q(bin)}|${q(bin)}:*) ;; *) export PATH=${q(bin)}:"\${PATH-/usr/local/bin:/usr/bin:/bin}" ;; esac\n`;
+}
 
 /** Private local installer. Only paths and a one-use activation key cross stdin; never argv. */
 export async function prepareGitHubTools(input: Parameters<typeof installGitHubTools>[0]): Promise<void> {
@@ -67,6 +86,7 @@ export async function installUserGitHubTools(input: {
   };
   const git = await original(input.git),
     gh = await original(input.gh);
+  await replace(join(input.root, "shell-env.sh"), githubShellEnvironmentScript(input.root), 0o600);
   const client = join(input.root, "client.py");
   await replace(client, `REQUIRE_ROOT=False\nGIT_EXECUTABLE=${JSON.stringify(git)}\n${GITHUB_CLIENT}`, 0o600);
   for (const [name, executable, mode] of [

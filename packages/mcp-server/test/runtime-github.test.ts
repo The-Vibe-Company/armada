@@ -5,7 +5,7 @@ import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
-import { createRuntimeGitHub } from "../src/runtime-github.ts";
+import { createRuntimeGitHub, RuntimeGitHubConnectionError } from "../src/runtime-github.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
@@ -183,6 +183,29 @@ test.each(["boat", "modal"] as const)(
       );
       expect(old?.status).toBe(403);
       expect((await service.status(f.caller, f.row.id)).configured).toBe(false);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.each(["boat", "modal"] as const)(
+  "service-token GitHub uses its linked user, with no org-installation fallback (%s)",
+  async (provider) => {
+    const x = await fixture(provider),
+      { f, service } = x;
+    try {
+      expect(f.caller.via).toBe("service");
+      await service.prepare(f.caller, f.row.id);
+      expect((await service.status(f.caller, f.row.id)).configured).toBe(true);
+      await f.db.query("delete from github_connections where user_id=$1", [f.people.owner]);
+      const golden = (await f.db.query<{ name: string }>("select name from goldens where id=$1", [f.row.goldenId]))
+        .rows[0]!;
+      await expect(
+        service.preflight(f.caller, { org: f.people.org, golden: golden.name, repository: "example/web" }),
+      ).rejects.toBeInstanceOf(RuntimeGitHubConnectionError);
+      await expect(service.prepare(f.caller, f.row.id)).rejects.toBeInstanceOf(RuntimeGitHubConnectionError);
+      expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "not_connected" });
     } finally {
       await f.close();
     }

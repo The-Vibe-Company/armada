@@ -49,7 +49,7 @@ import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
-import { type RuntimeGitHub, RuntimeGitHubDeliveryError } from "./runtime-github.ts";
+import { type RuntimeGitHub, RuntimeGitHubConnectionError, RuntimeGitHubDeliveryError } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 
 type Request = {
@@ -801,7 +801,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           return envelope(saved.row, saved.receipt);
         });
       } catch (error) {
-        if (error instanceof RuntimeGitHubDeliveryError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubDelivery;
+        if (error instanceof RuntimeGitHubConnectionError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubNotConnected;
+        else if (error instanceof RuntimeGitHubDeliveryError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubDelivery;
         if (workerId && !stopping) {
           // Only the live lease may record a terminal failure. No exception or command output crosses this boundary.
           await sql.query(

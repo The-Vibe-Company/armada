@@ -12,13 +12,16 @@ import {
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { modalRuntimeConfiguration, readModalRuntimeVariables } from "../src/modal-runtime-variables.ts";
+import { createRuntimeCommands } from "../src/runtime-commands.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
 // Real template claims/manifests and HTTP authorization; only physical compute is fake.
-async function fixture(isolated = false, harness: "codex" | "claude" = "codex") {
+async function fixture(isolated = false, harness: "codex" | "claude" = "codex", idle = false) {
   const { db, people } = await (isolated ? database() : sharedDatabase());
   const sql: Sql = { query: (q, v) => db.query(q, v), transaction: (work) => db.transaction((tx) => work(tx)) };
   const templates = createTemplateService(sql, ENCRYPTION_KEY);
@@ -69,8 +72,11 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
   };
   const starts: Record<string, string>[] = [];
   let prompts = 0;
+  const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+  let active: Awaited<ReturnType<typeof authority.enrol>> | undefined;
   const options: ControlOptions = {
     templates,
+    runtimeSend: createRuntimeFollowup(sql, ENCRYPTION_KEY, createRuntimeCommands(authority, ENCRYPTION_KEY)),
     data: createSqlData(sql),
     store: createSqlVaultStore(sql),
     encryptionKey: ENCRYPTION_KEY,
@@ -111,8 +117,13 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
         expect(plan.configuration.execEnv).not.toHaveProperty(key);
         expect(Reflect.get(plan.configuration, "mcp")).toEqual({ revision: "modal_runtime_empty_v1", servers: {} });
         starts.push(Object.fromEntries(Object.entries(selectedEnv).filter(([key]) => key === "APP_REGION")));
+        if (idle)
+          active = await authority.enrol(
+            (await authority.issue({ sandboxId: sandbox.id, ownerId: actor.userId, configuration: plan.configuration }))
+              .enrolmentToken,
+          );
         return {
-          epoch: "7",
+          epoch: active?.epoch ?? "7",
           async prepareWorkspace() {
             return { status: "not_connected" as const };
           },
@@ -160,6 +171,9 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
     db,
     sql,
     people,
+    authority,
+    options,
+    active: () => active,
     caller,
     templates,
     application,
@@ -328,4 +342,47 @@ test("native template replay cannot adopt an enrolled request key", async () => 
   expect(replay.status).toBe(409);
   expect(f.physical.forks).toHaveLength(1);
   expect(f.prompts()).toBe(1);
+});
+
+test("promptless Modal template freezes its manifest and replays the empty launch without inference", async () => {
+  const f = await fixture(false, "claude", true);
+  const template = await f.create();
+  const { prompt: _prompt, ...request } = f.request(template.id);
+  const send = f.options.runtimeSend;
+  if (!send) throw Error("Missing first-send service in fixture");
+  delete f.options.runtimeSend;
+  expect((await f.api(request)).status).toBe(503);
+  expect(f.physical.forks).toHaveLength(0);
+  f.options.runtimeSend = send;
+  const response = await f.api(request);
+  expect(response.status).toBe(200);
+  const launched = (await response.json()) as {
+    id: string;
+    status: string;
+    promptId: null;
+    conversationId: null;
+    manifest: { variables: Record<string, string> };
+  };
+  expect(launched).toMatchObject({ state: "succeeded", status: "ready", promptId: null, conversationId: null });
+  expect(f.prompts()).toBe(0);
+  expect(f.physical.forks).toHaveLength(1);
+  const active = f.active();
+  if (!active) throw Error("Missing enrolled idle template authority");
+  await expect(f.authority.withSession(active.runtimeToken, active.epoch, async () => true)).resolves.toBe(true);
+  await f.application.command(f.caller, "variable", "update", {
+    org: f.people.org,
+    id: f.variableId,
+    expectedVersion: 1,
+    value: "changed-source",
+  });
+  expect(await (await f.api(request)).json()).toEqual(launched);
+  expect((await f.api({ ...request, prompt: "changed request" })).status).toBe(409);
+  await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
+  expect(await (await f.api(request)).json()).toEqual(launched);
+  expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
+  expect(f.prompts()).toBe(0);
+  expect(f.physical.forks).toHaveLength(1);
+  expect(await readModalRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id)).toEqual(
+    launched.manifest.variables,
+  );
 });

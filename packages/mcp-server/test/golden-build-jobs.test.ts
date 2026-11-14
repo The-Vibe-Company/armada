@@ -4,6 +4,7 @@ import {
   createSqlVaultStore,
   GoldenBuildJobs,
   type GoldenBuildStatus,
+  goldenBuildFailureText,
   ProviderError,
 } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
@@ -626,6 +627,51 @@ test.each(["create", "rebuild", "builder-evidence", "builder-phase", "live-lease
   },
 );
 
+test("scan location survives requested-directory mapping, durable status and public failure formatting", async () => {
+  const s = await fixture();
+  try {
+    const object = "a".repeat(40),
+      commit = "b".repeat(40);
+    const exec = s.boat.provider.exec;
+    s.boat.provider.exec = async (request) =>
+      request.command.includes("cat-file --batch-all-objects")
+        ? {
+            detached: false,
+            exitCode: 97,
+            timedOut: false,
+            truncated: false,
+            stdout: `ARMADA_SCAN_LOCATION 1 git_object ${object} ${commit}\nARMADA_SCAN_MATCH git_object git_storage 1\n`,
+            stderr: "",
+          }
+        : exec(request);
+    const token = await s.token(s.people.admin);
+    const response = await s.http(token, "golden/create", {
+      name: "scan-location",
+      org: s.people.org,
+      repos: ["acme/web"],
+      idempotencyKey: crypto.randomUUID(),
+    });
+    expect(response.status).toBe(202);
+    const job = (await response.json()) as GoldenBuildStatus;
+    await s.builds.runOne();
+    const statusResponse = await s.http(token, "golden/build/status", { jobId: job.jobId });
+    expect(statusResponse.status).toBe(200);
+    const status = (await statusResponse.json()) as GoldenBuildStatus;
+    expect(status).toMatchObject({ state: "failed", phase: "secret_scan" });
+    const where = `repository web, git object ${object}, commit ${commit}`;
+    expect(status.failureReason).toContain(where);
+    expect(goldenBuildFailureText(status)).toContain(where);
+    const stored = (
+      await s.db.query<{ failure_reason: string | null }>("select failure_reason from golden_build_jobs where id=$1", [
+        job.jobId,
+      ])
+    ).rows[0];
+    expect(status.failureReason).toEqual(stored?.failure_reason);
+  } finally {
+    await s.close();
+  }
+});
+
 // Token resolution in these fixtures must not leak audit records to stdout.
 captureGitHubAuditLogs();
 
@@ -890,6 +936,81 @@ test.each(["create", "rebuild", "execution-evidence"])(
       if (mode === "rebuild") expect(slots).toEqual([{ golden_id: target.id, build_id: null }]);
       else if (mode === "execution-evidence") expect(slots).toEqual(originalSlots);
       else expect(slots).toEqual([]);
+    } finally {
+      await s.close();
+    }
+  },
+);
+
+test.each(["org", "private"])(
+  "active build lookup finds a visible %s rebuild without its key and preserves all state",
+  async (visibility) => {
+    const s = await fixture();
+    try {
+      const user = visibility === "org" ? s.people.admin : s.people.owner;
+      const name = visibility === "org" ? "shared" : "mine";
+      const token = await s.token(user);
+      const golden = (await s.db.query<{ id: string }>("select id from goldens where name=$1", [name])).rows[0]!;
+      await s.db.query(
+        "insert into golden_backend_slots(provider,backend_id,max_goldens,org_id,owner_id,golden_id) values('boat','test-boat-account',1,$1,$2,$3)",
+        [s.people.org, user, golden.id],
+      );
+      const response = await s.http(token, "golden/update", {
+        name,
+        org: s.people.org,
+        provider: "boat",
+        config: { repos: [{ url: "https://github.com/acme/web.git" }], init: [] },
+        idempotencyKey: crypto.randomUUID(),
+      });
+      expect(response.status).toBe(202);
+      const job = (await response.json()) as GoldenBuildStatus;
+      const before = (await s.db.query("select id,state,phase,fence,reservation_id,updated_at from golden_build_jobs"))
+        .rows;
+      const slots = (await s.db.query("select * from golden_backend_slots")).rows;
+      for (const state of ["queued", "running", "recovery_required"] as const) {
+        if (state !== "queued")
+          await s.db.query(
+            "update golden_build_jobs set state=$2,fence=$3,lease_until=now()+interval '1 minute',deadline=now()+interval '1 hour',error_code=$4 where id=$1",
+            [job.jobId, state, crypto.randomUUID(), state === "recovery_required" ? "build_failed" : null],
+          );
+        const expected = await s.builds.status(user, job.jobId);
+        const found = await s.http(token, "golden/build/find", { name, org: s.people.org, provider: "boat" });
+        expect(found.status).toBe(200);
+        expect(await found.json()).toEqual({ build: expected });
+      }
+      // Lookup is read-only: the only state differences above are the explicit fixture transitions.
+      expect(s.allocations()).toBe(0);
+      expect((await s.db.query("select * from golden_backend_slots")).rows).toEqual(slots);
+      expect((await s.db.query("select updated_at from golden_build_jobs where id=$1", [job.jobId])).rows).toEqual([
+        { updated_at: (before[0] as { updated_at: unknown }).updated_at },
+      ]);
+      const other = await s.token(visibility === "org" ? s.people.owner : s.people.admin);
+      const otherResult = await s.http(other, "golden/build/find", { name, org: s.people.org, provider: "boat" });
+      expect(otherResult.status).toBe(visibility === "org" ? 200 : 404);
+      if (visibility === "private") {
+        await s.db.query("update members set role='admin' where org_id=$1 and user_id=$2", [s.people.org, user]);
+        await s.db.transaction(async (tx) => {
+          await tx.query("select set_config('request.jwt.claim.sub',$1,true)", [user]);
+          await tx.query("select set_golden_visibility($1,'org')", [golden.id]);
+        });
+        const hiddenJob = await s.http(other, "golden/build/find", { name, org: s.people.org, provider: "boat" });
+        expect(hiddenJob.status).toBe(200);
+        expect(await hiddenJob.json()).toEqual({ build: null });
+      }
+      await s.db.query("insert into members(org_id,user_id,role) values($1,$2,'member') on conflict do nothing", [
+        s.people.otherOrg,
+        user,
+      ]);
+      const outside = await s.token(user, s.people.otherOrg);
+      expect((await s.http(outside, "golden/build/find", { name, org: s.people.org, provider: "boat" })).status).toBe(
+        403,
+      );
+      await s.db.query("update golden_build_jobs set state='failed',error_code='build_failed' where id=$1", [
+        job.jobId,
+      ]);
+      const none = await s.http(token, "golden/build/find", { name, org: s.people.org, provider: "boat" });
+      expect(await none.json()).toEqual({ build: null }); // Slot still held: null is not an all-clear.
+      expect((await s.db.query("select * from golden_backend_slots")).rows).toEqual(slots);
     } finally {
       await s.close();
     }
