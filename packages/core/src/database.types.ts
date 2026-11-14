@@ -3006,6 +3006,7 @@ export type Database = {
           fingerprint: string;
           response: Json | null;
           created_at: string;
+          authority: Json | null;
         };
         Insert: {
           id: string;
@@ -3015,6 +3016,7 @@ export type Database = {
           fingerprint: string;
           response?: Json | null;
           created_at?: string;
+          authority?: Json | null;
         };
         Update: {
           id?: string;
@@ -3024,6 +3026,7 @@ export type Database = {
           fingerprint?: string;
           response?: Json | null;
           created_at?: string;
+          authority?: Json | null;
         };
         Relationships: [
           {
