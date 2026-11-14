@@ -24,6 +24,7 @@ import {
   type StoredPrompt,
   type Turn,
 } from "./protocol.ts";
+import { readRuntimeJson } from "./request-framing.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills } from "./skills.ts";
 import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
@@ -162,36 +163,7 @@ export class Runner {
     )
       return Response.json({ error: "unauthorized" }, { status: 401 });
     try {
-      if (Number(request.headers.get("content-length") ?? 0) > 1048576) throw Error("request_too_large");
-      const reader = request.body?.getReader();
-      const decoder = new TextDecoder();
-      let raw = "";
-      let bytes = 0;
-      try {
-        if (reader) {
-          while (true) {
-            const chunk = await reader.read();
-            if (chunk.done) break;
-            bytes += chunk.value.byteLength;
-            if (bytes > 1048576) {
-              // Cancellation is advisory; a producer must not hold the refusal open.
-              void reader.cancel().catch(() => {});
-              throw Error("request_too_large");
-            }
-            raw += decoder.decode(chunk.value, { stream: true });
-          }
-          raw += decoder.decode();
-        }
-      } finally {
-        reader?.releaseLock();
-      }
-      if (Buffer.byteLength(raw) > 1048576) throw Error("request_too_large");
-      let r: RunnerRequest;
-      try {
-        r = JSON.parse(raw) as RunnerRequest;
-      } catch {
-        throw Error("invalid_request");
-      }
+      const r = (await readRuntimeJson(request)) as RunnerRequest;
       if (this.closing) throw Error("sandbox_not_ready");
       if (!r || typeof r !== "object" || Array.isArray(r)) throw Error("invalid_request");
       if (r.version !== 1 || r.sandboxId !== this.grant.sandboxId || typeof r.requestId !== "string" || !r.requestId)

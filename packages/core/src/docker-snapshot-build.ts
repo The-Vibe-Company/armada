@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { type DockerHostJob, parseDockerHostJob } from "./docker-host-job.ts";
 import { DOCKER_LOCAL_IMAGE_LABELS } from "./docker-image.ts";
 import type { DockerMachineCli } from "./docker-machine.ts";
+import { dockerHostResources, dockerResourceLimits } from "./docker-resources.ts";
 import { SNAPSHOT_INIT_SUPERVISOR } from "./docker-snapshot-init.ts";
 import { normalizeGitHubGoldenConfig } from "./golden-config.ts";
 import { goldenCheckoutScript } from "./golden-create-service.ts";
@@ -34,6 +35,7 @@ export async function buildDockerSnapshot(
       .digest("hex"),
   };
   let directory: string | undefined;
+  const builder = `armada-builder-${job.requestId}`;
   const checked = async (args: string[], stdin?: string, timeoutMs?: number, githubBuildToken?: string) => {
     const result = await options.cli.run(
       args,
@@ -126,9 +128,33 @@ RUN --mount=type=secret,id=github,uid=0,gid=0,mode=0400,required=true test -n "$
 USER 1000:1000
 `;
     await writeFile(join(directory, "Dockerfile"), dockerfile, { mode: 0o600, flag: "wx" });
+    const limits = dockerResourceLimits(dockerHostResources());
+    await checked([
+      "buildx",
+      "create",
+      "--name",
+      builder,
+      "--driver",
+      "docker-container",
+      "--driver-opt",
+      `memory=${limits.memoryBytes}`,
+      "--driver-opt",
+      `memory-swap=${limits.memoryBytes}`,
+      "--driver-opt",
+      "cpu-period=100000",
+      "--driver-opt",
+      `cpu-quota=${Math.floor(limits.cpus * 100000)}`,
+    ]);
+    await checked(["buildx", "inspect", builder, "--bootstrap"], undefined, Math.min(300000, remaining));
+    await checked(["container", "update", "--pids-limit", String(limits.pids), `buildx_buildkit_${builder}0`]);
+    const buildRemaining = (job.request.expiresAt ?? 0) - options.now();
+    if (buildRemaining <= 0) throw Error("Snapshot build expired.");
     await checked(
       [
         "build",
+        "--builder",
+        builder,
+        "--load",
         "--quiet",
         "--tag",
         tag,
@@ -140,13 +166,15 @@ USER 1000:1000
         directory,
       ],
       undefined,
-      Math.min(3600000, remaining),
+      Math.min(3600000, buildRemaining),
       job.build.token,
     );
     return await verify();
   } catch {
     throw Error("Docker snapshot build failed or outcome unknown.");
   } finally {
+    // Removal is scoped to this request's disposable builder, never the shared Docker builder.
+    await options.cli.run(["buildx", "rm", "--force", builder]).catch(() => {});
     if (directory) await rm(directory, { recursive: true, force: true });
   }
 }
