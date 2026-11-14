@@ -11,6 +11,13 @@ test.each([
   "claude",
   "claude-resume",
   "claude-old-version",
+  "claude-variables-skills-mcp-github-resume",
+  "claude-mcp-wrong-server",
+  "claude-mcp-no-result",
+  "claude-mcp-wrong-result-id",
+  "claude-mcp-error-result",
+  "claude-variables-old-prompt",
+  "claude-github-wrong-output",
   "disabled",
   "old-followup",
   "wrong-source",
@@ -115,11 +122,13 @@ test.each([
   const mode =
     scenario === "claude"
       ? "success"
-      : scenario === "claude-resume"
-        ? "resume"
-        : scenario === "claude-old-version"
-          ? "old-followup"
-          : scenario;
+      : scenario === "claude-old-version"
+        ? "old-followup"
+        : scenario === "claude-mcp-wrong-result-id"
+          ? "mcp-no-result"
+          : claude
+            ? scenario.slice("claude-".length)
+            : scenario;
   const github = mode.includes("github");
   const mcp = mode.includes("mcp");
   const skills = mode.includes("skills");
@@ -141,7 +150,7 @@ test.each([
 let launches=0,stops=0,checkpoints=0,sends=0,resumes=0,answer='',memory='',now=0,firstCheckpoint='',githubRevision=0,goldenReads=0,defaultReads=0,skillStatuses=0,variableCommand='',actualVariableOutput='',usagePages=0;
 const variableValues=${JSON.stringify(variableValues)};
 const variableDigest='${variableDigest}';
-const templateDefinition={provider:'modal',harness:'codex',goldenId:'${mode === "variables-wrong-golden" ? "foreign" : "golden-id"}',model:'${usage ? "gpt-6.1-sol" : "fixture-model"}',reasoningEffort:'high',modelAccount:{id:'${mode === "variables-wrong-account" ? "foreign" : accountId}',version:1},variables:${mode === "variables-missing-vars"}?[]:[{key:'APP_REGION',variableId:'region',version:1},{key:'${mode === "variables-wrong-keys" ? "APP_REGION" : "EMPTY_VALUE"}',variableId:'empty',version:1}],secrets:${mode === "variables-secrets"}?[{key:'APP_TOKEN',secretId:'foreign',version:1}]:[],skills:[],connections:${mcp}?['${mcpId}']:[]};
+const templateDefinition={provider:'modal',harness:'${claude ? "claude" : "codex"}',goldenId:'${mode === "variables-wrong-golden" ? "foreign" : "golden-id"}',model:'${usage ? "gpt-6.1-sol" : "fixture-model"}',reasoningEffort:'high',modelAccount:{id:'${mode === "variables-wrong-account" ? "foreign" : accountId}',version:1},variables:${mode === "variables-missing-vars"}?[]:[{key:'APP_REGION',variableId:'region',version:1},{key:'${mode === "variables-wrong-keys" ? "APP_REGION" : "EMPTY_VALUE"}',variableId:'empty',version:1}],secrets:${mode === "variables-secrets"}?[{key:'APP_TOKEN',secretId:'foreign',version:1}]:[],skills:[],connections:${mcp}?['${mcpId}']:[]};
 const receipts=['personal/notes@3.0.0','catalog/other@1.0.0'].map(reference=>({reference,version:reference.split('@')[1],skillId:'11111111-1111-4111-8111-111111111111',checksum:'sha256:'+'a'.repeat(64),origin:'https://skillpack.app/v1'}));
 const usageIds=()=>['prompt',...(sends?['followup']:[]),...(resumes?['resumed']:[]),...(resumes&&sends>1?['github-resumed']:[]),...(${mode === "usage-extra-observation"}?['background']:[])];
 const usageData=()=>({model:'gpt-6.1-sol',inputTokens:100,outputTokens:20,cachedTokens:10,cacheWriteTokens:${["usage-unknown", "usage-zero-missing"].includes(mode)}?null:0,reasoningTokens:null,...(${mode === "usage-forged-guest-money"}?{usd:'999',pricing:{usd:'999'}}:{})});
@@ -204,7 +213,7 @@ globalThis.fetch=async(url,options)=>{
     const promptIds=[...new Set(events.filter(event=>event.kind==='message').map(event=>event.promptId))];
     for(const promptId of promptIds) {
       if(resumes&&promptId==='resumed'&&${mode === "mcp-resume-replay"})continue;
-      events.push({id:'mcp-'+promptId,at:3,promptId:${mode === "mcp-old-prompt"}?'foreign':promptId,kind:'message',partial:false,text:'',tools:[{id:'mcp',server:'${mode === "mcp-wrong-server" ? "foreign" : mcpServer}',name:'${mode === "mcp-wrong-tool" ? "foreign" : "read_counter"}',input:{label:'fixture',nested:{a:1,b:${mode === "mcp-wrong-args" ? 3 : 2}}},...(${mode === "mcp-no-result"}?{}:{result:{isError:${mode === "mcp-error-result"},output:'${mode === "mcp-wrong-output" ? "foreign" : "independent result"}'}})}]});
+      events.push({id:'mcp-'+promptId,at:3,promptId:${mode === "mcp-old-prompt"}?'foreign':promptId,kind:'message',partial:false,text:'',tools:[{id:'mcp',server:'${mode === "mcp-wrong-server" ? "foreign" : mcpServer}',name:'${mode === "mcp-wrong-tool" ? "foreign" : "read_counter"}',input:{label:'fixture',nested:{a:1,b:${mode === "mcp-wrong-args" ? 3 : 2}}},...(${mode === "mcp-no-result" && scenario !== "claude-mcp-wrong-result-id"}?{}:{result:{isError:${mode === "mcp-error-result"},output:'${mode === "mcp-wrong-output" ? "foreign" : "independent result"}'}})}]});
     }
   }
   if(${variables}&&!${mode === "variables-no-tool"}) {
@@ -222,6 +231,17 @@ globalThis.fetch=async(url,options)=>{
   }
   if(sends&&${mode === "replayed-answer"})events=pair('prompt',memory);
   if((stops===1&&!resumes&&${mode === "resume-lost-stopped-history"})||(resumes&&${mode === "resume-lost-old-history"}))events=events.filter(event=>event.promptId==='resumed');
+  if(${claude}) {
+    events=events.flatMap(event=>{
+      if(event.kind!=='message'||!event.tools.length)return [event];
+      const calls=event.tools.map(tool=>({id:tool.id,name:tool.server?'mcp__'+tool.server+'__'+tool.name:tool.name==='commandExecution'?'Bash':tool.name,input:tool.input}));
+      const results=event.tools.filter(tool=>tool.result).map(tool=>({...event,id:event.id+'-result',responseKind:'tool_result',tools:[{id:${scenario === "claude-mcp-wrong-result-id"}?'unrelated':tool.id,name:'tool_result',result:{...tool.result,output:typeof tool.result.output==='string'?[{type:'text',text:tool.result.output}]:tool.result.output}}]}));
+      return [{...event,responseKind:'assistant',tools:calls},...results];
+    });
+    // Uses and results really arrive on separate archive pages.
+    if(!body.cursor)return Response.json({source:'armada-runtime',cursor:'claude-results',events:events.filter(event=>event.kind==='message'&&event.responseKind==='assistant'&&event.tools.length)});
+    events=events.filter(event=>!(event.kind==='message'&&event.responseKind==='assistant'&&event.tools.length));
+  }
   return Response.json({source:'${mode === "wrong-source" ? "modal-native" : "armada-runtime"}',events});
  }
  if(path.endsWith('/sandbox/checkpoint-runtime-v1')){

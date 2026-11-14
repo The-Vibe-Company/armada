@@ -1,6 +1,6 @@
 /** Coordinator-only staging check: exactly one Modal allocation, never retried. */
 import { createHash } from "node:crypto";
-import type { AgentEvent } from "../packages/core/src/provider.ts";
+import type { AgentEvent, ToolCall } from "../packages/core/src/provider.ts";
 import { validateReadableVariables } from "../packages/core/src/readable-variables.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { shellQuote } from "../packages/core/src/shell-quote.ts";
@@ -331,6 +331,8 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
   let finished = false;
   let foundMcp = !mcpMode;
   let foundVariables = !variablesMode;
+  const claudeCalls = new Map<string, ToolCall>();
+  const claudeResults = new Map<string, NonNullable<ToolCall["result"]>>();
   const deadline = Date.now() + 300000;
   while (
     Date.now() < deadline &&
@@ -342,39 +344,57 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
     for (const event of page.events ?? []) {
       if (usageMode) usageCheck.observe(event);
       if (event.promptId !== expectedPromptId) continue;
-      if (mcpMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
-        for (const tool of event.tools)
+      if (event.kind === "message" && !event.parentToolUseId && !event.retracted && !event.partial) {
+        let tools = event.tools;
+        if (harness === "claude") {
+          for (const tool of tools) {
+            if (event.responseKind === "tool_result" && tool.name === "tool_result" && tool.result)
+              claudeResults.set(tool.id, tool.result);
+            else if (event.responseKind !== "tool_result") claudeCalls.set(tool.id, tool);
+          }
+          // Claude archives the assistant use and user result separately. Join only
+          // within this prompt and by the exact tool-use ID, including across pages.
+          tools = [...claudeCalls.values()].flatMap((tool) => {
+            const result = claudeResults.get(tool.id);
+            return result ? [{ ...tool, result }] : [];
+          });
+        }
+        for (const tool of tools) {
+          const output = tool.result?.output;
+          const text =
+            typeof output === "string"
+              ? output
+              : Array.isArray(output) &&
+                  output.every((block) => block?.type === "text" && typeof block.text === "string")
+                ? output.map((block) => block.text).join("\n")
+                : undefined;
           if (
-            tool.server === mcpServer &&
-            tool.name === mcpTool &&
+            mcpMode &&
+            (harness === "claude"
+              ? tool.name === `mcp__${mcpServer}__${mcpTool}`
+              : tool.server === mcpServer && tool.name === mcpTool) &&
             canonical(tool.input) === canonical(mcpArguments) &&
             tool.result?.isError === false &&
-            JSON.stringify(tool.result.output)?.includes(mcpExpected)
+            JSON.stringify(output)?.includes(mcpExpected)
           )
             foundMcp = true;
-      }
-      if (variablesMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
-        for (const tool of event.tools)
-          if (
-            tool.name === "commandExecution" &&
-            exactCommand((tool.input as { command?: unknown } | undefined)?.command, variableCommand) &&
-            tool.result?.isError === false &&
-            typeof tool.result.output === "string" &&
-            expectedVariableDigest &&
-            tool.result.output.trim() === expectedVariableDigest
-          )
-            foundVariables = true;
-      }
-      if (githubMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
-        for (const tool of event.tools) {
+          const shell = tool.name === (harness === "claude" ? "Bash" : "commandExecution");
           const command = (tool.input as { command?: unknown } | undefined)?.command;
           if (
-            tool.name === "commandExecution" &&
-            typeof command === "string" &&
+            variablesMode &&
+            shell &&
+            exactCommand(command, variableCommand) &&
+            tool.result?.isError === false &&
+            expectedVariableDigest &&
+            text?.trim() === expectedVariableDigest
+          )
+            foundVariables = true;
+          if (
+            githubMode &&
+            shell &&
             exactCommand(command, `gh api repos/${repository} --jq .full_name`) &&
             tool.result?.isError === false &&
-            typeof tool.result.output === "string" &&
-            tool.result.output.trim().toLowerCase() === repository.toLowerCase()
+            text?.trim().toLowerCase() === repository.toLowerCase()
           )
             githubToolPrompts.add(expectedPromptId);
         }
