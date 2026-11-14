@@ -68,6 +68,23 @@ async function SandboxesContent({ searchParams }: Props) {
   const filters = parseSandboxFilters(await searchParams);
   const supabase = await createClient();
   const selected = await selectedOrganization();
+  if (!selected)
+    return (
+      <>
+        <PageHeader title="Sandboxes" />
+        <Empty
+          title="No organization yet"
+          icon={<BoxesIcon />}
+          action={
+            <Button asChild>
+              <Link href="/orgs">Choose an organization</Link>
+            </Button>
+          }
+        >
+          Create or join an organization before launching or following a sandbox.
+        </Empty>
+      </>
+    );
   const inventory = listSandboxes(supabase, filters, viewer.id);
   const hosts = readSelectedDockerHosts();
   // Enrich rows as soon as their actual dependencies resolve, not after unrelated setup/directory reads.
@@ -179,6 +196,19 @@ async function SandboxesContent({ searchParams }: Props) {
               Go to the first page
             </Link>
           </Empty>
+        ) : skipped > 0 ? (
+          <Empty
+            title="Sandboxes are not fully loaded"
+            icon={<SearchXIcon />}
+            action={
+              <Button variant="outline" asChild>
+                <a href={`/sandboxes${filtersToSearch(filters)}`}>Reload Sandboxes</a>
+              </Button>
+            }
+          >
+            Some sandboxes could not be read. Reload to try again. If this continues, ask an Armada administrator for
+            help.
+          </Empty>
         ) : filtered ? (
           <Empty
             title="No sandbox matches these filters"
@@ -193,8 +223,7 @@ async function SandboxesContent({ searchParams }: Props) {
           </Empty>
         ) : (
           <Empty title="No sandboxes yet" action={launchAction} icon={<BoxesIcon />}>
-            A sandbox starts from a snapshot. Pick one on the Snapshots page, or run{" "}
-            <code className="font-mono text-xs">armada launch &lt;snapshot&gt;</code> or launch through MCP.
+            Choose a snapshot, then tell an agent what to do. You can follow its progress and send more messages here.
           </Empty>
         )
       ) : (
