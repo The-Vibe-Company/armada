@@ -114,32 +114,87 @@ for replacement and Boat setup. Personal provider credentials do not complete or
 
 ### Store a model credential
 
-Choose **one** agent path. For API billing, create a key in the
+Start with one named model account. For API billing, create a key in the
 [Anthropic Console](https://console.anthropic.com/) for Claude Code or the
 [OpenAI API platform](https://platform.openai.com/api-keys) for Codex. Save the value alone
 in a private file outside your repository (for example `~/.config/armada/model-key`, mode
 `600`), then use the matching command:
 
 ```sh
-armada creds set anthropic --file ~/.config/armada/model-key   # Claude Code
+armada creds set anthropic --name "Claude API" --file ~/.config/armada/model-key
 # OR, for an OpenAI API key:
-armada creds set openai --file ~/.config/armada/model-key      # Codex
+armada creds set openai --name "OpenAI API" --file ~/.config/armada/model-key
 ```
 
-Subscription alternative (instead of the API key): run `claude setup-token` locally and
-save its output token alone in a private file, then
-`armada creds set claude-oauth --file ~/.config/armada/claude-token`.
-For Codex, run `codex login` locally, then
-`armada creds set codex-auth --file ~/.codex/auth.json`.
-Use an account entitled to the selected agent; an Armada login is not a model subscription.
+API keys use the key's provider billing account; subscription credentials use the
+eligible subscription account's access and limits. A subscription is not free usage
+or an API credit balance, and signing in to Armada does not provide a model subscription.
+The Boat/Modal machine is billed separately through the connected sandbox provider.
+
+#### Keep an API account and add a subscription
+
+For Codex, keep the OpenAI API account above and add an eligible ChatGPT account:
 
 ```sh
-armada creds list --org my-team   # kinds and dates, never values
+armada creds login codex --name "Personal ChatGPT"
+armada creds list
 ```
 
-A launch injects only the credentials of the chosen agent: yours first, else the org's.
-Values are read from stdin or a file, stored encrypted and never shown again. They do not
-belong in a snapshot or setup script.
+Approve the native Codex device login in your browser and **keep the terminal/session
+open until Armada confirms import**. This creates another account; it does not replace
+the API account or automatically switch its billing. If native login is unavailable,
+import an existing private Codex login file instead (not in addition to a successful
+import): `armada creds import codex --name "Personal ChatGPT" --file ~/.codex/auth.json`.
+See [native subscription authentication](native-subscription-auth.md) for prerequisites,
+file-based login and recovery.
+
+The list shows account IDs, names, kinds and defaults, never secret values. Copy the
+actual IDs for "OpenAI API" and "Personal ChatGPT". After building `first-modal` below,
+choose deliberately on each launch (replace the UUID placeholders):
+
+```sh
+armada launch first-modal --org my-team --provider modal --agent codex \
+  --credential-id <openai-api-account-uuid> "Summarize the repositories"
+# OR use the subscription account:
+armada launch first-modal --org my-team --provider modal --agent codex \
+  --credential-id <chatgpt-account-uuid> "Summarize the repositories"
+```
+
+For Claude, keep "Claude API" and run `claude setup-token` locally. Save the
+output token alone in a private file outside your repository, mode `600`, then:
+
+```sh
+armada creds import claude --name "Personal Claude" --file ~/.config/armada/claude-token
+armada creds list
+```
+
+There is no `armada creds login claude` device flow. Launch with `--agent claude`
+and `--credential-id <claude-api-account-uuid>` or `<claude-subscription-account-uuid>`
+to choose the API or eligible Claude subscription account, respectively.
+
+Optionally run `armada creds default <chosen-account-uuid>` to choose the default
+for future launches of that agent. Without an explicit ID, your personal compatible
+accounts take precedence over the org's; within that scope, a default wins, or a sole
+compatible account is used. Multiple compatible accounts without one default require
+selection rather than guessing. An explicitly selected refused/expired/revoked account
+does not silently fall back to another billing account. Existing sandboxes remain bound
+to their chosen account; a new default does not switch them.
+
+These examples create personal accounts. Org admins can add `--org my-team` to account
+creation/import, listing and default commands to manage org accounts instead; passing
+`--org` to launch alone does not override personal-account precedence.
+
+**Previously used unnamed commands?** Legacy `creds set openai`, `anthropic`,
+`codex-auth` or `claude-oauth` without `--name` update the sole account of that
+kind in that scope, or create one if absent; ambiguous multiple accounts are rejected.
+Different kinds coexist rather than replace each other. In an all-legacy "Default"
+setup, the compatibility defaults prefer OpenAI API over Codex auth and Claude OAuth
+over Anthropic API. Do not rely on adding a subscription to change billing: list IDs
+and select one explicitly. Named creation adds an account; intentional replacement
+uses `--id UUID --expected-version N`.
+
+Values are read from hidden input, stdin or a private file, stored encrypted and never
+shown again. They do not belong in a snapshot, setup script, command argument or chat.
 
 ### Authorize GitHub
 
