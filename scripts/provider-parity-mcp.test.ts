@@ -263,3 +263,57 @@ for (const mode of [
     expect(lines.join("\n")).not.toContain(binding.expectedText);
   });
 }
+
+test("production Boat MCP defers incomplete native provenance without allocation", async () => {
+  const lines: string[] = [];
+  const passed = await providerParitySmoke(
+    {
+      ARMADA_URL: "https://production-fixture.invalid",
+      ARMADA_TOKEN: "placeholder",
+      ARMADA_SMOKE: "create_real_compute",
+      ARMADA_SMOKE_CASES: JSON.stringify([
+        {
+          provider: "boat",
+          org: "fixture",
+          harness: "codex",
+          model: "fixture",
+          modelAccountId: "account",
+          golden: "golden",
+          template: { id: "10000000-0000-4000-8000-000000000001", revision: 1 },
+          mcp: {
+            connectionId: "10000000-0000-4000-8000-000000000002",
+            tool: "parity_probe",
+            expectedText: `parity_mcp_${crypto.randomUUID()}`,
+            readOnly: true,
+          },
+        },
+      ]),
+    },
+    {
+      out: (line) => lines.push(line),
+      now: () => 0,
+      sleep: async () => {
+        throw Error("unexpected wait");
+      },
+      fetch: async () => {
+        throw Error("must not allocate or discover");
+      },
+    },
+    ["--production-boat", "--only", "boat", "--feature", "mcp"],
+  );
+  expect(passed).toBe(true);
+  const report = lines
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .find((value) => value?.step === "provider_parity");
+  expect(report.starts).toBe(0);
+  expect(report.features.mcp.boat).toEqual({
+    status: "not-run",
+    reason: "native_boat_mcp_evidence_probe_not_implemented",
+  });
+});

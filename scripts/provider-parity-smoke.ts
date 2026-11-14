@@ -419,6 +419,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       record("mcp", c.provider, "not-run", "mcp_probe_not_configured");
       if (feature === "mcp") continue;
     }
+    if (feature === "mcp" && c.provider === "boat") {
+      record("mcp", c.provider, "not-run", "native_boat_mcp_evidence_probe_not_implemented");
+      continue;
+    }
     if (feature === "mcp" && c.harness === "opencode") {
       record("mcp", c.provider, "not-run", "opencode_mcp_inventory_probe_not_implemented");
       continue;
