@@ -114,6 +114,7 @@ export function NavLinks({ className, optIns }: { className?: string; optIns: Na
                       >
                         <Link
                           href={href}
+                          prefetch={true}
                           onClick={() => setOpenMobile(false)}
                           aria-current={active ? "page" : undefined}
                         >
