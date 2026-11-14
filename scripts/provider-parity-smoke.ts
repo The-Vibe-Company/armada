@@ -38,6 +38,8 @@ const localCodes = new Set([
   "harness_not_advertised",
   "invalid_launch_receipt",
   "invalid_exec_receipt",
+  "invalid_control_receipt",
+  "control_turn_not_active",
   "invalid_status_receipt",
   "invalid_logs_receipt",
   "delete_unconfirmed",
@@ -56,6 +58,8 @@ const steps = {
   github: "github",
   stop: "stop",
   resume: "resume",
+  steer: "steer",
+  interrupt: "interrupt",
   delete: "delete",
 } as const;
 // Stable feature IDs are also the --feature vocabulary. Unimplemented probes are
@@ -64,8 +68,6 @@ const features = [
   ...Object.keys(steps),
   "launch-default",
   "launch-snapshot",
-  "steer",
-  "interrupt",
   "resume-recall",
   // #1562: explicit debt rows; manual stop/resume is not idle-pause/wake proof.
   "idle-pause",
@@ -581,6 +583,121 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
       await checkUsage(turn.promptId);
     }
+    async function controlTurn(action: "steer" | "interrupt") {
+      if (!id) throw new Error("launch_not_available");
+      const until = Math.min(deadline, io.now() + 110_000);
+      const previous = requestDeadline;
+      requestDeadline = until;
+      try {
+        const original = await api<{ promptId: string }>("sandbox/send", {
+          id,
+          prompt:
+            "Use your terminal tool to run sleep 90. Wait for it to finish before replying CONTROL_ORIGINAL. Do not modify files.",
+          ...(c.provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+        });
+        if (!original.promptId) throw new Error("invalid_turn_receipt");
+        await poll(
+          () =>
+            api<{ prompt: { promptId: string; state: string } | null }>("sandbox/wait", {
+              id,
+              prompt_id: original.promptId,
+              timeout_seconds: 0,
+            }),
+          (value) => {
+            if (value.prompt === null) return false;
+            if (value.prompt?.promptId !== original.promptId || value.prompt.state !== "running")
+              throw new Error("control_turn_not_active");
+            return true;
+          },
+          110,
+          until,
+        );
+        const marker = `PARITY_STEER_${crypto.randomUUID().replaceAll("-", "")}`;
+        const result = await api<{ id: string; interrupted?: boolean; delivery?: string; promptId?: string }>(
+          `sandbox/${action}`,
+          {
+            id,
+            ...(action === "steer"
+              ? { text: `Cancel the waiting task. Reply with exactly ${marker} and nothing else. Do not use tools.` }
+              : {}),
+            ...(c.provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+          },
+        );
+        if (
+          result.id !== id ||
+          (action === "interrupt"
+            ? result.interrupted !== true
+            : !["native", "restart"].includes(result.delivery ?? ""))
+        )
+          throw new Error("invalid_control_receipt");
+        if (action === "interrupt") {
+          await poll(
+            () =>
+              api<{ prompt: { promptId: string; state: string } | null }>("sandbox/wait", {
+                id,
+                prompt_id: original.promptId,
+                timeout_seconds: 0,
+              }),
+            (value) => {
+              if (value.prompt === null) return false;
+              if (value.prompt?.promptId !== original.promptId) throw new Error("invalid_control_receipt");
+              if (["finished", "failed"].includes(value.prompt.state)) throw new Error("invalid_control_receipt");
+              return value.prompt.state === "interrupted";
+            },
+            110,
+            until,
+          );
+        } else {
+          // Boat can return a steer-record ID rather than the restarted run ID.
+          // Match the unique redirected answer and terminal event on the SAME run.
+          const answered = new Set<string>();
+          const finished = new Set<string>();
+          let cursor: string | undefined;
+          await poll(
+            () =>
+              api<{
+                cursor?: string;
+                events: Array<{
+                  kind: string;
+                  promptId?: string;
+                  status?: string;
+                  text?: string;
+                  partial?: boolean;
+                  parentToolUseId?: string;
+                  responseKind?: string;
+                  retracted?: boolean;
+                }>;
+              }>("logs/read", {
+                id,
+                coalesce: true,
+                ...(cursor ? { cursor } : {}),
+              }),
+            (page) => {
+              if (!Array.isArray(page.events)) throw new Error("invalid_logs_receipt");
+              cursor = page.cursor;
+              for (const event of page.events) {
+                if (!event.promptId) continue;
+                if (
+                  event.kind === "message" &&
+                  event.text === marker &&
+                  event.partial === false &&
+                  !event.parentToolUseId &&
+                  event.responseKind !== "tool_result" &&
+                  !event.retracted
+                )
+                  answered.add(event.promptId);
+                if (event.kind === "prompt" && event.status === "finished") finished.add(event.promptId);
+              }
+              return [...answered].some((prompt) => finished.has(prompt));
+            },
+            110,
+            until,
+          );
+        }
+      } finally {
+        requestDeadline = previous;
+      }
+    }
     async function deleteKnown() {
       if (!id) throw new Error("launch_not_available");
       const cleanupDeadline = io.now() + OBSERVATION_MS;
@@ -708,7 +825,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         !feature ||
         step === feature ||
         step === "launch" ||
-        step === "stop" ||
+        (step === "stop" && !["steer", "interrupt"].includes(feature ?? "")) ||
         step === "delete" ||
         (feature === "github" && step === "send") ||
         (["resume", "resume-recall", "usage", "exact-cost"].includes(feature ?? "") &&
@@ -734,7 +851,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         record(
           selected ? step : `prerequisite:${step}`,
           c.provider,
-          blockedDiagnostic?.quota ? "not-run" : "fail",
+          blockedDiagnostic?.quota || blockedDiagnostic?.code === "unsupported" ? "not-run" : "fail",
           blockedDiagnostic?.quota ? "quota" : blocked,
           blockedDiagnostic,
         );
@@ -779,6 +896,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           if (step === "send") {
             await runTurn();
             if (io.accountProbe) await runTurn(true);
+          } else if (step === "steer" || step === "interrupt") {
+            await controlTurn(step);
           } else if (step === "exec") {
             const result = await api<{ exitCode: number | null; timedOut: boolean; stdout: string }>("sandbox/exec", {
               id,
@@ -874,7 +993,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         record(
           selected ? step : `prerequisite:${step}`,
           c.provider,
-          detail.quota ? "not-run" : "fail",
+          detail.quota
+            ? "not-run"
+            : (step === "steer" || step === "interrupt") && detail.code === "unsupported"
+              ? "unsupported"
+              : "fail",
           detail.quota ? "quota" : detail.code,
           detail,
         );
