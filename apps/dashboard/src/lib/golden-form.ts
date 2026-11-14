@@ -14,7 +14,7 @@ import type { GoldenCapabilities } from "./control.ts";
 import type { Tone } from "./status-tone.ts";
 
 /** One repository row of the golden form, as typed. */
-export type RepoRow = { url: string; branch: string; dir: string };
+export type RepoRow = { url: string; branch: string; dir: string; history?: string };
 
 /** The backends a golden can be built on, in the order the form offers them. */
 export const GOLDEN_PROVIDERS = SANDBOX_PROVIDERS;
@@ -42,7 +42,10 @@ export type GoldenRequest =
         org: string;
         private: boolean;
         provider: SandboxProviderId;
-        config: { repos: { url: string; branch: string; dir?: string }[]; init: string[] };
+        config: {
+          repos: { url: string; branch: string; dir?: string; history?: "full" | "shallow" }[];
+          init: string[];
+        };
         setup?: string;
       };
     }
@@ -53,7 +56,10 @@ export type GoldenRequest =
         org: string;
         /** Picks this golden among same-name goldens of another provider; the server never changes it. */
         provider: SandboxProviderId;
-        config: { repos: { url: string; branch: string; dir?: string }[]; init: string[] };
+        config: {
+          repos: { url: string; branch: string; dir?: string; history?: "full" | "shallow" }[];
+          init: string[];
+        };
         setup?: string;
       };
     };
@@ -79,17 +85,23 @@ export function goldenRequest(fields: GoldenFormFields): Parsed<GoldenRequest> {
     return { ok: false, error: message(error) };
   }
   const rows = fields.repos
-    .map((row) => ({ url: row.url.trim(), branch: row.branch.trim(), dir: row.dir.trim() }))
+    .map((row) => ({ url: row.url.trim(), branch: row.branch.trim(), dir: row.dir.trim(), history: row.history }))
     .filter((row) => row.url || row.branch || row.dir);
   if (rows.length === 0) return { ok: false, error: "Add at least one repository." };
   if (rows.length > MAX_GOLDEN_REPOS)
     return { ok: false, error: `A golden holds at most ${MAX_GOLDEN_REPOS} repositories.` };
   const blank = rows.findIndex((row) => !row.url);
   if (blank !== -1) return { ok: false, error: `Repository ${blank + 1} needs a GitHub repository.` };
-  const repos = rows.map((row) => ({
+  const invalidHistory = rows.findIndex(
+    (row) => row.history !== undefined && row.history !== "full" && row.history !== "shallow",
+  );
+  if (invalidHistory !== -1)
+    return { ok: false, error: `Repository ${invalidHistory + 1} history must be full or shallow.` };
+  const repos = rows.map<GoldenRequest["body"]["config"]["repos"][number]>((row) => ({
     url: githubUrl(row.url),
     branch: row.branch || "main",
     ...(row.dir ? { dir: row.dir } : {}),
+    ...(row.history === "full" || row.history === "shallow" ? { history: row.history } : {}),
   }));
   const init = lines(fields.init);
   const config = { repos, init };
@@ -150,7 +162,13 @@ export function repoSlug(url: string): string | null {
   return match?.[1] && match[2] ? `${match[1]}/${match[2]}` : null;
 }
 
-export type GoldenRepoView = { url: string; slug: string | null; branch: string; dir: string };
+export type GoldenRepoView = {
+  url: string;
+  slug: string | null;
+  branch: string;
+  dir: string;
+  history?: "full" | "shallow";
+};
 
 /** The repositories recorded in a golden row, read defensively: legacy rows may carry an empty or odd config. */
 export function goldenRepos(config: Golden["config"]): GoldenRepoView[] {
@@ -163,6 +181,7 @@ export function goldenRepos(config: Golden["config"]): GoldenRepoView[] {
         slug: repoSlug(repo.url),
         branch: typeof repo.branch === "string" ? repo.branch : "main",
         dir: typeof repo.dir === "string" ? repo.dir : "",
+        ...(repo.history === "full" || repo.history === "shallow" ? { history: repo.history } : {}),
       },
     ];
   });
@@ -179,6 +198,7 @@ export function editDefaults(golden: Pick<Golden, "config">): { repos: RepoRow[]
     url: repo.slug ?? repo.url,
     branch: repo.branch,
     dir: repo.dir,
+    ...(repo.history ? { history: repo.history } : {}),
   }));
   return {
     repos: repos.length ? repos : [{ url: "", branch: "", dir: "" }],

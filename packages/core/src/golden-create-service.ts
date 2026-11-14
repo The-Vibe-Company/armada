@@ -38,6 +38,7 @@ export interface AuthorizedRepo {
 /** An authorized repo with the single-segment directory it is cloned into, shared by the build script and the persisted config. */
 export interface PreparedRepo extends AuthorizedRepo {
   dir: string;
+  history?: "full" | "shallow";
 }
 
 export interface GoldenCreateDeps {
@@ -489,7 +490,12 @@ export function applyRequestedRepos(
     if (!wanted || repo.owner !== wanted.owner || repo.repo !== wanted.repo) {
       throw new GoldenError("invalid_config", "Authorized repositories did not match the request.");
     }
-    return { ...repo, branch: wanted.branch, dir: wanted.dir };
+    return {
+      ...repo,
+      branch: wanted.branch,
+      dir: wanted.dir,
+      ...(wanted.history !== undefined ? { history: wanted.history } : {}),
+    };
   });
 }
 
@@ -633,7 +639,7 @@ const GIT_FAILURE_CLASSIFIER = [
 
 /** Shared credential-safe checkout frame. Runtime/image transports supply the token only in memory. */
 export function goldenCheckoutScript(
-  repos: readonly Pick<PreparedRepo, "owner" | "repo" | "branch" | "dir">[],
+  repos: readonly Pick<PreparedRepo, "owner" | "repo" | "branch" | "dir" | "history">[],
   options: { shallow?: boolean } = {},
 ): string {
   return [
@@ -647,7 +653,7 @@ export function goldenCheckoutScript(
     GIT_FAILURE_CLASSIFIER,
     ...repos.map(
       (r, index) =>
-        `armada_clone ${index + 1} git clone ${options.shallow ? "--depth=1 " : ""}--branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}`,
+        `armada_clone ${index + 1} git clone ${r.history === "shallow" || (r.history === undefined && options.shallow) ? "--depth=1 " : ""}--branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}`,
     ),
     "unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_TERMINAL_PROMPT GIT_ASKPASS",
     "unset ARMADA_GIT_TOKEN",
@@ -669,7 +675,7 @@ function goldenCheckoutFrame(repos: readonly PreparedRepo[]): string {
 }
 
 export function goldenScript(
-  repos: readonly Pick<PreparedRepo, "owner" | "repo" | "branch" | "dir">[],
+  repos: readonly Pick<PreparedRepo, "owner" | "repo" | "branch" | "dir" | "history">[],
   setup: readonly string[] = [],
   options: { skipCheckout?: boolean } = {},
 ): string {

@@ -32,19 +32,58 @@ fixture removed from the working tree may therefore still reject the build when
 its blob exists in history. No value allow-list, scanner exclusion, shallow-clone
 default or history rewrite is introduced by this diagnostic change.
 
-## History policy needs an explicit owner decision
+## Explicit per-repository short history (owner approved)
 
-For the known already-public fake fixture in #1755, a per-repository history mode
-has been proposed in the [issue design comment](https://github.com/The-Vibe-Company/armada/issues/1755#issuecomment-6875196321).
-It is not implemented or accepted as configuration by this PR. The proposed mode
-would be explicit and visible, preserve full history by default, and apply only
-to the chosen repository. Missing history affects blame/log/bisect and
-history-dependent builds; later deepening (including init scripts) can reintroduce
-the matching object. Scanning every byte/object actually present would remain
-unchanged. Docker host snapshots currently have a separate globally shallow
-checkout policy; a unified history field must explicitly preserve or migrate that
-default rather than silently deepen it. Do not retry an undocumented override or
-infer that a public match is safe to ignore.
+The owner approved a short-history checkout in #1755. Set this field on only the
+repository whose old history is not needed:
+
+```json
+{
+  "url": "https://github.com/The-Vibe-Company/armada.git",
+  "branch": "main",
+  "dir": "armada",
+  "history": "shallow"
+}
+```
+
+This is **one repository entry**, not the complete golden config. Preserve all
+other repositories and init commands: `golden update --config` intentionally
+replaces the full configuration and the CLI requires explicit `--replace`
+confirmation. To derive the owner's complete current config
+without dropping entries, after the updated CLI/server release:
+
+```sh
+armada golden list --provider boat --org <org-id> --json > goldens.json
+jq -e '
+  [.[] | select(.name == "two-repos-prod-test")]
+  | if length == 1 then .[0].config else error("Expected exactly one Boat golden") end
+  | if ([.repos[] | select(.dir == "armada")] | length) == 1
+    then .repos |= map(if .dir == "armada" then . + {history: "shallow"} else . end)
+    else error("Expected exactly one armada checkout directory") end
+' goldens.json > golden.json
+armada golden update two-repos-prod-test --provider boat --org <org-id> --config golden.json --replace
+```
+
+Review `golden.json` before the final mutating command. In the dashboard, open
+Snapshots → Edit and rebuild and set **History → Latest commit only** on the
+Armada row; other rows retain their modes. If a failed build is still tracked,
+choose **New build request** first to use a fresh admission key. Existing stored modes survive editing
+and additive updates; the immutable build request hash includes the field.
+
+| Config | Boat / Modal golden | Docker host snapshot |
+| --- | --- | --- |
+| omitted | full single-branch history (unchanged) | existing shallow default (unchanged) |
+| `"history": "shallow"` | latest commit only for that branch | latest commit only for that branch |
+| `"history": "full"` | full single-branch history | explicitly full single-branch history |
+
+Only selected shallow repositories receive `--depth=1 --single-branch`. No scan
+logic, ignore-list or token exemption changes: every byte/object actually present
+is still scanned. Old objects do not reach a fresh shallow clone, but a current
+fixture still rejects. Deepening during init/setup can bring old objects back and
+correctly fail again. Missing history can affect log/blame/bisect and
+history-dependent version/build tools; later sandbox users can deepen explicitly.
+Older CLI/server versions reject the unknown field rather than silently dropping
+it. No history rewrite, migration or new CI job is required.
 
 Tests/fixtures must not check in bytes matching real token patterns. Use short
 underscore-separated placeholders; scanner-positive cases construct the synthetic
@@ -53,4 +92,4 @@ matching literal fixtures; existing historical objects were not rewritten.
 
 No production rebuild or migration was performed. The coordinator can retry the
 same owner-approved build after release and report the repository/object/commit
-location, then make the history-mode decision with that evidence.
+location, then confirm the explicit history choice with that evidence.
