@@ -1336,9 +1336,6 @@ function sandboxStore(rows: Map<string, SandboxRecord>, insertError?: Error): Sa
       if (!row) throw new Error("missing sandbox");
       rows.set(id, { ...row, ...definedOnly(patch) });
     },
-    async listBefore(cutoff) {
-      return [...rows.values()].filter((row) => row.createdAt < cutoff && row.status !== "deleted");
-    },
   };
 }
 

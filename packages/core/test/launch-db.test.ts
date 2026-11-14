@@ -99,12 +99,12 @@ describe("launch database", () => {
       );
       const sandboxId = privateFork.sandbox.id;
       const serviceData = (await import("../../mcp-server/src/data.ts")).createSqlData(db);
+      const visible = (userId: string) =>
+        asUser(db, userId, async () =>
+          (await db.query<{ id: string }>("select id from sandboxes")).rows.map((row) => row.id),
+        );
       for (const who of ["owner", "admin"] as const) {
-        expect(
-          await asUser(db, people[who], async () =>
-            (await sandboxes.listBefore("2100-01-01T00:00:00Z")).some((s) => s.id === sandboxId),
-          ),
-        ).toBe(who === "admin");
+        expect((await visible(people[who])).includes(sandboxId)).toBe(who === "admin");
         const found = await serviceData({
           userId: people[who],
           orgs: [{ orgId: people.org, role: who === "admin" ? "admin" : "member" }],
@@ -122,14 +122,8 @@ describe("launch database", () => {
           via: "supabase",
         }).sandboxes.get(sandboxId),
       ).toBeNull();
-      expect(
-        await asUser(db, people.member, async () =>
-          (await sandboxes.listBefore("2100-01-01T00:00:00Z")).some((s) => s.id === sandboxId),
-        ),
-      ).toBe(true);
+      expect((await visible(people.member)).includes(sandboxId)).toBe(true);
 
-      const visible = (userId: string) =>
-        asUser(db, userId, async () => (await sandboxes.listBefore("2100-01-01T00:00:00Z")).map((row) => row.id));
       expect(await visible(people.owner)).toEqual(expect.arrayContaining([mine.sandbox.id]));
       expect(await visible(people.member)).toEqual(expect.arrayContaining([shared.sandbox.id, sandboxId]));
       expect(await visible(people.admin)).toEqual(
@@ -174,11 +168,12 @@ describe("launch database", () => {
       await asUser(db, people.owner, () =>
         sandboxes.update(mine.sandbox.id, { status: "failed", statusReason: "Weekly limit reached" }),
       );
-      const failed = await asUser(db, people.owner, () => sandboxes.listBefore("2100-01-01T00:00:00Z"));
-      expect(failed.find((row) => row.id === mine.sandbox.id)).toMatchObject({
-        status: "failed",
-        statusReason: "Weekly limit reached",
-      });
+      const failed = await serviceData({
+        userId: people.owner,
+        orgs: [{ orgId: people.org, role: "member" }],
+        via: "supabase",
+      }).sandboxes.get(mine.sandbox.id);
+      expect(failed).toMatchObject({ status: "failed", statusReason: "Weekly limit reached" });
       await expect(
         db.query("update sandboxes set status = 'running', stopped_at = null where id = $1", [mine.sandbox.id]),
       ).rejects.toThrow(/sandboxes_status_reason_chk/);

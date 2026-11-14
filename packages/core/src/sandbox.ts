@@ -136,8 +136,6 @@ export interface SandboxStore {
     visibility?: "private" | "org";
   }): Promise<SandboxRecord>;
   update(id: string, patch: SandboxPatch): Promise<void>;
-  /** Sandboxes created before `cutoff` (ISO) that are not deleted yet, oldest first. */
-  listBefore(cutoff: string): Promise<SandboxRecord[]>;
 }
 
 export interface SandboxRow {
@@ -255,17 +253,6 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
         params,
       );
       if (!result.rows[0]) throw new Error("The sandbox could not be updated.");
-    },
-
-    async listBefore(cutoff): Promise<SandboxRecord[]> {
-      const result = await sql.query<SandboxRow>(
-        `select ${COLUMNS} from public.sandboxes
-         where created_at < $1::timestamptz and status <> 'deleted'
-         and not exists(select 1 from public.orchestrators o where o.sandbox_id=sandboxes.id)
-         order by created_at asc`,
-        [cutoff],
-      );
-      return result.rows.map(mapSandboxRow);
     },
   };
 }
