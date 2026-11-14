@@ -2,7 +2,7 @@ import { sha256Hex } from "@armada/auth";
 import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
-import { createRuntimeAgent } from "./runtime-agent.ts";
+import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
@@ -236,13 +236,9 @@ export function createRuntimeResume(
       watermark: Number(admitted.op.watermark),
       conversationId: conversation,
     };
-    const agent = createRuntimeAgent(commands, {
-      harness: found.harness,
-      ownerId: caller.userId,
-      sandboxId: found.id,
-      providerSandboxId: found.providerSandboxId,
-      cwd: found.repositoryDir ? `/home/user/${found.repositoryDir}` : "/home/user",
-      defaults: { model: admitted.op.model, reasoningEffort: admitted.op.reasoning_effort },
+    const agent = runtimeAgentFor(commands, caller.userId, found, {
+      model: admitted.op.model,
+      reasoningEffort: admitted.op.reasoning_effort,
     });
     let placement: RuntimeResumePlacement | undefined, receipt: RuntimeResumeReceipt | undefined;
     const publishing = {
