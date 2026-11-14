@@ -1,4 +1,5 @@
 import type { Sql } from "@armada/core";
+import { measureSqlQuery } from "./request-timing.ts";
 
 /** The one method of Bun's Postgres client the server uses. */
 export interface SqlDriver {
@@ -31,7 +32,7 @@ export function sqlOver(driver: SqlDriver): Sql {
     const encoded = text.replace(/\$(\d+)::(jsonb|json)\b/g, (cast, index: string, kind: string) =>
       typeof params[Number(index) - 1] === "string" ? `$${index}::text::${kind}` : cast,
     );
-    const rows = (await driver.unsafe(encoded, sent as never[])) as unknown as T[];
+    const rows = (await measureSqlQuery(async () => driver.unsafe(encoded, sent as never[]))) as unknown as T[];
     return { rows: Array.from(rows) };
   };
   const transaction = driver.begin;
