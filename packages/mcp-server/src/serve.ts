@@ -80,6 +80,7 @@ import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { createServerRoutineScheduler } from "./server-routines.ts";
+import { installServerShutdown } from "./server-shutdown.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
 import { createSubscriptionMigration } from "./subscription-migration.ts";
@@ -731,38 +732,21 @@ export async function startServer(
   const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done, ottoWorker?.done]).then(
     () => {},
   );
-  const stop = server.stop.bind(server);
-  let shutdown: Promise<void> | undefined;
-  server.stop = (closeActiveConnections?: boolean) => {
-    if (shutdown) {
-      if (closeActiveConnections) void stop(true);
-      return shutdown;
-    }
-    draining = true;
-    workers.stop();
-    invitationWorker?.stop();
-    routineWorker.stop();
-    ottoWorker?.stop();
-    // Requests may still use the gateway and SQL while finishing a launch.
-    // Drain handlers and POST response streams; idle GET SSE needs
-    // MCP close to finish. SQL stays alive until the native HTTP drain completes.
-    const socketsStopped = runtimeSockets.stop();
-    const stopped = stop(closeActiveConnections);
-    shutdown = Promise.all([
-      allWorkersDone,
-      dockerLaunch?.close(),
-      socketsStopped,
-      (async () => {
-        while (requests.size) await Promise.allSettled([...requests]);
-      })(),
-    ])
-      .then(() => mcp.close())
-      .then(() => stopped)
-      .then(() => Promise.all([sql.close(), ottoSql?.close()]))
-      .then(() => {});
-    server.workerDone = shutdown;
-    return shutdown;
-  };
+  installServerShutdown(server, {
+    beginDrain: () => {
+      draining = true;
+      workers.stop();
+      invitationWorker?.stop();
+      routineWorker.stop();
+      ottoWorker?.stop();
+    },
+    workersDone: allWorkersDone,
+    stopSockets: () => runtimeSockets.stop(),
+    closeDocker: () => dockerLaunch?.close(),
+    requests,
+    closeMcp: () => mcp.close(),
+    closePools: () => Promise.all([sql.close(), ottoSql?.close()]),
+  });
   // Expose the tracked task for hosts that gracefully drain before process termination.
   Object.assign(server, { goldenWorker: workers.goldenWorker, lifecycleWorker: workers.lifecycleWorker });
   server.workerDone = allWorkersDone;
