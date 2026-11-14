@@ -744,3 +744,28 @@ sandbox and inspect HostConfig NanoCpus, Memory, MemorySwap and PidsLimit. Build
 a snapshot and inspect its request-scoped BuildKit container during the build,
 then confirm its removal. Verify small-machine limits fit the host. No real-host
 verification was performed by this change.
+
+### Automatic capacity admission (#1773, slice b)
+
+Apply `20261114130000_docker_host_resources.sql` through the normal authorized
+deployment path before deploying the server. Authenticated daemon polls persist
+CPU/memory observations; old daemons without observations retain unknown capacity
+and no admission limit. No new JWT access is granted.
+
+New allocations and wakes from stopped/idle-paused state check capacity while
+holding the host lock. The automatic limit is the smaller of the 2x CPU budget
+and memory budget after a 2 GiB reserve, minimum one. Pending starts reserve a
+slot to prevent concurrent launches exceeding capacity. A stop request alone
+does not release it: confirmed physical stop/delete or daemon TTL-stop proof
+does. A failed logical startup is conservatively retained until physical stop is
+proven. Full hosts return an immediate actionable conflict, not a readiness wait.
+Historical request retries retain their original allocation without another slot.
+
+Coordinator-only acceptance: on an upgraded host, launch to the computed limit,
+then verify one more launch returns HTTP 409 with the host name and running/limit.
+Stop one sandbox, confirm its physical ACK, and retry the rejected request.
+Repeat by attempting to wake an idle-paused sandbox while the host is full;
+it must remain paused, then wake after another sandbox physically stops.
+Older-daemon unknown-capacity behavior remains supported. Overrides and dashboard
+capacity display belong to slice (c), not this deployment. No real-host checks
+were performed here.

@@ -528,6 +528,18 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
     "Paused — wakes on your next message",
   );
   const resumeId = randomUUID();
+  await hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });
+  const occupied = await reservations.reserve(f.actor, {
+    hostId: f.hostId,
+    image: `worker@sha256:${"a".repeat(64)}`,
+    credentialId: f.credentialId,
+    credentialVersion: 1,
+    requestId: randomUUID(),
+  });
+  await expect(service.resume(f.actor, f.sandbox.id, resumeId)).rejects.toThrow("is full");
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
+  await hosts.complete(f.hostToken, f.installationId, { requestId: occupied.id, outcome: "completed" });
+  await hosts.expired(f.hostToken, f.installationId, { requestId: occupied.id });
   await service.resume(f.actor, f.sandbox.id, resumeId);
   const resume = await hosts.poll(f.hostToken, f.installationId);
   if (resume?.operation !== "resume") throw Error("missing resume");

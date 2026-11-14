@@ -1,6 +1,7 @@
 import { BodyTooLargeError, readBoundedText } from "@armada/auth";
 import type { CallerResult } from "./caller.ts";
 import { type createDockerBootstrapService, DockerBootstrapDenied } from "./docker-bootstrap-service.ts";
+import { DockerHostFull } from "./docker-capacity.ts";
 import { DockerHostDenied } from "./docker-host-store.ts";
 import { type createDockerRuntimeLifecycle, DockerRuntimeDenied } from "./docker-runtime-lifecycle.ts";
 import { type createDockerSandboxService, DockerSandboxDenied } from "./docker-sandbox-service.ts";
@@ -117,6 +118,8 @@ export function createDockerSandboxRoutes(
           : await services.sandboxes.delete(actor, sandboxId, requestId);
       return Response.json(result, { status: 202, headers });
     } catch (error) {
+      if (error instanceof DockerHostFull)
+        return Response.json({ error: "host_full", message: error.message }, { status: 409, headers });
       const denied =
         error instanceof DockerSandboxDenied ||
         error instanceof DockerHostDenied ||
