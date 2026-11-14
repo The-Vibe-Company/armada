@@ -84,44 +84,18 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
     async request<T>(path: string, init: RequestInit = {}): Promise<T> {
       const url = apiUrl(origin, path);
       const signal = init.signal ?? AbortSignal.timeout(timeoutMs);
-      let response: Response;
-      try {
-        response = await io.fetch(url, {
-          ...init,
-          // Bun has an independent fetch idle deadline. The explicit AbortSignal
-          // owns this request's budget, including long synchronous golden builds.
-          ...{ timeout: false },
-          headers: {
-            ...headers(init.headers),
-            authorization: `Bearer ${token}`,
-            accept: "application/json",
-          },
-          redirect: "error",
-          signal,
-        });
-      } catch (error) {
-        throw new AuthError(
-          path === "/api/v1/templates/launch"
-            ? TEMPLATE_LAUNCH_UNKNOWN
-            : signal.aborted || (error instanceof Error && error.name === "TimeoutError")
-              ? `The server did not answer in time; the operation may have been accepted.${
-                  path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
-                }`
-              : path === "/api/v1/sandbox/launch"
-                ? "Launch outcome unknown. Run armada list to check before retrying."
-                : "Armada could not reach the server.",
-          "unavailable",
-        );
-      }
-
-      if (response.status === 401 && !environmentToken && saved) {
-        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, init.signal ?? undefined);
-        token = saved.accessToken;
+      const attempt = async (): Promise<Response> => {
         try {
-          response = await io.fetch(url, {
+          return await io.fetch(url, {
             ...init,
+            // Bun has an independent fetch idle deadline. The explicit AbortSignal
+            // owns this request's budget, including long synchronous golden builds.
             ...{ timeout: false },
-            headers: { ...headers(init.headers), authorization: `Bearer ${token}`, accept: "application/json" },
+            headers: {
+              ...headers(init.headers),
+              authorization: `Bearer ${token}`,
+              accept: "application/json",
+            },
             redirect: "error",
             signal,
           });
@@ -139,6 +113,13 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
             "unavailable",
           );
         }
+      };
+      let response = await attempt();
+
+      if (response.status === 401 && !environmentToken && saved) {
+        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, init.signal ?? undefined);
+        token = saved.accessToken;
+        response = await attempt();
       }
       const payload: unknown = await response.json().catch(() => null);
       if (
