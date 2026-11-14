@@ -4,6 +4,7 @@ import { createUsagePricingContext, decryptSecret } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { sqlOver } from "../src/sql.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
@@ -39,9 +40,20 @@ async function fixture({
       [id, people.owner],
     );
   }
+  const queries: string[] = [];
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
-    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+    transaction: (work) =>
+      db.transaction((tx) =>
+        work(
+          sqlOver({
+            unsafe: async (q, v) => {
+              queries.push(q);
+              return (await tx.query(q, v)).rows;
+            },
+          }),
+        ),
+      ),
   };
   const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
   const enrol = async () =>
@@ -97,6 +109,7 @@ async function fixture({
       ?.usage_turns;
   return {
     db,
+    queries,
     sql,
     people,
     id,
@@ -191,6 +204,28 @@ test("ACK follows contiguous encrypted persistence and shared usage projection; 
   } finally {
     await f.close();
   }
+});
+
+test("a maximum event batch uses bounded SQL and detects duplicate conflicts before committing", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const batch = Array.from({ length: 1000 }, (_, i) => ({
+    sequence: i + 1,
+    event: f.other(`event-${i}`),
+  }));
+  f.queries.length = 0;
+  expect(await (await f.publish(active, batch)).json()).toEqual({ acknowledgedSequence: 1000 });
+  // Includes session authorization/locks, archive high-water/read and one bulk insert.
+  expect(f.queries.length).toBeLessThanOrEqual(8);
+  expect(await f.rows()).toHaveLength(1000);
+  f.queries.length = 0;
+  expect(await (await f.publish(active, batch)).json()).toEqual({ acknowledgedSequence: 1000 });
+  expect(f.queries.length).toBeLessThanOrEqual(8);
+  const next = { sequence: 1001, event: f.other("next") };
+  expect(await (await f.publish(active, [next, next])).json()).toEqual({ acknowledgedSequence: 1001 });
+  const conflict = { sequence: 1002, event: f.other("new") };
+  expect((await f.publish(active, [conflict, { ...conflict, event: f.other("conflict") }])).status).toBe(409);
+  expect(await f.rows()).toHaveLength(1001);
 });
 
 test("a resumed epoch continues the persistent producer sequence and rejects the revoked runtime", async () => {
