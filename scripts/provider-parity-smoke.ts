@@ -432,8 +432,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       record("mcp", c.provider, "not-run", "native_boat_mcp_evidence_probe_not_implemented");
       continue;
     }
-    if (feature === "mcp" && c.harness === "opencode") {
-      record("mcp", c.provider, "not-run", "opencode_mcp_inventory_probe_not_implemented");
+    if (feature === "mcp" && c.harness === "opencode" && c.provider !== "modal") {
+      record("mcp", c.provider, "not-run", "opencode_mcp_probe_modal_only");
       continue;
     }
     if ((!feature || feature === "application-secrets") && (!c.applicationSecret || !c.template)) {
@@ -1105,11 +1105,18 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       return receipt;
     }
     try {
-      const options = await discoveryApi<{ providers: LaunchProviderOption[] }>("launch/options");
+      const options = await discoveryApi<{
+        providers: LaunchProviderOption[];
+        modalRuntime?: { opencodeMcpProofVersion?: number };
+      }>("launch/options");
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
       if (feature === "mcp") {
+        if (c.harness === "opencode" && options.modalRuntime?.opencodeMcpProofVersion !== 1) {
+          record("mcp", c.provider, "not-run", "opencode_mcp_native_proof_not_advertised");
+          continue;
+        }
         if (option.capabilities.mcp !== true || option.capabilities.followupPrompts === false) {
           record(
             "mcp",
@@ -1121,8 +1128,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           );
           continue;
         }
-        if (!c.template || !c.mcp) throw new McpProbeError("invalid_mcp_binding");
-        mcp = await prepareMcpProbe(c.template, c.mcp, { request: readableApi, poll, until: readableUntil });
+        if (!c.template || !c.mcp || !isHarness(c.harness)) throw new McpProbeError("invalid_mcp_binding");
+        mcp = await prepareMcpProbe(c.template, c.mcp, { request: readableApi, poll, until: readableUntil }, c.harness);
       }
       if (feature === "application-secrets") {
         if (option.capabilities.secrets !== true) {
@@ -1546,9 +1553,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           if (!id) throw new Error("launch_not_available");
           if (step === "send") {
             if (feature === "mcp") {
-              if (!mcp || (c.harness !== "codex" && c.harness !== "claude"))
-                throw new McpProbeError("invalid_mcp_binding");
-              await mcp.verify(id, c.provider, c.harness);
+              if (!mcp) throw new McpProbeError("invalid_mcp_binding");
+              await mcp.verify(id, c.provider);
               record("mcp", c.provider, "pass");
               record("prerequisite:templates", c.provider, "pass");
             } else if (feature === "application-secrets") {

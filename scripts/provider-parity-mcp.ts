@@ -21,7 +21,9 @@ export function isMcpProbeBinding(value: unknown): value is McpProbeBinding {
   );
 }
 export class McpProbeError extends Error {
-  constructor(readonly code: "invalid_mcp_binding" | "invalid_mcp_receipt" | "mcp_turn_failed") {
+  constructor(
+    readonly code: "invalid_mcp_binding" | "invalid_mcp_receipt" | "mcp_turn_failed" | "invalid_mcp_inventory",
+  ) {
     super(code);
   }
 }
@@ -46,6 +48,7 @@ export async function prepareMcpProbe(
   template: { id: string; revision: number },
   binding: McpProbeBinding,
   io: EnvironmentDigestIo,
+  harness: "codex" | "claude" | "opencode",
 ) {
   if (!isMcpProbeBinding(binding)) fail("invalid_mcp_binding");
   const connectionId = binding.connectionId.toLowerCase();
@@ -64,6 +67,46 @@ export async function prepareMcpProbe(
     ).length === 1;
   if (!connected(await io.request("mcp/list", {}))) fail("invalid_mcp_binding");
   const server = `armada_${connectionId.replaceAll("-", "_")}`;
+  const nativeName = `${server}_${binding.tool.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  let inventory: string | undefined;
+  async function checkInventory() {
+    const result = await io.request<{
+      mcpReady?: boolean;
+      connections?: unknown;
+      mcpToolInventory?: Array<{ connectionId?: string; tools?: unknown }>;
+    }>("sandbox/mcp-preflight-v1", { runtimeVersion: 1, connections: [connectionId], toolInventory: true });
+    const entry = result?.mcpToolInventory?.[0];
+    if (
+      result?.mcpReady !== true ||
+      !matches(result.connections) ||
+      !Array.isArray(result.mcpToolInventory) ||
+      result.mcpToolInventory.length !== 1 ||
+      typeof entry?.connectionId !== "string" ||
+      entry.connectionId.toLowerCase() !== connectionId ||
+      !Array.isArray(entry.tools) ||
+      entry.tools.length > 10000 ||
+      entry.tools.some((name) => typeof name !== "string" || !name || name.length > 512)
+    )
+      fail("invalid_mcp_inventory");
+    const tools = entry.tools as string[];
+    const matching = tools.filter((name) => `${server}_${name.replace(/[^a-zA-Z0-9_-]/g, "_")}` === nativeName);
+    if (new Set(tools).size !== tools.length || matching.length !== 1 || matching[0] !== binding.tool)
+      fail("invalid_mcp_inventory");
+    const current = JSON.stringify([...tools].sort());
+    if (inventory !== undefined && current !== inventory) fail("invalid_mcp_inventory");
+    inventory = current;
+  }
+  const boundedInventory = () =>
+    io.poll(
+      async () => {
+        await checkInventory();
+        return true;
+      },
+      (value) => value,
+      1,
+      io.until,
+    );
+  if (harness === "opencode") await boundedInventory();
   return {
     verifyManifest(manifest: {
       definition?: { connections?: unknown };
@@ -82,7 +125,7 @@ export async function prepareMcpProbe(
       )
         fail("invalid_mcp_binding");
     },
-    async verify(id: string, provider: "boat" | "modal" | "docker", harness: "codex" | "claude") {
+    async verify(id: string, provider: "boat" | "modal" | "docker") {
       if (!connected(await io.request("mcp/sandbox-connections", { id }))) fail("invalid_mcp_binding");
       const answer = `PARITY_MCP_DONE_${crypto.randomUUID()}`;
       const turn = await io.request<{ promptId?: string }>("sandbox/send", {
@@ -95,6 +138,7 @@ export async function prepareMcpProbe(
         lastParent: string | undefined,
         finished = false;
       const messages = new Map<string, Extract<AgentEvent, { kind: "message" }>>();
+      const nativeProofs = new Map<string, unknown>();
       await io.poll(
         () =>
           io.request<{ cursor?: string; hasMore?: boolean; events?: AgentEvent[] }>("logs/read", {
@@ -112,6 +156,10 @@ export async function prepareMcpProbe(
             if (event.kind === "prompt") {
               if (["failed", "interrupted"].includes(event.status)) fail("mcp_turn_failed");
               finished ||= event.status === "finished";
+            }
+            if (harness === "opencode" && event.kind === "other" && event.type === "armada/opencodeMcp") {
+              if (typeof event.id !== "string" || nativeProofs.size > 2000) fail("invalid_mcp_receipt");
+              nativeProofs.set(event.id, event.data);
             }
             if (event.kind !== "message") continue;
             if (typeof event.id !== "string" || !Array.isArray(event.tools) || typeof event.text !== "string")
@@ -132,20 +180,45 @@ export async function prepareMcpProbe(
               } else calls.set(tool.id, tool);
             }
           }
-          const found = [...calls.values()].some((tool) => {
-            const result = harness === "claude" ? results.get(tool.id) : tool.result;
-            return (
-              (harness === "claude"
-                ? tool.name === `mcp__${server}__${binding.tool}`
-                : tool.server === server && tool.name === binding.tool) &&
-              tool.input !== null &&
-              typeof tool.input === "object" &&
-              !Array.isArray(tool.input) &&
-              Object.keys(tool.input).length === 0 &&
-              result?.isError === false &&
-              text(result.output) === binding.expectedText
-            );
-          });
+          const object = (value: unknown): Record<string, unknown> =>
+            value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+          const empty = (value: unknown) =>
+            !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0;
+          const found =
+            harness === "opencode"
+              ? [...nativeProofs.values()].some((raw) => {
+                  const proof = object(raw),
+                    result = object(proof.result);
+                  return (
+                    proof.version === 1 &&
+                    typeof proof.nativeMessageId === "string" &&
+                    !!proof.nativeMessageId &&
+                    typeof proof.callId === "string" &&
+                    !!proof.callId &&
+                    typeof proof.configurationRevision === "string" &&
+                    !!proof.configurationRevision &&
+                    proof.server === server &&
+                    proof.nativeToolName === nativeName &&
+                    empty(proof.input) &&
+                    result.isError === false &&
+                    typeof result.output === "string" &&
+                    text(result.output) === binding.expectedText
+                  );
+                })
+              : [...calls.values()].some((tool) => {
+                  const result = harness === "claude" ? results.get(tool.id) : tool.result;
+                  return (
+                    (harness === "claude"
+                      ? tool.name === `mcp__${server}__${binding.tool}`
+                      : tool.server === server && tool.name === binding.tool) &&
+                    tool.input !== null &&
+                    typeof tool.input === "object" &&
+                    !Array.isArray(tool.input) &&
+                    Object.keys(tool.input).length === 0 &&
+                    result?.isError === false &&
+                    text(result.output) === binding.expectedText
+                  );
+                });
           const final = lastParent ? messages.get(lastParent) : undefined;
           return (
             page.hasMore !== true &&
@@ -159,6 +232,7 @@ export async function prepareMcpProbe(
         110,
         io.until,
       );
+      if (harness === "opencode") await boundedInventory();
     },
   };
 }
