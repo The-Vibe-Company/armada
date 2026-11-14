@@ -372,6 +372,7 @@ for (const mode of [
             continue;
           }
           expect(summary).toContain(`| ${account} | ${provider} | launch | pass |`);
+          expect(summary).toContain(`| ${account} | ${provider} | mcp | not-run: probe_not_implemented |`);
           expect(summary).toContain(`| ${account} | ${provider} | resume-recall | pass |`);
           expect(summary).toContain(`| ${account} | ${provider} | usage-after-resume | pass |`);
           const cost = badCost

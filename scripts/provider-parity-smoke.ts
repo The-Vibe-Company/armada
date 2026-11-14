@@ -999,17 +999,6 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
   const accounts: Record<string, Partial<Record<Provider, unknown>>> = {};
   let passed = true;
   const table = ["## Accounts parity", "", "| Account | Provider | Result |", "| --- | --- | --- |"];
-  const detailFeatures = [
-    ...Object.keys(steps),
-    "resume-recall",
-    "usage-before-resume",
-    "usage-after-resume",
-    "usage",
-    "exact-cost-before-resume",
-    "exact-cost-after-resume",
-    "exact-cost",
-    "cleanup",
-  ];
   const details = [
     "",
     "## Account feature and cost details",
@@ -1061,8 +1050,8 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
         result = { status: outcome, features: receipt };
         status = `${outcome} (see per-feature diagnostics and cost classification)`;
         if (receipt) {
-          for (const feature of detailFeatures) {
-            const cell = receipt[feature]?.[provider];
+          for (const [feature, providers] of Object.entries(receipt)) {
+            const cell = providers[provider];
             detail(
               account,
               provider,

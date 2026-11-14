@@ -1160,8 +1160,8 @@ mode is unchanged.
 
 The accounts run prints two Markdown tables (also appended together to
 `GITHUB_STEP_SUMMARY`): an account/provider overview, then **Account feature and
-cost details**. The second table shows each lifecycle feature and before/after
-resume usage and cost check independently. The historical `exact-cost` feature
+cost details**. The second table shows every reported feature, including explicit
+not-implemented debt and before/after resume usage and cost checks independently. The historical `exact-cost` feature
 name means quote validation: its reason explicitly retains `exact`, `estimated`
 with the reported USD amount, or `unknown` and its reason. A failed cost check
 never becomes a displayed verified price. Unconfigured/undeclared cells have an
