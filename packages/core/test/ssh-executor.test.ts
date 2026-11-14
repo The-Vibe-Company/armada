@@ -144,36 +144,42 @@ test("shellQuote round-trips a value containing single quotes through a real she
   expect(result.stdout).toBe(value);
 });
 
-test("real SSH remote shell reports only allowlisted phase and exit code, never tool stderr", async () => {
-  const { spawn } = await import("node:child_process");
-  const { goldenScript, withGoldenDirs } = await import("../src/server.ts");
-  // Exercise the production stdin protocol and real bash, without network or installing a golden.
-  const remoteSpawn: typeof spawn = ((file: string, args: string[], options: any) => {
-    if (file !== "ssh") return spawn(file, args, options);
-    const destination = args.indexOf("user@ssh.test");
-    return spawn("bash", ["-c", args.slice(destination + 1).join(" ")], options);
-  }) as typeof spawn;
-  const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2 }]);
-  const script = goldenScript(prepared);
-  // Fail before clone: unstructured stderr must not escape even for non-GitHub-shaped secrets.
-  const failing = script.replace(
-    "export GIT_CONFIG_NOSYSTEM=1",
-    "printf 'opaque-private-value\\n' >&2; false\nexport GIT_CONFIG_NOSYSTEM=1",
-  );
-  let failure: unknown;
-  try {
-    await sshStdinCheckout(
-      provider,
-      { sandboxId: "bx", token: "opaque-private-value", script: failing },
-      { spawn: remoteSpawn },
+test.each(["checkout", "explicit-init-exit"])(
+  "real SSH remote shell reports only allowlisted phase and exit code (%s)",
+  async (mode) => {
+    const { spawn } = await import("node:child_process");
+    const { goldenScript, withGoldenDirs } = await import("../src/server.ts");
+    // Exercise the production stdin protocol and real bash, without network or installing a golden.
+    const remoteSpawn: typeof spawn = ((file: string, args: string[], options: any) => {
+      if (file !== "ssh") return spawn(file, args, options);
+      const destination = args.indexOf("user@ssh.test");
+      return spawn("bash", ["-c", args.slice(destination + 1).join(" ")], options);
+    }) as typeof spawn;
+    const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2 }]);
+    const script = goldenScript(prepared);
+    // Fail before clone: unstructured stderr must not escape even for non-GitHub-shaped secrets.
+    const failing = script.replace(
+      "export GIT_CONFIG_NOSYSTEM=1",
+      mode === "checkout"
+        ? "printf 'opaque-private-value\\n' >&2; false\nexport GIT_CONFIG_NOSYSTEM=1"
+        : "armada_phase=init; armada_command=2; printf 'opaque-private-value\\n' >&2; exit 17",
     );
-  } catch (error) {
-    failure = error;
-  }
-  expect(failure).toMatchObject({ code: "build_failed" });
-  expect(String(failure)).toContain("checkout (exit_1)");
-  expect(String(failure)).not.toContain("opaque-private-value");
-});
+    let failure: unknown;
+    try {
+      await sshStdinCheckout(
+        provider,
+        { sandboxId: "bx", token: "opaque-private-value", script: failing },
+        { spawn: remoteSpawn },
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: "build_failed" });
+    if (mode === "checkout") expect(String(failure)).toContain("checkout (exit_1)");
+    else expect(failure).toMatchObject({ safeMessage: "Init command 2 exited 17. Correct the command, then rebuild." });
+    expect(String(failure)).not.toContain("opaque-private-value");
+  },
+);
 
 test.each(["admin", "root; touch /tmp/forged", "", null])(
   "refuses invalid SSH username metadata %s before SSH",
@@ -322,7 +328,7 @@ test.each(["boat", "modal"] as const)(
 );
 
 // Fixed protocol records are the only guest metadata admitted to build results.
-test.each(["warning", "integrity"])("SSH checkout carries closed build outcome %s", async (mode) => {
+test.each(["warning", "integrity", "init", "clone"])("SSH checkout carries closed build outcome %s", async (mode) => {
   const warnings: string[] = [];
   const spawn: any = (file: string) => {
     const c: any = new EventEmitter();
@@ -336,10 +342,14 @@ test.each(["warning", "integrity"])("SSH checkout carries closed build outcome %
               "data",
               mode === "warning"
                 ? "ING skillpack download_unavailable\nARMADA_BUILD_WARNING skillpack secret-not-allowed\n"
-                : "ING skillpack unknown\nARMADA_BUILD_FAILURE skillpack 98\n",
+                : mode === "init"
+                  ? "ING skillpack unknown\nARMADA_BUILD_FAILURE init 17 2\n"
+                  : mode === "clone"
+                    ? "ING skillpack unknown\nARMADA_BUILD_FAILURE checkout 128 0\n"
+                    : "ING skillpack unknown\nARMADA_BUILD_FAILURE skillpack 98\n",
             );
           }
-          c.emit("close", file === "ssh" && mode === "integrity" ? 98 : 0);
+          c.emit("close", file === "ssh" && mode !== "warning" ? 98 : 0);
         }),
     };
     return c;
@@ -357,6 +367,14 @@ test.each(["warning", "integrity"])("SSH checkout carries closed build outcome %
   );
   if (mode === "integrity")
     await expect(run).rejects.toMatchObject({ code: "build_failed", safeReason: "skillpack_integrity_failed" });
+  else if (mode === "init" || mode === "clone")
+    await expect(run).rejects.toMatchObject({
+      safePhase: mode === "init" ? "init" : "checkout",
+      safeMessage:
+        mode === "init"
+          ? "Init command 2 exited 17. Correct the command, then rebuild."
+          : "Clone failed (exit 128). Check the requested branches and GitHub access, then rebuild.",
+    });
   else {
     await run;
     expect(warnings).toEqual(["skillpack_download_unavailable"]);

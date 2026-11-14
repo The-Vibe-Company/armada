@@ -35,12 +35,17 @@ export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<G
       for (const value of requested) {
         const { owner, repo } = requestedRepo(value);
         const repository = await userRepository(token, owner, repo, fetchImpl);
-        const installation = installationFor(repository, installations);
+        let installation = installationFor(repository, installations);
         if (!installation && repository.private) {
-          throw new GoldenError(
-            "forbidden",
-            `You cannot create a golden from '${owner}/${repo}' with this GitHub App installation.`,
-          );
+          throw repositoryAccessError(owner, repo);
+        }
+        if (
+          options.app &&
+          installation?.repositorySelection === "selected" &&
+          !(await installationCanRead(token, installation.id, repository.id, fetchImpl))
+        ) {
+          if (repository.private) throw repositoryAccessError(owner, repo);
+          installation = undefined; // Public checkout can safely use the caller token.
         }
         repos.push({
           owner: repository.owner.login,
@@ -82,6 +87,43 @@ function requestedRepo(value: string): { owner: string; repo: string } {
   return { owner: match[1], repo: match[2] };
 }
 
+function repositoryAccessError(owner: string, repo: string): GoldenError {
+  const message = `GitHub cannot read ${owner}/${repo} with your connection — grant the Armada GitHub App access to it and ensure your account can read it, then rebuild.`;
+  return new GoldenError("forbidden", message, { safeMessage: message });
+}
+
+async function installationCanRead(
+  token: string,
+  installationId: number,
+  repositoryId: number,
+  fetchImpl: typeof fetch,
+): Promise<boolean> {
+  for (let page = 1; page <= 100; page++) {
+    const response = await fetchImpl(
+      `${API}/user/installations/${installationId}/repositories?per_page=100&page=${page}`,
+      {
+        headers: headers(token),
+        signal: AbortSignal.timeout(TIMEOUT),
+      },
+    );
+    if (!response.ok)
+      throw new GitHubAuthError(
+        "unavailable",
+        "GitHub App repository access could not be checked. Retry when GitHub is available.",
+      );
+    const body: unknown = await response.json();
+    const rows = body && typeof body === "object" && "repositories" in body ? body.repositories : null;
+    if (!Array.isArray(rows))
+      throw new GitHubAuthError("unavailable", "GitHub App repository access could not be checked.");
+    if (rows.some((row) => row && typeof row === "object" && row.id === repositoryId)) return true;
+    if (rows.length < 100) return false;
+  }
+  throw new GitHubAuthError(
+    "unavailable",
+    "GitHub App repository listing exceeded its limit. Ask an administrator to check access.",
+  );
+}
+
 async function userRepository(
   token: string,
   owner: string,
@@ -99,7 +141,7 @@ async function userRepository(
   }
   const body: unknown = await response.json().catch(() => null);
   if (response.status === 401 || response.status === 403 || response.status === 404)
-    throw new GoldenError("forbidden", `You cannot access repository '${owner}/${repo}'.`);
+    throw repositoryAccessError(owner, repo);
   if (!response.ok || !isRepository(body))
     throw new GitHubAuthError("unavailable", `GitHub did not return repository '${owner}/${repo}'.`);
   return body;

@@ -2,9 +2,9 @@
 
 Secure create/rebuild reports a known backend-capacity, existing-build or global
 binding conflict as HTTP 409 with error code `conflict`. MCP returns an error
-result with `error code: conflict`. The generic message advises using an existing
-accessible golden, waiting for an active build, or asking an administrator to
-check the binding. It never identifies another account, golden, owner or ACL.
+result with `error code: conflict`. Capacity messages advise rebuilding an existing golden or asking an administrator
+to increase capacity. Busy and missing-binding messages identify their distinct
+recovery action instead of conflating these causes. It never identifies another account, golden, owner or ACL.
 
 Translation is restricted to SQL issued by the backend-slot reservation/finalize
 wrapper:
@@ -40,3 +40,14 @@ ARMADA_TEST_POSTGRES_URL='<disposable-test-database-url>' bun test packages/core
 This changes only the error boundary: no schema, capacity policy, binding, leases,
 crash recovery, frontend or release behavior. No production probes or mutations
 are required to validate it.
+
+
+Repository access is checked before admission without allocating a builder or
+reserving a slot. A caller without GitHub access receives an immediate 403 rather
+than a delayed build failure. Capacity refusals for authorized requests still
+return 409 `conflict` over HTTP and MCP, including Bun's errno SQLSTATE form.
+
+Admitted builds recheck authorization at execution. Curated failure diagnostics
+are persisted with the job phase, surfaced in the status DTO, and rendered by
+the CLI and dashboard. Arbitrary provider messages, stderr, commands, matched
+secret values and paths are never persisted as public diagnostics.

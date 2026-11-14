@@ -380,6 +380,7 @@ test("queued rebuild rechecks current target visibility before credentials or bu
     });
     expect(response.status).toBe(202);
     const job = (await response.json()) as GoldenBuildStatus;
+    const refreshedAtAdmission = [...s.github.refreshed];
     // Another authorized action shares the target, then the requester loses their admin role.
     await s.db.query("update members set role='admin' where org_id=$1 and user_id=$2", [s.people.org, s.people.owner]);
     await s.db.transaction(async (tx) => {
@@ -394,7 +395,7 @@ test("queued rebuild rechecks current target visibility before credentials or bu
       errorCode: "build_failed",
     });
     expect(s.allocations()).toBe(0);
-    expect(s.github.refreshed).toEqual([]);
+    expect(s.github.refreshed).toEqual(refreshedAtAdmission);
     expect(s.boat.execs).toEqual([]);
     expect((await s.db.query("select provider_snapshot_id from goldens where id=$1", [target.id])).rows).toEqual([
       { provider_snapshot_id: target.provider_snapshot_id },

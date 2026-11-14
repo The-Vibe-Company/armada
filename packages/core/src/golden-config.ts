@@ -46,15 +46,20 @@ export class GoldenError extends Error {
   override readonly name = "GoldenError";
   readonly code: GoldenErrorCode;
   readonly safeReason: "skillpack_integrity_failed" | undefined;
+  /** Curated public diagnostic only. Never supply upstream messages, output or command text. */
+  readonly safeMessage: string | undefined;
+  readonly safePhase: string | undefined;
 
   constructor(
     code: GoldenErrorCode,
     message: string,
-    options?: { cause?: unknown; safeReason?: "skillpack_integrity_failed" },
+    options?: { cause?: unknown; safeReason?: "skillpack_integrity_failed"; safeMessage?: string; safePhase?: string },
   ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;
     this.safeReason = options?.safeReason;
+    this.safeMessage = options?.safeMessage;
+    this.safePhase = options?.safePhase;
   }
 }
 

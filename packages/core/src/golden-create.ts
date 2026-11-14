@@ -1,3 +1,4 @@
+import type { Visibility } from "./contract.ts";
 import type { GitHubInstallationApp, GitHubResolveDeps } from "./github.ts";
 import { resolveGitHubAccess } from "./github.ts";
 import type { GoldenActor, GoldenRecord } from "./golden.ts";
@@ -69,16 +70,33 @@ export interface GoldenCreateOptions {
  * App is configured; the pinned SSH stdin transport clones over it; a fail-closed secret scan runs
  * before the snapshot; and only a ready snapshot is persisted, with org/private row level security.
  */
-export function createGoldenCreateService(options: GoldenCreateOptions): GoldenCreateService {
-  const adapter = goldenGitHubAdapter({
+function githubAdapter(options: GoldenCreateOptions) {
+  return goldenGitHubAdapter({
     app: options.installationApp,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     async accessToken(actor: GoldenActor) {
       const access = await resolveGitHubAccess({ ...options.github, caller: "golden_create" }, actor.userId);
-      if (access.status !== "connected") throw new GoldenError("forbidden", access.message);
+      if (access.status !== "connected") {
+        const message = "Your GitHub connection is unavailable. Connect GitHub in Settings, then rebuild.";
+        throw new GoldenError("forbidden", message, { safeMessage: message });
+      }
       return access.token;
     },
   });
+}
+
+/** Read-only authorization: no builder, reservation, or credential material is persisted. */
+export async function authorizeGoldenRepositories(
+  options: GoldenCreateOptions,
+  actor: GoldenActor,
+  visibility: Visibility,
+  requested: string[],
+): Promise<void> {
+  await githubAdapter(options).authorize(actor, visibility, requested);
+}
+
+export function createGoldenCreateService(options: GoldenCreateOptions): GoldenCreateService {
+  const adapter = githubAdapter(options);
   const slots: GoldenBackendSlot = options.backendSlot ?? sqlGoldenBackendSlots(options.sql);
   // Identity proof of a callback failure whose managed transaction has completed rollback.
   // A commit/transport error after a successful callback is deliberately never marked here.
@@ -490,7 +508,7 @@ export async function reserveGoldenBuild(
 }
 
 const BACKEND_CONFLICT_MESSAGE =
-  "Golden capacity or binding is unavailable or busy. Use an existing golden you can access, retry after any active build finishes, or ask an administrator to check the binding.";
+  "The backend did not confirm the golden reservation. Ask an administrator to check reservation recovery before retrying.";
 
 /** Match only errors owned by the slot protocol. Bun puts SQLSTATE in errno; pg/PGlite use code.
  * Do not classify arbitrary P0001 raises, unique violations, provider errors, or SQL outages. */
@@ -516,7 +534,15 @@ async function backendSlotQuery<T>(sql: Sql, query: string, params: unknown[]): 
         e.schema === "public" &&
         e.table === "golden_backend_slots" &&
         (e.constraint === "golden_backend_one_binding" || e.constraint === "boat_backend_one_slot");
-      if (knownRaise || knownConstraint) throw new GoldenError("conflict", BACKEND_CONFLICT_MESSAGE);
+      if (knownRaise || knownConstraint)
+        throw new GoldenError(
+          "conflict",
+          knownConstraint && e.constraint === "golden_backend_one_binding"
+            ? "This golden is already bound to another backend. Ask an administrator to restore its original provider connection."
+            : e.message === "golden backend build already in progress"
+              ? "Another build of this golden is still running or awaiting recovery. Check its build status before retrying."
+              : "This backend has reached its golden capacity. Update an existing golden instead of creating another, or ask an administrator to increase capacity.",
+        );
     }
     throw error;
   }
@@ -567,10 +593,24 @@ export async function assertGoldenBackendBinding(
   if (PROVIDER_LIMITS[golden.provider].defaultGoldenCapacity === undefined && provider.maxGoldens === undefined) return;
   const identity = backendId ?? (await provider.backendIdentity?.())?.id;
   if (!identity) throw new GoldenError("conflict", "Golden backend binding cannot be verified.");
-  const result = await sql.query<{ busy: boolean }>(
-    `select build_id is not null as busy from public.golden_backend_slots
-     where provider = $1 and backend_id = $2 and golden_id = $3::uuid`,
+  const result = await sql.query<{ busy: boolean; job_id?: string; started_at?: string }>(
+    `select s.build_id is not null as busy, j.id as job_id, j.created_at::text as started_at
+     from public.golden_backend_slots s
+     left join public.golden_build_jobs j on j.reservation_id = s.build_id
+     where s.provider = $1 and s.backend_id = $2 and s.golden_id = $3::uuid`,
     [golden.provider, identity, golden.id],
   );
-  if (result.rows.length !== 1 || result.rows[0]?.busy) throw new GoldenError("conflict", BACKEND_CONFLICT_MESSAGE);
+  if (result.rows.length !== 1)
+    throw new GoldenError(
+      "conflict",
+      "This golden is not bound to the connected provider account. Ask an administrator to restore its original provider connection; retrying a build will not repair the binding.",
+    );
+  const slot = result.rows[0];
+  if (slot?.busy)
+    throw new GoldenError(
+      "conflict",
+      slot.job_id
+        ? `Another build of this golden is still running or awaiting recovery (started ${slot.started_at}). Check armada golden build-status ${slot.job_id}; wait for completion or ask an administrator to investigate recovery.`
+        : "This golden has a build reservation with no durable job. Ask an administrator to reconcile the reservation before retrying; no new build was started.",
+    );
 }

@@ -172,15 +172,15 @@ for (const outcome of ["succeeded", "failed", "billing", "recovery", "disconnect
     for (const r of requests) expect(r.init).toMatchObject({ timeout: false, signal: expect.any(AbortSignal) });
     expect(output).toContain(jobId);
     expect(code).toBe(outcome === "succeeded" ? 0 : 1);
-    if (outcome === "failed") expect(error).toContain("build_failed");
+    if (outcome === "failed") expect(error).toContain("Build failed at secret_scan");
     if (outcome === "disconnected") expect(error).toContain("do not resubmit");
     if (outcome === "billing")
       expect(error.split("\n").find((line) => line.startsWith("armada: Build"))).toBe(
-        `armada: Build ${jobId}: failed (The Boat account cannot create machines: add billing or credits on Boat, then retry.).`,
+        `armada: Build ${jobId}: failed (Build failed at complete: The Boat account cannot create machines: add billing or credits on Boat, then retry.).`,
       );
     if (outcome === "recovery") {
       expect(error.split("\n").find((line) => line.startsWith("armada: Build"))).toBe(
-        `armada: Build ${jobId}: recovery_required (Recovery required; capacity is still held. Contact an operator or administrator to reconcile the original build before retrying.).`,
+        `armada: Build ${jobId}: recovery_required (Build failed at complete: The Boat account cannot create machines: add billing or credits on Boat. Recovery required; capacity is still held. Contact an operator or administrator to reconcile the original build before retrying.).`,
       );
       expect(error).not.toContain("then retry.");
     }

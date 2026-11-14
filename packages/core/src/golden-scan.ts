@@ -180,17 +180,27 @@ export async function scanGoldenSandbox(
     cwd: "/home/user",
     timeoutSeconds: TIMEOUT_SECONDS,
   });
-  if (result.detached) throw new GoldenError("setup_failed", "The secret scan started in the background.");
-  if (result.timedOut) throw new GoldenError("setup_failed", "The secret scan timed out.");
+  if (result.detached)
+    throw new GoldenError("setup_failed", "The secret scan started in the background.", {
+      safeMessage: "The secret scan started in the background.",
+    });
+  if (result.timedOut)
+    throw new GoldenError("setup_failed", "The secret scan timed out.", { safeMessage: "The secret scan timed out." });
   if (result.exitCode === 97) {
     reportScanMatches(result.stdout, context?.buildId);
     throw new GoldenError(
       "setup_failed",
       "The golden builder still has token-shaped material on disk; the golden was not saved.",
+      {
+        safeMessage:
+          "Secret scan found token-shaped material on disk. Remove credentials from repositories and setup before rebuilding; the golden was not saved.",
+      },
     );
   }
   if (result.exitCode !== 0) {
-    throw new GoldenError("setup_failed", "The secret scan could not run to completion; the golden was not saved.");
+    throw new GoldenError("setup_failed", "The secret scan could not run to completion; the golden was not saved.", {
+      safeMessage: "The secret scan could not run to completion; the golden was not saved.",
+    });
   }
 }
 

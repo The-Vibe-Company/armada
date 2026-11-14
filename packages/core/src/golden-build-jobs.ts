@@ -6,6 +6,7 @@ import type { GoldenBuildStatus } from "./golden-build-status.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GoldenError, parseGoldenName } from "./golden-config.ts";
 import {
+  authorizeGoldenRepositories,
   createGoldenCreateService,
   type GoldenCreateOptions,
   reserveGoldenBuild,
@@ -47,7 +48,7 @@ interface Job {
   golden_id: string | null;
   snapshot: string | null;
   build_warnings: GoldenBuildWarning[];
-  failure_reason: "skillpack_integrity_failed" | "provider_payment_required" | "provider_snapshot_rejected" | null;
+  failure_reason: string | null;
 }
 export interface GoldenBuildJobsOptions {
   sql: Sql;
@@ -151,6 +152,34 @@ export class GoldenBuildJobs {
         }),
       )
       .digest("hex");
+    // Recover an existing admission before asking GitHub again. Authorization can rotate
+    // OAuth credentials, so it must run outside the reservation transaction: rollback
+    // must never restore a refresh token already consumed upstream.
+    const priorAdmission = await this.transaction(async (sql) => {
+      await this.actor(sql, {
+        owner_id: actor.userId,
+        org_id: actor.orgId,
+        visibility: input.visibility,
+        ...(input.existingGolden ? { golden_id: input.existingGolden.id } : {}),
+      });
+      return (
+        await sql.query<Job>(
+          "select * from public.golden_build_jobs where owner_id=$1 and org_id=$2 and idempotency_key=$3",
+          [actor.userId, actor.orgId, idempotencyKey],
+        )
+      ).rows[0];
+    });
+    if (priorAdmission) {
+      if (priorAdmission.request_hash !== hash || priorAdmission.provider !== providerId)
+        throw new GoldenError("conflict", "Idempotency key was used for a different build.");
+      return this.dto(priorAdmission, input.name);
+    }
+    await authorizeGoldenRepositories(
+      { ...this.options.service, sql: this.options.sql },
+      actor,
+      input.visibility,
+      input.config ? input.config.repos.map(({ owner, repo }) => `${owner}/${repo}`) : input.repos,
+    );
     const encrypted = await encryptSecret(payload, this.options.encryptionKey);
     const job = await this.transaction(async (sql) => {
       const currentActor = await this.actor(sql, {
@@ -515,12 +544,12 @@ export class GoldenBuildJobs {
         if (current?.state !== "running" || current.fence !== job.fence) return;
         if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(
-          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,lease_until=null,updated_at=now() where id=$1",
+          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,lease_until=null,updated_at=now() where id=$1",
           [
             job.id,
             safeToRelease ? "failed" : "recovery_required",
             error instanceof GoldenError
-              ? (error.safeReason ?? null)
+              ? (error.safeReason ?? (error.safeMessage ? `detail:${error.safeMessage.slice(0, 1017)}` : null))
               : safeToRelease && error instanceof ProviderError && error.code === "payment_required"
                 ? "provider_payment_required"
                 : safeToRelease &&
@@ -530,6 +559,7 @@ export class GoldenBuildJobs {
                     current.phase === "snapshot"
                   ? "provider_snapshot_rejected"
                   : null,
+            error instanceof GoldenError ? (error.safePhase ?? current.phase) : current.phase,
           ],
         );
       });
