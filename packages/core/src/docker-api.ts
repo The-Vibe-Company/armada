@@ -102,6 +102,7 @@ export interface LaunchOptionsResponse {
   ttl: { defaultSeconds: number; maxSeconds: Partial<Record<SandboxPlacementProviderId, number>> };
   providers: LaunchProviderOption[];
   modalRuntime?: {
+    defaultPath?: "native" | "runtime";
     version: number;
     enabled: boolean;
     followupVersion?: number;

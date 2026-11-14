@@ -326,6 +326,7 @@ async function dispatch(
       ...launchOptions,
       providers: launchProviderOptions(options.docker),
       modalRuntime: {
+        defaultPath: options.launch?.modalRuntimeDefault ? "runtime" : "native",
         version: 1,
         enabled: Boolean(options.modalRuntimeLaunch),
         followupVersion: options.runtimeSend ? 1 : 0,

@@ -1040,6 +1040,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         output: {
           id: z.string(),
           provider: providerOutput,
+          runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
+          runtimeTransport: z.literal("dialout").optional(),
           providerSandboxId: z.string(),
           boatId: compat("providerSandboxId"),
           golden: z.string(),
