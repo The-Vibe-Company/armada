@@ -47,6 +47,8 @@ export interface ModalProviderOptions extends ModalConnection {
   /** Server-owned history projection only. No live App/runner calls in get/events/getPrompt.
    * Never use this provider for admission or lifecycle decisions. */
   storedReads?: boolean;
+  /** Scheduler for lifecycle admission backoff; defaults to the Bun timer. */
+  admissionSleep?(milliseconds: number): Promise<void>;
   scope: Scope;
   /** Trusted immutable source credential selection; never a requested access visibility. */
   managementAuthority?: ModalManagementProvenance;
@@ -522,12 +524,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>,
   ): Promise<T> {
     for (let attempt = 0; ; attempt++) {
+      let entered = false;
       try {
-        return await store.lease(id, work);
+        return await store.lease(id, (row, save) => {
+          entered = true;
+          return work(row, save);
+        });
       } catch (error) {
-        if (modalError(error).providerCode !== "lifecycle_lease_busy" || attempt >= 99) throw error;
+        if (entered || modalError(error).providerCode !== "lifecycle_lease_busy" || attempt >= 99) throw error;
         if ((await store.get(id)).phase !== "active") throw error;
-        await Bun.sleep(20);
+        await (options.admissionSleep ?? Bun.sleep)(20);
       }
     }
   }
