@@ -1366,6 +1366,15 @@ async function dispatch(
     }
     case "golden/list":
       return listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
+    case "golden/build/cancel": {
+      if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
+      const scoped = await selectedCaller(options, caller, optional(body, "org"));
+      return options.goldenBuilds.cancel(
+        caller.userId,
+        required(body, "jobId"),
+        scoped.orgs.map((org) => org.orgId),
+      );
+    }
     case "golden/build/status":
       if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
       return options.goldenBuilds.status(
