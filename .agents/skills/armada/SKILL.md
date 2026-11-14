@@ -28,12 +28,12 @@ selecting model accounts, creating goldens/templates, or configuring variables.
 
 ## 2. Choose before launching
 
-- Inspect `armada golden list --json` and `armada template list --json`.
+- Inspect `armada snapshot list --json` and `armada template list --json`.
   A golden is a provider-specific saved environment; a template is an immutable
   revision specifying a golden, harness and configuration. Use IDs if names clash.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
   is not automatically available on the other. Check
-  `armada golden capabilities --provider boat --json` (or substitute modal).
+  `armada snapshot capabilities --provider boat --json` (or substitute modal).
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
 - Bound TTL, size and concurrency to the task. Start small unless evidence calls
