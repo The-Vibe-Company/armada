@@ -1397,14 +1397,15 @@ boundary, daily-limit exhaustion or the older routine script's entire campaign.
 
 Use a dedicated **non-secret** canary variable with value
 `parity_readable_<fresh random UUID>`. Publish a smoke template revision binding
-it to an environment key such as `ARMADA_PARITY_READABLE`, then add this metadata
+it to an environment key such as `PARITY_READABLE_CANARY` (the
+`PARITY_READABLE_` namespace, **not** the reserved `ARMADA_` namespace), then add this metadata
 to that provider case (never put the value in the case JSON):
 
 ```json
 "readableVariable": {
   "id": "<variable UUID>",
   "version": 1,
-  "key": "ARMADA_PARITY_READABLE"
+  "key": "PARITY_READABLE_CANARY"
 }
 ```
 
