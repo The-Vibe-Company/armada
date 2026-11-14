@@ -242,6 +242,21 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       ).rows[0];
       if (!row) unavailable("environment_unavailable");
       host = { installationId: row.installation_id, ownerId: row.owner_id };
+      if (def.snapshotId !== undefined) {
+        // Ready snapshots are immutable and host-local. Recheck access and the
+        // installation binding on every fresh admission, never on receipt replay.
+        const snapshot = (
+          await tx.query(
+            `select s.id from public.docker_snapshots s
+           where s.id=$1 and s.org_id=$2 and s.host_id=$3 and s.installation_id=$4
+           and s.status='ready' and s.image_id is not null
+           and (s.visibility='org' or s.owner_id=$5)
+           and ($6::text<>'org' or s.visibility='org') for share of s`,
+            [def.snapshotId, actor.orgId, def.hostId, row.installation_id, actor.userId, scope],
+          )
+        ).rows[0];
+        if (!snapshot) unavailable("environment_snapshot_unavailable");
+      }
     } else if (g) {
       if (canonical(g.modal) !== canonical(def.goldenBinding)) unavailable("environment_binding_changed");
       const retired = (
@@ -293,6 +308,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     fields(d, [
       "goldenId",
       "hostId",
+      "snapshotId",
       "provider",
       "harness",
       "model",
@@ -317,8 +333,9 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     const g = d.provider === "docker" ? null : await golden(tx, actor, scope, id(d.goldenId), d.provider);
     if (d.provider === "docker") {
       id(d.hostId);
+      if (d.snapshotId !== undefined) id(d.snapshotId);
       if (d.goldenId !== undefined && d.goldenId !== null) invalid();
-    } else if (d.hostId !== undefined) invalid();
+    } else if (d.hostId !== undefined || d.snapshotId !== undefined) invalid();
     const connections: TemplateDefinition["connections"] = [];
     if (d.connections !== undefined && (!Array.isArray(d.connections) || d.connections.length > 100)) invalid();
     for (const connection of (d.connections ?? []) as unknown[]) {
@@ -361,6 +378,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
             provider: "docker" as const,
             goldenBinding: null,
             hostId: id(d.hostId),
+            ...(d.snapshotId === undefined ? {} : { snapshotId: id(d.snapshotId) }),
           }),
       harness: d.harness,
       ...choice,
@@ -667,6 +685,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                   org,
                   provider: "docker",
                   hostId: def.hostId,
+                  ...(def.snapshotId === undefined ? {} : { snapshotId: def.snapshotId }),
                   harness: def.harness,
                   credentialId: m.account.id,
                   credentialVersion: m.account.version,
