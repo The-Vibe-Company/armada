@@ -19,6 +19,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     writeFileSync("auth.json", JSON.stringify({ tokens, fixtureHome: process.cwd(), fixturePid: process.pid }), {
       mode: 0o600,
     });
+    send({ id: 999, error: { code: -32000, message: "unrelated native response must not cancel login" } });
+    send({ method: "remoteControl/status/changed", params: { status: "disconnected" } });
     send({
       id: message.id,
       result: {
@@ -29,6 +31,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         untrustedToken: "must-not-be-forwarded",
       },
     });
-    send({ method: "account/login/completed", params: { loginId: "login", success: true } });
+    send({
+      method: "account/login/completed",
+      params: { loginId: "login", success: true, error: null, onboardingEntrypoint: null },
+    });
   }
 });

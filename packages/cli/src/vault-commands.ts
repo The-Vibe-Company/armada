@@ -24,6 +24,7 @@ import { armadaApiUrl } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { invitationCommand } from "./invitation-commands.ts";
+import { validateNativeCodexAuth } from "./native-login-protocol.ts";
 import { nativeCodexLogin } from "./native-model-login.ts";
 
 export interface VaultIo {
@@ -267,33 +268,29 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       let raw: string;
       if (sub === "login") {
         const controller = new AbortController();
-        const cancel = () => controller.abort();
-        process.once("SIGINT", cancel);
-        process.once("SIGTERM", cancel);
+        const interrupt = () => controller.abort("SIGINT");
+        const terminate = () => controller.abort("SIGTERM");
+        const hangup = () => controller.abort("SIGHUP");
+        process.once("SIGINT", interrupt);
+        process.once("SIGTERM", terminate);
+        process.once("SIGHUP", hangup);
         try {
           raw = await nativeCodexLogin({
             path: io.auth.env.PATH ?? "/usr/bin:/bin",
-            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(300_000)]),
-            device: (url, code) => io.auth.err(`Open ${url} and enter ${code} to authorize native Codex.\n`),
+            signal: controller.signal,
+            device: (url, code) =>
+              io.auth.err(
+                `Keep this terminal/session open until the account is published; closing the parent shell cancels login. Use tmux or screen for a persistent remote session.\nOpen ${url} and enter ${code} to authorize native Codex.\n`,
+              ),
           });
         } finally {
-          process.removeListener("SIGINT", cancel);
-          process.removeListener("SIGTERM", cancel);
+          process.removeListener("SIGINT", interrupt);
+          process.removeListener("SIGTERM", terminate);
+          process.removeListener("SIGHUP", hangup);
         }
       } else raw = await readValue(args, io);
       const value = parseCredentialValue(kind, raw);
-      if (kind === "codex_auth") {
-        const native = JSON.parse(value);
-        if (
-          !native.tokens ||
-          typeof native.tokens.access_token !== "string" ||
-          typeof native.tokens.refresh_token !== "string" ||
-          typeof native.tokens.account_id !== "string"
-        )
-          throw usage(
-            "Import the native Codex ChatGPT auth.json, with ChatGPT token fields, using only this tool's own native login.",
-          );
-      }
+      if (kind === "codex_auth") validateNativeCodexAuth(value, false);
       // Native consent occurs locally before import. Only the Armada API receives
       // this secret; never print its response, which must not become a secret sink.
       await control(io.auth, "creds/accounts/set", {

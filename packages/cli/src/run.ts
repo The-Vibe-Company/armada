@@ -218,7 +218,10 @@ Usage:
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
                                            Direct membership administration; add requires an existing account,
                                            grants membership immediately and does not send an invitation.
-  armada creds login codex --name <name> [--org <name>]\n                                           Native local device login; five-minute expiry, Ctrl-C cancels\n  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
+  armada creds login codex --name <name> [--org <name>]
+                                           Native local device login; up to 16 minutes after the device code.
+                                           Keep this terminal open; Ctrl-C/shell exit cancels.
+  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
   armada creds presets [--json]             List the same model connection providers as the dashboard
   armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
