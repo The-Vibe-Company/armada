@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { bindableStatus, compatibleAccounts, needsAccountChoice } from "../src/lib/account-recovery.ts";
+import { bindableStatus, compatibleAccounts } from "../src/lib/account-recovery.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
 const now = new Date("2026-11-10T12:00:00Z");
@@ -51,16 +51,6 @@ describe("legacy account recovery", () => {
     ]);
     expect(compatibleAccounts(list, "codex", ORG, now).map((item) => item.name)).toEqual(["Account 02"]);
     expect(compatibleAccounts(null, "codex", ORG, now)).toEqual([]);
-  });
-
-  test("only a Modal sandbox recorded without an account needs a choice", () => {
-    const base = { provider: "modal", owner_id: "u", status: "stopped" as const };
-    expect(needsAccountChoice({ ...base, credential_id: null })).toBe(true);
-    expect(needsAccountChoice({ ...base, credential_id: "00000000-0000-4000-8000-000000000001" })).toBe(false);
-    expect(needsAccountChoice({ ...base, provider: "boat", credential_id: null })).toBe(false);
-    // A database before the #603 migration has no column: never mistaken for an unbound sandbox.
-    expect(needsAccountChoice(base)).toBe(false);
-    expect(needsAccountChoice({ ...base, status: "deleted", credential_id: null })).toBe(false);
   });
 
   test("only a stopped sandbox is offered the bind, as the server accepts no other state", () => {

@@ -1,12 +1,7 @@
 import { CREDENTIAL_KINDS, type CredentialKind, HARNESS_KINDS, type Harness, type SandboxStatus } from "@armada/core";
 import { accountsFromList, isUsable } from "./model-accounts.ts";
 
-/**
- * Recovery of a legacy Modal sandbox launched before model accounts were pinned (#603): its owner chooses, once,
- * the named account its turns run on (`sandbox/bind-credential`). The Armada server decides everything (owner,
- * membership, compatible and authorized account, safely stopped, still unbound); the dashboard only offers the
- * choice and never picks one itself.
- */
+/** Account-choice metadata and presentation only; authorization and binding policy stay on the server. */
 
 /** One account the owner may choose: safe metadata only, never a value. */
 export type AccountOption = {
@@ -17,22 +12,6 @@ export type AccountOption = {
   scope: "user" | "org";
   isDefault: boolean;
 };
-
-/** What the page needs to know about the sandbox. `credential_id` is absent before the #603 migration. */
-export type RecoverySandbox = {
-  provider: string;
-  owner_id: string;
-  status: SandboxStatus;
-  credential_id?: string | null;
-};
-
-/**
- * A Modal sandbox recorded with no pinned account (`credential_id` null): its turns cannot run until its owner binds
- * one. Boat is never concerned, and a row read without the column (a database before #603) is not either.
- */
-export function needsAccountChoice(sandbox: RecoverySandbox): boolean {
-  return sandbox.provider === "modal" && sandbox.credential_id === null && sandbox.status !== "deleted";
-}
 
 /**
  * The server binds only a sandbox that is safely stopped; a live one is stopped first, with the usual Stop. A failed
