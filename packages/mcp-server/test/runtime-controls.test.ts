@@ -1,16 +1,43 @@
 import { expect, test } from "bun:test";
-import type { Provider } from "@armada/core";
+import { encryptSecret, type Provider } from "@armada/core";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
 import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
-import { ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY, type People, SECRETS } from "./support.ts";
 
 for (const placement of ["boat", "modal"] as const)
   test(`${placement} control tools reach the enrolled runtime, preserve turn identity and redact bounded exec output without native hooks`, async () => {
-    const f = await runtimeFixture(undefined, placement);
+    const db = await openMigratedDatabase();
+    const people: People = {
+      org: crypto.randomUUID(),
+      otherOrg: crypto.randomUUID(),
+      owner: crypto.randomUUID(),
+      member: crypto.randomUUID(),
+      admin: crypto.randomUUID(),
+    };
+    let fixture: Awaited<ReturnType<typeof runtimeFixture>> | undefined;
     try {
+      // Control/renewal needs one account and org golden, not the launch credential matrix.
+      await db.query("insert into auth.users(id) values($1),($2)", [people.owner, people.member]);
+      await db.query("insert into orgs(id,name) values($1,'Runtime controls')", [people.org]);
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'member')", [
+        people.org,
+        people.owner,
+        people.member,
+      ]);
+      await db.query(
+        "insert into goldens(org_id,owner_id,name,visibility,boat_snapshot_id,config) values($1,$2,'shared','org',$3,$4::jsonb)",
+        [people.org, people.owner, `a${"2".repeat(62)}`, JSON.stringify({ repos: [], init: [] })],
+      );
+      await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'openai',$2)", [
+        people.org,
+        await encryptSecret(SECRETS.orgOpenai, ENCRYPTION_KEY),
+      ]);
+      const f = await runtimeFixture({ db, people }, placement);
+      fixture = f;
       const agent = createRuntimeAgent(f.bridge, {
         harness: "codex",
         ownerId: f.people.owner,
@@ -93,6 +120,10 @@ for (const placement of ["boat", "modal"] as const)
         }),
       ).rejects.toMatchObject({ code: "forbidden" });
     } finally {
-      await f.close();
+      try {
+        await fixture?.close();
+      } finally {
+        await db.close();
+      }
     }
   });
