@@ -1575,3 +1575,29 @@ This is initial native tool execution, not OAuth renewal, denied connection
 access, native Boat evidence, OpenCode name-collision handling or post-resume tool execution. Keep the
 older coordinator checks for those behaviors. Boat remains coordinator-only via
 `--only boat --production-boat`, never the release gate.
+
+### Subscription-account inference parity
+
+Set `subscriptionAccount: true` on a provider case whose `modelAccountId` is a
+dedicated connected subscription account. Run `--parity --feature
+subscription-account`, optionally `--only modal|docker`. Missing opt-in is
+not-run without allocation; an account label alone never establishes billing.
+
+The probe reuses one lifecycle sandbox and its ordinary answered turn, stop,
+resume and answered recall turn. Both turns must finish with the exact final
+parent-assistant response, not a tool echo or superseded message. Server-owned
+usage must cover every measured prompt, carry `included_in_subscription` /
+`api_equivalent` session classification, and have captured subscription billing,
+API-equivalent basis, the exact selected credential ID and a positive captured
+credential version for each measured turn. The existing persisted-quote checks
+must also pass. Unknown API-equivalent prices remain unknown; this proves the
+admitted subscription account was used, not an upstream bill or free inference.
+
+Before- and after-resume receipts are shown separately; baseline-only evidence
+never passes the main row. Wrong-account/version provenance, missing usage or a
+failed quote check fails the proof; an unobserved/refused resume stays not-run.
+Filtered proof requests and observation share 110 seconds; cleanup has its own
+window even if the proof budget expires. Full runs opt in with the same flag and
+reuse existing usage observations without extra allocations or turns. No account
+is created, reconnected or modified. Boat remains coordinator-only via
+`--only boat --production-boat`, never the release gate.

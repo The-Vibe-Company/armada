@@ -139,6 +139,7 @@ const accountMatrix = {
 } as const;
 
 interface Case {
+  subscriptionAccount?: boolean;
   mcp?: McpProbeBinding;
   applicationSecret?: SecretProbeBinding;
   skill?: SkillsProbeBinding;
@@ -249,6 +250,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       if (
         !(productionBoat ? c.provider === "boat" : ["modal", "docker"].includes(c.provider)) ||
         !isHarness(c.harness) ||
+        (c.subscriptionAccount !== undefined && typeof c.subscriptionAccount !== "boolean") ||
         (c.mcp !== undefined && !isMcpProbeBinding(c.mcp)) ||
         (c.applicationSecret !== undefined && !isSecretProbeBinding(c.applicationSecret)) ||
         (c.skill !== undefined && !isSkillsProbeBinding(c.skill)) ||
@@ -330,6 +332,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     until = Math.min(deadline, io.now() + OBSERVATION_MS),
     observed?: (elapsedMs: number, polls: number) => void,
   ) {
+    if (feature === "subscription-account") until = Math.min(until, requestDeadline ?? Number.POSITIVE_INFINITY);
     const started = io.now();
     const previousRequestDeadline = requestDeadline;
     requestDeadline = until;
@@ -415,6 +418,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       record("launch-snapshot", c.provider, "unsupported", "Docker has no golden snapshot launch source (#1532).");
       if (feature === "launch-snapshot") continue;
     }
+    if ((!feature || feature === "subscription-account") && c.subscriptionAccount !== true) {
+      record("subscription-account", c.provider, "not-run", "subscription_account_probe_not_configured");
+      if (feature === "subscription-account") continue;
+    }
     if ((!feature || feature === "mcp") && (!c.mcp || !c.template)) {
       record("mcp", c.provider, "not-run", "mcp_probe_not_configured");
       if (feature === "mcp") continue;
@@ -454,6 +461,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       !Object.hasOwn(steps, feature) &&
       ![
         "resume-recall",
+        "subscription-account",
         "usage",
         "exact-cost",
         "launch-snapshot",
@@ -500,11 +508,17 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         requestDeadline = previous;
       }
     };
-    const discoveryApi = ["readable-variables", "skills", "application-secrets", "mcp"].includes(feature ?? "")
+    const discoveryApi = [
+      "readable-variables",
+      "skills",
+      "application-secrets",
+      "mcp",
+      "subscription-account",
+    ].includes(feature ?? "")
       ? readableApi
       : api;
     async function checkUsage(promptId: string) {
-      if (feature && !["usage", "exact-cost"].includes(feature)) return;
+      if (feature && !["usage", "exact-cost", "subscription-account"].includes(feature)) return;
       const observe = (name: string, status: Cell["status"], reason: string | null = null, detail?: Diagnostic) => {
         record(`${name}-${afterResume ? "after" : "before"}-resume`, c.provider, status, reason, detail);
         // A before-resume observation alone is not proof of resume retention.
@@ -549,10 +563,34 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       } catch (error) {
         const detail = diagnostic(error);
         observe("usage", detail.quota ? "not-run" : "fail", detail.code, detail);
+        if (c.subscriptionAccount === true)
+          observe("subscription-account", detail.quota ? "not-run" : "fail", "usage_unavailable", detail);
         if (!feature || feature === "exact-cost")
           observe("exact-cost", detail.quota ? "not-run" : "fail", "usage_unavailable", detail);
         return;
       }
+      const proveSubscription = () => {
+        if (c.subscriptionAccount !== true) return;
+        const admitted = usage?.turns.filter((turn) => measuredPrompts.has(turn.promptId));
+        const valid =
+          usage?.cost?.classification === "included_in_subscription" &&
+          usage.cost.basis === "api_equivalent" &&
+          !!admitted?.length &&
+          admitted.every(
+            (turn) =>
+              turn.pricing?.billing === "subscription" &&
+              turn.pricing.basis === "api_equivalent" &&
+              typeof turn.pricing.credentialId === "string" &&
+              turn.pricing.credentialId.toLowerCase() === c.modelAccountId.toLowerCase() &&
+              Number.isSafeInteger(turn.pricing.credentialVersion) &&
+              (turn.pricing.credentialVersion ?? 0) > 0,
+          );
+        observe(
+          "subscription-account",
+          valid ? "pass" : "fail",
+          valid ? "observed admitted subscription account" : "invalid_subscription_receipt",
+        );
+      };
       if (feature === "usage") return;
       if (io.accountProbe)
         io.out(
@@ -625,6 +663,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               ? "included in subscription"
               : `unknown: ${usage.cost.unknown}`,
           );
+          proveSubscription();
           return;
         }
         if (
@@ -654,9 +693,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               ? "included in subscription"
               : `${usage.cost.basis ?? "unknown basis"}: USD ${usage.cost.usd}`,
           );
+        proveSubscription();
       } catch (error) {
         const detail = diagnostic(error);
         observe("exact-cost", "fail", detail.code, detail);
+        if (c.subscriptionAccount === true) observe("subscription-account", "fail", detail.code, detail);
       }
     }
     async function runTurn(recall = false, strictRecall = false) {
@@ -675,6 +716,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       let cursor: string | undefined;
       let finished = false;
       let answered = false;
+      let finalParent: string | undefined;
+      const subscriptionAnswers = new Map<string, { text: string; eligible: boolean }>();
       let serverStarted: number | undefined;
       let serverFinished: number | undefined;
       let elapsedMs = 0;
@@ -684,7 +727,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           () =>
             api<{
               cursor?: string;
+              hasMore?: boolean;
               events: {
+                id?: string;
+                messageId?: string;
+                textMode?: string;
                 at?: number;
                 kind: string;
                 promptId?: string;
@@ -717,6 +764,34 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             finished ||= page.events.some(
               (e) => e.promptId === turn.promptId && e.kind === "prompt" && e.status === "finished",
             );
+            if (c.subscriptionAccount === true) {
+              for (const event of page.events) {
+                if (event.promptId !== turn.promptId || event.kind !== "message") continue;
+                if (typeof event.id !== "string") throw new Error("invalid_turn_receipt");
+                const key = event.messageId ?? event.id;
+                if (!event.parentToolUseId && event.responseKind !== "tool_result") finalParent = key;
+                const text =
+                  event.textMode === "delta"
+                    ? (subscriptionAnswers.get(key)?.text ?? "") + (event.text ?? "")
+                    : (event.text ?? "");
+                subscriptionAnswers.set(key, {
+                  text: text.slice(0, 4096),
+                  eligible:
+                    text.length <= 4096 &&
+                    event.partial === false &&
+                    !event.parentToolUseId &&
+                    event.responseKind !== "tool_result" &&
+                    !event.retracted,
+                });
+              }
+              const answer = finalParent ? subscriptionAnswers.get(finalParent) : undefined;
+              return (
+                page.hasMore !== true &&
+                finished &&
+                answer?.eligible === true &&
+                answer.text.trim() === (recall ? memory : "SMOKE_OK")
+              );
+            }
             answered ||= page.events.some(
               (e) =>
                 e.promptId === turn.promptId &&
@@ -1163,7 +1238,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           requestedHarness) &&
           step === "send") ||
         (feature === "wake-on-send" && step === "idle-pause") ||
-        (["resume", "resume-recall", "usage", "exact-cost"].includes(feature ?? "") &&
+        (["resume", "resume-recall", "usage", "exact-cost", "subscription-account"].includes(feature ?? "") &&
           ["send", "resume"].includes(step));
       if (!needed) continue;
       const selected = !feature || step === feature;
@@ -1182,6 +1257,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         );
         continue;
       }
+      if (feature === "subscription-account" && io.now() >= readableUntil && !blocked) {
+        blocked = "proof_budget_exhausted";
+        blockedDiagnostic = { code: "poll_limit_exceeded", message: "Subscription proof budget exhausted." };
+      }
       // Cleanup operations still run after an earlier probe failed.
       if (blocked && !((step === "stop" || step === "delete") && id)) {
         record(
@@ -1199,6 +1278,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       try {
         if (feature === "skills" || feature === "application-secrets" || feature === "mcp")
           requestDeadline = step === "stop" || step === "delete" ? undefined : readableUntil;
+        if (feature === "subscription-account")
+          requestDeadline = step === "delete" || (step === "stop" && blocked) ? undefined : readableUntil;
         if (step === "launch") {
           if (feature !== "routines") starts++;
           const result =
@@ -1352,10 +1433,14 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       },
                       // This durable requestKey is replayed unchanged; never a new launch intent.
                       (value) => value.state === "succeeded" || value.state === "failed",
-                      ["readable-variables", "skills", "application-secrets", "mcp"].includes(feature ?? "")
+                      ["readable-variables", "skills", "application-secrets", "mcp", "subscription-account"].includes(
+                        feature ?? "",
+                      )
                         ? 110
                         : 600,
-                      ["readable-variables", "skills", "application-secrets", "mcp"].includes(feature ?? "")
+                      ["readable-variables", "skills", "application-secrets", "mcp", "subscription-account"].includes(
+                        feature ?? "",
+                      )
                         ? readableUntil
                         : Math.min(deadline, io.now() + OBSERVATION_MS),
                     );
@@ -1565,7 +1650,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               );
             else if (receipt.status !== "deleted") throw new Error("delete_unconfirmed");
             stopped = step !== "resume";
-            if (step === "resume" && (!feature || ["resume-recall", "usage", "exact-cost"].includes(feature))) {
+            if (
+              step === "resume" &&
+              (!feature || ["resume-recall", "usage", "exact-cost", "subscription-account"].includes(feature))
+            ) {
               if (c.provider === "docker") await runTurn(true);
               record("resume-recall", c.provider, "pass");
             }
@@ -1593,7 +1681,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         );
         blocked = `${step}_failed`;
         blockedDiagnostic = detail;
-        if (step === "resume" && (!feature || ["resume-recall", "usage", "exact-cost"].includes(feature)))
+        if (
+          step === "resume" &&
+          (!feature || ["resume-recall", "usage", "exact-cost", "subscription-account"].includes(feature))
+        )
           record(
             "resume-recall",
             c.provider,
@@ -1656,7 +1747,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     }
     // These probes already share the provider's lifecycle sandbox. If a
     // prerequisite prevents observation, report that cause, not implementation debt.
-    for (const name of ["resume-recall", "usage", "exact-cost"]) {
+    for (const name of ["resume-recall", "usage", "exact-cost", "subscription-account"]) {
       if (feature && feature !== name) continue;
       const cell = report[name]?.[c.provider];
       if (cell?.status !== "not-run" || !["probe_not_implemented", "resume_not_observed"].includes(cell.reason ?? ""))
@@ -1676,7 +1767,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     }
     // Probe failures never replace cleanup. A failed journal write or lost
     // resume acknowledgement still leaves a known allocation to reconcile.
-    if (feature === "skills" || feature === "application-secrets" || feature === "mcp") requestDeadline = undefined;
+    if (
+      feature === "skills" ||
+      feature === "application-secrets" ||
+      feature === "mcp" ||
+      feature === "subscription-account"
+    )
+      requestDeadline = undefined;
     for (const cleanupId of new Set([...(id ? [id] : []), ...templateClaims])) {
       if (cleanupId !== id) {
         id = cleanupId;

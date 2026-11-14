@@ -68,6 +68,17 @@ for (const mode of [
   "subscription",
   "subscription_priced",
   "subscription_bad_billing",
+  "subscription_probe",
+  "subscription_probe_unknown",
+  "subscription_probe_mismatch",
+  "subscription_probe_version",
+  "subscription_probe_api_account",
+  "subscription_probe_missing",
+  "subscription_probe_resume_refused",
+  "subscription_probe_budget",
+  "subscription_probe_full",
+  "subscription_probe_echo",
+  "subscription_probe_later_answer",
   "custom_unknown",
   "docker_send_pending",
   "github",
@@ -116,8 +127,11 @@ for (const mode of [
   "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
-    const subscription = mode.startsWith("subscription") || mode === "accounts_subscription";
-    const unpricedSubscription = mode === "subscription" || mode === "accounts_subscription";
+    const subscription =
+      (mode.startsWith("subscription") && mode !== "subscription_probe_api_account") ||
+      mode === "accounts_subscription";
+    const unpricedSubscription =
+      mode === "subscription" || mode === "subscription_probe_unknown" || mode === "accounts_subscription";
     let clock = mode.startsWith("routine_") ? Date.parse("2026-11-14T08:59:20Z") : 0;
     const woken = new Set<string>();
     const idleReads = new Map<string, number>();
@@ -162,6 +176,9 @@ for (const mode of [
             (mode.startsWith("accounts") ? ["codex-openai", "codex-azure"] : [undefined]).map((account) => ({
               ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
               provider,
+              ...(mode.startsWith("subscription_probe") && mode !== "subscription_probe_missing"
+                ? { subscriptionAccount: true }
+                : {}),
               ...(mode === "routine_full" ? { routine: true } : {}),
               ...((mode.startsWith("template_") && mode !== "template_missing") ||
               (mode.startsWith("routine_") && mode !== "routine_missing") ||
@@ -193,41 +210,43 @@ for (const mode of [
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode === "readable_full"
-        ? ["--parity"]
-        : mode.startsWith("readable_")
-          ? ["--parity", "--feature", "readable-variables"]
-          : mode.startsWith("idle_")
-            ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
-            : mode.startsWith("snapshot_")
-              ? ["--parity", "--feature", "launch-snapshot"]
-              : mode === "routine_full"
-                ? ["--parity"]
-                : mode.startsWith("routine_")
-                  ? ["--parity", "--feature", "routines"]
-                  : mode === "template_full"
-                    ? ["--parity"]
-                    : mode.startsWith("template_")
-                      ? ["--parity", "--feature", "templates"]
-                      : mode.startsWith("h_")
-                        ? ["--parity", "--feature", requestedHarness]
-                        : ["control_api_unsupported", "control_full"].includes(mode)
-                          ? ["--parity"]
-                          : mode.startsWith("control_")
-                            ? ["--parity", "--feature", controlFeature]
-                            : mode.startsWith("github")
-                              ? ["--parity", "--feature", "github"]
-                              : mode.startsWith("accounts")
-                                ? ["--parity", "--accounts"]
-                                : mode === "usage_filter"
-                                  ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-                                  : mode === "filtered"
-                                    ? ["--parity", "--only", "docker", "--feature", "exec"]
-                                    : debtFeature
-                                      ? ["--parity", "--feature", debtFeature]
-                                      : mode === "invalid_filter"
-                                        ? ["--parity", "--feature", "typo"]
-                                        : ["--parity"],
+      mode.startsWith("subscription_probe") && mode !== "subscription_probe_full"
+        ? ["--parity", "--feature", "subscription-account"]
+        : mode === "readable_full"
+          ? ["--parity"]
+          : mode.startsWith("readable_")
+            ? ["--parity", "--feature", "readable-variables"]
+            : mode.startsWith("idle_")
+              ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
+              : mode.startsWith("snapshot_")
+                ? ["--parity", "--feature", "launch-snapshot"]
+                : mode === "routine_full"
+                  ? ["--parity"]
+                  : mode.startsWith("routine_")
+                    ? ["--parity", "--feature", "routines"]
+                    : mode === "template_full"
+                      ? ["--parity"]
+                      : mode.startsWith("template_")
+                        ? ["--parity", "--feature", "templates"]
+                        : mode.startsWith("h_")
+                          ? ["--parity", "--feature", requestedHarness]
+                          : ["control_api_unsupported", "control_full"].includes(mode)
+                            ? ["--parity"]
+                            : mode.startsWith("control_")
+                              ? ["--parity", "--feature", controlFeature]
+                              : mode.startsWith("github")
+                                ? ["--parity", "--feature", "github"]
+                                : mode.startsWith("accounts")
+                                  ? ["--parity", "--accounts"]
+                                  : mode === "usage_filter"
+                                    ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                                    : mode === "filtered"
+                                      ? ["--parity", "--only", "docker", "--feature", "exec"]
+                                      : debtFeature
+                                        ? ["--parity", "--feature", debtFeature]
+                                        : mode === "invalid_filter"
+                                          ? ["--parity", "--feature", "typo"]
+                                          : ["--parity"],
       {
         now: () => clock,
         sleep: async (ms) => {
@@ -600,16 +619,37 @@ for (const mode of [
                     status: mode === "h_failed" ? "failed" : "finished",
                   },
                   {
+                    id: "answer",
                     kind: "message",
                     promptId: turns.get(p)?.at(-1),
                     partial: false,
+                    responseKind:
+                      mode === "subscription_probe_echo" && (turns.get(p)?.length ?? 0) > 1
+                        ? "tool_result"
+                        : "assistant",
                     text:
                       mode === "snapshot_answer_missing" || mode === "template_no_answer"
                         ? "WRONG"
-                        : mode.startsWith("idle_") && woken.has(p)
-                          ? prompts.get(p)
-                          : `SMOKE_OK ${prompts.get(p)}`,
+                        : mode.startsWith("subscription_probe")
+                          ? (turns.get(p)?.length ?? 0) > 1
+                            ? prompts.get(p)
+                            : "SMOKE_OK"
+                          : mode.startsWith("idle_") && woken.has(p)
+                            ? prompts.get(p)
+                            : `SMOKE_OK ${prompts.get(p)}`,
                   },
+                  ...(mode === "subscription_probe_later_answer" && (turns.get(p)?.length ?? 0) > 1
+                    ? [
+                        {
+                          id: "later",
+                          kind: "message",
+                          promptId: turns.get(p)?.at(-1),
+                          partial: false,
+                          responseKind: "assistant",
+                          text: "different final answer",
+                        },
+                      ]
+                    : []),
                 ],
               };
               break;
@@ -685,6 +725,7 @@ for (const mode of [
                   { error: { code: "rate_limited", message: "Read quota reached." } },
                   { status: 429 },
                 );
+              if (mode === "subscription_probe_budget") clock += 110_001;
               result = {
                 id: mode === "template_identity" || mode.startsWith("routine_") ? body.id : p,
                 status: states.get(p),
@@ -703,7 +744,13 @@ for (const mode of [
                         ? {
                             basis: "api_equivalent",
                             billing: mode === "subscription_bad_billing" ? "per_token" : "subscription",
-                            credentialId: "account",
+                            credentialId:
+                              mode === "subscription_probe_mismatch" && i > 0
+                                ? "wrong-account"
+                                : mode.startsWith("subscription_probe")
+                                  ? "fake-account"
+                                  : "account",
+                            credentialVersion: mode === "subscription_probe_version" && i > 0 ? null : 1,
                           }
                         : {}),
                       unknown:
@@ -770,7 +817,7 @@ for (const mode of [
               result = { status: "stopped" };
               break;
             case "sandbox/resume":
-              if (mode === "resume_quota")
+              if (mode === "resume_quota" || mode === "subscription_probe_resume_refused")
                 return Response.json(
                   { error: { code: "rate_limited", message: "Start quota reached." } },
                   { status: 429 },
@@ -979,6 +1026,53 @@ for (const mode of [
       return;
     }
 
+    if (mode.startsWith("subscription_probe")) {
+      const failure = [
+        "subscription_probe_mismatch",
+        "subscription_probe_version",
+        "subscription_probe_api_account",
+        "subscription_probe_budget",
+        "subscription_probe_echo",
+        "subscription_probe_later_answer",
+      ].includes(mode);
+      expect(passed).toBe(!failure);
+      expect(report.starts).toBe(mode === "subscription_probe_missing" ? 0 : 2);
+      for (const provider of ["modal", "docker"]) {
+        const refused = mode === "subscription_probe_resume_refused" && provider === "docker";
+        const cell = report.features["subscription-account"][provider];
+        expect(cell.status).toBe(
+          mode === "subscription_probe_missing" ||
+            refused ||
+            ["subscription_probe_echo", "subscription_probe_later_answer"].includes(mode)
+            ? "not-run"
+            : failure
+              ? "fail"
+              : "pass",
+        );
+        if (mode === "subscription_probe_missing") {
+          expect(cell.reason).toBe("subscription_account_probe_not_configured");
+          expect(calls).not.toContain(`${provider}:sandbox/launch`);
+          continue;
+        }
+        expect(calls.filter((path) => path === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(report.features.cleanup[provider].status).toBe("pass");
+        if (["subscription_probe_mismatch", "subscription_probe_version"].includes(mode)) {
+          expect(report.features["exact-cost"][provider].status).toBe("pass");
+          expect(report.features["subscription-account-before-resume"][provider].status).toBe("pass");
+          expect(report.features["subscription-account-after-resume"][provider].status).toBe("fail");
+        }
+        if (!failure && !refused) {
+          expect(report.features["subscription-account-before-resume"][provider].status).toBe("pass");
+          expect(report.features["subscription-account-after-resume"][provider].status).toBe("pass");
+          expect(turns.get(provider)).toHaveLength(2);
+        }
+        if (refused) {
+          expect(report.features["subscription-account-before-resume"][provider].status).toBe("pass");
+          expect(cell.reason).toBe("resume: quota");
+        }
+      }
+      return;
+    }
     if (mode === "subscription_bad_billing") {
       expect(passed).toBe(false);
       expect(report.features["exact-cost"].modal).toMatchObject({ status: "fail", reason: "invalid_cost_receipt" });
