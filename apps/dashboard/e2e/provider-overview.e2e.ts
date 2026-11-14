@@ -26,10 +26,7 @@ test("provider overview presents cloud accounts and connected machines without s
   await page.setViewportSize({ width: 1280, height: 900 });
   await signIn(page, "alice@example.com", "/providers/cloud");
   await expect(page.locator('[data-provider-row="boat"]')).toBeVisible();
-  await page.screenshot({ path: "test-results/provider-overview-desktop.png", fullPage: true, animations: "disabled" });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: "test-results/provider-overview-mobile.png", fullPage: true, animations: "disabled" });
-  await expect(page.getByRole("heading", { name: "Providers", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Providers", exact: true, level: 1 })).toBeVisible();
   const machines = page.getByRole("list", { name: "Self-hosted machines", exact: true });
   await expect(machines).toContainText("Office workstation");
   await expect(machines).toContainText("Online");
@@ -37,14 +34,16 @@ test("provider overview presents cloud accounts and connected machines without s
   await expect(machines).toContainText("Offline");
   await expect(machines).not.toContainText("Unfinished machine");
   await expect(machines).not.toContainText("Retired machine");
-  await expect(page.getByRole("link", { name: "Unfinished setup (1)" })).toHaveAttribute(
-    "href",
-    "/hosts?setup=unfinished",
-  );
+  await expect(page.getByRole("main")).not.toContainText("Unfinished setup");
+  await expect(page.getByRole("heading", { name: "Cloud accounts", level: 2 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Self-hosted machines", level: 2 })).toBeVisible();
   await expect(page.getByRole("link", { name: "View Office workstation" })).toHaveAttribute(
     "href",
     `/hosts?item=${hosts[0]?.id}`,
   );
+  await page.screenshot({ path: "test-results/provider-overview-desktop.png", fullPage: true, animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "test-results/provider-overview-mobile.png", fullPage: true, animations: "disabled" });
   await page.locator('[data-provider-row="modal"]').getByRole("button", { name: "Connect Modal" }).click();
   await expect(page.getByLabel("Token ID", { exact: true })).toBeVisible();
 });
@@ -56,7 +55,7 @@ test("members can view machine setup but cannot manage cloud accounts", async ({
   await expect(machines).toContainText("Ask an organization admin");
   await expect(machines.getByRole("link", { name: "View machines" })).toHaveAttribute("href", "/hosts");
   await expect(page.getByRole("button", { name: "Connect Modal" })).toHaveCount(0);
-  await expect(machines.getByRole("link", { name: "Set up a machine" })).toHaveCount(0);
+  await expect(machines.getByRole("link", { name: "Manage machines" })).toHaveCount(0);
 });
 
 test("cloud-only deployments do not offer unavailable machine setup", async ({ page }) => {
@@ -85,5 +84,17 @@ test("an unreadable machine list is partial evidence, not a new-machine empty st
   await expect(machines).toContainText("No machines available to show");
   await expect(machines).not.toContainText("No machines connected yet");
   await expect(machines.getByRole("link", { name: "View machines" })).toHaveAttribute("href", "/hosts");
-  await expect(machines.getByRole("link", { name: "Set up a machine" })).toHaveCount(0);
+  await expect(machines.getByRole("link", { name: "Manage machines" })).toHaveCount(0);
+});
+
+test("pending registrations are absent from the provider overview but remain manageable", async ({ page }) => {
+  await seed(hosts.filter((host) => host.state === "pending"));
+  await signIn(page, "alice@example.com", "/providers/cloud");
+  const machines = page.locator("[data-provider-machines]");
+  await expect(machines).toContainText("No machines connected yet");
+  await expect(machines).not.toContainText("Unfinished");
+  await expect(machines.getByRole("link", { name: "Manage machines", exact: true })).toHaveAttribute("href", "/hosts");
+  await machines.getByRole("link", { name: "Manage machines", exact: true }).click();
+  await page.getByRole("link", { name: "Unfinished setup (1)", exact: true }).click();
+  await expect(page.getByRole("list", { name: "Docker hosts", exact: true })).toContainText("Unfinished machine");
 });
