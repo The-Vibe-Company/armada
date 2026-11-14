@@ -109,6 +109,7 @@ export function createSandboxLifecycle(
         const provider = await operation(signal, () => providerFor(row.id));
         resolved = true;
         let info = await operation(signal, () => provider.get(row.provider_sandbox_id));
+        const host = isSandboxProvider(provider.id) ? HOST_CAPABILITIES[provider.id] : undefined;
         physicalExit = info.physicalExitConfirmed === true;
         const idleStop =
           native &&
@@ -126,11 +127,7 @@ export function createSandboxLifecycle(
         if (
           !physicalExit &&
           !["stopped", "deleted"].includes(info.state) &&
-          !(
-            isSandboxProvider(provider.id) &&
-            HOST_CAPABILITIES[provider.id].waitForPendingStop &&
-            info.state === "stopping"
-          ) &&
+          !(host?.waitForPendingStop && info.state === "stopping") &&
           (row.stop_requested_at !== null ||
             row.status === "stopping" ||
             row.status === "starting" ||
@@ -152,14 +149,10 @@ export function createSandboxLifecycle(
           );
           if (!owned.rows[0]) return true;
           signal?.throwIfAborted();
-          // Modal has already fenced native admission once its durable stop enters
-          // checkpoint/snapshot/terminate. Its reconciler owns that in-flight stop;
-          // active-only observation or recapture here would make retries impossible.
-          const reconcilingModalStop =
-            idleStop &&
-            provider.id === "modal" &&
-            info.state === "stopping" &&
-            ["checkpoint", "snapshot", "terminate"].includes(info.providerState);
+          // These durable phases already fence native admission. Active-only
+          // observation or recapture would prevent the owning reconciler from retrying.
+          const reconcilingStop =
+            idleStop && info.state === "stopping" && host?.fencedStopPhases.includes(info.providerState) === true;
           const requireIdle = async () => {
             if (!(await nativeQuiescent(provider, info, signal)))
               throw new ProviderError({
@@ -169,7 +162,7 @@ export function createSandboxLifecycle(
                 message: "Native work is active or unknown; idle stop waits without interruption.",
               });
           };
-          if (idleStop && !reconcilingModalStop) await operation(signal, requireIdle);
+          if (idleStop && !reconcilingStop) await operation(signal, requireIdle);
           const preservationProvider = idleStop
             ? new Proxy(provider, {
                 get(target, property) {
@@ -191,7 +184,7 @@ export function createSandboxLifecycle(
             );
           signal?.throwIfAborted();
           if (
-            !reconcilingModalStop &&
+            !reconcilingStop &&
             (await preserveBeforeStop(
               sql,
               preservationProvider,
@@ -207,7 +200,7 @@ export function createSandboxLifecycle(
               message: "Interruption is pending; retry stop after turns settle.",
             });
           signal?.throwIfAborted();
-          if (idleStop && !reconcilingModalStop) await operation(signal, requireIdle);
+          if (idleStop && !reconcilingStop) await operation(signal, requireIdle);
           const requireRetention = !expired && (idleStop || row.status_reason === "idle_paused");
           recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
           await operation(signal, () =>
