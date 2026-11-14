@@ -107,6 +107,8 @@ const ROW_ALIASES: Record<string, string> = {
   sandboxes: "Sandbox",
   runtime_enrolments: "RuntimeEnrolmentRow",
   runtime_events: "RuntimeEventRow",
+  runtime_idle_evidence: "RuntimeIdleEvidenceRow",
+  runtime_idle_turns: "RuntimeIdleTurnRow",
   runtime_commands: "RuntimeCommandRow",
   service_tokens: "ServiceToken",
 };

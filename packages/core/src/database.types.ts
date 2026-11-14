@@ -3691,6 +3691,61 @@ export type Database = {
           },
         ];
       };
+      runtime_idle_evidence: {
+        Row: {
+          sandbox_id: string;
+          sequence: number;
+          last_activity: number;
+          unknown_turn: boolean;
+        };
+        Insert: {
+          sandbox_id: string;
+          sequence?: number;
+          last_activity?: number;
+          unknown_turn?: boolean;
+        };
+        Update: {
+          sandbox_id?: string;
+          sequence?: number;
+          last_activity?: number;
+          unknown_turn?: boolean;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "runtime_idle_evidence_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      runtime_idle_turns: {
+        Row: {
+          sandbox_id: string;
+          prompt_id: string;
+          settled: boolean;
+        };
+        Insert: {
+          sandbox_id: string;
+          prompt_id: string;
+          settled: boolean;
+        };
+        Update: {
+          sandbox_id?: string;
+          prompt_id?: string;
+          settled?: boolean;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "runtime_idle_turns_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       runtime_resumes: {
         Row: {
           sandbox_id: string;
@@ -4330,6 +4385,8 @@ export type RuntimeCommandRow = Database["public"]["Tables"]["runtime_commands"]
 export type RuntimeEnrolmentRow = Database["public"]["Tables"]["runtime_enrolments"]["Row"];
 export type RuntimeEventRow = Database["public"]["Tables"]["runtime_events"]["Row"];
 export type RuntimeGitHubCapabilityRow = Database["public"]["Tables"]["runtime_github_capabilities"]["Row"];
+export type RuntimeIdleEvidenceRow = Database["public"]["Tables"]["runtime_idle_evidence"]["Row"];
+export type RuntimeIdleTurnRow = Database["public"]["Tables"]["runtime_idle_turns"]["Row"];
 export type RuntimeResumeRow = Database["public"]["Tables"]["runtime_resumes"]["Row"];
 export type SandboxAccountUsagePricingRow = Database["public"]["Tables"]["sandbox_account_usage_pricing"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
