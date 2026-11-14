@@ -110,11 +110,13 @@ export async function prepareReadableProbe(
       if (typeof turn?.promptId !== "string" || !turn.promptId) fail("invalid_readable_receipt");
       let cursor: string | undefined;
       let finished = false;
+      let lastParent: string | undefined;
       const messages = new Map<string, { text: string; eligible: boolean }>();
       await io.poll(
         () =>
           io.request<{
             cursor?: string;
+            hasMore?: boolean;
             events?: Array<{
               id: string;
               messageId?: string;
@@ -146,6 +148,7 @@ export async function prepareReadableProbe(
             }
             if (event.kind !== "message" || typeof event.id !== "string") continue;
             const key = event.messageId ?? event.id;
+            if (!event.parentToolUseId && event.responseKind !== "tool_result") lastParent = key;
             const text =
               event.textMode === "delta" ? (messages.get(key)?.text ?? "") + (event.text ?? "") : (event.text ?? "");
             messages.set(key, {
@@ -158,9 +161,8 @@ export async function prepareReadableProbe(
                 !event.retracted,
             });
           }
-          return (
-            finished && [...messages.values()].some((message) => message.eligible && message.text.trim() === expected)
-          );
+          const answer = lastParent ? messages.get(lastParent) : undefined;
+          return page.hasMore !== true && finished && answer?.eligible === true && answer.text.trim() === expected;
         },
         110,
         io.until,

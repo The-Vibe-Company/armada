@@ -86,6 +86,7 @@ function fixture(mode: string, provider: "boat" | "modal" | "docker" = "modal") 
         };
         result = {
           cursor: `page_${reads}`,
+          hasMore: mode === "later_page" && reads === 1,
           events: [
             ...(mode === "retracted" && reads === 1
               ? []
@@ -102,7 +103,12 @@ function fixture(mode: string, provider: "boat" | "modal" | "docker" = "modal") 
                   { ...message, text: digest.slice(0, 32), partial: true, textMode: "delta" },
                   { ...message, text: digest.slice(32), textMode: "delta" },
                 ]
-              : [message]),
+              : [
+                  message,
+                  ...(mode === "later_answer" || (mode === "later_page" && reads > 1)
+                    ? [{ ...message, id: "later", text: "different final answer" }]
+                    : []),
+                ]),
           ],
         };
       } else throw new Error(`Unexpected route ${path}`);
@@ -144,16 +150,23 @@ test("frozen manifest cannot substitute a different variable version", async () 
   expect(f.calls).not.toContain("sandbox/send");
 });
 
-test.each(["wrong_value", "echo", "child", "partial", "retracted", "wrong_prompt", "failed"])(
-  "requires the final parent assistant digest and exact turn outcome: %s",
-  async (mode) => {
-    const f = fixture(mode);
-    const probe = await prepareReadableProbe(template, binding, f.io);
-    await expect(probe.verify("sandbox", f.provider)).rejects.toThrow(
-      mode === "failed" ? "readable_turn_failed" : "poll exhausted",
-    );
-  },
-);
+test.each([
+  "wrong_value",
+  "echo",
+  "child",
+  "partial",
+  "retracted",
+  "wrong_prompt",
+  "failed",
+  "later_answer",
+  "later_page",
+])("requires the final parent assistant digest and exact turn outcome: %s", async (mode) => {
+  const f = fixture(mode);
+  const probe = await prepareReadableProbe(template, binding, f.io);
+  await expect(probe.verify("sandbox", f.provider)).rejects.toThrow(
+    mode === "failed" ? "readable_turn_failed" : "poll exhausted",
+  );
+});
 
 test("coalesced native deltas remain correlated to one final message", async () => {
   const f = fixture("delta");
