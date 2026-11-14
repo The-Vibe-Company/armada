@@ -1,11 +1,22 @@
-import { ticketStates, validateTicketGraph } from "@armada/core";
+import { validateTicketGraph } from "@armada/core";
 import { isOttoUuid, type Sql } from "@armada/core/server";
-import type { CallerResult } from "../caller.ts";
+import type { Caller, CallerResult } from "../caller.ts";
 import type { Route } from "../http.ts";
 import { objectiveStore } from "./objectives.ts";
 import { ticketStore } from "./tickets.ts";
 
-/** Ingest structured ticketise file contents; never writes a checkout or calls GitHub. */
+/** Server tool for #1823's structured ticketise output. Caller identity is server supplied.
+ * The store records the scoped intention before materializing the graph, atomically.
+ */
+export async function publishTicketGraph(sql: Sql, caller: Caller, org: string, objective: string, output: unknown) {
+  if (!caller.orgs.some((o) => o.orgId === org)) throw Error("forbidden");
+  const graph = validateTicketGraph(output);
+  const store = ticketStore(sql, caller, org, objective);
+  if (!(await store.publish(graph))) return null;
+  return { graph, tickets: await store.states(graph) };
+}
+
+/** Developer fallback and web read; production brief calls publishTicketGraph directly. */
 export function createOttoTicketApi(sql: Sql, authenticate: (request: Request) => Promise<CallerResult>): Route {
   return async (request) => {
     const url = new URL(request.url);
@@ -25,7 +36,7 @@ export function createOttoTicketApi(sql: Sql, authenticate: (request: Request) =
       const store = ticketStore(sql, auth.caller, org, id);
       if (request.method === "GET") {
         const graph = await store.read();
-        return reply({ graph, tickets: graph ? ticketStates(graph) : [] });
+        return reply({ graph, tickets: graph ? await store.states(graph) : [] });
       }
       if (request.method !== "POST") return reply({ error: "method_not_allowed" }, 405);
       const raw = await request.text();
@@ -36,9 +47,8 @@ export function createOttoTicketApi(sql: Sql, authenticate: (request: Request) =
       } catch {
         return reply({ error: "invalid_graph" }, 400);
       }
-      return (await store.publish(graph))
-        ? reply({ graph, tickets: ticketStates(graph) }, 201)
-        : reply({ error: "revision_conflict" }, 409);
+      const published = await publishTicketGraph(sql, auth.caller, org, id, graph);
+      return published ? reply(published, 201) : reply({ error: "revision_conflict" }, 409);
     } catch {
       return reply({ error: "unavailable" }, 503);
     }
