@@ -461,7 +461,7 @@ export class Runner {
       await Promise.all(this.commands);
       await Promise.all(Object.values(this.drivers).map((d) => d.close()));
       await this.flushOutbox();
-      const watermark = this.journal.events(0, Number.MAX_SAFE_INTEGER).at(-1)?.sequence ?? 0;
+      const watermark = this.journal.highWatermark();
       if (this.journal.ack < watermark) throw Error("checkpoint_upstream_unacknowledged");
       await this.configureGitHub?.(null);
       await this.stripTransientAuth?.();

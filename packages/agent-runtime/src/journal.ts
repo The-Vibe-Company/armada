@@ -102,6 +102,10 @@ export class Journal {
     return rows.map((r) => ({ sequence: r.seq, event: JSON.parse(r.body) as AgentEvent }));
   }
 
+  highWatermark(): number {
+    return (this.db.query("SELECT coalesce(max(seq),0) AS n FROM events").get() as { n: number }).n;
+  }
+
   get ack() {
     const value = Number(
       (this.db.query("SELECT value FROM metadata WHERE key='ack'").get() as { value: string } | null)?.value ?? 0,
@@ -160,7 +164,7 @@ export class Journal {
     const seal = this.db
       .query("SELECT value FROM metadata WHERE key=?")
       .get(`checkpoint:v2:${checkpointIdentityKey(identity)}`) as { value: string } | null;
-    const high = (this.db.query("SELECT coalesce(max(seq),0) AS n FROM events").get() as { n: number }).n;
+    const high = this.highWatermark();
     if (
       !source ||
       checkpointIdentityKey(source) !== checkpointIdentityKey(identity) ||
