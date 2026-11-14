@@ -1,4 +1,4 @@
-import type { LaunchError } from "@armada/core/server";
+import type { LaunchError, VaultErrorCode } from "@armada/core/server";
 import type { ToolApiError } from "./tool-api.ts";
 
 export function fail(
@@ -12,3 +12,17 @@ export function fail(
     { status, headers: { "cache-control": "no-store" } },
   );
 }
+
+export const VAULT_STATUS: Record<VaultErrorCode, number> = {
+  credential_busy: 409,
+  credential_binding_required: 409,
+  credential_binding_unsafe: 409,
+  credential_binding_unsupported: 409,
+  invalid: 400,
+  forbidden: 403,
+  not_found: 404,
+  missing_credential: 404,
+  conflict: 409,
+  unavailable: 503,
+  credential_refused: 422,
+};
