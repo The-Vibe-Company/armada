@@ -1948,7 +1948,10 @@ function scopedOrg(caller: Caller, requested: string | undefined): string | unde
   const orgId = caller.orgs[0]?.orgId;
   if (!orgId) throw new Unauthorized("Run armada login.");
   if (requested !== undefined && requested.trim() !== "" && requested.trim().toLowerCase() !== orgId) {
-    throw new VaultError("forbidden", "This token is scoped to another org.");
+    throw new VaultError(
+      "forbidden",
+      `This token is scoped to org ${orgId}. Retry with --org ${orgId} (the UUID, not its name).`,
+    );
   }
   return orgId;
 }
