@@ -38,6 +38,7 @@ const localCodes = new Set([
   "harness_not_advertised",
   "invalid_launch_receipt",
   "invalid_exec_receipt",
+  "invalid_snapshot_source",
   "invalid_control_receipt",
   "control_turn_not_active",
   "invalid_status_receipt",
@@ -328,11 +329,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       if ((!feature || feature === name) && name !== harnessFeature)
         record(name, c.provider, "not-run", "harness_account_not_configured");
     if (requestedHarness && feature !== harnessFeature) continue;
+    if ((!feature || feature === "launch-snapshot") && c.provider === "docker") {
+      record("launch-snapshot", c.provider, "unsupported", "Docker has no golden snapshot launch source (#1532).");
+      if (feature === "launch-snapshot") continue;
+    }
     // A not-yet-implemented row must not allocate compute merely to print debt.
     if (
       feature &&
       !Object.hasOwn(steps, feature) &&
-      !["resume-recall", "usage", "exact-cost"].includes(feature) &&
+      !["resume-recall", "usage", "exact-cost", "launch-snapshot"].includes(feature) &&
       !requestedHarness
     )
       continue;
@@ -340,6 +345,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       record("github", c.provider, "not-run", "github_repository_not_configured");
       continue;
     }
+    let snapshotSourceVerified = false;
     let option: LaunchProviderOption | undefined;
     let id: string | undefined;
     let stopped = false;
@@ -790,6 +796,22 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
+      if ((!feature || feature === "launch-snapshot") && c.provider !== "docker") {
+        const listed = await api<{
+          goldens: Array<{ id: string; name: string; provider: string; providerSnapshotId: string | null }>;
+        }>("golden/list");
+        if (!Array.isArray(listed.goldens)) throw new Error("invalid_snapshot_source");
+        const matches = listed.goldens.filter(
+          (golden) => golden.provider === c.provider && (golden.name === c.golden || golden.id === c.golden),
+        );
+        if (
+          matches.length !== 1 ||
+          typeof matches[0]?.providerSnapshotId !== "string" ||
+          !matches[0].providerSnapshotId.trim()
+        )
+          throw new Error("invalid_snapshot_source");
+        snapshotSourceVerified = true;
+      }
       if (
         c.githubRepository &&
         (!feature || feature === "github") &&
@@ -839,7 +861,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         step === "launch" ||
         (step === "stop" && !["steer", "interrupt"].includes(feature ?? "")) ||
         step === "delete" ||
-        ((feature === "github" || requestedHarness) && step === "send") ||
+        ((feature === "github" || feature === "launch-snapshot" || requestedHarness) && step === "send") ||
         (["resume", "resume-recall", "usage", "exact-cost"].includes(feature ?? "") &&
           ["send", "resume"].includes(step));
       if (!needed) continue;
@@ -909,6 +931,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             await runTurn();
             if (io.accountProbe) await runTurn(true);
             if (!feature || requestedHarness) record(harnessFeature, c.provider, "pass");
+            if ((!feature || feature === "launch-snapshot") && snapshotSourceVerified)
+              record("launch-snapshot", c.provider, "pass");
           } else if (step === "steer" || step === "interrupt") {
             await controlTurn(step);
           } else if (step === "exec") {
@@ -1025,6 +1049,22 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             detail,
           );
       }
+    }
+    if (
+      (!feature || feature === "launch-snapshot") &&
+      c.provider !== "docker" &&
+      report["launch-snapshot"]?.[c.provider]?.status !== "pass"
+    ) {
+      const source = ["launch", "send"]
+        .map((step) => ({ step, cell: report[feature ? `prerequisite:${step}` : step]?.[c.provider] }))
+        .find(({ cell }) => cell && cell.status !== "pass");
+      record(
+        "launch-snapshot",
+        c.provider,
+        "not-run",
+        source ? `${source.step}: ${source.cell?.reason ?? source.cell?.status}` : "turn_not_observed",
+        source?.cell?.diagnostic,
+      );
     }
     if ((!feature || requestedHarness) && report[harnessFeature]?.[c.provider]?.status !== "pass") {
       const source = ["launch", "send"]

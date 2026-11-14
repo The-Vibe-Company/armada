@@ -9,6 +9,10 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "snapshot_valid",
+  "snapshot_missing",
+  "snapshot_wrong_provider",
+  "snapshot_answer_missing",
   "h_codex",
   "h_claude",
   "h_opencode",
@@ -114,25 +118,27 @@ for (const mode of [
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode.startsWith("h_")
-        ? ["--parity", "--feature", requestedHarness]
-        : ["control_api_unsupported", "control_full"].includes(mode)
-          ? ["--parity"]
-          : mode.startsWith("control_")
-            ? ["--parity", "--feature", controlFeature]
-            : mode.startsWith("github")
-              ? ["--parity", "--feature", "github"]
-              : mode.startsWith("accounts")
-                ? ["--parity", "--accounts"]
-                : mode === "usage_filter"
-                  ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-                  : mode === "filtered"
-                    ? ["--parity", "--only", "docker", "--feature", "exec"]
-                    : debtFeature
-                      ? ["--parity", "--feature", debtFeature]
-                      : mode === "invalid_filter"
-                        ? ["--parity", "--feature", "typo"]
-                        : ["--parity"],
+      mode.startsWith("snapshot_")
+        ? ["--parity", "--feature", "launch-snapshot"]
+        : mode.startsWith("h_")
+          ? ["--parity", "--feature", requestedHarness]
+          : ["control_api_unsupported", "control_full"].includes(mode)
+            ? ["--parity"]
+            : mode.startsWith("control_")
+              ? ["--parity", "--feature", controlFeature]
+              : mode.startsWith("github")
+                ? ["--parity", "--feature", "github"]
+                : mode.startsWith("accounts")
+                  ? ["--parity", "--accounts"]
+                  : mode === "usage_filter"
+                    ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                    : mode === "filtered"
+                      ? ["--parity", "--only", "docker", "--feature", "exec"]
+                      : debtFeature
+                        ? ["--parity", "--feature", debtFeature]
+                        : mode === "invalid_filter"
+                          ? ["--parity", "--feature", "typo"]
+                          : ["--parity"],
       {
         now: () => 0,
         sleep: async () => {},
@@ -150,6 +156,18 @@ for (const mode of [
           calls.push(`${p}:${path}`);
           let result: object;
           switch (path) {
+            case "golden/list":
+              result = {
+                goldens: [
+                  {
+                    id: "golden-id",
+                    name: "fake-golden",
+                    provider: mode === "snapshot_wrong_provider" ? "docker" : p,
+                    providerSnapshotId: mode === "snapshot_missing" ? null : "published-snapshot",
+                  },
+                ],
+              };
+              break;
             case "launch/options":
               result = {
                 providers: providers.map((id) => ({
@@ -200,6 +218,7 @@ for (const mode of [
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
             case "sandbox/launch":
+              if (mode.startsWith("snapshot_")) expect(body.golden).toBe("fake-golden");
               if (mode.startsWith("h_")) {
                 expect(body.harness).toBe(configuredHarness);
                 expect(body.credentialId).toBe("fake-account");
@@ -293,7 +312,11 @@ for (const mode of [
                     promptId: turns.get(p)?.at(-1),
                     status: mode === "h_failed" ? "failed" : "finished",
                   },
-                  { kind: "message", promptId: turns.get(p)?.at(-1), text: `SMOKE_OK ${prompts.get(p)}` },
+                  {
+                    kind: "message",
+                    promptId: turns.get(p)?.at(-1),
+                    text: mode === "snapshot_answer_missing" ? "WRONG" : `SMOKE_OK ${prompts.get(p)}`,
+                  },
                 ],
               };
               break;
@@ -646,6 +669,21 @@ for (const mode of [
       }
       return;
     }
+    if (mode.startsWith("snapshot_")) {
+      expect(passed).toBe(mode === "snapshot_valid");
+      expect(report.features["launch-snapshot"].docker.status).toBe("unsupported");
+      expect(calls).not.toContain("docker:sandbox/launch");
+      if (mode === "snapshot_valid" || mode === "snapshot_answer_missing") {
+        expect(report.starts).toBe(1);
+        expect(turns.get("modal")).toHaveLength(1);
+        expect(report.features["launch-snapshot"].modal.status).toBe(mode === "snapshot_valid" ? "pass" : "not-run");
+        expect(report.features.cleanup.modal.status).toBe("pass");
+      } else {
+        expect(report.starts).toBe(0);
+        expect(report.features["launch-snapshot"].modal.diagnostic.code).toBe("invalid_snapshot_source");
+      }
+      return;
+    }
     if (mode === "docker_send_pending") {
       expect(passed).toBe(false);
       for (const name of ["resume-recall", "usage", "exact-cost"]) {
@@ -821,6 +859,17 @@ function productionBoatFixture(
       calls.push({ path, body });
       if (body.id !== undefined) expect(body.id).toBe("new-production-boat");
       switch (path) {
+        case "golden/list":
+          return Response.json({
+            goldens: [
+              {
+                id: "golden-id",
+                name: productionBoatCase.golden,
+                provider: "boat",
+                providerSnapshotId: "published-snapshot",
+              },
+            ],
+          });
         case "launch/options":
           return Response.json({
             providers: [
@@ -999,7 +1048,7 @@ for (const fault of [undefined, "foreign_provider", "ambiguous_launch", "delete_
     expect(fake.journalWrites()).toBe(0);
     const report = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"provider_parity"')) ?? "{}");
     if (fault === "foreign_provider" || fault === "ambiguous_launch") {
-      expect(fake.calls.map((call) => call.path)).toEqual(["launch/options", "sandbox/launch"]);
+      expect(fake.calls.map((call) => call.path)).toEqual(["launch/options", "golden/list", "sandbox/launch"]);
       expect(report.features.launch.boat.status).toBe("fail");
       expect(fake.lines.some((line) => line.includes('"step":"parity_cleanup"'))).toBe(false);
     } else {
