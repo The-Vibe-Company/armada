@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.31.0](https://github.com/The-Vibe-Company/armada/compare/v2.30.0...v2.31.0) (2026-11-14)
+
+
+### Features
+
+* **golden:** append repositories safely and explain CLI refusals ([#1705](https://github.com/The-Vibe-Company/armada/issues/1705)) ([f30c7bb](https://github.com/The-Vibe-Company/armada/commit/f30c7bbdfc2e7d0b958a6b11b0eed08471ec8db0))
+* **smoke:** prove configured harness parity with real turns ([#1712](https://github.com/The-Vibe-Company/armada/issues/1712)) ([f681c90](https://github.com/The-Vibe-Company/armada/commit/f681c905a709484d426ae8e14519b4f57802b737))
+* **smoke:** prove steer and interrupt turn outcomes ([#1714](https://github.com/The-Vibe-Company/armada/issues/1714)) ([dc2b343](https://github.com/The-Vibe-Company/armada/commit/dc2b343bbff6f9f97b1fe26ad6c6788faaa6bf97))
+
+
+### Bug Fixes
+
+* **cli:** diagnose and preserve native Codex device login ([#1708](https://github.com/The-Vibe-Company/armada/issues/1708)) ([0306a6f](https://github.com/The-Vibe-Company/armada/commit/0306a6f3bc9e9fb597dbc18f4d71785dee84473d))
+* **core:** expire unstarted queued golden builds safely ([#1701](https://github.com/The-Vibe-Company/armada/issues/1701)) ([76500cb](https://github.com/The-Vibe-Company/armada/commit/76500cb3e7c763ad2ab2909badea163632e10578))
+* **golden:** accept Git authentication challenges and preserve clone reasons ([#1706](https://github.com/The-Vibe-Company/armada/issues/1706)) ([214d9f2](https://github.com/The-Vibe-Company/armada/commit/214d9f2323e9537f064e72914ce20c6738af0c68))
+* **golden:** release expired pre-builder authorization reservations ([#1709](https://github.com/The-Vibe-Company/armada/issues/1709)) ([78ca13d](https://github.com/The-Vibe-Company/armada/commit/78ca13d392122a7f6928f1bc19467cf6817914c8))
+* **golden:** scope checkout credentials per GitHub installation ([#1713](https://github.com/The-Vibe-Company/armada/issues/1713)) ([9276e7f](https://github.com/The-Vibe-Company/armada/commit/9276e7f388a49370b4e012e993620f4ede32c8f9))
+* **usage:** classify subscription costs in parity receipts ([#1710](https://github.com/The-Vibe-Company/armada/issues/1710)) ([10018e9](https://github.com/The-Vibe-Company/armada/commit/10018e9b65e1835df4627d29efa7e9d0fb8e7c07))
+
 ## [2.30.0](https://github.com/The-Vibe-Company/armada/compare/v2.29.0...v2.30.0) (2026-11-14)
 
 

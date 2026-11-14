@@ -1284,6 +1284,28 @@ after resume. It validates precise USD sums when quotes exist, explicit null USD
 and price reasons otherwise, and preserves the earlier per-turn quotes across
 resume. A subscription pass is labeled `included in subscription`, not zero USD.
 
+### Natural idle pause and ordinary-send wake
+
+`--parity --feature idle-pause` observes automatic `stopped` / `idle_paused`
+after a finished token-memory turn. `--feature wake-on-send` additionally sends
+an ordinary recall message (never a resume request), requires its exact final
+assistant answer, and checks the original conversation IDs and absolute expiry
+remain unchanged. Full runs reuse their existing provider sandbox and memory
+turn for both rows. Status reasons are canonical; the optional list-style
+`idlePaused` flag, when supplied, must agree.
+
+The runner reads `/healthz.idlePauseDelayMs`; it never guesses or changes the
+server delay. It allows that delay plus three minutes for the lifecycle sweep
+and checkpoint, within the run deadline and original sandbox expiry. Missing
+diagnostics or a delay longer than the remaining run budget is not-run, never
+a pass. These feature checks necessarily take the configured idle interval
+(ten minutes by default), unlike quick lifecycle cells. Reads do not replace
+natural idle with stop/resume. Cleanup still runs on every known allocation.
+
+This encodes the coordinator's #1562 pause/recall observation. It relies on the
+server's confirmed shutdown projection, not a host ACK; independent provider
+console/host observations remain the coordinator's physical-compute evidence.
+
 ### Steer and interrupt parity
 
 `--parity --feature steer` and `--parity --feature interrupt` reuse the selected

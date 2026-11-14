@@ -6,6 +6,7 @@ import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError } from "./errors.ts";
 import { execCredentialValues, validateExecEnvironment, validateExecReadables } from "./exec-env.ts";
+import { githubRuntimeEnvironment } from "./github-tools.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import type { Journal } from "./journal.ts";
 import { mcpDigest, mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
@@ -81,6 +82,9 @@ export class Runner {
       ...validateExecReadables(execution.readableVariables, this.credentialFreeBuilder),
       ...execEnv,
       ...(execution.ghConfigDir ? { GH_CONFIG_DIR: execution.ghConfigDir } : {}),
+      ...(execution.githubToolsRoot
+        ? githubRuntimeEnvironment({ PATH: execEnv.PATH ?? process.env.PATH }, execution.githubToolsRoot)
+        : {}),
     });
     journal.assertRestoreSource(grant);
     this.barrier = journal.checkpointPending(grant);

@@ -286,6 +286,27 @@ export class GoldenBuildJobs {
     // Do not decrypt payload for status: even service-side readers need no arbitrary setup text.
     return this.dto(job);
   }
+  /** Latest visible active attempt for a stored golden; absence is not proof that capacity is free. */
+  async findActive(
+    userId: string,
+    goldenId: string,
+    allowedOrgs: readonly string[],
+  ): Promise<GoldenBuildStatus | null> {
+    const job = (
+      await this.options.sql.query<Job>(
+        `select j.* from public.golden_build_jobs j
+       join public.members m on m.org_id=j.org_id and m.user_id=$1
+       where j.golden_id=$2 and j.org_id=any($3::uuid[])
+         and (j.visibility='org' or j.owner_id=$1)
+         and exists(select 1 from public.goldens g where g.id=j.golden_id and (g.visibility='org' or g.owner_id=$1))
+         and j.state in ('queued','running','recovery_required')
+       order by j.created_at desc,j.id desc limit 1`,
+        [userId, goldenId, "{" + allowedOrgs.join(",") + "}"],
+      )
+    ).rows[0];
+    return job ? this.dto(job) : null;
+  }
+
   /** Only the requesting owner may cancel work that has provably never started.
    * Locking the same row as runOne makes cancellation and worker admission exclusive.
    */

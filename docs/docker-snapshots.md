@@ -249,3 +249,12 @@ work. Existing queue rows backfill known native conversation IDs only; a legacy
 launch with an unacknowledged pre-reservation native command must reconcile that
 receipt before a new queued send can promise its conversation. Newly admitted
 launches always reserve the identity up front.
+
+Managed GitHub setup acknowledgement and a successful `gh` command are separate
+checks. The runtime installs owner-local Git/gh shims, but a Bash login shell can
+reset `PATH` in `/etc/profile` and bypass them. The managed runtime supplies an
+owner-private, credential-free `BASH_ENV` script that restores the shim path
+**after** login profiles for model tools and explicit exec commands. This is a
+trusted runtime control, not an allowed readable variable or user exec-env field.
+No token is written to that script or added to argv. Rebuild/deploy the runtime
+artifact and use a new runtime epoch to receive this fix; no migration is needed.
