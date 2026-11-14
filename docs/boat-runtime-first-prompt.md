@@ -546,3 +546,43 @@ Boat measurement is coordinator-only, on demand in production under the current
 repository policy; it is not part of staging or the release gate. Do not allocate
 another sandbox just to obtain timing. Capture the record during the already
 authorized one-allocation lifecycle check. No worker measurement has been run.
+
+### Production 2.29.0 forward-log regression (#1161)
+
+The coordinator's Boat parity run on 2.29.0 timed out after send while fresh
+`armada logs --all --json` could show finished turns. The 2.29.0 Boat adapter
+advances a timestamp/row-ID cursor past a running prompt or partial response;
+Boat can mutate that same row without changing its timestamp/ID. Later forward
+reads therefore miss its terminal state even though a fresh history read sees it.
+This is a cursor visibility defect, not a reason to rewrite prompt IDs:
+`provider.prompt` returns Boat's `response.promptId`, and `normalizeEvent` maps
+Boat's `taskId` to the common `promptId` (not the event row's `id`).
+
+The fix is already on main in #1629 (`35730908`), **after** release 2.29.0:
+opaque Armada continuations retain unfinished row boundaries/fingerprints, reread
+changed snapshots, and continue paging the raw frontier. No extra native/runtime
+switch, prompt lookup, smoke timeout increase or full-history polling is needed.
+The provider regression now also covers 201 older rows before the active turn,
+distinct event/turn IDs, count/byte-limited pages, terminal mutation, and reaching
+the newest answer. It fails against the 2.29.0 adapter and passes on main.
+This reproduces missed completion; it cannot establish from code alone why the
+coordinator observed no matching queued/running event in that particular run.
+
+Dashboard follow-up submission itself calls `send` independently of logs. Its
+live conversation **does depend** on the same cursor contract: `sandbox-chat`
+passes its retained cursor to the events route, which uses `gateway.logs`
+(`logs` MCP tool with `since_cursor`). A missed terminal/partial update can leave
+the displayed turn stale even though send succeeded. Status is fetched separately;
+it is not evidence that the conversation stream delivered the answer.
+
+After the next normal release containing #1629, the coordinator alone reruns:
+
+```sh
+bun scripts/post-deploy-smoke.ts --parity --only boat --production-boat
+```
+
+Require the send receipt's exact `promptId` on the observed finished prompt and
+answer, follow-up/recall success, and normal stop/delete/cleanup. If still failing,
+retain receipt ID plus cursor/page event IDs to distinguish ID mismatch from
+pagination; do not infer a pass from historical logs alone. No worker provider
+call was made, and Boat must never be added to staging/release acceptance.
