@@ -53,3 +53,12 @@ export function checkSkillpackKey(raw: unknown): { ok: true; value: string } | {
 export function skillpackAudience(scope: SkillpackScope, orgName: string): string {
   return scope === "user" ? "Only you" : `Everyone in ${orgName}`;
 }
+
+/** A key mutation may have reached the server; never echo a credential service diagnostic. */
+export function skillpackActionFailure(status: number | undefined): string {
+  if (status === 401) return "This session cannot manage Skillpack keys. Sign in again, then reload Skills.";
+  if (status === 403) return "You no longer have permission to change this key. Ask an organization admin for help.";
+  if (status === 400) return "The key was not accepted. Check your key in Skillpack before trying again.";
+  if (status === 404) return "This key is no longer available. Reload Skills to check its current state.";
+  return "The key change could not be confirmed. Reload Skills to check whether it was saved or removed before trying again.";
+}
