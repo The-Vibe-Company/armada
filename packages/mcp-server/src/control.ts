@@ -426,6 +426,8 @@ async function dispatch(
         enabled: Boolean(options.modalRuntimeLaunch),
         followupVersion: options.runtimeSend ? 1 : 0,
         idleLaunchVersion: options.modalRuntimeLaunch && options.runtimeSend ? 1 : 0,
+        idleTemplateVersion:
+          options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor && options.runtimeSend ? 1 : 0,
         resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
@@ -892,8 +894,8 @@ async function dispatch(
         );
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
-      if (body.prompt !== undefined || body.id !== undefined) required(body, "prompt");
-      if (body.id === undefined && body.prompt === undefined && !options.runtimeSend)
+      if (body.prompt !== undefined) required(body, "prompt");
+      if (body.prompt === undefined && !options.runtimeSend)
         throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
       if (body.id !== undefined) {
         const standard = [
@@ -1204,7 +1206,9 @@ async function snapshotGoldenRoute(
   await data.goldens.assertBackendBinding?.(golden, provider);
   const target = (await connectGolden(provider, data.goldens, actor, golden.name)).golden;
   if (!target.providerSandboxId) throw new GoldenError("conflict", `Golden '${target.name}' has no sandbox yet.`);
-  await scanGoldenSandbox(provider, target.providerSandboxId);
+  await scanGoldenSandbox(provider, target.providerSandboxId, {
+    repositories: target.config.repos.map((repo) => repo.dir),
+  });
   const saved = await snapshotGolden(provider, data.goldens, actor, target.name, options.launch ?? {});
   return { name: saved.golden.name, snapshot: saved.snapshotName };
 }
