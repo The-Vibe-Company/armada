@@ -315,12 +315,17 @@ test("launch from a template: only the run is chosen, the revision is pinned and
   await page.screenshot({ animations: "disabled", path: "test-results/templates-launch-desktop.png" });
 
   // An outcome the server cannot confirm keeps the key: launching again repeats the same request.
-  await outcome({ state: "reconciling", reason: "allocation_or_start_unknown" });
+  await outcome({
+    state: "reconciling",
+    reason: "allocation_or_start_unknown",
+    message: "HTTP 503: model_account_id digest sha256:example",
+  });
   await dialog.getByLabel("Task").fill("Fix the flaky test");
   await dialog.getByLabel("Project").selectOption("api");
   await dialog.getByLabel("Runs for").selectOption("3600");
   await dialog.getByRole("button", { name: /Launch/ }).click();
   await expect(dialog.getByRole("alert")).toContainText("could not confirm whether the sandbox started");
+  await expect(dialog.getByRole("alert")).not.toContainText("HTTP 503");
   await expect(dialog.getByLabel("Task")).toHaveValue("Fix the flaky test");
   await dialog.getByRole("button", { name: /Launch/ }).click();
   const launchCalls = async () => (await mockState()).templateCalls.filter((call) => call.route === "templates/launch");
@@ -349,10 +354,18 @@ test("a refused launch says why and takes a fresh key; a successful one opens th
   await outcome({
     state: "failed",
     reason: "credential_refused",
-    message: "This model credential is revoked. Choose another account.",
+    message: "HTTP 503: model_account_id credential_version digest sha256:example",
   });
   await dialog.getByRole("button", { name: /Launch/ }).click();
-  await expect(dialog.getByRole("alert")).toContainText("This model credential is revoked. Choose another account.");
+  await expect(dialog.getByRole("alert")).toContainText("Reconnect it in Account > Models");
+  await expect(dialog.getByRole("alert")).not.toContainText("HTTP 503");
+  for (const [name, width] of [
+    ["desktop", 1280],
+    ["mobile", 390],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.screenshot({ path: `test-results/template-action-after-${name}.png`, fullPage: true });
+  }
   await expect(dialog.getByRole("link", { name: "Open its sandbox" })).toHaveCount(0);
   await dialog.getByRole("button", { name: /Launch/ }).click();
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);

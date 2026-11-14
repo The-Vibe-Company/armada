@@ -451,3 +451,13 @@ test("a chosen model account pins its current revision and refuses unusable, inc
   const implicit = templateRequest(form(), lookups);
   expect(implicit.ok && implicit.value.definition).not.toHaveProperty("modelAccount");
 });
+
+// Unknown control responses must not cross into action forms, even without a typed API code.
+test("template control failures suppress arbitrary diagnostics and retain account/access recovery", () => {
+  const diagnostic = "HTTP 502: model_account_id digest sha256:example";
+  for (const status of [undefined, 401, 502]) expect(templateFailure(status, diagnostic)).not.toContain(diagnostic);
+  expect(templateFailure(401, diagnostic)).toContain("Sign in again");
+  expect(templateFailure(404, diagnostic, "missing_credential")).toContain("Add one in Account > Models");
+  expect(templateFailure(404, diagnostic, "credential_refused")).toContain("Reconnect it in Account > Models");
+  expect(templateFailure(409, diagnostic, "credential_busy")).toContain("account is busy");
+});
