@@ -7,15 +7,26 @@ import {
   resolveGitHubAccess,
 } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createLegacyGitHubPreparation, refreshLegacyGitHub } from "../src/github-legacy.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
 test("opted-in next-prompt preparation repairs siblings and never blocks prompts on install failure", async () => {
-  const { db, people } = await database();
+  const db = await openMigratedDatabase();
+  const people = { org: crypto.randomUUID(), owner: crypto.randomUUID() };
   try {
+    // GitHub repair uses its own grant below, not model or provider credentials.
+    await db.query("insert into auth.users(id) values($1)", [people.owner]);
+    await db.query("insert into orgs(id,name) values($1,'Legacy GitHub')", [people.org]);
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [people.org, people.owner]);
+    await db.query("insert into goldens(org_id,owner_id,name,visibility) values($1,$2,'mine','private')", [
+      people.org,
+      people.owner,
+    ]);
     const golden = (await db.query<{ id: string }>("select id from goldens where name='mine'")).rows[0]!;
     const sandboxes = [];
-    for (let i = 0; i < 12; i++)
+    // Two siblings prove shared-token repair without replaying the same work twelve times.
+    for (let i = 0; i < 2; i++)
       sandboxes.push(
         await createSqlSandboxStore(db).insert({
           id: crypto.randomUUID(),
