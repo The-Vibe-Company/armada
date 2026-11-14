@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,13 +20,30 @@ import {
 } from "@armada/provider-modal";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
+
+// This fixture models remote exec; shell execution is not the snapshot-byte contract.
+async function revisionCommand(directory: string, command: string) {
+  if (command === "cat revision.txt") return readFile(join(directory, "revision.txt"), "utf8");
+  await writeFile(join(directory, "revision.txt"), command.includes("revision-one") ? "revision-one" : "revision-two");
+  return "";
+}
 
 test("secure Modal golden publishes a NULL master, restores from its own image, and snapshots again", async () => {
-  const { db, people } = await database();
+  const db = await openMigratedDatabase();
+  const people = { org: crypto.randomUUID(), admin: crypto.randomUUID(), owner: crypto.randomUUID() };
   const files = await mkdtemp(join(tmpdir(), "armada-golden-images-"));
   try {
+    // This lifecycle creates its own golden and GitHub grant; no launch credentials are needed.
+    await db.query("insert into auth.users (id) values ($1), ($2)", [people.admin, people.owner]);
+    await db.query("insert into orgs (id, name) values ($1, 'Modal lifecycle')", [people.org]);
+    await db.query("insert into members (org_id, user_id, role) values ($1, $2, 'admin'), ($1, $3, 'member')", [
+      people.org,
+      people.admin,
+      people.owner,
+    ]);
     const actor: GoldenActor = { orgId: people.org, userId: people.admin, role: "admin" };
     const scope: Scope = {
       orgId: people.org,
@@ -67,7 +83,7 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
                   close: async () => {
                     const request = JSON.parse(input) as { command: string };
                     const command = request.command;
-                    let result = {
+                    const result = {
                       detached: false,
                       exitCode: 0 as number | null,
                       stdout: "",
@@ -82,12 +98,7 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
                         "cat revision.txt",
                       ].includes(command)
                     ) {
-                      const done = spawnSync("/bin/bash", ["-c", command], {
-                        cwd: directory,
-                        env: { PATH: "/usr/bin:/bin", HOME: directory },
-                        encoding: "utf8",
-                      });
-                      result = { ...result, exitCode: done.status, stdout: done.stdout, stderr: done.stderr };
+                      result.stdout = await revisionCommand(directory, command);
                     }
                     if (command.includes("/helper/0.1.0/armada-helper")) result.stdout = goldenHelperReport;
                     complete(JSON.stringify(result));
@@ -169,16 +180,12 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
               )
             ) {
               const directory = machines.get(row.physicalId!)!.directory;
-              const result = spawnSync("/bin/bash", ["-c", command], {
-                cwd: directory,
-                env: { PATH: "/usr/bin:/bin", HOME: directory },
-                encoding: "utf8",
-              });
+              const stdout = await revisionCommand(directory, command);
               return {
                 detached: false,
-                exitCode: result.status,
-                stdout: result.stdout,
-                stderr: result.stderr,
+                exitCode: 0,
+                stdout,
+                stderr: "",
                 timedOut: false,
                 truncated: false,
               } as T;
@@ -207,8 +214,10 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
         return Response.json({
           access_token: "ghu-synthetic",
           refresh_token: "ghr-next",
-          expires_in: 3600,
-          refresh_token_expires_in: 7200,
+          // Golden checkout requires at least one hour remaining; use GitHub's
+          // normal eight-hour user-token lifetime, not the exact safety boundary.
+          expires_in: 28800,
+          refresh_token_expires_in: 31536000,
         });
       if (url === "https://api.github.com/user") return Response.json({ id: 7, login: "builder", name: null });
       if (url.includes("/user/installations"))

@@ -17,6 +17,26 @@ function setup() {
   return { auth, output, requests };
 }
 
+test("custom Codex save refuses missing deployment names before reading a key or calling the API", async () => {
+  const h = setup();
+  let reads = 0;
+  expect(
+    await run(
+      ["creds", "set", "openai", "--name", "Azure", "--base-url", "https://resource.openai.azure.com/openai/v1"],
+      { out: h.auth.out, err: h.auth.err },
+      {
+        auth: h.auth,
+        readStdin: async () => {
+          reads++;
+          return randomUUID();
+        },
+      },
+    ),
+  ).not.toBe(0);
+  expect(reads).toBe(0);
+  expect(h.requests).toHaveLength(0);
+});
+
 test.each(["stdin", "file"] as const)(
   "CLI creates normalized Codex endpoint accounts with a private %s key",
   async (source) => {
@@ -35,6 +55,8 @@ test.each(["stdin", "file"] as const)(
       baseUrl + "/responses",
       "--api-version",
       "2025-04-01-preview",
+      "--models",
+      "owner-deployment,backup-deployment",
     ];
     if (source === "file") args.push("--file", "private-input");
     expect(
@@ -63,7 +85,11 @@ test.each(["stdin", "file"] as const)(
       org: "Team",
       kind: "openai",
       name: "Foundry",
-      value: JSON.stringify({ endpoint: { version: 1, baseUrl, apiVersion: "2025-04-01-preview" }, apiKey }),
+      value: JSON.stringify({
+        endpoint: { version: 1, baseUrl, apiVersion: "2025-04-01-preview" },
+        apiKey,
+        models: ["owner-deployment", "backup-deployment"],
+      }),
     });
     expect(h.output.join("")).not.toContain(apiKey);
     expect(h.output.join("")).toContain("Responses API");
@@ -87,7 +113,9 @@ test.each(
       "--base-url",
       "https://other.example.com",
     ],
-  ].map((args) => ({ args })),
+  ].map((args) => ({
+    args: args.includes("openai") && args.includes("--base-url") ? [...args, "--models", "owner-deployment"] : args,
+  })),
 )("invalid endpoint command refuses before secret input/API: %j", async ({ args }) => {
   const h = setup();
   let reads = 0;
@@ -128,6 +156,8 @@ test("CLI rotation preserves account revision and JSON output without requiring 
         "3",
         "--base-url",
         "https://example.com/v1",
+        "--models",
+        "owner-deployment",
         "--json",
       ],
       { out: h.auth.out, err: h.auth.err },
@@ -141,7 +171,11 @@ test("CLI rotation preserves account revision and JSON output without requiring 
     kind: "openai",
     id: "account",
     expectedVersion: 3,
-    value: JSON.stringify({ endpoint: { version: 1, baseUrl: "https://example.com/v1" }, apiKey }),
+    value: JSON.stringify({
+      endpoint: { version: 1, baseUrl: "https://example.com/v1" },
+      apiKey,
+      models: ["owner-deployment"],
+    }),
   });
   expect(h.output.join("")).toBe('{"ok":true}\n');
 });
@@ -150,7 +184,17 @@ test("CLI refuses connection JSON when endpoint options require a raw key", asyn
   const h = setup();
   expect(
     await run(
-      ["creds", "set", "openai", "--name", "Foundry", "--base-url", "https://example.com/v1"],
+      [
+        "creds",
+        "set",
+        "openai",
+        "--name",
+        "Foundry",
+        "--base-url",
+        "https://example.com/v1",
+        "--models",
+        "owner-deployment",
+      ],
       { out: h.auth.out, err: h.auth.err },
       { auth: h.auth, readStdin: async () => JSON.stringify({ apiKey: randomUUID() }) },
     ),
@@ -218,7 +262,9 @@ test.each(
     ["set", "anthropic", "--name", "Gateway", "--base-url", "https://example.com", "--api-version", "v1"],
     ["set", "anthropic", "--name", "Gateway", "--base-url", "https://example.com", "--endpoint-auth", "oauth"],
     ["list", "--endpoint-auth", "bearer"],
-  ].map((args) => ({ args })),
+  ].map((args) => ({
+    args: args.includes("openai") && args.includes("--base-url") ? [...args, "--models", "owner-deployment"] : args,
+  })),
 )("invalid gateway options refuse before reading a key or calling API: %j", async ({ args }) => {
   const h = setup();
   let reads = 0;
@@ -304,6 +350,7 @@ test.each(["openai", "anthropic"])("CLI stores exact per-model prices on a %s co
         "3",
         "--base-url",
         "https://gateway.example/v1",
+        ...(kind === "openai" ? ["--models", "owner-deployment"] : []),
         "--price-model",
         "owner-deployment",
         "--price-input",
@@ -328,6 +375,7 @@ test.each(["openai", "anthropic"])("CLI stores exact per-model prices on a %s co
     "owner-deployment": { input: "0", output: "12.345678901234", cacheRead: "0.25", cacheWrite: null, reasoning: null },
   });
   expect(value.apiKey).toBe(apiKey);
+  expect(value.models).toEqual(kind === "openai" ? ["owner-deployment"] : undefined);
   expect(h.output.join("")).toBe('{"ok":true}\n');
 });
 
@@ -344,7 +392,9 @@ test.each(
       ["--price-model", "__proto__", "--price-input", "1", "--price-output", "2"],
       ["--price-model", "deployment", "--price-model", "other", "--price-input", "1", "--price-output", "2"],
     ].map((flags) => ["set", "openai", "--name", "Price", "--base-url", "https://gateway.example/v1", ...flags]),
-  ].map((args) => ({ args })),
+  ].map((args) => ({
+    args: args.includes("openai") && args.includes("--base-url") ? [...args, "--models", "owner-deployment"] : args,
+  })),
 )("invalid prices are refused before secret input/API: %j", async ({ args }) => {
   const h = setup();
   let reads = 0;
@@ -404,16 +454,24 @@ test("CLI creates an OpenCode chat-compatible account with explicit upstream mod
 });
 
 test("CLI connects shared provider presets without connection JSON or a user-selected credential kind", async () => {
-  for (const [preset, url, models, protocol] of [
+  for (const [preset, url, models, protocol, kind = "opencode"] of [
     ["opencode-anthropic", undefined, "claude-test", "anthropic"],
     ["opencode-openai", undefined, "gpt-test", "openai"],
     ["opencode-azure", "https://resource.openai.azure.com/openai/v1/responses", "my-deployment", "azure"],
+    [
+      "azure-foundry",
+      "https://resource.services.ai.azure.com/openai/v1/responses",
+      "my-deployment",
+      undefined,
+      "openai",
+    ],
     ["deepseek", undefined, "deepseek-flash", undefined],
   ]) {
     const h = setup();
     const key = randomUUID();
     const args = ["creds", "connect", preset!, "--name", "Provider", "--models", models!, "--file", "private-key"];
     if (url) args.push("--base-url", url);
+    if (kind === "openai") args.push("--json");
     expect(
       await run(
         args,
@@ -428,10 +486,11 @@ test("CLI connects shared provider presets without connection JSON or a user-sel
     const request = h.requests[0]!;
     expect(new URL(request.url).pathname).toBe("/api/v1/creds/accounts/set");
     const body = (await request.json()) as { kind: string; name: string; scope: string; value: string };
-    expect(body).toMatchObject({ kind: "opencode", name: "Provider", scope: "user" });
+    expect(body).toMatchObject({ kind, name: "Provider", scope: "user" });
     const connection = JSON.parse(body.value);
     expect(connection.endpoint.protocol).toBe(protocol);
-    expect(connection.endpoint.models).toEqual([models]);
+    expect(kind === "openai" ? connection.models : connection.endpoint.models).toEqual([models]);
+    if (kind === "openai") expect(h.output.join("")).toBe('{"ok":true}\n');
     expect(connection.apiKey).toBe(key);
     expect(h.output.join("")).not.toContain(key);
   }

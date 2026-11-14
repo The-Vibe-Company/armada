@@ -9,9 +9,38 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "h_codex",
+  "h_claude",
+  "h_opencode",
+  "h_missing",
+  "h_failed",
+
+  "control_steer",
+  "control_interrupt",
+  "control_echo",
+  "control_finished",
+  "control_unsupported",
+  "control_api_unsupported",
+  "control_full",
+  "subscription",
+  "subscription_priced",
+  "subscription_bad_billing",
+  "custom_unknown",
+  "docker_send_pending",
+  "github",
+  "github_scp",
+  "github_ssh",
+  "github_auth_failed",
+  "github_clone_failed",
+  "github_push_failed",
+  "github_invalid",
+  "github_unbound",
+  "github_unconfigured",
+  "github_unsupported",
   "accounts",
   "accounts_unknown",
   "accounts_invalid",
+  "accounts_missing_model",
   "accounts_stop_unsupported",
   "accounts_unknown_bad",
   "accounts_price_lost",
@@ -42,6 +71,12 @@ for (const mode of [
   "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
+    const requestedHarness =
+      mode === "h_claude" ? "claude-code" : mode === "h_opencode" || mode === "h_missing" ? "opencode" : "codex";
+    const configuredHarness = mode === "h_claude" ? "claude" : mode === "h_opencode" ? "opencode" : "codex";
+    const controlFeature = ["control_interrupt", "control_finished"].includes(mode) ? "interrupt" : "steer";
+    const controlMarkers = new Map<string, string>();
+    const controlled = new Set<string>();
     const debtFeature =
       mode === "unimplemented" ? "mcp" : mode === "idle-pause" || mode === "wake-on-send" ? mode : undefined;
     const lines: string[] = [];
@@ -64,27 +99,40 @@ for (const mode of [
               ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
               provider,
               org: provider,
-              harness: "codex",
-              model: "fake-model",
+              harness: configuredHarness,
+              ...(mode === "accounts_missing_model" && account === "codex-azure"
+                ? { model: "", notRunReason: "account has no declared model" }
+                : { model: "fake-model" }),
               modelAccountId: "fake-account",
               golden: "fake-golden",
               hostId: "owned-host",
+              ...(mode.startsWith("github") && mode !== "github_unconfigured"
+                ? { githubRepository: mode === "github_invalid" ? "owner/repo'; echo unsafe" : "owner/private-fixture" }
+                : {}),
             })),
           ),
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode.startsWith("accounts")
-        ? ["--parity", "--accounts"]
-        : mode === "usage_filter"
-          ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-          : mode === "filtered"
-            ? ["--parity", "--only", "docker", "--feature", "exec"]
-            : debtFeature
-              ? ["--parity", "--feature", debtFeature]
-              : mode === "invalid_filter"
-                ? ["--parity", "--feature", "typo"]
-                : ["--parity"],
+      mode.startsWith("h_")
+        ? ["--parity", "--feature", requestedHarness]
+        : ["control_api_unsupported", "control_full"].includes(mode)
+          ? ["--parity"]
+          : mode.startsWith("control_")
+            ? ["--parity", "--feature", controlFeature]
+            : mode.startsWith("github")
+              ? ["--parity", "--feature", "github"]
+              : mode.startsWith("accounts")
+                ? ["--parity", "--accounts"]
+                : mode === "usage_filter"
+                  ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                  : mode === "filtered"
+                    ? ["--parity", "--only", "docker", "--feature", "exec"]
+                    : debtFeature
+                      ? ["--parity", "--feature", debtFeature]
+                      : mode === "invalid_filter"
+                        ? ["--parity", "--feature", "typo"]
+                        : ["--parity"],
       {
         now: () => 0,
         sleep: async () => {},
@@ -106,10 +154,13 @@ for (const mode of [
               result = {
                 providers: providers.map((id) => ({
                   id,
-                  harnesses: ["codex"],
+                  harnesses: [configuredHarness],
                   capabilities: {
+                    steer: mode.startsWith("control_") && mode !== "control_unsupported",
+                    interrupt: mode.startsWith("control_") && mode !== "control_unsupported",
                     launch: true,
                     exec: true,
+                    github: mode !== "github_unsupported",
                     followupPrompts: true,
                     status: true,
                     logs: true,
@@ -118,18 +169,53 @@ for (const mode of [
                     delete: true,
                   },
                   unsupportedReasons: {
+                    steer: "Steer unavailable for this harness.",
+                    interrupt: "Interrupt unavailable for this harness.",
+                    github: "GitHub disabled by server.",
                     stop: "Stop unavailable (#1579)",
                     resume: "Server resume disabled.",
                   },
                 })),
               };
               break;
+            case "golden/size-policy":
+              result = {
+                provider: p,
+                repositories:
+                  mode === "github_unbound"
+                    ? []
+                    : [
+                        {
+                          url:
+                            mode === "github_scp"
+                              ? "git@github.com:owner/private-fixture.git"
+                              : mode === "github_ssh"
+                                ? "ssh://git@github.com/owner/private-fixture.git"
+                                : "https://github.com/owner/private-fixture.git",
+                        },
+                      ],
+              };
+              break;
             case "docker/hosts/list":
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
             case "sandbox/launch":
+              if (mode.startsWith("h_")) {
+                expect(body.harness).toBe(configuredHarness);
+                expect(body.credentialId).toBe("fake-account");
+              }
               if (mode.startsWith("accounts")) turns.set(p, []);
-              if (p === "docker") expect(body).not.toHaveProperty("image");
+              if (p === "docker") {
+                expect(body).not.toHaveProperty("image");
+                if (mode.startsWith("github") && mode !== "github_unconfigured")
+                  expect(body.repos).toEqual([
+                    {
+                      url: "https://github.com/owner/private-fixture.git",
+                      branch: "main",
+                      dir: "armada-parity-github",
+                    },
+                  ]);
+              }
               if (p === "modal" && (mode === "quota" || mode === "server_failure"))
                 return Response.json(
                   {
@@ -138,7 +224,7 @@ for (const mode of [
                       message:
                         mode === "quota"
                           ? "The Modal plan start limit per day has been reached."
-                          : "Access denied. token=do-not-print ghp_abcdefghijklmnopqrstuvwxyz0123456789 sk-abcdefghijklmnopqrstuvwxyz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl",
+                          : `Access denied. token=do-not-print ghp_${"abcdefghijklmnopqrstuvwxyz0123456789"} sk-abcdefghijklmnopqrstuvwxyz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl`,
                       details: { secret: "do-not-print-details" },
                     },
                   },
@@ -147,7 +233,34 @@ for (const mode of [
               states.set(p, "ready");
               result = { sandbox: { id: p, provider: p } };
               break;
+            case "sandbox/wait":
+              result = {
+                prompt: {
+                  promptId: turns.get(p)?.at(-1),
+                  state: controlled.has(p) ? (mode === "control_finished" ? "finished" : "interrupted") : "running",
+                },
+              };
+              break;
+            case "sandbox/steer":
+              if (mode === "control_api_unsupported")
+                return Response.json(
+                  { error: { code: "unsupported", message: "This harness cannot steer." } },
+                  { status: 400 },
+                );
+              expect(body.text).toContain("Cancel the waiting task");
+              controlMarkers.set(p, body.text.match(/PARITY_STEER_[a-z0-9]+/)[0]);
+              result = { id: p, promptId: "steer-record", delivery: "restart" };
+              break;
+            case "sandbox/interrupt":
+              controlled.add(p);
+              result = { id: p, interrupted: true };
+              break;
             case "sandbox/send": {
+              if (mode === "docker_send_pending" && p === "docker")
+                return Response.json(
+                  { error: { code: "sandbox_not_ready", message: "Docker launch preparation is pending." } },
+                  { status: 409 },
+                );
               if (p !== "docker") expect(body.request_id).toBeUndefined();
               if (body.prompt.includes("Remember this token")) prompts.set(p, body.prompt.match(/PARITY_[a-z0-9]+/)[0]);
               states.set(p, p === "docker" ? "running" : "ready");
@@ -158,14 +271,50 @@ for (const mode of [
               break;
             }
             case "logs/read":
+              if (controlMarkers.has(p)) {
+                result = {
+                  events: [
+                    {
+                      kind: "message",
+                      promptId: "steered-run",
+                      text: controlMarkers.get(p),
+                      partial: false,
+                      responseKind: mode === "control_echo" ? "tool_result" : "assistant",
+                    },
+                    { kind: "prompt", promptId: "steered-run", status: "finished" },
+                  ],
+                };
+                break;
+              }
               result = {
                 events: [
-                  { kind: "prompt", promptId: turns.get(p)?.at(-1), status: "finished" },
+                  {
+                    kind: "prompt",
+                    promptId: turns.get(p)?.at(-1),
+                    status: mode === "h_failed" ? "failed" : "finished",
+                  },
                   { kind: "message", promptId: turns.get(p)?.at(-1), text: `SMOKE_OK ${prompts.get(p)}` },
                 ],
               };
               break;
             case "sandbox/exec":
+              if (String(body.command).includes("PARITY_GITHUB_OK")) {
+                expect(body.command).toContain("clone --quiet");
+                expect(body.command).toContain("core.hooksPath=/dev/null");
+                expect(body.command).toContain("push --dry-run");
+                expect(body.command).toContain(".private and .permissions.push");
+                expect(body.command).toContain("trap ");
+                expect(body.command).not.toContain("Bearer");
+                result =
+                  mode === "github_auth_failed"
+                    ? { exitCode: 11, timedOut: false, stdout: "PARITY_GITHUB_AUTH_FAILED" }
+                    : mode === "github_clone_failed"
+                      ? { exitCode: 12, timedOut: false, stdout: "PARITY_GITHUB_CLONE_FAILED" }
+                      : mode === "github_push_failed"
+                        ? { exitCode: 13, timedOut: false, stdout: "PARITY_GITHUB_PUSH_FAILED" }
+                        : { exitCode: 0, timedOut: false, stdout: "PARITY_GITHUB_OK" };
+                break;
+              }
               result = { exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" };
               break;
             case "sandbox/detail":
@@ -190,13 +339,20 @@ for (const mode of [
                     inputTokens: mode === "usage_missing" ? null : 10,
                     outputTokens: 5,
                     pricing: {
+                      ...(mode.startsWith("subscription")
+                        ? {
+                            basis: "api_equivalent",
+                            billing: mode === "subscription_bad_billing" ? "per_token" : "subscription",
+                            credentialId: "account",
+                          }
+                        : {}),
                       unknown:
-                        mode === "accounts_unknown" ||
+                        ["accounts_unknown", "subscription", "custom_unknown"].includes(mode) ||
                         (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                           ? "price"
                           : null,
                       usd:
-                        mode === "accounts_unknown" ||
+                        ["accounts_unknown", "subscription", "custom_unknown"].includes(mode) ||
                         (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                           ? null
                           : mode === "price_changed" && (turns.get(p)?.length ?? 0) > 1
@@ -209,20 +365,33 @@ for (const mode of [
                     },
                   })),
                   cost: {
+                    classification: mode.startsWith("subscription")
+                      ? "included_in_subscription"
+                      : mode.startsWith("accounts_unknown") ||
+                          mode === "custom_unknown" ||
+                          mode === "accounts_price_lost"
+                        ? "unknown"
+                        : "priced",
                     currency: "USD",
-                    basis: "estimated",
+                    basis: mode.startsWith("subscription") ? "api_equivalent" : "estimated",
                     unknown:
                       mode.startsWith("accounts_unknown") ||
+                      mode === "subscription" ||
+                      mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? "price"
                         : null,
                     unpricedTurns:
                       mode.startsWith("accounts_unknown") ||
+                      mode === "subscription" ||
+                      mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? turns.get(p)?.length
                         : 0,
                     usd:
                       mode.startsWith("accounts_unknown") ||
+                      mode === "subscription" ||
+                      mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? null
                         : mode === "cost_mismatch"
@@ -275,7 +444,10 @@ for (const mode of [
       if (mode === "accounts_invalid") {
         expect(passed).toBe(false);
         expect(calls).toHaveLength(0);
-        expect(lines.find((line) => line.startsWith("{"))).toContain("invalid_accounts_configuration");
+        expect(JSON.parse(lines.find((line) => line.startsWith("{"))!)).toMatchObject({
+          code: "invalid_accounts_configuration",
+          field: "ARMADA_SMOKE_CASES[1].account",
+        });
         return;
       }
       const badCost = mode === "accounts_unknown_bad" || mode === "accounts_price_lost";
@@ -284,18 +456,37 @@ for (const mode of [
       for (const account of ["codex-openai", "codex-azure"]) {
         for (const provider of ["modal", "docker"]) {
           const cell = report.accounts[account][provider];
+          if (mode === "accounts_missing_model" && account === "codex-azure") {
+            expect(cell).toEqual({ status: "not-run", reason: "account has no declared model" });
+            expect(lines.join("\n")).toContain(
+              `| codex-azure | ${provider} | not-run: account has no declared model |`,
+            );
+            continue;
+          }
           expect(cell.status).toBe(badCost ? "fail" : mode === "accounts_stop_unsupported" ? "not-run" : "pass");
           expect(cell.features["resume-recall"][provider].status).toBe("pass");
           if (mode === "accounts_unknown") expect(cell.features["exact-cost"][provider].reason).toBe("unknown: price");
         }
       }
+      expect(lines.join("\n")).toContain("| claude-anthropic | modal | not-run: no account on staging |");
+      expect(lines.join("\n")).toContain("| codex-subscription | docker | not-run: no account on staging |");
       expect(report.accounts["codex-subscription"].modal).toEqual({
         status: "not-run",
         reason: "no account on staging",
       });
-      expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(4);
-      expect(calls.filter((call) => call.endsWith(":sandbox/delete"))).toHaveLength(4);
+      expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(
+        mode === "accounts_missing_model" ? 2 : 4,
+      );
+      expect(calls.filter((call) => call.endsWith(":sandbox/delete"))).toHaveLength(
+        mode === "accounts_missing_model" ? 2 : 4,
+      );
       expect(calls.some((call) => call.startsWith("boat:"))).toBe(false);
+      return;
+    }
+    if (mode === "github_invalid") {
+      expect(passed).toBe(false);
+      expect(calls).toHaveLength(0);
+      expect(lines.join("\n")).toContain("invalid_configuration");
       return;
     }
     if (mode === "invalid_filter") {
@@ -307,6 +498,35 @@ for (const mode of [
     const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"provider_parity"'))!);
     for (const cells of Object.values(report.features) as Record<string, unknown>[])
       expect(cells.boat).toEqual(boatNotRun);
+    if (mode === "github_unbound") {
+      expect(passed).toBe(false);
+      expect(report.features.github.modal.status).toBe("fail");
+      expect(report.features.github.modal.diagnostic.code).toBe("github_repository_not_in_golden");
+      expect(report.features.github.docker.status).toBe("pass");
+      expect(calls).not.toContain("modal:sandbox/launch");
+      return;
+    }
+    if (mode.startsWith("github")) {
+      expect(passed).toBe(!["github_auth_failed", "github_clone_failed", "github_push_failed"].includes(mode));
+      for (const provider of providers) {
+        const cell = report.features.github[provider];
+        expect(cell.status).toBe(
+          mode === "github_unconfigured"
+            ? "not-run"
+            : mode === "github_unsupported"
+              ? "unsupported"
+              : ["github", "github_scp", "github_ssh"].includes(mode)
+                ? "pass"
+                : "fail",
+        );
+        if (mode === "github_unconfigured") expect(calls).toHaveLength(0);
+        else expect(report.features.cleanup[provider].status).toBe("pass");
+      }
+      expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(
+        mode === "github_unconfigured" ? 0 : 2,
+      );
+      return;
+    }
     if (mode === "filtered" || debtFeature) {
       expect(passed).toBe(true);
       if (debtFeature) {
@@ -352,6 +572,108 @@ for (const mode of [
       expect(report.features["exact-cost-after-resume"].docker.status).toBe("pass");
       expect(report.features["exact-cost"].docker.status).toBe("not-run");
       return;
+    }
+    if (mode.startsWith("h_")) {
+      expect(passed).toBe(mode !== "h_failed");
+      for (const provider of ["modal", "docker"]) {
+        const cell = report.features[requestedHarness][provider];
+        expect(cell.status).toBe(mode === "h_missing" || mode === "h_failed" ? "not-run" : "pass");
+        if (mode === "h_missing") {
+          expect(cell.reason).toBe("harness_account_not_configured");
+          expect(calls).not.toContain(`${provider}:sandbox/launch`);
+        } else {
+          expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+          expect(turns.get(provider)).toHaveLength(1);
+          expect(report.features.cleanup[provider].status).toBe("pass");
+          if (mode === "h_failed") expect(cell.reason).toBe("send: turn_failed");
+        }
+      }
+      return;
+    }
+
+    if (mode === "subscription_bad_billing") {
+      expect(passed).toBe(false);
+      expect(report.features["exact-cost"].modal).toMatchObject({ status: "fail", reason: "invalid_cost_receipt" });
+      return;
+    }
+    if (mode.startsWith("subscription") || mode === "custom_unknown") {
+      expect(passed).toBe(true);
+      for (const provider of ["modal", "docker"]) {
+        for (const name of ["exact-cost", "exact-cost-before-resume", "exact-cost-after-resume"])
+          expect(report.features[name][provider]).toMatchObject({
+            status: "pass",
+            reason: mode.startsWith("subscription") ? "included in subscription" : "unknown: price",
+          });
+        expect(turns.get(provider)).toHaveLength(2);
+      }
+      return;
+    }
+    if (mode === "control_full") {
+      expect(passed).toBe(true);
+      for (const provider of ["modal", "docker"]) {
+        expect(report.features.steer[provider].status).toBe("pass");
+        expect(report.features.interrupt[provider].status).toBe("pass");
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(turns.get(provider)).toHaveLength(4);
+        expect(report.features.cleanup[provider].status).toBe("pass");
+      }
+      return;
+    }
+    if (mode === "control_api_unsupported") {
+      expect(passed).toBe(true);
+      for (const provider of ["modal", "docker"]) {
+        expect(report.features.steer[provider].status).toBe("unsupported");
+        expect(report.features.interrupt[provider]).toMatchObject({
+          status: "not-run",
+          reason: "steer_failed",
+          diagnostic: { code: "unsupported" },
+        });
+        expect(calls).not.toContain(`${provider}:sandbox/interrupt`);
+        expect(report.features.cleanup[provider].status).toBe("pass");
+      }
+      return;
+    }
+    if (mode.startsWith("control_")) {
+      const fail = mode === "control_echo" || mode === "control_finished";
+      expect(passed).toBe(!fail);
+      for (const provider of ["modal", "docker"]) {
+        expect(report.features[controlFeature][provider].status).toBe(
+          mode === "control_unsupported" ? "unsupported" : fail ? "fail" : "pass",
+        );
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(report.features.cleanup[provider].status).toBe("pass");
+        expect(turns.get(provider)?.length ?? 0).toBe(mode === "control_unsupported" ? 0 : 1);
+      }
+      return;
+    }
+    if (mode === "docker_send_pending") {
+      expect(passed).toBe(false);
+      for (const name of ["resume-recall", "usage", "exact-cost"]) {
+        expect(report.features[name].docker).toMatchObject({
+          status: "not-run",
+          reason: "send: sandbox_not_ready",
+          diagnostic: { code: "sandbox_not_ready", httpStatus: 409 },
+        });
+      }
+      expect(report.features.cleanup.docker.status).toBe("pass");
+      expect(calls.filter((call) => call === "docker:sandbox/launch")).toHaveLength(1);
+      return;
+    }
+    if (mode === "online") {
+      for (const provider of ["modal", "docker"]) {
+        for (const name of [
+          "resume-recall",
+          "usage",
+          "exact-cost",
+          "usage-before-resume",
+          "usage-after-resume",
+          "exact-cost-before-resume",
+          "exact-cost-after-resume",
+        ])
+          expect(report.features[name][provider].status).toBe("pass");
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(turns.get(provider)).toHaveLength(2);
+      }
     }
     if (["cost_mismatch", "usage_missing", "price_changed", "usage_filter", "usage_lost"].includes(mode)) {
       const cell = report.features["exact-cost"].docker;
@@ -506,6 +828,8 @@ function productionBoatFixture(
                 id: "boat",
                 harnesses: ["codex"],
                 capabilities: {
+                  steer: false,
+                  interrupt: false,
                   launch: true,
                   followupPrompts: true,
                   status: true,
@@ -515,9 +839,14 @@ function productionBoatFixture(
                   resume: true,
                   delete: true,
                 },
-                unsupportedReasons: {},
+                unsupportedReasons: { steer: "Unavailable", interrupt: "Unavailable" },
               },
             ],
+          });
+        case "golden/size-policy":
+          return Response.json({
+            provider: "boat",
+            repositories: [{ url: "https://github.com/owner/private-fixture.git" }],
           });
         case "sandbox/launch":
           if (fault === "deadline_exhausted") clock += 35 * 60_000;
@@ -560,13 +889,23 @@ function productionBoatFixture(
                 outputTokens: 2,
                 pricing: { unknown: null, usd: "0.1" },
               })),
-              cost: { currency: "USD", unknown: null, unpricedTurns: 0, usd: `0.${turns.length}` },
+              cost: {
+                classification: "priced",
+                currency: "USD",
+                unknown: null,
+                unpricedTurns: 0,
+                usd: `0.${turns.length}`,
+              },
             },
           });
         case "sandbox/status":
           return Response.json({ id: "new-production-boat", status });
         case "sandbox/exec":
-          return Response.json({ exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" });
+          return Response.json({
+            exitCode: 0,
+            timedOut: false,
+            stdout: String(body.command).includes("PARITY_GITHUB_OK") ? "PARITY_GITHUB_OK" : "PARITY_EXEC_OK",
+          });
         case "sandbox/stop":
           status = "stopped";
           return Response.json({ status });
@@ -749,5 +1088,92 @@ for (const fault of ["slow_turn", "turn_timeout", "stop_settling", "late_success
       const requests = fake.calls.filter((call) => call.path === "sandbox/delete").map((call) => call.body.request_id);
       expect(new Set(requests).size).toBe(1);
     }
+  });
+}
+
+test("GitHub parity uses the same probe for coordinator production Boat", async () => {
+  const fake = productionBoatFixture();
+  const env = {
+    ...productionBoatEnv,
+    ARMADA_SMOKE_CASES: JSON.stringify([{ ...productionBoatCase, githubRepository: "owner/private-fixture" }]),
+  };
+  expect(await runProductionBoat(env, fake.io, [...productionBoatArgs, "--feature", "github"])).toBe(true);
+  const report = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"provider_parity"')) ?? "{}");
+  expect(report.features.github.boat.status).toBe("pass");
+  expect(report.features.cleanup.boat.status).toBe("pass");
+  expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+  expect(fake.calls.find((call) => call.path === "sandbox/exec")?.body.command).toContain("push --dry-run");
+});
+
+// Configuration failures must be actionable before allocating any real compute.
+for (const [name, override, field] of [
+  ["missing URL", { ARMADA_URL: undefined }, "ARMADA_URL"],
+  ["missing token", { ARMADA_TOKEN: " " }, "ARMADA_TOKEN"],
+  ["missing consent", { ARMADA_SMOKE: undefined }, "ARMADA_SMOKE"],
+  ["malformed JSON", { ARMADA_SMOKE_CASES: '{"secret":"never-echo-this"' }, "ARMADA_SMOKE_CASES"],
+  ["non-array", { ARMADA_SMOKE_CASES: "{}" }, "ARMADA_SMOKE_CASES"],
+  ["non-object", { ARMADA_SMOKE_CASES: "[null]" }, "ARMADA_SMOKE_CASES[0]"],
+  [
+    "unrecognized skip reason",
+    {
+      ARMADA_SMOKE_CASES:
+        '[{"provider":"modal","account":"codex-azure","harness":"codex","notRunReason":"never-echo-this"}]',
+    },
+    "ARMADA_SMOKE_CASES[0].notRunReason",
+  ],
+  [
+    "missing model without explicit metadata skip",
+    { ARMADA_SMOKE_CASES: '[{"provider":"modal","account":"codex-azure","harness":"codex"}]' },
+    "ARMADA_SMOKE_CASES[0].model",
+  ],
+  [
+    "normal case without label",
+    { ARMADA_SMOKE_CASES: '[{"provider":"boat"},{"provider":"modal"}]' },
+    "ARMADA_SMOKE_CASES[1].account",
+  ],
+  [
+    "wrong harness",
+    { ARMADA_SMOKE_CASES: '[{"provider":"modal","account":"codex-openai","harness":"opencode"}]' },
+    "ARMADA_SMOKE_CASES[0].harness",
+  ],
+  [
+    "missing Docker host",
+    {
+      ARMADA_SMOKE_CASES:
+        '[{"provider":"docker","account":"codex-openai","harness":"codex","org":"org","model":"model","modelAccountId":"account"}]',
+    },
+    "ARMADA_SMOKE_CASES[0].hostId",
+  ],
+] as const) {
+  test(`accounts configuration identifies ${name}`, async () => {
+    const lines: string[] = [];
+    expect(
+      await postDeploySmoke(
+        Object.assign(
+          {
+            ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+            ARMADA_TOKEN: "never-echo-this",
+            ARMADA_SMOKE: "create_real_compute",
+            ARMADA_SMOKE_CASES: "[]",
+          },
+          override,
+        ),
+        ["--parity", "--accounts"],
+        {
+          now: () => 0,
+          sleep: async () => {},
+          out: (line) => lines.push(line),
+          fetch: async () => {
+            throw new Error("must not allocate or call the network on invalid configuration");
+          },
+        },
+      ),
+    ).toBe(false);
+    expect(JSON.parse(lines.find((line) => line.startsWith("{"))!)).toMatchObject({
+      code: "invalid_accounts_configuration",
+      field,
+      message: expect.any(String),
+    });
+    expect(lines.join("\n")).not.toContain("never-echo-this");
   });
 }

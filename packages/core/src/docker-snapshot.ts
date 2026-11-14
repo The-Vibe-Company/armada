@@ -14,6 +14,9 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
       (typeof r.builtOnVersion === "string" &&
         /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?(?:\+[a-zA-Z0-9.-]+)?$/.test(r.builtOnVersion))
     ) ||
+    (r.failureReason !== undefined &&
+      r.failureReason !== null &&
+      (typeof r.failureReason !== "string" || r.failureReason.length > 512)) ||
     typeof r.name !== "string" ||
     !r.name ||
     (r.visibility !== "private" && r.visibility !== "org") ||
@@ -43,6 +46,7 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
     definitionHash: r.definitionHash as string,
     status: r.status as DockerSnapshotRecord["status"],
     image: r.image as string | null,
+    failureReason: (r.failureReason as string | null | undefined) ?? null,
     config: parseGoldenConfig(r.config),
   };
 }

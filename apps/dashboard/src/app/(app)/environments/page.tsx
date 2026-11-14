@@ -885,7 +885,8 @@ function dockerSnapshotRow(
     snapshot.status === "building"
       ? "Repositories and setup are building on this host. Closing this panel does not stop the build."
       : snapshot.status === "failed"
-        ? "The build did not publish a snapshot. Check the config and host, then create a new build."
+        ? (snapshot.failureReason ??
+          "The build did not publish a snapshot. Check the config and host, then create a new build.")
         : !snapshot.hostAvailable
           ? "Bring the original registered host online. Snapshots are local to its installation; they are not copied to other hosts."
           : !launchEnabled

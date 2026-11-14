@@ -1,13 +1,14 @@
 import type { AgentEvent, Sql } from "@armada/core";
-import { HARNESS_KINDS, PROMPT_STATUSES } from "@armada/core";
+import { HARNESS_KINDS, isRecord as object, PROMPT_STATUSES } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
+import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { runtimeHealthMatches } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const scopedSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 export class DockerRuntimeDenied extends Error {
   constructor() {
@@ -127,7 +128,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
     });
   }
   return {
-    ready(actor: Actor, sandboxId: string, requestId: string) {
+    ready(actor: Actor, sandboxId: string, requestId: string, activate = true) {
       if (!uuid.test(requestId)) return Promise.reject(new DockerRuntimeDenied());
       return admitted(
         actor,
@@ -140,8 +141,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           if (response.state === "pending") return { state: "pending" as const };
           if (response.state !== "finished") deny();
           const health = result(response.reply, queued.epoch, id);
-          if (health.generation !== queued.epoch || typeof health.ready !== "boolean") deny();
-          if (!health.ready) deny();
+          if (!runtimeHealthMatches(health, queued.epoch)) deny();
           const checkpoint = (
             await tx.query<{ epoch: string; watermark: string }>(
               "select epoch::text,watermark::text from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2::bigint-1 and watermark is not null",
@@ -149,7 +149,6 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             )
           ).rows[0];
           if (checkpoint) {
-            const restore = health.restoredFrom;
             const saved = (
               await tx.query<{ conversation_ids: string[] }>(
                 "select conversation_ids from public.sandboxes where id=$1",
@@ -157,20 +156,25 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
               )
             ).rows[0];
             if (
-              !object(restore) ||
-              restore.epoch !== checkpoint.epoch ||
-              restore.watermark !== Number(checkpoint.watermark) ||
+              !object(health.restoredFrom) ||
               saved?.conversation_ids.length !== 1 ||
-              restore.conversationId !== saved.conversation_ids[0]
+              !runtimeHealthMatches(health, queued.epoch, {
+                epoch: checkpoint.epoch,
+                watermark: Number(checkpoint.watermark),
+                conversationId: saved.conversation_ids[0] as string,
+              })
             )
               deny();
           }
           return authority.withOwner(sandboxId, actor.userId, async (fenced, scope) => {
             if (scope.epoch !== queued.epoch) deny();
             // Private lane status transitions must not revoke their own live epoch.
-            await fenced.query(`update public.sandboxes set status='ready' where id=$1 and status='starting'`, [
-              sandboxId,
-            ]);
+            if (activate)
+              await fenced.query(
+                `update public.sandboxes set status='ready' where id=$1 and status='starting'
+              and not exists(select 1 from public.docker_launch_requests d where d.sandbox_id=$1 and d.result_enc is null)`,
+                [sandboxId],
+              );
             return { state: "ready" as const, epoch: scope.epoch };
           });
         },
@@ -191,6 +195,53 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           !["ready", "running"].includes(sandbox.status)
         )
           deny();
+        // The launch reserves a conversation before any native admission or queued receipt.
+        const launch = (
+          await tx.query<{ request_enc: Uint8Array<ArrayBuffer>; result_enc: Uint8Array<ArrayBuffer> | null }>(
+            "select request_enc,result_enc from public.docker_launch_requests where sandbox_id=$1",
+            [sandboxId],
+          )
+        ).rows[0];
+        let plannedConversation: string | undefined;
+        if (launch) {
+          const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
+          plannedConversation = manifest.conversationId ?? manifest.promptId;
+          if (
+            !launch.result_enc &&
+            (manifest.promptId !== input.requestId ||
+              manifest.request?.prompt !== input.text ||
+              (input.conversationId !== plannedConversation &&
+                !(manifest.conversationId === undefined && input.conversationId === undefined)))
+          )
+            deny();
+        }
+        const reserved = (
+          await tx.query<{
+            input_enc: Uint8Array<ArrayBuffer>;
+            conversation_id: string | null;
+            previous_command: boolean;
+            valid: boolean;
+          }>(
+            `select q.input_enc,q.conversation_id,
+             exists(select 1 from public.runtime_commands c where c.sandbox_id=q.sandbox_id and c.request_id='docker_prompt_'||q.request_id::text) as previous_command,(q.status='dispatching' and q.owner_id=s.owner_id and q.actor_epoch=e.epoch and q.lifecycle_generation=s.lifecycle_generation) as valid
+          from public.docker_queued_prompts q join public.sandboxes s on s.id=q.sandbox_id
+          join public.mcp_actor_epochs e on e.user_id=q.owner_id and e.org_id=s.org_id
+          where q.sandbox_id=$1 and q.request_id=$2`,
+            [sandboxId, input.requestId],
+          )
+        ).rows[0];
+        if (reserved) {
+          const payload = JSON.parse(await decryptSecret(reserved.input_enc, key));
+          if (
+            !reserved.valid ||
+            payload.prompt !== input.text ||
+            (!reserved.previous_command &&
+              reserved.conversation_id !== null &&
+              reserved.conversation_id !== input.conversationId) ||
+            (payload.conversationId !== null && payload.conversationId !== input.conversationId)
+          )
+            deny();
+        }
         const id = `docker_prompt_${input.requestId}`;
         // Exact retries keep their original canonical payload, including the first
         // request's absent conversationId, even after its receipt is reconciled.
@@ -207,7 +258,12 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           ).rows[0]?.conversation_ids ?? deny();
         if (!previous.rows.length) {
           if (saved.length > 1 || saved.some((conversationId) => !uuid.test(conversationId))) deny();
-          if (saved.length ? input.conversationId !== saved[0] : input.conversationId !== undefined) deny();
+          if (
+            saved.length
+              ? input.conversationId !== saved[0]
+              : input.conversationId !== undefined && input.conversationId !== plannedConversation
+          )
+            deny();
           const blocked = await tx.query(
             `select 1 from public.runtime_commands where sandbox_id=$1
              and starts_with(request_id,'docker_prompt_')
@@ -252,6 +308,22 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           (saved.length === 1 && receipt.conversationId !== saved[0])
         )
           deny();
+        const pricing = (
+          await tx.query<{ context: unknown; captured: boolean }>(
+            "select pricing_context as context,pricing_context is not null as captured from public.runtime_enrolments where sandbox_id=$1 and epoch=$2",
+            [sandboxId, queued.epoch],
+          )
+        ).rows[0];
+        await createSqlData(tx)({
+          userId: actor.userId,
+          orgs: [{ orgId: actor.orgId, role: "member" }],
+          via: "service",
+        }).sandboxes.recordTurnModel!(
+          sandboxId,
+          receipt.promptId,
+          sandbox.model,
+          pricing?.captured ? pricing.context : null,
+        );
         await tx.query(
           `update public.sandboxes s set task_prompt_id=$2 where s.id=$1 and exists (
            select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id=$3 and c.epoch=$4

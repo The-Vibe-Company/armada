@@ -1,7 +1,9 @@
 # OpenCode on Modal
 
-**OpenCode has runtime launch paths on Modal and owned Docker hosts**; Boat refuses before fork. The shared
-harness catalog drives validators and generated iOS choices. Codex and Claude
+**OpenCode has runtime launch paths on Modal and owned Docker hosts.** Enabled
+placements come from the server's launch options and admission policy, not from
+the account's kind. The shared harness catalog drives validators and generated
+iOS choices. Codex and Claude
 retain their native drivers; OpenCode uses one ACP v1 transport, not a parallel
 V2 server/SDK integration. Modal retains its existing authenticated tunnel.
 
@@ -160,7 +162,8 @@ Use the normal staging `ARMADA_URL`, `ARMADA_TOKEN`, and `ARMADA_SMOKE_CASES`.
 Verify both cells' answer, follow-up, stop/resume recall, token receipts, honest
 cost classification and cleanup. This procedure is not evidence of a successful
 real Anthropic request; deterministic tests cover sealed credential validation
-and native adapter selection, not the live provider. Azure v1 endpoint support is described below; legacy versioned endpoints remain unsupported.
+and native adapter selection, not the live provider. Azure v1 endpoint support
+is described below; legacy versioned endpoints remain unsupported.
 
 ## Azure v1 connections for OpenCode (#1579)
 
@@ -237,7 +240,6 @@ for Modal and the owned Docker host and run the existing
 `--parity --accounts` command above. Verify answer, follow-up, stop/resume recall,
 tokens, honest cost classification and cleanup. Deterministic tests prove sealed
 configuration/CLI routing, not a successful live OpenAI lifecycle.
-
 
 Account setup guidance does not decide placement support. The selected provider's
 launch options and the server's admission policy remain authoritative; saving a

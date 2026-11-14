@@ -1,7 +1,4 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createServiceToken, createSqlAuthStore, sha256Hex } from "@armada/auth";
 import { createSqlMcpLeasePort, createSqlSandboxStore } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
@@ -10,7 +7,6 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { sandbox as boatSandbox } from "../../provider-boat/test/support.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
-import { nativeMcpInstallScript } from "../src/mcp-native.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
@@ -18,7 +14,6 @@ import { migratedDatabase } from "./migrated-database.ts";
 // before a possibly ambiguous resume, not inferred only from kernel identity.
 test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls only after readiness", async () => {
   const db = await migratedDatabase();
-  const home = await mkdtemp(join(tmpdir(), "armada-sameboot-"));
   const servers: McpServer[] = [];
   let service: ReturnType<typeof createMcpHttpIntegration> | undefined;
   try {
@@ -117,12 +112,10 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
           record.id,
         ])
       ).rows[0]?.configured;
-    const installedHash = async () => {
-      const config = JSON.parse(await readFile(join(home, ".claude.json"), "utf8")) as {
-        mcpServers: Record<string, { headers: { Authorization: string } }>;
-      };
-      return sha256Hex(Object.values(config.mcpServers)[0]?.headers.Authorization.slice(7) ?? "");
-    };
+    // Native installer bytes/rotation belong to mcp-native.test.ts. This test owns
+    // SQL fencing and delivery ordering, so observe the actual provider payload.
+    let deliveredToken = "";
+    const deliveredHash = () => sha256Hex(deliveredToken);
     let delayedHook: (() => Promise<void>) | undefined;
     const provider = createBoatProvider({
       apiKey: "boat_fixture_not_real",
@@ -187,7 +180,7 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
         if (path.endsWith("/prompt")) {
           turns++;
           expect(await configured()).toBe(true);
-          expect(await leases.validate(await installedHash(), "tools")).not.toBeNull();
+          expect(await leases.validate(await deliveredHash(), "tools")).not.toBeNull();
           return Response.json({ promptId: "p", conversationId: "c", status: "queued" });
         }
         throw Error("Unexpected provider operation");
@@ -195,17 +188,13 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
     });
     provider.configureMcp = async ({ configuration }) => {
       expect(state).toBe("ready");
-      const child = Bun.spawn(["bash"], {
-        stdin: new Blob([nativeMcpInstallScript]),
-        stdout: "pipe",
-        stderr: "pipe",
-        env: { ...process.env, HOME: home, ARMADA_GIT_TOKEN: JSON.stringify(configuration) },
-      });
-      expect(await child.exited).toBe(0);
+      const server = Object.values(configuration.servers)[0];
+      if (!server || server.type !== "http") throw Error("Expected HTTP MCP bootstrap");
+      deliveredToken = server.headers?.Authorization?.slice(7) ?? "";
       writes++;
     };
     await integration.connections.prepare?.(provider, record, { ...actor, role: "admin" });
-    previousHash = await installedHash();
+    previousHash = await deliveredHash();
     expect(await leases.validate(previousHash, "tools")).not.toBeNull();
     const initial = await generation();
     for (const caller of [
@@ -241,13 +230,13 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
     expect(turns).toBe(0);
     expect(writes).toBe(1);
     await prompt(); // Now-ready retry MUST replace config despite identical boot UUID.
-    let fresh = await installedHash();
+    let fresh = await deliveredHash();
     expect(fresh === previousHash).toBe(false);
     expect(await leases.validate(previousHash, "tools")).toBeNull();
     expect(await generation()).toBe(initial + 1);
     expect(writes).toBe(2);
     await Promise.all([prompt(), prompt()]);
-    expect(await installedHash()).toBe(fresh);
+    expect(await deliveredHash()).toBe(fresh);
     expect(writes).toBe(2);
     expect(resumes).toBe(1);
     // B observes stopped FIRST, but its hook runs only AFTER A has fenced,
@@ -269,7 +258,7 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
     await bObserved;
     const beforeRace = await generation();
     await prompt(); // A completes resume + configuration + native turn.
-    const aHash = await installedHash();
+    const aHash = await deliveredHash();
     expect(await leases.validate(previousHash, "tools")).toBeNull();
     expect(await leases.validate(aHash, "tools")).not.toBeNull();
     expect(await generation()).toBe(beforeRace + 1);
@@ -279,7 +268,7 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
     await delayedB;
     expect(await generation()).toBe(beforeRace + 1);
     expect(await leases.validate(aHash, "tools")).not.toBeNull();
-    expect(await installedHash()).toBe(aHash);
+    expect(await deliveredHash()).toBe(aHash);
     expect(writes).toBe(aWrites);
     expect(resumes).toBe(aResumes);
     fresh = aHash;
@@ -300,7 +289,7 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
         )
       ).rows[0],
     ).toMatchObject({ status: "ready", stopped_at: null });
-    expect((await installedHash()) === fresh).toBe(false);
+    expect((await deliveredHash()) === fresh).toBe(false);
     // An authorized VM with no bootstrap/lease must not churn generations.
     const empty = await createSqlSandboxStore(db).insert({
       id: crypto.randomUUID(),
@@ -342,6 +331,5 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
     await service?.close();
     await Promise.all(servers.map((server) => server.close()));
     await db.close();
-    await rm(home, { recursive: true, force: true });
   }
 });

@@ -5,21 +5,31 @@ import { join } from "node:path";
 import { CodexDriver, type DriverEvent } from "@armada/agent-runtime";
 import type { AgentEvent } from "@armada/core";
 import { createUsagePricingContext } from "@armada/core/server";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import recording from "../../agent-runtime/test/fixtures/codex-resume-recorded.json";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
 // This owns the native child -> encrypted archive -> public status contract.
 // Driver unit tests own baseline validation; SQL unit tests own unknown/rollback.
 (process.platform === "linux" ? test : test.skip)(
   "recorded Codex first and cold-resumed turns expose their own positive admitted USD in Boat status",
   async () => {
-    const { db, people } = await database();
+    const db = await openMigratedDatabase();
+    const people = { org: crypto.randomUUID(), owner: crypto.randomUUID() };
     const root = await mkdtemp(join(tmpdir(), "runtime-positive-cost-"));
     const drivers: CodexDriver[] = [];
     try {
+      // Recorded native usage needs ownership, not unrelated launch credentials.
+      await db.query("insert into auth.users(id) values($1)", [people.owner]);
+      await db.query("insert into orgs(id,name) values($1,'Positive cost')", [people.org]);
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [people.org, people.owner]);
+      await db.query("insert into goldens(org_id,owner_id,name,visibility) values($1,$2,'positive-source','private')", [
+        people.org,
+        people.owner,
+      ]);
       const id = crypto.randomUUID(),
         credentialId = crypto.randomUUID();
       await db.query(

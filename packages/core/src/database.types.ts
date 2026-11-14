@@ -444,6 +444,9 @@ export type Database = {
           request_enc: string;
           result_enc: string | null;
           created_at: string;
+          async_launch: boolean;
+          worker_id: string | null;
+          worker_expires_at: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -452,6 +455,9 @@ export type Database = {
           request_enc: string;
           result_enc?: string | null;
           created_at?: string;
+          async_launch?: boolean;
+          worker_id?: string | null;
+          worker_expires_at?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -460,12 +466,93 @@ export type Database = {
           request_enc?: string;
           result_enc?: string | null;
           created_at?: string;
+          async_launch?: boolean;
+          worker_id?: string | null;
+          worker_expires_at?: string | null;
         };
         Relationships: [
           {
             foreignKeyName: "docker_launch_requests_sandbox_id_fkey";
             columns: ["sandbox_id"];
             isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      docker_queued_prompts: {
+        Row: {
+          sandbox_id: string;
+          request_id: string;
+          prompt_id: string;
+          owner_id: string;
+          actor_epoch: number;
+          lifecycle_generation: number;
+          position: number;
+          input_enc: string;
+          input_hash: string;
+          status: string;
+          native_prompt_id: string | null;
+          native_conversation_id: string | null;
+          failure_reason: string | null;
+          failure_native_sequence: number | null;
+          worker_id: string | null;
+          worker_expires_at: string | null;
+          created_at: string;
+          conversation_id: string | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          request_id: string;
+          prompt_id: string;
+          owner_id: string;
+          actor_epoch: number;
+          lifecycle_generation: number;
+          position: number;
+          input_enc: string;
+          input_hash: string;
+          status?: string;
+          native_prompt_id?: string | null;
+          native_conversation_id?: string | null;
+          failure_reason?: string | null;
+          failure_native_sequence?: number | null;
+          worker_id?: string | null;
+          worker_expires_at?: string | null;
+          created_at?: string;
+          conversation_id?: string | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          request_id?: string;
+          prompt_id?: string;
+          owner_id?: string;
+          actor_epoch?: number;
+          lifecycle_generation?: number;
+          position?: number;
+          input_enc?: string;
+          input_hash?: string;
+          status?: string;
+          native_prompt_id?: string | null;
+          native_conversation_id?: string | null;
+          failure_reason?: string | null;
+          failure_native_sequence?: number | null;
+          worker_id?: string | null;
+          worker_expires_at?: string | null;
+          created_at?: string;
+          conversation_id?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "docker_queued_prompts_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "docker_queued_prompts_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
             referencedRelation: "sandboxes";
             referencedColumns: ["id"];
           },
@@ -491,6 +578,7 @@ export type Database = {
           image_id: string | null;
           created_at: string;
           built_on_version: string | null;
+          failure_reason: string | null;
         };
         Insert: {
           id: string;
@@ -511,6 +599,7 @@ export type Database = {
           image_id?: string | null;
           created_at?: string;
           built_on_version?: string | null;
+          failure_reason?: string | null;
         };
         Update: {
           id?: string;
@@ -531,6 +620,7 @@ export type Database = {
           image_id?: string | null;
           created_at?: string;
           built_on_version?: string | null;
+          failure_reason?: string | null;
         };
         Relationships: [
           {
@@ -3653,6 +3743,7 @@ export type Database = {
           configuration_enc: string | null;
           runtime_hash: string | null;
           docker_issuer_fence: string | null;
+          pricing_context: Json | null;
         };
         Insert: {
           sandbox_id: string;
@@ -3663,6 +3754,7 @@ export type Database = {
           configuration_enc?: string | null;
           runtime_hash?: string | null;
           docker_issuer_fence?: string | null;
+          pricing_context?: Json | null;
         };
         Update: {
           sandbox_id?: string;
@@ -3673,6 +3765,7 @@ export type Database = {
           configuration_enc?: string | null;
           runtime_hash?: string | null;
           docker_issuer_fence?: string | null;
+          pricing_context?: Json | null;
         };
         Relationships: [
           {
@@ -3816,24 +3909,59 @@ export type Database = {
           },
         ];
       };
+      sandbox_account_usage_pricing: {
+        Row: {
+          sandbox_id: string;
+          credential_id: string;
+          credential_version: number;
+          context: Json;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          credential_id: string;
+          credential_version: number;
+          context: Json;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          credential_id?: string;
+          credential_version?: number;
+          context?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_account_usage_pricing_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_turn_models: {
         Row: {
           sandbox_id: string;
           prompt_id: string;
           requested_model: string | null;
           evidence: Json | null;
+          pricing_context: Json | null;
         };
         Insert: {
           sandbox_id: string;
           prompt_id: string;
           requested_model?: string | null;
           evidence?: Json | null;
+          pricing_context?: Json | null;
         };
         Update: {
           sandbox_id?: string;
           prompt_id?: string;
           requested_model?: string | null;
           evidence?: Json | null;
+          pricing_context?: Json | null;
         };
         Relationships: [
           {
@@ -4294,6 +4422,7 @@ export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type DockerHostJobRow = Database["public"]["Tables"]["docker_host_jobs"]["Row"];
 export type DockerHostRow = Database["public"]["Tables"]["docker_hosts"]["Row"];
 export type DockerLaunchRequestRow = Database["public"]["Tables"]["docker_launch_requests"]["Row"];
+export type DockerQueuedPromptRow = Database["public"]["Tables"]["docker_queued_prompts"]["Row"];
 export type DockerSnapshotRow = Database["public"]["Tables"]["docker_snapshots"]["Row"];
 export type GitHubAuthorization = Database["public"]["Tables"]["github_authorizations"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
@@ -4364,6 +4493,7 @@ export type RuntimeEnrolmentRow = Database["public"]["Tables"]["runtime_enrolmen
 export type RuntimeEventRow = Database["public"]["Tables"]["runtime_events"]["Row"];
 export type RuntimeGitHubCapabilityRow = Database["public"]["Tables"]["runtime_github_capabilities"]["Row"];
 export type RuntimeResumeRow = Database["public"]["Tables"]["runtime_resumes"]["Row"];
+export type SandboxAccountUsagePricingRow = Database["public"]["Tables"]["sandbox_account_usage_pricing"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxUsagePricingRow = Database["public"]["Tables"]["sandbox_usage_pricing"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];

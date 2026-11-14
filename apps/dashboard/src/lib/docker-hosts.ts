@@ -209,12 +209,3 @@ export function sandboxHostLabel(list: DockerHostList | null, hostId: string | n
   const host = list?.hosts.find((candidate) => candidate.id === hostId);
   return host ? hostName(host) : `Host ${shortHostId(hostId)}`;
 }
-
-/**
- * A Docker sandbox's short, readable name (#1526): the container name is a 150-character machine name, so the title
- * shows `docker-` and the first block of the sandbox id instead, as a Boat `bx_` id is short. The full ids stay in the
- * details and the copy button.
- */
-export function dockerSandboxName(id: string): string {
-  return `docker-${id.slice(0, 8)}`;
-}

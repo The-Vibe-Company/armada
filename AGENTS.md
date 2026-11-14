@@ -12,7 +12,7 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 - `packages/auth`: Supabase login, OAuth server, service tokens and bearer verification. Tokens persist as lowercase SHA256; service-role bearer verification is uncached. `packages/cli` is the API-only `armada` client: `src/run.ts` takes injected I/O, `armada-api.ts` calls `/api/v1/`, and `session.ts` stores only the Armada login (or use `ARMADA_TOKEN`). No provider/database credentials or adapters belong in its runtime graph.
 - `packages/mcp-server`: `armada-server`, assembled in `src/serve.ts`. `http.ts` mounts health/OAuth/control/MCP; `tools.ts` and `control.ts` share server policies. SQL in `data.ts` bypasses RLS and must enforce visibility itself. Golden creation shares core's disposable-builder service: caller GitHub authorization, pinned SSH-stdin checkout, secret scan, snapshot/persist and unconditional builder cleanup. GitHub App setup is in `docs/github-app.md`; the normal server image needs `openssh-client`.
 - `packages/provider-boat`: SDK adapter (`createBoatProvider`), error/event normalization and native compatibility path. Golden creation always uses `noEnv:true`, never account environment. `packages/provider-modal`: runtime distribution, immutable provider bindings and existing authenticated tunnel. Native Boat and Modal paths remain; experimental Boat runtime selection is immutable/default off. Remote MCP uses standard launch selection/defaults and automatic first/later/resumed-turn preparation. Read `docs/boat-runtime-first-prompt.md` before changing its lifecycle.
-- `packages/agent-runtime`: journal, command handler and native Codex app-server/Claude Agent SDK drivers; OpenCode uses ACP v1 and is enabled on Modal only. `docs/runtime-startup.md` covers compiled artifacts, verified caches, private enrolment/epochs and dial-out transport; `docs/runtime/opencode-modal.md` covers OpenCode. `packages/docker-host` is the separate outbound machine-only daemon; install, ownership, TTL, reconciliation and preview APIs are in `docs/docker-host-daemon.md`. Host ACKs are not runtime readiness.
+- `packages/agent-runtime`: journal, command handler and native Codex app-server/Claude Agent SDK drivers; OpenCode uses ACP v1; its enabled placements come from the server launch capabilities, not account-setup copy. `docs/runtime-startup.md` covers compiled artifacts, verified caches, private enrolment/epochs and dial-out transport; `docs/runtime/opencode-modal.md` covers OpenCode. `packages/docker-host` is the separate outbound machine-only daemon; install, ownership, TTL, reconciliation and preview APIs are in `docs/docker-host-daemon.md`. Host ACKs are not runtime readiness.
 - `packages/mcp-gateway`: scoped MCP transport; upstream grants stay server-side. Runtime and native integrations retain their own authorized lifecycle. Templates resolve current reference versions at launch into frozen manifests, not publication. Boat readable variables are non-secret world-readable configuration, not isolation from guest file readers. Application-secret delivery is a separate security boundary; consult `docs/templates-cli.md` for frozen manifests and raw-delivery limits, and `docs/post-deploy-smoke.md` for staging checks.
 - `packages/mcp-server/src/otto/` and browser-safe `core/src/otto/`: explicitly bound, read-only GitHub/fleet observations. Selected append-only facts and replaceable projections do not authorize launches, worker messaging or task completion; partial/hidden evidence stays unknown. Operator scope and checks: `docs/otto-staging.md`.
 - `apps/dashboard`: Next.js App Router/Tailwind/shadcn, acting as user JWT over Supabase, never service key. Pure logic is `src/lib` (`bun test`); Playwright uses `e2e/mock-supabase.ts`. Writes RLS cannot express use dashboard SQL functions. Resource create/add flows use `CreateDialog` as `ResourceBrowser.actions`, one short centered form, not side panels or duplicate lists. `apps/ios` contains the Swift client and generated shared wire/harness contracts.
@@ -61,7 +61,10 @@ What runs only when its files change: the iOS checks (`apps/ios`), the migration
 What runs after a merge, not before: the staging dashboard build in GitHub Actions
 (`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which runs only the owner-enabled Modal/Docker staging probes, builds goldens and exercises the whole lifecycle. Production deploys only from a publishing release after its exact-SHA staging
 smoke succeeds; there is no opt-in bypass. The #1547 owner cutover in
-`docs/releasing.md` records which provider settings still need owner changes.
+`docs/releasing.md` records which provider settings still need owner changes. The deployment policy
+acceptance ledger in that document separates repository implementation from
+outstanding coordinator-only provider evidence; do not report cutover complete
+from merged code or CI alone.
 Vercel Git deployments are disabled for both dashboard projects via
 `apps/dashboard/vercel.json`; no PR previews. Keep the Actions staging path
 working and follow the owner cutover prerequisites in `docs/releasing.md`.
@@ -72,6 +75,9 @@ standalone migration workflow retains manual previews/history/owner repair,
 never per-commit production applies.
 Ordinary queued staging-main sources are superseded before mutation when newer
 main exists; started deployments and explicit pinned release smoke are never cancelled.
+Publishing releases first validate required staging/production configuration,
+including before Release Please announces/tags or image/npm/host publication;
+ordinary preparation/dry runs do not access production secrets.
 Binaries are built by the release workflow when a version is published.
 
 What CI does not do, and must not be added back:
@@ -86,6 +92,7 @@ Rules for a test:
 - a test that takes more than one second is rewritten or deleted;
 - a test that fails intermittently is deleted the day it is seen, not retried, not quarantined; if the behaviour matters, a cheaper deterministic test replaces it;
 - CI has no retries.
+- Do not restore `packages/agent-runtime/test/github-user-tools.test.ts` or an equivalent real Git/gh installation replay in unit CI. It timed out at five seconds, was deleted in #1557, restored by #1497, then deleted again in #1671. Real Git/gh installation and privilege-boundary verification belong in staging smoke; keep deterministic renewal/redaction checks at their owning unit boundary. This is a review instruction, not a test-duration lint rule.
 
 Adding a CI job or a required check is the owner's decision, never an agent's. Where something is tested: logic in a unit test; a provider, a golden, a full lifecycle in the post-deploy smoke; a screen by opening it on staging.
 

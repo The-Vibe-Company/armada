@@ -18,6 +18,7 @@ if (harness !== "codex" && harness !== "claude")
   throw Error("ARMADA_RUNTIME_HARNESS must be codex or claude; no launch attempted.");
 const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
+const idleMode = process.argv.includes("--idle");
 const usageMode = process.argv.includes("--usage");
 const usageCheck = createRuntimeUsageCheck(credentialId);
 let usageProof: ReturnType<typeof usageCheck.verify> | undefined;
@@ -46,6 +47,8 @@ interface Reply {
     id?: string;
     goldenId?: string;
     boatRuntime?: boolean;
+    status?: string;
+    conversationIds?: string[];
     skills?: { reference: string; checksum: string; workspaceId?: string }[];
   };
   runtime?: { kind?: string; epoch?: string };
@@ -299,6 +302,10 @@ function validateCheckpoint(candidate: Reply, epoch: string | undefined, request
     throw Error("Missing complete runtime checkpoint acknowledgement. Do not claim resume.");
 }
 try {
+  const initialPrompt = mcpMode
+    ? `Remember token ${memory}. ${mcpInstruction} After it succeeds, reply exactly ${marker}. Do not change files.`
+    : `${followup ? `Remember token ${memory}. ` : ""}Reply exactly ${marker}. Do not use tools or change files.`;
+  const launchStarted = performance.now();
   const launched = await api("sandbox/launch-runtime-v1", {
     runtimeVersion: 1,
     boatRuntime: true,
@@ -308,15 +315,49 @@ try {
     org,
     credentialId,
     ...(process.env.ARMADA_RUNTIME_MODEL ? { model: process.env.ARMADA_RUNTIME_MODEL } : {}),
-    prompt: mcpMode
-      ? `Remember token ${memory}. ${mcpInstruction} After it succeeds, reply exactly ${marker}. Do not change files.`
-      : `${followup ? `Remember token ${memory}. ` : ""}Reply exactly ${marker}. Do not use tools or change files.`,
+    ...(!idleMode ? { prompt: initialPrompt } : {}),
     ...(mcpMode ? {} : { connections: [] }),
     ...(!skillsMode ? { skipSkillDefaults: true } : {}),
     ttlSeconds: 900,
   });
+  const launchRequestMs = performance.now() - launchStarted;
+  console.log(
+    JSON.stringify({
+      operation: "runtime_launch_timing",
+      harness,
+      mode: idleMode ? "idle" : "prompt",
+      launchRequestMs,
+      boundary: "launch_request_to_response",
+    }),
+  );
   id = launched.sandbox?.id;
   goldenId = launched.sandbox?.goldenId;
+  if (idleMode) {
+    if (
+      !id ||
+      launched.sandbox?.boatRuntime !== true ||
+      launched.sandbox.status !== "ready" ||
+      launched.promptId ||
+      launched.conversationId ||
+      launched.sandbox.conversationIds?.length !== 0 ||
+      launched.runtime?.kind !== "armada" ||
+      !/^[1-9][0-9]{0,18}$/.test(launched.runtime.epoch ?? "")
+    )
+      throw Error("Idle runtime launch did not publish ready without a conversation.");
+    const epoch = launched.runtime.epoch;
+    const requestId = crypto.randomUUID();
+    console.log(JSON.stringify({ operation: "runtime_first_send", sandboxId: id, requestId }));
+    const first = await api("sandbox/send", { id, request_id: requestId, prompt: initialPrompt });
+    if (
+      !first.promptId ||
+      !first.conversationId ||
+      first.requestId !== requestId ||
+      first.runtime?.kind !== "armada" ||
+      first.runtime.epoch !== epoch
+    )
+      throw Error("Missing first-send runtime acknowledgement; reconcile the original request_id, never launch again.");
+    Object.assign(launched, { promptId: first.promptId, conversationId: first.conversationId });
+  }
   if (
     !id ||
     launched.sandbox?.boatRuntime !== true ||
@@ -413,6 +454,7 @@ try {
   initialConversation = launched.conversationId;
   firstPrompt = launched.promptId;
   await verify(launched.promptId, marker);
+  if (idleMode) console.log(JSON.stringify({ idleLaunch: "verified", firstSend: "verified" }));
   if (mcpMode) mcpProof = verifyMcp(launched.promptId, launched.runtime.epoch ?? "");
   if (execMode) {
     const expected = crypto.randomUUID();

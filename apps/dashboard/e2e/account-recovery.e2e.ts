@@ -99,7 +99,7 @@ for (const [view, size] of [
       animations: "disabled",
     });
 
-    await choice.getByRole("button", { name: "Stop" }).click();
+    await page.getByRole("button", { name: "Stop", exact: true }).click();
     await page.getByRole("button", { name: "Stop sandbox" }).click();
     await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "stopped", { timeout: 10_000 });
     const use = choice.getByRole("button", { name: "Use this account" });
@@ -153,21 +153,20 @@ for (const [view, size] of [
     });
   });
 
-test("a choice that lost a race to another binding says so instead of rebinding", async ({ page }) => {
-  await legacy({ status: "stopped" });
+test("the owner can replace an already bound stopped account after deliberate confirmation", async ({ page }) => {
+  await legacy({ status: "stopped", credential_id: WORK.id, credential_version: 3 });
   await post("accounts", { user: [WORK, API] });
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  await expect(page.locator("[data-sandbox-billing-account]")).toContainText("Work subscription");
+  await page.getByText("Change model account", { exact: true }).click();
   await section(page)
     .getByRole("radio", { name: /API billing/ })
     .check();
-  await legacy({ status: "stopped", credential_id: WORK.id, credential_version: 3 });
   await section(page).getByRole("button", { name: "Use this account" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Bind account" }).click();
-  await expect(section(page).getByRole("alert")).toHaveText(
-    "This sandbox already has an account, or that account just changed. Reload to see it.",
-  );
-  await page.reload();
-  await expect(section(page)).toHaveCount(0);
+  await expect(page.locator("[data-sandbox-billing-account]")).toContainText("API billing");
+  await expect(page.locator("[data-sandbox-billing-account]")).toContainText("API key");
+  expect((await mockState()).bindCalls).toEqual([{ id: IDS.running, credentialId: API.id, org: ACME }]);
 });
 
 test("only the owner chooses; no usable account points to Harness; Boat and bound sandboxes are untouched", async ({

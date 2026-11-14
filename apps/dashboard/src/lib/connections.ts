@@ -1,3 +1,4 @@
+import { isRecord } from "@armada/core";
 /**
  * MCP connections as the dashboard sees them: the public DTO of the control API
  * (`POST /api/control/mcp/{list,create,update,connect,status,revoke,delete}`, issue #522), the request
@@ -526,10 +527,6 @@ export function parseStdioImport(raw: string): Parsed<{ name?: string; command: 
     return { ok: false, error: "Every argument must be a string." };
   }
   return { ok: true, value: { ...(name ? { name } : {}), command: entry.command.trim(), args } };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**

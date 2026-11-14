@@ -1,5 +1,6 @@
 import {
   type AgentEvent,
+  type Harness,
   type MemberRole,
   PROMPT_STATUSES,
   reportedTurnUsage,
@@ -10,8 +11,10 @@ import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
+import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
+import { admittedTurnContexts } from "./turn-pricing.ts";
 
 class InvalidEvents extends Error {}
 class ConflictingEvent extends Error {}
@@ -205,8 +208,8 @@ export function createRuntimeEvents(
           ).rows[0]?.count ?? "0",
         );
         const owner = (
-          await tx.query<{ owner_id: string; org_id: string; role: MemberRole }>(
-            `select s.owner_id,s.org_id,m.role from public.sandboxes s join public.members m
+          await tx.query<{ owner_id: string; org_id: string; role: MemberRole; harness: Harness }>(
+            `select s.owner_id,s.org_id,m.role,s.harness::text as harness from public.sandboxes s join public.members m
            on m.org_id=s.org_id and m.user_id=s.owner_id where s.id=$1`,
             [scope.sandboxId],
           )
@@ -225,7 +228,18 @@ export function createRuntimeEvents(
           via: "service",
         });
         if (!data.sandboxes.recordUsage) throw Error("runtime_usage_projection_unavailable");
-        await data.sandboxes.recordUsage(scope.sandboxId, usage, { observations: usage.turns });
+        const admission = (
+          await tx.query<{ context: unknown; captured: boolean }>(
+            "select pricing_context as context,pricing_context is not null as captured from public.runtime_enrolments where sandbox_id=$1 and epoch=$2",
+            [scope.sandboxId, scope.epoch],
+          )
+        ).rows[0];
+        await data.sandboxes.recordUsage(scope.sandboxId, usage, {
+          observations: usage.turns,
+          ...(admission?.captured
+            ? { contexts: admittedTurnContexts(admission.context, usage.turns, owner.harness) }
+            : {}),
+        });
       }
       if (initialAck === 0 && fresh.length) first = scope;
       return { acknowledgedSequence: ack };
@@ -255,18 +269,13 @@ export function createRuntimeEvents(
                 : error instanceof UnsupportedNativeAuth
                   ? 501
                   : 503;
-      return Response.json(
-        {
-          error:
-            status === 401
-              ? "runtime_enrolment_denied"
-              : status === 501
-                ? "runtime_native_auth_not_supported"
-                : status === 503
-                  ? "runtime_unavailable"
-                  : "invalid_runtime_events",
-        },
-        { status, headers },
+      return runtimeHttpFailure(
+        status,
+        status === 501
+          ? "runtime_native_auth_not_supported"
+          : status === 401 || status === 503
+            ? undefined
+            : "invalid_runtime_events",
       );
     }
   };

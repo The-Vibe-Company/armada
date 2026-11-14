@@ -104,6 +104,13 @@ describe("sandbox filters", () => {
       "gone",
     ]);
     expect(filterSandboxes(rows, parseSandboxFilters({ q: "no match" }), ALICE)).toEqual([]);
+    const opaque = [row("opaque", { providerSandboxId: "x".repeat(150), harness: "codex" })];
+    expect(filterSandboxes(opaque, parseSandboxFilters({ q: "Codex sandbox" }), ALICE).map((item) => item.id)).toEqual([
+      "opaque",
+    ]);
+    expect(filterSandboxes(opaque, parseSandboxFilters({ q: "x".repeat(100) }), ALICE).map((item) => item.id)).toEqual([
+      "opaque",
+    ]);
   });
 
   test("facet counts ignore their own selection but honor search and all other facets", () => {
@@ -136,4 +143,13 @@ describe("sandbox filters", () => {
       sortSandboxes([row("old"), row("new", { createdAt: "2026-11-09T10:00:00Z" })], "oldest").map((row) => row.id),
     ).toEqual(["old", "new"]);
   });
+});
+
+test("Name A–Z sorts the displayed fallback rather than the hidden provider identifier", () => {
+  const inventory = [
+    row("opaque", { providerSandboxId: "00000000-0000-4000-8000-000000000030", harness: "codex" }),
+    row("last", { providerSandboxId: "Zulu" }),
+    row("first", { providerSandboxId: "Alpha" }),
+  ];
+  expect(sortSandboxes(inventory, "name").map((item) => item.id)).toEqual(["first", "opaque", "last"]);
 });

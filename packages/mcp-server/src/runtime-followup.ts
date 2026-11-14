@@ -1,7 +1,8 @@
 import { ProviderError, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
-import { createRuntimeAgent } from "./runtime-agent.ts";
+import { lockRuntimeAccount } from "./runtime-account-admission.ts";
+import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
@@ -17,7 +18,8 @@ export interface RuntimeFollowupInput {
 }
 export type RuntimeFollowup = ReturnType<typeof createRuntimeFollowup>;
 /** Running, owner-scoped, model-only continuation. No host, native credential
- * hooks, model switching or new conversation. Stopped workers use the existing
+ * hooks, model switching or arbitrary new conversations. Idle Boat workers
+ * open their first conversation using a request-derived identity. Stopped workers use the existing
  * checkpointed resume path when supplied. Commands are durable;
  * the client MUST reuse request_id and identical input on uncertain delivery.
  */
@@ -42,7 +44,9 @@ export function createRuntimeFollowup(
         (found.provider === "boat" && found.boatRuntime) ||
         (found.provider === "modal" && found.runtimeTransport === "dialout")
       ) ||
-      (found.harness !== "codex" && !(found.provider === "boat" && found.harness === "claude"))
+      (found.harness !== "codex" &&
+        found.harness !== "claude" &&
+        !(found.provider === "modal" && found.harness === "opencode"))
     )
       throw new VaultError("not_found", "No owned runtime sandbox.");
     if (input.model !== undefined || input.reasoning_effort !== undefined)
@@ -84,17 +88,21 @@ export function createRuntimeFollowup(
       found.deletedAt
     )
       throw new VaultError("conflict", "Runtime send requires an already-running, bound sandbox.");
-    const conversation = input.conversation_id ?? found.conversationIds.at(-1);
-    if (!conversation || !found.conversationIds.includes(conversation))
+    // A stable server-owned first-conversation ID keeps uncertain first-send
+    // payloads identical even after publication adds that conversation to SQL.
+    const firstConversation = `first_${requestId}`;
+    const conversation = input.conversation_id ?? found.conversationIds.at(-1) ?? firstConversation;
+    const idleFirst =
+      found.provider === "boat" &&
+      found.conversationIds.length === 0 &&
+      !found.taskPromptId &&
+      input.conversation_id === undefined;
+    if (!found.conversationIds.includes(conversation) && !idleFirst)
       throw new VaultError("invalid", "Continue an existing runtime conversation.");
     const commandId = `follow_${requestId}`;
-    const agent = createRuntimeAgent(commands, {
-      harness: found.harness,
-      ownerId: caller.userId,
-      sandboxId: found.id,
-      providerSandboxId: found.providerSandboxId,
-      cwd: found.repositoryDir ? `/home/user/${found.repositoryDir}` : "/home/user",
-      defaults: { model: found.model, reasoningEffort: found.reasoningEffort },
+    const agent = runtimeAgentFor(commands, caller.userId, found, {
+      model: found.model,
+      reasoningEffort: found.reasoningEffort,
     });
     // Read-only probe before admission. Runner still owns the final busy check.
     const previous = await commands.result(caller.userId, found.id, commandId);
@@ -104,29 +112,7 @@ export function createRuntimeFollowup(
     }
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime send requires transactional admission.");
     const admitted = await sql.transaction(async (tx) => {
-      // Same lock order as account publication: membership -> credential -> sandbox -> epoch.
-      const member = (
-        await tx.query("select user_id from public.members where user_id=$1 and org_id=$2 for update", [
-          caller.userId,
-          found.orgId,
-        ])
-      ).rows[0];
-      if (!member) throw new VaultError("not_found", "Runtime membership was revoked.");
-      const account = (
-        await tx.query(
-          `select id from public.credentials where id=$1 and version=$2
-        and status='active' and kind = any($5::public.credential_kind[]) and (expires_at is null or expires_at>now())
-        and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for update`,
-          [
-            found.credentialId,
-            found.credentialVersion,
-            caller.userId,
-            found.orgId,
-            found.harness === "claude" ? ["anthropic", "claude_oauth"] : ["openai", "codex_auth"],
-          ],
-        )
-      ).rows[0];
-      if (!account) throw new VaultError("not_found", "The pinned runtime account is no longer authorized.");
+      await lockRuntimeAccount(tx, caller, found, "The pinned runtime account is no longer authorized.");
       // Reuse this transaction; never hold its locks across a second connection or runtime I/O.
       const local = {
         ...tx,
@@ -151,7 +137,10 @@ export function createRuntimeFollowup(
           current.credentialVersion !== found.credentialVersion ||
           current.model !== found.model ||
           current.reasoningEffort !== found.reasoningEffort ||
-          !current.conversationIds.includes(conversation)
+          !(
+            current.conversationIds.includes(conversation) ||
+            (idleFirst && current.conversationIds.length === 0 && !current.taskPromptId)
+          )
         )
           throw new VaultError("conflict", "Runtime admission changed; inspect status before retrying.");
         const checkpoint = (
@@ -202,6 +191,7 @@ export function createRuntimeFollowup(
         return { current: active, epoch: scope.epoch, replay: false };
       });
     });
+    const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const submit = (signal?: AbortSignal) =>
       agent.prompt(
         {
@@ -239,7 +229,7 @@ export function createRuntimeFollowup(
         if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
         const accepted = await submit(signal);
         try {
-          await store.recordTurnModel?.(found.id, accepted.promptId, found.model);
+          await store.recordTurnModel?.(found.id, accepted.promptId, found.model, pricingContext);
         } catch {
           /* Accepted work continues. */
         }
@@ -248,7 +238,9 @@ export function createRuntimeFollowup(
           patch: {
             status: "running",
             taskPromptId: accepted.promptId,
-            conversationIds: admitted.current.conversationIds,
+            conversationIds: admitted.current.conversationIds.includes(conversation)
+              ? admitted.current.conversationIds
+              : [...admitted.current.conversationIds, conversation],
             statusReason: null,
           },
         };

@@ -183,6 +183,11 @@ export function createUsagePricingContext(input: {
     catalogRevision: table.sha256,
     provider,
     basis: input.harness === "opencode" && !input.customEndpoint ? "api_equivalent" : costBasis(input.credentialKind),
+    ...(input.credentialKind === "codex_auth" || input.credentialKind === "claude_oauth"
+      ? { billing: "subscription" as const }
+      : ["openai", "anthropic", "opencode"].includes(input.credentialKind ?? "")
+        ? { billing: "per_token" as const }
+        : {}),
     credentialId: input.credentialId ?? null,
     credentialVersion: input.credentialVersion ?? null,
     customEndpoint: input.customEndpoint,

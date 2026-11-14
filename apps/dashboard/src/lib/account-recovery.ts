@@ -1,12 +1,7 @@
 import { CREDENTIAL_KINDS, type CredentialKind, HARNESS_KINDS, type Harness, type SandboxStatus } from "@armada/core";
 import { accountsFromList, isUsable } from "./model-accounts.ts";
 
-/**
- * Recovery of a legacy Modal sandbox launched before model accounts were pinned (#603): its owner chooses, once,
- * the named account its turns run on (`sandbox/bind-credential`). The Armada server decides everything (owner,
- * membership, compatible and authorized account, safely stopped, still unbound); the dashboard only offers the
- * choice and never picks one itself.
- */
+/** Account-choice metadata and presentation only; authorization and binding policy stay on the server. */
 
 /** One account the owner may choose: safe metadata only, never a value. */
 export type AccountOption = {
@@ -18,28 +13,12 @@ export type AccountOption = {
   isDefault: boolean;
 };
 
-/** What the page needs to know about the sandbox. `credential_id` is absent before the #603 migration. */
-export type RecoverySandbox = {
-  provider: string;
-  owner_id: string;
-  status: SandboxStatus;
-  credential_id?: string | null;
-};
-
-/**
- * A Modal sandbox recorded with no pinned account (`credential_id` null): its turns cannot run until its owner binds
- * one. Boat is never concerned, and a row read without the column (a database before #603) is not either.
- */
-export function needsAccountChoice(sandbox: RecoverySandbox): boolean {
-  return sandbox.provider === "modal" && sandbox.credential_id === null && sandbox.status !== "deleted";
-}
-
 /**
  * The server binds only a sandbox that is safely stopped; a live one is stopped first, with the usual Stop. A failed
  * one cannot be stopped and is never bound, so it is not offered a choice at all.
  */
 export function bindableStatus(status: SandboxStatus): "ready" | "stop-first" | "wait" | "failed" {
-  if (status === "stopped") return "ready";
+  if (status === "stopped" || status === "ready") return "ready";
   if (status === "stopping") return "wait";
   if (status === "failed") return "failed";
   return "stop-first";
@@ -66,10 +45,12 @@ export function compatibleAccounts(list: unknown, harness: Harness, orgId: strin
 /** A refused bind, in plain words, by the typed failure the server answers with. */
 export function bindFailure(code: string | undefined, message: string): string {
   switch (code) {
+    case "credential_binding_unsupported":
+      return "This native Boat sandbox cannot refresh accounts safely yet. Launch a new sandbox with the chosen account; existing work is unchanged (tracked by #1579).";
     case "credential_binding_unsafe":
-      return "The sandbox is not safely stopped yet. Stop it, wait until it shows stopped, then try again.";
+      return "Wait for the turn or lifecycle operation to finish and check retained-work warnings before retrying. The account was not changed.";
     case "conflict":
-      return "This sandbox already has an account, or that account just changed. Reload to see it.";
+      return "The sandbox or account changed while you were choosing. Reload and try again.";
     case "forbidden":
     case "not_found":
       return "Only the sandbox's owner, still a member of its org, can choose its account.";

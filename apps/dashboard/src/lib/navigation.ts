@@ -44,9 +44,9 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   {
     label: "Providers",
     links: [
-      // Self-hosted shows only when the server enables Docker hosts; Cloud always leads to the Boat and Modal accounts.
+      // The overview always shows cloud accounts; machine management follows the server Docker opt-in.
+      { href: "/providers/cloud", label: "Overview", icon: "cloud" },
       { href: "/hosts", label: "Self-hosted", icon: "selfHosted", optIn: "dockerHosts" },
-      { href: "/providers/cloud", label: "Cloud", icon: "cloud" },
     ],
   },
   {

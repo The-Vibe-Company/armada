@@ -23,6 +23,8 @@ test("routine observation uses the exact Docker prompt and retains unknown when 
     },
   };
   expect(await observeRoutinePrompt(caller, turn, ports)).toBe("finished");
+  state = "queued";
+  expect(await observeRoutinePrompt(caller, turn, ports)).toBe("running");
   state = null;
   expect(await observeRoutinePrompt(caller, turn, ports)).toBe("unknown");
 });

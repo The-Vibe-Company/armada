@@ -1,4 +1,4 @@
-# Modal: enrolled Codex lifecycle (#1421)
+# Modal: enrolled harness lifecycle (#1421)
 
 This is a coordinator-owned, **billable staging check**, not a worker task or a
 production cutover. It creates exactly one Modal sandbox, never retries an
@@ -7,8 +7,8 @@ runtime archive, performs an acknowledged checkpoint, and requests compute stop
 once. The `--resume` extension activates that same logical sandbox once from its
 retained filesystem image, proves a new-epoch same-conversation recall, then
 checkpoints and stops it again. Optional `--github`, `--mcp`, `--skills`, `--variables` and `--usage` add the scoped
-checks below; they do not claim full harness/setup parity. The golden
-checkout remains as-is (no pull/init).
+checks below; they do not claim full harness/setup parity. Configured repository refresh and init scripts run through epoch-bound private
+runtime commands before skills, MCP publication and the first prompt.
 The existing Modal tunnel path remains the default.
 
 ## Prerequisites
@@ -25,8 +25,8 @@ Coordinator staging configuration:
   the manifest from that deployed build for the Modal Linux x64 target.
 - Existing authorized Modal management credentials and immutable workspace,
   environment and App binding, with an existing snapshotted Modal golden.
-- An authorized Codex API-key/custom-endpoint account. Subscription login is
-  not admitted by this first slice (no broker/native-auth publication is wired).
+- An authorized Codex API-key/custom-endpoint account, or an existing server-owned
+  Codex subscription account enrolled in the shared model-auth broker.
 
 In the coordinator's secure environment, supply:
 
@@ -51,7 +51,7 @@ first-answer/follow-up/checkpoint/stop subset. It sends one `sandbox/launch-moda
 `harness:"codex"` and a 900-second TTL. Without `--skills`, skills are empty
 and defaults are skipped. With `--skills`, both fields are omitted so the normal
 server policy resolves defaults. Connections are empty unless `--mcp` explicitly
-selects one existing connection. The golden checkout is used as-is. The first prompt stores a random
+selects one existing connection. The golden repositories are refreshed and configured init commands run before inference. The first prompt stores a random
 memory token and asks for a separate literal
 nonce answer, without tools or file changes. After verifying that archived first
 answer, the script sends exactly one follow-up on the same conversation asking
@@ -319,3 +319,198 @@ allocation, ONE activation, FOUR prompts and TWO stops. No catalog/account edits
 extra launch, provider compute or credentials are introduced by the offline
 fixtures. Record the exact revision and truthful priced/unknown result on #1421;
 workers do not execute the billable staging check.
+
+## Enrolled control operations
+
+Opted-in Modal Codex sandboxes expose `steer`, `interrupt` and bounded foreground
+`exec` through the same durable runtime commands as Boat. These operations never
+call the Modal tunnel. Only the sandbox owner can control the runtime; steering
+also revalidates current membership and the pinned account before enqueueing a
+restart. Revoked accounts cannot gain another inference turn by steering.
+Interrupt remains available to stop a turn after account revocation.
+
+Native Modal launches are unchanged. This control-routing slice does not claim
+live Modal steer/interrupt acceptance or enable other harnesses, subscriptions,
+workspace preparation, default cutover or tunnel deletion. Those remain #1421
+acceptance work for the coordinator-owned staging lifecycle check.
+
+
+## Codex subscription accounts
+
+Modal enrolled launch and retained resume use the same model-auth ownership
+service as Boat and Docker. For an existing server-owned Codex subscription
+account, private enrolment carries only the `runtimeSubscription` selection;
+access-only material comes from `/api/runtime/model-access`, bound to the live
+runtime token, epoch, owner membership and pinned account version. The shared
+broker owns refresh. Guest configuration does not receive the refresh token or
+server-owned auth.json. Native-auth publication remains the existing sealed,
+CAS-controlled path for runtime-owned accounts; no Modal auth adapter is added.
+
+Use the same one-allocation command above with the existing authorized Codex
+subscription UUID in `ARMADA_RUNTIME_CREDENTIAL_ID` (and a supported model).
+No new credential, account migration, default configuration or manual artifact
+publication is performed by the check. Deploy the matching server revision;
+there is no new schema migration. Existing native Modal behavior is unchanged.
+
+The lifecycle smoke proves inference and retained-session behavior for the
+selected account, not a forced upstream token renewal. Offline boundary tests
+exercise access-only delivery, refresh revision, token registration, and refusal
+after epoch replacement or membership/pin/stop/ownership changes during refresh.
+Live subscription refresh acceptance remains coordinator-owned and is not
+claimed by these tests. Workspace setup is described below; OpenCode, default
+cutover and tunnel deletion remain separate #1421 work.
+
+## Claude lifecycle extension
+
+Add `--claude` to the same coordinator command to select the enrolled Claude
+Agent SDK driver instead of Codex. Use the existing authorized Claude API-key,
+Claude OAuth-token or custom Claude endpoint account and a matching Claude model
+in `ARMADA_RUNTIME_CREDENTIAL_ID` / `ARMADA_RUNTIME_MODEL`. Do not reuse a Codex
+account. The smoke preflights `modalRuntime.claudeVersion:1` before allocation.
+For `--variables`, the existing pinned template must select Claude and that same
+account; mixed template/request harnesses are rejected before allocation.
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --claude --usage --variables --skills --mcp --github --resume
+```
+
+This still creates one sandbox, restores it once, and requires every existing
+answer/session/archive/epoch/checkpoint proof. Claude readables go only to the
+selected Claude environment, not the unselected Codex driver. No new credential,
+configuration mutation, provider runtime, pricing formula or manual artifact
+publication is required. The matching schema must include
+`20261114013200_modal_runtime_claude.sql` before opting in. Native Modal launches
+are unchanged. Live Claude acceptance remains unproven until the coordinator
+records the smoke receipt. Codex subscription ownership is described above;
+OpenCode remains a later slice. Default cutover and tunnel deletion are not
+authorized here.
+
+## Workspace preparation
+
+The enrolled Modal launch now shares Boat's workspace policy: require current
+epoch `workspaceVersion:1` health, prepare GitHub before private repository
+access, then execute configured repository pulls and init commands in order.
+All setup uses the durable `workspaceExec` bridge, never Modal native exec or
+the tunnel. Health, GitHub, repository or init failure aborts launch; there is
+no fallback to an unprepared checkout or inference. The existing core pull
+retry policy, redaction, progress and ten-minute private setup budget are reused.
+
+GitHub authority during `starting` is restricted to immutable dial-out Modal
+rows with a live activity lease, live runtime epoch, owner membership and
+current repository binding. Expired leases cannot acquire credentials. Frozen
+readables are delivered in the private execution environment for init scripts;
+model-account secrets remain confined to the selected harness environment.
+
+Use the same coordinator-owned one-allocation lifecycle command. No golden or
+configuration mutation, new credentials, schema migration, separate allocation
+or manual artifact publication is needed. The selected golden's existing
+configured init scripts now actually execute: launch success is not a live
+workspace acceptance receipt until the coordinator runs it. Native Modal setup
+is unchanged; retained resume does not rerun first-launch setup. OpenCode and
+default/cutover/deletion gates remain separate #1421 work.
+
+
+## OpenCode enrolled lifecycle
+
+Add `--opencode` (mutually exclusive with `--claude`) to select the existing
+OpenCode/ACP driver through the same bootstrap, epoch, command and archive
+services. Use an existing authorized OpenCode key/custom connection account and
+an account-supported model in `ARMADA_RUNTIME_CREDENTIAL_ID` and
+`ARMADA_RUNTIME_MODEL`. OpenAI-compatible, Anthropic Messages and Azure Responses
+connection projection is reused unchanged; this adds no new account kind or
+provider runtime. The smoke requires `modalRuntime.opencodeVersion:1` before
+allocation.
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --opencode --usage --skills --resume
+```
+
+One allocation and one retained activation still require exact first/follow-up
+answers, same native session, fresh resume epoch, retained archive, usage,
+checkpoint ACK and both stops. Existing effective skill defaults are selected
+only with `--skills`. The driver continues to export/import sanitized native
+sessions, not its credential cache/database.
+
+This slice admits normal frozen configuration, GitHub/MCP delivery and runtime
+controls for OpenCode through existing shared services. It does **not** claim
+live tool-bearing parity. The native shell-proof extension below supports
+`--github` and `--variables`; the native MCP extension below adds inventory-checked
+`--mcp` proof. ACP titles/results must not be mistaken for
+Codex or Claude provenance.
+
+Normal matching schema/server/runtime deployment must include
+`20261114020500_modal_runtime_opencode.sql`. Boat does not gain OpenCode admission;
+native Modal behavior and the default-off flag are unchanged. No provider
+allocation, forced account migration, new secrets, default cutover or tunnel
+deletion is authorized. Real OpenCode acceptance awaits coordinator receipts.
+
+
+## OpenCode native shell proof
+
+`--opencode --github` and `--opencode --variables` now preflight
+`opencodeShellProofVersion:1` before allocating. The same check can combine all
+existing non-MCP proofs:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --opencode --usage --variables --skills --github --resume
+```
+
+Use an existing eligible published OpenCode template when variables are enabled,
+with the same authorized account/model and existing readable bindings. No inputs,
+configuration mutations, migrations or extra allocations are introduced.
+
+ACP display titles are not tool identity. The existing native export, already
+used for session continuity and usage, emits shell evidence only from new,
+completed assistant messages in the selected native session. Loaded history,
+foreign message/session bindings, duplicate call IDs, missing/nonzero exit,
+timeout and truncated output cannot supply proof. The archived prompt must
+contain the exact command and independent output plus its answer/finished event;
+a bare display event or model echo is not sufficient.
+
+The metadata contract follows the pinned OpenCode1.19.5
+[native shell output](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/tool/shell.ts)
+and [native completed tool records](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/session/processor.ts).
+This uses the existing archive, not a new ingestion or runtime path. Matching
+normal server/runtime artifacts are required; older servers refuse before
+allocation. Live acceptance remains coordinator-owned. The native MCP extension below completes
+the code-side tool-proof row; cutover and authorized tunnel deletion remain outstanding.
+
+
+## OpenCode native MCP proof
+
+The combined existing check now supports OpenCode remote MCP:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --opencode --usage --variables --skills --mcp --github --resume
+```
+
+Before allocating, it requires `opencodeMcpProofVersion:1`, the usual authorized
+connected remote MCP selection, and its complete SDK-discovered tool inventory.
+The inventory comes from the existing bounded/paginated connection probe, not
+operator-supplied names or a new gateway route. Exactly one original remote tool
+must map to the expected native name: missing tools, duplicate names and native
+sanitization collisions (for example `read.counter` versus `read_counter`) refuse
+before allocation. The same inventory is rechecked after every verified prompt;
+observed changes or lost authorization invalidate acceptance.
+
+The existing native export supplies MCP proof only for new completed assistant
+tool records with matching native session/message bindings, unique call IDs,
+selected private MCP configuration/revision and bounded untruncated results.
+Native tool name, configured server, exact arguments and independent expected
+result must match this archived prompt. Loaded history, ACP display-only events,
+foreign server/tool/prompt, error states and ambiguous configured server prefixes
+do not supply proof. No second ingestion, runtime, provider auth or proxy exists.
+
+This follows the pinned OpenCode1.19.5
+[MCP native naming/error contract](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/mcp/catalog.ts)
+and [native MCP result conversion](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/session/tools.ts).
+Inventories are before/after observations, not an attestation of an adversarial
+upstream server’s internal execution. The actual call still uses existing
+current-epoch gateway authorization.
+
+Use existing account/template/default-skill/MCP/GitHub inputs. The script changes
+no configuration, adds no credentials, and retains one allocation/one activation
+and all prior lifecycle proofs. Matching normal server/runtime artifacts are
+required; no new migration or manual artifact publication. Coordinator receipts
+are still required for live acceptance, ordinary default-path rollout and the
+production-day gate before tunnel deletion.

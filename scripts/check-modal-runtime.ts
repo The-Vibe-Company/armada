@@ -1,8 +1,9 @@
 /** Coordinator-only staging check: exactly one Modal allocation, never retried. */
 import { createHash } from "node:crypto";
-import type { AgentEvent } from "../packages/core/src/provider.ts";
+import type { AgentEvent, ToolCall } from "../packages/core/src/provider.ts";
 import { validateReadableVariables } from "../packages/core/src/readable-variables.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
+import { shellQuote } from "../packages/core/src/shell-quote.ts";
 import type { TemplateDefinition } from "../packages/core/src/templates.ts";
 import { readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
 import { createRuntimeUsageCheck } from "./runtime-usage-smoke.ts";
@@ -49,7 +50,12 @@ interface Reply {
     skillsVersion?: number;
     variablesVersion?: number;
     usageVersion?: number;
+    claudeVersion?: number;
+    opencodeVersion?: number;
+    opencodeShellProofVersion?: number;
+    opencodeMcpProofVersion?: number;
   };
+  mcpToolInventory?: { connectionId: string; tools: string[] }[];
   usage?: SandboxUsage;
   skills?: unknown;
   sandbox?: { id?: string; goldenId?: string; skills?: unknown; provider?: string; runtimeTransport?: string };
@@ -93,6 +99,26 @@ if (
   options.modalRuntime.followupVersion !== 1
 )
   throw Error("Modal dial-out v1 with same-conversation follow-up is unavailable; no launch attempted.");
+if (process.argv.includes("--opencode") && process.argv.includes("--claude"))
+  throw Error("Select only one harness; no launch attempted.");
+const harness = process.argv.includes("--opencode")
+  ? "opencode"
+  : process.argv.includes("--claude")
+    ? "claude"
+    : "codex";
+if (harness === "opencode") {
+  if (options.modalRuntime.opencodeVersion !== 1)
+    throw Error("Modal enrolled OpenCode v1 is unavailable; no launch attempted.");
+  if (process.argv.includes("--mcp") && options.modalRuntime.opencodeMcpProofVersion !== 1)
+    throw Error("OpenCode native MCP proof v1 is unavailable; no launch attempted.");
+  if (
+    ["--variables", "--github"].some((flag) => process.argv.includes(flag)) &&
+    options.modalRuntime.opencodeShellProofVersion !== 1
+  )
+    throw Error("OpenCode native shell proof v1 is unavailable; no launch attempted.");
+}
+if (harness === "claude" && options.modalRuntime.claudeVersion !== 1)
+  throw Error("Modal enrolled Claude v1 is unavailable; no launch attempted.");
 const resumeMode = process.argv.includes("--resume");
 if (resumeMode && options.modalRuntime.resumeVersion !== 1)
   throw Error("Modal retained resume v1 is unavailable; no launch attempted.");
@@ -150,6 +176,30 @@ if (mcpMode) {
     throw Error("MCP arguments must be a non-secret JSON object; no launch attempted.");
   mcpArguments = parsed as Record<string, unknown>;
 }
+const mcpServer = `armada_${mcpConnection.replaceAll("-", "_")}`;
+const nativeMcpName = `${mcpServer}_${mcpTool.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+let mcpInventoryOrg: string | undefined;
+let frozenToolInventory: string[] | undefined;
+function checkMcpInventory(reply: Reply) {
+  const inventory = reply.mcpToolInventory;
+  if (
+    !Array.isArray(inventory) ||
+    inventory.length !== 1 ||
+    inventory[0]?.connectionId !== mcpConnection ||
+    !Array.isArray(inventory[0].tools) ||
+    inventory[0].tools.length > 10000 ||
+    inventory[0].tools.some((name) => typeof name !== "string" || !name || name.length > 512)
+  )
+    throw Error("Complete authorized OpenCode MCP tool inventory is unavailable.");
+  const tools = inventory[0].tools;
+  const matches = tools.filter((name) => `${mcpServer}_${name.replace(/[^a-zA-Z0-9_-]/g, "_")}` === nativeMcpName);
+  if (matches.length !== 1 || matches[0] !== mcpTool)
+    throw Error("OpenCode MCP native tool name is missing or ambiguous; no proof accepted.");
+  const ordered = [...tools].sort();
+  if (frozenToolInventory && canonical(frozenToolInventory) !== canonical(ordered))
+    throw Error("OpenCode MCP tool inventory changed; no proof accepted.");
+  frozenToolInventory = ordered;
+}
 if (githubMode && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
   throw Error("GitHub check requires existing ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo; no launch attempted.");
 if (githubMode || mcpMode || skillsMode || variablesMode) {
@@ -174,7 +224,7 @@ if (githubMode || mcpMode || skillsMode || variablesMode) {
       (revision.revision ?? 0) < 1 ||
       !def ||
       def.provider !== "modal" ||
-      def.harness !== "codex" ||
+      def.harness !== harness ||
       def.goldenId !== choices[0].id ||
       !Array.isArray(def.variables) ||
       !def.variables.length ||
@@ -233,11 +283,15 @@ if (githubMode || mcpMode || skillsMode || variablesMode) {
       runtimeVersion: 1,
       org: choices[0].orgId,
       connections: [mcpConnection],
+      ...(harness === "opencode" ? { toolInventory: true } : {}),
     });
     if (preflight.mcpReady !== true) throw Error("Modal MCP preflight refused; no launch attempted.");
+    if (harness === "opencode") {
+      mcpInventoryOrg = choices[0].orgId;
+      checkMcpInventory(preflight);
+    }
   }
 }
-const mcpServer = `armada_${mcpConnection.replaceAll("-", "_")}`;
 const mcpInstruction = `Call the read-only MCP tool ${mcpTool} on server ${mcpServer} with exactly these non-secret JSON arguments: ${JSON.stringify(mcpArguments)}. Do not substitute a shell or another tool.`;
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -247,9 +301,6 @@ function canonical(value: unknown): string {
       .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`)
       .join(",")}}`;
   return JSON.stringify(value) ?? "undefined";
-}
-function shellQuote(value: string): string {
-  return "'" + value.replaceAll("'", "'\\''") + "'";
 }
 function exactCommand(command: unknown, expected: string): boolean {
   if (typeof command !== "string") return false;
@@ -329,6 +380,8 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
   let finished = false;
   let foundMcp = !mcpMode;
   let foundVariables = !variablesMode;
+  const claudeCalls = new Map<string, ToolCall>();
+  const claudeResults = new Map<string, NonNullable<ToolCall["result"]>>();
   const deadline = Date.now() + 300000;
   while (
     Date.now() < deadline &&
@@ -340,39 +393,112 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
     for (const event of page.events ?? []) {
       if (usageMode) usageCheck.observe(event);
       if (event.promptId !== expectedPromptId) continue;
-      if (mcpMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
-        for (const tool of event.tools)
-          if (
-            tool.server === mcpServer &&
-            tool.name === mcpTool &&
-            canonical(tool.input) === canonical(mcpArguments) &&
-            tool.result?.isError === false &&
-            JSON.stringify(tool.result.output)?.includes(mcpExpected)
-          )
-            foundMcp = true;
+      if (harness === "opencode" && mcpMode && event.kind === "other" && event.type === "armada/opencodeMcp") {
+        const proof = event.data as Record<string, unknown> | undefined;
+        const result = proof?.result as { output?: unknown; isError?: unknown } | undefined;
+        if (
+          proof?.version === 1 &&
+          typeof proof.nativeMessageId === "string" &&
+          proof.nativeMessageId &&
+          typeof proof.callId === "string" &&
+          proof.callId &&
+          typeof proof.configurationRevision === "string" &&
+          proof.configurationRevision &&
+          proof.server === mcpServer &&
+          proof.nativeToolName === nativeMcpName &&
+          canonical(proof.input) === canonical(mcpArguments) &&
+          result?.isError === false &&
+          typeof result.output === "string" &&
+          result.output.includes(mcpExpected)
+        )
+          foundMcp = true;
       }
-      if (variablesMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
-        for (const tool of event.tools)
+      if (harness === "opencode" && event.kind === "other" && event.type === "armada/opencodeShell") {
+        const proof = event.data as Record<string, unknown> | undefined;
+        if (
+          proof &&
+          proof.version === 1 &&
+          typeof proof.nativeMessageId === "string" &&
+          proof.nativeMessageId &&
+          typeof proof.callId === "string" &&
+          proof.callId &&
+          ["bash", "shell"].includes(String(proof.tool)) &&
+          proof.exitCode === 0 &&
+          proof.truncated === false &&
+          typeof proof.output === "string"
+        ) {
           if (
-            tool.name === "commandExecution" &&
-            exactCommand((tool.input as { command?: unknown } | undefined)?.command, variableCommand) &&
-            tool.result?.isError === false &&
-            typeof tool.result.output === "string" &&
+            variablesMode &&
             expectedVariableDigest &&
-            tool.result.output.trim() === expectedVariableDigest
+            exactCommand(proof.command, variableCommand) &&
+            proof.output.trim() === expectedVariableDigest
           )
             foundVariables = true;
+          if (
+            githubMode &&
+            exactCommand(proof.command, `gh api repos/${repository} --jq .full_name`) &&
+            proof.output.trim().toLowerCase() === repository.toLowerCase()
+          )
+            githubToolPrompts.add(expectedPromptId);
+        }
       }
-      if (githubMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
-        for (const tool of event.tools) {
+      if (
+        harness !== "opencode" &&
+        event.kind === "message" &&
+        !event.parentToolUseId &&
+        !event.retracted &&
+        !event.partial
+      ) {
+        let tools = event.tools;
+        if (harness === "claude") {
+          for (const tool of tools) {
+            if (event.responseKind === "tool_result" && tool.name === "tool_result" && tool.result)
+              claudeResults.set(tool.id, tool.result);
+            else if (event.responseKind !== "tool_result") claudeCalls.set(tool.id, tool);
+          }
+          // Claude archives the assistant use and user result separately. Join only
+          // within this prompt and by the exact tool-use ID, including across pages.
+          tools = [...claudeCalls.values()].flatMap((tool) => {
+            const result = claudeResults.get(tool.id);
+            return result ? [{ ...tool, result }] : [];
+          });
+        }
+        for (const tool of tools) {
+          const output = tool.result?.output;
+          const text =
+            typeof output === "string"
+              ? output
+              : Array.isArray(output) &&
+                  output.every((block) => block?.type === "text" && typeof block.text === "string")
+                ? output.map((block) => block.text).join("\n")
+                : undefined;
+          if (
+            mcpMode &&
+            (harness === "claude"
+              ? tool.name === `mcp__${mcpServer}__${mcpTool}`
+              : tool.server === mcpServer && tool.name === mcpTool) &&
+            canonical(tool.input) === canonical(mcpArguments) &&
+            tool.result?.isError === false &&
+            JSON.stringify(output)?.includes(mcpExpected)
+          )
+            foundMcp = true;
+          const shell = tool.name === (harness === "claude" ? "Bash" : "commandExecution");
           const command = (tool.input as { command?: unknown } | undefined)?.command;
           if (
-            tool.name === "commandExecution" &&
-            typeof command === "string" &&
+            variablesMode &&
+            shell &&
+            exactCommand(command, variableCommand) &&
+            tool.result?.isError === false &&
+            expectedVariableDigest &&
+            text?.trim() === expectedVariableDigest
+          )
+            foundVariables = true;
+          if (
+            githubMode &&
+            shell &&
             exactCommand(command, `gh api repos/${repository} --jq .full_name`) &&
             tool.result?.isError === false &&
-            typeof tool.result.output === "string" &&
-            tool.result.output.trim().toLowerCase() === repository.toLowerCase()
+            text?.trim().toLowerCase() === repository.toLowerCase()
           )
             githubToolPrompts.add(expectedPromptId);
         }
@@ -400,6 +526,16 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
     throw Error(
       "Timed out waiting for this Modal prompt's archived answer, tool proof, harness usage and finished event.",
     );
+  if (harness === "opencode" && mcpMode) {
+    const inventory = await api("sandbox/mcp-preflight-v1", {
+      runtimeVersion: 1,
+      org: mcpInventoryOrg,
+      connections: [mcpConnection],
+      toolInventory: true,
+    });
+    if (inventory.mcpReady !== true) throw Error("OpenCode MCP authorization changed; no proof accepted.");
+    checkMcpInventory(inventory);
+  }
   await verifyUsageStatus();
 };
 
@@ -439,7 +575,7 @@ try {
     runtimeVersion: 1,
     runtimeTransport: "dialout",
     provider: "modal",
-    harness: "codex",
+    harness,
     ...(templateSource
       ? { org: templateSource.org, id: templateId, revision: templateSource.revision, requestKey: templateRequestKey }
       : {

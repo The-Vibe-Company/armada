@@ -4,7 +4,6 @@ import type { SkillReceipt } from "./delegated-access.ts";
 import type { Sql } from "./golden-store.ts";
 import { isHarness } from "./harnesses.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
-import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
 import { type SandboxUsage, withUsageTotals } from "./sandbox-usage.ts";
 import type { TaskOutcome } from "./task-outcome.ts";
@@ -98,7 +97,13 @@ export interface SandboxPatch {
 export interface SandboxStore {
   /** Service-only, first-write-wins session pricing admission. Legacy stores omit it and remain unpriced. */
   recordUsagePricingContext?(id: string, context: UsagePricingContext): Promise<void>;
-  recordTurnModel?(id: string, promptId: string, requestedModel: string | null): Promise<void>;
+  captureUsagePricingContext?(id: string): Promise<unknown>;
+  recordTurnModel?(
+    id: string,
+    promptId: string,
+    requestedModel: string | null,
+    pricingContext?: unknown,
+  ): Promise<void>;
   readTurnModel?(id: string, promptId: string): Promise<{ requestedModel: string | null; evidence: unknown } | null>;
   recordTurnModelEvidence?(id: string, promptId: string, evidence: unknown): Promise<void>;
   recordSkills?(id: string, skills: SkillReceipt[]): Promise<void>;
@@ -133,53 +138,6 @@ export interface SandboxStore {
   update(id: string, patch: SandboxPatch): Promise<void>;
   /** Sandboxes created before `cutoff` (ISO) that are not deleted yet, oldest first. */
   listBefore(cutoff: string): Promise<SandboxRecord[]>;
-}
-
-/** How long Armada keeps a sandbox before its cleanup deletes it, when nobody says otherwise. */
-export const DEFAULT_SANDBOX_RETENTION_DAYS = 7;
-
-export interface CleanupResult {
-  deleted: string[];
-  failed: { id: string; message: string }[];
-}
-
-/**
- * Deletes this provider's sandboxes older than `retentionDays` from it and marks them `deleted`.
- * A sandbox the provider no longer has counts as deleted. One failure does not stop the others.
- */
-export async function cleanupSandboxes(
-  provider: Provider,
-  store: SandboxStore,
-  options: { retentionDays?: number; now?: Date } = {},
-): Promise<CleanupResult> {
-  const days = options.retentionDays ?? DEFAULT_SANDBOX_RETENTION_DAYS;
-  if (!Number.isFinite(days) || days <= 0) throw new RangeError("retentionDays must be a positive number.");
-  const now = options.now ?? new Date();
-  const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
-  const result: CleanupResult = { deleted: [], failed: [] };
-  for (const sandbox of await store.listBefore(cutoff)) {
-    // Another provider's sandboxes are that provider's cleanup to delete.
-    if (sandbox.provider !== provider.id) continue;
-    try {
-      await provider.delete({ sandboxId: sandbox.providerSandboxId });
-    } catch (error) {
-      if (!(error instanceof ProviderError && error.code === "not_found")) {
-        result.failed.push({ id: sandbox.id, message: error instanceof Error ? error.message : String(error) });
-        continue;
-      }
-    }
-    try {
-      await store.update(sandbox.id, {
-        status: "deleted",
-        deletedAt: now.toISOString(),
-        ...(sandbox.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
-      });
-      result.deleted.push(sandbox.id);
-    } catch (error) {
-      result.failed.push({ id: sandbox.id, message: error instanceof Error ? error.message : String(error) });
-    }
-  }
-  return result;
 }
 
 export interface SandboxRow {
@@ -395,7 +353,26 @@ function decodeLifecycleGeneration(value: SandboxRow["lifecycle_generation"]): n
 
 function sqlTurnModelStore(
   sql: Sql,
-): Pick<SandboxStore, "recordTurnModel" | "readTurnModel" | "recordTurnModelEvidence" | "recordUsagePricingContext"> {
+): Pick<
+  SandboxStore,
+  | "recordTurnModel"
+  | "readTurnModel"
+  | "recordTurnModelEvidence"
+  | "recordUsagePricingContext"
+  | "captureUsagePricingContext"
+> {
+  async function captureUsagePricingContext(id: string) {
+    const result = await sql.query<{ context: unknown }>(
+      `select coalesce(
+          (select context from public.sandbox_account_usage_pricing a where a.sandbox_id=s.id
+            and a.credential_id=s.credential_id and a.credential_version=s.credential_version),
+          case when not exists(select 1 from public.sandbox_account_usage_pricing a where a.sandbox_id=s.id)
+            then (select context from public.sandbox_usage_pricing p where p.sandbox_id=s.id) end,
+          'null'::jsonb) as context from public.sandboxes s where s.id=$1::uuid`,
+      [id],
+    );
+    return result.rows[0]?.context ?? null;
+  }
   return {
     async recordUsagePricingContext(id, context) {
       await sql.query(
@@ -404,11 +381,13 @@ function sqlTurnModelStore(
         [id, JSON.stringify(context)],
       );
     },
-    async recordTurnModel(id, promptId, requestedModel) {
+    captureUsagePricingContext,
+    async recordTurnModel(id, promptId, requestedModel, pricingContext) {
+      const captured = pricingContext === undefined ? await captureUsagePricingContext(id) : pricingContext;
       await sql.query(
-        `insert into public.sandbox_turn_models(sandbox_id,prompt_id,requested_model)
-        values($1::uuid,$2,$3) on conflict do nothing`,
-        [id, promptId, requestedModel],
+        `insert into public.sandbox_turn_models(sandbox_id,prompt_id,requested_model,pricing_context)
+         values($1::uuid,$2,$3,$4::jsonb) on conflict do nothing`,
+        [id, promptId, requestedModel, JSON.stringify(captured)],
       );
     },
     async readTurnModel(id, promptId) {

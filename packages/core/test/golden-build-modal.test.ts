@@ -33,6 +33,7 @@ async function fixture() {
   const input = { name: "modal-web", visibility: "org" as const, repos: ["acme/web"], modal: binding };
   let allocations = 0,
     connectionRevision = 1;
+  let repositoryDenied = false;
   let checkout: (() => Promise<void>) | undefined;
   let snapshot: (() => Promise<void>) | undefined;
   const contexts: ProviderTarget[] = [],
@@ -107,6 +108,8 @@ async function fixture() {
       });
     if (url === "https://api.github.com/user") return Response.json({ id: 77, login: "builder", name: null });
     if (url.includes("/user/installations")) return Response.json({ installations: [] });
+    if (url === "https://api.github.com/repos/acme/web" && repositoryDenied)
+      return Response.json({ message: "fixture-upstream-secret-not-for-display" }, { status: 404 });
     if (url === "https://api.github.com/repos/acme/web")
       return Response.json({ id: 1, name: "web", owner: { login: "acme" }, default_branch: "main", private: false });
     throw new Error("Unexpected fixture GitHub route.");
@@ -142,6 +145,9 @@ async function fixture() {
     deleted,
     provider: provider(0),
     allocations: () => allocations,
+    denyRepository: () => {
+      repositoryDenied = true;
+    },
     rotate: () => {
       connectionRevision++;
     },
@@ -355,3 +361,39 @@ test("an older retained recovery queue head does not starve an interrupted build
 
 // Token resolution in these fixtures must not leak audit records to stdout.
 captureGitHubAuditLogs();
+
+test("repository authorization denial refuses admission without a job, slot or builder", async () => {
+  const f = await fixture();
+  try {
+    f.denyRepository();
+    await expect(f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID())).rejects.toThrow(
+      "GitHub cannot read acme/web",
+    );
+    expect((await f.db.query("select id from golden_build_jobs")).rows).toEqual([]);
+    expect((await f.db.query("select id from golden_backend_slots")).rows).toEqual([]);
+    expect(f.allocations()).toBe(0);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("a repository revoked after admission preserves only its safe diagnostic and failure phase in status", async () => {
+  const f = await fixture();
+  try {
+    const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
+    f.denyRepository();
+    await f.jobs.runOne();
+    const status = await f.jobs.status(f.actor.userId, job.jobId);
+    expect(status).toMatchObject({ state: "failed", phase: "authorization" });
+    expect(status.failureReason).toContain("detail:GitHub cannot read acme/web");
+    expect(status.failureReason).not.toContain("fixture-upstream-secret");
+    const stored = await f.db.query<{ failure_reason: string | null }>(
+      "select failure_reason from golden_build_jobs where id=$1",
+      [job.jobId],
+    );
+    expect(status.failureReason).toEqual(stored.rows[0]?.failure_reason);
+    expect(f.allocations()).toBe(0);
+  } finally {
+    await f.db.close();
+  }
+});

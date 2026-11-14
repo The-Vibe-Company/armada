@@ -8,26 +8,33 @@ import { cn } from "@/lib/utils";
 export function StatusBadge({
   status,
   idlePaused = false,
+  canMessage = true,
+  readyLabel,
   expiresAt,
   className,
 }: {
   status: SandboxStatus;
   idlePaused?: boolean;
+  /** A metadata-only viewer can see the pause, but cannot send the wake-up message. */
+  canMessage?: boolean;
+  /** Context-specific plain wording without changing the stored status or other screens. */
+  readyLabel?: string;
   expiresAt?: string | null;
   className?: string;
 }) {
   const look = statusLook(status);
   const paused = idlePauseMessage({ status, idlePaused, expiresAt: expiresAt ?? null }, new Date());
+  const pauseHint = paused ? (canMessage ? paused : "Paused to save resources") : undefined;
   return (
     <Badge
       variant="outline"
       className={cn("gap-1.5 pr-2 pl-1.5", TONE_BADGE[look.tone], status === "deleted" && "line-through", className)}
       data-status={status}
-      title={paused ?? undefined}
-      aria-label={paused ?? undefined}
+      title={pauseHint}
+      aria-label={pauseHint}
     >
       <StatusDot tone={look.tone} pulse={look.pulse} />
-      {paused ? "Paused" : look.label}
+      {paused ? "Paused" : status === "ready" ? (readyLabel ?? look.label) : look.label}
     </Badge>
   );
 }

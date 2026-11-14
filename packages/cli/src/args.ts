@@ -14,6 +14,7 @@ const VALUE = new Set([
   "--prompt-id",
   "--timeout",
   "--repo",
+  "--add-repo",
   "--init",
   "--config",
   "--agent",

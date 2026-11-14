@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type AgentEvent,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerSandboxStatus,
   GoldenError,
   HARNESS_CAPABILITIES,
@@ -69,7 +70,10 @@ function reason(row: Row) {
   if (row.status_reason === "expired") return "expired";
   if (row.status_reason === "idle_paused" && ["stopping", "stopped"].includes(row.status)) return "idle_paused";
   if (row.status !== "failed") return null;
-  return row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ? row.status_reason : "Docker sandbox failed.";
+  return row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ||
+    Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((message) => message === row.status_reason)
+    ? row.status_reason
+    : "Docker sandbox failed.";
 }
 function usage(value: unknown): SandboxUsage | null {
   if (!value || typeof value !== "object" || !("turnCount" in value) || !("turns" in value)) return null;
@@ -122,7 +126,7 @@ export function createDockerSandboxControls(
     if (!row || (row.provider === "docker" && row.owner_id !== caller.userId && row.role !== "admin")) throw denied();
     return row;
   }
-  const history = createRuntimeHistory(sql, key, {
+  const nativeHistory = createRuntimeHistory(sql, key, {
     provider: "docker",
     async authorize(caller, id) {
       const row = await visible(caller, id);
@@ -130,7 +134,77 @@ export function createDockerSandboxControls(
       return { status: row.status, statusReason: reason(row) };
     },
   });
-  async function admission(sandboxId: string) {
+  type QueuedPrompt = {
+    prompt_id: string;
+    request_id: string;
+    status: "queued" | "dispatching" | "admitted" | "failed";
+    native_prompt_id: string | null;
+    native_conversation_id: string | null;
+    conversation_id: string | null;
+    failure_reason: string | null;
+    failure_native_sequence: string | null;
+    command_pending: boolean;
+    command_result_enc: Uint8Array<ArrayBuffer> | null;
+  };
+  // Callers authorize the sandbox before reading retained queue metadata. No input ciphertext is selected.
+  async function queuedPrompts(sandboxId: string): Promise<QueuedPrompt[]> {
+    const rows = (
+      await sql.query<QueuedPrompt>(
+        `select q.prompt_id,q.request_id,q.status,q.native_prompt_id,q.native_conversation_id,q.conversation_id,q.failure_reason,
+       q.failure_native_sequence::text as failure_native_sequence,
+       (c.request_id is not null and c.result_enc is null) as command_pending,c.result_enc as command_result_enc
+       from public.docker_queued_prompts q left join public.runtime_commands c
+       on c.sandbox_id=q.sandbox_id and c.request_id='docker_prompt_'||q.request_id::text
+       where q.sandbox_id=$1 order by q.position`,
+        [sandboxId],
+      )
+    ).rows;
+    for (const row of rows) {
+      if (row.native_prompt_id || !row.command_result_enc) continue;
+      // The native receipt can precede publication of its queue projection. Reconcile only a validated receipt.
+      const reply = JSON.parse(await decryptSecret(row.command_result_enc, key));
+      if (
+        reply?.status === 200 &&
+        reply.requestId === `docker_prompt_${row.request_id}` &&
+        reply.body?.requestId === reply.requestId &&
+        reply.body?.version === 1 &&
+        UUID.test(reply.body?.result?.promptId ?? "") &&
+        UUID.test(reply.body?.result?.conversationId ?? "")
+      ) {
+        row.native_prompt_id = reply.body.result.promptId;
+        row.native_conversation_id = reply.body.result.conversationId;
+      }
+    }
+    return rows;
+  }
+  const aliases = (rows: readonly QueuedPrompt[]) =>
+    new Map(rows.flatMap((row) => (row.native_prompt_id ? [[row.native_prompt_id, row.prompt_id] as const] : [])));
+  const history: typeof nativeHistory = async (caller, id, request) => {
+    const page = await nativeHistory(caller, id, request);
+    const queued = await queuedPrompts(id);
+    // Native journal events may beat the command ACK. Do not advance a forward reader past
+    // an unlinked native prompt: the next read must publish its stable accepted prompt ID.
+    if (queued.some((row) => !row.native_prompt_id && row.command_pending)) {
+      // Neither direction may advance past an unlinked native event, even after cancellation.
+      return {
+        events: [],
+        hasMore: true,
+        ...(page.source ? { source: page.source } : {}),
+        ...(page.runtimeFailure ? { runtimeFailure: page.runtimeFailure } : {}),
+        ...(request.cursor ? { cursor: request.cursor } : {}),
+      };
+    }
+    const ids = aliases(queued);
+    return {
+      ...page,
+      events: page.events.map((event) => {
+        const promptId = ids.get(event.promptId ?? "");
+        return promptId ? { ...event, promptId } : event;
+      }),
+    };
+  };
+  async function admission(sandboxId: string, project = true) {
+    const ids = project ? aliases(await queuedPrompts(sandboxId)) : new Map<string, string>();
     const commands = (
       await sql.query<{
         sequence: string;
@@ -178,7 +252,7 @@ export function createDockerSandboxControls(
         sequence,
         known: true,
         receipt: {
-          promptId: receipt.promptId,
+          promptId: ids.get(receipt.promptId) ?? receipt.promptId,
           conversationId: receipt.conversationId,
           status: receipt.status as (typeof PROMPT_STATUSES)[number],
         },
@@ -186,15 +260,38 @@ export function createDockerSandboxControls(
     }
     return { sequence, known: commands.length < 100 };
   }
-  async function status(caller: Caller, initial: Row, promptId?: string): Promise<DockerSandboxStatus> {
-    const admitted = await admission(initial.id);
-    const selectedPrompt = promptId ?? admitted.receipt?.promptId;
+  async function status(
+    caller: Caller,
+    initial: Row,
+    promptId?: string,
+    includeQueue = true,
+  ): Promise<DockerSandboxStatus> {
+    const queued = includeQueue ? await queuedPrompts(initial.id) : [];
+    const latestQueue = queued.at(-1);
+    // A failed server admission remains the latest visible turn until a newer native
+    // command is admitted. Do not let an older queue failure hide later ordinary sends.
+    const latestQueueIsCurrent =
+      latestQueue &&
+      (latestQueue.status === "queued" ||
+        latestQueue.status === "dispatching" ||
+        (latestQueue.status === "failed" &&
+          latestQueue.failure_native_sequence !== null &&
+          BigInt(initial.prompt_sequence) <= BigInt(latestQueue.failure_native_sequence)));
+    const selectedQueue = promptId
+      ? queued.find((row) => row.prompt_id === promptId || row.native_prompt_id === promptId)
+      : latestQueueIsCurrent
+        ? latestQueue
+        : undefined;
+    const admitted = await admission(initial.id, includeQueue);
+    const selectedPrompt = selectedQueue?.prompt_id ?? promptId ?? admitted.receipt?.promptId;
+    const queueOnly = selectedQueue && !selectedQueue.native_prompt_id;
+    const readHistory = includeQueue ? history : nativeHistory;
     let cursor: string | undefined;
     const events: AgentEvent[] = [];
     let complete = false;
     let newestCursor: string | undefined;
     for (let count = 0; count < 100; count++) {
-      const page = await history(caller, initial.id, {
+      const page = await readHistory(caller, initial.id, {
         direction: "backward",
         limit: 500,
         ...(cursor ? { cursor } : {}),
@@ -202,6 +299,7 @@ export function createDockerSandboxControls(
       if (count === 0) newestCursor = page.cursor;
       events.unshift(...page.events);
       if (
+        queueOnly ||
         !page.hasMore ||
         page.events.some((event) => event.kind === "prompt" && (!selectedPrompt || event.promptId === selectedPrompt))
       ) {
@@ -239,11 +337,42 @@ export function createDockerSandboxControls(
         reason: state === "failed" ? "The agent failed." : null,
       };
     }
+    if (queueOnly) {
+      const failed = selectedQueue.status === "failed" || terminal(row) || row.status === "stopping";
+      const uncertainStop = failed && selectedQueue.status === "dispatching" && selectedQueue.command_pending;
+      prompt = {
+        promptId: selectedQueue.prompt_id,
+        conversationId: selectedQueue.conversation_id ?? selectedQueue.native_conversation_id,
+        state: uncertainStop ? "interrupted" : failed ? "failed" : "queued",
+        reason: uncertainStop
+          ? "Docker sandbox stopped before queued prompt admission was confirmed."
+          : failed
+            ? (reason(row) ??
+              selectedQueue.failure_reason ??
+              "Docker sandbox stopped before the queued prompt was admitted.")
+            : null,
+      };
+    }
     if (promptId && !prompt)
       throw failure(complete ? "not_found" : "unavailable", "Docker prompt history is unavailable.");
     // An explicit historical turn does not make a newer, still-running turn idle.
     const latest = events.findLast((event) => event.kind === "prompt");
     const idle = latest?.kind === "prompt" ? !["queued", "running"].includes(latest.status) : row.status === "ready";
+    // Usage may have arrived after the initial queue snapshot. Never publish transient native IDs.
+    const finalQueue = includeQueue ? await queuedPrompts(row.id) : [];
+    const ids = aliases(finalQueue);
+    if (prompt && ids.has(prompt.promptId)) prompt = { ...prompt, promptId: ids.get(prompt.promptId)! };
+    const nativeUsage = finalQueue.some((entry) => !entry.native_prompt_id && entry.command_pending)
+      ? null
+      : withServerCost(usage(row.usage_turns), row.harness);
+    const nativeSettled =
+      terminal(row) ||
+      (complete &&
+        idle &&
+        admitted.known &&
+        admitted.sequence === row.prompt_sequence &&
+        (!admitted.receipt || latest?.promptId === admitted.receipt.promptId) &&
+        (newestCursor ?? `ar1_${row.id}_0`) === `ar1_${row.id}_${row.journal_sequence}`);
     return {
       provider: "docker",
       hostId: row.docker_host_id,
@@ -276,16 +405,21 @@ export function createDockerSandboxControls(
               : null,
       conversationIds: [...conversations],
       expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
-      usage: withServerCost(usage(row.usage_turns), row.harness),
+      usage: nativeUsage
+        ? {
+            ...nativeUsage,
+            turns: nativeUsage.turns.map((turn) => ({ ...turn, promptId: ids.get(turn.promptId) ?? turn.promptId })),
+          }
+        : nativeUsage,
       prompt,
       settled:
-        terminal(row) ||
-        (complete &&
-          idle &&
-          admitted.known &&
-          admitted.sequence === row.prompt_sequence &&
-          (!admitted.receipt || latest?.promptId === admitted.receipt.promptId) &&
-          (newestCursor ?? `ar1_${row.id}_0`) === `ar1_${row.id}_${row.journal_sequence}`),
+        nativeSettled &&
+        !queued.some(
+          (entry) =>
+            (entry.status === "queued" || entry.status === "dispatching") &&
+            !terminal(row) &&
+            row.status !== "stopping",
+        ),
     };
   }
   async function logs(caller: Caller, row: Row, args: Record<string, unknown>) {
@@ -324,6 +458,9 @@ export function createDockerSandboxControls(
       cursor = next;
     }
     const summary = await status(caller, row);
+    const queueOnly =
+      summary.prompt &&
+      (await queuedPrompts(row.id)).some((q) => q.prompt_id === summary.prompt?.promptId && !q.native_prompt_id);
     return {
       events: [...events.values()],
       cursor: cursor ?? null,
@@ -331,6 +468,9 @@ export function createDockerSandboxControls(
       hasMore,
       source: "armada-runtime",
       settled: summary.settled,
+      ...(summary.prompt?.state === "queued" || (summary.prompt?.state === "failed" && queueOnly)
+        ? { queuedPrompt: summary.prompt }
+        : {}),
       ...(summary.status === "failed"
         ? { runtimeFailure: { status: "failed" as const, reason: summary.statusReason ?? "Docker sandbox failed." } }
         : {}),
@@ -347,9 +487,17 @@ export function createDockerSandboxControls(
       throw error;
     }
   }
-  async function cleanup(caller: Caller, row: Row, operation: "stop" | "delete", requestId?: string) {
+  async function cleanup(
+    caller: Caller,
+    row: Row,
+    operation: "stop" | "delete",
+    requestId?: string,
+    onlyIfIdle = false,
+  ) {
     if (requestId !== undefined && !UUID.test(requestId)) throw invalid();
     if (operation === "delete") await assertDelete(caller, row.id);
+    if (onlyIfIdle && row.status === "ready" && !(await status(caller, row)).settled)
+      throw failure("conflict", "Wait for the current turn to finish before changing accounts.");
     const done = (current: Row) =>
       operation === "delete"
         ? current.status === "deleted"
@@ -382,6 +530,7 @@ export function createDockerSandboxControls(
       await createDockerHostStore(scoped, key).enqueueSandbox({ userId: caller.userId, orgId: row.org_id }, row.id, {
         requestId: id,
         operation,
+        ...(operation === "stop" && onlyIfIdle ? { onlyIfIdle: true } : {}),
       });
       return id;
     });
@@ -559,6 +708,13 @@ export function createDockerSandboxControls(
     };
   }
   return {
+    /** Worker-only idle observation: queued server admissions must not hide the native journal's settled state. */
+    async canDispatchQueued(caller: Caller, id: string): Promise<boolean> {
+      const row = await visible(caller, id);
+      if (row.provider !== "docker" || row.owner_id !== caller.userId || !["ready", "running"].includes(row.status))
+        return false;
+      return (await status(caller, row, undefined, false)).settled;
+    },
     async invoke(
       caller: Caller,
       name: string,
@@ -613,7 +769,13 @@ export function createDockerSandboxControls(
             ? await status(caller, row, args.prompt_id as string | undefined)
             : name === "logs"
               ? await logs(caller, row, args)
-              : await cleanup(caller, row, name as "stop" | "delete", args.request_id as string | undefined);
+              : await cleanup(
+                  caller,
+                  row,
+                  name as "stop" | "delete",
+                  args.request_id as string | undefined,
+                  args.only_if_idle === true,
+                );
         return { handled: true, result };
       } catch (error) {
         if (error instanceof ProviderError) throw error;

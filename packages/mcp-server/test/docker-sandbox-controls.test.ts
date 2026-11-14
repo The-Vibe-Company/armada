@@ -30,6 +30,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { createSandboxBillingAccount } from "../src/sandbox-billing-account.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
@@ -96,6 +97,16 @@ async function fixture() {
     credentialVersion: 1,
   });
   await hosts.complete(host.hostToken, installationId, { requestId: sandbox.id, outcome: "completed" });
+  await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext?.(
+    sandbox.id,
+    createUsagePricingContext({
+      harness: "codex",
+      credentialKind: "openai",
+      customEndpoint: false,
+      credentialId: sandbox.credentialId,
+      credentialVersion: sandbox.credentialVersion,
+    }),
+  );
   await bootstrap.bootstrap(actor, sandbox.id, randomUUID());
   const job = await hosts.poll(host.hostToken, installationId);
   if (job?.operation !== "bootstrap") throw Error("missing bootstrap");
@@ -188,16 +199,6 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
     prompt: { promptId, conversationId, state: "running" },
     settled: false,
   });
-  await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext?.(
-    f.sandbox.id,
-    createUsagePricingContext({
-      harness: "codex",
-      credentialKind: "openai",
-      customEndpoint: false,
-      credentialId: f.sandbox.credentialId,
-      credentialVersion: f.sandbox.credentialVersion,
-    }),
-  );
   await publish(f, session, [
     { id: "p-start", at: 1, kind: "prompt", promptId, conversationId, text: "begin", status: "running" },
     { id: "p-done", at: 2, kind: "prompt", promptId, conversationId, text: "begin", status: "finished" },
@@ -522,7 +523,9 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     },
   });
   const store = createSqlVaultStore(sql);
+  const billing = createSandboxBillingAccount(sql);
   const context: ToolContext = {
+    sandboxBillingAccount: (id) => billing(who, id),
     caller: who,
     data: createSqlData(sql)(who),
     dockerControls: cleanup,
@@ -547,6 +550,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
   expect(parsed.rows[0]?.provider).toBe("docker");
   expect(sandboxListText(listed.sandboxes, new Date())).toContain("Docker");
   const options: ControlOptions = {
+    sandboxBillingAccount: billing,
     store,
     providers: {
       resolve: async () => {
@@ -745,7 +749,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
     now: () => now,
     async wait(ms: number) {
       now += ms;
-      const job = await hosts.poll(f.hostToken, f.installationId);
+      const job = await hosts.poll(f.hostToken, f.installationId, "2.28.0");
       if (job) {
         if (job.operation !== "resume") throw Error("expected resume");
         resumes++;
@@ -780,7 +784,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
   // An unknown outcome retries the same bound resume, not a second host instruction.
   const pending = createDockerSandboxControls(sql, key, { send, resume: bootstrap, clock, timeoutMs: 0 });
   await rejected(invoke(caller(f.actor), "send", args, pending), "conflict");
-  await rejected(invoke(caller(f.actor), "send", { ...args, request_id: randomUUID() }, controller), "conflict");
+  await rejected(invoke(caller(f.actor), "send", { ...args, request_id: randomUUID() }, controller), "unavailable");
   const result = await invoke(caller(f.actor), "send", args, controller);
   expect(result).toMatchObject({ id: f.sandbox.id, promptId, conversationId, status: "queued" });
   expect(await invoke(caller(f.actor), "send", args, controller)).toEqual(result);
@@ -788,7 +792,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
   await stop();
   await rejected(invoke(caller(f.actor), "send", args, controller), "conflict");
   await rejected(invoke(caller(f.actor), "send", { ...args, prompt: "changed" }, controller), "conflict");
-  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect(await hosts.poll(f.hostToken, f.installationId, "2.28.0")).toBeNull();
   expect((await invoke(caller(f.actor), "status", { id: f.sandbox.id })).status).toBe("stopped");
   expect(
     (

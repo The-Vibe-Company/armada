@@ -5,6 +5,7 @@ import {
   DEFAULT_LAUNCH_TTL_SECONDS,
   encryptSecret,
   GitHubHydrationError,
+  HARNESS_CAPABILITIES,
   HARNESS_KINDS,
   HARNESSES,
   type LaunchOptionsResponse,
@@ -2300,7 +2301,11 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(
       (
         await owner.run(["creds", "set", "openai", "--name", "Foundry"], {
-          stdin: JSON.stringify({ endpoint: { version: 1, baseUrl: "https://example.com/v1" }, apiKey: key }),
+          stdin: JSON.stringify({
+            endpoint: { version: 1, baseUrl: "https://example.com/v1" },
+            apiKey: key,
+            models: ["deployment"],
+          }),
         })
       ).code,
     ).toBe(0);
@@ -2392,6 +2397,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
           stdin: JSON.stringify({
             endpoint: { version: 1, baseUrl: "https://example.com/v1" },
             apiKey: crypto.randomUUID(),
+            models: ["deployment"],
           }),
         })
       ).code,
@@ -2617,15 +2623,6 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(await (await request("launch/options", {}))?.json()).toMatchObject({
       boatRuntime: { defaultPath: "runtime" },
     });
-    const ordinary = await request("sandbox/launch", {
-      golden: body.golden,
-      org: body.org,
-      harness: "codex",
-    });
-    expect(ordinary?.status).toBe(400);
-    expect(JSON.stringify(await ordinary?.json())).toContain("idle sandbox");
-    expect(host.forks).toHaveLength(1);
-    expect(host.prompts).toHaveLength(0);
     const account = (
       await db.query<{ id: string; version: number }>(
         "select id,version from credentials where owner_id=$1 and kind='openai'",
@@ -2673,14 +2670,12 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       golden: body.golden,
       org: body.org,
       harness: "codex",
-      prompt: "ordinary default request",
       credentialId: account.id,
     });
     expect(defaulted?.status).toBe(200);
     expect(await defaulted?.json()).toMatchObject({
       runtime: { kind: "armada", epoch: "1" },
-      sandbox: { boatRuntime: true },
-      promptId: "default-initial",
+      sandbox: { boatRuntime: true, status: "ready", conversationIds: [] },
     });
     expect(host.forks).toHaveLength(2);
     expect(host.forks[1]?.env).toEqual({});
@@ -2749,16 +2744,24 @@ test("versioned runtime launch is explicit/default-off and never selects native 
 
 // Public HTTP admission owns the opt-in: no allocation when disabled/malformed,
 // and no native agent/configuration fallback on the accepted model-only path.
-test.each([false, true])(
-  "Modal runtime launch prepares explicit/default MCP and skills before its first prompt (%s)",
-  async (fromDefaults) => {
+test.each([
+  { harness: "codex" as const, fromDefaults: false },
+  { harness: "claude" as const, fromDefaults: true },
+  { harness: "opencode" as const, fromDefaults: true },
+])(
+  "Modal runtime launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults)",
+  async ({ harness, fromDefaults }) => {
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Modal runtime", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
-      await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'openai',$2)", [
-        STAN,
-        await encryptSecret("fixture-model-key", KEY),
-      ]);
+      await db.query(
+        "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,$3::public.credential_kind,$2)",
+        [
+          STAN,
+          await encryptSecret("fixture-model-key", KEY),
+          harness === "claude" ? "anthropic" : harness === "opencode" ? "opencode" : "openai",
+        ],
+      );
       await db.query(
         `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
        values($1,$2,'modal-runtime','org','modal','master','image','workspace','main','app','{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":["must not run"]}')`,
@@ -2778,7 +2781,8 @@ test.each([false, true])(
         org: org.id,
         golden: "modal-runtime",
         provider: "modal",
-        harness: "codex",
+        harness,
+        ...(harness === "opencode" ? { model: "opencode/fixture", reasoningEffort: "default" } : {}),
         prompt: "reply",
         runtimeVersion: 1,
         runtimeTransport: "dialout",
@@ -2786,10 +2790,16 @@ test.each([false, true])(
         connections: [],
       };
       const fake = fakeBoat();
-      const host = { ...fake.provider, id: "modal" as const };
+      const host = {
+        ...fake.provider,
+        id: "modal" as const,
+        harnesses: [...fake.provider.harnesses, "opencode" as const],
+        capabilities: { ...fake.provider.capabilities, opencode: HARNESS_CAPABILITIES.opencode },
+      };
       let starts = 0;
       let mcpPrepared = false;
       let skillsInstalled = false;
+      let workspacePrepared = false;
       const skill = "team/runtime-skill@1.2.3";
       const receipt = {
         reference: skill,
@@ -2824,11 +2834,18 @@ test.each([false, true])(
             async installSkills(references, key) {
               expect(references).toEqual([skill]);
               expect(key).toBeNull();
+              expect(workspacePrepared).toBe(true);
               expect(mcpPrepared).toBe(false);
               skillsInstalled = true;
               return [receipt];
             },
             epoch: "1",
+            async prepareWorkspace() {
+              expect(mcpPrepared).toBe(false);
+              expect(skillsInstalled).toBe(false);
+              workspacePrepared = true;
+              return { status: "not_connected" as const };
+            },
             prompt: async () => {
               expect(mcpPrepared).toBe(true);
               expect(skillsInstalled).toBe(true);
@@ -2841,7 +2858,7 @@ test.each([false, true])(
         { ...body, skipSkillDefaults: "invalid" },
         { ...body, skills: "invalid" },
         { ...body, connections: ["invalid"] },
-        { ...body, harness: "claude" },
+        { ...body, harness: "unknown" },
         { ...body, runtimeTransport: undefined },
       ])
         expect((await request(bad))?.status).toBe(400);

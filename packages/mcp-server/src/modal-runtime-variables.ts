@@ -83,7 +83,15 @@ export async function readModalRuntimeVariables(
 
 /** Credentials and frozen readables meet only in the private enrolment payload. */
 export async function modalRuntimeConfiguration(sql: Sql, input: RuntimeConfigurationInput) {
-  const plan = await runtimeConfiguration(input, "modal");
-  Object.assign(plan.configuration.codexEnv, await readModalRuntimeVariables(sql, input.actor, input.sandbox.id));
-  return plan;
+  const plan = await runtimeConfiguration(input, "modal", "modal_runtime_empty_v1");
+  const variables = await readModalRuntimeVariables(sql, input.actor, input.sandbox.id);
+  Object.assign(
+    input.sandbox.harness === "claude"
+      ? plan.configuration.claudeEnv
+      : input.sandbox.harness === "opencode"
+        ? plan.configuration.opencodeEnv
+        : plan.configuration.codexEnv,
+    variables,
+  );
+  return { ...plan, configuration: { ...plan.configuration, readableVariables: variables } };
 }

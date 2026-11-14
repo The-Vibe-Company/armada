@@ -935,7 +935,7 @@ function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
             Choose a destination
           </option>
           <option value="anthropic">Anthropic default endpoint</option>
-          <option value="custom">Custom gateway (Modal)</option>
+          <option value="custom">Custom gateway</option>
         </NativeSelect>
       </div>
       {mode === "custom" && (
@@ -955,8 +955,8 @@ function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
             />
           </div>
           <p id={`${idPrefix}-gateway-hint`} className="text-xs text-muted-foreground">
-            Modal only. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages; it must
-            support Anthropic Messages, streaming and tool use.
+            Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages; it must support
+            Anthropic Messages, streaming and tool use.
           </p>
           <div className="space-y-2">
             <Label htmlFor={`${idPrefix}-gateway-auth`}>Gateway authentication</Label>
@@ -1068,7 +1068,7 @@ function CustomEndpointFields({
               Choose a destination
             </option>
             <option value="openai">OpenAI default endpoint</option>
-            <option value="custom">Custom endpoint (Modal)</option>
+            <option value="custom">Custom endpoint</option>
             {replacementPresets(kind).map((option) => (
               <option key={option.id} value={option.id}>
                 {option.label}
@@ -1085,7 +1085,7 @@ function CustomEndpointFields({
             checked={custom}
             onCheckedChange={(value) => setCustom(value === true)}
           />
-          Use a custom endpoint (Modal)
+          Use a custom endpoint
         </Label>
       )}
       {custom && (
@@ -1108,8 +1108,8 @@ function CustomEndpointFields({
           </div>
           <p id={`${idPrefix}-endpoint-hint`} className="text-xs text-muted-foreground">
             {codex
-              ? "Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Modal only. Codex cannot use chat-completions-only endpoints such as DeepSeek."
-              : "Modal only. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages. The gateway must support Anthropic Messages, streaming and tool use."}
+              ? "Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Codex cannot use chat-completions-only endpoints such as DeepSeek."
+              : "Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages. The gateway must support Anthropic Messages, streaming and tool use."}
           </p>
           {codex ? (
             <div className="space-y-2">
@@ -1129,6 +1129,26 @@ function CustomEndpointFields({
                 <option value="bearer">Bearer token (Authorization)</option>
                 <option value="api-key">API key (x-api-key)</option>
               </NativeSelect>
+            </div>
+          )}
+          {codex && (
+            <div className="space-y-2">
+              <Label htmlFor={`${idPrefix}-custom-models`}>Deployment/model IDs</Label>
+              <Textarea
+                id={`${idPrefix}-custom-models`}
+                name="customModels"
+                required
+                rows={2}
+                spellCheck={false}
+                autoComplete="off"
+                className="font-mono text-xs"
+                placeholder="your-deployment-name, another-model-id"
+              />
+              <p className="text-xs text-muted-foreground">
+                List the exact models this endpoint serves. For Azure, use actual resource deployment names, not
+                underlying model names. Official Azure addresses receive a tiny billable test request per deployment
+                before saving; nothing is saved if a check fails. Other custom endpoints are not tested on save.
+              </p>
             </div>
           )}
           <ModelPriceFields idPrefix={idPrefix} />
@@ -1208,7 +1228,7 @@ const SUBSCRIPTION_KINDS = ACCOUNT_KINDS.filter((value) => KIND_INFO[value].bill
 /** A subscription kind, or a provider preset; a plain-key kind's id is also its preset's id. */
 type AddChoice = AccountKind | ConnectionPresetId;
 
-/** Adds subscriptions and API keys in one short form, with equal-weight connection choices. */
+/** One provider choice leads to the existing sign-in or key form, without a wall of connection cards. */
 export function AddAccountDialog({
   orgId,
   orgName,
@@ -1288,11 +1308,13 @@ export function AddAccountDialog({
           <DialogHeader>
             <DialogTitle>Add a model account</DialogTitle>
             <DialogDescription>
-              {preset?.models === "choose"
-                ? "Paste the key and tick the models you want. Billed per token by the provider."
-                : subscription
-                  ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
-                  : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
+              {preset?.deploymentNames
+                ? "Paste the key and enter your Azure deployment names. Testing sends a tiny billable request per deployment; nothing is saved if a check fails."
+                : preset?.models === "choose"
+                  ? "Paste the key and tick the models you want. Billed per token by the provider."
+                  : subscription
+                    ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
+                    : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
             </DialogDescription>
           </DialogHeader>
           <form ref={formRef} key={generation} action={formAction} className="min-w-0 space-y-5">
@@ -1300,34 +1322,34 @@ export function AddAccountDialog({
             <input type="hidden" name="kind" value={kind} />
             {preset?.models === "choose" && <input type="hidden" name="preset" value={preset.id} />}
             <input type="hidden" name="scope" value={scope} />
-            <fieldset className="space-y-2">
-              <legend className="text-sm font-medium">Connection</legend>
-              <RadioGroup
+            <div className="space-y-2">
+              <Label htmlFor={`${id}-provider`}>Provider</Label>
+              <NativeSelect
+                id={`${id}-provider`}
                 value={choice}
-                onValueChange={(value) => setChoice(value as AddChoice)}
-                aria-label="Connection"
-                className="sm:grid-cols-2"
+                onChange={(event) => setChoice(event.target.value as AddChoice)}
+                aria-describedby={`${id}-provider-hint`}
               >
-                {SUBSCRIPTION_KINDS.map((value) => (
-                  <ChoiceCard
-                    key={value}
-                    value={value}
-                    icon={<StarIcon />}
-                    title={KIND_INFO[value].label}
-                    hint={`For ${KIND_INFO[value].harnessLabel}`}
-                  />
-                ))}
-                {CONNECTION_PRESETS.map((option) => (
-                  <ChoiceCard
-                    key={option.id}
-                    value={option.id}
-                    icon={<KeyRoundIcon />}
-                    title={option.label}
-                    hint={`For ${KIND_INFO[option.kind].harnessLabel} · ${option.hint}`}
-                  />
-                ))}
-              </RadioGroup>
-            </fieldset>
+                <optgroup label="Subscriptions">
+                  {SUBSCRIPTION_KINDS.map((value) => (
+                    <option key={value} value={value}>
+                      {KIND_INFO[value].label}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="API keys and connections">
+                  {CONNECTION_PRESETS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </optgroup>
+              </NativeSelect>
+              <p id={`${id}-provider-hint`} className="text-xs text-muted-foreground">
+                For {info.harnessLabel}
+                {preset ? ` · ${preset.hint}` : " using your subscription"}.
+              </p>
+            </div>
 
             {isAdmin && (
               <fieldset className="space-y-2">
@@ -1418,7 +1440,13 @@ export function AddAccountDialog({
                 {defaultBox}
                 {state && !state.ok && <ResultLine result={state} />}
                 <SubmitButton>
-                  {subscription ? "Add subscription" : preset?.models === "choose" ? "Add connection" : "Add API key"}
+                  {subscription
+                    ? "Add subscription"
+                    : preset?.deploymentNames
+                      ? "Test and add connection"
+                      : preset?.models === "choose"
+                        ? "Add connection"
+                        : "Add API key"}
                 </SubmitButton>
               </>
             )}

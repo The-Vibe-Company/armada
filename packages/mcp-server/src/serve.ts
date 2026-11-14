@@ -42,6 +42,7 @@ import { createDockerSnapshots } from "./docker-snapshots.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
+import { idlePauseDelayMs } from "./idle-pause-policy.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
@@ -77,7 +78,9 @@ import { createRuntimeServing } from "./runtime-serving.ts";
 import { createRuntimeSockets, type RuntimeSocketData } from "./runtime-sockets.ts";
 import { orchestratorScopedMcpUrl } from "./sandbox-access-scoped-gateway.ts";
 import { createSandboxAccessServices } from "./sandbox-access-services.ts";
+import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
@@ -100,6 +103,7 @@ export async function startServer(
   } = {},
 ) {
   const config = configFromEnv(env);
+  const idleDelayMs = idlePauseDelayMs(env);
   const launch: LaunchOptions = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
   const catalogAuthentication = catalogAuthenticationFromEnv(
     env,
@@ -313,6 +317,8 @@ export async function startServer(
       serverUrl: config.publicUrl,
       manifest,
       architecture: manifest.architecture,
+      ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
+      modelAuth,
     });
   }
   // Docker placement is a separate, explicit API preview. Host polling remains
@@ -361,6 +367,7 @@ export async function startServer(
         vault: store,
         key: config.encryptionKey,
         policy: modalRuntimePolicy,
+        modelAuth,
         hostFor: modalRuntimeHostFor,
       })
     : undefined;
@@ -406,6 +413,7 @@ export async function startServer(
       ? createDockerNormalLaunch(sql, config.encryptionKey, {
           mcp: runtimeMcp,
           enabled: dockerLaunchEnabled,
+          deferLaunch: true,
           ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           credentials: dockerCredentials,
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
@@ -439,7 +447,12 @@ export async function startServer(
     launch,
     publicUrl: config.publicUrl,
     modelAuth,
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
+    sandboxBillingAccount: createSandboxBillingAccount(sql),
+    credentialBindingRecovery: createSandboxAccountChange(
+      sql,
+      dockerCredentials,
+      createCredentialBindingRecovery(sql, config.encryptionKey),
+    ),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
@@ -515,7 +528,9 @@ export async function startServer(
     runtimeCheckpoint,
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
+    ...(control.sandboxBillingAccount ? { sandboxBillingAccount: control.sandboxBillingAccount } : {}),
     ready: createDatabaseReadiness(sql),
+    idlePauseDelayMs: idleDelayMs,
     ...(env.RAILWAY_GIT_COMMIT_SHA ? { commitSha: env.RAILWAY_GIT_COMMIT_SHA } : {}),
     runtimeProviderFor,
     launch,
@@ -616,6 +631,7 @@ export async function startServer(
     ...(options.logError ? { log: options.logError } : {}),
   });
   mcp.startBackground();
+  dockerLaunch?.startBackground();
   let draining = false;
   const requests = new Set<Promise<unknown>>();
   const fetch = (request: Request) => {
@@ -681,7 +697,6 @@ export async function startServer(
   // Only authenticated normal Docker launches opt out; their service deadline
   // remains bounded, and other providers/routes keep their existing timeouts.
   control.configureDockerLaunchRequest = (request) => server.timeout(request, 0);
-  const idleDelayMs = Number(env.ARMADA_RUNTIME_IDLE_MINUTES ?? 10) * 60_000;
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers), {
     delayMs: idleDelayMs,
   });
@@ -802,6 +817,7 @@ export async function startServer(
     const stopped = stop(closeActiveConnections);
     shutdown = Promise.all([
       allWorkersDone,
+      dockerLaunch?.close(),
       socketsStopped,
       (async () => {
         while (requests.size) await Promise.allSettled([...requests]);

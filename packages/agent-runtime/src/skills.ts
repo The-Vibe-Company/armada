@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { HARNESS_CATALOG, type Harness, type SkillReceipt, validateSkillPins } from "@armada/core";
+import { shellQuote as q } from "../../core/src/shell-quote.ts";
 import {
   parsePrivateSkillReceipt,
   parseSkillReceipt,
@@ -19,7 +20,6 @@ export interface SkillInstallInput {
   cwd: string;
   key?: string;
 }
-const q = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 /** Fixed, foreground installer. No model credentials, arbitrary command, key argv
  * or global environment mutation. All diagnostics are closed labels. */
 export async function installRuntimeSkills(

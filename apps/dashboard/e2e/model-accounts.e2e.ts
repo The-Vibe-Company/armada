@@ -40,7 +40,7 @@ function account(id: number, name: string, extra: Row = {}): Row {
 async function addAccount(page: Page, name: string, token: string, makeDefault: boolean) {
   await page.getByRole("button", { name: "Add a model account", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("radio", { name: /Claude subscription/ }).check();
+  await dialog.getByLabel("Provider", { exact: true }).selectOption("claude_oauth");
   // No server-run sign-in exists for a subscription: one step names the exact local command.
   await expect(dialog.locator("[data-paste-sign-in] code")).toHaveText("claude setup-token");
   await dialog.getByLabel("Name").fill(name);
@@ -310,7 +310,10 @@ test("a refused launch keeps the chosen account: the retry bills who the person 
 test("a server older than named accounts is said plainly, and launches send no account", async ({ page }) => {
   await mock("/__test/accounts", { legacy: true });
   await signIn(page, "alice@example.com", "/harness");
-  await expect(page.locator('[data-accounts="legacy"]')).toContainText("This Armada server predates named accounts");
+  await expect(page.locator('[data-accounts="legacy"]')).toContainText("Account management needs an update");
+  await expect(
+    page.locator('[data-accounts="legacy"]').getByRole("link", { name: "Choose a snapshot" }),
+  ).toHaveAttribute("href", "/environments");
   await expect(page.getByRole("button", { name: "Add a model account", exact: true })).toHaveCount(0);
 
   const dialog = await openLaunch(page);
@@ -470,7 +473,7 @@ test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays
   await signIn(page, "alice@example.com", "/harness");
   await page.getByRole("button", { name: "Add a model account", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("radio", { name: /ChatGPT subscription/ }).check();
+  await dialog.getByLabel("Provider", { exact: true }).selectOption("codex_auth");
   await dialog.getByLabel("Name").fill("Bob's $HOME");
   await expect(dialog.locator("[data-terminal-login] code")).toHaveText(
     "armada creds login codex --name 'Bob'\\''s $HOME'",
@@ -486,10 +489,7 @@ test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays
   await mock("/__test/accounts", { authCapabilities: null });
   await page.reload();
   await page.getByRole("button", { name: "Add a model account", exact: true }).click();
-  await page
-    .getByRole("dialog")
-    .getByRole("radio", { name: /ChatGPT subscription/ })
-    .check();
+  await page.getByRole("dialog").getByLabel("Provider", { exact: true }).selectOption("codex_auth");
   await expect(page.getByRole("dialog").locator("[data-terminal-login]")).toHaveCount(0);
   await expect(page.getByRole("dialog").getByLabel("auth.json")).toBeVisible();
   await expect(page.getByRole("dialog").locator("[data-paste-sign-in] code")).toHaveText(
@@ -502,7 +502,7 @@ test("on a phone the terminal sign-in stays inside the add dialog, even for a lo
   await signIn(page, "alice@example.com", "/harness");
   await page.getByRole("button", { name: "Add a model account", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("radio", { name: /ChatGPT subscription/ }).check();
+  await dialog.getByLabel("Provider", { exact: true }).selectOption("codex_auth");
   await dialog.getByLabel("Name").fill("A very long account name for the team that shares one ChatGPT plan");
   await expect(dialog.locator("[data-terminal-login]")).toBeVisible();
   const box = await dialog.boundingBox();

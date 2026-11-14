@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { sha256Hex } from "@armada/auth";
-import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
+import { createSqlSandboxStore, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import type { Route } from "./http.ts";
+import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
 const ENROL_PATH = "/api/runtime/enrol";
 const SESSION_PATH = "/api/runtime/session";
@@ -110,14 +111,25 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     const receipt = await transaction(async (tx) => {
       const sandbox = await lockSandbox(tx, input.sandboxId, input.ownerId);
       if (sandbox.provider === "docker" && options.allowDockerIssue !== true) throw new RuntimeEnrolmentDenied();
+      const pricing = await createSqlSandboxStore(tx, { turnModels: true }).captureUsagePricingContext!(
+        input.sandboxId,
+      );
       const row = (
         await tx.query<{ epoch: string }>(
-          `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,enrolment_hash,enrolment_expires_at,configuration_enc,docker_issuer_fence)
-         values($1,$2,$3,now()+interval '5 minutes',$4,$5)
+          `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,enrolment_hash,enrolment_expires_at,configuration_enc,docker_issuer_fence,pricing_context)
+         values($1,$2,$3,now()+interval '5 minutes',$4,$5,$6::jsonb)
          on conflict(sandbox_id) do update set lifecycle_generation=excluded.lifecycle_generation,
          enrolment_hash=excluded.enrolment_hash,enrolment_expires_at=excluded.enrolment_expires_at,
-         configuration_enc=excluded.configuration_enc,docker_issuer_fence=excluded.docker_issuer_fence,runtime_hash=null returning epoch::text`,
-          [sandbox.id, sandbox.lifecycle_generation, hash, sealed, sandbox.docker_issuer_fence],
+         configuration_enc=excluded.configuration_enc,docker_issuer_fence=excluded.docker_issuer_fence,
+         pricing_context=excluded.pricing_context,runtime_hash=null returning epoch::text`,
+          [
+            sandbox.id,
+            sandbox.lifecycle_generation,
+            hash,
+            sealed,
+            sandbox.docker_issuer_fence,
+            JSON.stringify(pricing),
+          ],
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
@@ -251,10 +263,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
           : await withSession(bearer, request.headers.get("x-armada-runtime-epoch") ?? "", async (_tx, scope) => scope);
       return Response.json(result, { headers });
     } catch (error) {
-      return Response.json(
-        { error: error instanceof RuntimeEnrolmentDenied ? "runtime_enrolment_denied" : "runtime_unavailable" },
-        { status: error instanceof RuntimeEnrolmentDenied ? 401 : 503, headers },
-      );
+      return runtimeHttpFailure(error instanceof RuntimeEnrolmentDenied ? 401 : 503);
     }
   };
   return { issue, enrol, withBootstrap, withSession, withOwner, lockSourceMembers, route };

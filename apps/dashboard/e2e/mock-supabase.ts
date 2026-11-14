@@ -1,4 +1,5 @@
 import {
+  accountBindingAvailability,
   type Harness,
   harnessForCredential,
   type MachineSizePolicy,
@@ -65,6 +66,8 @@ type State = {
   goldenCalls: { route: string; body: Row; authorized: boolean }[];
   goldenGate: {
     hold: boolean;
+    /** Keep admission queued for cancellation checks, without advancing to a running builder. */
+    holdQueued?: boolean;
     fail: { status: number; code?: string; message: string } | null;
     /** The job is admitted, then a gateway in front of the server loses the answer (a 504 without a code). */
     loseAnswer?: boolean;
@@ -526,6 +529,9 @@ function sandbox(
 
 let state = seed();
 let dockerHosts: Row[] | null = null;
+let templateListFailure: { unsupported: boolean; message: string } | null = null;
+let vaultListFailure: { unsupported: boolean; message: string } | null = null;
+let accountListFailure: string | null = null;
 let sequence = 100;
 const sessions = new Map<string, string>();
 
@@ -649,6 +655,7 @@ function sandboxListMetadata(userId: string): Row[] {
         model: row.model ?? null,
         reasoningEffort: row.reasoning_effort ?? null,
         status: row.status,
+        idlePaused: row.status === "stopped" && row.status_reason === "idle_paused",
         createdAt: at(row.created_at),
         stoppedAt: at(row.stopped_at),
         expiresAt: at(row.expires_at),
@@ -1092,10 +1099,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   }
 }
 
-/**
- * `POST /api/v1/sandbox/bind-credential`, with the checks #603's server makes: the owner, a stopped Modal sandbox
- * still unbound, and one of the caller's compatible accounts. The binding is a compare-and-set; nothing restarts.
- */
+/** Fixture transport only: supported owner account changes retain the logical workspace, without a provider probe. */
 function bindCredential(body: Row, userId: string | null): Response {
   if (!userId) return json({ error: "Unauthorized." }, 401);
   state.bindCalls.push({ ...body });
@@ -1106,22 +1110,39 @@ function bindCredential(body: Row, userId: string | null): Response {
     return refuse(failure.status, failure.code, failure.message);
   }
   const target = state.sandboxes.find((row) => row.id === body.id);
-  if (!target || target.owner_id !== userId || target.provider !== "modal")
-    return refuse(404, "not_found", "Only the sandbox owner can recover its account binding.");
-  if (target.credential_id !== null)
-    return refuse(409, "conflict", "This sandbox is already bound; its account cannot change.");
-  if (target.status !== "stopped")
-    return refuse(
-      409,
-      "credential_binding_unsafe",
-      "Stop the sandbox and finish lifecycle reconciliation before binding.",
-    );
+  if (
+    !target ||
+    target.owner_id !== userId ||
+    !isMember(target.org_id, userId) ||
+    (body.org !== undefined && body.org !== target.org_id)
+  )
+    return refuse(404, "not_found", "Only the sandbox owner can choose its account binding.");
+  const availability = accountBindingAvailability({
+    provider: String(target.provider),
+    boatRuntime: target.boat_runtime === true,
+  });
+  if (!availability.available) return refuse(409, "credential_binding_unsupported", availability.reason);
+  const latestPrompt = [...(state.events.get(String(target.id)) ?? [])]
+    .reverse()
+    .find((event) => event.kind === "prompt");
+  if (
+    !["ready", "stopped"].includes(String(target.status)) ||
+    (target.status === "ready" && latestPrompt?.status === "running")
+  )
+    return refuse(409, "credential_binding_unsafe", "Wait for the running turn or lifecycle operation to finish.");
   const account = state.credentials.find(
-    (row) => row.id === body.credentialId && String(row.kind) in MODEL_KINDS && row.status === "active",
+    (row) =>
+      row.id === body.credentialId &&
+      MODEL_KINDS[String(row.kind)] === target.harness &&
+      row.status === "active" &&
+      (!row.expires_at || Date.parse(String(row.expires_at)) > Date.now()) &&
+      ((row.scope === "user" && row.owner_id === userId) || (row.scope === "org" && row.owner_id === target.org_id)),
   );
   if (!account) return refuse(400, "invalid", "That account cannot be used for this sandbox.");
   target.credential_id = account.id;
   target.credential_version = account.version;
+  target.status = "stopped";
+  target.stopped_at ??= new Date().toISOString();
   return json({
     id: target.id,
     credentialId: account.id,
@@ -1321,6 +1342,10 @@ function vaultRoute(route: string, body: Row, request: Request): Response {
   const denied = () => refuse(403, "forbidden", "Application vault access denied.");
   if (kind === "secret" && operation === "read") return invalid();
   if (!isMember(body.org, userId)) return denied();
+  if (operation === "list" && vaultListFailure)
+    return vaultListFailure.unsupported
+      ? json({ error: vaultListFailure.message }, 404)
+      : refuse(503, "unavailable", vaultListFailure.message);
   const visible = (row: Row) =>
     row.kind === kind && row.org_id === body.org && (row.scope === "org" || row.owner_id === userId);
   const nameOk = (value: unknown) =>
@@ -1572,6 +1597,10 @@ function templateRoute(route: string, body: Row, request: Request): Response {
   const fields = allowed[operation];
   if (!fields || Object.keys(body).some((key) => !fields.includes(key))) return invalid();
   if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Template access denied.");
+  if (operation === "list" && templateListFailure)
+    return templateListFailure.unsupported
+      ? json({ error: templateListFailure.message }, 404)
+      : controlFail(503, "unavailable", templateListFailure.message);
   const visible = (row: Row) =>
     row.orgId === body.org && row.status === "active" && (row.scope === "org" || row.ownerId === userId);
   // The `launch_templates_name` unique index: one active name per org and scope (per owner when personal).
@@ -1743,6 +1772,7 @@ const ISSUER = `http://127.0.0.1:${PORT}`;
 /** Pending browser sign-ins by state: the API, not the URL, knows which user and connection a state is for. */
 let failSandboxConnections = false;
 let failConnectionList = false;
+let mcpReadFailures: Partial<Record<"list" | "catalog" | "status", string>> = {};
 const pendingOAuth = new Map<string, { connection: string; user: string; code: string | null }>();
 
 function visibleConnections(orgId: string, userId: string): Row[] {
@@ -1957,6 +1987,10 @@ function mcpControl(operation: string, body: Row, userId: string | null): Respon
   if (operation === "oauth/callback") return oauthCallback(body, userId);
   const org = String(body.org ?? "");
   if (!isMember(org, userId)) return controlFail(403, "forbidden", "You are not a member of that organization.");
+  if (operation === "list" || operation === "catalog" || operation === "status") {
+    const failure = mcpReadFailures[operation];
+    if (failure) return controlFail(503, "unavailable", failure);
+  }
   if (operation === "list") {
     if (failConnectionList) return controlFail(503, "unavailable", "The registry is unavailable.");
     return json({ connections: visibleConnections(org, userId).map(connectionDto) });
@@ -2129,7 +2163,7 @@ type GoldenJob = {
   body: Row;
   owner: string;
   key: string;
-  status: { state: string; phase: string; errorCode: string | null; result: Row | null };
+  status: { state: string; phase: string; errorCode: string | null; failureReason?: string | null; result: Row | null };
 };
 const goldenJobs = new Map<string, GoldenJob>();
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,128}$/;
@@ -2194,6 +2228,7 @@ async function goldenJobStatus(body: Row, request: Request): Promise<Response> {
   if (!job || job.owner !== userId || !isMember(job.body.org, userId))
     return json({ error: { code: "not_found", message: "No such build." } }, 404);
   if (job.status.state === "queued" || job.status.state === "running") {
+    if (state.goldenGate.holdQueued && job.status.state === "queued") return json(jobJson(job));
     if (state.goldenGate.hold)
       job.status = { state: "running", phase: "checkout_baseline", errorCode: null, result: null };
     else {
@@ -2203,6 +2238,33 @@ async function goldenJobStatus(body: Row, request: Request): Promise<Response> {
         : { state: "failed", phase: "publish", errorCode: "build_failed", result: null };
     }
   }
+  return json(jobJson(job));
+}
+
+function cancelGoldenJob(body: Row, request: Request): Response {
+  const userId = viewer(request);
+  if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+  const job = goldenJobs.get(String(body.jobId));
+  if (!job || job.owner !== userId || !isMember(job.body.org, userId) || (body.org && body.org !== job.body.org))
+    return json({ error: { code: "not_found", message: "No such build." } }, 404);
+  if (job.status.state !== "queued" || job.status.phase !== "queued")
+    return json(
+      {
+        error: {
+          code: "conflict",
+          message:
+            "Only a queued, never-started build can be cancelled. Check its status; running builds need recovery.",
+        },
+      },
+      409,
+    );
+  job.status = {
+    state: "failed",
+    phase: "queued",
+    errorCode: "build_failed",
+    failureReason: "detail:Queued build cancelled by its owner; no builder was started. You can submit a new build.",
+    result: null,
+  };
   return json(jobJson(job));
 }
 
@@ -2569,6 +2631,7 @@ function accounts(route: string, body: Row, request: Request): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   const model = (row: Row) => String(row.kind) in MODEL_KINDS;
   if (route === "creds/list") {
+    if (accountListFailure) return controlFail(503, "unavailable", accountListFailure);
     const org = state.orgs.find((row) => row.id === body.org && isMember(row.id, userId));
     // As the server: every kind of the scope, the Skillpack key (#957) as kind and dates only.
     const listed = (row: Row) => model(row) || row.kind === "skillpack";
@@ -2667,6 +2730,9 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     for (const release of state.routineCreateWaiters) release();
     state = seed();
+    templateListFailure = null;
+    vaultListFailure = null;
+    accountListFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
     // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
     if (body.missingTemplateRevision)
@@ -2684,6 +2750,7 @@ function control(url: URL, body: Row): Response {
     githubCliFlows.clear();
     failSandboxConnections = false;
     failConnectionList = false;
+    mcpReadFailures = {};
     failCatalog = false;
     failConnect = false;
     if (body.missingUsage) {
@@ -2911,6 +2978,7 @@ function control(url: URL, body: Row): Response {
       loseAnswer: body.loseAnswer === true,
       failStatus: body.failStatus === true,
       hold: body.hold === true,
+      holdQueued: body.holdQueued === true,
       fail: body.fail ? (body.fail as State["providerStatusFail"]) : null,
     };
     return json({ ok: true });
@@ -2926,6 +2994,7 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/golden-release") {
     state.goldenGate.hold = false;
+    state.goldenGate.holdQueued = false;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/goldens") {
@@ -2949,6 +3018,8 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   if (url.pathname === "/__test/accounts") {
+    if (body.listFailure !== undefined)
+      accountListFailure = typeof body.listFailure === "string" ? body.listFailure : null;
     if (body.legacy !== undefined) state.legacyAccounts = body.legacy === true;
     Object.assign(state.usage, (body.usage as Record<string, Row> | undefined) ?? {});
     if (body.authCapabilities !== undefined) state.authCapabilities = body.authCapabilities as Row | null;
@@ -3069,6 +3140,14 @@ function control(url: URL, body: Row): Response {
     state.failNextTool = String(body.message);
     return json({ ok: true });
   }
+  if (url.pathname === "/__test/mcp-read-failure") {
+    const operation = body.operation;
+    if (operation !== "list" && operation !== "catalog" && operation !== "status")
+      return json({ error: "Unknown read" }, 400);
+    if (typeof body.message === "string") mcpReadFailures[operation] = body.message;
+    else delete mcpReadFailures[operation];
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/fail-connection-list") {
     failConnectionList = true;
     return json({ ok: true });
@@ -3121,6 +3200,16 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   /** Another tab or the CLI revokes a vault item: the page still holds the version it loaded. */
+  if (url.pathname === "/__test/vault-list-failure") {
+    vaultListFailure =
+      typeof body.message === "string" ? { unsupported: body.unsupported === true, message: body.message } : null;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/template-list-failure") {
+    templateListFailure =
+      typeof body.message === "string" ? { unsupported: body.unsupported === true, message: body.message } : null;
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/vault-revoke") {
     const row = state.vault.find((item) => item.id === body.id);
     if (!row) return json({ error: "unknown item" }, 404);
@@ -3136,6 +3225,7 @@ function control(url: URL, body: Row): Response {
     }
     if ("failure" in body) state.routineFailure = body.failure as Fail | null;
     if (body.empty) state.routines = [];
+    if (body.templatesEmpty) for (const template of state.templates) template.status = "deleted";
     if (body.stale) {
       const item = state.routines.find((r) => r.id === body.stale);
       if (item) item.version = Number(item.version) + 1;
@@ -3236,10 +3326,26 @@ const server = Bun.serve({
           return controlFail(403, "forbidden", "Only organization members can list hosts.");
         return json({ placement: true, hosts: dockerHosts });
       }
+      if (route === "launch/options" && dockerHosts !== null) {
+        if (!viewer(request)) return controlFail(401, "unauthorized", "Sign in again.");
+        return json({
+          providers: [
+            {
+              id: "docker",
+              enabled: true,
+              launchSources: ["image"],
+              harnesses: ["claude", "codex"],
+              capabilities: { launch: true, followupPrompts: true, stop: true, delete: true, status: true, logs: true },
+              unsupportedReasons: {},
+            },
+          ],
+        });
+      }
       if (route === "auth/email/start") return json({ ok: true });
       if (route === "skillpack/catalog" || route === "skillpack/versions")
         return skillCatalogRoute(route, body, request);
       if (route === "golden/build/status") return goldenJobStatus(body, request);
+      if (route === "golden/build/cancel") return cancelGoldenJob(body, request);
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);
       if (route === "golden/remove") return goldenRemove(body, request);

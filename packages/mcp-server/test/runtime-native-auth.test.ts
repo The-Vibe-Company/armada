@@ -1,12 +1,16 @@
 import { expect, test } from "bun:test";
 import { CodexDriver, type DriverEvent } from "@armada/agent-runtime";
-import { encryptSecret, type GoldenActor, type Sql } from "@armada/core/server";
+import { encryptSecret, type GoldenActor, type Provider, type Sql } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
+import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeNativeAuth } from "../src/runtime-native-auth.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
+const modalDatabase = rowOnlyDatabase();
 const nativeTest = process.platform === "linux" ? test : test.skip;
 
 const native = (revision: number, account = "offline-account") =>
@@ -17,8 +21,8 @@ const native = (revision: number, account = "offline-account") =>
       refresh_token: `offline-refresh-${revision}`,
     },
   });
-async function fixture(boatRuntime = false, authJson = native(0)) {
-  const { db, people } = await database();
+async function fixture(boatRuntime = false, authJson = native(0), provider: "boat" | "modal" = "boat") {
+  const { db, people } = await (provider === "modal" ? modalDatabase() : database());
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -33,11 +37,26 @@ async function fixture(boatRuntime = false, authJson = native(0)) {
   const id = crypto.randomUUID(),
     actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
   const ownership = createModelAuthOwnership(sql, ENCRYPTION_KEY);
-  await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,credential_id,credential_version,boat_runtime)
+  if (provider === "modal") {
+    const golden = (
+      await db.query<{ id: string }>(
+        `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+       values($1,$2,'subscription-modal','private','modal','master','image','workspace','main','app','{"repos":[],"init":[]}') returning id`,
+        [people.org, people.owner],
+      )
+    ).rows[0]!;
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,credential_id,credential_version,runtime_transport,model,reasoning_effort)
+      values($1,$2,$3,$4,'modal','modal-subscription','codex','ready',$5,1,'dialout','gpt-5.4','high')`,
+      [id, golden.id, people.org, people.owner, account.id],
+    );
+  } else {
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,credential_id,credential_version,boat_runtime)
     select $1,id,org_id,owner_id,'native-publisher','codex','ready',$3,1,$4 from goldens where owner_id=$2 and visibility='private' limit 1`,
-    [id, people.owner, account.id, boatRuntime],
-  );
+      [id, people.owner, account.id, boatRuntime],
+    );
+  }
   const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
   const enrol = async () =>
     authority.enrol(
@@ -66,7 +85,22 @@ async function fixture(boatRuntime = false, authJson = native(0)) {
     if (!response) throw Error("missing native publication route");
     return response;
   };
-  return { db, sql, people, id, actor, account, ownership, authority, enrol, publisher, publish };
+  return {
+    db,
+    sql,
+    people,
+    id,
+    actor,
+    account,
+    ownership,
+    authority,
+    enrol,
+    publisher,
+    publish,
+    async close() {
+      if (provider !== "modal") await db.close();
+    },
+  };
 }
 
 test("private runtime renewal seals state once, retains retired leaves, and returns honest CAS receipts", async () => {
@@ -94,7 +128,7 @@ test("private runtime renewal seals state once, retains retired leaves, and retu
     expect((await f.ownership.state.read(f.actor, f.account.id, 1, f.id))?.authJson).toBe(native(2));
     expect(wrong.headers.get("cache-control")).toBe("no-store");
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -119,7 +153,7 @@ test("runtime epoch, membership and pinned credential version fence publication"
     ).rows[0];
     expect(stored?.auth_revision).toBe(1);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
@@ -152,14 +186,14 @@ test("malformed/mixed native publications never masquerade as journal ACKs or di
       ).rows,
     ).toHaveLength(0);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
-test("epoch subscription access round-trips the runtime client, refresh revision and access-only driver callback", async () => {
+test("Modal epoch subscription access round-trips the runtime client, refresh revision and access-only driver callback", async () => {
   const { createRuntimeModelAccess } = await import("../src/runtime-model-access.ts");
   const { RuntimeDialout, runtimeSubscriptionAccess } = await import("../../agent-runtime/src/dialout.ts");
-  const f = await fixture();
+  const f = await fixture(false, native(0), "modal");
   try {
     const active = await f.enrol();
     await f.publish(active, native(0), 0);
@@ -233,16 +267,16 @@ test("epoch subscription access round-trips the runtime client, refresh revision
     await expect(access(false)).rejects.toThrow("runtime_channel_revoked");
     expect(calls).toHaveLength(2);
   } finally {
-    await f.db.close();
+    await f.close();
   }
 });
 
 test.each(["epoch", "membership", "pin", "stop", "ownership", "upstream"] as const)(
-  "subscription material cannot escape after %s changes during server refresh",
+  "Modal subscription material cannot escape after %s changes during server refresh",
   async (change) => {
     const { createRuntimeModelAccess } = await import("../src/runtime-model-access.ts");
     const { VaultError } = await import("@armada/core/server");
-    const f = await fixture();
+    const f = await fixture(false, native(0), "modal");
     try {
       const active = await f.enrol();
       await f.publish(active, native(0), 0);
@@ -284,7 +318,7 @@ test.each(["epoch", "membership", "pin", "stop", "ownership", "upstream"] as con
       expect(response?.headers.get("cache-control")).toBe("no-store");
       expect(await response?.text()).not.toContain("private-");
     } finally {
-      await f.db.close();
+      await f.close();
     }
   },
 );
@@ -411,6 +445,76 @@ nativeTest("Boat guests share native-requested renewal across epoch replacement"
     expect((await f.db.query("select sequence from runtime_events")).rows).toEqual([]);
   } finally {
     await driver?.close();
-    await f.db.close();
+    await f.close();
+  }
+});
+
+// Production Modal policy must project the shared broker selection into private
+// enrolment. Deliberately abort at bootstrap: no runtime polling/provider compute.
+test("Modal subscription launch enrols only access-broker selection and replaces prior authority", async () => {
+  const f = await fixture(false, native(0), "modal");
+  try {
+    const active = await f.enrol();
+    await f.publish(active, native(0), 0);
+    await f.db.query("update model_auth_state set source_generation='server:ready'");
+    const caller = {
+      userId: f.people.owner,
+      orgs: [{ orgId: f.people.org, role: "member" as const }],
+      via: "service" as const,
+    };
+    const sandbox = (await createSqlData(f.sql)(caller).sandboxes.get(f.id))!;
+    let enrolled: Awaited<ReturnType<typeof f.enrol>> | undefined;
+    const host = {
+      id: "modal",
+      async startRuntime(request: { enrolmentToken: string }) {
+        enrolled = await f.authority.enrol(request.enrolmentToken);
+        expect(enrolled.configuration).toMatchObject({ selectedHarness: "codex", runtimeSubscription: true });
+        const wire = JSON.stringify(enrolled.configuration);
+        expect(wire).not.toContain("offline-refresh-");
+        expect(wire).not.toContain("offline-access-");
+        expect(wire).not.toContain("codexAuthJson");
+        throw Error("intentional_bootstrap_abort");
+      },
+    } as unknown as Provider;
+    const policy = modalRuntimeLaunch({
+      sql: f.sql,
+      encryptionKey: ENCRYPTION_KEY,
+      serverUrl: "https://armada.example",
+      architecture: "x64",
+      manifest: {
+        protocol: 1,
+        platform: "linux",
+        architecture: "x64",
+        libc: "glibc",
+        runtime: { sha256: "a".repeat(64), bytes: 1 },
+        harnesses: { codex: { files: [{ path: "bin/codex" }] } },
+      },
+      modelAuth: {
+        state: f.ownership.state,
+        broker: {
+          async access() {
+            throw Error("configuration must not refresh model access");
+          },
+        },
+      },
+    });
+    await expect(
+      policy.start({
+        host,
+        actor: f.actor,
+        sandbox,
+        credentials: {
+          env: { ARMADA_SERVER_CODEX: "1" },
+          codexAuthJson: true,
+          secrets: [],
+          binding: { credentialId: f.account.id, credentialVersion: 1 },
+        },
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow();
+    expect(enrolled).toBeDefined();
+    await expect(f.authority.withSession(active.runtimeToken, active.epoch, async () => true)).rejects.toThrow();
+  } finally {
+    await f.close();
   }
 });

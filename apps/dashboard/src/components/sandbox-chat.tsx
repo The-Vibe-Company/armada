@@ -1,6 +1,6 @@
 "use client";
 
-import type { Harness, SandboxStatus } from "@armada/core";
+import { type Harness, idlePauseMessage, type SandboxStatus } from "@armada/core";
 import {
   AlertTriangleIcon,
   ArrowDownIcon,
@@ -408,6 +408,7 @@ export function SandboxChat(props: Props) {
   const chat = useMemo(() => projectChat(eventsOf(events, shownConversation)), [events, shownConversation]);
   // A stopped or failed machine runs no turn, whatever its last prompt event said before it stopped.
   const turnRunning = chat.running && LIVE.includes(status);
+  const pauseMessage = idlePauseMessage({ status, idlePaused, expiresAt: props.expiresAt ?? null }, new Date());
   const failure = [...chat.items].reverse().find((item) => item.kind === "outcome" && item.status === "failed");
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;
 
@@ -431,9 +432,20 @@ export function SandboxChat(props: Props) {
                 <StatusDot tone="success" pulse /> Live
               </span>
             )}
-            <StatusBadge status={status} idlePaused={idlePaused} expiresAt={props.expiresAt ?? null} />
+            <StatusBadge
+              status={status}
+              idlePaused={idlePaused}
+              expiresAt={props.expiresAt ?? null}
+              readyLabel="Waiting for you"
+            />
           </div>
         </div>
+
+        {pauseMessage && (
+          <p className="border-b px-4 py-2 text-xs text-muted-foreground sm:px-6" role="status">
+            {pauseMessage}
+          </p>
+        )}
 
         {turnModel?.modelSelectionReason && (
           <details className="border-b px-4 py-2 text-sm sm:px-6">
@@ -470,6 +482,7 @@ export function SandboxChat(props: Props) {
             <Composer
               {...props}
               status={status}
+              idlePaused={idlePaused}
               conversation={selected && props.conversations.includes(selected) ? selected : null}
               running={turnRunning}
               onDone={() => {
@@ -934,11 +947,19 @@ function Composer({
   conversation,
   running,
   onDone,
-}: Props & { status: SandboxStatus; conversation: string | null; running: boolean; onDone: () => void }) {
+  idlePaused,
+}: Props & {
+  status: SandboxStatus;
+  conversation: string | null;
+  running: boolean;
+  idlePaused: boolean;
+  onDone: () => void;
+}) {
   const form = useRef<HTMLFormElement>(null);
   const [draft, setDraft] = useState("");
   const [result, setResult] = useState<ActionResult | null>(null);
   const [pending, setPending] = useState<Intent | null>(null);
+  const [waking, setWaking] = useState(false);
   const [, startTransition] = useTransition();
   const [showModel, setShowModel] = useState(false);
   const [override, setOverride] = useState(false);
@@ -985,6 +1006,7 @@ function Composer({
       data.set(SEND_KEY_FIELD, sendKey.current.key);
     }
     const action = intent === "send" ? sendToSandbox : intent === "steer" ? steerSandbox : interruptSandbox;
+    setWaking(intent === "send" && idlePaused);
     setPending(intent);
     setResult(null);
     startTransition(async () => {
@@ -995,6 +1017,7 @@ function Composer({
         outcome = { ok: false, error: UNCONFIRMED_ACTION };
       }
       setPending(null);
+      setWaking(false);
       setResult(outcome);
       if (!outcome.ok) return;
       sendKey.current = null;
@@ -1183,7 +1206,8 @@ function Composer({
               onClick={() => run("send")}
             >
               {pending === "send" && <Loader2Icon className="animate-spin" />}
-              {running ? (
+              {waking ? "Waking the sandbox…" : null}
+              {waking ? null : running ? (
                 <>
                   <span className="max-sm:hidden">Send as new turn</span>
                   <span className="sm:hidden">New turn</span>

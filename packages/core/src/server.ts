@@ -54,7 +54,7 @@ export {
   PRIVATE_SKILL_PATTERN,
   PrivateSkillError,
 } from "./private-skill.ts";
-export { isNonMutatingProviderRefusal } from "./provider.ts";
+export { isNonMutatingProviderRefusal, isProviderStartRateLimit } from "./provider.ts";
 export {
   advanceRoutineSchedule,
   nextRoutineDates,

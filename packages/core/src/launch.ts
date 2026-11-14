@@ -256,7 +256,6 @@ export async function launchSandbox(
         `Boat runtime default cannot launch ${feature}; no native fallback. Set ARMADA_BOAT_AGENT_PATH=native for rollback.`,
       );
     };
-    if (!request.prompt?.trim()) refuse("an idle sandbox without an initial prompt");
     if (options.nativeEnvironmentBindings) refuse("template readable-variable or application-secret bindings");
     provider = await defaultRuntime.provider(actor, golden);
     stores = { ...stores, credentials: defaultRuntime.credentials, connections: defaultRuntime.connections };
@@ -267,13 +266,13 @@ export async function launchSandbox(
   if (
     runtime &&
     (!["boat", "modal"].includes(provider.id) ||
-      (harness !== "codex" && !(provider.id === "boat" && harness === "claude")) ||
+      (harness !== "codex" && harness !== "claude" && !(provider.id === "modal" && harness === "opencode")) ||
       options.privateParent ||
       options.privateVisibility)
   )
     throw new LaunchError(
       "invalid_request",
-      "The experimental runtime supports ordinary Boat Codex/Claude or Modal Codex workers only.",
+      "The experimental runtime supports ordinary Boat Codex/Claude or Modal Codex/Claude/OpenCode workers only.",
     );
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);
@@ -579,7 +578,7 @@ export async function launchSandbox(
       if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now())
         throw new LaunchError("invalid_request", "Provider lifetime has no remaining preservation headroom.");
       if (!runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
-      const runtimeWorkspace = provider.id === "boat" && Boolean(runtime);
+      const runtimeWorkspace = Boolean(runtime);
       if (!runtimeWorkspace) await options.beforeStart?.(provider, record);
       if (runtime && !startedRuntime)
         startedRuntime = Promise.resolve().then(() =>
@@ -592,7 +591,7 @@ export async function launchSandbox(
         if (!agent?.prepareWorkspace)
           throw new LaunchError(
             "start_failed",
-            "Boat runtime workspace setup requires updated runtime artifacts; no native fallback.",
+            "Runtime workspace setup requires updated runtime artifacts; no native fallback.",
           );
         launchGithub = await agent.prepareWorkspace(golden, progress, options.sleep);
       }
@@ -678,7 +677,12 @@ export async function launchSandbox(
         },
       );
       try {
-        await stores.sandboxes.recordTurnModel?.(record.id, receipt.promptId, choice.model);
+        await stores.sandboxes.recordTurnModel?.(
+          record.id,
+          receipt.promptId,
+          choice.model,
+          credentials.usagePricing ?? null,
+        );
       } catch {
         try {
           console.error("armada: turn model request record unavailable; accepted prompt continues.");

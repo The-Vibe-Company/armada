@@ -1,3 +1,4 @@
+import { isRecord } from "./record.ts";
 import { shellQuote as shQuote } from "./shell-quote.ts";
 /** Where a golden's repositories are cloned. Launch pulls the same directories. */
 export const GOLDEN_ROOT = "/home/user";
@@ -45,15 +46,20 @@ export class GoldenError extends Error {
   override readonly name = "GoldenError";
   readonly code: GoldenErrorCode;
   readonly safeReason: "skillpack_integrity_failed" | undefined;
+  /** Curated public diagnostic only. Never supply upstream messages, output or command text. */
+  readonly safeMessage: string | undefined;
+  readonly safePhase: string | undefined;
 
   constructor(
     code: GoldenErrorCode,
     message: string,
-    options?: { cause?: unknown; safeReason?: "skillpack_integrity_failed" },
+    options?: { cause?: unknown; safeReason?: "skillpack_integrity_failed"; safeMessage?: string; safePhase?: string },
   ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;
     this.safeReason = options?.safeReason;
+    this.safeMessage = options?.safeMessage;
+    this.safePhase = options?.safePhase;
   }
 }
 
@@ -169,6 +175,47 @@ export function configFromFlags(repos: readonly string[], init: readonly string[
     }),
     init: [...init],
   });
+}
+
+/** Add repositories without replacing stored branches, directories or initialization commands.
+ * Repeating the same addition is a no-op so a successful admission remains recoverable.
+ */
+export function addGoldenRepositories(existing: GoldenConfig, additions: readonly string[]): GoldenConfig {
+  if (!additions.length) throw new GoldenError("invalid_config", "Pass at least one --add-repo URL.");
+  const current = parseGoldenConfig(existing);
+  const requested = configFromFlags(additions, []);
+  const repos = [...current.repos];
+  const identities = new Map(
+    normalizeGitHubGoldenConfig(current).repos.map((repo, index) => [
+      `${repo.owner}/${repo.repo}`.toLowerCase(),
+      current.repos[index]!,
+    ]),
+  );
+  for (const [index, identity] of normalizeGitHubGoldenConfig(requested).repos.entries()) {
+    const key = `${identity.owner}/${identity.repo}`.toLowerCase();
+    const prior = identities.get(key);
+    const addition = requested.repos[index]!;
+    if (prior) {
+      if (prior.branch !== addition.branch)
+        throw new GoldenError(
+          "invalid_config",
+          "This repository already has a different branch in the golden. Use --config with the complete desired repository list to change it.",
+        );
+      continue;
+    }
+    repos.push(addition);
+    identities.set(key, addition);
+  }
+  try {
+    return parseGoldenConfig({ repos, init: current.init });
+  } catch (error) {
+    if (error instanceof GoldenError)
+      throw new GoldenError(
+        "invalid_config",
+        `${error.message} Use --config with the complete desired repository list and distinct directories.`,
+      );
+    throw error;
+  }
 }
 
 export function parseGoldenConfig(input: unknown): GoldenConfig {
@@ -374,10 +421,6 @@ function secretAssignment(command: string): string | null {
     if (key && isSecretKey(key)) return key;
   }
   return null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function showUrl(value: string): string {

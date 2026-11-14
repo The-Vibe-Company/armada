@@ -2,7 +2,8 @@ import { sha256Hex } from "@armada/auth";
 import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
-import { createRuntimeAgent } from "./runtime-agent.ts";
+import { lockRuntimeAccount } from "./runtime-account-admission.ts";
+import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
@@ -81,7 +82,9 @@ export function createRuntimeResume(
         (found.provider === "boat" && found.boatRuntime) ||
         (found.provider === "modal" && found.runtimeTransport === "dialout")
       ) ||
-      (found.harness !== "codex" && found.harness !== "claude") ||
+      (found.harness !== "codex" &&
+        found.harness !== "claude" &&
+        !(found.provider === "modal" && found.harness === "opencode")) ||
       found.deletedAt
     )
       throw new VaultError("not_found", "No owned runtime resume target.");
@@ -97,32 +100,9 @@ export function createRuntimeResume(
       return prior.receipt;
     } // Historical accepted outcome, not a new activation.
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime resume requires transactional admission.");
+    const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const admitted = await sql.transaction(async (tx) => {
-      if (
-        !(
-          await tx.query("select user_id from public.members where user_id=$1 and org_id=$2 for update", [
-            caller.userId,
-            found.orgId,
-          ])
-        ).rows[0]
-      )
-        throw new VaultError("not_found", "Runtime membership was revoked.");
-      if (
-        !(
-          await tx.query(
-            `select id from public.credentials where id=$1 and version=$2 and status='active' and kind = any($5::public.credential_kind[])
-        and (expires_at is null or expires_at>now()) and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for update`,
-            [
-              found.credentialId,
-              found.credentialVersion,
-              caller.userId,
-              found.orgId,
-              found.harness === "claude" ? ["anthropic", "claude_oauth"] : ["openai", "codex_auth"],
-            ],
-          )
-        ).rows[0]
-      )
-        throw new VaultError("not_found", "Pinned runtime account is no longer authorized.");
+      await lockRuntimeAccount(tx, caller, found, "Pinned runtime account is no longer authorized.");
       const fence = (
         await tx.query<{ tainted: boolean; lease: string | null; busy: boolean; unexpired: boolean }>(
           "select expires_at>now() as unexpired,application_secret_tainted as tainted,activity_lease_id::text as lease,(reconcile_lease_until>now()) as busy from public.sandboxes where id=$1 and owner_id=$2 for update",
@@ -236,13 +216,9 @@ export function createRuntimeResume(
       watermark: Number(admitted.op.watermark),
       conversationId: conversation,
     };
-    const agent = createRuntimeAgent(commands, {
-      harness: found.harness,
-      ownerId: caller.userId,
-      sandboxId: found.id,
-      providerSandboxId: found.providerSandboxId,
-      cwd: found.repositoryDir ? `/home/user/${found.repositoryDir}` : "/home/user",
-      defaults: { model: admitted.op.model, reasoningEffort: admitted.op.reasoning_effort },
+    const agent = runtimeAgentFor(commands, caller.userId, found, {
+      model: admitted.op.model,
+      reasoningEffort: admitted.op.reasoning_effort,
     });
     let placement: RuntimeResumePlacement | undefined, receipt: RuntimeResumeReceipt | undefined;
     const publishing = {
@@ -316,7 +292,7 @@ export function createRuntimeResume(
             sourceCheckpoint: { epoch: restore.epoch, watermark: restore.watermark },
           };
           try {
-            await store.recordTurnModel?.(found.id, accepted.promptId, admitted.op.model);
+            await store.recordTurnModel?.(found.id, accepted.promptId, admitted.op.model, pricingContext);
           } catch {
             /* Accepted work continues. */
           }

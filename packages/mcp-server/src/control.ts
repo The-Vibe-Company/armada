@@ -33,13 +33,12 @@ import {
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   parseMachineSize,
   parseMachineSizePolicy,
-  providerRateLimitDetails,
-  providerRateLimitMessage,
   sandboxIdentity,
   VERSION,
 } from "@armada/core";
 import {
   type ApplicationVault,
+  addGoldenRepositories,
   addMember,
   assertGoldenMutation,
   connectGolden,
@@ -110,7 +109,8 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
-import { apiFailureCode } from "./api-failure.ts";
+import { apiFailureCode, providerFailureResponse } from "./api-failure.ts";
+import { validateAzureModelAccount } from "./azure-model-account.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
 import { databasePoolMax } from "./config.ts";
 import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
@@ -141,7 +141,9 @@ import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
+import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { bunSql } from "./sql.ts";
 import { createSubscriptionMigration } from "./subscription-migration.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
@@ -151,6 +153,10 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  sandboxBillingAccount?: (
+    caller: Caller,
+    id: string,
+  ) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerLaunch?: import("./docker-normal-launch.ts").DockerNormalLaunch;
   /** Listener-local keepalive for the bounded synchronous Docker launch pipeline. */
   configureDockerLaunchRequest?: (request: Request) => void;
@@ -189,6 +195,8 @@ export interface ControlOptions {
   modelUsage?: ModelUsageApi;
   invitations?: Invitations;
   providerValidator?: ProviderValidator;
+  /** Server-owned account admission; never selected or disabled by request JSON. */
+  modelAccountValidator?: NonNullable<Parameters<typeof mutateCredentialAccount>[4]>;
   githubAccount?: GitHubAccountApi;
   goldenRetirements?: import("@armada/core/server").GoldenSnapshotRetirements;
   mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
@@ -234,6 +242,7 @@ const STATUS: Record<VaultErrorCode, number> = {
   credential_busy: 409,
   credential_binding_required: 409,
   credential_binding_unsafe: 409,
+  credential_binding_unsupported: 409,
   invalid: 400,
   forbidden: 403,
   not_found: 404,
@@ -344,7 +353,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
       status:
-        (route === "golden/create" || route === "golden/update") &&
+        (route === "golden/create" || route === "golden/update" || route === "golden/update-add-repos") &&
         typeof result === "object" &&
         result !== null &&
         "jobId" in result
@@ -354,6 +363,10 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     });
   } catch (error) {
     if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
+    if (error instanceof ProviderError) {
+      const { status, error: failure } = providerFailureResponse(error);
+      return Response.json({ error: failure }, { status, headers: { "cache-control": "no-store" } });
+    }
     const failureCode = apiFailureCode(error);
     if (failureCode)
       return Response.json(
@@ -362,9 +375,6 @@ export async function handleControlRequest(request: Request, options: ControlOpt
             code: failureCode,
             message: error instanceof Error ? error.message : failureCode,
             ...(error instanceof GitHubHydrationError ? { details: error.details } : {}),
-            ...(error instanceof ProviderError && error.details?.keepSource === true
-              ? { details: { keepSource: true, sourceSandboxId: error.details.sourceSandboxId } }
-              : {}),
           },
         },
         { status: API_FAILURE_STATUS[failureCode], headers: { "cache-control": "no-store" } },
@@ -378,43 +388,6 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof AuthUnavailable)
       return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
-    if (error instanceof ProviderError) {
-      const limit =
-        error.provider === "boat" && error.code === "rate_limited" && error.status === 429
-          ? providerRateLimitDetails({ ...error.details, provider: "boat", retryAfterSeconds: error.retryAfterSeconds })
-          : undefined;
-      const status =
-        error.code === "rate_limited"
-          ? 429
-          : error.code === "payment_required"
-            ? 402
-            : error.code === "conflict"
-              ? 409
-              : error.code === "forbidden"
-                ? 403
-                : error.code === "invalid_request"
-                  ? 400
-                  : 503;
-      return Response.json(
-        {
-          error: {
-            code: error.code,
-            message: limit ? providerRateLimitMessage(limit) : error.message,
-            ...(limit
-              ? { details: limit }
-              : error.details?.keepSource === true
-                ? {
-                    details: {
-                      keepSource: true,
-                      sourceSandboxId: error.details.sourceSandboxId,
-                    },
-                  }
-                : {}),
-          },
-        },
-        { status, headers: { "cache-control": "no-store" } },
-      );
-    }
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(
@@ -823,6 +796,10 @@ async function dispatch(
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
         usageVersion: options.modalRuntimeLaunch ? 1 : 0,
+        claudeVersion: options.modalRuntimeLaunch ? 1 : 0,
+        opencodeVersion: options.modalRuntimeLaunch ? 1 : 0,
+        opencodeShellProofVersion: options.modalRuntimeLaunch ? 1 : 0,
+        opencodeMcpProofVersion: options.modalRuntimeLaunch && options.runtimeMcp ? 1 : 0,
         variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
       },
       boatRuntime: {
@@ -996,10 +973,13 @@ async function dispatch(
     )
       throw new VaultError("forbidden", "You are not a member of this org.");
     const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
-    return callSharedTool(
+    const result = await callSharedTool(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
+        ...(options.sandboxBillingAccount
+          ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(scopedCaller, id) }
+          : {}),
         ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
@@ -1043,6 +1023,7 @@ async function dispatch(
       toolName,
       body,
     );
+    return result;
   }
   const { store, encryptionKey } = options;
   const userId = caller.userId;
@@ -1137,26 +1118,38 @@ async function dispatch(
     case "creds/accounts/default":
     case "creds/accounts/remove": {
       const action = route.split("/").at(-1) as "set" | "rename" | "default" | "remove";
-      const account = await mutateCredentialAccount(store, encryptionKey, userId, {
-        action,
-        ...(body.expectedVersion === undefined ? {} : { expectedVersion: requiredNumber(body, "expectedVersion") }),
-        ...(optional(body, "expiresAt") ? { expiresAt: required(body, "expiresAt") } : {}),
-        scope: scope(body),
-        ...(org ? { org } : {}),
-        ...(body.id !== undefined ? { id: required(body, "id") } : {}),
-        ...(body.name !== undefined ? { name: required(body, "name") } : {}),
-        ...(optional(body, "kind") ? { kind: parseCredentialKind(required(body, "kind")) } : {}),
-        ...(optional(body, "value") ? { value: required(body, "value") } : {}),
-      });
+      const account = await mutateCredentialAccount(
+        store,
+        encryptionKey,
+        userId,
+        {
+          action,
+          ...(body.expectedVersion === undefined ? {} : { expectedVersion: requiredNumber(body, "expectedVersion") }),
+          ...(optional(body, "expiresAt") ? { expiresAt: required(body, "expiresAt") } : {}),
+          scope: scope(body),
+          ...(org ? { org } : {}),
+          ...(body.id !== undefined ? { id: required(body, "id") } : {}),
+          ...(body.name !== undefined ? { name: required(body, "name") } : {}),
+          ...(optional(body, "kind") ? { kind: parseCredentialKind(required(body, "kind")) } : {}),
+          ...(optional(body, "value") ? { value: required(body, "value") } : {}),
+        },
+        options.modelAccountValidator ?? validateAzureModelAccount,
+      );
       return { account };
     }
     case "creds/set":
-      await setCredential(store, encryptionKey, userId, {
-        scope: scope(body),
-        org,
-        kind: parseCredentialKind(required(body, "kind")),
-        value: required(body, "value"),
-      });
+      await setCredential(
+        store,
+        encryptionKey,
+        userId,
+        {
+          scope: scope(body),
+          org,
+          kind: parseCredentialKind(required(body, "kind")),
+          value: required(body, "value"),
+        },
+        options.modelAccountValidator ?? validateAzureModelAccount,
+      );
       return { ok: true };
     case "creds/list":
       return listCredentials(store, userId, org);
@@ -1175,12 +1168,33 @@ async function dispatch(
     case "sandbox/bind-credential":
       if (!options.credentialBindingRecovery)
         throw new VaultError("unavailable", "Binding recovery is not configured.");
-      return options.credentialBindingRecovery(caller, {
-        id: required(body, "id"),
-        credentialId: required(body, "credentialId"),
-        // An org name or ID, resolved against fresh memberships like every other sandbox route.
-        ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
-      });
+      return options.credentialBindingRecovery(
+        caller,
+        {
+          id: required(body, "id"),
+          credentialId: required(body, "credentialId"),
+          // An org name or ID, resolved against fresh memberships like every other sandbox route.
+          ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
+        },
+        async (id, sandboxOrg) => {
+          const stopped = await dispatch(
+            "sandbox/stop",
+            caller,
+            { id, org: sandboxOrg, only_if_idle: true, request_id: crypto.randomUUID() },
+            options,
+          );
+          if (!stopped || typeof stopped !== "object" || !("status" in stopped) || stopped.status !== "stopped")
+            throw new VaultError(
+              "credential_binding_unsafe",
+              "Stop is still pending; wait for stopped and retry. The account is unchanged.",
+            );
+          if ("preservationNote" in stopped && stopped.preservationNote === "checkpoint_failed_disk_not_retained")
+            throw new VaultError(
+              "credential_binding_unsafe",
+              "Checkpointing failed and retained compute cannot resume. The account is unchanged; inspect preserved work.",
+            );
+        },
+      );
     case "golden/size-policy": {
       if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
       const data = options.data(caller);
@@ -1211,9 +1225,12 @@ async function dispatch(
     case "sandbox/mcp-preflight-v1":
       if (body.runtimeVersion !== 1 || !options.runtimeMcp)
         throw new VaultError("unavailable", "Runtime MCP v1 is unavailable.");
+      if (body.toolInventory !== undefined && typeof body.toolInventory !== "boolean")
+        throw new VaultError("invalid", "toolInventory must be boolean.");
       return options.runtimeMcp.preflight(caller, {
         org: required(body, "org"),
         connections: body.connections as string[],
+        ...(body.toolInventory === true ? { toolInventory: true } : {}),
       });
     case "sandbox/github-preflight-v1":
       if (body.runtimeVersion !== 1 || !options.runtimeGitHub)
@@ -1228,14 +1245,17 @@ async function dispatch(
         body.runtimeVersion !== 1 ||
         body.runtimeTransport !== "dialout" ||
         body.provider !== "modal" ||
-        body.harness !== "codex" ||
+        (body.harness !== "codex" && body.harness !== "claude" && body.harness !== "opencode") ||
         body.boatRuntime !== undefined ||
         body.armadaAccess ||
         (body.connections !== undefined && !Array.isArray(body.connections)) ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
       )
-        throw new VaultError("invalid", "Modal runtime v1 requires explicit Codex launch; helpers are unavailable.");
+        throw new VaultError(
+          "invalid",
+          "Modal runtime v1 requires explicit Codex, Claude or OpenCode launch; helpers are unavailable.",
+        );
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
       required(body, "prompt");
@@ -1275,10 +1295,10 @@ async function dispatch(
         );
         return options.templates.command(caller, "launch", input, {
           validateDefinition: (definition) => {
-            if (definition.provider !== "modal" || definition.harness !== "codex" || definition.secrets?.length)
+            if (definition.provider !== "modal" || definition.harness !== body.harness || definition.secrets?.length)
               throw new VaultError(
                 "invalid",
-                "Modal runtime templates require Modal Codex without application-secret bindings.",
+                "Modal runtime templates require the selected Modal harness without application-secret bindings.",
               );
           },
           stores: {
@@ -1305,7 +1325,6 @@ async function dispatch(
         throw new VaultError("invalid", "Runtime v1 requires explicit Boat Codex or Claude snapshot launch.");
       if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
         throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-      required(body, "prompt");
       return launchRoute(options, caller, body, true);
     case "sandbox/launch-access-v1":
       if (body.armadaAccessVersion !== 1 || !parseSandboxArmadaAccess(body.armadaAccess))
@@ -1363,6 +1382,15 @@ async function dispatch(
     }
     case "golden/list":
       return listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
+    case "golden/build/cancel": {
+      if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
+      const scoped = await selectedCaller(options, caller, optional(body, "org"));
+      return options.goldenBuilds.cancel(
+        caller.userId,
+        required(body, "jobId"),
+        scoped.orgs.map((org) => org.orgId),
+      );
+    }
     case "golden/build/status":
       if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
       return options.goldenBuilds.status(
@@ -1376,6 +1404,8 @@ async function dispatch(
       return createGoldenRoute(options, caller, body);
     case "golden/update":
       return updateGoldenRoute(options, caller, body);
+    case "golden/update-add-repos":
+      return updateGoldenRoute(options, caller, body, true);
     case "golden/snapshot":
       return snapshotGoldenRoute(options, caller, body);
     case "golden/connect":
@@ -1458,7 +1488,12 @@ async function createGoldenRoute(options: ControlOptions, caller: Caller, body: 
 }
 
 /** Rebuild an existing visible golden in place. The row, owner and visibility come from storage, never the body. */
-async function updateGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
+async function updateGoldenRoute(
+  options: ControlOptions,
+  caller: Caller,
+  body: Record<string, unknown>,
+  additive = false,
+) {
   if (!options.goldenBuilds || (!options.providers && !options.providerFor) || !options.data)
     throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
   required(body, "idempotencyKey");
@@ -1469,8 +1504,22 @@ async function updateGoldenRoute(options: ControlOptions, caller: Caller, body: 
   if (!existingGolden) throw new GoldenError("not_found", `No golden named '${name}'.`);
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   assertGoldenMutation(actor, existingGolden);
-  if (body.config === undefined) throw new VaultError("invalid", "config is required.");
-  const config = normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
+  if (additive && (body.config !== undefined || body.setup !== undefined))
+    throw new VaultError(
+      "invalid",
+      "--add-repo cannot replace config or setup. Use --config with the complete desired configuration for replacement.",
+    );
+  if (!additive && body.addRepos !== undefined)
+    throw new VaultError(
+      "invalid",
+      "Additive repository updates require the golden/update-add-repos route. Upgrade the CLI; do not retry as a replacement.",
+    );
+  if (!additive && body.config === undefined) throw new VaultError("invalid", "config is required.");
+  if (additive && (!Array.isArray(body.addRepos) || !body.addRepos.every((repo) => typeof repo === "string")))
+    throw new VaultError("invalid", "addRepos must be a non-empty list of repository URLs.");
+  const config = normalizeGitHubGoldenConfig(
+    additive ? addGoldenRepositories(existingGolden.config, body.addRepos as string[]) : parseGoldenConfig(body.config),
+  );
   const provider = await providerForGolden(options, caller, existingGolden);
   return options.goldenBuilds.admit(
     provider,
@@ -2047,7 +2096,12 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     );
   return {
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey),
+    sandboxBillingAccount: createSandboxBillingAccount(sql),
+    credentialBindingRecovery: createSandboxAccountChange(
+      sql,
+      launchCredentials(store, encryptionKey, undefined, modelAuth),
+      createCredentialBindingRecovery(sql, encryptionKey),
+    ),
     invitations: invitationsFromEnv(sql, env),
     templates,
     skillDefaults: createSkillDefaultsService(sql),

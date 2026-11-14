@@ -5,6 +5,7 @@ import { ExternalLinkIcon, Loader2Icon } from "lucide-react";
 import { useActionState, useEffect, useId, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { connectProvider, disconnectProvider } from "@/app/actions/provider-setup";
+import { ProviderName } from "@/components/provider-mark";
 import { ConnectionBadge } from "@/components/status-badge";
 import {
   AlertDialog,
@@ -76,7 +77,7 @@ export function ProviderConnection({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0 space-y-0.5">
           <p className="flex items-center gap-2 text-sm font-medium">
-            {info.label}
+            <ProviderName provider={provider} />
             <ConnectionBadge state={state} />
           </p>
         </div>
@@ -91,7 +92,7 @@ export function ProviderConnection({
                 setOpen(true);
               }}
             >
-              {connected ? `Replace ${provider === "boat" ? "key" : "token"}` : `Connect ${info.label}`}
+              {connected ? `Replace ${info.credentialNoun}` : `Connect ${info.label}`}
             </Button>
             {connected && (
               <DisconnectProvider

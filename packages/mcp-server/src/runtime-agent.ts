@@ -15,6 +15,7 @@ import {
   ProviderError,
   type ProviderErrorCode,
   resolveModelChoice,
+  type SandboxRecord,
   type SkillReceipt,
   type SteerReceipt,
   type SteerRequest,
@@ -47,6 +48,39 @@ function runtimeRefusal(
     message: "Armada runtime operation refused.",
     retryable: false,
     ...(requestId ? { details: { runtimeRequestId: requestId, runtimeOutcome: "unknown" } } : {}),
+  });
+}
+
+type RuntimeRestore = { epoch: string; watermark: number; conversationId: string };
+/** Shared enrolled readiness and retained-session proof; transports keep envelope authorization. */
+export function runtimeHealthMatches(value: unknown, epoch: string, expected?: RuntimeRestore) {
+  const health = value as Record<string, unknown> | undefined;
+  const restored = health?.restoredFrom as Record<string, unknown> | undefined;
+  return (
+    health?.ready === true &&
+    health.generation === epoch &&
+    (!expected || (["epoch", "watermark", "conversationId"] as const).every((key) => restored?.[key] === expected[key]))
+  );
+}
+
+/** Build the bridge from persisted identity; callers retain owner/defaults and any authoritative cwd. */
+export function runtimeAgentFor(
+  commands: Parameters<typeof createRuntimeAgent>[0],
+  ownerId: string,
+  sandbox: Pick<SandboxRecord, "id" | "harness" | "providerSandboxId" | "repositoryDir"> & {
+    provider: "boat" | "modal" | "docker";
+  },
+  defaults: ModelChoice,
+  cwd = sandbox.repositoryDir ? `/home/user/${sandbox.repositoryDir}` : "/home/user",
+) {
+  return createRuntimeAgent(commands, {
+    provider: sandbox.provider,
+    harness: sandbox.harness,
+    ownerId,
+    sandboxId: sandbox.id,
+    providerSandboxId: sandbox.providerSandboxId,
+    cwd,
+    defaults,
   });
 }
 
@@ -109,7 +143,7 @@ export function createRuntimeAgent(
     /** The launcher must first await enrolment; no native readiness/resume is implied. */
     async health(
       signal?: AbortSignal,
-      expectedRestore?: { epoch: string; watermark: number; conversationId: string },
+      expectedRestore?: RuntimeRestore,
     ): Promise<{ runtime: "armada"; epoch: string }> {
       const command = { ...identity(), op: "health" as const };
       // Retain epoch alongside the result for provenance validation.
@@ -120,25 +154,12 @@ export function createRuntimeAgent(
         throw refusal("sandbox_not_ready");
       }
       const body = reply.body;
-      const result = body.result as
-        | {
-            ready?: unknown;
-            generation?: unknown;
-            restoredFrom?: { epoch?: unknown; watermark?: unknown; conversationId?: unknown };
-          }
-        | undefined;
       if (
         reply.status !== 200 ||
         body.version !== 1 ||
         body.requestId !== command.requestId ||
         body.error !== undefined ||
-        !result ||
-        result.ready !== true ||
-        result.generation !== reply.epoch ||
-        (expectedRestore &&
-          (result.restoredFrom?.epoch !== expectedRestore.epoch ||
-            result.restoredFrom.watermark !== expectedRestore.watermark ||
-            result.restoredFrom.conversationId !== expectedRestore.conversationId))
+        !runtimeHealthMatches(body.result, reply.epoch, expectedRestore)
       )
         throw refusal("sandbox_not_ready");
       return { runtime: "armada", epoch: reply.epoch };
@@ -150,7 +171,7 @@ export function createRuntimeAgent(
         epoch,
       );
       if (health.ready !== true || health.generation !== epoch || health.workspaceVersion !== 1)
-        throw new Error("Boat runtime workspace setup requires updated runtime artifacts; no native fallback.");
+        throw new Error("Runtime workspace setup requires updated runtime artifacts; no native fallback.");
     },
     async workspaceExec(
       request: import("@armada/core").ExecRequest,

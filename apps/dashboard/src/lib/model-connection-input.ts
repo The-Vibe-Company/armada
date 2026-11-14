@@ -3,6 +3,7 @@ import {
   connectionPreset,
   parseClaudeEndpoint,
   parseCodexEndpoint,
+  parseConnectionModels,
   parseCredentialValue,
   parseModelPriceOverrides,
   presetConnectionValue,
@@ -39,6 +40,19 @@ export function customAccountValue(
         "Enter an exact model ID and non-negative decimal input/output prices in USD per million tokens. Cached input is optional.",
     };
   }
+  let models: string[] | undefined;
+  if (kind === "openai") {
+    try {
+      const rawModels = data.get("customModels");
+      if (typeof rawModels !== "string") throw Error();
+      models = parseConnectionModels(connectionModelList([], rawModels));
+    } catch {
+      return {
+        ok: false,
+        error: "Enter 1–32 exact deployment/model IDs. For Azure, use your resource's deployment names.",
+      };
+    }
+  }
   try {
     const baseUrl = data.get("baseUrl");
     const rawVersion = data.get("apiVersion");
@@ -55,7 +69,7 @@ export function customAccountValue(
       ok: true,
       value: parseCredentialValue(
         kind,
-        JSON.stringify({ endpoint, apiKey: key.trim(), ...(prices ? { prices } : {}) }),
+        JSON.stringify({ endpoint, apiKey: key.trim(), ...(models ? { models } : {}), ...(prices ? { prices } : {}) }),
       ),
     };
   } catch {

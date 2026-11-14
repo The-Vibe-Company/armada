@@ -1,3 +1,4 @@
+export { accountBindingAvailability, NATIVE_ACCOUNT_CHANGE_UNSUPPORTED } from "./account-binding-policy.ts";
 export {
   API_FAILURE_HELP,
   API_FAILURE_STATUS,
@@ -7,6 +8,12 @@ export {
   githubHydrationPhase,
 } from "./api-failure.ts";
 export { type ApplicationSecretBinding, parseApplicationSecretBindings } from "./application-secret-bindings.ts";
+export {
+  AZURE_ACCOUNT_CHECK_TIMEOUT_MS,
+  isAzureResourceHost,
+  MODEL_ACCOUNT_WRITE_TIMEOUT_MS,
+  validateAzureOpenAIAddress,
+} from "./azure-endpoint.ts";
 export { CLAUDE_ENDPOINT_ENV, type ClaudeEndpoint, parseClaudeEndpoint } from "./claude-endpoint.ts";
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { CODEX_ENDPOINT_ENV, type CodexEndpoint, parseCodexEndpoint } from "./codex-endpoint.ts";
@@ -32,13 +39,10 @@ export {
   type ConnectionModelInfo,
   CREDENTIAL_KINDS,
   type CredentialReader,
-  type CredentialSource,
   connectionModels,
   credentialName,
   HARNESS_KINDS,
   type HarnessCredentials,
-  harnessCredentials,
-  type LaunchCredentialKind,
   listConnectionModels,
   MAX_AUTH_FILE_LENGTH,
   MAX_SECRET_LENGTH,
@@ -49,7 +53,6 @@ export {
   type ResolvedCredentials,
   redact,
   resolveBoatKey,
-  resolveCredential,
   resolveCredentials,
   resolveModalTokens,
   resolveSkillpackCredential,
@@ -94,6 +97,7 @@ export type {
   DockerHostSummary,
   DockerLaunchRequest,
   DockerLaunchResult,
+  DockerQueuedPromptReceipt,
   DockerSandboxRecord,
   DockerSandboxStatus,
   LaunchCapabilityName,
@@ -106,6 +110,7 @@ export {
   DOCKER_DEFAULT_IMAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
   DOCKER_SNAPSHOT_STATUSES,
   type DockerJobFailureReason,
   type DockerSnapshotRecord,
@@ -174,6 +179,7 @@ export type { GoldenBuildStatus } from "./golden-build-status.ts";
 export { goldenBuildFailureText, providerPaymentRequiredMessage } from "./golden-build-status.ts";
 export type { GoldenBuildWarning } from "./golden-build-warning.ts";
 export {
+  addGoldenRepositories,
   assignDirs,
   configFromFlags,
   type GitHubGoldenConfig,
@@ -349,10 +355,7 @@ export type {
 } from "./resource-observation.ts";
 export { ROUTINE_REASON_HELP, type Routine, routineReasonHelp } from "./routines.ts";
 export {
-  type CleanupResult,
-  cleanupSandboxes,
   createSqlSandboxStore,
-  DEFAULT_SANDBOX_RETENTION_DAYS,
   MAX_STATUS_REASON_LENGTH,
   mapSandboxRow,
   type ResourceProject,
@@ -400,8 +403,6 @@ export {
 export {
   reportedTurnUsage,
   type SandboxUsage,
-  type SandboxUsageSummary,
-  summarizeSandboxUsage,
   type TokenUsageTotals,
   type TurnTokenUsage,
   USAGE_UNAVAILABLE_CODES,
