@@ -3154,6 +3154,52 @@ export type Database = {
         };
         Relationships: [];
       };
+      otto_engine_preferences: {
+        Row: {
+          org_id: string;
+          user_id: string;
+          harness: string;
+          model: string;
+          credential_id: string;
+        };
+        Insert: {
+          org_id: string;
+          user_id: string;
+          harness: string;
+          model: string;
+          credential_id: string;
+        };
+        Update: {
+          org_id?: string;
+          user_id?: string;
+          harness?: string;
+          model?: string;
+          credential_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "otto_engine_preferences_credential_id_fkey";
+            columns: ["credential_id"];
+            isOneToOne: false;
+            referencedRelation: "credentials";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "otto_engine_preferences_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "otto_engine_preferences_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       otto_facts: {
         Row: {
           id: string;
@@ -4552,6 +4598,7 @@ export type OrdinaryLaunchReceiptRow = Database["public"]["Tables"]["ordinary_la
 export type OrgSkillDefaultsRow = Database["public"]["Tables"]["org_skill_defaults"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
+export type OttoEnginePreferenceRow = Database["public"]["Tables"]["otto_engine_preferences"]["Row"];
 export type OttoFactRow = Database["public"]["Tables"]["otto_facts"]["Row"];
 export type OttoGitHubPageRow = Database["public"]["Tables"]["otto_github_pages"]["Row"];
 export type OttoOrphanDayRow = Database["public"]["Tables"]["otto_orphan_days"]["Row"];
