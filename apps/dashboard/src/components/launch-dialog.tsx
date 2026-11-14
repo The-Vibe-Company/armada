@@ -252,6 +252,7 @@ function LaunchForm({
           <div className={cn("grid gap-4", repositories.length > 1 && "sm:grid-cols-2")}>
             <Segmented
               legend="Agent"
+              describedBy={`${id}-availability`}
               name="harness"
               value={harness}
               onChange={(next) => {
@@ -259,12 +260,21 @@ function LaunchForm({
                 setCredential(initialAccount(next));
                 setArmadaAccess(false);
               }}
-              options={(Object.keys(catalog) as Harness[]).map((value) => ({ value, label: HARNESS_LABELS[value] }))}
+              options={(Object.keys(catalog) as Harness[]).map((value) => ({
+                value,
+                label: HARNESS_LABELS[value],
+                disabled: value === "opencode" && provider !== "modal",
+              }))}
             />
             {repositories.length > 1 && (
               <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
             )}
           </div>
+          <p id={`${id}-availability`} className="text-xs text-muted-foreground" data-launch-availability>
+            {provider === "modal"
+              ? "Modal supports Claude Code, Codex and OpenCode, including custom model connections."
+              : `${PROVIDER_LABELS[provider]} supports standard Claude Code and Codex accounts. OpenCode and custom model connections require Modal; choose a Modal snapshot to use them.`}
+          </p>
           {/* Who is billed stays in view: it is never a collapsed default. */}
           <AccountField
             key={harness}
@@ -485,15 +495,17 @@ function connectionChoices(accounts: LaunchAccounts, harness: Harness): Connecti
 /** A compact radio group: every option visible, one choice, arrow keys move between them. */
 export function Segmented<T extends string>({
   legend,
+  describedBy,
   name,
   value,
   options,
   onChange,
 }: {
   legend: string;
+  describedBy?: string;
   name: string;
   value: T;
-  options: { value: T; label: string }[];
+  options: { value: T; label: string; disabled?: boolean }[];
   onChange: (value: T) => void;
 }) {
   const id = useId();
@@ -505,6 +517,7 @@ export function Segmented<T extends string>({
         value={value}
         onValueChange={(next) => onChange(next as T)}
         aria-label={legend}
+        aria-describedby={describedBy}
         className="h-9 auto-cols-fr grid-flow-col gap-0.5 rounded-md border border-input p-0.5 dark:bg-input/30"
       >
         {options.map((option) => (
@@ -512,6 +525,7 @@ export function Segmented<T extends string>({
             key={option.value}
             id={`${id}-${option.value}`}
             value={option.value}
+            disabled={option.disabled}
             className="flex h-full w-full min-w-0 items-center justify-center rounded-sm border-0 bg-transparent px-2 text-sm whitespace-nowrap text-muted-foreground shadow-none hover:text-foreground data-[state=checked]:bg-accent data-[state=checked]:font-medium data-[state=checked]:text-foreground"
           >
             {option.label}
