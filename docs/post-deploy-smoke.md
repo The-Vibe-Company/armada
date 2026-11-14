@@ -1525,3 +1525,50 @@ not rotation/revocation, denied cross-owner access, or delivery after resume.
 Those checks and MCP parity remain separate debt; keep the older coordinator
 scripts until every check is represented. Boat remains coordinator-only via
 `--only boat --production-boat`, never the release gate.
+
+### Native MCP canary-tool parity
+
+Use a dedicated, already-connected smoke MCP connection exposing a zero-argument
+read-only tool named `parity_<name>`. Its independently known, non-secret output
+must be exactly `parity_mcp_<fresh UUID>` (plain text or MCP text content). Publish
+a dedicated template revision selecting exactly that connection, then configure:
+
+```json
+"mcp": {
+  "connectionId": "<connection UUID>",
+  "tool": "parity_probe",
+  "expectedText": "parity_mcp_<fresh UUID>",
+  "readOnly": true
+}
+```
+
+`readOnly: true` is the operator's explicit attestation about this dedicated
+fixture, not a claim that the runner can infer tool safety from its name. Do not
+point this probe at a general-purpose or mutating tool, a real credential,
+or a resource containing private application data. No upstream tool arguments
+are accepted: the probe requests exactly `{}`. It never connects/reconfigures
+an account or reads upstream credentials; existing connection metadata must
+already say connected.
+
+Run `--parity --feature mcp`, optionally `--only modal|docker`. The probe verifies
+authorized template selection, frozen connection/grant identity and current
+sandbox binding, then requires **native** tool-call/result evidence for that
+server/tool, empty arguments, successful exact canary output, and an answered,
+finished parent-assistant turn with a fresh acknowledgement. Expected tool
+output is never included in the prompt. Claude's separate call/result messages
+must join by exact tool-use ID even across pages; tool echoes, wrong calls,
+nested-agent observations, retractions and later-page supersession cannot pass.
+
+This initial slice supports Codex and Claude Code. OpenCode remains explicit
+not-run without allocation until complete authorized tool-inventory correlation
+and its native proof contract are added. Missing configuration or unadvertised
+MCP support also allocates nothing; declared unsupported delivery stays visible
+debt. Proof requests/observations share 110 seconds and reuse the existing durable
+template launch and independent cleanup. A full run adds one counted template
+allocation per configured MCP case to the same table. No connection/template is
+created, modified, disconnected or deleted.
+
+This is initial native tool execution, not OAuth renewal, denied connection
+access, OpenCode name-collision handling or post-resume tool execution. Keep the
+older coordinator checks for those behaviors. Boat remains coordinator-only via
+`--only boat --production-boat`, never the release gate.
