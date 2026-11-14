@@ -46,3 +46,12 @@ export function measureProviderPhase<T>(phase: ModalPromptPhase, work: () => Pro
   const timing = current.getStore();
   return timing ? timing.measure(phase, work) : work();
 }
+
+/** Optional request-local measurement for handlers that also run without a timing observer. */
+export function measureRequestPhase<T>(
+  timing: RequestTiming | undefined,
+  phase: TimingPhase,
+  work: () => Promise<T>,
+): Promise<T> {
+  return timing ? timing.measure(phase, work) : work();
+}
