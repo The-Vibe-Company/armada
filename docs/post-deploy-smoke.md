@@ -1089,9 +1089,12 @@ Codex and **Azure for OpenCode**. The shared preset requires at least one model;
 for Azure, enter the **deployment name configured in your Azure resource**,
 not an assumed underlying model name. In dashboard **Models → Add a model
 account**, select the appropriate provider, enter its OpenAI v1 address and API
-key, and enter the deployment under **Model IDs** (or **Other model IDs** when a
-catalog is shown). A catalog model name is usable only if your deployment
-actually has that name. The preset refuses an empty model list before saving.
+key, and enter its actual deployment under **Azure deployment names**. Azure
+presets do not offer the generic model catalog or infer prices from an underlying
+model name. **Test and add connection** sends one tiny billable Responses request
+per declared deployment before saving. Empty lists, rejected/invalid responses
+and unavailable checks save nothing. All declarations must pass; this is not an
+optional browser-only check.
 
 CLI equivalents from this checkout, with the staging Armada token already
 exported from your secret source:
@@ -1117,16 +1120,31 @@ billing account. Neither command accepts a secret in argv; omit `--file` to read
 stdin. Use a CLI containing `creds connect` (the source command avoids an old
 installed CLI). OpenCode uses API-key authentication and the v1 Responses path;
 legacy versioned Azure URLs and interactive Entra sign-in are not supported by
-that preset. Save success means **configuration saved, not deployment tested**.
+that preset. Both commands use the same mandatory server admission as the
+dashboard. Save success means each declared Azure deployment returned an accepted
+native Responses receipt, **not** that answer/follow-up/resume with a harness is
+proven. See Microsoft’s [v1 endpoint/deployment guidance](https://learn.microsoft.com/en-us/azure/ai-foundry/model-inference/concepts/endpoints).
 
-The older **OpenAI API key → Use a custom endpoint** dashboard route can still
-save an endpoint without any deployment list; that legacy gap is tracked in
-#1579. Missing declared metadata does not prove the key or endpoint is invalid,
-but a harness default is not a safe substitute for an Azure deployment name.
-For an existing account, **Replace key → Azure AI Foundry** re-enters the address,
-key and deployment through the required-model preset (and rotates its version);
-or create a new correctly configured account with the commands above.
-An account's name alone cannot establish its sealed endpoint or authentication.
+The older **OpenAI API key → Use a custom endpoint** route now also requires an
+explicit deployment/model list. CLI `creds set openai --base-url` requires
+`--models`; direct named/legacy API writes cannot omit the list or bypass the
+Azure check. Existing sealed accounts remain readable; they are not rewritten,
+automatically verified or rebound. For an old undeclared Azure account, choose
+**Replace key → Azure AI Foundry**, re-enter address/key/deployment and test/save
+(version rotation), or create a new account with the commands above.
+
+Admission is intentionally limited to public Microsoft Azure OpenAI/Foundry
+resource hosts (`*.openai.azure.com`, `*.services.ai.azure.com`,
+`*.cognitiveservices.azure.com`), HTTPS default port and an `/openai/v1` address.
+DNS must resolve exclusively to public addresses and is pinned to the socket;
+redirects are refused. Private endpoints, custom proxy addresses and legacy
+non-v1 addresses are not accepted by the Azure presets. Other generic Responses
+connections remain separate and are not contacted from the server. The overall
+check budget is 25 seconds; clients allow 45 seconds for the account write.
+Only closed HTTP/error diagnostics are returned, never the upstream body, key or
+address. These tiny setup requests are billable validation, not sandbox turns;
+they do not fabricate sandbox usage/cost receipts. An account name alone does not
+establish its sealed endpoint or authentication.
 
 For Codex, dashboard **Test connection** (or
 `bun run armada creds test SANDBOX_ID --model "$AZURE_DEPLOYMENT"`) sends a tiny
@@ -1136,9 +1154,10 @@ lifecycle. This check is not implemented for OpenCode. Its live verification is
 the existing `opencode-azure` accounts cell: use the new account ID and
 `armada/YOUR-ACTUAL-DEPLOYMENT-NAME` as the model. Codex uses the bare deployment
 name. Run both Modal and owned-Docker cells for answer, follow-up, resumed recall,
-usage, honest costs and cleanup. Neither account creation flow automatically
-performs this live test; completing that onboarding validation remains #1579
-work, not a claim made by the configuration or smoke-table repair.
+usage, honest costs and cleanup. Creation now performs the bounded Azure
+**deployment** check for both harnesses without starting a sandbox; it does not
+perform this full lifecycle test. Actual Modal/Docker accounts observations
+remain required before claiming parity for a newly connected deployment.
 
 An absent pair prints `not-run: no account on staging`, including subscriptions.
 Only provision supported connections: the generic **Other OpenAI-compatible**

@@ -41,11 +41,13 @@ export async function validateAzureModelAccount(kind: CredentialKind, raw: strin
         };
   // One tiny billable request per declared deployment. A finite total budget prevents many
   // declarations from holding an account write open indefinitely; no partial save is performed.
+  const transport: NonNullable<Fetcher> =
+    fetcher ?? ((input, init) => publicFetch(input instanceof Request ? input.url : input, init));
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), AZURE_ACCOUNT_CHECK_TIMEOUT_MS);
   try {
     for (const model of models) {
-      const result = await testModelConnection(connection, model, controller.signal, fetcher ?? publicFetch);
+      const result = await testModelConnection(connection, model, controller.signal, transport);
       if (controller.signal.aborted)
         throw new VaultError("unavailable", "Azure deployment checks timed out. The account was not saved.");
       if (!result.ok) {
