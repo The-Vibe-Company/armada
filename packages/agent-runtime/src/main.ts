@@ -8,7 +8,7 @@ import { enrolRuntime, RuntimeDialout, runtimeSubscriptionAccess } from "./dialo
 import { prepareEnrolledHarness } from "./enrolled-harness.ts";
 import { execCredentialValues, validateExecEnvironment, validateExecReadables } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
-import { installUserGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
+import { githubRuntimeEnvironment, installUserGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
 import { runHarnessInstallMode } from "./harness-cache.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
@@ -345,8 +345,8 @@ async function main(dialout = false) {
   const githubBin = `${githubRoot}/bin`;
   // Fixed before drivers/exec capture their environments. Installation contains no secrets.
   for (const env of [config.claudeEnv, config.codexEnv, opencodeEnv])
-    env.PATH = `${githubBin}:${env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`;
-  process.env.PATH = `${githubBin}:${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`;
+    Object.assign(env, githubRuntimeEnvironment(env, githubRoot));
+  Object.assign(process.env, githubRuntimeEnvironment({PATH:process.env.PATH}, githubRoot));
   let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
   let githubConfiguration = Promise.resolve();
   const ensureGitHubTools = async (identity?: { name: string; email: string }) => {
@@ -493,6 +493,7 @@ async function main(dialout = false) {
       exclusiveNativeAuth: config.nativeAuthRevision !== undefined,
       credentialFreeBuilder: config.credentialFreeBuilder ?? false,
       ghConfigDir: `${config.root}/exec-transient/gh`,
+      githubToolsRoot: githubRoot,
     },
   );
   if (restore) {
