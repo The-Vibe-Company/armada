@@ -27,11 +27,6 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
-  otto_waits: "OttoWaitRow",
-  otto_engine_preferences: "OttoEnginePreferenceRow",
-  otto_objectives: "OttoObjectiveRow",
-  otto_ticket_graphs: "OttoTicketGraphRow",
-  otto_objective_messages: "OttoObjectiveMessageRow",
   ordinary_launch_receipts: "OrdinaryLaunchReceiptRow",
   sandbox_account_usage_pricing: "SandboxAccountUsagePricingRow",
   runtime_github_capabilities: "RuntimeGitHubCapabilityRow",
@@ -42,11 +37,6 @@ const ROW_ALIASES: Record<string, string> = {
   docker_hosts: "DockerHostRow",
   docker_host_jobs: "DockerHostJobRow",
   docker_launch_requests: "DockerLaunchRequestRow",
-  otto_orphan_days: "OttoOrphanDayRow",
-  otto_tasks: "OttoTaskRow",
-  otto_resources: "OttoResourceRow",
-  otto_facts: "OttoFactRow",
-  otto_github_pages: "OttoGitHubPageRow",
   personal_skill_defaults: "PersonalSkillDefaultsRow",
   org_skill_defaults: "OrgSkillDefaultsRow",
   golden_skill_defaults: "GoldenSkillDefaultsRow",

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
-import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "@armada/core";
+import { CODEX_ENDPOINT_ENV, OPENCODE_ENDPOINT_ENV, parseCodexEndpoint, parseOpenCodeEndpoint } from "@armada/core";
 import { runArtifactInstallMode } from "./artifact-cache.ts";
 import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
@@ -12,7 +12,7 @@ import { githubRuntimeEnvironment, installUserGitHubTools, runGitHubInstallMode 
 import { runHarnessInstallMode } from "./harness-cache.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
-import { testModelConnection } from "./model-connection-test.ts";
+import { runtimeModelConnection, testModelConnection } from "./model-connection-test.ts";
 import { quiesceNativeCodex, readNativeCodexAuth, removeNativeCodexAuth } from "./native-auth.ts";
 import { OpenCodeDriver } from "./opencode.ts";
 import { configureOpenCodeEndpoint } from "./opencode-endpoint.ts";
@@ -158,6 +158,14 @@ async function main(dialout = false) {
     .filter((v) => v.length > 0)
     .sort((a, b) => b.length - a.length);
   const redact = createRedactor(secrets);
+  const opencodeConnection =
+    opencodeEnv[OPENCODE_ENDPOINT_ENV] && opencodeEnv.OPENCODE_API_KEY
+      ? {
+          harness: "opencode" as const,
+          endpoint: parseOpenCodeEndpoint(JSON.parse(opencodeEnv[OPENCODE_ENDPOINT_ENV]!)),
+          apiKey: opencodeEnv.OPENCODE_API_KEY,
+        }
+      : null;
   configureOpenCodeEndpoint(opencodeEnv);
   const journal = new Journal(`${config.root}/journal.sqlite`, redact);
   let lastAuth: string | undefined;
@@ -461,28 +469,16 @@ async function main(dialout = false) {
           }
         : {}),
       testModelConnection: async (harness, model, signal) => {
-        if (harness === "codex" && codexEndpoint && config.codexEnv.OPENAI_API_KEY)
-          return testModelConnection(
-            { harness, endpoint: codexEndpoint, apiKey: config.codexEnv.OPENAI_API_KEY },
-            model,
-            signal,
-          );
-        const env = config.claudeEnv;
-        const key = env.ANTHROPIC_AUTH_TOKEN ?? env.ANTHROPIC_API_KEY;
-        if (harness === "claude" && env.ANTHROPIC_BASE_URL && key)
-          return testModelConnection(
-            {
-              harness,
-              endpoint: {
-                version: 1,
-                baseUrl: env.ANTHROPIC_BASE_URL,
-                auth: env.ANTHROPIC_AUTH_TOKEN ? "bearer" : "api-key",
-              },
-              apiKey: key,
-            },
-            model,
-            signal,
-          );
+        if (harness === "opencode") {
+          if (!opencodeConnection) throw Error("model_connection_test_denied");
+          return testModelConnection(opencodeConnection, model, signal);
+        }
+        const connection = runtimeModelConnection(
+          harness,
+          harness === "codex" ? config.codexEnv : config.claudeEnv,
+          codexEndpoint,
+        );
+        if (connection) return testModelConnection(connection, model, signal);
         throw Error("model_connection_test_denied");
       },
       readableVariables: fenced ? {} : readableVariables,

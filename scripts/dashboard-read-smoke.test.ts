@@ -29,7 +29,6 @@ const sandbox = {
   canManage: false,
 };
 function answer(url: string) {
-  if (url.includes("/otto/")) return { items: [], observedAt: null, completeness: "unknown", nextCursor: null };
   if (url.endsWith("sandbox/list")) return { sandboxes: [sandbox], hasMore: false };
   if (url.endsWith("docker/hosts/list")) return { hosts: [], placement: false };
   return { providers: [{ id: "docker", enabled: false, launchSources: [], harnesses: [], capabilities: {} }] };
@@ -45,7 +44,6 @@ test.each([
   ],
   ["malformed host row", "docker/hosts/list", { hosts: [{}], placement: false }],
   ["malformed launch options", "launch/options", { providers: [{}] }],
-  ["Otto error state", "otto/tasks", { error: "not logged" }],
 ] as const)("%s reports only the affected read", async (_name, broken, payload) => {
   const lines: { step: string; pass: boolean }[] = [];
   const passed = await dashboardReadSmoke(env, {
@@ -63,11 +61,11 @@ test.each([
   expect(failed).toEqual(
     broken
       ? [
-          `dashboard_${broken === "sandbox/list" ? "sandboxes" : broken === "docker/hosts/list" ? "hosts" : broken === "launch/options" ? "launch_options" : "otto"}`,
+          `dashboard_${broken === "sandbox/list" ? "sandboxes" : broken === "docker/hosts/list" ? "hosts" : "launch_options"}`,
         ]
       : [],
   );
-  expect(lines).toHaveLength(5);
+  expect(lines).toHaveLength(4);
   expect(JSON.stringify(lines)).not.toContain(env.ARMADA_TOKEN);
 });
 

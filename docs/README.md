@@ -24,7 +24,6 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 - [Boat runtime](boat-runtime-first-prompt.md): default-off Codex lifecycle, checkpoint/resume, explicit GitHub, automatic MCP and staged acceptance.
 - [Docker hosts](docker-host-daemon.md): daemon installation, registration, ownership/TTL, API preview and cleanup limits.
 - [OpenCode](runtime/opencode-modal.md): Modal-only ACP harness, accounts, portable state and lifecycle checks.
-- [Otto](otto-staging.md): read-only observations, dashboard, repository scope and unknown/partial evidence.
 
 ## Operate
 

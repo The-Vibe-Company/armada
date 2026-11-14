@@ -119,7 +119,9 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
   if (!selected) return { state: "unavailable" };
   const eligible = accounts.filter(
     (account) =>
-      account.status === "active" && KIND_INFO[account.kind].billing === "api" && account.kind !== "opencode",
+      account.status === "active" &&
+      KIND_INFO[account.kind].billing === "api" &&
+      (account.kind !== "opencode" || !!account.models?.length),
   );
   const reads = await Promise.all(
     eligible.map((account) =>

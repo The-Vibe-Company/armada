@@ -1,10 +1,9 @@
 import type { AuthStore } from "@armada/auth";
 import {
-  CLAUDE_ENDPOINT_ENV,
-  CODEX_ENDPOINT_ENV,
   goldenForSettings,
   isModelConnectionTestResult,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
+  OPENCODE_ENDPOINT_ENV,
   parseMachineSizePolicy,
   VERSION,
 } from "@armada/core";
@@ -193,6 +192,21 @@ export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecov
 export async function handleControlRequest(request: Request, options: ControlOptions): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith(CONTROL_PREFIX)) return null;
+  const timing = new RequestTiming();
+  const response = await withRequestTiming(timing, () =>
+    timing.measure("total", () => timedControlRequest(request, { ...options, timing })),
+  );
+  const headers = new Headers(response.headers);
+  headers.set("server-timing", timing.header());
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+async function timedControlRequest(
+  request: Request,
+  options: ControlOptions & { timing: RequestTiming },
+): Promise<Response> {
+  const url = new URL(request.url);
+  const timing = options.timing;
   const route = url.pathname.slice(CONTROL_PREFIX.length);
   if (route === "github/oauth/callback") {
     if (request.method !== "GET" && request.method !== "POST") return fail(405, "invalid", "Use POST or GET.");
@@ -212,8 +226,6 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
   if (deletion ? request.method !== "DELETE" : request.method !== "POST")
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
-  const timing = new RequestTiming();
-  options = { ...options, timing };
   try {
     const caller = await timing.measure("auth", () => authenticatedCaller(request, options));
     if (
@@ -426,14 +438,22 @@ async function dispatch(
         "Connection checks require a running, bound Modal sandbox; no resume is performed.",
       );
     const harness = found.harness;
-    if (harness !== "claude" && harness !== "codex")
-      throw new VaultError("invalid", "Connection checks currently support Claude and Codex only.");
+    if (harness !== "claude" && harness !== "codex" && harness !== "opencode")
+      throw new VaultError("invalid", "Connection checks support Claude, Codex and custom OpenCode connections only.");
     const model = resolveModelChoice(harness, { model: required(body, "model") }).model;
     const credentials = launchCredentials(options.store, options.encryptionKey, undefined, options.modelAuth);
     const actor: GoldenActor = { userId: found.ownerId, orgId: found.orgId, role: "member" };
     const bound = await credentials.resolve(actor, found.harness, found.credentialId, found.credentialVersion);
-    if (!bound.env[found.harness === "codex" ? CODEX_ENDPOINT_ENV : CLAUDE_ENDPOINT_ENV])
-      throw new VaultError("invalid", "This check supports custom endpoint connections only.");
+    if (harness === "opencode") {
+      if (!bound.env[OPENCODE_ENDPOINT_ENV] || !bound.env.OPENCODE_API_KEY)
+        throw new VaultError("invalid", "OpenCode checks require a custom connection, not a plan key.");
+    } else {
+      const apiKey =
+        harness === "codex"
+          ? bound.env.OPENAI_API_KEY
+          : (bound.env.ANTHROPIC_AUTH_TOKEN ?? bound.env.ANTHROPIC_API_KEY);
+      if (!apiKey) throw new VaultError("invalid", "This check requires an API-key account, not a subscription.");
+    }
     await credentials.assertTurn?.(actor, found.id, false);
     const provider = await options.providers.resolve(found, scoped);
     if (!provider.testModelConnection)

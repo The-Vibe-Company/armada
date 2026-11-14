@@ -20,3 +20,20 @@ test("provider timings stay inside their concurrent request and preserve callbac
   expect(await measureProviderPhase("modal_health", async () => "no HTTP context")).toBe("no HTTP context");
   expect(first.header()).not.toContain("modal_health");
 });
+
+test("SQL timing includes rejected queries and is absent outside request context", async () => {
+  const { sqlOver } = await import("../src/sql.ts");
+  const timing = new RequestTiming();
+  const failure = new Error("private database detail");
+  const sql = sqlOver({
+    unsafe: async () => {
+      throw failure;
+    },
+  });
+  await expect(withRequestTiming(timing, () => sql.query("private query"))).rejects.toBe(failure);
+  expect(timing.header()).toMatch(/^sql;dur=\d+\.\d{2}$/);
+  const recorded = timing.header();
+  await expect(sql.query("another private query")).rejects.toBe(failure);
+  expect(timing.header()).toBe(recorded);
+  expect(timing.header()).not.toContain("private");
+});

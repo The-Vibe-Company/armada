@@ -11,7 +11,6 @@ import {
   type LucideIcon,
   PackageIcon,
   PlugIcon,
-  RadarIcon,
   ServerIcon,
   SettingsIcon,
   VariableIcon,
@@ -38,7 +37,6 @@ import { cn } from "@/lib/utils";
 /** Each destination's glyph; the order and labels live in `NAV_GROUPS`. */
 const ICONS: Record<NavIcon, LucideIcon> = {
   sandboxes: BoxesIcon,
-  otto: RadarIcon,
   routines: CalendarClockIcon,
   templates: LayoutTemplateIcon,
   environments: CameraIcon,

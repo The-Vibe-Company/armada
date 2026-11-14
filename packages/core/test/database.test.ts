@@ -165,11 +165,6 @@ describe("database", () => {
         "orgs DELETE",
         "orgs SELECT(created_at,id,name)",
         "orgs UPDATE(boat_api_key_enc,name)",
-        "otto_engine_preferences SELECT",
-        "otto_objective_messages SELECT(body,created_at,id,objective_id,org_id,owner_id,revision)",
-        "otto_objectives SELECT(created_at,id,org_id,owner_id,repository,request,revision,updated_at)",
-        "otto_ticket_graphs SELECT(brief_revision,created_at,graph,objective_id,org_id,owner_id)",
-        "otto_waits SELECT(choices,connection_url,created_at,deadline_at,dedupe_key,default_choice,id,kind,objective_id,org_id,owner_id,phase,question,reason,reminded_at,resolution,status)",
         "personal_skill_defaults SELECT",
         "readable_variables SELECT",
         "routine_runs SELECT(configuration_version,created_at,id,missed_count_capped,missed_intervals,org_id,owner_id,reason,request_key,routine_id,scheduled_due_at,state,task_checked_at,task_state,template_request_id,updated_at)",
@@ -216,7 +211,6 @@ describe("database", () => {
         }
         if (!secretName.test(column.column_name)) continue;
         if (
-          id === "otto_engine_preferences.credential_id" ||
           id === "sandboxes.credential_id" ||
           id === "sandboxes.credential_version" ||
           id === "modal_server_harnesses.credential_id" ||
@@ -340,6 +334,66 @@ describe("database", () => {
         return result.rows[0]?.hex ?? null;
       });
       expect(stored).toBe("0102");
+    });
+  });
+
+  test("credential lists keep user ownership separate from current org membership", async () => {
+    await withDb(async (db) => {
+      const insert = async (scope: "user" | "org", owner: string) => {
+        const result = await db.query<{ id: string }>(
+          "insert into credentials(scope,owner_id,kind,value_enc) values($1,$2,'modal',decode('0f','hex')) returning id",
+          [scope, owner],
+        );
+        return result.rows[0]!.id;
+      };
+      const people = await fixture(db);
+      await db.query("update orgs set name='First org' where id=$1", [people.org]);
+      const other = await fixture(db);
+      const user = await insert("user", people.member);
+      await insert("user", other.member);
+      const shared = await insert("org", people.org);
+      const hidden = await insert("org", other.org);
+      const list = (actor: string) => asUser(db, actor, () => ids(db, "select id from credentials order by id"));
+      expect(await list(people.member)).toEqual([user, shared].sort());
+      expect(await list(people.outsider)).toEqual([]);
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [other.org, people.member]);
+      expect(await list(people.member)).toEqual([user, shared, hidden].sort());
+      await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.member]);
+      expect(await list(people.member)).toEqual([user, hidden].sort());
+    });
+  });
+
+  test("organization lists isolate callers and refresh membership between statements", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      await db.query("update orgs set name='First org' where id=$1", [people.org]);
+      const other = await fixture(db);
+      const list = (user: string) => asUser(db, user, () => ids(db, "select id from orgs order by id"));
+      expect(await list(people.member)).toEqual([people.org]);
+      expect(await list(other.member)).toEqual([other.org]);
+      expect(await list(people.outsider)).toEqual([]);
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [other.org, people.member]);
+      expect(await list(people.member)).toEqual([people.org, other.org].sort());
+      await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.member]);
+      expect(await list(people.member)).toEqual([other.org]);
+    });
+  });
+
+  test("golden lists refresh the caller membership set without exposing private rows across orgs", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      await db.query("update orgs set name='First org' where id=$1", [people.org]);
+      const other = await fixture(db);
+      const own = await insertGolden(db, people, { name: "own", visibility: "private", owner: people.owner });
+      const shared = await insertGolden(db, other, { name: "shared", visibility: "org", owner: other.owner });
+      await insertGolden(db, other, { name: "hidden", visibility: "private", owner: other.owner });
+      const list = (user: string) => asUser(db, user, () => ids(db, "select id from goldens order by id"));
+      expect(await list(people.owner)).toEqual([own]);
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [other.org, people.owner]);
+      expect(await list(people.owner)).toEqual([own, shared].sort());
+      expect(await list(people.outsider)).toEqual([]);
+      await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
+      expect(await list(people.owner)).toEqual([shared]);
     });
   });
 

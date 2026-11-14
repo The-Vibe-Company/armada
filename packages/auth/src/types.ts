@@ -52,6 +52,8 @@ export interface OAuthCodeRecord {
  * Timestamps are passed in: the caller owns the clock, and tests never sleep.
  */
 export interface AuthStore {
+  /** Fresh token and membership in one database snapshot; never cached. */
+  findTokenWithMembership?(kind: TokenTable, hash: string): Promise<{ token: TokenRecord; role: MemberRole } | null>;
   findTokenByHash(kind: TokenTable, hash: string): Promise<TokenRecord | null>;
   insertToken(
     kind: TokenTable,
