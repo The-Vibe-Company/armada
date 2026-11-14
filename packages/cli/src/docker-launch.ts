@@ -40,7 +40,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     "--no-connections",
   ]);
   if ([...args.options.keys()].some((key) => !allowed.has(key)) || args.positionals.length > 1)
-    throw new GoldenError("invalid_config", "Docker launch takes at most one prompt and no golden or size.");
+    throw new GoldenError("invalid_config", "Docker launch takes at most one prompt and no snapshot or size.");
   const harness = (single(args, "--agent") ?? "codex") as Harness;
   if (!HARNESSES.includes(harness)) throw new GoldenError("invalid_config", "Unknown Docker harness.");
   const requiredId = (flag: string) => {

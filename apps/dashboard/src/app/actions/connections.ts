@@ -44,7 +44,7 @@ function isResult(value: object): value is ActionResult {
 
 function refresh() {
   revalidatePath("/tools");
-  revalidatePath("/environments");
+  revalidatePath("/snapshots");
 }
 
 /** What happened, from the connection the server returned: never a success the server did not report. */

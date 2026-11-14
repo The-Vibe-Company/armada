@@ -117,7 +117,7 @@ test("a refused, failed or unexpected capacity read is unavailable, never a numb
   for (const body of [{ error: "Not found." }, null])
     expect(await readGoldenCapabilities(answering(404, body), org, "boat")).toEqual({
       ok: false,
-      reason: "This Armada server does not report golden capacity yet.",
+      reason: "This Armada server does not report snapshot capacity yet.",
     });
   for (const body of [{ provider: "modal", maxGoldens: 1 }, { provider: "boat", maxGoldens: 0 }, { provider: "boat" }])
     expect(await readGoldenCapabilities(answering(200, body), org, "boat")).toEqual({

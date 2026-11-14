@@ -30,8 +30,8 @@ describe("run", () => {
       },
     });
     expect(code).toBe(0);
-    expect(out).toContain("armada golden create");
-    expect(out).toContain("armada launch <golden> --agent claude|codex");
+    expect(out).toContain("armada snapshot create");
+    expect(out).toContain("armada launch <snapshot> --agent claude|codex");
     expect(out).toContain("armada login");
     expect(out).toContain("armada token create");
   });
@@ -104,7 +104,7 @@ describe("run", () => {
     expect(out).toContain("cannot combine");
     expect(out).toContain(".events[]");
     expect(out).toContain("Ctrl-C");
-    expect(out).not.toContain("armada golden create");
+    expect(out).not.toContain("armada snapshot create");
   });
 
   test("an unknown command fails with a usage error", async () => {
@@ -113,4 +113,26 @@ describe("run", () => {
     expect(out).toBe("");
     expect(err).toContain("unknown command 'frobnicate'");
   });
+});
+
+test.each(["snapshot", "golden"])("%s help works before login and documents snapshots", async (command) => {
+  let out = "";
+  let err = "";
+  expect(
+    await run(
+      [command, "--help"],
+      {
+        out: (text) => {
+          out += text;
+        },
+        err: (text) => {
+          err += text;
+        },
+      },
+      { env: {} },
+    ),
+  ).toBe(0);
+  expect(out).toContain("armada snapshot create");
+  expect(out).not.toContain("armada golden ");
+  expect(err).toBe("");
 });

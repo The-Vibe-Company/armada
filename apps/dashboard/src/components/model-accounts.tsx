@@ -206,7 +206,7 @@ function ConnectionTestForm({
             {choices.state === "unavailable" ? (
               <a href={HARNESS_PATH}>Reload Models</a>
             ) : (
-              <a href="/environments">Choose a snapshot</a>
+              <a href="/snapshots">Choose a snapshot</a>
             )}
           </Button>
         </div>

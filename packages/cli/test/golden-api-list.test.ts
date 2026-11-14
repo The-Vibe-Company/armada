@@ -28,12 +28,12 @@ function apiFetch(calls: Request[]) {
 }
 
 describe("golden list through the Armada API", () => {
-  test("uses the default API with a token-only clean HOME", async () => {
+  test.each(["snapshot", "golden"])("%s list uses the same API with a token-only clean HOME", async (command) => {
     const calls: Request[] = [];
     let out = "";
     let err = "";
     const code = await run(
-      ["golden", "list"],
+      [command, "list"],
       { out: (text) => (out += text), err: (text) => (err += text) },
       {
         auth: {
