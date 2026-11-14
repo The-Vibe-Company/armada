@@ -28,7 +28,7 @@ export function createOttoEngineApi(
         const engine =
           (
             await sql.query<OttoEngine>(
-              'select harness,model,credential_id as "credentialId" from public.otto_engine_preferences where org_id=$1 and user_id=$2',
+              'select harness,model,credential_id as "credentialId" from public.otto_engine_preferences where org_id=$1 and owner_id=$2',
               [orgId, userId],
             )
           ).rows[0] ?? null;
@@ -63,7 +63,7 @@ export function createOttoEngineApi(
       const preflight = await preflightOttoEngine(reader, encryptionKey, { userId, orgId }, engine);
       if (!preflight.ready) return reply({ preflight }, 422);
       await sql.query(
-        "insert into public.otto_engine_preferences(org_id,user_id,harness,model,credential_id) values($1,$2,$3,$4,$5) on conflict(org_id,user_id) do update set harness=excluded.harness,model=excluded.model,credential_id=excluded.credential_id",
+        "insert into public.otto_engine_preferences(org_id,owner_id,harness,model,credential_id) values($1,$2,$3,$4,$5) on conflict(org_id,owner_id) do update set harness=excluded.harness,model=excluded.model,credential_id=excluded.credential_id",
         [orgId, userId, engine.harness, engine.model, engine.credentialId],
       );
       return reply({ engine, preflight });

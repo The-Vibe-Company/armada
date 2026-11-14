@@ -1,5 +1,5 @@
 import type { OttoEngine, OttoEnginePreflight } from "@armada/core";
-import { isHarness, resolveModelChoice } from "@armada/core";
+import { HARNESS_CATALOG, isHarness, resolveModelChoice } from "@armada/core";
 import { type CredentialReader, listConnectionModels, resolveCredentials } from "@armada/core/server";
 
 export async function preflightOttoEngine(
@@ -14,6 +14,11 @@ export async function preflightOttoEngine(
       error: "unsupported_engine",
       message: "Choose a supported harness and one of its catalog models.",
     };
+  if (
+    engine.harness !== "opencode" &&
+    !HARNESS_CATALOG[engine.harness].models.some((model) => model.id === engine.model)
+  )
+    return { ready: false, error: "unsupported_engine", message: "Choose a model listed for the selected harness." };
   try {
     await resolveCredentials(reader, encryptionKey, {
       ...scope,

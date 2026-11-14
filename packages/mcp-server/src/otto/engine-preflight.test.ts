@@ -17,7 +17,7 @@ test("preflight checks the exact account without exposing its material or choosi
     error: "account_unavailable",
     connectUrl: expect.any(String),
   });
-  expect(await preflightOttoEngine(reader, key, scope, { ...engine, model: "invalid model" })).toMatchObject({
+  expect(await preflightOttoEngine(reader, key, scope, { ...engine, model: "claude-opus-5-5" })).toMatchObject({
     ready: false,
     error: "unsupported_engine",
   });
@@ -39,4 +39,25 @@ test("OpenCode preflight refuses plain-key catalog defaults", async () => {
   expect(await preflightOttoEngine(reader, key, scope, { ...engine, model: "opencode/example" })).toEqual({
     ready: true,
   });
+});
+
+test("Claude rejects a Codex catalog model before reading credentials", async () => {
+  const reader: CredentialReader = {
+    credentials: async () => {
+      throw new Error("must not resolve an incompatible engine");
+    },
+    orgBoatKey: async () => null,
+  };
+  expect(
+    await preflightOttoEngine(
+      reader,
+      undefined,
+      { userId: "user_one", orgId: "org_one" },
+      {
+        harness: "claude",
+        model: "gpt-6.1-sol",
+        credentialId: "account_one",
+      },
+    ),
+  ).toMatchObject({ ready: false, error: "unsupported_engine" });
 });

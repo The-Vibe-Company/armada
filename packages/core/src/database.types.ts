@@ -3157,21 +3157,21 @@ export type Database = {
       otto_engine_preferences: {
         Row: {
           org_id: string;
-          user_id: string;
+          owner_id: string;
           harness: string;
           model: string;
           credential_id: string;
         };
         Insert: {
           org_id: string;
-          user_id: string;
+          owner_id: string;
           harness: string;
           model: string;
           credential_id: string;
         };
         Update: {
           org_id?: string;
-          user_id?: string;
+          owner_id?: string;
           harness?: string;
           model?: string;
           credential_id?: string;
@@ -3192,8 +3192,8 @@ export type Database = {
             referencedColumns: ["id"];
           },
           {
-            foreignKeyName: "otto_engine_preferences_user_id_fkey";
-            columns: ["user_id"];
+            foreignKeyName: "otto_engine_preferences_owner_id_fkey";
+            columns: ["owner_id"];
             isOneToOne: false;
             referencedRelation: "users";
             referencedColumns: ["id"];
