@@ -15,30 +15,31 @@ export function createSandboxLifecycle(
   const delay = options.delayMs ?? 600_000;
   if (!Number.isSafeInteger(delay) || delay < 1) throw Error("Invalid native idle delay.");
   const pending = new Set<Promise<unknown>>();
-  // Cancellation bounds the scheduling lane without pretending an in-flight SDK stop
-  // was undone. Raw operations remain tracked and their results cannot publish late.
-  async function operation<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
-    signal?.throwIfAborted();
-    const running = work();
-    pending.add(running);
-    const settled = running.finally(() => pending.delete(running));
-    if (!signal) return settled;
-    return new Promise<T>((resolve, reject) => {
-      const abort = () => reject(signal.reason);
-      signal.addEventListener("abort", abort, { once: true });
-      settled.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
-      if (signal.aborted) abort();
-    });
-  }
-  return {
-    async drain(): Promise<void> {
-      await Promise.allSettled([...pending]);
-    },
-    async reconcileOne(signal?: AbortSignal): Promise<boolean> {
+  // Four slots per authority (eight total). Reserve before SQL so concurrent
+  // callers cannot over-admit; keep a reservation until every raw SDK call settles.
+  const authorities = ["boat", "modal"] as const;
+  const admitted = { boat: 0, modal: 0 };
+  let next = 0;
+  async function reconcile(providerId: "boat" | "modal", signal?: AbortSignal): Promise<boolean> {
+    const raw = new Set<Promise<unknown>>();
+    async function operation<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
       signal?.throwIfAborted();
-      // The production lane is serial, but timed-out SDK calls can outlive a tick.
-      // Keep their raw work bounded; a slot opens only when it actually settles.
-      if (pending.size >= 4) return false;
+      const running = work();
+      raw.add(running);
+      pending.add(running);
+      const settled = running.finally(() => {
+        raw.delete(running);
+        pending.delete(running);
+      });
+      if (!signal) return settled;
+      return new Promise<T>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        settled.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+        if (signal.aborted) abort();
+      });
+    }
+    try {
       const token = crypto.randomUUID();
       const row = (
         await sql.query<{
@@ -62,7 +63,7 @@ export function createSandboxLifecycle(
           `update public.sandboxes s set reconcile_lease=$1::uuid,
           reconcile_lease_until=now()+interval '2 minutes'
         where s.id=(select candidate.id from public.sandboxes candidate
-          where candidate.provider <> 'docker' and candidate.status not in ('stopped','deleted')
+          where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
           and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
           and not (candidate.status='failed' and candidate.stopped_at is not null)
           and candidate.reconcile_after<=now()
@@ -71,7 +72,7 @@ export function createSandboxLifecycle(
           order by candidate.reconcile_after limit 1 for update of candidate skip locked)
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
-          [token],
+          [token, providerId],
         )
       ).rows[0];
       if (!row) return false;
@@ -264,6 +265,30 @@ export function createSandboxLifecycle(
         ],
       );
       return true;
+    } finally {
+      if (raw.size === 0) admitted[providerId]--;
+      else
+        void Promise.allSettled([...raw]).then(() => {
+          admitted[providerId]--;
+        });
+    }
+  }
+  return {
+    async drain(): Promise<void> {
+      await Promise.allSettled([...pending]);
+    },
+    async reconcileOne(signal?: AbortSignal): Promise<boolean> {
+      signal?.throwIfAborted();
+      const first = next;
+      next = (next + 1) % authorities.length;
+      for (let offset = 0; offset < authorities.length; offset++) {
+        const providerId = authorities[(first + offset) % authorities.length]!;
+        if (admitted[providerId] >= 4) continue;
+        admitted[providerId]++;
+        if (await reconcile(providerId, signal)) return true;
+        signal?.throwIfAborted();
+      }
+      return false;
     },
   };
 }

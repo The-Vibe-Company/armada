@@ -544,80 +544,77 @@ for (const status of ["running", "starting", "failed", "stopping"] as const) {
   });
 }
 
-test("timed-out provider observations stay bounded until their raw work settles", async () => {
-  const { db, people } = await sharedDatabase();
-  const arrived = Array.from({ length: 4 }, () => Promise.withResolvers<void>());
-  const held = Array.from({ length: 4 }, () => Promise.withResolvers<void>());
-  let lifecycle: ReturnType<typeof createSandboxLifecycle> | undefined;
-  try {
+for (const blocked of ["boat", "modal"] as const) {
+  test(`timed-out ${blocked} calls preserve capacity for the other authority and stay globally bounded`, async () => {
+    const { db, people } = await sharedDatabase();
     const sql = bunLikeSql(db);
-    const store = createSqlData(sql)({
-      via: "service",
-      userId: people.owner,
-      orgs: [{ orgId: people.org, role: "member" }],
-    }).sandboxes;
-    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
-    if (!golden) throw Error("missing golden");
+    const gates: ReturnType<typeof Promise.withResolvers<void>>[] = [];
+    const entered: ReturnType<typeof Promise.withResolvers<void>>[] = [];
     const ids: string[] = [];
-    for (let i = 0; i < 5; i++) {
-      const id = crypto.randomUUID();
-      ids.push(id);
-      await store.insert({
-        id,
-        provider: "boat",
-        providerSandboxId: `bx_2345678${i}`,
-        goldenId: golden.id,
-        orgId: people.org,
-        ownerId: people.owner,
-        harness: "claude",
-        status: "running",
-        model: "test",
-        reasoningEffort: "medium",
-        effectiveTtlSeconds: 3600,
-      });
+    const calls: string[] = [];
+    const authorityFor = new Map<string, "boat" | "modal">();
+    const worker = createSandboxLifecycle(
+      sql,
+      async (id) =>
+        ({
+          id: authorityFor.get(id),
+          async get() {
+            calls.push(id);
+            const index = ids.indexOf(id);
+            entered[index]!.resolve();
+            await gates[index]!.promise;
+            return { state: "stopped" };
+          },
+        }) as unknown as import("@armada/core").Provider,
+    );
+    try {
+      for (const authority of [blocked, blocked === "boat" ? "modal" : "boat"] as const) {
+        const golden = (
+          await db.query<{ id: string }>(
+            `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+          values($1,$2,$3,'private',$4::public.sandbox_provider,'master','image',case when $4::public.sandbox_provider='modal' then 'workspace' end,case when $4::public.sandbox_provider='modal' then 'main' end,case when $4::public.sandbox_provider='modal' then 'app' end,'{"repos":[],"init":[]}') returning id`,
+            [people.org, people.owner, `capacity-${authority}`, authority],
+          )
+        ).rows[0]!;
+        for (let i = 0; i < 5; i++) {
+          const id = crypto.randomUUID();
+          ids.push(id);
+          authorityFor.set(id, authority);
+          gates.push(Promise.withResolvers<void>());
+          entered.push(Promise.withResolvers<void>());
+          await db.query(
+            `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,runtime_transport)
+             values($1::uuid,$2,$1::uuid::text,$3,$4,$5,'codex','running',null)`,
+            [id, authority, golden.id, people.org, people.owner],
+          );
+          // Leave the fifth candidate eligible to prove saturation does not
+          // simply rely on there being no work in this partition.
+          if (i === 4) continue;
+          const controller = new AbortController();
+          const tick = worker.reconcileOne(controller.signal);
+          expect(await Promise.race([entered[ids.length - 1]!.promise.then(() => true), tick.then(() => false)])).toBe(
+            true,
+          );
+          controller.abort();
+          expect(await tick).toBe(true);
+        }
+        expect(await worker.reconcileOne()).toBe(false);
+      }
+      expect(calls).toHaveLength(8);
+      for (const gate of gates) gate.resolve();
+      await worker.drain();
+      // Neither timed-out partition publishes its delayed terminal response.
+      expect(
+        (await db.query("select id from sandboxes where id=any($1::uuid[]) and status='running'", [ids])).rows,
+      ).toHaveLength(10);
+      expect(await worker.reconcileOne()).toBe(true);
+      expect(calls).toHaveLength(9);
+    } finally {
+      for (const gate of gates) gate.resolve();
+      await worker.drain();
     }
-    let calls = 0;
-    const provider = createBoatProvider({
-      apiKey: "test-key",
-      fetch: (async (input: Request | string | URL) => {
-        const index = calls++;
-        arrived[index]?.resolve();
-        if (index < held.length) await held[index]?.promise;
-        return Response.json({
-          ok: true,
-          sandbox: sandbox({
-            id: new URL(input instanceof Request ? input.url : String(input)).pathname.split("/").at(-1),
-            state: index < held.length ? "archived" : "running",
-          }),
-        });
-      }) as typeof fetch,
-    });
-    lifecycle = createSandboxLifecycle(sql, async () => provider);
-    for (let i = 0; i < 4; i++) {
-      const controller = new AbortController();
-      const tick = lifecycle.reconcileOne(controller.signal);
-      await arrived[i]?.promise;
-      controller.abort();
-      expect(await tick).toBe(true);
-    }
-    expect(await lifecycle.reconcileOne()).toBe(false);
-    expect(calls).toBe(4);
-    expect(
-      (await db.query("select id from sandboxes where id=any($1::uuid[]) and reconcile_lease is null", [ids])).rows,
-    ).toHaveLength(1);
-    for (const gate of held) gate.resolve();
-    await lifecycle.drain();
-    // Late archived responses cannot turn the aborted observations into terminal writes.
-    expect(
-      (await db.query("select id from sandboxes where id=any($1::uuid[]) and status='running'", [ids])).rows,
-    ).toHaveLength(5);
-    expect(await lifecycle.reconcileOne()).toBe(true);
-    expect(calls).toBe(5);
-  } finally {
-    for (const gate of held) gate.resolve();
-    await lifecycle?.drain();
-  }
-});
+  });
+}
 
 test("runtime lifecycle stops compute with explicit no-checkpoint note, without native quiescence or capture", async () => {
   const { db, people } = await sharedDatabase();
