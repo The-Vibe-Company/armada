@@ -26,6 +26,18 @@ test("Docker defaults shrink to fit and disable extra swap while bounding proces
     expect(() => dockerResourceLimits(resources)).toThrow();
 });
 
+test("automatic Docker capacity respects memory reserve, 2x CPU and small hosts", () => {
+  for (const [cpus, memory, expected] of [
+    [16, 26, 6],
+    [2, 64, 2],
+    [8, 10, 2],
+    [1, 1, 1],
+    [2, 2, 1],
+    [4, 6, 1],
+  ])
+    expect(dockerResourcePolicy({ cpus: cpus!, memoryBytes: memory! * GIB }).capacity).toBe(expected!);
+});
+
 test("manual policy fits hardware, recomputes capacity and parses exact memory units", () => {
   const machine = { cpus: 8, memoryBytes: 26 * GIB };
   expect(dockerResourcePolicy(machine, { cpus: 1, memoryBytes: 2 * GIB, maxSandboxes: 12 })).toMatchObject({

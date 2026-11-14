@@ -1,17 +1,6 @@
 import { ProviderError, type Sql } from "@armada/core";
-import {
-  type DockerHostResources,
-  type DockerResourceOverrides,
-  dockerResourcePolicy,
-} from "../../core/src/docker-resources.ts";
+import { dockerResourcePolicy } from "../../core/src/docker-resources.ts";
 
-/** Unknown hardware on older daemons deliberately retains the pre-limit behavior. */
-export function dockerHostCapacity(
-  resources: DockerHostResources | null,
-  overrides: DockerResourceOverrides = {},
-): number | null {
-  return resources ? dockerResourcePolicy(resources, overrides).capacity : null;
-}
 export type DockerPolicyRow = {
   machine_cpus: number | null;
   machine_memory_bytes: number | string | null;
