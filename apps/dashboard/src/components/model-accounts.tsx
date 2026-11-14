@@ -935,7 +935,7 @@ function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
             Choose a destination
           </option>
           <option value="anthropic">Anthropic default endpoint</option>
-          <option value="custom">Custom gateway (Modal)</option>
+          <option value="custom">Custom gateway</option>
         </NativeSelect>
       </div>
       {mode === "custom" && (
@@ -955,8 +955,8 @@ function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
             />
           </div>
           <p id={`${idPrefix}-gateway-hint`} className="text-xs text-muted-foreground">
-            Modal only. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages; it must
-            support Anthropic Messages, streaming and tool use.
+            Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages; it must support
+            Anthropic Messages, streaming and tool use.
           </p>
           <div className="space-y-2">
             <Label htmlFor={`${idPrefix}-gateway-auth`}>Gateway authentication</Label>
@@ -1068,7 +1068,7 @@ function CustomEndpointFields({
               Choose a destination
             </option>
             <option value="openai">OpenAI default endpoint</option>
-            <option value="custom">Custom endpoint (Modal)</option>
+            <option value="custom">Custom endpoint</option>
             {replacementPresets(kind).map((option) => (
               <option key={option.id} value={option.id}>
                 {option.label}
@@ -1085,7 +1085,7 @@ function CustomEndpointFields({
             checked={custom}
             onCheckedChange={(value) => setCustom(value === true)}
           />
-          Use a custom endpoint (Modal)
+          Use a custom endpoint
         </Label>
       )}
       {custom && (
@@ -1108,8 +1108,8 @@ function CustomEndpointFields({
           </div>
           <p id={`${idPrefix}-endpoint-hint`} className="text-xs text-muted-foreground">
             {codex
-              ? "Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Modal only. Codex cannot use chat-completions-only endpoints such as DeepSeek."
-              : "Modal only. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages. The gateway must support Anthropic Messages, streaming and tool use."}
+              ? "Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Codex cannot use chat-completions-only endpoints such as DeepSeek."
+              : "Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages. The gateway must support Anthropic Messages, streaming and tool use."}
           </p>
           {codex ? (
             <div className="space-y-2">
@@ -1577,10 +1577,7 @@ export function HarnessAccounts({
             {subscriptionAvailable ? (
               <>Add one to launch {harnessLabel}. An API key works too.</>
             ) : (
-              <>
-                Add an OpenCode plan key, or connect DeepSeek, OpenRouter or another OpenAI-compatible provider. Modal
-                only.
-              </>
+              <>Add an OpenCode plan key, or connect DeepSeek, OpenRouter or another OpenAI-compatible provider.</>
             )}
           </Empty>
         </div>

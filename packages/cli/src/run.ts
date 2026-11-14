@@ -241,9 +241,9 @@ Usage:
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
                                            Codex: --base-url URL --models deployment,model [--api-version VERSION]
                                            Key from hidden input, stdin/file; Azure requires actual deployment names, not model catalog IDs
-                                           Codex endpoints require Modal and the Responses API, not chat completions
+                                           Codex endpoints require the Responses API, not chat completions
                                            Claude: --base-url URL [--endpoint-auth bearer|api-key] (default bearer)
-                                           Claude gateways require Modal and support Claude models only; key from hidden input, stdin/file
+                                           Claude gateways support Claude models only; key from hidden input, stdin/file
                                            Endpoint prices: --price-model ID --price-input USD --price-output USD
                                            [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
                                            Replacing a connection replaces its prices too; re-enter all rates to keep them

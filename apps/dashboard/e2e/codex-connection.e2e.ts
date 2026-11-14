@@ -39,11 +39,12 @@ test("Codex custom endpoint creation accepts both Foundry URL forms without retu
     const dialog = page.getByRole("dialog");
     await dialog.getByLabel("Provider", { exact: true }).selectOption("openai");
     await dialog.getByLabel("Name", { exact: true }).fill(`Foundry ${index}`);
-    await dialog.getByLabel("Use a custom endpoint (Modal)", { exact: true }).check();
+    await dialog.getByLabel("Use a custom endpoint", { exact: true }).check();
     await expect(dialog.getByText(/Codex cannot use chat-completions-only endpoints/)).toBeVisible();
     await dialog
       .getByLabel("Base URL", { exact: true })
       .fill(`https://resource.services.ai.azure.com/api/projects/project/openai/v1${suffix}`);
+    await dialog.locator('textarea[name="customModels"]').fill("owner-deployment");
     await expect(dialog.getByLabel("API version (optional)")).toHaveValue("");
     await dialog.getByLabel("Set model prices (optional)", { exact: true }).check();
     await dialog.getByLabel("Priced model ID", { exact: true }).fill("owner-deployment");
@@ -92,6 +93,7 @@ test("Codex replacement chooses a route explicitly, keeps the version fence and 
   await dialog
     .getByLabel("Base URL", { exact: true })
     .fill("https://resource.services.ai.azure.com/api/projects/project/openai/v1/responses");
+  await dialog.locator('textarea[name="customModels"]').fill("owner-deployment");
   await dialog.getByLabel("Set model prices (optional)", { exact: true }).check();
   await dialog.getByLabel("Priced model ID", { exact: true }).fill("owner-deployment");
   await dialog.getByLabel("Input", { exact: true }).fill("2.5");
@@ -196,7 +198,7 @@ test("Claude gateway creation supports bearer and API-key authentication without
     const dialog = page.getByRole("dialog");
     await dialog.getByLabel("Provider", { exact: true }).selectOption("anthropic");
     await dialog.getByLabel("Name", { exact: true }).fill(`Gateway ${auth}`);
-    await dialog.getByLabel("Use a custom endpoint (Modal)", { exact: true }).check();
+    await dialog.getByLabel("Use a custom endpoint", { exact: true }).check();
     await expect(dialog.getByText(/Claude Code supports Claude models only/)).toBeVisible();
     await expect(dialog.getByLabel("API version (optional)")).toHaveCount(0);
     await dialog.getByLabel("Base URL", { exact: true }).fill("https://gateway.example.com/anthropic");

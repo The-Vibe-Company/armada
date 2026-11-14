@@ -445,10 +445,10 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       if (endpoint)
         io.auth.out(
           kind === "opencode"
-            ? "Custom OpenCode endpoint: Modal only; use --model armada/<upstream-model>.\n"
+            ? "Custom OpenCode endpoint: use --model armada/<upstream-model>.\n"
             : kind === "anthropic"
-              ? "Custom Claude gateway: Modal only; supports Claude models only and requires Anthropic Messages with streaming/tool use.\n"
-              : "Custom Codex endpoint: Modal only; requires the Responses API (not chat completions).\n",
+              ? "Custom Claude gateway: supports Claude models only and requires Anthropic Messages with streaming/tool use.\n"
+              : "Custom Codex endpoint: requires the Responses API (not chat completions).\n",
         );
       io.auth.out(
         `Stored ${credentialName(kind)} for ${scope === "org" ? `org ${org}` : "you"}, encrypted. It is never shown again.\n`,
