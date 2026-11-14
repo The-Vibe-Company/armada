@@ -15,6 +15,7 @@ import type { VaultIo } from "./vault-commands.ts";
 const HELP = `Launch templates (readable variables and secret references):
   armada template create NAME --file definition.json [--scope personal|org] [--org NAME|UUID] [--json]
   armada template create NAME --golden UUID --provider boat|modal --agent claude|codex [definition flags]
+  armada template create NAME --host UUID --provider docker --agent claude|codex [definition flags]
   armada template list [--org NAME|UUID] [--json]
   armada template get NAME|ID [--revision N] [--org NAME|UUID] [--json]
   armada template publish NAME|ID --expected-revision N --file definition.json [--org NAME|UUID] [--json]
@@ -22,7 +23,8 @@ const HELP = `Launch templates (readable variables and secret references):
   armada template launch NAME|ID --request-key KEY [--revision N] [--prompt TEXT] [--ttl 30m] [--size SIZE] [--repo REPO] [--model-account UUID --model-account-version N] [--org NAME|UUID] [--json]
 
 Create/publish accept either a JSON definition file (the definition object, not an API envelope)
-or --golden UUID --provider boat|modal --agent claude|codex, optionally --model ID,
+or --golden UUID --provider boat|modal --agent claude|codex,
+or --host UUID --provider docker --agent claude|codex, optionally --model ID,
 --reasoning-effort LEVEL, --connection UUID (repeatable), --variable KEY:UUID:VERSION
 (repeatable), --secret KEY:UUID:VERSION (repeatable, references only), --skill PIN (repeatable),
 --model-account UUID --model-account-version N. Publish creates a new immutable revision.
@@ -33,11 +35,13 @@ Launch uses a required request key: retry the SAME key and body after an unknown
 For name-based launches, the resolved template ID is printed before submission; use that ID
 for retries so a later rename or deletion cannot prevent recovery.
 Never invent a new key while the original outcome is unknown. Only prompt, TTL, size, repository and an unpinned model account can be overridden. No local environment expansion is supported. Secret references deliver environment values to the selected native harness.
+Docker --host takes a host UUID, not a name; it selects the official environment, not a snapshot.
 Readable values may appear in launch manifests; they are not secrets.
 `;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFINITION_FLAGS = [
   "--golden",
+  "--host",
   "--provider",
   "--agent",
   "--model",
@@ -157,16 +161,24 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
       }
     } else {
       const goldenId = single(args, "--golden"),
+        hostId = single(args, "--host"),
         provider = single(args, "--provider"),
         harness = single(args, "--agent");
       if (
-        !goldenId ||
-        !UUID.test(goldenId) ||
-        !["boat", "modal"].includes(provider ?? "") ||
+        (provider === "docker"
+          ? !hostId || !UUID.test(hostId) || goldenId !== undefined
+          : !goldenId || !UUID.test(goldenId) || hostId !== undefined) ||
+        !["boat", "modal", "docker"].includes(provider ?? "") ||
         !(HARNESSES as readonly string[]).includes(harness ?? "")
       )
-        throw usage("Definition flags require --golden UUID --provider boat|modal --agent claude|codex.");
-      const definition: Record<string, unknown> = { goldenId, provider, harness };
+        throw usage(
+          "Definition flags require --golden UUID --provider boat|modal or --host UUID --provider docker, plus --agent claude|codex.",
+        );
+      const definition: Record<string, unknown> = {
+        ...(provider === "docker" ? { goldenId: null, hostId } : { goldenId }),
+        provider,
+        harness,
+      };
       const model = single(args, "--model"),
         effort = single(args, "--reasoning-effort");
       if (model !== undefined) definition.model = model;
