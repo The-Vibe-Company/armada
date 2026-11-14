@@ -35,7 +35,7 @@ describe("machine sizes in the launch dialog", () => {
     expect(sizeSpec("modal", "small")).toBe("1 physical core (2 vCPU) · 4 GiB, capped");
   });
 
-  test("the default follows the selected repository, then the golden, then the provider's own", () => {
+  test("the default follows the selected repository, then the snapshot, then the provider's own", () => {
     const repository = launchDefault("boat", policy, "api");
     expect(repository).toMatchObject({ effective: "large", source: "repository", requested: null });
     expect(describeDefault("boat", repository)).toBe("Large, the default for api");
@@ -43,7 +43,7 @@ describe("machine sizes in the launch dialog", () => {
 
     const golden = launchDefault("modal", policy, "web");
     expect(golden).toMatchObject({ effective: "medium", source: "golden" });
-    expect(describeDefault("modal", golden)).toBe("Medium, the golden's default");
+    expect(describeDefault("modal", golden)).toBe("Medium, the snapshot's default");
     expect(launchDefault("boat", policy, "")).toMatchObject({ source: "golden", repositoryDir: null });
     // A policy from JSON is a plain object: a directory named like a prototype key has no default of its own.
     const parsed = JSON.parse(JSON.stringify(policy)) as MachineSizePolicy;
@@ -62,7 +62,7 @@ describe("machine sizes in the launch dialog", () => {
   test("an override warns of the provider outcome that can refuse it, never of a silent change", () => {
     expect(sizeCaveat("boat", null)).toBeNull();
     expect(sizeCaveat("boat", "xlarge")).toBe("Extra large needs a Boat plan that includes it.");
-    expect(sizeCaveat("boat", "small")).toBe("Boat refuses a size whose disk cannot hold the golden.");
+    expect(sizeCaveat("boat", "small")).toBe("Boat refuses a size whose disk cannot hold the snapshot.");
     expect(sizeCaveat("modal", "xlarge")).toMatch(/same label on Boat is a different machine/);
   });
 
@@ -92,18 +92,18 @@ describe("machine sizes in the launch dialog", () => {
       kind: "unreadable",
       reason: "Unknown configured repository directory.",
     });
-    expect(policySummary("boat", policy)).toBe("Golden: Medium · api: Large");
+    expect(policySummary("boat", policy)).toBe("Snapshot: Medium · api: Large");
     expect(policySummary("modal", null)).toBe("No defaults: Modal decides");
   });
 
-  test("only the owner of a private golden or an org admin edits defaults, as the server checks", () => {
+  test("only the owner of a private snapshot or an org admin edits defaults, as the server checks", () => {
     const viewer = { id: "u1", isAdmin: false };
     expect(sizePolicyBlocker({ visibility: "private", owner_id: "u1" }, viewer)).toBeNull();
     expect(sizePolicyBlocker({ visibility: "private", owner_id: "u2" }, { ...viewer, isAdmin: true })).toBe(
       "Only its owner changes its size defaults.",
     );
     expect(sizePolicyBlocker({ visibility: "org", owner_id: "u1" }, viewer)).toBe(
-      "Only an org admin changes an org golden's size defaults.",
+      "Only an org admin changes an org snapshot's size defaults.",
     );
     expect(sizePolicyBlocker({ visibility: "org", owner_id: "u2" }, { ...viewer, isAdmin: true })).toBeNull();
   });
