@@ -1393,6 +1393,7 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
       checkoutExitCode: scenario === "checkout-failed" ? 1 : 0,
       githubConfigurationAcknowledged: scenario !== "github-delivery-failed",
     });
+    const caller: Caller = { ...f.caller, via: "service" };
     if (scenario !== "missing-github")
       await db.query(
         `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
@@ -1413,7 +1414,7 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
       repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
     };
     const first = f.service(sql, true, 10000, officialImage, true);
-    const accepted = await first.launch(f.caller, body);
+    const accepted = await first.launch(caller, body);
     expect(accepted.sandbox.status).toBe("starting");
     expect(accepted.runtime).toBeNull();
     expect(accepted.promptId).toBeUndefined();
@@ -1436,7 +1437,7 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
       );
     }
     await restarted.drain();
-    const completed = await restarted.launch(f.caller, body);
+    const completed = await restarted.launch(caller, body);
     if (scenario === "success") {
       expect(completed.sandbox.credentialId).toBe(f.body.credentialId);
       expect(f.session()?.configuration).toMatchObject({ codexEnv: { OPENAI_API_KEY: f.secret } });
@@ -1451,14 +1452,15 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
       expect(completed.sandbox.status).toBe("failed");
       expect(completed.sandbox.statusReason).toBe(
         scenario === "missing-github"
-          ? DOCKER_LAUNCH_FAILURE_MESSAGES.github
+          ? DOCKER_LAUNCH_FAILURE_MESSAGES.githubNotConnected
           : scenario === "github-delivery-failed"
             ? DOCKER_LAUNCH_FAILURE_MESSAGES.githubDelivery
             : DOCKER_LAUNCH_FAILURE_MESSAGES.checkout,
       );
       expect((f.native as { op: string }[]).some((c) => c.op === "prompt")).toBe(false);
+      if (scenario === "missing-github") expect(f.native).toHaveLength(0);
       const controls = createDockerSandboxControls(sql, key);
-      const status = await controls.invoke(f.caller, "status", { id: body.requestId });
+      const status = await controls.invoke(caller, "status", { id: body.requestId });
       expect(status.handled && (status.result as DockerSandboxStatus).statusReason).toBe(
         completed.sandbox.statusReason,
       );

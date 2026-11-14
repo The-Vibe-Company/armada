@@ -56,8 +56,8 @@ if used); update any explicit old tool pin. Rebuild, do not just re-snapshot the
 old master. For example, with the existing configuration saved as `golden.json`:
 
 ```sh
-armada golden update <name> --provider boat --org <org> --config golden.json
-armada golden update <name> --provider modal --org <org> --config golden.json
+armada golden update <name> --provider boat --org <org> --replace --config golden.json
+armada golden update <name> --provider modal --org <org> --replace --config golden.json
 # Add --setup <original-setup-file> when the original build used one.
 armada golden build-status <job-id>
 ```
