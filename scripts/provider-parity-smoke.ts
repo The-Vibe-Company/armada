@@ -64,6 +64,7 @@ const steps = {
 } as const;
 // Stable feature IDs are also the --feature vocabulary. Unimplemented probes are
 // explicit not-run debt, never inferred support or a successful proof.
+const harnessFeatures = { codex: "codex", "claude-code": "claude", opencode: "opencode" } as const;
 const features = [
   ...Object.keys(steps),
   "launch-default",
@@ -321,8 +322,19 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       );
   let starts = 0;
   for (const c of cases) {
+    const harnessFeature = c.harness === "claude" ? "claude-code" : c.harness;
+    const requestedHarness = feature && Object.hasOwn(harnessFeatures, feature);
+    for (const name of Object.keys(harnessFeatures))
+      if ((!feature || feature === name) && name !== harnessFeature)
+        record(name, c.provider, "not-run", "harness_account_not_configured");
+    if (requestedHarness && feature !== harnessFeature) continue;
     // A not-yet-implemented row must not allocate compute merely to print debt.
-    if (feature && !Object.hasOwn(steps, feature) && !["resume-recall", "usage", "exact-cost"].includes(feature))
+    if (
+      feature &&
+      !Object.hasOwn(steps, feature) &&
+      !["resume-recall", "usage", "exact-cost"].includes(feature) &&
+      !requestedHarness
+    )
       continue;
     if (feature === "github" && !c.githubRepository) {
       record("github", c.provider, "not-run", "github_repository_not_configured");
@@ -827,7 +839,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         step === "launch" ||
         (step === "stop" && !["steer", "interrupt"].includes(feature ?? "")) ||
         step === "delete" ||
-        (feature === "github" && step === "send") ||
+        ((feature === "github" || requestedHarness) && step === "send") ||
         (["resume", "resume-recall", "usage", "exact-cost"].includes(feature ?? "") &&
           ["send", "resume"].includes(step));
       if (!needed) continue;
@@ -896,6 +908,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           if (step === "send") {
             await runTurn();
             if (io.accountProbe) await runTurn(true);
+            if (!feature || requestedHarness) record(harnessFeature, c.provider, "pass");
           } else if (step === "steer" || step === "interrupt") {
             await controlTurn(step);
           } else if (step === "exec") {
@@ -1012,6 +1025,21 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             detail,
           );
       }
+    }
+    if ((!feature || requestedHarness) && report[harnessFeature]?.[c.provider]?.status !== "pass") {
+      const source = ["launch", "send"]
+        .map((step) => ({
+          step,
+          cell: report[feature ? `prerequisite:${step}` : step]?.[c.provider],
+        }))
+        .find(({ cell }) => cell && cell.status !== "pass");
+      record(
+        harnessFeature,
+        c.provider,
+        source?.cell?.status === "unsupported" ? "unsupported" : "not-run",
+        source ? `${source.step}: ${source.cell?.reason ?? source.cell?.status}` : "turn_not_observed",
+        source?.cell?.diagnostic,
+      );
     }
     // These probes already share the provider's lifecycle sandbox. If a
     // prerequisite prevents observation, report that cause, not implementation debt.
