@@ -62,7 +62,13 @@ export interface VaultStore extends CredentialReader, GitHubConnectionStore {
   addMember(orgId: string, userId: string, role: MemberRole): Promise<boolean>;
   setMemberRole(orgId: string, userId: string, role: MemberRole): Promise<boolean>;
   removeMember(orgId: string, userId: string): Promise<boolean>;
-  upsertCredential(scope: CredentialScope, ownerId: string, kind: CredentialKind, valueEnc: Uint8Array): Promise<void>;
+  upsertCredential(
+    scope: CredentialScope,
+    ownerId: string,
+    kind: CredentialKind,
+    valueEnc: Uint8Array,
+    actorId?: string,
+  ): Promise<void>;
   deleteCredential(scope: CredentialScope, ownerId: string, kind: CredentialKind): Promise<boolean>;
   listCredentials(scope: CredentialScope, ownerId: string): Promise<CredentialInfo[]>;
   /** Null clears the key. */
@@ -195,7 +201,7 @@ export async function setCredential(
   const value = credentialWriteValue(input.kind, input.value);
   if (input.scope === "user") {
     await validate?.(input.kind, value);
-    await store.upsertCredential("user", userId, input.kind, await encryptSecret(value, encryptionKey));
+    await store.upsertCredential("user", userId, input.kind, await encryptSecret(value, encryptionKey), userId);
     return;
   }
   const org = await resolveAdminOrg(store, userId, input.org);
@@ -203,7 +209,7 @@ export async function setCredential(
   const sealed = await encryptSecret(value, encryptionKey);
   await resolveAdminOrg(store, userId, org.id);
   if (input.kind === "boat") await store.setOrgBoatKey(org.id, sealed);
-  else await store.upsertCredential("org", org.id, input.kind, sealed);
+  else await store.upsertCredential("org", org.id, input.kind, sealed, userId);
 }
 
 export async function removeCredential(
@@ -288,7 +294,7 @@ export async function mutateCredentialAccount(
     // The SQL mutation still rechecks authorization/version atomically after the probe.
     if (input.id) {
       const existing = (await store.listCredentials(input.scope, org?.id ?? userId)).find((row) => row.id === input.id);
-      if (!existing) throw new VaultError("not_found", "Account not found.");
+      if (!existing || existing.status === "deleted") throw new VaultError("not_found", "Account not found.");
       if (existing.kind !== input.kind) throw new VaultError("invalid", "An account replacement must keep its kind.");
       if (existing.version !== input.expectedVersion)
         throw new VaultError("conflict", "The account revision changed. No secret was overwritten.");

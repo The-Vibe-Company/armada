@@ -172,7 +172,7 @@ test("unavailable or malformed Azure responses do not establish deployment accep
   ])
     await expect(validateAzureModelAccount("openai", value, fetcher)).rejects.toThrow(/not saved/);
 });
-test("authorization and stale or foreign rotations refuse before a billable request", async () => {
+test("authorization and stale, deleted or foreign rotations refuse before a billable request", async () => {
   const f = fixture("member");
   let requests = 0;
   f.options.modelAccountValidator = async () => {
@@ -187,6 +187,9 @@ test("authorization and stale or foreign rotations refuse before a billable requ
   f.existing.push({ id, kind: "openai", version: 2, createdAt: null });
   const stale = await f.post("creds/accounts/set", { scope: "user", id, expectedVersion: 1, kind: "openai", value });
   expect(stale?.status).toBe(409);
+  if (f.existing[0]) f.existing[0].status = "deleted";
+  const deleted = await f.post("creds/accounts/set", { scope: "user", id, expectedVersion: 2, kind: "openai", value });
+  expect(deleted?.status).toBe(404);
   expect(requests).toBe(0);
   expect(f.writes).toHaveLength(0);
 });
