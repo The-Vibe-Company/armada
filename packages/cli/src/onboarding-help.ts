@@ -162,6 +162,37 @@ Select an organization with org use or --org UUID; use an ID from mcp list.
 Output is JSON even without --json. This is not mcp delete.
 Example: armada mcp revoke CONNECTION_UUID --org ORG_UUID
 `,
+  "mcp rename": `Usage: armada mcp rename <connection-id> <name> [--org UUID] [--json]
+Rename an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json.
+Example: armada mcp rename CONNECTION_UUID work-tools --org ORG_UUID
+`,
+  "mcp default": `Usage: armada mcp default <connection-id> on|off [--org UUID] [--json]
+Set whether an MCP connection is a launch default after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+The on/off choice is positional. This is not connection authorization.
+Output is JSON even without --json.
+Example: armada mcp default CONNECTION_UUID on --org ORG_UUID
+`,
+  "mcp enable": `Usage: armada mcp enable <connection-id> [--org UUID] [--json]
+Enable an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json. Check mcp status for authorization state.
+Example: armada mcp enable CONNECTION_UUID --org ORG_UUID
+`,
+  "mcp disable": `Usage: armada mcp disable <connection-id> [--org UUID] [--json]
+Disable an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json. This is not registry deletion.
+Example: armada mcp disable CONNECTION_UUID --org ORG_UUID
+`,
+  "mcp delete": `Usage: armada mcp delete <connection-id> [--org UUID] [--json]
+Delete an MCP registry connection after Armada login and server authorization.
+Use an ID from mcp list; select an organization with org use or --org UUID.
+Output is JSON even without --json. For authorization revocation, see mcp revoke.
+Example: armada mcp delete CONNECTION_UUID --org ORG_UUID
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
