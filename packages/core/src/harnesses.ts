@@ -29,7 +29,7 @@ export const HARNESS_CATALOG = {
   claude: {
     label: "Claude Code",
     skillpackTool: "claude-code",
-    credentialKinds: ["claude_oauth", "anthropic"],
+    credentialKinds: ["claude_oauth", "anthropic", "morph"],
     boatProvider: "claude-code",
     capabilities: { ...COMMON_CAPABILITIES, steer: "native" },
     defaultModel: "claude-opus-5-5",
@@ -43,7 +43,7 @@ export const HARNESS_CATALOG = {
   codex: {
     label: "Codex",
     skillpackTool: "codex",
-    credentialKinds: ["openai", "codex_auth"],
+    credentialKinds: ["openai", "codex_auth", "morph"],
     boatProvider: "codex",
     capabilities: { ...COMMON_CAPABILITIES, steer: "restart" },
     defaultModel: "gpt-6.1-sol",

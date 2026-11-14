@@ -1,5 +1,6 @@
 import { CLAUDE_ENDPOINT_ENV, parseClaudeEndpoint } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "./codex-endpoint.ts";
+import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 import type { Harness, Visibility } from "./contract.ts";
 import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import type { CredentialKind, CredentialScope } from "./database.types.ts";
@@ -112,6 +113,7 @@ interface KindInfo {
 /** Credential delivery metadata; supported model accounts are declared by the harness catalog. */
 export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
   claude_oauth: { name: "claude-oauth", label: "Claude Code OAuth token", env: "CLAUDE_CODE_OAUTH_TOKEN" },
+  morph: { name: "morph", label: "Morph API key", env: "MORPH_API_KEY" },
   anthropic: { name: "anthropic", label: "Anthropic API key", env: "ANTHROPIC_API_KEY" },
   opencode: { name: "opencode", label: "OpenCode API key or custom endpoint", env: "OPENCODE_API_KEY" },
   openai: { name: "openai", label: "OpenAI API key for Codex", env: "OPENAI_API_KEY" },
@@ -436,7 +438,7 @@ export async function resolveCredentials(
         "The selected credential is incompatible, expired, revoked or changed. No fallback was used.",
       );
     }
-    const result = deliver(row.kind, scope, await open(row.valueEnc, encryptionKey));
+    const result = deliver(row.kind, scope, await open(row.valueEnc, encryptionKey), input.harness);
     if (row.id) result.binding = { credentialId: row.id, credentialVersion: row.version ?? 1 };
     return result;
   }
@@ -547,8 +549,21 @@ function open(sealed: Uint8Array, encryptionKey: string | undefined): Promise<st
   });
 }
 
-function deliver(kind: CredentialKind, scope: CredentialScope, value: string): ResolvedCredentials {
+function deliver(kind: CredentialKind, scope: CredentialScope, value: string, harness: Harness): ResolvedCredentials {
   const source = { kind, scope };
+  if (kind === "morph") {
+    const provider = COMPATIBLE_MODEL_PROVIDERS[kind];
+    const claude = harness === "claude";
+    return {
+      env: {
+        ARMADA_MODEL_PROVIDER: kind,
+        [claude ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"]: parseCredentialValue(kind, value),
+        [claude ? CLAUDE_ENDPOINT_ENV : CODEX_ENDPOINT_ENV]: JSON.stringify(claude ? provider.claude : provider.codex),
+      },
+      files: [],
+      sources: [source],
+    };
+  }
   if (kind === "opencode" && value.startsWith("{")) {
     const parsed = JSON.parse(parseCredentialValue(kind, value));
     return {

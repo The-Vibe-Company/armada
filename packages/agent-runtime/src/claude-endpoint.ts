@@ -11,6 +11,10 @@ export function configureClaudeEndpoint(env: Record<string, string>): void {
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
   delete env.ANTHROPIC_AUTH_TOKEN;
   delete env.ANTHROPIC_API_KEY;
+  for (const [alias, model] of Object.entries(endpoint.aliases ?? {})) {
+    env[`ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL`] = model;
+    env[`ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL_NAME`] = model;
+  }
   env.ANTHROPIC_BASE_URL = endpoint.baseUrl;
   env[endpoint.auth === "bearer" ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY"] = key;
 }
