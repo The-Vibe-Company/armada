@@ -114,9 +114,10 @@ describe("the server's rules, said before sending", () => {
   });
 
   test("a refusal is said for this page, not in the vault's generic words", () => {
-    expect(vaultFailure(409, "Application vault version changed.")).toMatch(/Refresh and try again/);
-    expect(vaultFailure(403, "Application vault access denied.")).toMatch(/Only an admin/);
-    expect(vaultFailure(503, "Application vault unavailable.")).toBe("Application vault unavailable.");
+    expect(vaultFailure(409)).toMatch(/Refresh and try again/);
+    expect(vaultFailure(403)).toMatch(/organization admin/);
+    for (const status of [undefined, 502, 503]) expect(vaultFailure(status)).toContain("Reload Variables");
+    expect(vaultFailure(401)).toContain("Sign in again");
   });
 });
 
