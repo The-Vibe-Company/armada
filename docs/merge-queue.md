@@ -30,7 +30,7 @@ gate. Screenshot evidence workflows and their one-off capture scripts are remove
 | `migrations.yml` | No | Main migration changes or explicit operator dispatch only; apply jobs never appear on PRs. |
 | `release.yml` | No | Publishes releases from main/tags or manual dispatch. |
 | `staging-gated-production.yml` | No | Deployment/smoke on main, dispatch or explicit reusable call. |
-| `post-deploy-smoke.yml` | No | Deployment event/manual smoke, not merge validation. |
+| `post-deploy-smoke.yml` | No | Main-only manual pinned smoke, not merge validation. |
 | `production-health.yml` | No | Scheduled/deployment/manual monitoring. |
 | `testflight.yml` | No | Main/manual distribution, not merge validation. |
 
@@ -51,6 +51,39 @@ With the queue required, this enqueues the PR (or enables auto-merge until it is
 eligible); it does not bypass queue validation. Do not use `--admin` or jump the
 queue. A failed candidate is removed: fix the PR, rerun checks, then enqueue again.
 Authors do not need to continually merge main just to satisfy queue freshness.
+
+### Releases do not freeze merges (#1850)
+
+Keep enqueueing and merging green PRs while a publishing release runs. Do not
+pause the queue to protect its staging commit: staging ownership, not main's
+branch tip, protects the exact-release smoke. The release checks out its validated
+SHA and production requires that call's successful smoke; newer main commits do
+not change either source or authorize production.
+
+`staging-gated-production.yml` serializes **all** staging writers with the
+`post-deploy-smoke-staging` job concurrency group (`queue: max`, no cancellation).
+The lock covers migration, server/dashboard deployment, smoke and receipt upload.
+An ordinary main job waits while the release holds that lock. Its outer
+`staging-main-latest` group retains the newest pending ordinary run; the final
+admission guard also skips superseded main SHAs before any mutation. Once the
+release releases staging, ordinary work resumes with the latest main. Pinned
+release/manual calls are not superseded. An ordinary job already holding staging
+finishes before a waiting release; never cancel it to accelerate the release.
+
+This is steady-state operation, not permission to skip the one-time provider
+writer cutover/drain in [releasing](releasing.md#owner-cutover-prerequisites-no-agent-performs-these-operations).
+No ruleset change, new CI job or required check is needed. If an independent Git
+provider writer is still enabled, stop and have the owner complete that cutover;
+a merge freeze is not a substitute for exclusive staging ownership.
+
+Owner acceptance evidence (not yet verified for #1850): during an authorized
+release, record the release run URL and exact SHA, a PR URL and merge timestamp
+inside that run's staging lock interval, and the following latest-main staging
+run URL/SHA. Confirm the release and following ordinary smoke both succeed,
+with no ordinary deployment inside the release lock interval. Record the
+release's successful exact-SHA smoke as the production prerequisite, not an
+ordinary smoke. This observation needs a real release; local checks and merged
+workflow code cannot establish it. Agents must not deploy to manufacture proof.
 
 To roll back, an administrator disables the new queue ruleset and restores the
 previous branch protections/required-check policy. Do not remove CI checks or
