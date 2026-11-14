@@ -1392,3 +1392,26 @@ create/enable acknowledgements and uncertain admissions cannot become a pass;
 unconfirmed cleanup remains a failure with the routine ID and nonce reported.
 This proves one scheduled initial execution, not pause across a later hourly
 boundary, daily-limit exhaustion or the older routine script's entire campaign.
+
+### Cleanup transition races (#1785)
+
+DELETE remains stop-first: a transition/lease refusal is not an accepted future
+operation. The smoke must observe terminal shutdown, then confirm idempotent
+DELETE for the same receipt ID. Do not remove the lifecycle/authorization
+fences or infer deletion from a timeout, `stopping`, or a pending response.
+
+Receipt cleanup preserves parent-before-delegated-child ordering and grants each
+wave up to ten minutes (the parity lifecycle bound), capped by an explicit caller
+deadline. A slow parent cannot spend the child's whole window. The journal
+wrapper reserves both windows independently of the existing 35-minute work and
+five-minute local cleanup allowances; historical reconciliation has its own
+bounded sweep. Standard release modes are bounded to 20 minutes historical,
+35 work, 5 local cleanup, and 20 final reconciliation. The existing staging job
+still has its 85-minute outer cap; no job or required check was added or changed.
+
+An unknown/admitted stop is observed, not blindly dispatched again. Only an
+explicit busy refusal followed by a ready/running observation permits retrying
+the guarded stop API. Transient reads and the same idempotent DELETE can be
+reconciled after lost acknowledgements. Permanent refusals and exhausted hard
+deadlines still retain receipts and fail cleanup. Successful reconciliation
+never converts a failed functional probe into a pass.
