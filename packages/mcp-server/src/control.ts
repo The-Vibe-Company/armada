@@ -1160,12 +1160,22 @@ async function dispatch(
           ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
         },
         async (id, sandboxOrg) => {
-          await dispatch(
+          const stopped = await dispatch(
             "sandbox/stop",
             caller,
             { id, org: sandboxOrg, only_if_idle: true, request_id: crypto.randomUUID() },
             options,
           );
+          if (!stopped || typeof stopped !== "object" || !("status" in stopped) || stopped.status !== "stopped")
+            throw new VaultError(
+              "credential_binding_unsafe",
+              "Stop is still pending; wait for stopped and retry. The account is unchanged.",
+            );
+          if ("preservationNote" in stopped && stopped.preservationNote === "checkpoint_failed_disk_not_retained")
+            throw new VaultError(
+              "credential_binding_unsafe",
+              "Checkpointing failed and retained compute cannot resume. The account is unchanged; inspect preserved work.",
+            );
         },
       );
     case "golden/size-policy": {

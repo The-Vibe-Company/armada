@@ -20,12 +20,14 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
     no_running_turn:
       "No turn is running. Check armada status ID; use armada send ID TEXT to start a turn instead of steer.",
     unsupported: `This operation is not supported by the selected sandbox provider or harness. ${inspect}`,
+    credential_refused:
+      "The selected account cannot be used. Check that it is active, accessible, and supports this agent and current model with armada creds list.",
     credential_binding_required:
       "The sandbox needs an account binding. Ask its owner to inspect armada creds list and use armada bind-credential after stopping safely.",
     credential_binding_unsupported:
       "This native Boat sandbox cannot refresh model accounts safely yet. Launch a new sandbox using the chosen account; existing work is unchanged (tracked by #1579).",
     credential_binding_unsafe:
-      "Wait for the running turn and any start or stop operation to finish, then retry the account change as the sandbox owner.",
+      "Wait for the turn or lifecycle operation to finish and inspect retained-work warnings before retrying as the owner. The account was not changed.",
     provider_not_configured: "The sandbox provider is not configured. Ask an org admin to check armada org setup.",
     rate_limited:
       "Sandbox request rate limited. Wait before retrying; inspect sandbox state first if this was a mutation.",

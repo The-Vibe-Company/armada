@@ -3665,6 +3665,7 @@ export type Database = {
           configuration_enc: string | null;
           runtime_hash: string | null;
           docker_issuer_fence: string | null;
+          pricing_context: Json | null;
         };
         Insert: {
           sandbox_id: string;
@@ -3675,6 +3676,7 @@ export type Database = {
           configuration_enc?: string | null;
           runtime_hash?: string | null;
           docker_issuer_fence?: string | null;
+          pricing_context?: Json | null;
         };
         Update: {
           sandbox_id?: string;
@@ -3685,6 +3687,7 @@ export type Database = {
           configuration_enc?: string | null;
           runtime_hash?: string | null;
           docker_issuer_fence?: string | null;
+          pricing_context?: Json | null;
         };
         Relationships: [
           {

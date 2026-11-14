@@ -268,9 +268,35 @@ export function createSqlData(sql: Sql): DataSource {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
         await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext!(id, context);
       },
-      async recordTurnModel(id, promptId, requestedModel) {
-        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
-        await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModel!(id, promptId, requestedModel);
+      async captureUsagePricingContext(id) {
+        const visible = await sql.query(
+          `select s.id from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
+          [...scope, id],
+        );
+        if (!visible.rows.length) throw new DataError("No such sandbox.");
+        return createSqlSandboxStore(sql, { turnModels: true }).captureUsagePricingContext!(id);
+      },
+      async recordTurnModel(id, promptId, requestedModel, pricingContext) {
+        const visible = await sql.query(
+          `select s.id from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
+          [...scope, id],
+        );
+        if (!visible.rows.length) throw new DataError("No such sandbox.");
+        await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModel!(
+          id,
+          promptId,
+          requestedModel,
+          pricingContext,
+        );
+        // Usage may arrive before the accepted RPC receipt. Reconcile that already stored observation
+        // after its authoritative pre-work context is captured, without changing any existing quote.
+        const rows = await sql.query<{ usage: Pick<SandboxUsage, "turnCount" | "turns"> | null }>(
+          `select s.usage_turns as usage from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
+          [...scope, id],
+        );
+        const usage = rows.rows[0]?.usage;
+        const pending = usage?.turns.filter((turn) => turn.promptId === promptId && !turn.pricing) ?? [];
+        if (usage && pending.length) await sandboxes.recordUsage!(id, usage, { observations: pending });
       },
       async readTurnModel(id, promptId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");

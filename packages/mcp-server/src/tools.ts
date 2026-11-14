@@ -1423,15 +1423,19 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       );
     const { sandbox: found, provider } = await live(args.id, false, selected);
     if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
+    let pricingContext: unknown;
     if (found.credentialId)
-      await measure("send_credentials", () =>
-        context.launchCredentials.resolve(
-          { userId: caller.userId, orgId: found.orgId, role: "member" },
-          found.harness,
-          found.credentialId ?? undefined,
-          found.credentialVersion ?? undefined,
-        ),
-      );
+      pricingContext =
+        (
+          await measure("send_credentials", () =>
+            context.launchCredentials.resolve(
+              { userId: caller.userId, orgId: found.orgId, role: "member" },
+              found.harness,
+              found.credentialId ?? undefined,
+              found.credentialVersion ?? undefined,
+            ),
+          )
+        ).usagePricing ?? null;
     const stored =
       found.model !== null && found.reasoningEffort !== null
         ? { model: found.model, reasoningEffort: found.reasoningEffort }
@@ -1482,7 +1486,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         );
         acknowledged = true;
         try {
-          await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null);
+          await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null, pricingContext);
         } catch {
           try {
             (context.logError ?? console.error)(

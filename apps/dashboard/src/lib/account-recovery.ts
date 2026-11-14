@@ -69,7 +69,7 @@ export function bindFailure(code: string | undefined, message: string): string {
     case "credential_binding_unsupported":
       return "This native Boat sandbox cannot refresh accounts safely yet. Launch a new sandbox with the chosen account; existing work is unchanged (tracked by #1579).";
     case "credential_binding_unsafe":
-      return "Wait for the running turn and any start or stop operation to finish before changing the account.";
+      return "Wait for the turn or lifecycle operation to finish and check retained-work warnings before retrying. The account was not changed.";
     case "conflict":
       return "The sandbox or account changed while you were choosing. Reload and try again.";
     case "forbidden":

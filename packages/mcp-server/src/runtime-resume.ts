@@ -97,6 +97,7 @@ export function createRuntimeResume(
       return prior.receipt;
     } // Historical accepted outcome, not a new activation.
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime resume requires transactional admission.");
+    const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const admitted = await sql.transaction(async (tx) => {
       if (
         !(
@@ -316,7 +317,7 @@ export function createRuntimeResume(
             sourceCheckpoint: { epoch: restore.epoch, watermark: restore.watermark },
           };
           try {
-            await store.recordTurnModel?.(found.id, accepted.promptId, admitted.op.model);
+            await store.recordTurnModel?.(found.id, accepted.promptId, admitted.op.model, pricingContext);
           } catch {
             /* Accepted work continues. */
           }

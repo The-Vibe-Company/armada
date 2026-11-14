@@ -84,8 +84,8 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
           Choose this sandbox's account
         </h2>
         <p className="text-sm text-muted-foreground">
-          Future turns use the account you choose. A ready sandbox is safely stopped first; the next message resumes the
-          same workspace and conversation. Existing usage keeps its original billing record.
+          Future turns use the account you choose. Ready compute is checkpointed and stopped first; history resumes only
+          when retention succeeds. Save work and check warnings. Existing usage keeps its original billing record.
         </p>
       </div>
 
@@ -154,8 +154,9 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
           <AlertDialogHeader>
             <AlertDialogTitle>Use {account?.name} for this sandbox?</AlertDialogTitle>
             <AlertDialogDescription>
-              Future turns run on this {account?.scope === "org" ? "org" : "personal"} {account?.kindLabel}. A ready
-              sandbox is safely stopped first; workspace and conversation history are kept.
+              Future turns run on this {account?.scope === "org" ? "org" : "personal"} {account?.kindLabel}. Ready
+              compute uses normal checkpoint/stop first. Save work: failed checkpointing can prevent resume. The account
+              stays unchanged if that failure is reported.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

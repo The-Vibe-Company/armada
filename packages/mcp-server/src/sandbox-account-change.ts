@@ -44,7 +44,8 @@ export function createSandboxAccountChange(
       await db.query<Target>(
         `select s.*,
       coalesce(s.activity_until>=now(),false) or coalesce(s.reconcile_lease_until>=now(),false) as leased
-      from public.sandboxes s where s.id=$1 ${lock ? "for update" : ""}`,
+      from public.sandboxes s where s.id=$1
+      and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) ${lock ? "for update" : ""}`,
         [id],
       )
     ).rows[0];

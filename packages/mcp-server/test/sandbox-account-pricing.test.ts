@@ -75,8 +75,9 @@ test("account changes price new turns under the subscription without rewriting o
   await createSandboxAccountChange(sql, credentials, async () => {
     throw Error("not legacy");
   })(caller, { id, credentialId: subscription });
-  await evidence.recordTurnModel!(id, "new", "gpt-6.1-sol");
-  await record("new", 2);
+  const newAdmission = await store.captureUsagePricingContext!(id);
+  await record("new", 2); // Native usage may arrive before its accepted RPC receipt.
+  await store.recordTurnModel!(id, "new", "gpt-6.1-sol", newAdmission);
   await record("old-delayed", 3);
   const after = (
     await db.query<{ usage_turns: { turns: TurnTokenUsage[] } }>("select usage_turns from sandboxes where id=$1", [id])

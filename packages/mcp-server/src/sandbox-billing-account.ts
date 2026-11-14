@@ -16,6 +16,7 @@ export function createSandboxBillingAccount(sql: Sql) {
        join public.credentials c on c.id=s.credential_id
        join public.members m on m.org_id=s.org_id and m.user_id=$2
        where s.id=$1 and s.owner_id=$2 and s.org_id=any($3::uuid[])
+       and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
        and ((c.scope='user' and c.owner_id=$2) or (c.scope='org' and c.owner_id=s.org_id))`,
         [id, caller.userId, caller.orgs.map((membership) => membership.orgId)],
       )

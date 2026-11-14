@@ -1,6 +1,7 @@
 import type { AgentEvent, Sql } from "@armada/core";
 import { HARNESS_KINDS, PROMPT_STATUSES } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
+import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
@@ -271,6 +272,22 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           (saved.length === 1 && receipt.conversationId !== saved[0])
         )
           deny();
+        const pricing = (
+          await tx.query<{ context: unknown; captured: boolean }>(
+            "select pricing_context as context,pricing_context is not null as captured from public.runtime_enrolments where sandbox_id=$1 and epoch=$2",
+            [sandboxId, queued.epoch],
+          )
+        ).rows[0];
+        await createSqlData(tx)({
+          userId: actor.userId,
+          orgs: [{ orgId: actor.orgId, role: "member" }],
+          via: "service",
+        }).sandboxes.recordTurnModel!(
+          sandboxId,
+          receipt.promptId,
+          sandbox.model,
+          pricing?.captured ? pricing.context : null,
+        );
         await tx.query(
           `update public.sandboxes s set task_prompt_id=$2 where s.id=$1 and exists (
            select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id=$3 and c.epoch=$4
