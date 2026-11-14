@@ -5,6 +5,11 @@ import { run } from "../src/run.ts";
 test("nested onboarding help is focused and performs no authenticated or secret I/O", async () => {
   for (const command of [
     "org setup",
+    "mcp list",
+    "mcp catalog",
+    "mcp status",
+    "mcp sandbox-connections",
+
     "account status",
     "account logout",
     "logout",
@@ -160,6 +165,8 @@ test("help detection leaves malformed operations and literal payloads to their p
     ["logout", "extra", "-h"],
     ["host", "show", "workstation", "--help"],
     ["host", "limits", "--memory", "-h"],
+    ["mcp", "status", "connection-id", "--help"],
+    ["mcp", "sandbox-connections", "--org", "-h"],
     ["constructor", "--help"],
     ["toString", "-h"],
   ])

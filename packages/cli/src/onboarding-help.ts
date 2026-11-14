@@ -131,6 +131,31 @@ This does not revoke service tokens or remove ARMADA_TOKEN from your environment
 To sign out a personal session remotely first, use armada account logout.
 Example: armada logout
 `,
+  "mcp list": `Usage: armada mcp list [--org UUID] [--json]
+List visible MCP registry connections after Armada login and server authorization.
+Select an organization with armada org use or --org UUID.
+Output is JSON even without --json. This is not a sandbox's bound-connection list.
+Example: armada mcp list --org ORG_UUID --json
+`,
+  "mcp catalog": `Usage: armada mcp catalog [--org UUID] [--json]
+Read the MCP service catalog after Armada login and server authorization.
+Select an organization with armada org use or --org UUID.
+Output is JSON even without --json; this command does not add a connection.
+Example: armada mcp catalog --org ORG_UUID --json
+`,
+  "mcp status": `Usage: armada mcp status <connection-id> [--org UUID] [--json]
+Read an MCP connection's status after Armada login and server authorization.
+Use a connection ID from mcp list, not a sandbox ID.
+Select an organization with armada org use or --org UUID. Output is always JSON.
+Example: armada mcp status CONNECTION_UUID --org ORG_UUID --json
+`,
+  "mcp sandbox-connections": `Usage: armada mcp sandbox-connections <sandbox-UUID> [--org UUID] [--json]
+Read actual bound MCP connection metadata for a sandbox after Armada login.
+Requires server authorization and an organization selected with org use or --org UUID.
+Use a sandbox UUID, not a registry connection ID. Output is always JSON.
+This command does not mutate bindings.
+Example: armada mcp sandbox-connections SANDBOX_UUID --org ORG_UUID --json
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
