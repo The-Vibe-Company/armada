@@ -88,6 +88,7 @@ What CI does not do, and must not be added back:
 - no timing or budget check: the coordinator measures the verdict time.
 
 Rules for a test:
+- Fixtures must never contain literals matching real token patterns; use short underscore-separated placeholders, and construct scanner-positive token-shaped bytes only at runtime.
 - one test per behaviour, at the cheapest boundary that proves it; no network, no wall-clock wait, no child process when a function call proves the same thing;
 - a test that takes more than one second is rewritten or deleted;
 - a test that fails intermittently is deleted the day it is seen, not retried, not quarantined; if the behaviour matters, a cheaper deterministic test replaces it;

@@ -4,6 +4,7 @@ import {
   createSqlVaultStore,
   GoldenBuildJobs,
   type GoldenBuildStatus,
+  goldenBuildFailureText,
   ProviderError,
 } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
@@ -625,6 +626,51 @@ test.each(["create", "rebuild", "builder-evidence", "builder-phase", "live-lease
     }
   },
 );
+
+test("scan location survives requested-directory mapping, durable status and public failure formatting", async () => {
+  const s = await fixture();
+  try {
+    const object = "a".repeat(40),
+      commit = "b".repeat(40);
+    const exec = s.boat.provider.exec;
+    s.boat.provider.exec = async (request) =>
+      request.command.includes("cat-file --batch-all-objects")
+        ? {
+            detached: false,
+            exitCode: 97,
+            timedOut: false,
+            truncated: false,
+            stdout: `ARMADA_SCAN_LOCATION 1 git_object ${object} ${commit}\nARMADA_SCAN_MATCH git_object git_storage 1\n`,
+            stderr: "",
+          }
+        : exec(request);
+    const token = await s.token(s.people.admin);
+    const response = await s.http(token, "golden/create", {
+      name: "scan-location",
+      org: s.people.org,
+      repos: ["acme/web"],
+      idempotencyKey: crypto.randomUUID(),
+    });
+    expect(response.status).toBe(202);
+    const job = (await response.json()) as GoldenBuildStatus;
+    await s.builds.runOne();
+    const statusResponse = await s.http(token, "golden/build/status", { jobId: job.jobId });
+    expect(statusResponse.status).toBe(200);
+    const status = (await statusResponse.json()) as GoldenBuildStatus;
+    expect(status).toMatchObject({ state: "failed", phase: "secret_scan" });
+    const where = `repository web, git object ${object}, commit ${commit}`;
+    expect(status.failureReason).toContain(where);
+    expect(goldenBuildFailureText(status)).toContain(where);
+    const stored = (
+      await s.db.query<{ failure_reason: string | null }>("select failure_reason from golden_build_jobs where id=$1", [
+        job.jobId,
+      ])
+    ).rows[0];
+    expect(status.failureReason).toEqual(stored?.failure_reason);
+  } finally {
+    await s.close();
+  }
+});
 
 // Token resolution in these fixtures must not leak audit records to stdout.
 captureGitHubAuditLogs();

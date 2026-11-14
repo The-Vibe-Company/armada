@@ -82,6 +82,7 @@ function withIsolatedRoots(
       // process oracle below retains the actual /proc boundary and broker rejection.
       .replaceAll("/proc/[0-9]*/comm", `${liveProcesses ? "/proc" : join(roots.tmp, "proc")}/[0-9]*/comm`)
       .replace("roots='/home/user /root /tmp'", `roots='${roots.home} ${roots.root} ${roots.tmp}'`)
+      .replaceAll('"/home/user/', `"${roots.home}/`)
       .replace("    /root/*)", `    ${roots.root}/*)`)
       .replaceAll("/home/user/.armada", `${roots.home}/.armada`)
       .replaceAll("/root/.armada", `${roots.root}/.armada`)
@@ -566,6 +567,127 @@ linuxScanTest.each([".armada-helper/spool", ".armada/github-generation", ".armad
       expect(runAgainst(script, world.roots).status).toBe(97);
     } finally {
       rmSync(world.base, { recursive: true, force: true });
+    }
+  },
+);
+
+test.each([
+  ["1 git_object " + "a".repeat(40) + " " + "b".repeat(40), "repository armada, git object"],
+  ["1 file_content - -", "repository armada, file content"],
+  ["1 path_name - -", "repository armada, path name"],
+  ["0 file_content - -", "outside configured repositories"],
+  ["17 file_content - -", "on disk"],
+  ["2 file_content - -", "on disk"],
+  ["1 git_object opaque-value -", "on disk"],
+  ["1 git_object " + "a".repeat(40) + " opaque-value", "on disk"],
+])("scan failure accepts only bounded location metadata (%s)", async (record, expected) => {
+  const calls: ExecRequest[] = [];
+  let error: unknown;
+  try {
+    await scanGoldenSandbox(
+      provider({ exitCode: 97, stdout: "ARMADA_SCAN_LOCATION " + record + "\nopaque-value" }, calls),
+      "builder",
+      { repositories: ["armada"] },
+    );
+  } catch (caught) {
+    error = caught;
+  }
+  expect(error).toMatchObject({ code: "setup_failed", safeMessage: expect.stringContaining(expected) });
+  expect(String(error)).not.toContain("opaque-value");
+});
+
+test("a token-shaped repository name is not eligible for public scan diagnostics", async () => {
+  const token = "ghp_" + "Z".repeat(36);
+  const calls: ExecRequest[] = [];
+  await expect(scanGoldenSandbox(provider({}, calls), "builder", { repositories: [token] })).rejects.toThrow(
+    "Invalid repository directory",
+  );
+  expect(calls).toEqual([]);
+});
+
+linuxScanTest.each(["file_content", "path_name", "outside_repository"])(
+  "scan reports the configured repository and %s without its matched value or filename",
+  async (surface) => {
+    const { base, roots } = sandbox();
+    const token = "ghp_" + "Q".repeat(36);
+    try {
+      const repo = join(surface === "outside_repository" ? roots.tmp : roots.home, "armada");
+      mkdirSync(repo);
+      writeFileSync(
+        join(repo, surface === "path_name" ? token : "private-filename"),
+        surface !== "path_name" ? token : "",
+      );
+      let failure: unknown;
+      const executor = {
+        exec: async (request: ExecRequest) => {
+          const result = spawnSync("bash", ["-c", withIsolatedRoots(request.command, roots)], { encoding: "utf8" });
+          expect(result.status).toBe(97);
+          expect(result.stdout).toContain(
+            `ARMADA_SCAN_LOCATION ${surface === "outside_repository" ? 0 : 1} ${surface === "path_name" ? "path_name" : "file_content"} - -`,
+          );
+          expect(result.stdout + result.stderr).not.toContain(token);
+          expect(result.stdout + result.stderr).not.toContain("private-filename");
+          return { detached: false, exitCode: result.status, stdout: result.stdout, stderr: result.stderr };
+        },
+      } as unknown as Provider;
+      try {
+        await scanGoldenSandbox(executor, "builder", { repositories: ["armada"] });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        safeMessage: expect.stringContaining(
+          surface === "outside_repository"
+            ? "outside configured repositories, file content"
+            : `repository armada, ${surface === "file_content" ? "file content" : "path name"}`,
+        ),
+      });
+      expect(String(failure)).not.toContain(token);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  },
+);
+
+linuxScanTest(
+  "historic removed fixture reports repository, blob and introducing commit through the public failure",
+  async () => {
+    const { base, roots } = sandbox();
+    const token = "ghu_" + "J".repeat(36);
+    try {
+      const repo = join(roots.home, "armada");
+      mkdirSync(repo);
+      git(repo, "init", "-q");
+      git(repo, "config", "user.email", "fixture@example.com");
+      git(repo, "config", "user.name", "Fixture");
+      writeFileSync(join(repo, "fixture.txt"), token);
+      git(repo, "add", "fixture.txt");
+      git(repo, "commit", "-qm", "add fixture");
+      const introducing = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
+      const object = spawnSync("git", ["rev-parse", "HEAD:fixture.txt"], { cwd: repo, encoding: "utf8" }).stdout.trim();
+      git(repo, "rm", "-q", "fixture.txt");
+      git(repo, "commit", "-qm", "remove fixture");
+      let failure: unknown;
+      const executor = {
+        exec: async (request: ExecRequest) => {
+          const result = spawnSync("bash", ["-c", withIsolatedRoots(request.command, roots)], { encoding: "utf8" });
+          expect(result.status).toBe(97);
+          expect(result.stdout).toContain(`ARMADA_SCAN_LOCATION 1 git_object ${object} ${introducing}`);
+          expect(result.stdout + result.stderr).not.toContain(token);
+          return { detached: false, exitCode: result.status, stdout: result.stdout, stderr: result.stderr };
+        },
+      } as unknown as Provider;
+      try {
+        await scanGoldenSandbox(executor, "builder", { repositories: ["armada"] });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        safeMessage: expect.stringContaining(`repository armada, git object ${object}, commit ${introducing}`),
+      });
+      expect(String(failure)).not.toContain(token);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
     }
   },
 );
