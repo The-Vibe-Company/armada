@@ -527,6 +527,14 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
   expect(detail.handled && (detail.result as { statusMessage?: string }).statusMessage).toBe(
     "Paused — wakes on your next message",
   );
+  // A smaller hardware report can invalidate a formerly valid manual policy.
+  await db.query("update public.docker_hosts set machine_cpus=2,machine_memory_bytes=$2,sandbox_cpus=4 where id=$1", [
+    f.hostId,
+    6 * 1024 ** 3,
+  ]);
+  await expect(service.resume(f.actor, f.sandbox.id, randomUUID())).rejects.toThrow("Host hardware changed");
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
+  await db.query("update public.docker_hosts set sandbox_cpus=null where id=$1", [f.hostId]);
   const resumeId = randomUUID();
   await hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });
   const occupied = await reservations.reserve(f.actor, {

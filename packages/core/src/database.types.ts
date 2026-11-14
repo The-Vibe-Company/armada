@@ -390,6 +390,10 @@ export type Database = {
           name: string | null;
           machine_cpus: number | null;
           machine_memory_bytes: number | null;
+          sandbox_cpus: number | null;
+          sandbox_memory_bytes: number | null;
+          max_sandboxes: number | null;
+          resource_policy_version: number | null;
         };
         Insert: {
           id: string;
@@ -407,6 +411,10 @@ export type Database = {
           name?: string | null;
           machine_cpus?: number | null;
           machine_memory_bytes?: number | null;
+          sandbox_cpus?: number | null;
+          sandbox_memory_bytes?: number | null;
+          max_sandboxes?: number | null;
+          resource_policy_version?: number | null;
         };
         Update: {
           id?: string;
@@ -424,6 +432,10 @@ export type Database = {
           name?: string | null;
           machine_cpus?: number | null;
           machine_memory_bytes?: number | null;
+          sandbox_cpus?: number | null;
+          sandbox_memory_bytes?: number | null;
+          max_sandboxes?: number | null;
+          resource_policy_version?: number | null;
         };
         Relationships: [
           {

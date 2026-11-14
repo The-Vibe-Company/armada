@@ -3,6 +3,7 @@ import {
   type DockerHostRegistrationResponse,
   dockerHostResourceDisplay,
   GoldenError,
+  parseDockerMemory,
   isRecord as record,
   validDockerHostResources,
 } from "@armada/core";
@@ -12,7 +13,7 @@ import type { AuthIo } from "./auth-commands.ts";
 
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const HELP =
-  "Usage: armada host add [--name NAME] [--org UUID] | list [--json] [--org UUID] | show HOST [--json] [--org UUID] | revoke UUID [--org UUID]\n";
+  "Usage: armada host add [--name NAME] [--org UUID] | list [--json] [--org UUID] | show HOST [--json] [--org UUID] | limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID] | revoke UUID [--org UUID]\n";
 const invalid = (message: string): never => {
   throw new GoldenError("invalid_config", message);
 };
@@ -66,19 +67,21 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
     auth.out(HELP);
     return operation ? 0 : 2;
   }
-  const args = parseArgs(rest);
+  const args = parseArgs(rest, ["--cpus", "--memory", "--max-sandboxes"], ["--auto"]);
   const allowed =
     operation === "add"
       ? ["--org", "--name"]
       : operation === "list" || operation === "show"
         ? ["--org", "--json"]
-        : operation === "revoke"
-          ? ["--org"]
-          : [];
+        : operation === "limits"
+          ? ["--org", "--cpus", "--memory", "--max-sandboxes", "--auto"]
+          : operation === "revoke"
+            ? ["--org"]
+            : [];
   if (
     !allowed.length ||
     [...args.options.keys()].some((key) => !allowed.includes(key)) ||
-    args.positionals.length !== (["revoke", "show"].includes(operation) ? 1 : 0)
+    args.positionals.length !== (["revoke", "show", "limits"].includes(operation) ? 1 : 0)
   )
     return invalid(HELP.trim());
   const org = single(args, "--org");
@@ -109,6 +112,44 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
         );
       }
     }
+    return 0;
+  }
+  if (operation === "limits") {
+    const patch: { cpus?: number; memoryBytes?: number; maxSandboxes?: number; auto?: true } = {};
+    if (args.options.has("--auto")) {
+      if (["--cpus", "--memory", "--max-sandboxes"].some((key) => args.options.has(key)))
+        return invalid("--auto resets all limits and cannot be combined with overrides.");
+      patch.auto = true;
+    } else {
+      const cpus = single(args, "--cpus");
+      const memory = single(args, "--memory");
+      const max = single(args, "--max-sandboxes");
+      if (cpus !== undefined) {
+        patch.cpus = Number(cpus);
+        if (!Number.isFinite(patch.cpus) || patch.cpus < 0.01) return invalid("--cpus must be at least 0.01.");
+      }
+      if (memory !== undefined) {
+        try {
+          patch.memoryBytes = parseDockerMemory(memory);
+        } catch (error) {
+          return invalid(error instanceof Error ? error.message : "Invalid memory.");
+        }
+      }
+      if (max !== undefined) {
+        patch.maxSandboxes = Number(max);
+        if (!Number.isSafeInteger(patch.maxSandboxes) || patch.maxSandboxes < 1)
+          return invalid("--max-sandboxes must be a positive integer.");
+      }
+      if (!Object.keys(patch).length) return invalid("Provide --cpus, --memory, --max-sandboxes or --auto.");
+    }
+    const resolved = await resolveHost(client, org, hostId!);
+    await client.request("/api/v1/docker/hosts/limits", {
+      method: "POST",
+      body: JSON.stringify({ org, hostId: resolved, ...patch }),
+    });
+    auth.out(
+      "Host limits updated. Use armada host show to inspect the policy. Container changes apply on the next start or resume.\n",
+    );
     return 0;
   }
   if (operation === "revoke") {
