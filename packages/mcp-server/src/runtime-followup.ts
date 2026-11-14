@@ -44,7 +44,7 @@ export function createRuntimeFollowup(
         (found.provider === "boat" && found.boatRuntime) ||
         (found.provider === "modal" && found.runtimeTransport === "dialout")
       ) ||
-      (found.harness !== "codex" && !(found.provider === "boat" && found.harness === "claude"))
+      (found.harness !== "codex" && found.harness !== "claude")
     )
       throw new VaultError("not_found", "No owned runtime sandbox.");
     if (input.model !== undefined || input.reasoning_effort !== undefined)

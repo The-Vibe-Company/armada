@@ -266,13 +266,13 @@ export async function launchSandbox(
   if (
     runtime &&
     (!["boat", "modal"].includes(provider.id) ||
-      (harness !== "codex" && !(provider.id === "boat" && harness === "claude")) ||
+      (harness !== "codex" && harness !== "claude") ||
       options.privateParent ||
       options.privateVisibility)
   )
     throw new LaunchError(
       "invalid_request",
-      "The experimental runtime supports ordinary Boat Codex/Claude or Modal Codex workers only.",
+      "The experimental runtime supports ordinary Boat or Modal Codex/Claude workers only.",
     );
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);

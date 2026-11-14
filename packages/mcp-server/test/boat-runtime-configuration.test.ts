@@ -220,29 +220,31 @@ test.each([
   });
 });
 
-test.each(["key", "token", "endpoint", "mixed", "wrong-harness"] as const)(
-  "Claude private configuration projects only selected harness credentials (%s)",
-  async (mode) => {
-    const f = fixture();
-    f.sandbox.harness = "claude";
-    Object.assign(f.manifest.harnesses, { claude: { files: [{ path: "bin/claude" }] } });
-    f.credentials.env = mode === "token" ? { CLAUDE_CODE_OAUTH_TOKEN: f.key } : { ANTHROPIC_API_KEY: f.key };
-    if (mode === "endpoint")
-      f.credentials.env.ARMADA_CLAUDE_ENDPOINT = JSON.stringify({
-        version: 1,
-        baseUrl: "https://model.example/anthropic",
-        auth: "api-key",
-      });
-    if (mode === "mixed") f.credentials.env.CLAUDE_CODE_OAUTH_TOKEN = f.key;
-    if (mode === "wrong-harness") f.credentials.env = { OPENAI_API_KEY: f.key };
-    if (mode === "mixed" || mode === "wrong-harness") {
-      await expect(boatRuntimeConfiguration(f)).rejects.toThrow("Boat runtime configuration is unavailable.");
-      return;
-    }
-    const plan = await boatRuntimeConfiguration(f);
-    expect(plan.configuration.selectedHarness).toBe("claude");
-    expect(plan.configuration.claudeEnv).toMatchObject(f.credentials.env);
-    expect(plan.configuration.codexEnv.OPENAI_API_KEY).toBeUndefined();
-    expect(plan.configuration.codexAuthJson).toBeUndefined();
-  },
-);
+for (const provider of ["boat", "modal"] as const)
+  test.each(["key", "token", "endpoint", "mixed", "wrong-harness"] as const)(
+    `${provider} Claude private configuration projects only selected harness credentials (%s)`,
+    async (mode) => {
+      const f = fixture();
+      f.sandbox.provider = provider;
+      f.sandbox.harness = "claude";
+      Object.assign(f.manifest.harnesses, { claude: { files: [{ path: "bin/claude" }] } });
+      f.credentials.env = mode === "token" ? { CLAUDE_CODE_OAUTH_TOKEN: f.key } : { ANTHROPIC_API_KEY: f.key };
+      if (mode === "endpoint")
+        f.credentials.env.ARMADA_CLAUDE_ENDPOINT = JSON.stringify({
+          version: 1,
+          baseUrl: "https://model.example/anthropic",
+          auth: "api-key",
+        });
+      if (mode === "mixed") f.credentials.env.CLAUDE_CODE_OAUTH_TOKEN = f.key;
+      if (mode === "wrong-harness") f.credentials.env = { OPENAI_API_KEY: f.key };
+      if (mode === "mixed" || mode === "wrong-harness") {
+        await expect(runtimeConfiguration(f, provider)).rejects.toMatchObject({ code: "unavailable" });
+        return;
+      }
+      const plan = await runtimeConfiguration(f, provider);
+      expect(plan.configuration.selectedHarness).toBe("claude");
+      expect(plan.configuration.claudeEnv).toMatchObject(f.credentials.env);
+      expect(plan.configuration.codexEnv.OPENAI_API_KEY).toBeUndefined();
+      expect(plan.configuration.codexAuthJson).toBeUndefined();
+    },
+  );

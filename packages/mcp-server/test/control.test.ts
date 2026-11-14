@@ -2742,12 +2742,13 @@ test.each([false, true])(
   "Modal runtime launch prepares explicit/default MCP and skills before its first prompt (%s)",
   async (fromDefaults) => {
     await withServer(async ({ db, options }) => {
+      const harness = fromDefaults ? "claude" : "codex";
       const org = await options.store.createOrg("Modal runtime", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
-      await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'openai',$2)", [
-        STAN,
-        await encryptSecret("fixture-model-key", KEY),
-      ]);
+      await db.query(
+        "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,$3::public.credential_kind,$2)",
+        [STAN, await encryptSecret("fixture-model-key", KEY), fromDefaults ? "anthropic" : "openai"],
+      );
       await db.query(
         `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
        values($1,$2,'modal-runtime','org','modal','master','image','workspace','main','app','{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":["must not run"]}')`,
@@ -2767,7 +2768,7 @@ test.each([false, true])(
         org: org.id,
         golden: "modal-runtime",
         provider: "modal",
-        harness: "codex",
+        harness,
         prompt: "reply",
         runtimeVersion: 1,
         runtimeTransport: "dialout",
@@ -2830,7 +2831,7 @@ test.each([false, true])(
         { ...body, skipSkillDefaults: "invalid" },
         { ...body, skills: "invalid" },
         { ...body, connections: ["invalid"] },
-        { ...body, harness: "claude" },
+        { ...body, harness: "opencode" },
         { ...body, runtimeTransport: undefined },
       ])
         expect((await request(bad))?.status).toBe(400);

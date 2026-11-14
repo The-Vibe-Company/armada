@@ -1,4 +1,4 @@
-# Modal: enrolled Codex lifecycle (#1421)
+# Modal: enrolled Codex/Claude lifecycle (#1421)
 
 This is a coordinator-owned, **billable staging check**, not a worker task or a
 production cutover. It creates exactly one Modal sandbox, never retries an
@@ -359,3 +359,28 @@ after epoch replacement or membership/pin/stop/ownership changes during refresh.
 Live subscription refresh acceptance remains coordinator-owned and is not
 claimed by these tests. OpenCode, workspace setup, default cutover and tunnel
 deletion remain separate #1421 work.
+
+## Claude lifecycle extension
+
+Add `--claude` to the same coordinator command to select the enrolled Claude
+Agent SDK driver instead of Codex. Use the existing authorized Claude API-key,
+Claude OAuth-token or custom Claude endpoint account and a matching Claude model
+in `ARMADA_RUNTIME_CREDENTIAL_ID` / `ARMADA_RUNTIME_MODEL`. Do not reuse a Codex
+account. The smoke preflights `modalRuntime.claudeVersion:1` before allocation.
+For `--variables`, the existing pinned template must select Claude and that same
+account; mixed template/request harnesses are rejected before allocation.
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --claude --usage --variables --skills --mcp --github --resume
+```
+
+This still creates one sandbox, restores it once, and requires every existing
+answer/session/archive/epoch/checkpoint proof. Claude readables go only to the
+selected Claude environment, not the unselected Codex driver. No new credential,
+configuration mutation, provider runtime, pricing formula or manual artifact
+publication is required. The matching schema must include
+`20261114013200_modal_runtime_claude.sql` before opting in. Native Modal launches
+are unchanged. Live Claude acceptance remains unproven until the coordinator
+records the smoke receipt. Codex subscription ownership is described above;
+OpenCode remains a later slice. Default cutover and tunnel deletion are not
+authorized here.
