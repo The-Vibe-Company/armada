@@ -2,7 +2,6 @@
 
 import { parseDockerHostList } from "../apps/dashboard/src/lib/docker-hosts.ts";
 import { dockerLaunchOption } from "../apps/dashboard/src/lib/docker-launch.ts";
-import { readOtto } from "../apps/dashboard/src/lib/otto.ts";
 import { parseSandboxListMetadata } from "../apps/dashboard/src/lib/sandbox-access.ts";
 import { stagingSmokeCases } from "./staging-smoke-policy.ts";
 
@@ -103,26 +102,6 @@ export async function dashboardReadSmoke(env: NodeJS.ProcessEnv, io: Io): Promis
           if (!payload.hasMore) break;
           if (page >= 100) fail("incomplete_read");
         }
-      }
-    }),
-    step("otto", async () => {
-      const signal = AbortSignal.timeout(PAGE_BOUND_MS);
-      for (const orgId of orgs) {
-        const result = await readOtto({
-          serverUrl,
-          token,
-          orgId,
-          fetch: Object.assign(
-            (input: Parameters<typeof fetch>[0], init?: RequestInit) =>
-              io.fetch(String(input), {
-                ...init,
-                signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
-              }),
-            { preconnect: () => {} },
-          ),
-        });
-        if (result.state !== "ready") fail("otto_read_failed");
-        if (result.snapshot.truncated) fail("incomplete_read");
       }
     }),
     step("hosts", async () => {

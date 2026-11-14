@@ -125,7 +125,6 @@ describe("database", () => {
         where n.nspname = 'public' and c.relkind = 'r'
         order by 1
       `);
-      // otto_ticket_publications is server-only: intentionally no JWT grant in this allowlist.
       expect(granted.rows.map((row) => row.grant)).toEqual([
         "application_secrets SELECT(created_at,epoch,expires_at,id,name,org_id,owner_id,scope,status,updated_at,version)",
         "application_vault_audit SELECT",
@@ -166,13 +165,6 @@ describe("database", () => {
         "orgs DELETE",
         "orgs SELECT(created_at,id,name)",
         "orgs UPDATE(boat_api_key_enc,name)",
-        "otto_engine_preferences SELECT",
-        "otto_interview_revisions SELECT",
-        "otto_interviews SELECT",
-        "otto_objective_messages SELECT(body,created_at,id,objective_id,org_id,owner_id,revision)",
-        "otto_objectives SELECT(created_at,id,org_id,owner_id,repository,request,revision,updated_at)",
-        "otto_ticket_graphs SELECT(brief_revision,created_at,graph,objective_id,org_id,owner_id)",
-        "otto_waits SELECT(choices,connection_url,created_at,deadline_at,dedupe_key,default_choice,id,kind,objective_id,org_id,owner_id,phase,question,reason,reminded_at,resolution,status)",
         "personal_skill_defaults SELECT",
         "readable_variables SELECT",
         "routine_runs SELECT(configuration_version,created_at,id,missed_count_capped,missed_intervals,org_id,owner_id,reason,request_key,routine_id,scheduled_due_at,state,task_checked_at,task_state,template_request_id,updated_at)",
@@ -219,7 +211,6 @@ describe("database", () => {
         }
         if (!secretName.test(column.column_name)) continue;
         if (
-          id === "otto_engine_preferences.credential_id" ||
           id === "sandboxes.credential_id" ||
           id === "sandboxes.credential_version" ||
           id === "modal_server_harnesses.credential_id" ||

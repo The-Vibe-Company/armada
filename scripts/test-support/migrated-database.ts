@@ -27,12 +27,9 @@ export async function openMigratedDatabase(): Promise<PGlite> {
   }
 }
 
-/** Owner-only maintenance of a disposable fixture; all guards return before a test runs. */
+/** Reset disposable fixture rows atomically. */
 export async function resetMigratedDatabaseRows(db: PGlite, reset: string): Promise<void> {
   await db.transaction(async (tx) => {
-    // Preserve UPDATE/DELETE enforcement, and atomically restore TRUNCATE enforcement.
-    await tx.exec("alter table public.otto_facts disable trigger otto_facts_no_truncate");
     await tx.exec(reset);
-    await tx.exec("alter table public.otto_facts enable trigger otto_facts_no_truncate");
   });
 }

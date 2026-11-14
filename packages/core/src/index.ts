@@ -279,21 +279,6 @@ export {
   parseConnectionModels,
   parseOpenCodeEndpoint,
 } from "./opencode-endpoint.ts";
-export type { OttoEngine, OttoEnginePreflight } from "./otto/engine.ts";
-export type { OttoMechanicalEvidence } from "./otto/evidence.ts";
-export type {
-  OttoCompleteness,
-  OttoFact,
-  OttoOrphan,
-  OttoPage,
-  OttoResource,
-  OttoTask,
-  OttoTruth,
-} from "./otto/index.ts";
-export type { OttoInterview, OttoInterviewDecision, OttoInterviewRound } from "./otto/interview.ts";
-export type { OttoObjective, OttoObjectiveMessage } from "./otto/objectives.ts";
-export * from "./otto/tickets.ts";
-export type { OttoWait, OttoWaitChoice, OttoWaitInput, OttoWaitKind, OttoWaitReason } from "./otto/waits.ts";
 export {
   dedupeEvents,
   type PromptOutcome,

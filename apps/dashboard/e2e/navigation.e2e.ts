@@ -22,7 +22,7 @@ for (const phone of [false, true])
       }
       await expect(nav.getByRole("heading", { level: 2 })).toHaveText(["Run", "Library", "Providers", "Account"]);
       for (const [label, items] of [
-        ["Run", ["Sandboxes", "Otto", "Routines", "Templates"]],
+        ["Run", ["Sandboxes", "Routines", "Templates"]],
         ["Library", ["Snapshots", "Skills", "Tools", "Variables"]],
         ["Providers", ["Overview"]],
         ["Account", ["Models", "Settings"]],

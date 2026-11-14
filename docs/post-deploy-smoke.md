@@ -609,17 +609,16 @@ admin key, or session secret.
 
 Only the existing `ARMADA_URL`, `ARMADA_TOKEN` and `ARMADA_SMOKE_CASES` are needed.
 Every distinct case org is checked. Named steps are `dashboard_configuration`,
-`dashboard_sandboxes`, `dashboard_otto`, `dashboard_hosts`, and
+`dashboard_sandboxes`, `dashboard_hosts`, and
 `dashboard_launch_options`. Each read step has a 15-second bound and reports only
 pass, elapsed time and a closed failure code; response bodies and credentials
-are never logged. Non-2xx, error states, malformed/skipped rows, incomplete Otto
+are never logged. Non-2xx, error states, malformed/skipped rows, incomplete
 pagination and slow answers fail, rather than silently disabling a probe.
-Otto and Docker host list routes must be enabled on staging.
+Docker host list routes must be enabled on staging.
 
 Sandboxes calls `sandbox/list` and imports the dashboard's own
 `parseSandboxListMetadata`, rejecting skipped rows even though the UI tolerates
-them. Otto uses the dashboard's `readOtto` (summary, tasks, resources, orphans,
-facts and pagination). Hosts and launch options use the same dashboard parsers.
+them. Hosts and launch options use the same dashboard parsers.
 These are read-only API calls; no compute or account is created.
 
 **Uncovered:** actual HTML rendering, hydration, session cookies, selected-org
@@ -750,8 +749,7 @@ a promise that it continuously restarts running deployments.
 
 Use [runtime validation](runtime-startup.md#validation),
 [Boat runtime](boat-runtime-first-prompt.md#staging-acceptance),
-[Docker hosts](docker-host-daemon.md), [OpenCode](runtime/opencode-modal.md) and
-[Otto](otto-staging.md) for their implemented feature gates and real-provider checks.
+[Docker hosts](docker-host-daemon.md) and [OpenCode](runtime/opencode-modal.md) for their implemented feature gates and real-provider checks.
 Synthetic protocol/build proofs are not inference or production acceptance.
 
 ## Sandbox deletion receipts
