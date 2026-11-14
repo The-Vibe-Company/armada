@@ -422,7 +422,8 @@ test("heartbeat availability is validated and drives the public busy-capacity su
       });
     expect((await poll(resources)).status).toBe(200);
     const listed = await post("/api/v1/docker/hosts/list", "fixture-user-token", { org: orgId });
-    expect((await listed.json()).hosts[0]).toMatchObject({ resources: { capacity: 7, heldBack: 2 } });
+    const list = (await listed.json()) as DockerHostListResponse;
+    expect(list.hosts[0]).toMatchObject({ resources: { capacity: 7, heldBack: 2 } });
     for (const invalid of [
       { ...resources, availableCpus: 17 },
       { ...resources, availableMemoryBytes: -1 },
