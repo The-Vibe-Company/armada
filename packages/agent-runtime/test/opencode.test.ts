@@ -16,14 +16,18 @@ test("OpenCode exports sanitized history and imports it before no-text resume an
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
     redact: createRedactor(["private-key-for-test"]),
   });
+  const finalMessages: string[] = [];
   const context = {
-    request: { sandboxId: "s", harness: "codex" as const, text: "hello" },
+    request: { sandboxId: "s", harness: "opencode" as const, text: "hello" },
     signal: new AbortController().signal,
-    emit: () => {},
+    emit: (event: import("../src/protocol.ts").DriverEvent) => {
+      if (event.kind === "message" && !event.partial && event.text) finalMessages.push(event.text);
+    },
     session: (id: string) => expect(id).toBe("session-1"),
   };
   try {
     expect(await driver.start(context).done).toBe("finished");
+    expect(finalMessages).toEqual(["hello"]);
     const history = await readFile(join(root, "opencode/sessions/session-1.json"), "utf8");
     expect(history).not.toContain("private-key-for-test");
     expect(history).toContain("[REDACTED]");
@@ -36,6 +40,7 @@ test("OpenCode exports sanitized history and imports it before no-text resume an
 
     expect(await driver.resumeSession({ ...context, sessionId: "session-1" })).toEqual({ sessionId: "session-1" });
     expect(await driver.start({ ...context, sessionId: "session-1" }).done).toBe("finished");
+    expect(finalMessages).toEqual(["hello", "hello"]);
     await expect(driver.resumeSession({ ...context, sessionId: "../other" })).rejects.toThrow(
       "invalid_harness_protocol",
     );
@@ -120,6 +125,27 @@ test("OpenCode uses Azure Responses without duplicating v1 on Azure OpenAI or lo
   }
 });
 
+test("OpenCode uses native OpenAI Responses for a sealed OpenAI connection", () => {
+  const env: Record<string, string> = {
+    OPENCODE_API_KEY: "fake-openai-key",
+    [OPENCODE_ENDPOINT_ENV]: JSON.stringify({
+      version: 1,
+      protocol: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      models: ["gpt-test"],
+    }),
+  };
+  configureOpenCodeEndpoint(env);
+  const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}");
+  expect(config.provider.armada).toMatchObject({
+    npm: "@ai-sdk/openai",
+    options: { baseURL: "https://api.openai.com/v1", apiKey: "fake-openai-key" },
+    models: { "gpt-test": { name: "gpt-test" } },
+  });
+  expect(env.OPENCODE_API_KEY).toBeUndefined();
+  expect(env[OPENCODE_ENDPOINT_ENV]).toBeUndefined();
+});
+
 // A failed native export must not turn an older JSON export into a false continuity proof.
 test("OpenCode refuses stale history and checkpoint after an unacknowledged export", async () => {
   const { HarnessState } = await import("../src/state.ts");
@@ -196,6 +222,74 @@ test("OpenCode meters every new native assistant step once, excludes loaded hist
         reasoningTokens: 2,
       },
     ]);
+  } finally {
+    await driver.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// Completed native export, not model-controlled ACP titles, owns shell proof.
+test.each([
+  "success",
+  "exit",
+  "missing-exit",
+  "truncated",
+  "timeout",
+  "duplicate",
+  "foreign-session",
+  "oversized",
+] as const)("OpenCode shell proof excludes restored history and refuses unsafe native results (%s)", async (mode) => {
+  const root = await mkdtemp(join(tmpdir(), "opencode-shell-proof-"));
+  const env = { EXPORT_STAGE: "1", EXPORT_TOOLS: mode, PATH: process.env.PATH ?? "/usr/bin:/bin" };
+  const driver = new OpenCodeDriver({
+    executable: `${import.meta.dir}/fixtures/opencode.ts`,
+    root,
+    cwd: root,
+    env,
+    redact: createRedactor([]),
+  });
+  const proofs: unknown[] = [];
+  const context = {
+    request: { sandboxId: "s", harness: "opencode" as const, text: "hello" },
+    signal: new AbortController().signal,
+    emit: (event: import("../src/protocol.ts").DriverEvent) => {
+      if (event.kind === "other" && event.type === "armada/opencodeShell") proofs.push(event.data);
+    },
+    session: () => {},
+  };
+  try {
+    expect(await driver.start(context).done).toBe("finished");
+    expect(proofs).toEqual([
+      {
+        version: 1,
+        nativeMessageId: "old",
+        callId: "call-old",
+        tool: "bash",
+        command: "printf OLD",
+        output: "OLD",
+        exitCode: 0,
+        truncated: false,
+      },
+    ]);
+    proofs.length = 0;
+    env.EXPORT_STAGE = "2";
+    expect(await driver.start({ ...context, sessionId: "session-1" }).done).toBe("finished");
+    expect(proofs).toEqual(
+      mode === "success"
+        ? [
+            {
+              version: 1,
+              nativeMessageId: "new-tool",
+              callId: "call-new-tool",
+              tool: "bash",
+              command: "printf EXPECTED",
+              output: "EXPECTED",
+              exitCode: 0,
+              truncated: false,
+            },
+          ]
+        : [],
+    );
   } finally {
     await driver.close();
     await rm(root, { recursive: true, force: true });

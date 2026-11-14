@@ -9,7 +9,7 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { createSqlData } from "./data.ts";
-import { createRuntimeAgent } from "./runtime-agent.ts";
+import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
@@ -37,7 +37,9 @@ export function createRuntimeServing(sql: Sql, key: string) {
       !sandbox ||
       (!sandbox.boatRuntime && sandbox.runtimeTransport !== "dialout") ||
       !["boat", "modal"].includes(sandbox.provider) ||
-      (sandbox.harness !== "codex" && !(sandbox.provider === "boat" && sandbox.harness === "claude")) ||
+      (sandbox.harness !== "codex" &&
+        sandbox.harness !== "claude" &&
+        !(sandbox.provider === "modal" && sandbox.harness === "opencode")) ||
       sandbox.provider !== target.provider ||
       (typeof apiKey !== "string" && apiKey.id !== sandbox.provider) ||
       sandbox.visibility !== target.visibility ||
@@ -46,7 +48,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
       !sandbox.reasoningEffort
     )
       throw new VaultError("not_found", "No authorized runtime sandbox.");
-    const agent = createRuntimeAgent(
+    const agent = runtimeAgentFor(
       {
         async call(ownerId, request, options) {
           if (request.op === "steer") {
@@ -60,7 +62,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
               ).rows[0];
               if (!member || actor.userId !== sandbox.ownerId)
                 throw new ProviderError({
-                  provider: "boat",
+                  provider: sandbox.provider,
                   code: "forbidden",
                   message: "Runtime owner membership required.",
                   retryable: false,
@@ -76,7 +78,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
               ).rows[0];
               if (!account)
                 throw new ProviderError({
-                  provider: "boat",
+                  provider: sandbox.provider,
                   code: "forbidden",
                   message: "Pinned runtime account is no longer authorized.",
                   retryable: false,
@@ -92,14 +94,9 @@ export function createRuntimeServing(sql: Sql, key: string) {
           return commands.call(ownerId, request, options);
         },
       },
-      {
-        harness: sandbox.harness,
-        ownerId: sandbox.ownerId,
-        sandboxId: sandbox.id,
-        providerSandboxId: sandbox.providerSandboxId,
-        cwd: sandbox.repositoryDir ? `/home/user/${sandbox.repositoryDir}` : "/home/user",
-        defaults: { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
-      },
+      sandbox.ownerId,
+      sandbox,
+      { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
     );
     const host = typeof apiKey === "string" ? createBoatProvider({ apiKey }) : apiKey;
     // Native Modal stop expects its private listener. This lane may retain disk
@@ -170,7 +167,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
             return { promptId: request.promptId, status: "failed" as const, done: true };
           if (!last || last.kind !== "prompt")
             throw new ProviderError({
-              provider: "boat",
+              provider: sandbox.provider,
               code: "not_found",
               message: "No archived runtime prompt.",
               retryable: false,
@@ -188,7 +185,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
         },
         events: ({ sandboxId: _physical, ...pagination }) => history(caller, sandbox.id, pagination),
       },
-      sandbox.boatRuntime
+      sandbox.boatRuntime || sandbox.runtimeTransport === "dialout"
         ? {
             interrupt(request) {
               authorize();

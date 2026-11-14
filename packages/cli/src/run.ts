@@ -1,12 +1,10 @@
 import { AuthError, assertProvider } from "@armada/auth";
 import {
   configFromFlags,
-  type GoldenActor,
   type GoldenBuildStatus,
   type GoldenConfig,
   GoldenError,
   type GoldenRecord,
-  type GoldenStore,
   goldenBuildFailureText,
   goldenResponse,
   HARNESSES,
@@ -24,10 +22,8 @@ import {
   resolveModelChoice,
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
-  type SandboxStore,
   SIZED_LAUNCH_ROUTE_V1,
   VaultError,
-  type VaultStore,
   VERSION,
 } from "@armada/core";
 import { accountCommand } from "./account-commands.ts";
@@ -70,20 +66,8 @@ export interface Deps {
   readStdin?: () => Promise<string>;
   /** Separate native Docker host binary boundary; no Armada session required. */
   localHost?: LocalHostIo;
-  /** Legacy test seam; commands use the Armada API rather than direct stores. */
-  actor?: GoldenActor;
-  store?: GoldenStore;
-  sandboxes?: SandboxStore;
-  provider?: Provider;
-  sandboxPolls?: number;
-  snapshotPolls?: number;
   /** Set by auth tests. Otherwise login stores an Armada API session on this machine. */
   auth?: AuthIo;
-  /**
-   * The encrypted credential store. Tests inject one. Otherwise `armada launch` asks the server
-   * (`ARMADA_URL`) to resolve them, since the encryption key stays there.
-   */
-  vault?: { store: VaultStore; encryptionKey: string };
 }
 
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
@@ -110,9 +94,9 @@ Usage:
   armada host add [--name NAME] [--org UUID]
   armada host list [--json] [--org UUID]
   armada host revoke UUID [--org UUID]
-  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode --credential-id UUID --org UUID [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
+  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] --org UUID [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.
-  armada doctor [--org UUID] [--json]      Check session, server, hosts and model accounts
+  armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
   armada completion bash|zsh|fish           Print a shell completion script
   armada --version                         Print the version
   armada --help                            Show this help
@@ -235,6 +219,9 @@ Usage:
                                            grants membership immediately and does not send an invitation.
   armada creds login codex --name <name> [--org <name>]\n                                           Native local device login; five-minute expiry, Ctrl-C cancels\n  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
+  armada creds presets [--json]             List the same model connection providers as the dashboard
+  armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
+                                           Provider key from stdin/file; custom providers take --models and --base-url
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
@@ -582,11 +569,6 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     );
   }
   providerFlag(args);
-  const limits = {
-    ...(deps.sleep ? { sleep: deps.sleep } : {}),
-    ...(deps.sandboxPolls !== undefined ? { sandboxPolls: deps.sandboxPolls } : {}),
-    ...(deps.snapshotPolls !== undefined ? { snapshotPolls: deps.snapshotPolls } : {}),
-  };
   switch (subcommand) {
     case "capabilities": {
       if (args.positionals.length) throw new GoldenError("invalid_config", "golden capabilities takes no name.");
@@ -721,11 +703,11 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       return job.state === "failed" || job.state === "recovery_required" ? 1 : 0;
     }
     case "create":
-      return create(args.positionals, args, io, deps, limits);
+      return create(args.positionals, args, io, deps);
     case "update":
       return update(args.positionals, args, io, deps);
     case "connect":
-      return connect(args, io, deps, limits);
+      return connect(args, io, deps);
     case "snapshot":
       return snapshot(args, io, deps);
     case "list":
@@ -834,19 +816,7 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
   return 0;
 }
 
-type Limits = {
-  sleep?: (ms: number) => Promise<void>;
-  sandboxPolls?: number;
-  snapshotPolls?: number;
-};
-
-async function create(
-  positionals: string[],
-  args: ReturnType<typeof parseArgs>,
-  io: Io,
-  deps: Deps,
-  _limits: Limits,
-): Promise<number> {
+async function create(positionals: string[], args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
   const name = oneName(positionals);
   const config = await readConfig(args, deps);
   const setupFile = single(args, "--setup");
@@ -885,7 +855,7 @@ async function create(
   return 0;
 }
 
-async function connect(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, _limits: Limits): Promise<number> {
+async function connect(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
   const name = oneName(args.positionals);
   const auth = authOf(io, deps);
   const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });

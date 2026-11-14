@@ -1,41 +1,60 @@
 import { expect, test } from "bun:test";
 import type { Sql } from "@armada/core/server";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
 async function fixture() {
-  const { db, people } = await database();
-  const id = crypto.randomUUID();
-  await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,provider_sandbox_id,harness,status,boat_runtime)
+  const db = await openMigratedDatabase();
+  const people = { org: crypto.randomUUID(), owner: crypto.randomUUID(), member: crypto.randomUUID() };
+  try {
+    // Enrolment needs sandbox ownership and membership, not model/provider credentials.
+    await db.query("insert into auth.users(id) values($1),($2)", [people.owner, people.member]);
+    await db.query("insert into orgs(id,name) values($1,'Runtime enrolment')", [people.org]);
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'member')", [
+      people.org,
+      people.owner,
+      people.member,
+    ]);
+    await db.query("insert into goldens(org_id,owner_id,name,visibility) values($1,$2,'enrolment-source','private')", [
+      people.org,
+      people.owner,
+    ]);
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,provider_sandbox_id,harness,status,boat_runtime)
      select $1,id,org_id,owner_id,'runtime-native','runtime-native','codex','ready',true from goldens
      where owner_id=$2 and visibility='private' limit 1`,
-    [id, people.owner],
-  );
-  const sql: Sql = {
-    query: (q, v) => db.query(q, v),
-    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
-  };
-  const service = () => createRuntimeEnrolments(sql, ENCRYPTION_KEY);
-  const request = async (path: string, bearer: string, epoch?: string) => {
-    const response = await service().route(
-      new Request(`https://armada.example/api/runtime/${path}`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${bearer}`, ...(epoch ? { "x-armada-runtime-epoch": epoch } : {}) },
-      }),
+      [id, people.owner],
     );
-    if (!response) throw Error("missing_runtime_route");
-    return response;
-  };
-  return {
-    db,
-    people,
-    id,
-    service,
-    request,
-    issue: (configuration = { marker: "offline-bootstrap" }) =>
-      service().issue({ sandboxId: id, ownerId: people.owner, configuration }),
-  };
+    const sql: Sql = {
+      query: (q, v) => db.query(q, v),
+      transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+    };
+    const service = () => createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+    const request = async (path: string, bearer: string, epoch?: string) => {
+      const response = await service().route(
+        new Request(`https://armada.example/api/runtime/${path}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${bearer}`, ...(epoch ? { "x-armada-runtime-epoch": epoch } : {}) },
+        }),
+      );
+      if (!response) throw Error("missing_runtime_route");
+      return response;
+    };
+    return {
+      db,
+      people,
+      id,
+      service,
+      request,
+      issue: (configuration = { marker: "offline-bootstrap" }) =>
+        service().issue({ sandboxId: id, ownerId: people.owner, configuration }),
+    };
+  } catch (error) {
+    await db.close();
+    throw error;
+  }
 }
 
 // One owner for one-use exchange, durable replay and replacement fencing: real route + SQL migrations.

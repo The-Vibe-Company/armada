@@ -15,6 +15,7 @@ import {
   ProviderError,
   type ProviderErrorCode,
   resolveModelChoice,
+  type SandboxRecord,
   type SkillReceipt,
   type SteerReceipt,
   type SteerRequest,
@@ -47,6 +48,27 @@ function runtimeRefusal(
     message: "Armada runtime operation refused.",
     retryable: false,
     ...(requestId ? { details: { runtimeRequestId: requestId, runtimeOutcome: "unknown" } } : {}),
+  });
+}
+
+/** Build the bridge from persisted identity; callers retain owner/defaults and any authoritative cwd. */
+export function runtimeAgentFor(
+  commands: Parameters<typeof createRuntimeAgent>[0],
+  ownerId: string,
+  sandbox: Pick<SandboxRecord, "id" | "harness" | "providerSandboxId" | "repositoryDir"> & {
+    provider: "boat" | "modal" | "docker";
+  },
+  defaults: ModelChoice,
+  cwd = sandbox.repositoryDir ? `/home/user/${sandbox.repositoryDir}` : "/home/user",
+) {
+  return createRuntimeAgent(commands, {
+    provider: sandbox.provider,
+    harness: sandbox.harness,
+    ownerId,
+    sandboxId: sandbox.id,
+    providerSandboxId: sandbox.providerSandboxId,
+    cwd,
+    defaults,
   });
 }
 
@@ -150,7 +172,7 @@ export function createRuntimeAgent(
         epoch,
       );
       if (health.ready !== true || health.generation !== epoch || health.workspaceVersion !== 1)
-        throw new Error("Boat runtime workspace setup requires updated runtime artifacts; no native fallback.");
+        throw new Error("Runtime workspace setup requires updated runtime artifacts; no native fallback.");
     },
     async workspaceExec(
       request: import("@armada/core").ExecRequest,

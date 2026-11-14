@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { createBoatProvider } from "@armada/provider-boat";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { sandbox } from "../../provider-boat/test/support.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
-import { bunLikeSql, database } from "./support.ts";
+import { bunLikeSql } from "./support.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -13,17 +14,33 @@ function deferred<T>() {
   return { promise, resolve };
 }
 async function rows() {
-  const { db, people } = await database();
-  const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
-  if (!golden) throw Error("missing golden");
-  const ids = [crypto.randomUUID(), crypto.randomUUID()];
-  for (const [index, id] of ids.entries())
-    await db.query(
-      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,reconcile_after)
+  const db = await openMigratedDatabase();
+  const org = crypto.randomUUID(),
+    owner = crypto.randomUUID();
+  try {
+    // Worker scheduling needs live rows, not unrelated launch credentials.
+    await db.query("insert into auth.users(id) values($1)", [owner]);
+    await db.query("insert into orgs(id,name) values($1,'Server workers')", [org]);
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [org, owner]);
+    const golden = (
+      await db.query<{ id: string }>(
+        "insert into goldens(org_id,owner_id,name,visibility) values($1,$2,'shared','org') returning id",
+        [org, owner],
+      )
+    ).rows[0];
+    if (!golden) throw Error("missing golden");
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    for (const [index, id] of ids.entries())
+      await db.query(
+        `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,reconcile_after)
     values($1,$2,$3,$4,'boat',$5,'claude','running',now()-($6::integer * interval '1 minute'))`,
-      [id, golden.id, people.org, people.owner, `bx_worker_${index}`, 2 - index],
-    );
-  return { db, sql: bunLikeSql(db), ids };
+        [id, golden.id, org, owner, `bx_worker_${index}`, 2 - index],
+      );
+    return { db, sql: bunLikeSql(db), ids };
+  } catch (error) {
+    await db.close();
+    throw error;
+  }
 }
 
 test("server lifecycle drains multiple rows while a golden build is pending; stop tracks both lanes", async () => {

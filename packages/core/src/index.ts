@@ -1,3 +1,4 @@
+export { accountBindingAvailability, NATIVE_ACCOUNT_CHANGE_UNSUPPORTED } from "./account-binding-policy.ts";
 export {
   API_FAILURE_HELP,
   API_FAILURE_STATUS,
@@ -90,6 +91,7 @@ export type {
   DockerHostSummary,
   DockerLaunchRequest,
   DockerLaunchResult,
+  DockerQueuedPromptReceipt,
   DockerSandboxRecord,
   DockerSandboxStatus,
   LaunchCapabilityName,
@@ -102,6 +104,7 @@ export {
   DOCKER_DEFAULT_IMAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
   DOCKER_SNAPSHOT_STATUSES,
   type DockerJobFailureReason,
   type DockerSnapshotRecord,

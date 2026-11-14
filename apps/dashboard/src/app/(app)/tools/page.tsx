@@ -1,4 +1,4 @@
-import { CircleAlertIcon, CircleCheckIcon, PlugIcon, StarIcon, UserIcon, UsersIcon } from "lucide-react";
+import { CircleAlertIcon, CircleCheckIcon, InfoIcon, PlugIcon, StarIcon, UserIcon, UsersIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { AddServerDialog, ServiceCatalog, ServiceMark, ToolPanel, ToolRowAction } from "@/components/connections";
@@ -31,7 +31,7 @@ export const dynamic = "force-dynamic";
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
 const TITLE = "Tools";
-const DESCRIPTION = "MCP connections your agents can use.";
+const DESCRIPTION = "Connect external tools and services for your agents.";
 
 export default async function ToolsPage({ searchParams }: Props) {
   const selected = await selectedOrganization();
@@ -44,11 +44,15 @@ export default async function ToolsPage({ searchParams }: Props) {
     return (
       <>
         {header}
-        <Empty title="No organization yet">
-          <Link className="underline" href="/orgs">
-            Create an organization
-          </Link>{" "}
-          to add tools.
+        <Empty
+          title="No organization yet"
+          action={
+            <Button asChild>
+              <Link href="/orgs">Choose an organization</Link>
+            </Button>
+          }
+        >
+          Create or join an organization before connecting tools.
         </Empty>
       </>
     );
@@ -57,9 +61,15 @@ export default async function ToolsPage({ searchParams }: Props) {
     return (
       <>
         {header}
-        <Alert variant="destructive">
-          <CircleAlertIcon />
-          <AlertDescription>The Armada server is not configured: tools cannot be managed here.</AlertDescription>
+        <Alert role="status">
+          <InfoIcon />
+          <AlertTitle>Tool setup is not ready here</AlertTitle>
+          <AlertDescription>
+            <p>Ask an Armada administrator to finish setup, then reload Tools.</p>
+            <Button asChild variant="outline" size="sm" className="mt-2">
+              <a href="/tools">Reload Tools</a>
+            </Button>
+          </AlertDescription>
         </Alert>
       </>
     );
@@ -72,9 +82,12 @@ export default async function ToolsPage({ searchParams }: Props) {
           <CircleAlertIcon />
           <AlertTitle>Tools could not be loaded</AlertTitle>
           <AlertDescription>
-            <p>{list.message}</p>
+            <p>
+              Check your connection and reload Tools. If this continues, ask an Armada administrator to check tool
+              setup.
+            </p>
             <Button asChild variant="outline" size="sm" className="mt-2">
-              <Link href="/tools">Try again</Link>
+              <a href="/tools">Reload Tools</a>
             </Button>
           </AlertDescription>
         </Alert>
@@ -135,7 +148,7 @@ export default async function ToolsPage({ searchParams }: Props) {
                 <ServiceCatalog services={services} connections={list.connections} {...org} />
               ) : (
                 <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-                  This Armada server offers no services. Add any MCP server with Add server.
+                  No ready-to-connect services are offered here. Use Add server to connect another tool.
                 </p>
               )
             ) : (
@@ -143,7 +156,7 @@ export default async function ToolsPage({ searchParams }: Props) {
                 className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground"
                 data-catalog-unavailable
               >
-                Services are not available: {catalog.message} You can still add a custom server.
+                Services could not be loaded here. You can still use Add server to connect a custom tool.
               </p>
             )}
           </section>
@@ -151,7 +164,7 @@ export default async function ToolsPage({ searchParams }: Props) {
       }
       empty={
         <Empty title="No tools yet" icon={<PlugIcon />}>
-          Connect a service below or add any MCP server; agents pick it when they launch.
+          Connect a service below or use Add server to connect another tool for your agents.
         </Empty>
       }
     />
@@ -247,22 +260,22 @@ async function returnNotice(returned: OAuthReturn, org: string) {
         </AlertTitle>
         <AlertDescription>
           {returned.outcome === "denied"
-            ? "Nothing was stored. Connect again when you are ready."
-            : "The authorization expired or was refused, and nothing was stored. Use Connect to try again."}
+            ? "Review your tool list before trying sign-in again."
+            : "Review your tool list, then use Connect if sign-in is still needed."}
         </AlertDescription>
       </Alert>
     );
   }
-  const control = await viewerControl();
-  let connection: McpConnection | null = null;
-  let problem: string | null = null;
+  let connection: McpConnection;
   try {
-    connection = control ? await control.status({ org, id: returned.id }) : null;
+    const control = await viewerControl();
+    if (!control) return unverifiedReturnNotice();
+    connection = await control.status({ org, id: returned.id });
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    problem = error.message;
+    return unverifiedReturnNotice();
   }
-  if (connection?.status === "connected") {
+  if (connection.status === "connected") {
     return (
       <Alert role="status" data-oauth-return="connected" className="border-success/40">
         <CircleCheckIcon className="text-success" />
@@ -274,22 +287,31 @@ async function returnNotice(returned: OAuthReturn, org: string) {
       </Alert>
     );
   }
-  const title =
-    returned.outcome === "denied"
-      ? "Sign-in was cancelled"
-      : connection
-        ? `${connection.name} is not connected`
-        : "That connection could not be found";
-  const detail =
-    problem ??
-    (connection
-      ? `${STATUS_INFO[connection.status].label}.${connection.lastError ? ` ${connection.lastError}` : ""} Try Connect again.`
-      : "It may have been deleted, or belong to another organization.");
+  const title = returned.outcome === "denied" ? "Sign-in was cancelled" : `${connection.name} is not connected`;
+  const detail = `${STATUS_INFO[connection.status].label}. Review this tool below for the next step.`;
   return (
     <Alert variant="destructive" data-oauth-return="failed">
       <CircleAlertIcon />
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription>{detail}</AlertDescription>
+    </Alert>
+  );
+}
+
+/** A failed lookup is not evidence that the sign-in failed or that its connection was never saved. */
+function unverifiedReturnNotice() {
+  return (
+    <Alert variant="destructive" data-oauth-return="failed">
+      <CircleAlertIcon />
+      <AlertTitle>Sign-in status could not be checked</AlertTitle>
+      <AlertDescription>
+        <p>
+          The connection may already have been saved. Reload Tools to check its current state before signing in again.
+        </p>
+        <Button asChild variant="outline" size="sm" className="mt-2">
+          <a href="/tools">Reload Tools</a>
+        </Button>
+      </AlertDescription>
     </Alert>
   );
 }

@@ -68,6 +68,7 @@ test("a malformed launch receipt still gets deleted and a failed delete persists
     const directory = await mkdtemp(join(tmpdir(), "smoke-cleanup-"));
     const path = join(directory, "journal.json");
     const calls: string[] = [];
+    let clock = 0;
     try {
       const backlog = Array.from({ length: 100 }, (_, index) => ({
         ...row,
@@ -94,8 +95,10 @@ test("a malformed launch receipt still gets deleted and a failed delete persists
         },
         [],
         {
-          now: () => 0,
-          sleep: async () => {},
+          now: () => clock,
+          sleep: async (ms) => {
+            clock += ms;
+          },
           out: () => {},
           fetch: async (url, init) => {
             const action = init.method === "DELETE" ? "delete" : url.split("/").at(-1)!;
@@ -421,3 +424,29 @@ test.each([
     }
   },
 );
+
+test("cleanup reconciles transient status refusal and acknowledged pending deletion", async () => {
+  let clock = 0;
+  let statuses = 0;
+  let deletes = 0;
+  const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, "token", [row], {
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    out: () => {},
+    fetch: async (url, init) => {
+      if (url.endsWith("/stop")) return Response.json({ id: row.id, status: "stopping" });
+      if (url.endsWith("/status")) {
+        if (++statuses === 1) return Response.json({ error: { code: "unavailable" } }, { status: 503 });
+        return Response.json({ id: row.id, status: "stopped" });
+      }
+      expect(init.method).toBe("DELETE");
+      if (++deletes === 1) return Response.json({ error: { code: "sandbox_busy" } }, { status: 409 });
+      return Response.json({ id: row.id, status: deletes === 2 ? "stopped" : "deleted" });
+    },
+  });
+  expect(remaining).toEqual([]);
+  expect(statuses).toBe(2);
+  expect(deletes).toBe(3);
+});

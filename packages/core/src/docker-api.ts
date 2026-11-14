@@ -97,6 +97,9 @@ export interface LaunchOptionsResponse {
     skillsVersion?: number;
     variablesVersion?: number;
     usageVersion?: number;
+    claudeVersion?: number;
+    opencodeVersion?: number;
+    opencodeShellProofVersion?: number;
   };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
@@ -115,11 +118,25 @@ export interface LaunchOptionsResponse {
 }
 
 /** Why a host reports a failed machine operation, when the person can act on it (#1507). */
-export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable"] as const;
+export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable", "snapshot_build_failed"] as const;
 export type DockerJobFailureReason = (typeof DOCKER_JOB_FAILURE_REASONS)[number];
 /** What a sandbox and its launch say when its host could not fetch the image. */
 export const DOCKER_IMAGE_UNAVAILABLE_MESSAGE =
   "Your host could not fetch the image. Check that the image exists and that the host can reach its registry, then launch again.";
+/** Public diagnostics for admitted launch preparation; never derive these from command output. */
+export const DOCKER_LAUNCH_FAILURE_MESSAGES = {
+  startup: "Docker sandbox startup failed. Check the host and retry with a new request.",
+  github:
+    "Repository authorization failed. Connect GitHub and grant access to the requested repositories, then launch again.",
+  githubDelivery:
+    "GitHub configureGitHub setup step failed or was not acknowledged by the sandbox runtime. Check that the image includes git, gh and python3, and that the runtime is connected.",
+  environment: "Sandbox environment preparation failed. Check variable and secret bindings, then launch again.",
+  checkout:
+    "Repository checkout failed or timed out. Check the repository branch and GitHub access, then launch again.",
+  preparation: "Sandbox skill or MCP preparation failed. Check the launch configuration, then launch again.",
+  prompt: "Sandbox first prompt admission failed. Inspect the sandbox and launch again.",
+} as const;
+
 /** Legacy operator/compatibility fixture image. Normal launches use officialSandboxImage(). */
 export const DOCKER_DEFAULT_IMAGE =
   "buildpack-deps@sha256:58021c2a0204361b62a23d2e0244d144d74c29af2d678e2a1f7e6611885d6949";
@@ -135,7 +152,8 @@ export interface DockerLaunchRequest {
   hostId?: string;
   snapshotId?: string;
   harness: Harness;
-  credentialId: string;
+  /** Omit to resolve the caller's compatible personal default, then freeze its ID/version at admission. */
+  credentialId?: string;
   credentialVersion?: number;
   requestId: string;
   prompt?: string;
@@ -155,12 +173,21 @@ export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "g
   hostId: string;
   image: string;
 }
+/** Durable server admission before a native conversation exists. Read status with this stable promptId. */
+export interface DockerQueuedPromptReceipt {
+  id: string;
+  requestId: string;
+  promptId: string;
+  conversationId: null;
+  status: "queued";
+  state: "queued";
+}
 export interface DockerLaunchResult {
   sandbox: DockerSandboxRecord;
   golden: null;
   helper: null;
   github: GitHubLaunchInfo;
-  runtime: { kind: "armada"; epoch: string };
+  runtime: { kind: "armada"; epoch: string } | null;
   ttlSeconds: number;
   expiresAt: string;
   conversationId?: string;
@@ -189,7 +216,7 @@ export interface DockerSandboxStatus {
   prompt: {
     promptId: string;
     conversationId: string | null;
-    state: PromptOutcome["state"];
+    state: PromptOutcome["state"] | "queued";
     reason: string | null;
   } | null;
   settled: boolean;
@@ -212,6 +239,8 @@ export interface DockerSnapshotRecord {
   definitionHash: string;
   status: (typeof DOCKER_SNAPSHOT_STATUSES)[number];
   image: string | null;
+  /** Safe build diagnostic; absent on older servers. Never contains command output. */
+  failureReason?: string | null;
   config: import("./golden-config.ts").GoldenConfig;
   createdAt: string;
 }

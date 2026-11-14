@@ -1,21 +1,27 @@
 import { afterAll, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import type { Sql } from "@armada/core/server";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createOttoObserver } from "../src/otto/observation.ts";
-import { database } from "./support.ts";
 
-const shared = database();
+// Observation only needs an organization; launch credentials and goldens are unrelated.
+const shared = (async () => {
+  const db = await openMigratedDatabase();
+  const org = crypto.randomUUID();
+  await db.query("insert into orgs (id, name) values ($1, 'Work evidence')", [org]);
+  return { db, org };
+})();
 afterAll(async () => (await shared).db.close());
 const SHA = "c".repeat(40);
 async function setup(repository: string) {
-  const { db, people } = await shared;
+  const { db, org } = await shared;
   const sql: Sql = { query: (q, p) => db.query(q, p) };
-  const observer = createOttoObserver(sql, { orgId: people.org, repository });
+  const observer = createOttoObserver(sql, { orgId: org, repository });
   const facts = async () =>
     (
       await db.query<{ kind: string; value: string; evidence: { headSha?: string } }>(
         "select * from otto_facts where org_id=$1 and repository=$2 order by observed_at,id",
-        [people.org, repository],
+        [org, repository],
       )
     ).rows;
   return { db, observer, facts };

@@ -21,6 +21,7 @@ export type SnapshotRow = {
   build_expires_at: Date | string;
   status: DockerSnapshotRecord["status"];
   image_id: string | null;
+  failure_reason?: string | null;
   created_at: Date | string;
   host_name: string | null;
   host_available: boolean;
@@ -48,6 +49,13 @@ export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
       .digest("hex"),
     status: row.status === "building" && new Date(row.build_expires_at).getTime() <= Date.now() ? "failed" : row.status,
     image: row.image_id,
+    failureReason:
+      row.status === "building" && new Date(row.build_expires_at).getTime() <= Date.now()
+        ? "Snapshot build expired before an image was published."
+        : row.status === "failed"
+          ? (row.failure_reason ??
+            "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.")
+          : null,
     createdAt: new Date(row.created_at).toISOString(),
     hostName: row.host_name,
     hostAvailable: row.host_available,

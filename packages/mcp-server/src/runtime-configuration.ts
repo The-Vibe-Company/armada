@@ -53,6 +53,7 @@ export interface RuntimeConfigurationInput {
 export async function runtimeConfiguration(
   input: RuntimeConfigurationInput,
   expectedProvider: "boat" | "docker" | "modal",
+  emptyMcpRevision?: string,
 ) {
   try {
     if (expectedProvider !== "boat" && expectedProvider !== "docker" && expectedProvider !== "modal") throw Error();
@@ -66,8 +67,8 @@ export async function runtimeConfiguration(
       sandbox.provider !== expectedProvider ||
       (expectedProvider === "docker" && (sandbox.visibility !== "private" || sandbox.repositoryDir !== null)) ||
       (sandbox.harness !== "codex" &&
-        !(expectedProvider !== "modal" && sandbox.harness === "claude") &&
-        !(expectedProvider === "docker" && sandbox.harness === "opencode")) ||
+        sandbox.harness !== "claude" &&
+        !(expectedProvider !== "boat" && sandbox.harness === "opencode")) ||
       sandbox.ownerId !== actor.userId ||
       sandbox.orgId !== actor.orgId ||
       !["starting", "ready", "running"].includes(sandbox.status) ||
@@ -182,6 +183,8 @@ export async function runtimeConfiguration(
         claudeEnv: sandbox.harness === "claude" ? claudeEnv : {},
         codexEnv,
         opencodeEnv: sandbox.harness === "opencode" ? opencodeEnv : {},
+        // Retained sessions must not revive upstream defaults before current-epoch delivery.
+        ...(emptyMcpRevision ? { mcp: { revision: emptyMcpRevision, servers: {} } } : {}),
         ...auth,
       },
     };

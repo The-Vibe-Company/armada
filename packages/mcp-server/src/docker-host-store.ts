@@ -53,7 +53,7 @@ type Sandbox = {
 };
 type Selection = { requestId: string } & (
   | { operation: "create" | "delete" }
-  | { operation: "stop"; idleCheckpointRequest?: string }
+  | { operation: "stop"; idleCheckpointRequest?: string; onlyIfIdle?: boolean }
   | { operation: "bootstrap" | "resume"; bootstrapDescriptor: BootstrapDescriptor }
 );
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -303,7 +303,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (operation !== "create" && operation !== "bootstrap" && operation !== "resume") return;
     await tx.query(
       `update public.sandboxes set status='failed',status_reason=$2,
-       lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running','stopping')`,
+       lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
       [
         row.id,
         reason === "image_unavailable" && operation === "create"
@@ -506,6 +506,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         exact(selection, [
           "requestId",
           "operation",
+          ...(selection.operation === "stop" && selection.onlyIfIdle !== undefined ? ["onlyIfIdle"] : []),
           ...(selection.operation === "stop" && selection.idleCheckpointRequest !== undefined
             ? ["idleCheckpointRequest"]
             : []),
@@ -543,6 +544,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         const row = await sandbox(tx, sandboxId, host, hint.docker_installation_id);
         if (row.owner_id !== hint.owner_id) deny();
+        if (selection.operation === "stop" && selection.onlyIfIdle && !["ready", "stopped"].includes(row.status))
+          deny();
         const epoch = await permission(tx, actor, row, selection.operation);
         // The host lock serializes admission: observe an existing request only
         // after waiting, so concurrent lost-response retries reconcile too.
@@ -655,11 +658,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
     },
     poll(hostToken: string, installationId: string, version?: string, skipSnapshots = false): Promise<Job | null> {
       return transaction(async (tx) => {
+        // Cleanup bypasses queued startup/snapshot work; already executing native work remains serial.
+        // Stop intent fences every later startup, so an absent-resource ACK cannot admit a queued create.
         // Peek before member/host locks: never acquire a late actor lock behind the host.
         const hint = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null and (not $3::boolean or j.snapshot_id is null) order by (j.snapshot_id is not null),j.position limit 1`,
+           where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null and (not $3::boolean or j.snapshot_id is null) order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
             [hash(hostToken), installationId, skipSnapshots],
           )
         ).rows[0];
@@ -669,7 +674,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           version ?? null,
         ]);
         await tx.query(
-          "update public.docker_snapshots set status='failed',image_id=null where host_id=$1 and status='building' and build_expires_at<=now()",
+          "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build expired before an image was published.' where host_id=$1 and status='building' and build_expires_at<=now()",
           [host.id],
         );
         await tx.query(
@@ -702,7 +707,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         const row = (
           await tx.query<StoredJob>(
-            `select * from public.docker_host_jobs where host_id=$1 and outcome is null and (not $2::boolean or snapshot_id is null) order by (snapshot_id is not null),position limit 1`,
+            `select * from public.docker_host_jobs where host_id=$1 and outcome is null and (not $2::boolean or snapshot_id is null) order by case when bound_operation in ('stop','delete') then 0 else 1 end,(snapshot_id is not null),position limit 1`,
             [host.id, skipSnapshots],
           )
         ).rows[0];
@@ -714,7 +719,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             await authorizeSnapshotBuild(tx, host.id, installationId, job);
           } catch {
             await tx.query(
-              "update public.docker_snapshots set status='failed',image_id=null where id=$1 and status='building'",
+              "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build authorization is no longer valid.' where id=$1 and status='building'",
               [row.snapshot_id],
             );
             await tx.query(
@@ -828,6 +833,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           (job.outcome !== result.outcome || (job.result_image_id ?? null) !== (result.imageId ?? null))
         )
           deny();
+        if (result.reason === "snapshot_build_failed" && !job.snapshot_id) deny();
         if (job.snapshot_id) {
           const parsed = await readJob(job);
           if (
@@ -846,8 +852,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
               } catch {}
             }
             await tx.query(
-              "update public.docker_snapshots set status=$2,image_id=$3 where id=$1 and status='building'",
-              [job.snapshot_id, eligible ? "ready" : "failed", eligible ? result.imageId : null],
+              "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4 where id=$1 and status='building'",
+              [
+                job.snapshot_id,
+                eligible ? "ready" : "failed",
+                eligible ? result.imageId : null,
+                eligible
+                  ? null
+                  : result.outcome === "completed"
+                    ? "Snapshot build authorization is no longer valid."
+                    : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
+              ],
             );
           }
         } else if (result.imageId !== undefined) deny();

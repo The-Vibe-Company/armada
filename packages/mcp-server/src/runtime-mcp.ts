@@ -73,7 +73,7 @@ export function createRuntimeMcp(options: {
       !s ||
       s.ownerId !== caller.userId ||
       !((s.provider === "boat" && s.boatRuntime) || (s.provider === "modal" && s.runtimeTransport === "dialout")) ||
-      (s.harness !== "codex" && s.harness !== "claude")
+      (s.harness !== "codex" && s.harness !== "claude" && !(s.provider === "modal" && s.harness === "opencode"))
     )
       return deny();
     return s;
@@ -82,7 +82,7 @@ export function createRuntimeMcp(options: {
     const row = (
       await db.query<{ mcp_generation: number; expires_at: string | Date }>(
         `select mcp_generation,expires_at from public.sandboxes s
-      where s.id=$1 and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) and (s.status in ('ready','running') or (s.status='starting' and s.activity_lease_id is not null and s.activity_until>now())) and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
+      where s.id=$1 and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) and (s.status in ('ready','running') or (s.provider='docker' and s.status='starting') or (s.status='starting' and s.activity_lease_id is not null and s.activity_until>now())) and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
       and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=$2)`,
         [id, epoch],
       )

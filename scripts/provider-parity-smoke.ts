@@ -102,6 +102,7 @@ const accountMatrix = {
 interface Case {
   githubRepository?: string;
   account?: keyof typeof accountMatrix;
+  notRunReason?: "account has no declared model";
   provider: Provider;
   org: string;
   harness: string;
@@ -910,6 +911,14 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
 async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): Promise<boolean> {
   let cases: Case[];
   let providers: Array<"modal" | "docker"> = ["modal", "docker"];
+  let field = "arguments";
+  const invalid = (path: string, reason: string): never => {
+    field = path;
+    throw new Error(reason);
+  };
+  const nonempty = (value: unknown, path: string) => {
+    if (typeof value !== "string" || !value.trim()) invalid(path, "must be a non-empty string");
+  };
   try {
     if (
       args.length === 3 &&
@@ -918,30 +927,53 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
       (args[2] === "modal" || args[2] === "docker")
     )
       providers = [args[2]];
-    else if (args.length !== 1 || args[0] !== "--accounts") throw new Error();
-    if (env.ARMADA_URL !== STAGING_ORIGIN || !env.ARMADA_TOKEN || env.ARMADA_SMOKE !== "create_real_compute")
-      throw new Error();
-    cases = stagingSmokeCases(JSON.parse(env.ARMADA_SMOKE_CASES ?? "[]")) as Case[];
-    if (!Array.isArray(cases)) throw new Error();
-    const seen = new Set<string>();
-    for (const c of cases) {
-      if (
-        !c ||
-        !c.account ||
-        !Object.hasOwn(accountMatrix, c.account) ||
-        accountMatrix[c.account] !== c.harness ||
-        !["modal", "docker"].includes(c.provider) ||
-        [c.org, c.model, c.modelAccountId, c.provider === "docker" ? c.hostId : c.golden].some(
-          (v) => typeof v !== "string" || !v.trim(),
-        )
-      )
-        throw new Error();
-      const key = `${c.provider}:${c.account}`;
-      if (seen.has(key)) throw new Error();
-      seen.add(key);
+    else if (args.length !== 1 || args[0] !== "--accounts")
+      invalid("arguments", "expected --accounts [--only modal|docker]");
+    if (env.ARMADA_URL !== STAGING_ORIGIN) invalid("ARMADA_URL", `must equal ${STAGING_ORIGIN}`);
+    nonempty(env.ARMADA_TOKEN, "ARMADA_TOKEN");
+    if (env.ARMADA_SMOKE !== "create_real_compute") invalid("ARMADA_SMOKE", "must equal create_real_compute");
+    field = "ARMADA_SMOKE_CASES";
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(env.ARMADA_SMOKE_CASES ?? "[]");
+    } catch {
+      invalid(field, "must be a JSON array");
     }
-  } catch {
-    io.out(JSON.stringify({ step: "configure", pass: false, code: "invalid_accounts_configuration" }));
+    if (!Array.isArray(parsed)) invalid(field, "must be a JSON array");
+    cases = [];
+    const seen = new Set<string>();
+    for (const [index, row] of (parsed as unknown[]).entries()) {
+      const path = `ARMADA_SMOKE_CASES[${index}]`;
+      if (!row || typeof row !== "object" || Array.isArray(row)) invalid(path, "must be an object");
+      const c = row as Case;
+      // Keep original indexes in diagnostics, while ignoring unused Boat fields.
+      if (c.provider === "boat") continue;
+      if (c.provider !== "modal" && c.provider !== "docker")
+        invalid(`${path}.provider`, "must be modal or docker (Boat is skipped)");
+      if (typeof c.account !== "string" || !Object.hasOwn(accountMatrix, c.account))
+        invalid(`${path}.account`, `must be one of: ${Object.keys(accountMatrix).join(", ")}`);
+      if (accountMatrix[c.account!] !== c.harness) invalid(`${path}.harness`, "must match the selected account label");
+      if (c.notRunReason !== undefined && c.notRunReason !== "account has no declared model")
+        invalid(`${path}.notRunReason`, "must equal account has no declared model when supplied");
+      if (!c.notRunReason) nonempty(c.model, `${path}.model`);
+      for (const name of ["org", "modelAccountId", c.provider === "docker" ? "hostId" : "golden"] as const)
+        nonempty(c[name], `${path}.${name}`);
+      const key = `${c.provider}:${c.account}`;
+      if (seen.has(key)) invalid(`${path}.account`, "duplicate provider/account pair");
+      seen.add(key);
+      cases.push(c);
+    }
+  } catch (error) {
+    // Only controlled diagnostics: never echo supplied JSON, token or account values.
+    io.out(
+      JSON.stringify({
+        step: "configure",
+        pass: false,
+        code: "invalid_accounts_configuration",
+        field,
+        message: error instanceof Error ? error.message : "invalid configuration",
+      }),
+    );
     return false;
   }
   const accounts: Record<string, Partial<Record<Provider, unknown>>> = {};
@@ -951,9 +983,10 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
     accounts[account] = {};
     for (const provider of providers) {
       const c = cases.find((c) => c.account === account && c.provider === provider);
-      let result: object = { status: "not-run", reason: "no account on staging" };
-      let status = "not-run: no account on staging";
-      if (c) {
+      const reason = c?.notRunReason ?? "no account on staging";
+      let result: object = { status: "not-run", reason };
+      let status = `not-run: ${reason}`;
+      if (c && !c.notRunReason) {
         let receipt: Record<string, Partial<Record<Provider, Cell>>> | undefined;
         const ok = await providerParitySmoke(
           { ...env, ARMADA_SMOKE_CASES: JSON.stringify([c]), GITHUB_STEP_SUMMARY: undefined },

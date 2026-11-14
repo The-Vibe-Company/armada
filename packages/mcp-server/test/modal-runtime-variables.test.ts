@@ -18,7 +18,7 @@ import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 const sharedDatabase = rowOnlyDatabase();
 
 // Real template claims/manifests and HTTP authorization; only physical compute is fake.
-async function fixture(isolated = false) {
+async function fixture(isolated = false, harness: "codex" | "claude" = "codex") {
   const { db, people } = await (isolated ? database() : sharedDatabase());
   const sql: Sql = { query: (q, v) => db.query(q, v), transaction: (work) => db.transaction((tx) => work(tx)) };
   const templates = createTemplateService(sql, ENCRYPTION_KEY);
@@ -45,15 +45,15 @@ async function fixture(isolated = false) {
   const variableId = (variable.item as { id: string }).id;
   const account = (
     await db.query<{ id: string; version: number }>(
-      "select id,version from credentials where kind='openai' and owner_id=$1",
-      [people.org],
+      "select id,version from credentials where kind=$2::public.credential_kind and owner_id=$1",
+      [people.org, harness === "claude" ? "anthropic" : "openai"],
     )
   ).rows[0]!;
   const definition = {
     goldenId: modal.id,
     provider: "modal",
-    harness: "codex",
-    ...resolveModelChoice("codex", {}),
+    harness,
+    ...resolveModelChoice(harness, {}),
     modelAccount: account,
     variables: [{ key: "APP_REGION", variableId, version: 1 }],
     connections: [],
@@ -101,15 +101,21 @@ async function fixture(isolated = false) {
             libc: "glibc",
             architecture: "x64",
             runtime: { sha256: "a".repeat(64), bytes: 1 },
-            harnesses: { codex: { files: [{ path: "bin/codex" }] } },
+            harnesses: { [harness]: { files: [{ path: `bin/${harness}` }] } },
           },
         });
-        expect(plan.configuration.codexEnv.OPENAI_API_KEY).toBe(credentials.env.OPENAI_API_KEY);
-        starts.push(
-          Object.fromEntries(Object.entries(plan.configuration.codexEnv).filter(([key]) => key === "APP_REGION")),
-        );
+        const selectedEnv = harness === "claude" ? plan.configuration.claudeEnv : plan.configuration.codexEnv;
+        const key = harness === "claude" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+        expect(selectedEnv[key]).toBe(credentials.env[key]);
+        expect(plan.configuration.readableVariables.APP_REGION).toBe(selectedEnv.APP_REGION);
+        expect(plan.configuration.execEnv).not.toHaveProperty(key);
+        expect(Reflect.get(plan.configuration, "mcp")).toEqual({ revision: "modal_runtime_empty_v1", servers: {} });
+        starts.push(Object.fromEntries(Object.entries(selectedEnv).filter(([key]) => key === "APP_REGION")));
         return {
           epoch: "7",
+          async prepareWorkspace() {
+            return { status: "not_connected" as const };
+          },
           prompt: async () => ({ promptId: `prompt-${++prompts}`, conversationId: "conversation", status: "queued" }),
         };
       },
@@ -142,7 +148,7 @@ async function fixture(isolated = false) {
     runtimeVersion: 1,
     runtimeTransport: "dialout",
     provider: "modal",
-    harness: "codex",
+    harness,
     org: people.org,
     id,
     revision: 1,
@@ -170,7 +176,7 @@ async function fixture(isolated = false) {
 }
 
 test("Modal experimental template launch freezes variables and its original runtime receipt across claim replay", async () => {
-  const f = await fixture();
+  const f = await fixture(false, "claude");
   const discovery = await f.api({}, "launch/options");
   expect(await discovery.json()).toMatchObject({ modalRuntime: { variablesVersion: 1 } });
   const template = await f.create();

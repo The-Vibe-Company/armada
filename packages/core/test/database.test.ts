@@ -1,10 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
 import { generateDatabaseTypes } from "../../../scripts/db/generate.ts";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { encryptSecret, HARNESSES, type SandboxState, type Visibility } from "../src/index.ts";
+
+// Migration setup is shared immutable fixture preparation, not part of a schema assertion's runtime.
+beforeAll(async () => {
+  const db = await openMigratedDatabase();
+  await db.close();
+});
 
 const PROVIDER_STATES = [
   "starting",
@@ -208,7 +214,9 @@ describe("database", () => {
           id === "sandboxes.credential_id" ||
           id === "sandboxes.credential_version" ||
           id === "modal_server_harnesses.credential_id" ||
-          id === "modal_server_harnesses.credential_version"
+          id === "modal_server_harnesses.credential_version" ||
+          id === "sandbox_account_usage_pricing.credential_id" ||
+          id === "sandbox_account_usage_pricing.credential_version"
         ) {
           expect(column.data_type).toBe(id.endsWith("_id") ? "uuid" : "integer");
           continue;
@@ -245,6 +253,7 @@ describe("database", () => {
         "docker_host_jobs.input_enc",
         "docker_launch_requests.request_enc",
         "docker_launch_requests.result_enc",
+        "docker_queued_prompts.input_enc",
         "github_connections.access_token_enc",
         "github_connections.refresh_token_enc",
         "github_runtime_issued.token_enc",

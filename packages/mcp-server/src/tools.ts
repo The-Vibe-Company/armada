@@ -80,6 +80,7 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  sandboxBillingAccount?: (id: string) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
@@ -301,6 +302,16 @@ const skillReceipts = z
   .optional();
 
 const status = {
+  billingAccount: z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      kind: z.string(),
+      billing: z.enum(["subscription", "api-key"]),
+      version: z.number().int(),
+    })
+    .nullable()
+    .optional(),
   skills: skillReceipts,
   usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
@@ -372,7 +383,15 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       (async (args: z.infer<z.ZodObject<In>>): Promise<CallToolResult> => {
         try {
           const routed = name === "send" ? undefined : await context.dockerControls?.invoke(caller, name, args);
-          const result = routed?.handled ? routed.result : await run(args);
+          const value = routed?.handled ? routed.result : await run(args);
+          const sandboxId = (args as Record<string, unknown>).id;
+          const result =
+            (name === "status" || name === "wait") && context.sandboxBillingAccount && typeof sandboxId === "string"
+              ? {
+                  ...(value as Record<string, unknown>),
+                  billingAccount: await context.sandboxBillingAccount(sandboxId),
+                }
+              : value;
           return {
             structuredContent: result as Record<string, unknown>,
             content: [{ type: "text", text: JSON.stringify(result) }],
@@ -625,11 +644,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   };
   const live = async (sandboxId: string, allowUnbound = false, known?: SandboxView, runtimeControl = false) => {
     const found = known ?? (await visible(sandboxId));
-    if (
-      (found.boatRuntime || found.runtimeTransport === "dialout") &&
-      !allowUnbound &&
-      !(runtimeControl && found.boatRuntime)
-    )
+    if ((found.boatRuntime || found.runtimeTransport === "dialout") && !allowUnbound && !runtimeControl)
       throw new ToolError(
         "unsupported",
         "Experimental runtime supports initial launch, reads and compute stop/delete only.",
@@ -1423,15 +1438,21 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       );
     const { sandbox: found, provider } = await live(args.id, false, selected);
     if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
+    let pricingContext: unknown;
     if (found.credentialId)
-      await measure("send_credentials", () =>
-        context.launchCredentials.resolve(
-          { userId: caller.userId, orgId: found.orgId, role: "member" },
-          found.harness,
-          found.credentialId ?? undefined,
-          found.credentialVersion ?? undefined,
-        ),
-      );
+      pricingContext =
+        (
+          await measure("send_credentials", () =>
+            context.launchCredentials.resolve(
+              { userId: caller.userId, orgId: found.orgId, role: "member" },
+              found.harness,
+              found.credentialId ?? undefined,
+              found.credentialVersion ?? undefined,
+            ),
+          )
+        ).usagePricing ?? null;
+    if (data.sandboxes.captureUsagePricingContext)
+      pricingContext = await data.sandboxes.captureUsagePricingContext(found.id);
     const stored =
       found.model !== null && found.reasoningEffort !== null
         ? { model: found.model, reasoningEffort: found.reasoningEffort }
@@ -1482,7 +1503,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         );
         acknowledged = true;
         try {
-          await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null);
+          await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null, pricingContext);
         } catch {
           try {
             (context.logError ?? console.error)(
@@ -1581,20 +1602,19 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (args.request_id !== undefined)
         throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
       const { sandbox: found, provider } = await live(args.id, false, undefined, true);
-      if (found.runtimeTransport === "dialout" && !found.boatRuntime)
-        throw new ToolError("unsupported", "This runtime operation is unavailable.");
-      if (found.boatRuntime && found.ownerId !== caller.userId)
+      const enrolled = Boolean(found.boatRuntime || found.runtimeTransport === "dialout");
+      if (enrolled && found.ownerId !== caller.userId)
         throw new ToolError("forbidden", "Only the runtime owner may control this sandbox.");
       const delivery = provider.capabilities[found.harness]?.steer ?? "none";
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
-      if (!found.boatRuntime && delivery === "restart" && found.credentialId)
+      if (!enrolled && delivery === "restart" && found.credentialId)
         await context.launchCredentials.resolve(
           { userId: caller.userId, orgId: found.orgId, role: "member" },
           found.harness,
           found.credentialId,
           found.credentialVersion ?? undefined,
         );
-      if (found.boatRuntime) {
+      if (enrolled) {
         const receipt = await provider
           .steer({
             sandboxId: found.providerSandboxId,
@@ -1612,7 +1632,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         found,
         { clearTaskOutcome: true },
         async () => {
-          if (!found.boatRuntime)
+          if (!enrolled)
             await context.connections?.prepare?.(provider, found, {
               userId: caller.userId,
               orgId: found.orgId,
@@ -1689,9 +1709,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (args.request_id !== undefined)
         throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
       const { sandbox: found, provider } = await live(args.id, false, undefined, true);
-      if (found.runtimeTransport === "dialout" && !found.boatRuntime)
-        throw new ToolError("unsupported", "This runtime operation is unavailable.");
-      if (found.boatRuntime && found.ownerId !== caller.userId)
+      const enrolled = Boolean(found.boatRuntime || found.runtimeTransport === "dialout");
+      if (enrolled && found.ownerId !== caller.userId)
         throw new ToolError("forbidden", "Only the runtime owner may control this sandbox.");
       if (!provider.capabilities[found.harness]?.interrupt) {
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
@@ -1737,15 +1756,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (args.request_id !== undefined)
         throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
       const { sandbox: found, provider } = await live(args.id, false, undefined, true);
-      if (found.runtimeTransport === "dialout" && !found.boatRuntime)
-        throw new ToolError("unsupported", "This runtime operation is unavailable.");
-      if (found.boatRuntime && found.ownerId !== caller.userId)
+      const enrolled = Boolean(found.boatRuntime || found.runtimeTransport === "dialout");
+      if (enrolled && found.ownerId !== caller.userId)
         throw new ToolError("forbidden", "Only the runtime owner may control this sandbox.");
       // Applies to managed and ordinary exec before any native preparation or
       // provider command can implicitly resume a retained disk.
       await data.sandboxes.assertExecAllowed?.(found.id);
       const managedNative =
-        !found.boatRuntime &&
+        !enrolled &&
         (await context.launchCredentials.assertExec?.(
           { userId: found.ownerId, orgId: found.orgId, role: "member" },
           found.id,
@@ -1754,7 +1772,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const execute = async () => {
         const membership = caller.orgs.find((member) => member.orgId === found.orgId);
         if (!membership) throw new ToolError("forbidden", "No current organization membership.");
-        if (!found.boatRuntime)
+        if (!enrolled)
           await context.connections?.prepare?.(provider, found, {
             userId: caller.userId,
             orgId: found.orgId,
@@ -1762,7 +1780,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           });
         const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
         const nativeBefore =
-          (!found.boatRuntime &&
+          (!enrolled &&
             (await context.launchCredentials.nativeSecrets?.(
               nativeActor,
               found.id,
@@ -1787,7 +1805,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           );
         try {
           const nativeAfter =
-            (!found.boatRuntime &&
+            (!enrolled &&
               (await context.launchCredentials.nativeSecrets?.(
                 nativeActor,
                 found.id,
@@ -1944,12 +1962,22 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
         "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
         "agent is done, so the sandbox stops costing.",
-      input: { id, request_id: z.string().uuid().optional() },
+      input: { id, request_id: z.string().uuid().optional(), only_if_idle: z.boolean().optional() },
       output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
       destructive: true,
     },
     async (args) => {
       const found = await visible(args.id);
+      if (args.only_if_idle && !["ready", "stopped"].includes(found.status))
+        throw new VaultError(
+          "credential_binding_unsafe",
+          "Wait for the running turn or lifecycle operation to finish before changing accounts.",
+        );
+      if (args.only_if_idle && found.status === "ready" && !(await statusOf(args.id, undefined)).settled)
+        throw new VaultError(
+          "credential_binding_unsafe",
+          "Wait for the current turn to finish before changing accounts.",
+        );
       // A repeated stop observes the admitted request; it must not compete with
       // its activity/reconciliation lease or replay provider hooks on archiving compute.
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))

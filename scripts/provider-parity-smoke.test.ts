@@ -22,6 +22,7 @@ for (const mode of [
   "accounts",
   "accounts_unknown",
   "accounts_invalid",
+  "accounts_missing_model",
   "accounts_stop_unsupported",
   "accounts_unknown_bad",
   "accounts_price_lost",
@@ -75,7 +76,9 @@ for (const mode of [
               provider,
               org: provider,
               harness: "codex",
-              model: "fake-model",
+              ...(mode === "accounts_missing_model" && account === "codex-azure"
+                ? { model: "", notRunReason: "account has no declared model" }
+                : { model: "fake-model" }),
               modelAccountId: "fake-account",
               golden: "fake-golden",
               hostId: "owned-host",
@@ -183,7 +186,7 @@ for (const mode of [
                       message:
                         mode === "quota"
                           ? "The Modal plan start limit per day has been reached."
-                          : "Access denied. token=do-not-print ghp_abcdefghijklmnopqrstuvwxyz0123456789 sk-abcdefghijklmnopqrstuvwxyz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl",
+                          : `Access denied. token=do-not-print ghp_${"abcdefghijklmnopqrstuvwxyz0123456789"} sk-abcdefghijklmnopqrstuvwxyz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl`,
                       details: { secret: "do-not-print-details" },
                     },
                   },
@@ -337,7 +340,10 @@ for (const mode of [
       if (mode === "accounts_invalid") {
         expect(passed).toBe(false);
         expect(calls).toHaveLength(0);
-        expect(lines.find((line) => line.startsWith("{"))).toContain("invalid_accounts_configuration");
+        expect(JSON.parse(lines.find((line) => line.startsWith("{"))!)).toMatchObject({
+          code: "invalid_accounts_configuration",
+          field: "ARMADA_SMOKE_CASES[1].account",
+        });
         return;
       }
       const badCost = mode === "accounts_unknown_bad" || mode === "accounts_price_lost";
@@ -346,17 +352,30 @@ for (const mode of [
       for (const account of ["codex-openai", "codex-azure"]) {
         for (const provider of ["modal", "docker"]) {
           const cell = report.accounts[account][provider];
+          if (mode === "accounts_missing_model" && account === "codex-azure") {
+            expect(cell).toEqual({ status: "not-run", reason: "account has no declared model" });
+            expect(lines.join("\n")).toContain(
+              `| codex-azure | ${provider} | not-run: account has no declared model |`,
+            );
+            continue;
+          }
           expect(cell.status).toBe(badCost ? "fail" : mode === "accounts_stop_unsupported" ? "not-run" : "pass");
           expect(cell.features["resume-recall"][provider].status).toBe("pass");
           if (mode === "accounts_unknown") expect(cell.features["exact-cost"][provider].reason).toBe("unknown: price");
         }
       }
+      expect(lines.join("\n")).toContain("| claude-anthropic | modal | not-run: no account on staging |");
+      expect(lines.join("\n")).toContain("| codex-subscription | docker | not-run: no account on staging |");
       expect(report.accounts["codex-subscription"].modal).toEqual({
         status: "not-run",
         reason: "no account on staging",
       });
-      expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(4);
-      expect(calls.filter((call) => call.endsWith(":sandbox/delete"))).toHaveLength(4);
+      expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(
+        mode === "accounts_missing_model" ? 2 : 4,
+      );
+      expect(calls.filter((call) => call.endsWith(":sandbox/delete"))).toHaveLength(
+        mode === "accounts_missing_model" ? 2 : 4,
+      );
       expect(calls.some((call) => call.startsWith("boat:"))).toBe(false);
       return;
     }
@@ -871,3 +890,76 @@ test("GitHub parity uses the same probe for coordinator production Boat", async 
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
   expect(fake.calls.find((call) => call.path === "sandbox/exec")?.body.command).toContain("push --dry-run");
 });
+
+// Configuration failures must be actionable before allocating any real compute.
+for (const [name, override, field] of [
+  ["missing URL", { ARMADA_URL: undefined }, "ARMADA_URL"],
+  ["missing token", { ARMADA_TOKEN: " " }, "ARMADA_TOKEN"],
+  ["missing consent", { ARMADA_SMOKE: undefined }, "ARMADA_SMOKE"],
+  ["malformed JSON", { ARMADA_SMOKE_CASES: '{"secret":"never-echo-this"' }, "ARMADA_SMOKE_CASES"],
+  ["non-array", { ARMADA_SMOKE_CASES: "{}" }, "ARMADA_SMOKE_CASES"],
+  ["non-object", { ARMADA_SMOKE_CASES: "[null]" }, "ARMADA_SMOKE_CASES[0]"],
+  [
+    "unrecognized skip reason",
+    {
+      ARMADA_SMOKE_CASES:
+        '[{"provider":"modal","account":"codex-azure","harness":"codex","notRunReason":"never-echo-this"}]',
+    },
+    "ARMADA_SMOKE_CASES[0].notRunReason",
+  ],
+  [
+    "missing model without explicit metadata skip",
+    { ARMADA_SMOKE_CASES: '[{"provider":"modal","account":"codex-azure","harness":"codex"}]' },
+    "ARMADA_SMOKE_CASES[0].model",
+  ],
+  [
+    "normal case without label",
+    { ARMADA_SMOKE_CASES: '[{"provider":"boat"},{"provider":"modal"}]' },
+    "ARMADA_SMOKE_CASES[1].account",
+  ],
+  [
+    "wrong harness",
+    { ARMADA_SMOKE_CASES: '[{"provider":"modal","account":"codex-openai","harness":"opencode"}]' },
+    "ARMADA_SMOKE_CASES[0].harness",
+  ],
+  [
+    "missing Docker host",
+    {
+      ARMADA_SMOKE_CASES:
+        '[{"provider":"docker","account":"codex-openai","harness":"codex","org":"org","model":"model","modelAccountId":"account"}]',
+    },
+    "ARMADA_SMOKE_CASES[0].hostId",
+  ],
+] as const) {
+  test(`accounts configuration identifies ${name}`, async () => {
+    const lines: string[] = [];
+    expect(
+      await postDeploySmoke(
+        Object.assign(
+          {
+            ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+            ARMADA_TOKEN: "never-echo-this",
+            ARMADA_SMOKE: "create_real_compute",
+            ARMADA_SMOKE_CASES: "[]",
+          },
+          override,
+        ),
+        ["--parity", "--accounts"],
+        {
+          now: () => 0,
+          sleep: async () => {},
+          out: (line) => lines.push(line),
+          fetch: async () => {
+            throw new Error("must not allocate or call the network on invalid configuration");
+          },
+        },
+      ),
+    ).toBe(false);
+    expect(JSON.parse(lines.find((line) => line.startsWith("{"))!)).toMatchObject({
+      code: "invalid_accounts_configuration",
+      field,
+      message: expect.any(String),
+    });
+    expect(lines.join("\n")).not.toContain("never-echo-this");
+  });
+}

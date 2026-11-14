@@ -1,4 +1,5 @@
 import type { Harness } from "../packages/core/src/contract.ts";
+import { redactForLog } from "../packages/mcp-server/src/log.ts";
 /** Ordinary sandbox access probe. The owner API only observes and safely cleans up; the native model exercises MCP. */
 export interface ScopedProbeCase {
   org: string;
@@ -299,20 +300,50 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         if (!sent || typeof sent.promptId !== "string" || !sent.promptId) fail("scoped_send_unknown");
         promptId = sent.promptId;
         sendUnknown = false;
-        await io.poll(
-          () =>
-            api<{ prompt: { promptId: string; state: string } | null }>("sandbox/wait", {
-              id,
-              prompt_id: promptId,
-              timeout_seconds: 0,
+        let lastWait: Row | undefined;
+        try {
+          await io.poll(
+            async () => {
+              const result = await api<Row>("sandbox/wait", {
+                id,
+                prompt_id: promptId,
+                timeout_seconds: 0,
+              });
+              lastWait = result;
+              return result;
+            },
+            (result) => {
+              // Lifecycle fences can temporarily hide the accepted parent turn.
+              // Absence is not completion: still require this exact turn to finish.
+              if (result.prompt === null) return false;
+              const prompt = row(result.prompt);
+              if (prompt.promptId !== promptId) fail("scoped_invalid_wait");
+              if (["failed", "interrupted"].includes(String(prompt.state))) fail("scoped_turn_failed");
+              if (!["running", "finished"].includes(String(prompt.state))) fail("scoped_invalid_wait");
+              return prompt.state === "finished";
+            },
+          );
+        } catch (error) {
+          const safeText = (value: unknown) => (typeof value === "string" ? redactForLog(value) : null);
+          io.out(
+            JSON.stringify({
+              step: "scoped_wait_diagnostic",
+              parentId: id,
+              status: safeText(lastWait?.status),
+              statusReason: safeText(lastWait?.statusReason),
+              settled: typeof lastWait?.settled === "boolean" ? lastWait.settled : null,
+              timedOut: typeof lastWait?.timedOut === "boolean" ? lastWait.timedOut : null,
+              prompt:
+                lastWait?.prompt === null
+                  ? null
+                  : {
+                      promptId: safeText(row(lastWait?.prompt).promptId),
+                      state: safeText(row(lastWait?.prompt).state),
+                    },
             }),
-          (result) => {
-            if (!result.prompt || result.prompt.promptId !== promptId) fail("scoped_invalid_wait");
-            if (["failed", "interrupted"].includes(result.prompt.state)) fail("scoped_turn_failed");
-            if (!["running", "finished"].includes(result.prompt.state)) fail("scoped_invalid_wait");
-            return result.prompt.state === "finished";
-          },
-        );
+          );
+          throw error;
+        }
       });
       await io.step("scoped_tool_evidence", async () => {
         await logs(id);

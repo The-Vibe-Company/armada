@@ -339,7 +339,6 @@
     "packages/mcp-server/test/sandbox-lifecycle.test.ts": 4.674,
     "packages/mcp-server/test/sandbox-usage.test.ts": 3.388,
     "packages/mcp-server/test/serve-database-boot.test.ts": 0.369,
-    "packages/mcp-server/test/serve-sandbox-lifetime.test.ts": 2.877,
     "packages/mcp-server/test/server-workers.test.ts": 2.778,
     "packages/mcp-server/test/server.test.ts": 9.981,
     "packages/mcp-server/test/session-amount.test.ts": 2.606,

@@ -1,6 +1,6 @@
 /** Coordinator-only staging check: exactly one Modal allocation, never retried. */
 import { createHash } from "node:crypto";
-import type { AgentEvent } from "../packages/core/src/provider.ts";
+import type { AgentEvent, ToolCall } from "../packages/core/src/provider.ts";
 import { validateReadableVariables } from "../packages/core/src/readable-variables.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { shellQuote } from "../packages/core/src/shell-quote.ts";
@@ -50,6 +50,9 @@ interface Reply {
     skillsVersion?: number;
     variablesVersion?: number;
     usageVersion?: number;
+    claudeVersion?: number;
+    opencodeVersion?: number;
+    opencodeShellProofVersion?: number;
   };
   usage?: SandboxUsage;
   skills?: unknown;
@@ -94,6 +97,26 @@ if (
   options.modalRuntime.followupVersion !== 1
 )
   throw Error("Modal dial-out v1 with same-conversation follow-up is unavailable; no launch attempted.");
+if (process.argv.includes("--opencode") && process.argv.includes("--claude"))
+  throw Error("Select only one harness; no launch attempted.");
+const harness = process.argv.includes("--opencode")
+  ? "opencode"
+  : process.argv.includes("--claude")
+    ? "claude"
+    : "codex";
+if (harness === "opencode") {
+  if (options.modalRuntime.opencodeVersion !== 1)
+    throw Error("Modal enrolled OpenCode v1 is unavailable; no launch attempted.");
+  if (process.argv.includes("--mcp"))
+    throw Error("OpenCode MCP tool-proof smoke is not yet admitted; no launch attempted.");
+  if (
+    ["--variables", "--github"].some((flag) => process.argv.includes(flag)) &&
+    options.modalRuntime.opencodeShellProofVersion !== 1
+  )
+    throw Error("OpenCode native shell proof v1 is unavailable; no launch attempted.");
+}
+if (harness === "claude" && options.modalRuntime.claudeVersion !== 1)
+  throw Error("Modal enrolled Claude v1 is unavailable; no launch attempted.");
 const resumeMode = process.argv.includes("--resume");
 if (resumeMode && options.modalRuntime.resumeVersion !== 1)
   throw Error("Modal retained resume v1 is unavailable; no launch attempted.");
@@ -175,7 +198,7 @@ if (githubMode || mcpMode || skillsMode || variablesMode) {
       (revision.revision ?? 0) < 1 ||
       !def ||
       def.provider !== "modal" ||
-      def.harness !== "codex" ||
+      def.harness !== harness ||
       def.goldenId !== choices[0].id ||
       !Array.isArray(def.variables) ||
       !def.variables.length ||
@@ -327,6 +350,8 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
   let finished = false;
   let foundMcp = !mcpMode;
   let foundVariables = !variablesMode;
+  const claudeCalls = new Map<string, ToolCall>();
+  const claudeResults = new Map<string, NonNullable<ToolCall["result"]>>();
   const deadline = Date.now() + 300000;
   while (
     Date.now() < deadline &&
@@ -338,39 +363,92 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
     for (const event of page.events ?? []) {
       if (usageMode) usageCheck.observe(event);
       if (event.promptId !== expectedPromptId) continue;
-      if (mcpMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
-        for (const tool of event.tools)
+      if (harness === "opencode" && event.kind === "other" && event.type === "armada/opencodeShell") {
+        const proof = event.data as Record<string, unknown> | undefined;
+        if (
+          proof &&
+          proof.version === 1 &&
+          typeof proof.nativeMessageId === "string" &&
+          proof.nativeMessageId &&
+          typeof proof.callId === "string" &&
+          proof.callId &&
+          ["bash", "shell"].includes(String(proof.tool)) &&
+          proof.exitCode === 0 &&
+          proof.truncated === false &&
+          typeof proof.output === "string"
+        ) {
           if (
-            tool.server === mcpServer &&
-            tool.name === mcpTool &&
-            canonical(tool.input) === canonical(mcpArguments) &&
-            tool.result?.isError === false &&
-            JSON.stringify(tool.result.output)?.includes(mcpExpected)
-          )
-            foundMcp = true;
-      }
-      if (variablesMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
-        for (const tool of event.tools)
-          if (
-            tool.name === "commandExecution" &&
-            exactCommand((tool.input as { command?: unknown } | undefined)?.command, variableCommand) &&
-            tool.result?.isError === false &&
-            typeof tool.result.output === "string" &&
+            variablesMode &&
             expectedVariableDigest &&
-            tool.result.output.trim() === expectedVariableDigest
+            exactCommand(proof.command, variableCommand) &&
+            proof.output.trim() === expectedVariableDigest
           )
             foundVariables = true;
+          if (
+            githubMode &&
+            exactCommand(proof.command, `gh api repos/${repository} --jq .full_name`) &&
+            proof.output.trim().toLowerCase() === repository.toLowerCase()
+          )
+            githubToolPrompts.add(expectedPromptId);
+        }
       }
-      if (githubMode && event.kind === "message" && !event.parentToolUseId && !event.retracted) {
-        for (const tool of event.tools) {
+      if (
+        harness !== "opencode" &&
+        event.kind === "message" &&
+        !event.parentToolUseId &&
+        !event.retracted &&
+        !event.partial
+      ) {
+        let tools = event.tools;
+        if (harness === "claude") {
+          for (const tool of tools) {
+            if (event.responseKind === "tool_result" && tool.name === "tool_result" && tool.result)
+              claudeResults.set(tool.id, tool.result);
+            else if (event.responseKind !== "tool_result") claudeCalls.set(tool.id, tool);
+          }
+          // Claude archives the assistant use and user result separately. Join only
+          // within this prompt and by the exact tool-use ID, including across pages.
+          tools = [...claudeCalls.values()].flatMap((tool) => {
+            const result = claudeResults.get(tool.id);
+            return result ? [{ ...tool, result }] : [];
+          });
+        }
+        for (const tool of tools) {
+          const output = tool.result?.output;
+          const text =
+            typeof output === "string"
+              ? output
+              : Array.isArray(output) &&
+                  output.every((block) => block?.type === "text" && typeof block.text === "string")
+                ? output.map((block) => block.text).join("\n")
+                : undefined;
+          if (
+            mcpMode &&
+            (harness === "claude"
+              ? tool.name === `mcp__${mcpServer}__${mcpTool}`
+              : tool.server === mcpServer && tool.name === mcpTool) &&
+            canonical(tool.input) === canonical(mcpArguments) &&
+            tool.result?.isError === false &&
+            JSON.stringify(output)?.includes(mcpExpected)
+          )
+            foundMcp = true;
+          const shell = tool.name === (harness === "claude" ? "Bash" : "commandExecution");
           const command = (tool.input as { command?: unknown } | undefined)?.command;
           if (
-            tool.name === "commandExecution" &&
-            typeof command === "string" &&
+            variablesMode &&
+            shell &&
+            exactCommand(command, variableCommand) &&
+            tool.result?.isError === false &&
+            expectedVariableDigest &&
+            text?.trim() === expectedVariableDigest
+          )
+            foundVariables = true;
+          if (
+            githubMode &&
+            shell &&
             exactCommand(command, `gh api repos/${repository} --jq .full_name`) &&
             tool.result?.isError === false &&
-            typeof tool.result.output === "string" &&
-            tool.result.output.trim().toLowerCase() === repository.toLowerCase()
+            text?.trim().toLowerCase() === repository.toLowerCase()
           )
             githubToolPrompts.add(expectedPromptId);
         }
@@ -437,7 +515,7 @@ try {
     runtimeVersion: 1,
     runtimeTransport: "dialout",
     provider: "modal",
-    harness: "codex",
+    harness,
     ...(templateSource
       ? { org: templateSource.org, id: templateId, revision: templateSource.revision, requestKey: templateRequestKey }
       : {
