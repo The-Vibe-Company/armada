@@ -55,11 +55,14 @@ function runtimeRefusal(
 export function runtimeAgentFor(
   commands: Parameters<typeof createRuntimeAgent>[0],
   ownerId: string,
-  sandbox: Pick<SandboxRecord, "id" | "harness" | "providerSandboxId" | "repositoryDir">,
+  sandbox: Pick<SandboxRecord, "id" | "harness" | "providerSandboxId" | "repositoryDir"> & {
+    provider: "boat" | "modal" | "docker";
+  },
   defaults: ModelChoice,
   cwd = sandbox.repositoryDir ? `/home/user/${sandbox.repositoryDir}` : "/home/user",
 ) {
   return createRuntimeAgent(commands, {
+    provider: sandbox.provider,
     harness: sandbox.harness,
     ownerId,
     sandboxId: sandbox.id,

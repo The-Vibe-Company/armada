@@ -319,3 +319,17 @@ allocation, ONE activation, FOUR prompts and TWO stops. No catalog/account edits
 extra launch, provider compute or credentials are introduced by the offline
 fixtures. Record the exact revision and truthful priced/unknown result on #1421;
 workers do not execute the billable staging check.
+
+## Enrolled control operations
+
+Opted-in Modal Codex sandboxes expose `steer`, `interrupt` and bounded foreground
+`exec` through the same durable runtime commands as Boat. These operations never
+call the Modal tunnel. Only the sandbox owner can control the runtime; steering
+also revalidates current membership and the pinned account before enqueueing a
+restart. Revoked accounts cannot gain another inference turn by steering.
+Interrupt remains available to stop a turn after account revocation.
+
+Native Modal launches are unchanged. This control-routing slice does not claim
+live Modal steer/interrupt acceptance or enable other harnesses, subscriptions,
+workspace preparation, default cutover or tunnel deletion. Those remain #1421
+acceptance work for the coordinator-owned staging lifecycle check.
