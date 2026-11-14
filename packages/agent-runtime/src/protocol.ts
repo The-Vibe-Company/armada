@@ -76,6 +76,8 @@ export interface RunnerExecutionOptions {
   readableVariables?: Record<string, string>;
   credentialFreeBuilder?: boolean;
   ghConfigDir?: string;
+  /** Trusted process-local installation path, never accepted through runtime commands. */
+  githubToolsRoot?: string;
 }
 export interface DriverContext {
   request: RuntimePromptRequest;

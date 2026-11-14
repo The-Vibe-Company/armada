@@ -9,6 +9,25 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "idle_wake",
+  "idle_pause",
+  "idle_wrong_reason",
+  "idle_expiry",
+  "idle_conversation",
+  "idle_recall",
+  "idle_budget",
+  "template_valid",
+  "template_missing",
+  "template_revision",
+  "template_account",
+  "template_placement",
+  "template_pending",
+  "template_identity",
+  "template_final_missing",
+  "template_unknown",
+  "template_refused",
+  "template_no_answer",
+  "template_full",
   "h_codex",
   "h_claude",
   "h_opencode",
@@ -75,12 +94,20 @@ for (const mode of [
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
     const subscription = mode.startsWith("subscription") || mode === "accounts_subscription";
     const unpricedSubscription = mode === "subscription" || mode === "accounts_subscription";
+    let clock = 0;
+    const woken = new Set<string>();
+    const idleReads = new Map<string, number>();
+
     const requestedHarness =
       mode === "h_claude" ? "claude-code" : mode === "h_opencode" || mode === "h_missing" ? "opencode" : "codex";
     const configuredHarness = mode === "h_claude" ? "claude" : mode === "h_opencode" ? "opencode" : "codex";
     const controlFeature = ["control_interrupt", "control_finished"].includes(mode) ? "interrupt" : "steer";
     const controlMarkers = new Map<string, string>();
     const controlled = new Set<string>();
+    const journaled: string[] = [];
+    const journalClaims: string[] = [];
+    const templateCalls = new Map<string, number>();
+    const templateRequests = new Map<string, object>();
     const debtFeature =
       mode === "unimplemented" ? "mcp" : mode === "idle-pause" || mode === "wake-on-send" ? mode : undefined;
     const lines: string[] = [];
@@ -102,6 +129,9 @@ for (const mode of [
             (mode.startsWith("accounts") ? ["codex-openai", "codex-azure"] : [undefined]).map((account) => ({
               ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
               provider,
+              ...(mode.startsWith("template_") && mode !== "template_missing"
+                ? { template: { id: "10000000-0000-4000-8000-000000000001", revision: 2 } }
+                : {}),
               org: provider,
               harness: configuredHarness,
               ...(mode === "accounts_missing_model" && account === "codex-azure"
@@ -118,36 +148,50 @@ for (const mode of [
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode.startsWith("h_")
-        ? ["--parity", "--feature", requestedHarness]
-        : ["control_api_unsupported", "control_full"].includes(mode)
+      mode.startsWith("idle_")
+        ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
+        : mode === "template_full"
           ? ["--parity"]
-          : mode.startsWith("control_")
-            ? ["--parity", "--feature", controlFeature]
-            : mode.startsWith("github")
-              ? ["--parity", "--feature", "github"]
-              : mode.startsWith("accounts")
-                ? ["--parity", "--accounts"]
-                : mode === "usage_filter"
-                  ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-                  : mode === "filtered"
-                    ? ["--parity", "--only", "docker", "--feature", "exec"]
-                    : debtFeature
-                      ? ["--parity", "--feature", debtFeature]
-                      : mode === "invalid_filter"
-                        ? ["--parity", "--feature", "typo"]
-                        : ["--parity"],
+          : mode.startsWith("template_")
+            ? ["--parity", "--feature", "templates"]
+            : mode.startsWith("h_")
+              ? ["--parity", "--feature", requestedHarness]
+              : ["control_api_unsupported", "control_full"].includes(mode)
+                ? ["--parity"]
+                : mode.startsWith("control_")
+                  ? ["--parity", "--feature", controlFeature]
+                  : mode.startsWith("github")
+                    ? ["--parity", "--feature", "github"]
+                    : mode.startsWith("accounts")
+                      ? ["--parity", "--accounts"]
+                      : mode === "usage_filter"
+                        ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                        : mode === "filtered"
+                          ? ["--parity", "--only", "docker", "--feature", "exec"]
+                          : debtFeature
+                            ? ["--parity", "--feature", debtFeature]
+                            : mode === "invalid_filter"
+                              ? ["--parity", "--feature", "typo"]
+                              : ["--parity"],
       {
-        now: () => 0,
-        sleep: async () => {},
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
         out: (line) => lines.push(line),
         recordSandbox: async (org, _id, requestKey, provider) => {
+          journaled.push(org);
+          journalClaims.push(_id);
           // Exercise the real journal validator, not a permissive callback.
           expect(String(provider)).toBe(org);
           smokeReceipts([{ org, id: "12345678-1234-1234-1234-123456789abc", requestKey, provider }]);
           if (mode === "journal_failure") throw new Error("journal_unwritable");
         },
         fetch: async (url, init) => {
+          if (url.endsWith("/healthz"))
+            return Response.json(
+              mode.startsWith("idle_") ? { idlePauseDelayMs: mode === "idle_budget" ? 35 * 60_000 : 1000 } : {},
+            );
           const path = url.split("/api/v1/")[1]!;
           const body = JSON.parse(String(init.body));
           const p = body.org;
@@ -203,6 +247,54 @@ for (const mode of [
             case "docker/hosts/list":
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
+            case "templates/launch": {
+              const n = (templateCalls.get(p) ?? 0) + 1;
+              templateCalls.set(p, n);
+              if (n === 1) templateRequests.set(p, body);
+              else expect(body).toEqual(templateRequests.get(p));
+              expect(body.revision).toBe(2);
+              expect(body.prompt).toBeUndefined();
+              states.set(p, "ready");
+              turns.set(p, []);
+              result = {
+                id:
+                  mode === "template_final_missing" && n > 1
+                    ? undefined
+                    : mode === "template_identity" && n > 1
+                      ? `${p}-other`
+                      : p,
+                ...(mode === "template_unknown" ||
+                (["template_pending", "template_identity", "template_final_missing"].includes(mode) && n === 1)
+                  ? {}
+                  : { provider: p }),
+                state:
+                  mode === "template_refused"
+                    ? "failed"
+                    : (["template_pending", "template_identity", "template_final_missing"].includes(mode) && n === 1) ||
+                        mode === "template_unknown"
+                      ? "allocating"
+                      : "succeeded",
+                reason: "environment_unavailable",
+                manifest: {
+                  templateId: body.id,
+                  revision: mode === "template_revision" ? 3 : 2,
+                  account: { id: mode === "template_account" ? "wrong-account" : "fake-account", version: 1 },
+                  golden: {
+                    id: "golden-id",
+                    name: mode === "template_placement" ? "wrong-golden" : "fake-golden",
+                    provider: p,
+                  },
+                  definition: {
+                    provider: p,
+                    harness: "codex",
+                    model: "fake-model",
+                    goldenId: "golden-id",
+                    hostId: mode === "template_placement" ? "wrong-host" : "owned-host",
+                  },
+                },
+              };
+              break;
+            }
             case "sandbox/launch":
               if (mode.startsWith("h_")) {
                 expect(body.harness).toBe(configuredHarness);
@@ -260,6 +352,11 @@ for (const mode of [
               result = { id: p, interrupted: true };
               break;
             case "sandbox/send": {
+              if (mode.startsWith("idle_") && body.prompt.startsWith("What PARITY_")) {
+                expect(states.get(p)).toBe("stopped");
+                woken.add(p);
+                if (mode === "idle_recall") prompts.delete(p);
+              }
               if (mode === "docker_send_pending" && p === "docker")
                 return Response.json(
                   { error: { code: "sandbox_not_ready", message: "Docker launch preparation is pending." } },
@@ -297,7 +394,17 @@ for (const mode of [
                     promptId: turns.get(p)?.at(-1),
                     status: mode === "h_failed" ? "failed" : "finished",
                   },
-                  { kind: "message", promptId: turns.get(p)?.at(-1), text: `SMOKE_OK ${prompts.get(p)}` },
+                  {
+                    kind: "message",
+                    promptId: turns.get(p)?.at(-1),
+                    partial: false,
+                    text:
+                      mode === "template_no_answer"
+                        ? "WRONG"
+                        : mode.startsWith("idle_") && woken.has(p)
+                          ? prompts.get(p)
+                          : `SMOKE_OK ${prompts.get(p)}`,
+                  },
                 ],
               };
               break;
@@ -323,6 +430,23 @@ for (const mode of [
               break;
             case "sandbox/detail":
             case "sandbox/status":
+              if (mode.startsWith("idle_")) {
+                const n = (idleReads.get(p) ?? 0) + 1;
+                idleReads.set(p, n);
+                const paused = !woken.has(p) && n > 2;
+                if (paused) states.set(p, "stopped");
+                result = {
+                  id: p,
+                  status: paused ? "stopped" : states.get(p),
+                  idlePaused: paused,
+                  statusReason: paused ? (mode === "idle_wrong_reason" ? "explicit_stop" : "idle_paused") : null,
+                  expiresAt: paused && mode === "idle_expiry" ? "2099-02-01T00:00:00Z" : "2099-01-01T00:00:00Z",
+                  conversationIds: [
+                    woken.has(p) && mode === "idle_conversation" ? "new-conversation" : "original-conversation",
+                  ],
+                };
+                break;
+              }
               detailReads.set(p, (detailReads.get(p) ?? 0) + 1);
               if (mode === "baseline_quota" && path === "sandbox/detail" && detailReads.get(p) === 1)
                 return Response.json(
@@ -330,7 +454,7 @@ for (const mode of [
                   { status: 429 },
                 );
               result = {
-                id: p,
+                id: mode === "template_identity" ? body.id : p,
                 status: states.get(p),
                 usage: {
                   turnCount: turns.get(p)?.length ?? 0,
@@ -433,7 +557,7 @@ for (const mode of [
                 );
               expect(["stopped", "failed"]).toContain(states.get(p) ?? "missing");
               result = {
-                id: mode === "wrong_delete_id" ? "another-sandbox" : p,
+                id: mode === "wrong_delete_id" ? "another-sandbox" : mode === "template_identity" ? body.id : p,
                 status: mode === "delete_failure" && p === "docker" ? "pending" : "deleted",
               };
               break;
@@ -562,7 +686,7 @@ for (const mode of [
         for (const provider of providers)
           expect(report.features[debtFeature][provider]).toEqual({
             status: "not-run",
-            reason: "probe_not_implemented",
+            reason: debtFeature === "mcp" ? "probe_not_implemented" : "idle_delay_not_advertised",
           });
       } else {
         expect(report.features.exec.docker.status).toBe("pass");
@@ -635,6 +759,26 @@ for (const mode of [
       }
       return;
     }
+    if (mode.startsWith("idle_")) {
+      const failure = ["idle_wrong_reason", "idle_expiry", "idle_conversation", "idle_recall"].includes(mode);
+      expect(passed).toBe(!failure);
+      if (mode === "idle_budget") {
+        expect(report.starts).toBe(0);
+        expect(report.features["wake-on-send"].docker.reason).toBe("idle_observation_exceeds_run_budget");
+        return;
+      }
+      for (const provider of ["modal", "docker"]) {
+        const selected = mode === "idle_pause" ? "idle-pause" : "wake-on-send";
+        expect(report.features[selected][provider].status).toBe(failure ? "fail" : "pass");
+        expect(report.features.cleanup[provider].status).toBe("pass");
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(calls).not.toContain(`${provider}:sandbox/resume`);
+        const firstDetail = calls.indexOf(`${provider}:sandbox/detail`);
+        expect(calls.indexOf(`${provider}:sandbox/stop`)).toBeGreaterThan(firstDetail);
+      }
+      return;
+    }
+
     if (mode === "control_full") {
       expect(passed).toBe(true);
       for (const provider of ["modal", "docker"]) {
@@ -670,6 +814,48 @@ for (const mode of [
         expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
         expect(report.features.cleanup[provider].status).toBe("pass");
         expect(turns.get(provider)?.length ?? 0).toBe(mode === "control_unsupported" ? 0 : 1);
+      }
+      return;
+    }
+    if (mode.startsWith("template_")) {
+      const failure = [
+        "template_revision",
+        "template_account",
+        "template_placement",
+        "template_refused",
+        "template_no_answer",
+        "template_unknown",
+        "template_identity",
+        "template_final_missing",
+      ].includes(mode);
+      expect(passed).toBe(!failure);
+      expect(report.starts).toBe(mode === "template_missing" ? 0 : mode === "template_full" ? 4 : 2);
+      for (const provider of ["modal", "docker"]) {
+        expect(report.features.templates[provider].status).toBe(
+          mode === "template_missing" || failure ? "not-run" : "pass",
+        );
+        if (mode === "template_missing")
+          expect(report.features.templates[provider].reason).toBe("template_revision_not_configured");
+        else {
+          expect(templateCalls.get(provider)).toBe(
+            mode === "template_unknown"
+              ? 600
+              : ["template_pending", "template_identity", "template_final_missing"].includes(mode)
+                ? 2
+                : 1,
+          );
+          expect(journaled).toContain(provider);
+          if (mode === "template_identity") {
+            expect(journalClaims).toContain(provider);
+            expect(journalClaims).toContain(`${provider}-other`);
+            expect(calls.filter((call) => call === `${provider}:sandbox/delete`)).toHaveLength(2);
+          }
+          expect(report.features[mode === "template_full" ? "templates-cleanup" : "cleanup"][provider].status).toBe(
+            "pass",
+          );
+          if (mode === "template_refused")
+            expect(report.features.templates[provider].diagnostic.code).toBe("environment_unavailable");
+        }
       }
       return;
     }

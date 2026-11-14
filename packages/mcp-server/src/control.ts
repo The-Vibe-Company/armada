@@ -1,21 +1,10 @@
 import {
   AuthError,
   type AuthStore,
-  assertEmail,
-  assertEmailCode,
-  assertProvider,
   BodyTooLargeError,
   createServiceToken,
-  createSqlAuthStore,
-  exchangeSupabaseCode,
   listServiceTokens,
-  readBoundedText,
-  refreshSupabaseSession,
   revokeServiceToken,
-  type Session,
-  sendEmailLink,
-  supabaseAuthorizeUrl,
-  verifyEmailCode,
 } from "@armada/auth";
 import type { Harness } from "@armada/core";
 import {
@@ -42,26 +31,16 @@ import {
   addMember,
   assertGoldenMutation,
   connectGolden,
-  createApplicationVault,
-  createGoldenAdoption,
   createOrg,
-  createRoutineService,
   createSkillCatalog,
-  createSkillDefaultsService,
-  createSqlMcpLaunchPort,
-  createSqlMcpRegistry,
-  createSqlVaultStore,
-  createTemplateService,
   ENCRYPTION_KEY_ENV,
   EncryptionKeyError,
   type GitHubApp,
   type GoldenActor,
-  GoldenBuildJobs,
+  type GoldenBuildJobs,
   GoldenError,
   type GoldenErrorCode,
   type GoldenRecord,
-  githubAppFromEnv,
-  githubInstallationAppFromEnv,
   goldenForLaunch,
   isSandboxProvider,
   LaunchError,
@@ -73,9 +52,6 @@ import {
   listCredentials,
   listMembers,
   listOrgs,
-  type McpBrokerPort,
-  type McpConnectionInput,
-  type McpRegistry,
   type ModelChoice,
   mutateCredentialAccount,
   normalizeGitHubGoldenConfig,
@@ -107,25 +83,22 @@ import {
   type VaultStore,
   type Visibility,
 } from "@armada/core/server";
-import { createBoatProvider } from "@armada/provider-boat";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
 import { apiFailureCode, providerFailureResponse } from "./api-failure.ts";
 import { validateAzureModelAccount } from "./azure-model-account.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
-import { databasePoolMax } from "./config.ts";
-import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
-import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
+import { readBody, readVaultBody } from "./control-body.ts";
+import { optional, required, UUID } from "./control-input.ts";
+import { fail } from "./control-response.ts";
+import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
+import type { DataSource, ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
-import { providerRegistry } from "./http.ts";
-import { InvitationError, type Invitations, invitationsFromEnv } from "./invitations.ts";
+import { InvitationError, type Invitations } from "./invitations.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions, launchProviderOptions } from "./launch-options.ts";
-import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
-import { createMcpLifecycle } from "./mcp-lifecycle.ts";
-import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
-import { createModalIntegration } from "./modal-integration.ts";
-import { createModelAuthOwnership, type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
-import { createModelUsageApi, isPrivateModelEvent, type ModelUsageApi } from "./model-usage.ts";
+import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
+import { type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
+import { isPrivateModelEvent, type ModelUsageApi } from "./model-usage.ts";
 import {
   connectOrgProvider,
   disconnectOrgProvider,
@@ -134,23 +107,24 @@ import {
   validateOrgProvider,
 } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
-import { createProviderMetadata } from "./provider-metadata.ts";
+import {
+  authMethodsRoute,
+  authorizeRoute,
+  emailStartRoute,
+  emailVerifyRoute,
+  exchangeRoute,
+  refreshRoute,
+} from "./public-auth-control.ts";
 import { RequestTiming, withRequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
-import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
-import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
-import { bunSql } from "./sql.ts";
-import { createSubscriptionMigration } from "./subscription-migration.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
-const MAX_BODY_BYTES = 128 * 1024;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
   sandboxBillingAccount?: (
@@ -199,7 +173,7 @@ export interface ControlOptions {
   modelAccountValidator?: NonNullable<Parameters<typeof mutateCredentialAccount>[4]>;
   githubAccount?: GitHubAccountApi;
   goldenRetirements?: import("@armada/core/server").GoldenSnapshotRetirements;
-  mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
+  mcp?: NonNullable<McpControlOptions["mcp"]>;
   connections?: LaunchStores["connections"];
   /** Same verified bearer dependencies as MCP: Armada service/OAuth tokens and Supabase sessions. */
   authStore: AuthStore;
@@ -550,207 +524,6 @@ async function tokenListRoute(request: Request, options: ControlOptions): Promis
   }
 }
 
-/** Expose only supported sign-in methods, never upstream configuration. */
-async function authMethodsRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "GET") return fail(405, "invalid", "Use GET.");
-  try {
-    const response = await (options.supabase.fetch ?? fetch)(
-      new URL("/auth/v1/settings", options.supabase.supabaseUrl),
-      { headers: { apikey: options.supabase.anonKey }, signal: AbortSignal.timeout(10_000) },
-    );
-    if (!response.ok) throw new Error();
-    const settings = (await response.json()) as { external?: Record<string, unknown> };
-    if (!settings.external || typeof settings.external !== "object") throw new Error();
-    const methods = ["email", "github", "google"].filter((method) => settings.external?.[method] === true);
-    return Response.json({ methods }, { headers: { "cache-control": "no-store" } });
-  } catch {
-    return fail(503, "unavailable", "Sign-in methods are unavailable; try again later.");
-  }
-}
-
-async function emailVerifyRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const body = await readBody(request);
-    const email = assertEmail(required(body, "email"));
-    const code = assertEmailCode(required(body, "code"));
-    const session = await verifyEmailCode({
-      fetch: options.supabase.fetch ?? fetch,
-      supabaseUrl: options.supabase.supabaseUrl,
-      anonKey: options.supabase.anonKey,
-      email,
-      code,
-      now: options.now?.() ?? new Date(),
-    });
-    return Response.json(
-      { accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt },
-      { headers: { "cache-control": "no-store" } },
-    );
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    return fail(401, "unauthorized", "Email code was refused.");
-  }
-}
-
-async function emailStartRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const body = await readBody(request);
-    const email = assertEmail(required(body, "email"));
-    const redirectTo = required(body, "redirect_uri");
-    const challenge = required(body, "code_challenge");
-    const state = required(body, "state");
-    const callback = new URL(redirectTo);
-    if (body.cli_email_link !== undefined && typeof body.cli_email_link !== "boolean") throw new Error();
-    const cliEmailLink = body.cli_email_link === true;
-    if (
-      callback.protocol !== "http:" ||
-      !["127.0.0.1", "localhost"].includes(callback.hostname) ||
-      !callback.port ||
-      callback.username ||
-      callback.password ||
-      callback.hash ||
-      (cliEmailLink && (callback.pathname !== "/callback" || callback.search)) ||
-      !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) ||
-      !/^[A-Za-z0-9._~-]{8,512}$/.test(state)
-    )
-      throw new Error();
-    if (cliEmailLink) callback.searchParams.set("state", state);
-    await sendEmailLink({
-      fetch: options.supabase.fetch ?? fetch,
-      supabaseUrl: options.supabase.supabaseUrl,
-      anonKey: options.supabase.anonKey,
-      email,
-      // Existing clients (including iOS) remain numeric-code-only unless explicitly opted in.
-      redirectTo: cliEmailLink
-        ? callback.toString()
-        : new URL("/login?flow=code", options.publicUrl ?? "https://armada.thevibecompany.co").toString(),
-      challenge,
-    });
-    return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    const status = error instanceof Error && error.message.includes("Too many") ? 429 : 400;
-    return fail(
-      status,
-      status === 429 ? "rate_limited" : "invalid",
-      status === 429 ? "Try again later." : "Invalid email login request.",
-    );
-  }
-}
-
-async function exchangeRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const body = await readBody(request);
-    const code = required(body, "code");
-    const verifier = required(body, "verifier");
-    if (code.length > 4096 || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier))
-      throw new VaultError("invalid", "Invalid login exchange.");
-    const result = options.exchangeNative
-      ? await options.exchangeNative(code, verifier)
-      : await nativeExchange(options, code, verifier);
-    return Response.json(result, { headers: { "cache-control": "no-store" } });
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError)
-      return fail(
-        400,
-        error.code,
-        error.message,
-        error.reason ? { reason: error.reason, action: error.action } : undefined,
-      );
-    if (error instanceof VaultError) return fail(400, error.code, error.message);
-    return fail(401, "unauthorized", "Login exchange was refused.");
-  }
-}
-
-async function nativeExchange(options: ControlOptions, code: string, verifier: string) {
-  const session = await exchangeSupabaseCode({
-    fetch: options.supabase.fetch ?? fetch,
-    supabaseUrl: options.supabase.supabaseUrl,
-    anonKey: options.supabase.anonKey,
-    code,
-    verifier,
-    now: options.now?.() ?? new Date(),
-  });
-  return { accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt };
-}
-
-function authorizeRoute(request: Request, options: ControlOptions): Response {
-  if (request.method !== "GET") return fail(405, "invalid", "Use GET.");
-  const url = new URL(request.url);
-  const provider = url.searchParams.get("provider") ?? "";
-  const redirectTo = url.searchParams.get("redirect_uri") ?? "";
-  const challenge = url.searchParams.get("code_challenge") ?? "";
-  const state = url.searchParams.get("state") ?? "";
-  try {
-    assertProvider(provider);
-    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) || !/^[A-Za-z0-9._~-]{8,512}$/.test(state)) throw new Error();
-    const callback = new URL(redirectTo);
-    if (
-      callback.protocol !== "http:" ||
-      !["127.0.0.1", "localhost"].includes(callback.hostname) ||
-      !callback.port ||
-      callback.username ||
-      callback.password ||
-      callback.hash
-    )
-      throw new Error();
-    const location = supabaseAuthorizeUrl({
-      supabaseUrl: options.supabase.supabaseUrl,
-      anonKey: options.supabase.anonKey,
-      provider: assertProvider(provider),
-      redirectTo: callback.toString(),
-      challenge,
-    });
-    return new Response(null, { status: 302, headers: { location, "cache-control": "no-store" } });
-  } catch {
-    return fail(400, "invalid", "Invalid browser login request.");
-  }
-}
-
-async function refreshRoute(request: Request, options: ControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
-  try {
-    const body = await readBody(request);
-    const token = required(body, "refreshToken");
-    const refreshed = options.refreshNative ? await options.refreshNative(token) : await nativeRefresh(options, token);
-    return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
-  } catch (error) {
-    if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
-    if (error instanceof LaunchError)
-      return fail(
-        400,
-        error.code,
-        error.message,
-        error.reason ? { reason: error.reason, action: error.action } : undefined,
-      );
-    if (error instanceof VaultError) return fail(400, error.code, error.message);
-    return fail(401, "unauthorized", "Refresh token was refused.");
-  }
-}
-
-async function nativeRefresh(options: ControlOptions, refreshToken: string) {
-  const session: Session = {
-    supabaseUrl: options.supabase.supabaseUrl,
-    anonKey: options.supabase.anonKey,
-    accessToken: "expired",
-    refreshToken,
-    expiresAt: new Date(0).toISOString(),
-    userId: "",
-  };
-  const next = await refreshSupabaseSession({
-    fetch: options.supabase.fetch ?? fetch,
-    anonKey: options.supabase.anonKey,
-    session,
-    now: options.now?.() ?? new Date(),
-  });
-  return { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt };
-}
-
 async function dispatch(
   route: string,
   caller: Caller,
@@ -792,6 +565,7 @@ async function dispatch(
         version: 1,
         enabled: Boolean(options.modalRuntimeLaunch),
         followupVersion: options.runtimeSend ? 1 : 0,
+        idleLaunchVersion: options.modalRuntimeLaunch && options.runtimeSend ? 1 : 0,
         resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
@@ -1258,7 +1032,9 @@ async function dispatch(
         );
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
-      required(body, "prompt");
+      if (body.prompt !== undefined || body.id !== undefined) required(body, "prompt");
+      if (body.id === undefined && body.prompt === undefined && !options.runtimeSend)
+        throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
       if (body.id !== undefined) {
         const standard = [
           "org",
@@ -1382,6 +1158,19 @@ async function dispatch(
     }
     case "golden/list":
       return listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
+    case "golden/build/find": {
+      if (!options.goldenBuilds || !options.data)
+        throw new VaultError("unavailable", "Durable golden builds are not configured.");
+      const scoped = await selectedCaller(options, caller, optional(body, "org"));
+      const org = await resolveOrg(options.store, caller.userId, scopedOrg(scoped, optional(body, "org")));
+      const golden = selectGolden(await options.data(scoped).goldens.findByName(org.id, required(body, "name")), body);
+      if (!golden)
+        throw new GoldenError(
+          "not_found",
+          "No visible golden has that name and provider. Check golden list in the intended organization.",
+        );
+      return { build: await options.goldenBuilds.findActive(caller.userId, golden.id, [org.id]) };
+    }
     case "golden/build/cancel": {
       if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
       const scoped = await selectedCaller(options, caller, optional(body, "org"));
@@ -1948,26 +1737,12 @@ function scopedOrg(caller: Caller, requested: string | undefined): string | unde
   const orgId = caller.orgs[0]?.orgId;
   if (!orgId) throw new Unauthorized("Run armada login.");
   if (requested !== undefined && requested.trim() !== "" && requested.trim().toLowerCase() !== orgId) {
-    throw new VaultError("forbidden", "This token is scoped to another org.");
+    throw new VaultError(
+      "forbidden",
+      `This token is scoped to org ${orgId}. Retry with --org ${orgId} (the UUID, not its name).`,
+    );
   }
   return orgId;
-}
-
-async function readBody(request: Request): Promise<Record<string, unknown>> {
-  return readJsonBody(request, false);
-}
-
-function optional(body: Record<string, unknown>, key: string): string | undefined {
-  const value = body[key];
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string") throw new VaultError("invalid", `${key} must be text.`);
-  return value;
-}
-
-function required(body: Record<string, unknown>, key: string): string {
-  const value = optional(body, key);
-  if (value === undefined) throw new VaultError("invalid", `${key} is required.`);
-  return value;
 }
 
 function requiredRepos(body: Record<string, unknown>): string[] {
@@ -1998,144 +1773,6 @@ function scope(body: Record<string, unknown>): "user" | "org" {
   throw new VaultError("invalid", "scope is user or org.");
 }
 
-function fail(
-  status: number,
-  code: string,
-  message: string,
-  details?: ToolApiError["details"] | Pick<LaunchError, "reason" | "action">,
-): Response {
-  return Response.json(
-    { error: { code, message, ...(details ? { details } : {}) } },
-    { status, headers: { "cache-control": "no-store" } },
-  );
-}
-
-/**
- * Wires the control API from the environment: `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
- * `ARMADA_DATABASE_URL` (a privileged Postgres connection string, the Supabase `postgres` role)
- * and `ARMADA_ENCRYPTION_KEY`.
- */
-export function controlOptionsFromEnv(env: Record<string, string | undefined>): ConfiguredControlOptions {
-  const need = (name: string): string => {
-    const value = env[name];
-    if (!value) throw new Error(`Set ${name}.`);
-    return value;
-  };
-  // Share the server adapter and its validated pool budget, including transaction support.
-  const sql = bunSql(need("ARMADA_DATABASE_URL"), databasePoolMax(env.ARMADA_DATABASE_POOL_MAX));
-  const encryptionKey = need(ENCRYPTION_KEY_ENV);
-  const githubApp = githubAppFromEnv(env);
-  const store = createSqlVaultStore(sql);
-  const authStore = createSqlAuthStore(sql);
-  const supabaseUrl = need("SUPABASE_URL");
-  const anonKey = need("SUPABASE_ANON_KEY");
-  const registry = createSqlMcpRegistry(sql, encryptionKey, {
-    catalogAuthentication: catalogAuthenticationFromEnv(
-      env,
-      encryptionKey,
-      env.ARMADA_DASHBOARD_URL,
-      env.NODE_ENV === "development",
-    ),
-  });
-  const templates = createTemplateService(sql, encryptionKey);
-  const lifecycle = () =>
-    createMcpLifecycle({
-      sql,
-      registry,
-      encryptionKey,
-      origin: need("ARMADA_PUBLIC_URL"),
-      prepareReadableVariables: templates.prepare,
-    });
-  const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) =>
-    createBoatProvider({
-      apiKey,
-      beforePrompt: async (provider, id) => {
-        if (caller) await lifecycle().beforePrompt(provider, id, caller);
-      },
-    });
-  let modal: ReturnType<typeof createModalIntegration> | undefined;
-  const modalIntegration = () =>
-    (modal ??= createModalIntegration({
-      sql,
-      vault: store,
-      encryptionKey,
-      publicUrl: need("ARMADA_PUBLIC_URL"),
-      github: { store, app: githubApp },
-      beforePrompt: async (provider, id, caller) => {
-        await lifecycle().beforePrompt(provider, id, caller);
-      },
-    }));
-  const providers = providerRegistry({
-    vault: store,
-    encryptionKey,
-    providerFor,
-    modalTokensFor: async (target, caller) => (await modalIntegration()).modalTokensFor(target, caller),
-    modalProviderFor: async (tokens, binding, context) =>
-      (await modalIntegration()).modalProviderFor(tokens, binding, context),
-  });
-  let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
-  const modelAuth = createModelAuthOwnership(
-    sql,
-    encryptionKey,
-    undefined,
-    undefined,
-    env.ARMADA_PUBLIC_URL
-      ? {
-          origin: env.ARMADA_PUBLIC_URL,
-          prepareAccount: (actor, id, version) => subscriptionMigration.prepareAccount(actor, id, version),
-          prepareTurn: (provider, id, caller) => subscriptionMigration.prepareTurn(provider, id, caller),
-        }
-      : undefined,
-  );
-  if (modelAuth.broker)
-    subscriptionMigration = createSubscriptionMigration(
-      sql,
-      createHistoricalSandboxProviderResolver(providers),
-      (provider, id, caller, quiesced) => modelAuth.capture(provider, id, caller, quiesced),
-      modelAuth.broker,
-    );
-  return {
-    ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
-    sandboxBillingAccount: createSandboxBillingAccount(sql),
-    credentialBindingRecovery: createSandboxAccountChange(
-      sql,
-      launchCredentials(store, encryptionKey, undefined, modelAuth),
-      createCredentialBindingRecovery(sql, encryptionKey),
-    ),
-    invitations: invitationsFromEnv(sql, env),
-    templates,
-    skillDefaults: createSkillDefaultsService(sql),
-    routines: createRoutineService(sql),
-    applicationVault: createApplicationVault(sql, encryptionKey),
-    mcp: { registry },
-    connections: createSqlMcpLaunchPort(sql, registry),
-    authStore,
-    supabase: { supabaseUrl, anonKey },
-    encryptionKey,
-    github: { app: githubApp },
-    store,
-    modelAuth,
-    providerFor,
-    modelUsage: createModelUsageApi(sql),
-    goldenAdoption: createGoldenAdoption(sql),
-    providers,
-    storedProviderFor: async (target, caller) => (await modalIntegration()).storedProviderFor(target, caller),
-    data: createSqlData(sql),
-    providerMetadata: createProviderMetadata({ sql, vault: store, encryptionKey, providerFor }),
-    goldenTarget: async (target, caller) =>
-      target.provider === "boat" ? { ...target, modal: null } : (await modalIntegration()).goldenTarget(target, caller),
-    goldenBuilds: new GoldenBuildJobs({
-      sql,
-      encryptionKey,
-      service: {
-        github: { store, encryptionKey, app: githubApp },
-        installationApp: githubInstallationAppFromEnv(env),
-      },
-      provider: (actor, _visibility, target) => providers.resolve(target, { userId: actor.userId }),
-    }),
-  };
-}
-
 function selectGolden(rows: GoldenRecord[], body: Record<string, unknown>): GoldenRecord | undefined {
   const provider = optional(body, "provider");
   if (provider !== undefined && !isSandboxProvider(provider))
@@ -2146,141 +1783,10 @@ function selectGolden(rows: GoldenRecord[], body: Record<string, unknown>): Gold
   return selected[0];
 }
 
-async function dispatchMcp(action: string, userId: string, body: Record<string, unknown>, options: ControlOptions) {
-  if (action === "oauth/callback") {
-    const callback = options.mcp?.broker?.callback;
-    if (!callback || !options.mcp) throw new VaultError("unavailable", "MCP OAuth callback broker is not configured.");
-    const result = await callback.call(
-      options.mcp.broker,
-      userId,
-      required(body, "state"),
-      required(body, "code"),
-      optional(body, "issuer"),
-    );
-    const connection = await options.mcp.registry.get(userId, result.orgId, result.connectionId);
-    return {
-      connection: {
-        ...connection,
-        status: connection.status === "disabled" || result.status === "connected" ? connection.status : result.status,
-      },
-    };
-  }
-  const orgId = required(body, "org");
-  if (!UUID.test(orgId)) throw new VaultError("invalid", "org must be an organization UUID.");
-  // Membership checked even if the registry is not configured.
-  const orgs = await listOrgs(options.store, userId);
-  if (!orgs.some((o) => o.id === orgId)) throw new VaultError("forbidden", "Organization membership required.");
-  if (!options.mcp) throw new VaultError("unavailable", "MCP registry is not configured on this server.");
-  const { registry, broker } = options.mcp;
-  if (action === "catalog") return { services: await registry.catalog() };
-  if (action === "metadata") {
-    const id = required(body, "id");
-    if (!UUID.test(id)) throw new VaultError("invalid", "id must be a connection UUID.");
-    return { connection: await registry.metadata(userId, orgId, id, body) };
-  }
-  if (action === "list") return { connections: await registry.list(userId, orgId) };
-  if (action === "create" || action === "update") {
-    if (action === "update" && !UUID.test(required(body, "id")))
-      throw new VaultError("invalid", "id must be a connection UUID.");
-    return {
-      connection: await registry.save(
-        userId,
-        orgId,
-        body as unknown as McpConnectionInput,
-        action === "update" ? required(body, "id") : undefined,
-      ),
-    };
-  }
-  const id = required(body, "id");
-  if (!UUID.test(id)) throw new VaultError("invalid", "id must be a connection UUID.");
-  if (action === "sandbox-connections") return { connections: await registry.sandboxConnections(userId, orgId, id) };
-  if (action === "set-enabled") {
-    if (typeof body.enabled !== "boolean") throw new VaultError("invalid", "enabled must be a boolean.");
-    return { connection: await registry.setEnabled(userId, orgId, id, body.enabled) };
-  }
-  const connection = await registry.get(userId, orgId, id);
-  if (action === "delete" || action === "revoke") {
-    await registry.revoke(userId, orgId, id, action === "delete");
-    return { ok: true };
-  }
-  if (action === "connect" && connection.scope === "org" && !orgs.some((o) => o.id === orgId && o.role === "admin"))
-    throw new VaultError("forbidden", "Only an organization administrator may connect a shared grant.");
-  if (action === "connect" && connection.status === "disabled")
-    throw new VaultError("conflict", "Enable this MCP connection before connecting.");
-  if (connection.transport === "stdio") {
-    if (action === "connect") return { connection: await registry.configureStdio(userId, orgId, id) };
-    if (action === "status") return { connection };
-  }
-  if (action === "status" && connection.status === "disabled") return { connection };
-  if (action === "connect" || action === "status") {
-    if (!broker)
-      return {
-        connection: {
-          ...connection,
-          status: "unavailable",
-          lastError: "MCP broker is not configured. Ask your administrator to configure the OAuth/gateway service.",
-        },
-      };
-    const result = await broker[action]({ userId, orgId, connectionId: id });
-    const current = await registry.get(userId, orgId, id);
-    return {
-      connection: {
-        ...current,
-        status: current.status === "disabled" || result.status === "connected" ? current.status : result.status,
-      },
-      ...("authorizationUrl" in result && result.authorizationUrl ? { authorizationUrl: result.authorizationUrl } : {}),
-    };
-  }
-  throw new VaultError("not_found", "Unknown MCP control action.");
-}
-
 async function selectedCaller(options: ControlOptions, caller: Caller, ref: string | undefined): Promise<Caller> {
   if (ref === undefined) return caller;
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, ref));
   return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === org.id) };
 }
 
-/** Both policies count bytes before decoding; vault bodies additionally require valid UTF-8. */
-async function readVaultBody(request: Request): Promise<Record<string, unknown>> {
-  return readJsonBody(request, true);
-}
-
-async function readJsonBody(request: Request, vault: boolean): Promise<Record<string, unknown>> {
-  const invalid = (message: string) =>
-    new VaultError("invalid", vault ? "Invalid application vault request." : message);
-  const reader = vault ? request.body?.getReader() : undefined;
-  const decoder = new TextDecoder("utf-8", { fatal: vault });
-  let text = vault ? "" : await readBoundedText(request, MAX_BODY_BYTES),
-    bytes = 0;
-  try {
-    if (reader) {
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        bytes += chunk.value.byteLength;
-        if (bytes > (vault ? 64 * 1024 : MAX_BODY_BYTES)) {
-          // Do not drain an untrusted stream, or wait for its producer to finish cancellation.
-          void reader.cancel().catch(() => {});
-          throw invalid("The request is too large.");
-        }
-        text += decoder.decode(chunk.value, { stream: true });
-      }
-      text += decoder.decode();
-    }
-    if (!vault && text.trim() === "") return {};
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw invalid("The request is not JSON.");
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      throw invalid("The request is not a JSON object.");
-    return parsed as Record<string, unknown>;
-  } catch (error) {
-    if (vault) throw invalid("");
-    throw error;
-  } finally {
-    reader?.releaseLock();
-  }
-}
+export { controlOptionsFromEnv } from "./control-config.ts";

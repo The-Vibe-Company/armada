@@ -86,6 +86,81 @@ before approval) proves that initial protocol shape; it is **not** a completed
 owner login or model-turn proof. After retrying, share only the new safe failure
 line if needed, never the authentication file or native provider logs.
 
+## If device login still fails: owner recovery (#1581)
+
+First run `codex --version` and keep the safe Armada failure line (including
+its step and any HTTP/JSON-RPC code). The bounded check on 2026-11-14 used
+**codex-cli 0.166.0** installed separately from the sandbox's 0.169.0 binary:
+Armada's real `nativeCodexLogin` started its app-server, received an official
+device challenge, then deliberately cancelled before browser approval. It
+reported the waiting-for-approval step and no publication. No challenge code,
+authentication file or native diagnostic stream was recorded. This checks the
+real startup/challenge/cancellation boundary, **not** completed subscription
+login, Armada publication or a model turn.
+
+Use this decision order:
+
+1. **Startup/initialization failure:** run `command -v codex` and
+   `codex --version` in the same persistent terminal as Armada. Correct the
+   executable/PATH or permissions first; do not repeatedly approve browser
+   codes for a process that cannot start.
+2. **Expired challenge or closed terminal:** start a fresh Armada attempt in
+   tmux/screen, approve only its new code and leave that process alive until
+   import succeeds. An earlier approval cannot resume a terminated attempt.
+3. **Polling, exchange or workspace failure:** isolate native sign-in using the
+   temporary-home procedure below. If standalone Codex also fails, the failure
+   is upstream of Armada publication. Share only version plus the safe Armada
+   stage/code; do not paste native provider errors or `auth.json` into an issue.
+4. **Native login succeeds, Armada publication fails:** check the selected
+   Armada server, org UUID and account-write permissions. For an uncertain API
+   outcome, inspect `armada creds list --org ORG_UUID` before importing again.
+   A native success alone does not prove an Armada account exists.
+
+### Standalone native login, then secure import
+
+Run on your own machine in a persistent terminal, with the intended Armada
+server/login already selected. Replace `ORG_UUID` and the display name below.
+This uses a disposable Codex home and explicitly requests file storage, so it
+neither overwrites your usual Codex login nor depends on a keychain file being
+available to Armada. The subshell deletes its temporary credentials on exit.
+Do not enable shell tracing (`set -x`).
+
+```sh
+(
+  set -eu
+  export CODEX_HOME="$(mktemp -d)"
+  trap 'rm -rf "$CODEX_HOME"' EXIT
+  codex -c 'cli_auth_credentials_store="file"' login --device-auth
+  # Only continue after Codex reports a successful sign-in.
+  test -s "$CODEX_HOME/auth.json"
+  armada creds import codex --name "Personal ChatGPT" \
+    --file "$CODEX_HOME/auth.json" --org ORG_UUID
+)
+```
+
+If standalone **device** authorization still fails, run the same procedure with
+`login` instead of `login --device-auth` on a machine where the native browser
+callback can reach Codex. Do not forward or reuse a device code from a failed
+attempt. If both native methods fail, resolve native account/workspace access
+before retrying Armada; do not fabricate an account ID or replace the
+subscription with an API-key file. If import rejects missing renewable tokens
+or a stable account ID, no account was published: complete native
+account/workspace setup first. The temporary file is deleted even on failure;
+a later attempt requires a new native login.
+
+### Completion evidence still required from the owner
+
+- Complete browser approval with 0.166.0 in the foreground and wait for Armada's
+  imported-account confirmation (not just the browser's success page).
+- Confirm the intended named account in `armada creds list --org ORG_UUID`.
+- Coordinator only: launch/follow up on Modal or the authorized Docker host with
+  that account and record the safe result. No Boat staging probe.
+
+These three steps have **not** been completed by the bounded local check above.
+Do not mark subscription end-to-end acceptance passed from that check or unit
+fixtures. If either native login or publication fails, retain the safe boundary
+and next action above rather than reporting a generic "login failed".
+
 ## Deployment and coordinator acceptance
 
 Deploy the matching server and native runtime from #1186 together. Build with

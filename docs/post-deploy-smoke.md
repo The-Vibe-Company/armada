@@ -1297,6 +1297,28 @@ after resume. It validates precise USD sums when quotes exist, explicit null USD
 and price reasons otherwise, and preserves the earlier per-turn quotes across
 resume. A subscription pass is labeled `included in subscription`, not zero USD.
 
+### Natural idle pause and ordinary-send wake
+
+`--parity --feature idle-pause` observes automatic `stopped` / `idle_paused`
+after a finished token-memory turn. `--feature wake-on-send` additionally sends
+an ordinary recall message (never a resume request), requires its exact final
+assistant answer, and checks the original conversation IDs and absolute expiry
+remain unchanged. Full runs reuse their existing provider sandbox and memory
+turn for both rows. Status reasons are canonical; the optional list-style
+`idlePaused` flag, when supplied, must agree.
+
+The runner reads `/healthz.idlePauseDelayMs`; it never guesses or changes the
+server delay. It allows that delay plus three minutes for the lifecycle sweep
+and checkpoint, within the run deadline and original sandbox expiry. Missing
+diagnostics or a delay longer than the remaining run budget is not-run, never
+a pass. These feature checks necessarily take the configured idle interval
+(ten minutes by default), unlike quick lifecycle cells. Reads do not replace
+natural idle with stop/resume. Cleanup still runs on every known allocation.
+
+This encodes the coordinator's #1562 pause/recall observation. It relies on the
+server's confirmed shutdown projection, not a host ACK; independent provider
+console/host observations remain the coordinator's physical-compute evidence.
+
 ### Steer and interrupt parity
 
 `--parity --feature steer` and `--parity --feature interrupt` reuse the selected
@@ -1313,3 +1335,23 @@ visible debt. Full runs place these controls after resume/usage observations so
 the deliberately interrupted task does not contaminate their cost evidence;
 there are no extra sandbox allocations. These are coordinator/provider probes,
 not unit-test sleeps or CI provider calls.
+
+### Configured template-revision parity
+
+Add `template: {"id":"<template UUID>","revision":2}` to a provider case and run
+`--parity --feature templates` (optionally `--only docker` or `--only modal`).
+The probe launches that existing revision idle, checks the frozen manifest's
+provider, harness, model and admitted account against the case, then requires a
+finished answered turn. It never creates, publishes or deletes the operator's
+template. Use a dedicated smoke template; its configured resources are real.
+Missing configuration is `not-run: template_revision_not_configured`, with no
+allocation for the filtered feature.
+
+In a full run, this is one additional launch per configured provider case,
+because template admission is a distinct launch path. The combined table counts
+these starts and includes template cleanup failures. Pending admission replays
+only the identical durable request key; claimed sandbox IDs are journaled before
+waiting for completion and cleaned up even if acknowledgement remains unknown.
+Child probes share the outer run deadline; cleanup keeps its independent budget.
+Boat retains the coordinator-only production opt-in. Template CRUD/publication
+and routine execution are not established by this launch probe.

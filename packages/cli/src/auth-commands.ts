@@ -1,12 +1,12 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { AuthError, type AuthFetch, assertEmail, type Provider } from "@armada/auth";
 import { createArmadaApiClient, DEFAULT_ARMADA_API_URL } from "./armada-api.ts";
 import { browserLogin } from "./browser-login.ts";
 import { emailLogin } from "./email-login.ts";
-import { filePreferences, type Preferences } from "./preferences.ts";
-import { fileSessionStore, type SessionStore } from "./session.ts";
+import type { Preferences } from "./preferences.ts";
+import { profileDirectory, profileStores } from "./profiles.ts";
+import type { SessionStore } from "./session.ts";
 
 export interface AuthIo {
   out(text: string): void;
@@ -31,8 +31,7 @@ export interface AuthIo {
 }
 
 export function defaultSessionPath(env: NodeJS.ProcessEnv = process.env): string {
-  const base = env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(base, "armada", "session.json");
+  return join(profileDirectory(env), "session.json");
 }
 
 export function productionAuthIo(
@@ -45,20 +44,13 @@ export function productionAuthIo(
     fetch: globalThis.fetch,
     now: () => new Date(),
     open: openBrowser,
-    session: fileSessionStore(defaultSessionPath(env)),
-    preferences: filePreferences(join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "armada", "preferences.json")),
+    ...profileStores(env),
     interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY && !env.CI),
     confirmSignIn: async () => /^(y|yes)?$/i.test(await promptLine("You are not signed in. Sign in now? [Y/n] ")),
     chooseMethod: async (methods, defaultMethod) => {
       const choice = await promptLine(`Sign-in method (${methods.join(", ")}) [${defaultMethod}]: `);
       return choice || defaultMethod;
     },
-    emailPreferences: filePreferences(
-      join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "armada", "login-email.json"),
-    ),
-    launchPreferences: filePreferences(
-      join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "armada", "launch-preferences.json"),
-    ),
     chooseLaunch: async (title, options, preferred) => {
       io.err(
         `${title}:\n${options.map((o, i) => `  ${i + 1}. ${o.label}${o.value === preferred ? " (default)" : ""}`).join("\n")}\n`,
@@ -107,6 +99,7 @@ export async function loginCommand(
   how: { provider?: Provider | undefined; email?: string | undefined; url?: string | undefined } = {},
 ): Promise<void> {
   const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_API_URL;
+  const cli = io.env.ARMADA_PROFILE ? `armada --profile ${io.env.ARMADA_PROFILE}` : "armada";
   if (how.email === undefined) {
     let methods: string[];
     try {
@@ -156,7 +149,7 @@ export async function loginCommand(
     await io.emailPreferences?.write(origin, email);
     io.out("Logged in.\n");
     io.err(
-      "Next: run armada launch for guided setup, or armada host add to connect your own machine. Check setup with armada doctor.\n",
+      `Next: run ${cli} launch for guided setup, or ${cli} host add to connect your own machine. Check setup with ${cli} doctor.\n`,
     );
     return;
   }
@@ -180,7 +173,7 @@ export async function loginCommand(
       });
       io.out("Logged in.\n");
       io.err(
-        "Next: run armada launch for guided setup, or armada host add to connect your own machine. Check setup with armada doctor.\n",
+        `Next: run ${cli} launch for guided setup, or ${cli} host add to connect your own machine. Check setup with ${cli} doctor.\n`,
       );
       return;
     } catch {

@@ -124,10 +124,16 @@ test("a competing accepted turn invalidates an older finished probe before admis
   }
 });
 
-describe.each(["codex", "claude"] as const)("idle Boat %s first send", (harness) => {
+describe.each([
+  { provider: "boat", harness: "codex" },
+  { provider: "boat", harness: "claude" },
+  { provider: "modal", harness: "codex" },
+  { provider: "modal", harness: "claude" },
+  { provider: "modal", harness: "opencode" },
+] as const)("idle $provider $harness first send", ({ provider, harness }) => {
   let f: Awaited<ReturnType<typeof fixture>>;
   beforeAll(async () => {
-    f = await fixture(undefined, "boat", harness, true);
+    f = await fixture(undefined, provider, harness, true);
   }, 20_000);
   afterAll(async () => {
     await f?.close();
