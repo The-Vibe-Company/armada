@@ -203,6 +203,24 @@ Docker does not ask for a separate installation token or host-local GitHub login
 Boat/Modal managed-runtime repository preflight uses the same token resolver and
 GitHub repository access check.
 
+A launch response before runtime preparation completes reports that preparation
+has not completed; it does not establish a provider limitation. A completed launch
+without repositories (either explicit or from a snapshot) has no repository-scoped
+GitHub grant. Name repositories at launch or build a snapshot containing them.
+Do not interpret either response as evidence that Docker cannot use GitHub.
+
+A service bearer uses its owning user's connection; being a service bearer alone
+does not make GitHub unavailable. A coordinator identity with no personal GitHub
+connection cannot prove connected-user parity. For acceptance, use a token owned
+by a connected user with repository access and archive actual successful
+`git log -1`, `gh api repos/<repo> --jq .full_name`, and variable-read tool
+results, both for an explicit repository launch and for the documented
+`--snapshot --config --normal-lifecycle` probe. Managed setup acknowledgements
+alone do not prove clone/push/PR authorization. If push/PR parity is being checked,
+use an owner-approved disposable branch/PR and retain command results; do not
+mutate the repository's main branch. These are coordinator-run real-host checks,
+not unit-test or CI evidence.
+
 Sign in as that same person against the same Armada server, then run
 `armada github status` to inspect connection state and installations;
 `armada github connect`, `reconnect`, `install`, and `manage INSTALLATION_ID`
