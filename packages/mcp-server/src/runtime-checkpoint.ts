@@ -62,7 +62,7 @@ export function createRuntimeCheckpoint(
         ((row.boatRuntime || row.runtimeTransport === "dialout") && ["boat", "modal"].includes(row.provider))
       ) ||
       (row.harness !== "codex" &&
-        !(["boat", "docker"].includes(row.provider) && row.harness === "claude") &&
+        row.harness !== "claude" &&
         !(row.provider === "docker" && row.harness === "opencode")) ||
       row.deletedAt
     )

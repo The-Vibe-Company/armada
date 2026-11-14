@@ -39,6 +39,7 @@ describe.each([
   ["boat", "codex"],
   ["boat", "claude"],
   ["modal", "codex"],
+  ["modal", "claude"],
 ] as const)("retained runtime resume (%s/%s)", (provider, harness) => {
   let f: Awaited<ReturnType<typeof stopped>>;
   // Cold WASM/migrations and building the stopped checkpoint are prerequisites,

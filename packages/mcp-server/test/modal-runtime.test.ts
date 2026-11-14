@@ -8,7 +8,7 @@ import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 // SQL is the owner of immutable routing, epoch handoff and stopped archive authority.
 // This protects Modal admission (previously Boat/Docker only), not provider inference.
-test("Modal dial-out persists routing and retains enrolled authority through launch but not stop", async () => {
+test("Modal Claude dial-out persists routing and retains enrolled authority through launch but not stop", async () => {
   const { db, people } = await database();
   try {
     const sql: Sql = {
@@ -36,10 +36,10 @@ test("Modal dial-out persists routing and retains enrolled authority through lau
       goldenId: golden.id,
       orgId: people.org,
       ownerId: people.owner,
-      harness: "codex",
+      harness: "claude",
       status: "starting",
       activityLeaseId: crypto.randomUUID(),
-      model: "gpt-5.4",
+      model: "claude-sonnet-4-6",
       reasoningEffort: "high",
     });
     expect((await store.get(row.id))?.runtimeTransport).toBe("dialout");

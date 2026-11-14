@@ -50,6 +50,7 @@ interface Reply {
     skillsVersion?: number;
     variablesVersion?: number;
     usageVersion?: number;
+    claudeVersion?: number;
   };
   usage?: SandboxUsage;
   skills?: unknown;
@@ -94,6 +95,9 @@ if (
   options.modalRuntime.followupVersion !== 1
 )
   throw Error("Modal dial-out v1 with same-conversation follow-up is unavailable; no launch attempted.");
+const harness = process.argv.includes("--claude") ? "claude" : "codex";
+if (harness === "claude" && options.modalRuntime.claudeVersion !== 1)
+  throw Error("Modal enrolled Claude v1 is unavailable; no launch attempted.");
 const resumeMode = process.argv.includes("--resume");
 if (resumeMode && options.modalRuntime.resumeVersion !== 1)
   throw Error("Modal retained resume v1 is unavailable; no launch attempted.");
@@ -175,7 +179,7 @@ if (githubMode || mcpMode || skillsMode || variablesMode) {
       (revision.revision ?? 0) < 1 ||
       !def ||
       def.provider !== "modal" ||
-      def.harness !== "codex" ||
+      def.harness !== harness ||
       def.goldenId !== choices[0].id ||
       !Array.isArray(def.variables) ||
       !def.variables.length ||
@@ -437,7 +441,7 @@ try {
     runtimeVersion: 1,
     runtimeTransport: "dialout",
     provider: "modal",
-    harness: "codex",
+    harness,
     ...(templateSource
       ? { org: templateSource.org, id: templateId, revision: templateSource.revision, requestKey: templateRequestKey }
       : {

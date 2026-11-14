@@ -8,6 +8,9 @@ import { join } from "node:path";
 // repeated, and a known allocation gets one stop even after checkpoint failure.
 test.each([
   "success",
+  "claude",
+  "claude-resume",
+  "claude-old-version",
   "disabled",
   "old-followup",
   "wrong-source",
@@ -107,7 +110,16 @@ test.each([
   "usage-resume-repricing",
   "usage-resume-stopped-drift",
   "usage-variables-skills-mcp-github-resume",
-])("Modal one-allocation check is fail-closed (%s)", async (mode) => {
+])("Modal one-allocation check is fail-closed (%s)", async (scenario) => {
+  const claude = scenario.startsWith("claude");
+  const mode =
+    scenario === "claude"
+      ? "success"
+      : scenario === "claude-resume"
+        ? "resume"
+        : scenario === "claude-old-version"
+          ? "old-followup"
+          : scenario;
   const github = mode.includes("github");
   const mcp = mode.includes("mcp");
   const skills = mode.includes("skills");
@@ -144,7 +156,7 @@ process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops,ch
 globalThis.fetch=async(url,options)=>{
  const path=new URL(url).pathname,body=JSON.parse(options.body);
  if(new Headers(options.headers).get('authorization')!=='Bearer '+process.env.ARMADA_TOKEN)throw Error('auth');
- if(path.endsWith('/launch/options'))return Response.json({modalRuntime:{version:1,enabled:${mode !== "disabled"},followupVersion:${mode === "old-followup" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},mcpVersion:${mode === "mcp-old-version" ? 1 : 2},skillsVersion:${mode === "skills-old-version" ? 0 : 1},variablesVersion:${mode === "variables-old-version" ? 0 : 1},usageVersion:${mode === "usage-old-version" ? 0 : 1}}});
+ if(path.endsWith('/launch/options'))return Response.json({modalRuntime:{version:1,enabled:${mode !== "disabled"},followupVersion:${mode === "old-followup" && !claude ? 0 : 1},claudeVersion:${scenario === "claude-old-version" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},mcpVersion:${mode === "mcp-old-version" ? 1 : 2},skillsVersion:${mode === "skills-old-version" ? 0 : 1},variablesVersion:${mode === "variables-old-version" ? 0 : 1},usageVersion:${mode === "usage-old-version" ? 0 : 1}}});
  if(path.endsWith('/golden/list')){if(++goldenReads!==1)throw Error('golden resolved twice');return Response.json({goldens:[{id:'golden-id',name:'golden',provider:'modal',orgId:'org-id'}]});}
  if(path.endsWith('/templates/get')){if(body.org!=='org-id'||body.id!=='${templateId}'||Object.hasOwn(body,'revision'))throw Error('wrong template lookup');return Response.json({item:{id:'${mode === "variables-wrong-template" ? "foreign" : templateId}',status:'active',orgId:'org-id'},revision:{id:'44444444-4444-4444-8444-444444444444',revision:2,definition:templateDefinition}});}
  if(path.endsWith('/sandbox/mcp-preflight-v1')){if(body.org!=='org-id'||body.runtimeVersion!==1||JSON.stringify(body.connections)!==JSON.stringify(['${mcpId}']))throw Error('wrong MCP preflight');return Response.json({mcpReady:${mode !== "mcp-preflight-denied"}});}
@@ -157,7 +169,7 @@ globalThis.fetch=async(url,options)=>{
   return Response.json({configured,runtime:{kind:'armada',epoch:resumes?'2':'1'},revision:${mode === "github-stale-revision"}?'foreign':${mode === "github-resume-reused-revision"}?'1':String(githubRevision),credentialRequests:${mode === "github-no-acquisition"}?0:1});
  }
  if(path.endsWith('/sandbox/launch-modal-runtime-v1')){
-  launches++;if(launches!==1||body.provider!=='modal'||body.runtimeTransport!=='dialout'||body.runtimeVersion!==1||body.harness!=='codex'||body.ttlSeconds!==900||(${skills}?(defaultReads!==3||Object.hasOwn(body,'skipSkillDefaults')||Object.hasOwn(body,'skills')):(body.skipSkillDefaults!==true||body.skills.length)))throw Error('unsafe launch');
+  launches++;if(launches!==1||body.provider!=='modal'||body.runtimeTransport!=='dialout'||body.runtimeVersion!==1||body.harness!=='${claude ? "claude" : "codex"}'||body.ttlSeconds!==900||(${skills}?(defaultReads!==3||Object.hasOwn(body,'skipSkillDefaults')||Object.hasOwn(body,'skills')):(body.skipSkillDefaults!==true||body.skills.length)))throw Error('unsafe launch');
   if(${variables}) {
     if(body.id!=='${templateId}'||body.revision!==2||!body.requestKey||body.org!=='org-id'||['golden','credentialId','model','connections'].some(key=>Object.hasOwn(body,key)))throw Error('ambiguous template launch');
     variableCommand=body.prompt.match(/(node -e '.*?') successfully/)[1];
@@ -236,6 +248,7 @@ globalThis.fetch=async(url,options)=>{
         preload,
         "scripts/check-modal-runtime.ts",
         ...(resume ? ["--resume"] : []),
+        ...(claude ? ["--claude"] : []),
         ...(github ? ["--github"] : []),
         ...(mcp ? ["--mcp"] : []),
         ...(skills ? ["--skills"] : []),
