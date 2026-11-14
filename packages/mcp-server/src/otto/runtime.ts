@@ -1,3 +1,4 @@
+import { readBoundedText } from "@armada/auth";
 import type { Sql } from "@armada/core/server";
 import type { Route } from "../http.ts";
 import { createOttoObserver, type OttoScope } from "./observation.ts";
@@ -5,7 +6,7 @@ import { recordOrphanDays } from "./orphan-days.ts";
 import { readOttoModel } from "./read-model.ts";
 
 /** Opt-in, one repository binding; credentials never leave the server process. */
-export function createOttoRuntime(sql: Sql, env: Record<string, string | undefined>) {
+function createRepositoryRuntime(sql: Sql, env: Record<string, string | undefined>) {
   const orgId = env.ARMADA_OTTO_ORG_ID,
     repository = env.ARMADA_OTTO_REPOSITORY;
   if (!orgId && !repository) return undefined;
@@ -84,6 +85,50 @@ export function createOttoRuntime(sql: Sql, env: Record<string, string | undefin
         }
       })();
       return { done, stop: () => shutdown.abort() };
+    },
+  };
+}
+
+/** Explicit repository allowlist; each repository retains its own lock, cache and failure boundary. */
+export function createOttoRuntime(sql: Sql, env: Record<string, string | undefined>) {
+  const repositories =
+    env.ARMADA_OTTO_REPOSITORIES?.split(",").map((value) => value.trim()) ??
+    (env.ARMADA_OTTO_REPOSITORY ? [env.ARMADA_OTTO_REPOSITORY] : []);
+  if (!repositories.length) {
+    if (env.ARMADA_OTTO_ORG_ID) throw Error("Invalid Otto repository binding");
+    return undefined;
+  }
+  if (repositories.length > 20 || new Set(repositories.map((v) => v.toLowerCase())).size !== repositories.length)
+    throw Error("Invalid Otto repository bindings");
+  const runtimes = repositories.map(
+    (repository) => createRepositoryRuntime(sql, { ...env, ARMADA_OTTO_REPOSITORY: repository })!,
+  );
+  return {
+    scope: runtimes[0]!.scope,
+    scopes: runtimes.map((runtime) => runtime.scope),
+    route: (async (request) => {
+      if (new URL(request.url).pathname !== "/api/v1/otto/github/webhook") return null;
+      if (request.method !== "POST") return new Response(null, { status: 405 });
+      let raw: string;
+      let repository: unknown;
+      try {
+        raw = await readBoundedText(request, 1024 * 1024);
+        repository = JSON.parse(raw)?.repository?.full_name;
+      } catch {
+        return new Response(null, { status: 400 });
+      }
+      const runtime = runtimes.find((runtime) => runtime.scope.repository === repository);
+      if (!runtime) return new Response(null, { status: 403 });
+      return runtime.route(new Request(request.url, { method: "POST", headers: request.headers, body: raw }));
+    }) as Route,
+    start() {
+      const workers = runtimes.map((runtime) => runtime.start());
+      return {
+        done: Promise.all(workers.map((worker) => worker.done)),
+        stop: () => {
+          for (const worker of workers) worker.stop();
+        },
+      };
     },
   };
 }

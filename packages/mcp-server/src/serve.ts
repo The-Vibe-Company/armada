@@ -650,7 +650,7 @@ export async function startServer(
             ),
             createOttoApi(
               ottoSql ?? sql,
-              otto.scope,
+              otto.scopes,
               (request) =>
                 authenticateCaller(request.headers.get("authorization"), {
                   store: authStore,
@@ -659,6 +659,19 @@ export async function startServer(
                 }),
               undefined,
               config.encryptionKey,
+              async (caller, repository) => {
+                const access = await resolveGitHubAccess(
+                  { store, app: githubApp, encryptionKey: config.encryptionKey, caller: "account_status" },
+                  caller.userId,
+                );
+                if (access.status !== "connected") return false;
+                const response = await globalThis.fetch(`https://api.github.com/repos/${repository}`, {
+                  redirect: "error",
+                  signal: AbortSignal.timeout(2000),
+                  headers: { authorization: `Bearer ${access.token}`, accept: "application/vnd.github+json" },
+                });
+                return response.ok;
+              },
             ),
           ]
         : []),

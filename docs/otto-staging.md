@@ -1,7 +1,7 @@
 # Otto observations
 
-Otto is a read-only control tower bound to one organization and explicit GitHub
-repository. It does not launch, message, wake, refuse, complete tasks or operate
+Otto is a read-only control tower bound to one organization and an explicit GitHub
+repository allowlist. It does not launch, message, wake, refuse, complete tasks or operate
 providers. Observation APIs and the read-only dashboard are implemented; no automation
 authority follows from displaying the read model.
 
@@ -11,7 +11,8 @@ Do not apply migrations or deploy from a worker. Coordinator staging actions:
 
 1. Ensure the merged Otto schema is present through the normal authorized migration process.
 2. Bind `ARMADA_OTTO_ORG_ID` to the organization UUID and
-   `ARMADA_OTTO_REPOSITORY` to the exact `owner/repo` full name. No default org.
+   `ARMADA_OTTO_REPOSITORIES` to comma-separated exact `owner/repo` full names
+   (or legacy `ARMADA_OTTO_REPOSITORY` for one). No default org.
 3. Set server-only `ARMADA_OTTO_GITHUB_TOKEN` to a repository-scoped read token
    (GitHub App installation token supplied/rotated by the owner, or fine-grained
    token). Required read permissions: Metadata, Pull requests, Issues, Checks,
@@ -24,7 +25,7 @@ Do not apply migrations or deploy from a worker. Coordinator staging actions:
    webhook secret in the owner's secret manager and set that identical value in
    the App webhook secret and server `ARMADA_OTTO_WEBHOOK_SECRET`. Never commit it.
    Subscribe to Pull request, Check run, Check suite, Merge group, Push, Issues.
-   Install only on the configured repository. Set `ARMADA_OTTO_MAIN_BRANCH` when
+   Install only on the configured repositories. Set `ARMADA_OTTO_MAIN_BRANCH` when
    its default branch is not `main`. The server checks HMAC before parsing.
 6. With no secret the receiver returns 503; reconciliation remains operational.
    With no token GitHub listing coverage stays unknown; webhooks alone do not prove
@@ -45,7 +46,9 @@ not expand private sandbox visibility.
 
 Authenticated GET endpoints are `summary`, `tasks`, `resources`, `orphans`, `facts`
 under `/api/v1/otto/`. Pass `org_id=<bound UUID>` and optionally the exact bound
-`repository`. Use `limit=1..100` and the opaque `nextCursor` returned by each view.
+`repository` (required when multiple are configured). The authenticated
+`repositories` endpoint lists the explicit bindings for the selected organization;
+actual evidence reads recheck connected GitHub access. Use `limit=1..100` and the opaque `nextCursor` returned by each view.
 Every page carries `items`, `observedAt`, `completeness`, `nextCursor`; responses
 are not cached. Resource/task projections are server-owned and disposable.
 The facts cursor is an observation-time/UUID pair. No write API is exposed.
@@ -163,3 +166,25 @@ Before accepting staging, compare **every paginated PR** with a complete scoped
 `gh pr list`, including unknown/partial coverage, current/daily orphan distinction
 and private visibility. Future intentions, obligations, refusal rules and wake-ups
 are not part of this implemented read-only surface.
+
+## Multiple connected repositories (#1820)
+
+Configure the explicit `ARMADA_OTTO_REPOSITORIES` comma-separated allowlist with
+`The-Vibe-Company/armada,The-Vibe-Company/skillpack` for the bound organization.
+The legacy singular variable remains supported. This is not repository discovery.
+Credentials remain server-only; the observation token is never a write credential.
+
+Coordinator staging acceptance (not performed by this worker):
+
+1. Sign in with a member connected to GitHub with access to both repositories.
+   Open `/otto`, select each repository, and compare its PR inventory against
+   that repository on GitHub. Select a PR then refresh; selection must remain
+   within the same repository. Follow list pagination through the API using
+   the same `repository` parameter; no page may contain the other repo's facts.
+2. Revoke the member's access to one repository and refresh its view: it must
+   be unavailable, not a complete empty inventory. Select the other repository:
+   it must remain usable. Restore access, then interrupt one reconciliation
+   traversal (e.g. deny a later GitHub page); its listing must be partial/unknown,
+   never complete, and the other repository must still reconcile independently.
+
+No migration or provider operation is needed for these checks.

@@ -55,3 +55,52 @@ test("every Otto view has a deadline and logs only view and elapsed time", async
     log.mockRestore();
   }
 });
+
+test("Otto selects only bound repositories, binds fact cursors and denies removed connected access", async () => {
+  const scopes = ["example/web", "example/skills"].map((repository) => ({ orgId: "org", repository }));
+  const caller = { userId: "member", orgs: [{ orgId: "org", role: "member" as const }], via: "service" as const };
+  let allowed = true;
+  const queried: unknown[][] = [];
+  const api = createOttoApi(
+    {
+      async query(_text, params) {
+        queried.push(params ?? []);
+        return {
+          rows: [
+            {
+              id: "00000000-0000-0000-0000-000000000001",
+              observed_at: "2026-11-14T00:00:00Z",
+              repository: params?.[1],
+            },
+            {
+              id: "00000000-0000-0000-0000-000000000002",
+              observed_at: "2026-11-13T00:00:00Z",
+              repository: params?.[1],
+            },
+          ],
+        } as never;
+      },
+    },
+    scopes,
+    async () => ({ ok: true, caller }),
+    undefined,
+    undefined,
+    async () => allowed,
+  );
+  const get = (view: string, repository = "example/web", cursor = "") =>
+    api(
+      new Request(
+        `https://armada.example/api/v1/otto/${view}?org_id=org&repository=${repository}&limit=1&cursor=${cursor}`,
+      ),
+    );
+  const list = (await (await get("repositories"))?.json()) as { items: string[] };
+  expect(list.items).toEqual(["example/web", "example/skills"]);
+  const web = (await (await get("facts"))?.json()) as { items: { repository: string }[]; nextCursor: string };
+  expect(web.items[0]?.repository).toBe("example/web");
+  expect((await get("facts", "example/skills", web.nextCursor))?.status).toBe(400);
+  expect((await get("facts", "example/skills"))?.status).toBe(200);
+  expect(queried.map((params) => params[1])).toEqual(["example/web", "example/skills"]);
+  allowed = false;
+  expect((await get("facts"))?.status).toBe(503);
+  expect(queried).toHaveLength(2);
+});
