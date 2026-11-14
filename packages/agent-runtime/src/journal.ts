@@ -63,8 +63,12 @@ export class Journal {
   prompts(): StoredPrompt[] {
     return (this.db.query("SELECT body FROM prompts").all() as { body: string }[]).map((r) => JSON.parse(r.body));
   }
-  get(id: string) {
-    return this.prompts().find((p) => p.promptId === id);
+  get(id: string): StoredPrompt | undefined {
+    if (typeof id !== "string") return undefined;
+    const row = this.db.query("SELECT body FROM prompts WHERE id=?").get(id) as { body: string } | null;
+    if (!row) return undefined;
+    const prompt = JSON.parse(row.body) as StoredPrompt;
+    return prompt.promptId === id ? prompt : undefined;
   }
   session(conversation: string): string | undefined {
     return (
