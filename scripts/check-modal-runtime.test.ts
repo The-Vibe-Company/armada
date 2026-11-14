@@ -8,6 +8,13 @@ import { join } from "node:path";
 // repeated, and a known allocation gets one stop even after checkpoint failure.
 test.each([
   "success",
+  "opencode",
+  "opencode-resume",
+  "opencode-usage",
+  "opencode-skills-resume",
+  "opencode-old-version",
+  "opencode-tools-blocked",
+  "opencode-claude-conflict",
   "claude",
   "claude-resume",
   "claude-old-version",
@@ -118,17 +125,22 @@ test.each([
   "usage-resume-stopped-drift",
   "usage-variables-skills-mcp-github-resume",
 ])("Modal one-allocation check is fail-closed (%s)", async (scenario) => {
-  const claude = scenario.startsWith("claude");
+  const opencode = scenario.startsWith("opencode");
+  const claude = scenario.startsWith("claude") || scenario === "opencode-claude-conflict";
   const mode =
-    scenario === "claude"
+    scenario === "opencode" || scenario === "claude"
       ? "success"
-      : scenario === "claude-old-version"
+      : ["opencode-old-version", "opencode-claude-conflict", "claude-old-version"].includes(scenario)
         ? "old-followup"
-        : scenario === "claude-mcp-wrong-result-id"
-          ? "mcp-no-result"
-          : claude
-            ? scenario.slice("claude-".length)
-            : scenario;
+        : scenario === "opencode-tools-blocked"
+          ? "mcp-old-version"
+          : scenario === "claude-mcp-wrong-result-id"
+            ? "mcp-no-result"
+            : opencode
+              ? scenario.slice("opencode-".length)
+              : claude
+                ? scenario.slice("claude-".length)
+                : scenario;
   const github = mode.includes("github");
   const mcp = mode.includes("mcp");
   const skills = mode.includes("skills");
@@ -165,7 +177,7 @@ process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops,ch
 globalThis.fetch=async(url,options)=>{
  const path=new URL(url).pathname,body=JSON.parse(options.body);
  if(new Headers(options.headers).get('authorization')!=='Bearer '+process.env.ARMADA_TOKEN)throw Error('auth');
- if(path.endsWith('/launch/options'))return Response.json({modalRuntime:{version:1,enabled:${mode !== "disabled"},followupVersion:${mode === "old-followup" && !claude ? 0 : 1},claudeVersion:${scenario === "claude-old-version" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},mcpVersion:${mode === "mcp-old-version" ? 1 : 2},skillsVersion:${mode === "skills-old-version" ? 0 : 1},variablesVersion:${mode === "variables-old-version" ? 0 : 1},usageVersion:${mode === "usage-old-version" ? 0 : 1}}});
+ if(path.endsWith('/launch/options'))return Response.json({modalRuntime:{version:1,enabled:${mode !== "disabled"},followupVersion:${mode === "old-followup" && !claude && !opencode ? 0 : 1},claudeVersion:${scenario === "claude-old-version" ? 0 : 1},opencodeVersion:${scenario === "opencode-old-version" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},mcpVersion:${mode === "mcp-old-version" ? 1 : 2},skillsVersion:${mode === "skills-old-version" ? 0 : 1},variablesVersion:${mode === "variables-old-version" ? 0 : 1},usageVersion:${mode === "usage-old-version" ? 0 : 1}}});
  if(path.endsWith('/golden/list')){if(++goldenReads!==1)throw Error('golden resolved twice');return Response.json({goldens:[{id:'golden-id',name:'golden',provider:'modal',orgId:'org-id'}]});}
  if(path.endsWith('/templates/get')){if(body.org!=='org-id'||body.id!=='${templateId}'||Object.hasOwn(body,'revision'))throw Error('wrong template lookup');return Response.json({item:{id:'${mode === "variables-wrong-template" ? "foreign" : templateId}',status:'active',orgId:'org-id'},revision:{id:'44444444-4444-4444-8444-444444444444',revision:2,definition:templateDefinition}});}
  if(path.endsWith('/sandbox/mcp-preflight-v1')){if(body.org!=='org-id'||body.runtimeVersion!==1||JSON.stringify(body.connections)!==JSON.stringify(['${mcpId}']))throw Error('wrong MCP preflight');return Response.json({mcpReady:${mode !== "mcp-preflight-denied"}});}
@@ -178,7 +190,7 @@ globalThis.fetch=async(url,options)=>{
   return Response.json({configured,runtime:{kind:'armada',epoch:resumes?'2':'1'},revision:${mode === "github-stale-revision"}?'foreign':${mode === "github-resume-reused-revision"}?'1':String(githubRevision),credentialRequests:${mode === "github-no-acquisition"}?0:1});
  }
  if(path.endsWith('/sandbox/launch-modal-runtime-v1')){
-  launches++;if(launches!==1||body.provider!=='modal'||body.runtimeTransport!=='dialout'||body.runtimeVersion!==1||body.harness!=='${claude ? "claude" : "codex"}'||body.ttlSeconds!==900||(${skills}?(defaultReads!==3||Object.hasOwn(body,'skipSkillDefaults')||Object.hasOwn(body,'skills')):(body.skipSkillDefaults!==true||body.skills.length)))throw Error('unsafe launch');
+  launches++;if(launches!==1||body.provider!=='modal'||body.runtimeTransport!=='dialout'||body.runtimeVersion!==1||body.harness!=='${opencode ? "opencode" : claude ? "claude" : "codex"}'||body.ttlSeconds!==900||(${skills}?(defaultReads!==3||Object.hasOwn(body,'skipSkillDefaults')||Object.hasOwn(body,'skills')):(body.skipSkillDefaults!==true||body.skills.length)))throw Error('unsafe launch');
   if(${variables}) {
     if(body.id!=='${templateId}'||body.revision!==2||!body.requestKey||body.org!=='org-id'||['golden','credentialId','model','connections'].some(key=>Object.hasOwn(body,key)))throw Error('ambiguous template launch');
     variableCommand=body.prompt.match(/(node -e '.*?') successfully/)[1];
@@ -269,6 +281,7 @@ globalThis.fetch=async(url,options)=>{
         "scripts/check-modal-runtime.ts",
         ...(resume ? ["--resume"] : []),
         ...(claude ? ["--claude"] : []),
+        ...(opencode ? ["--opencode"] : []),
         ...(github ? ["--github"] : []),
         ...(mcp ? ["--mcp"] : []),
         ...(skills ? ["--skills"] : []),
@@ -306,6 +319,10 @@ globalThis.fetch=async(url,options)=>{
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
+    if (scenario === "opencode-tools-blocked")
+      expect(stderr).toContain("OpenCode tool-proof smoke is not yet admitted");
+    if (scenario === "opencode-old-version") expect(stderr).toContain("Modal enrolled OpenCode v1 is unavailable");
+    if (scenario === "opencode-claude-conflict") expect(stderr).toContain("Select only one harness");
     expect(status === 0, stderr).toBe(
       [
         "success",

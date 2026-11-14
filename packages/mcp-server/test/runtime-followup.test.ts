@@ -10,6 +10,7 @@ describe.each([
   { provider: "boat", harness: "claude" },
   { provider: "modal", harness: "codex" },
   { provider: "modal", harness: "claude" },
+  { provider: "modal", harness: "opencode" },
 ] as const)("$provider $harness shared runtime send", ({ provider, harness }) => {
   let f: Awaited<ReturnType<typeof fixture>>;
   let preparations = 0;

@@ -672,7 +672,7 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
       serverUrl: "https://armada.invalid",
       cacheDir: "/cache",
       artifact: { sha256: "a".repeat(64), bytes: 10 },
-      configuration: { selectedHarness: scenario === "selection" ? "opencode" : "codex" },
+      configuration: { selectedHarness: scenario === "selection" ? "unknown" : "codex" },
       signal: abort.signal,
       readinessTimeoutMs: 1000,
     });

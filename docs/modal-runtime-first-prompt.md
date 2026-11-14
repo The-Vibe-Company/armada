@@ -1,4 +1,4 @@
-# Modal: enrolled Codex/Claude lifecycle (#1421)
+# Modal: enrolled harness lifecycle (#1421)
 
 This is a coordinator-owned, **billable staging check**, not a worker task or a
 production cutover. It creates exactly one Modal sandbox, never retries an
@@ -408,3 +408,38 @@ configured init scripts now actually execute: launch success is not a live
 workspace acceptance receipt until the coordinator runs it. Native Modal setup
 is unchanged; retained resume does not rerun first-launch setup. OpenCode and
 default/cutover/deletion gates remain separate #1421 work.
+
+
+## OpenCode enrolled lifecycle
+
+Add `--opencode` (mutually exclusive with `--claude`) to select the existing
+OpenCode/ACP driver through the same bootstrap, epoch, command and archive
+services. Use an existing authorized OpenCode key/custom connection account and
+an account-supported model in `ARMADA_RUNTIME_CREDENTIAL_ID` and
+`ARMADA_RUNTIME_MODEL`. OpenAI-compatible, Anthropic Messages and Azure Responses
+connection projection is reused unchanged; this adds no new account kind or
+provider runtime. The smoke requires `modalRuntime.opencodeVersion:1` before
+allocation.
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --opencode --usage --skills --resume
+```
+
+One allocation and one retained activation still require exact first/follow-up
+answers, same native session, fresh resume epoch, retained archive, usage,
+checkpoint ACK and both stops. Existing effective skill defaults are selected
+only with `--skills`. The driver continues to export/import sanitized native
+sessions, not its credential cache/database.
+
+This slice admits normal frozen configuration, GitHub/MCP delivery and runtime
+controls for OpenCode through existing shared services. It does **not** claim
+live tool-bearing parity: `--opencode` with `--github`, `--mcp` or `--variables`
+is rejected before allocation until the smoke has an ACP-specific tool-proof
+oracle. ACP titles/results must not be mistaken for Codex or Claude provenance.
+That verification extension is a subsequent #1421 slice, not a synthetic pass.
+
+Normal matching schema/server/runtime deployment must include
+`20261114020500_modal_runtime_opencode.sql`. Boat does not gain OpenCode admission;
+native Modal behavior and the default-off flag are unchanged. No provider
+allocation, forced account migration, new secrets, default cutover or tunnel
+deletion is authorized. Real OpenCode acceptance awaits coordinator receipts.

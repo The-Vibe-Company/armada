@@ -73,7 +73,7 @@ export function createRuntimeMcp(options: {
       !s ||
       s.ownerId !== caller.userId ||
       !((s.provider === "boat" && s.boatRuntime) || (s.provider === "modal" && s.runtimeTransport === "dialout")) ||
-      (s.harness !== "codex" && s.harness !== "claude")
+      (s.harness !== "codex" && s.harness !== "claude" && !(s.provider === "modal" && s.harness === "opencode"))
     )
       return deny();
     return s;
