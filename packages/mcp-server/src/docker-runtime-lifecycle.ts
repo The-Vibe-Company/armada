@@ -195,25 +195,35 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           !["ready", "running"].includes(sandbox.status)
         )
           deny();
-        // An admitted normal launch owns its first prompt until its final receipt is durable.
+        // The launch reserves a conversation before any native admission or queued receipt.
         const launch = (
-          await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-            "select request_enc from public.docker_launch_requests where sandbox_id=$1 and result_enc is null",
+          await tx.query<{ request_enc: Uint8Array<ArrayBuffer>; result_enc: Uint8Array<ArrayBuffer> | null }>(
+            "select request_enc,result_enc from public.docker_launch_requests where sandbox_id=$1",
             [sandboxId],
           )
         ).rows[0];
+        let plannedConversation: string | undefined;
         if (launch) {
           const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
+          plannedConversation = manifest.conversationId ?? manifest.promptId;
           if (
-            manifest.promptId !== input.requestId ||
-            manifest.request?.prompt !== input.text ||
-            input.conversationId !== undefined
+            !launch.result_enc &&
+            (manifest.promptId !== input.requestId ||
+              manifest.request?.prompt !== input.text ||
+              (input.conversationId !== plannedConversation &&
+                !(manifest.conversationId === undefined && input.conversationId === undefined)))
           )
             deny();
         }
         const reserved = (
-          await tx.query<{ input_enc: Uint8Array<ArrayBuffer>; valid: boolean }>(
-            `select q.input_enc,(q.status='dispatching' and q.owner_id=s.owner_id and q.actor_epoch=e.epoch and q.lifecycle_generation=s.lifecycle_generation) as valid
+          await tx.query<{
+            input_enc: Uint8Array<ArrayBuffer>;
+            conversation_id: string | null;
+            previous_command: boolean;
+            valid: boolean;
+          }>(
+            `select q.input_enc,q.conversation_id,
+             exists(select 1 from public.runtime_commands c where c.sandbox_id=q.sandbox_id and c.request_id='docker_prompt_'||q.request_id::text) as previous_command,(q.status='dispatching' and q.owner_id=s.owner_id and q.actor_epoch=e.epoch and q.lifecycle_generation=s.lifecycle_generation) as valid
           from public.docker_queued_prompts q join public.sandboxes s on s.id=q.sandbox_id
           join public.mcp_actor_epochs e on e.user_id=q.owner_id and e.org_id=s.org_id
           where q.sandbox_id=$1 and q.request_id=$2`,
@@ -225,6 +235,9 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           if (
             !reserved.valid ||
             payload.prompt !== input.text ||
+            (!reserved.previous_command &&
+              reserved.conversation_id !== null &&
+              reserved.conversation_id !== input.conversationId) ||
             (payload.conversationId !== null && payload.conversationId !== input.conversationId)
           )
             deny();
@@ -245,7 +258,12 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           ).rows[0]?.conversation_ids ?? deny();
         if (!previous.rows.length) {
           if (saved.length > 1 || saved.some((conversationId) => !uuid.test(conversationId))) deny();
-          if (saved.length ? input.conversationId !== saved[0] : input.conversationId !== undefined) deny();
+          if (
+            saved.length
+              ? input.conversationId !== saved[0]
+              : input.conversationId !== undefined && input.conversationId !== plannedConversation
+          )
+            deny();
           const blocked = await tx.query(
             `select 1 from public.runtime_commands where sandbox_id=$1
              and starts_with(request_id,'docker_prompt_')

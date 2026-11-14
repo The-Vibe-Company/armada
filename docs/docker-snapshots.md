@@ -227,8 +227,9 @@ preview APIs only. A normal launch's GitHub delivery diagnostic names the
 
 An accepted Docker launch can be followed immediately by `sandbox/send`. While
 preparation is pending, send persists the encrypted instruction and returns an
-immediate receipt with a stable public `promptId`, `status: "queued"`,
-`state: "queued"`, and `conversationId: null`. No client retry loop is required.
+immediate standard send receipt with a stable public `promptId`, `status: "queued"`,
+and the launch-reserved `conversationId` string. Native execution uses that same
+conversation; the strict shared MCP output schema remains unchanged. No client retry loop is required.
 The dedicated server worker dispatches accepted sends in order after preparation
 and the prior native turn settle. Reusing the same request ID returns the original
 receipt; changing its text or selected conversation is a conflict.
@@ -242,3 +243,9 @@ Stop/delete mailbox work takes priority over queued startups and snapshot builds
 Stop intent fences queued creation/bootstrap before a physical stop ACK can
 settle it. Already executing native work remains serial: cancellation does not
 publish a fake stopped state or allow a late create to resurrect compute.
+
+Conversation identity is frozen in the encrypted launch manifest before any host
+work. Existing queue rows backfill known native conversation IDs only; a legacy
+launch with an unacknowledged pre-reservation native command must reconcile that
+receipt before a new queued send can promise its conversation. Newly admitted
+launches always reserve the identity up front.

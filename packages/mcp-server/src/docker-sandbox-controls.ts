@@ -140,6 +140,7 @@ export function createDockerSandboxControls(
     status: "queued" | "dispatching" | "admitted" | "failed";
     native_prompt_id: string | null;
     native_conversation_id: string | null;
+    conversation_id: string | null;
     failure_reason: string | null;
     failure_native_sequence: string | null;
     command_pending: boolean;
@@ -149,7 +150,7 @@ export function createDockerSandboxControls(
   async function queuedPrompts(sandboxId: string): Promise<QueuedPrompt[]> {
     const rows = (
       await sql.query<QueuedPrompt>(
-        `select q.prompt_id,q.request_id,q.status,q.native_prompt_id,q.native_conversation_id,q.failure_reason,
+        `select q.prompt_id,q.request_id,q.status,q.native_prompt_id,q.native_conversation_id,q.conversation_id,q.failure_reason,
        q.failure_native_sequence::text as failure_native_sequence,
        (c.request_id is not null and c.result_enc is null) as command_pending,c.result_enc as command_result_enc
        from public.docker_queued_prompts q left join public.runtime_commands c
@@ -341,7 +342,7 @@ export function createDockerSandboxControls(
       const uncertainStop = failed && selectedQueue.status === "dispatching" && selectedQueue.command_pending;
       prompt = {
         promptId: selectedQueue.prompt_id,
-        conversationId: selectedQueue.native_conversation_id,
+        conversationId: selectedQueue.conversation_id ?? selectedQueue.native_conversation_id,
         state: uncertainStop ? "interrupted" : failed ? "failed" : "queued",
         reason: uncertainStop
           ? "Docker sandbox stopped before queued prompt admission was confirmed."
@@ -457,6 +458,9 @@ export function createDockerSandboxControls(
       cursor = next;
     }
     const summary = await status(caller, row);
+    const queueOnly =
+      summary.prompt &&
+      (await queuedPrompts(row.id)).some((q) => q.prompt_id === summary.prompt?.promptId && !q.native_prompt_id);
     return {
       events: [...events.values()],
       cursor: cursor ?? null,
@@ -464,8 +468,7 @@ export function createDockerSandboxControls(
       hasMore,
       source: "armada-runtime",
       settled: summary.settled,
-      ...(summary.prompt?.state === "queued" ||
-      (summary.prompt?.state === "failed" && summary.prompt.conversationId === null)
+      ...(summary.prompt?.state === "queued" || (summary.prompt?.state === "failed" && queueOnly)
         ? { queuedPrompt: summary.prompt }
         : {}),
       ...(summary.status === "failed"

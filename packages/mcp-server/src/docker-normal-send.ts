@@ -105,6 +105,18 @@ export function createDockerNormalSend(
       }
       await options.prepareMcp?.(caller, row.id);
       let conversationId = args.conversation_id ?? row.conversation_ids.at(-1);
+      if (conversationId === undefined && !previous) {
+        const launch = (
+          await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+            "select request_enc from public.docker_launch_requests where sandbox_id=$1",
+            [row.id],
+          )
+        ).rows[0];
+        if (launch) {
+          const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
+          conversationId = manifest.conversationId ?? manifest.promptId;
+        }
+      }
       // Reconcile durable admission without requiring GitHub to be healthy again.
       // runtime.prompt still validates exact input, current owner and epoch.
       if (args.conversation_id === undefined && previous)

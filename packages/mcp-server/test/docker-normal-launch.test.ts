@@ -25,6 +25,8 @@ import {
   encryptSecret,
   type TemplateRuntime,
 } from "@armada/core/server";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
 import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
@@ -42,6 +44,7 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
+import { createArmadaServer } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 let db: Awaited<ReturnType<typeof migratedDatabase>>;
@@ -169,6 +172,8 @@ async function fixture(
       if (next.command) {
         const command = next.command;
         native.push(command);
+        if (command.op === "prompt" && command.input.conversationId)
+          receipt.conversationId = command.input.conversationId as typeof receipt.conversationId;
         if (command.op === "prompt" && !promptReceipts.has(command.requestId))
           promptReceipts.set(
             command.requestId,
@@ -823,9 +828,151 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
   );
 });
 
+test.each(["codex", "opencode"] as const)(
+  "queued %s send passes the real MCP structured-output schema and keeps its native conversation",
+  async (harness) => {
+    const f = await fixture({ harness });
+    const launch = f.service(sql, true, 10000, officialImage, true);
+    const { prompt: _prompt, ...body } = f.body;
+    await launch.launch(f.caller, body);
+    const stored = (
+      await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+        "select request_enc from docker_launch_requests where sandbox_id=$1",
+        [f.body.requestId],
+      )
+    ).rows[0];
+    if (!stored) throw Error("missing launch");
+    const planned = JSON.parse(await decryptSecret(stored.request_enc, key)).conversationId;
+    const controls = createDockerSandboxControls(sql, key, {
+      clock: f.clock,
+      send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
+    });
+    const server = createArmadaServer(
+      {
+        caller: f.caller,
+        data: createSqlData(sql)(f.caller),
+        launchCredentials: credentials,
+        dockerControls: controls,
+        exposedSecrets: async () => [],
+        provider: async () => {
+          throw Error("Docker must not route to a cloud provider");
+        },
+        now: () => new Date(),
+        sleep: async () => {},
+      },
+      "test",
+    );
+    const client = new Client({ name: "queued-receipt-schema", version: "1" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a);
+    await client.connect(b);
+    try {
+      const catalog = await client.listTools();
+      const send = catalog.tools.find((t) => t.name === "send");
+      if (!send?.outputSchema?.properties) throw Error("missing send output schema");
+      const properties = send.outputSchema.properties as Record<string, { type: string }>;
+      expect(properties.conversationId?.type).toBe("string");
+      const requestId = randomUUID();
+      const response = await client.callTool({
+        name: "send",
+        arguments: { id: f.body.requestId, request_id: requestId, prompt: "Accepted through the tool boundary" },
+      });
+      if (response.isError) throw Error(JSON.stringify(response._meta));
+      expect(response.isError).not.toBe(true);
+      const receipt = response.structuredContent as { promptId: string; conversationId: string; status: string };
+      expect(receipt.status).toBe("queued");
+      expect(receipt.conversationId).toMatch(/^[a-f0-9-]{36}$/);
+      const conversationId = receipt.conversationId;
+      expect(conversationId).toBe(planned);
+      expect(f.native).toHaveLength(0);
+      await launch.drain();
+      await launch.drainQueued();
+      expect(f.native.at(-1)).toMatchObject({ op: "prompt", input: { conversationId } });
+      expect(
+        (
+          await db.query<{ native_conversation_id: string }>(
+            "select native_conversation_id from docker_queued_prompts where sandbox_id=$1 and request_id=$2",
+            [f.body.requestId, requestId],
+          )
+        ).rows[0]?.native_conversation_id,
+      ).toBe(conversationId);
+    } finally {
+      await client.close();
+      await server.close();
+      await launch.close();
+    }
+  },
+);
+
+test("legacy initial prompt replay retains its already-enqueued conversation payload", async () => {
+  const f = await fixture();
+  const server = f.service(sql, true, 10000, officialImage, true);
+  await server.launch(f.caller, f.body);
+  await server.drain();
+  const claim = (
+    await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+      "select request_enc from docker_launch_requests where sandbox_id=$1",
+      [f.body.requestId],
+    )
+  ).rows[0];
+  if (!claim) throw Error("missing claim");
+  const manifest = JSON.parse(await decryptSecret(claim.request_enc, key));
+  delete manifest.conversationId;
+  const commandId = `docker_prompt_${manifest.promptId}`;
+  const command = (
+    await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+      "select request_enc from runtime_commands where sandbox_id=$1 and request_id=$2",
+      [f.body.requestId, commandId],
+    )
+  ).rows[0];
+  if (!command) throw Error("missing command");
+  const old = JSON.parse(await decryptSecret(command.request_enc, key));
+  delete old.input.conversationId;
+  await db.query("update runtime_commands set request_enc=$3 where sandbox_id=$1 and request_id=$2", [
+    f.body.requestId,
+    commandId,
+    await encryptSecret(JSON.stringify(old), key),
+  ]);
+  await db.query("update docker_launch_requests set request_enc=$2,result_enc=null where sandbox_id=$1", [
+    f.body.requestId,
+    await encryptSecret(JSON.stringify(manifest), key),
+  ]);
+  await db.query("update sandboxes set conversation_ids='{}'::text[] where id=$1", [f.body.requestId]);
+  const actualConversation = f.receipt.conversationId;
+  const controls = createDockerSandboxControls(sql, key, {
+    clock: f.clock,
+    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
+  });
+  const queued = await controls.invoke(f.caller, "send", {
+    id: f.body.requestId,
+    request_id: randomUUID(),
+    prompt: "Legacy completed reply, unprojected conversation",
+  });
+  expect(queued).toMatchObject({ handled: true, result: { conversationId: actualConversation, status: "queued" } });
+  expect(actualConversation).not.toBe(manifest.promptId);
+  const before = f.native.length;
+  await server.drain();
+  expect((await server.launch(f.caller, f.body)).conversationId).toBe(f.receipt.conversationId);
+  expect(f.native).toHaveLength(before);
+  await publishFinished(f);
+  await server.drainQueued();
+  expect(f.native.at(-1)).toMatchObject({ op: "prompt", input: { conversationId: actualConversation } });
+  await server.close();
+});
+
 async function publishFinished(f: Fixture, sequence = 0, promptId = f.receipt.promptId) {
   const session = f.session();
   if (!session) throw Error("no runtime");
+  const launch = (
+    await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+      "select request_enc from docker_launch_requests where sandbox_id=$1",
+      [f.body.requestId],
+    )
+  ).rows[0];
+  if (launch) {
+    const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
+    if (manifest.conversationId) f.receipt.conversationId = manifest.conversationId;
+  }
   const events: AgentEvent[] = [
     {
       id: randomUUID(),
@@ -875,7 +1022,7 @@ test.each([false, true])(
     const acceptedTurn = await controls.invoke(f.caller, "send", args);
     expect(acceptedTurn).toMatchObject({
       handled: true,
-      result: { status: "queued", state: "queued", conversationId: null },
+      result: { status: "queued", conversationId: expect.stringMatching(/^[a-f0-9-]{36}$/) },
     });
     if (!acceptedTurn.handled) throw Error("not handled");
     const queued = acceptedTurn.result as { promptId: string };
