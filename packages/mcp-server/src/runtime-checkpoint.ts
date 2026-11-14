@@ -63,7 +63,7 @@ export function createRuntimeCheckpoint(
       ) ||
       (row.harness !== "codex" &&
         row.harness !== "claude" &&
-        !(row.provider === "docker" && row.harness === "opencode")) ||
+        !(["docker", "modal"].includes(row.provider) && row.harness === "opencode")) ||
       row.deletedAt
     )
       throw new VaultError("not_found", "No owned runtime checkpoint target.");

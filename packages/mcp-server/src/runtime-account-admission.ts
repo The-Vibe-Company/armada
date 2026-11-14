@@ -1,4 +1,4 @@
-import { type Sql, VaultError } from "@armada/core/server";
+import { HARNESS_CATALOG, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { SandboxView } from "./data.ts";
 
@@ -26,7 +26,7 @@ export async function lockRuntimeAccount(
         sandbox.credentialVersion,
         caller.userId,
         sandbox.orgId,
-        sandbox.harness === "claude" ? ["anthropic", "claude_oauth"] : ["openai", "codex_auth"],
+        [...HARNESS_CATALOG[sandbox.harness].credentialKinds],
       ],
     )
   ).rows[0];

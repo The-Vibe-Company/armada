@@ -248,3 +248,36 @@ for (const provider of ["boat", "modal"] as const)
       expect(plan.configuration.codexAuthJson).toBeUndefined();
     },
   );
+
+test.each(["key", "endpoint", "anthropic", "azure", "mixed", "boat"] as const)(
+  "OpenCode Modal private configuration retains selected account projection (%s)",
+  async (mode) => {
+    const f = fixture();
+    f.sandbox.provider = mode === "boat" ? "boat" : "modal";
+    f.sandbox.harness = "opencode";
+    f.credentials.env = { OPENCODE_API_KEY: f.key };
+    if (["endpoint", "anthropic", "azure"].includes(mode))
+      f.credentials.env.ARMADA_OPENCODE_ENDPOINT = JSON.stringify({
+        version: 1,
+        baseUrl: mode === "azure" ? "https://models.example/openai/v1" : "https://models.example/v1",
+        models: ["fixture"],
+        ...(mode === "anthropic" || mode === "azure" ? { protocol: mode } : {}),
+      });
+    if (mode === "mixed") f.credentials.env.OPENAI_API_KEY = f.key;
+    if (mode === "mixed" || mode === "boat") {
+      await expect(runtimeConfiguration(f, f.sandbox.provider)).rejects.toMatchObject({ code: "unavailable" });
+      return;
+    }
+    const plan = await runtimeConfiguration(f, "modal", "modal_runtime_empty_v1");
+    expect(plan.configuration.selectedHarness).toBe("opencode");
+    expect(plan.configuration.opencodeEnv.OPENCODE_API_KEY).toBe(f.key);
+    if (mode !== "key")
+      expect(JSON.parse(plan.configuration.opencodeEnv.ARMADA_OPENCODE_ENDPOINT!)).toMatchObject({
+        models: ["fixture"],
+        ...(mode === "anthropic" || mode === "azure" ? { protocol: mode } : {}),
+      });
+    expect(plan.configuration.codexEnv.OPENAI_API_KEY).toBeUndefined();
+    expect(plan.configuration.claudeEnv).toEqual({});
+    expect(plan.configuration.execEnv).not.toHaveProperty("OPENCODE_API_KEY");
+  },
+);

@@ -68,7 +68,7 @@ export async function runtimeConfiguration(
       (expectedProvider === "docker" && (sandbox.visibility !== "private" || sandbox.repositoryDir !== null)) ||
       (sandbox.harness !== "codex" &&
         sandbox.harness !== "claude" &&
-        !(expectedProvider === "docker" && sandbox.harness === "opencode")) ||
+        !(expectedProvider !== "boat" && sandbox.harness === "opencode")) ||
       sandbox.ownerId !== actor.userId ||
       sandbox.orgId !== actor.orgId ||
       !["starting", "ready", "running"].includes(sandbox.status) ||

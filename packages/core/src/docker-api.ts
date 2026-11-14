@@ -98,6 +98,7 @@ export interface LaunchOptionsResponse {
     variablesVersion?: number;
     usageVersion?: number;
     claudeVersion?: number;
+    opencodeVersion?: number;
   };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
