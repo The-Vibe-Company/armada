@@ -201,6 +201,25 @@ globalThis.fetch=async(url,options)=>{
         "workspace-resume",
       ].includes(mode),
     );
+    if (["success", "idle", "claude-resume"].includes(mode)) {
+      const timing = out
+        .split("\n")
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .find((value) => value?.operation === "runtime_launch_timing");
+      expect(timing).toMatchObject({
+        harness: claude ? "claude" : "codex",
+        mode: idle ? "idle" : "prompt",
+        boundary: "launch_request_to_response",
+      });
+      expect(Number.isFinite(timing.launchRequestMs)).toBe(true);
+      expect(timing.launchRequestMs).toBeGreaterThanOrEqual(0);
+    }
     expect(out + err).not.toContain(token);
     expect(out + err).not.toContain(privateArgument);
     if (mode === "mcp-invalid-json")

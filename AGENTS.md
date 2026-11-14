@@ -61,7 +61,10 @@ What runs only when its files change: the iOS checks (`apps/ios`), the migration
 What runs after a merge, not before: the staging dashboard build in GitHub Actions
 (`vercel pull`, `vercel build`, then `vercel deploy --prebuilt`), the deploy to staging and the post-deploy smoke, which runs only the owner-enabled Modal/Docker staging probes, builds goldens and exercises the whole lifecycle. Production deploys only from a publishing release after its exact-SHA staging
 smoke succeeds; there is no opt-in bypass. The #1547 owner cutover in
-`docs/releasing.md` records which provider settings still need owner changes.
+`docs/releasing.md` records which provider settings still need owner changes. The deployment policy
+acceptance ledger in that document separates repository implementation from
+outstanding coordinator-only provider evidence; do not report cutover complete
+from merged code or CI alone.
 Vercel Git deployments are disabled for both dashboard projects via
 `apps/dashboard/vercel.json`; no PR previews. Keep the Actions staging path
 working and follow the owner cutover prerequisites in `docs/releasing.md`.

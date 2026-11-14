@@ -9,7 +9,7 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { createSqlData } from "./data.ts";
-import { createRuntimeAgent } from "./runtime-agent.ts";
+import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
@@ -46,7 +46,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
       !sandbox.reasoningEffort
     )
       throw new VaultError("not_found", "No authorized runtime sandbox.");
-    const agent = createRuntimeAgent(
+    const agent = runtimeAgentFor(
       {
         async call(ownerId, request, options) {
           if (request.op === "steer") {
@@ -92,14 +92,9 @@ export function createRuntimeServing(sql: Sql, key: string) {
           return commands.call(ownerId, request, options);
         },
       },
-      {
-        harness: sandbox.harness,
-        ownerId: sandbox.ownerId,
-        sandboxId: sandbox.id,
-        providerSandboxId: sandbox.providerSandboxId,
-        cwd: sandbox.repositoryDir ? `/home/user/${sandbox.repositoryDir}` : "/home/user",
-        defaults: { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
-      },
+      sandbox.ownerId,
+      sandbox,
+      { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
     );
     const host = typeof apiKey === "string" ? createBoatProvider({ apiKey }) : apiKey;
     // Native Modal stop expects its private listener. This lane may retain disk

@@ -15,6 +15,7 @@ import {
   ProviderError,
   type ProviderErrorCode,
   resolveModelChoice,
+  type SandboxRecord,
   type SkillReceipt,
   type SteerReceipt,
   type SteerRequest,
@@ -47,6 +48,24 @@ function runtimeRefusal(
     message: "Armada runtime operation refused.",
     retryable: false,
     ...(requestId ? { details: { runtimeRequestId: requestId, runtimeOutcome: "unknown" } } : {}),
+  });
+}
+
+/** Build the bridge from persisted identity; callers retain owner/defaults and any authoritative cwd. */
+export function runtimeAgentFor(
+  commands: Parameters<typeof createRuntimeAgent>[0],
+  ownerId: string,
+  sandbox: Pick<SandboxRecord, "id" | "harness" | "providerSandboxId" | "repositoryDir">,
+  defaults: ModelChoice,
+  cwd = sandbox.repositoryDir ? `/home/user/${sandbox.repositoryDir}` : "/home/user",
+) {
+  return createRuntimeAgent(commands, {
+    harness: sandbox.harness,
+    ownerId,
+    sandboxId: sandbox.id,
+    providerSandboxId: sandbox.providerSandboxId,
+    cwd,
+    defaults,
   });
 }
 
