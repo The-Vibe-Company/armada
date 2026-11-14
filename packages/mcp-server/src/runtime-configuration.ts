@@ -67,7 +67,7 @@ export async function runtimeConfiguration(
       sandbox.provider !== expectedProvider ||
       (expectedProvider === "docker" && (sandbox.visibility !== "private" || sandbox.repositoryDir !== null)) ||
       (sandbox.harness !== "codex" &&
-        !(expectedProvider !== "modal" && sandbox.harness === "claude") &&
+        sandbox.harness !== "claude" &&
         !(expectedProvider === "docker" && sandbox.harness === "opencode")) ||
       sandbox.ownerId !== actor.userId ||
       sandbox.orgId !== actor.orgId ||

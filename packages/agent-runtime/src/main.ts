@@ -6,7 +6,7 @@ import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
 import { enrolRuntime, RuntimeDialout, runtimeSubscriptionAccess } from "./dialout.ts";
 import { prepareEnrolledHarness } from "./enrolled-harness.ts";
-import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
+import { execCredentialValues, validateExecEnvironment, validateExecReadables } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
 import { installUserGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
 import { runHarnessInstallMode } from "./harness-cache.ts";
@@ -58,6 +58,7 @@ async function main(dialout = false) {
     nativeAuthRevision?: number;
     nativeAuthSecrets?: string[];
     execEnv?: ExecEnvironment;
+    readableVariables?: Record<string, string>;
     credentialFreeBuilder?: boolean;
   };
   if (enrolled) {
@@ -96,6 +97,7 @@ async function main(dialout = false) {
   if (codexEndpoint) config.codexEnv.ARMADA_CUSTOM_CODEX_ENDPOINT = "1";
   configureClaudeEndpoint(config.claudeEnv);
   const execEnv = validateExecEnvironment(config.execEnv, config.credentialFreeBuilder);
+  const readableVariables = validateExecReadables(config.readableVariables, config.credentialFreeBuilder);
   if (
     config.credentialFreeBuilder &&
     (codexEndpoint ||
@@ -484,6 +486,7 @@ async function main(dialout = false) {
           );
         throw Error("model_connection_test_denied");
       },
+      readableVariables: fenced ? {} : readableVariables,
       execEnv: { ...(fenced ? {} : execEnv), PATH: `${githubBin}:${execEnv.PATH ?? "/usr/local/bin:/usr/bin:/bin"}` },
       refreshNativeSecrets,
       publishNativeAuth,

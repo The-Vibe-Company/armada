@@ -2,9 +2,15 @@ import type { LaunchOptions } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
 import { modalRuntimeConfiguration } from "./modal-runtime-variables.ts";
 import { createRuntimeLaunch, type RuntimeLaunchOptions } from "./runtime-launch.ts";
+import { runtimeWorkspace } from "./runtime-workspace.ts";
 
 /** First-answer slice: same enrolled startup and journal, Modal supplies only compute. */
-export function modalRuntimeLaunch(options: RuntimeLaunchOptions): NonNullable<LaunchOptions["runtime"]> {
+export function modalRuntimeLaunch(
+  options: RuntimeLaunchOptions & {
+    github?: Pick<import("./runtime-github.ts").RuntimeGitHub, "prepareLaunch">;
+    modelAuth?: NonNullable<Parameters<typeof modalRuntimeConfiguration>[1]["modelAuth"]>;
+  },
+): NonNullable<LaunchOptions["runtime"]> {
   const startRuntime = createRuntimeLaunch(options);
   return {
     async start(input) {
@@ -13,6 +19,7 @@ export function modalRuntimeLaunch(options: RuntimeLaunchOptions): NonNullable<L
       return startRuntime({
         input,
         configure: () => modalRuntimeConfiguration(options.sql, { ...options, actor, sandbox, credentials }),
+        extensions: (agent, epoch) => runtimeWorkspace(input, agent, epoch, options.github),
         bootstrap: () => {
           const start = (host as Partial<ModalProvider>).startRuntime;
           if (!start) throw Error("modal_runtime_host_required");

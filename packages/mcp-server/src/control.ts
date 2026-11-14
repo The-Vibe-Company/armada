@@ -792,6 +792,7 @@ async function dispatch(
         mcpVersion: options.runtimeMcp ? 2 : 0,
         skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
         usageVersion: options.modalRuntimeLaunch ? 1 : 0,
+        claudeVersion: options.modalRuntimeLaunch ? 1 : 0,
         variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
       },
       boatRuntime: {
@@ -1222,14 +1223,17 @@ async function dispatch(
         body.runtimeVersion !== 1 ||
         body.runtimeTransport !== "dialout" ||
         body.provider !== "modal" ||
-        body.harness !== "codex" ||
+        (body.harness !== "codex" && body.harness !== "claude") ||
         body.boatRuntime !== undefined ||
         body.armadaAccess ||
         (body.connections !== undefined && !Array.isArray(body.connections)) ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
       )
-        throw new VaultError("invalid", "Modal runtime v1 requires explicit Codex launch; helpers are unavailable.");
+        throw new VaultError(
+          "invalid",
+          "Modal runtime v1 requires explicit Codex or Claude launch; helpers are unavailable.",
+        );
       if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
         throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
       required(body, "prompt");
@@ -1269,10 +1273,10 @@ async function dispatch(
         );
         return options.templates.command(caller, "launch", input, {
           validateDefinition: (definition) => {
-            if (definition.provider !== "modal" || definition.harness !== "codex" || definition.secrets?.length)
+            if (definition.provider !== "modal" || definition.harness !== body.harness || definition.secrets?.length)
               throw new VaultError(
                 "invalid",
-                "Modal runtime templates require Modal Codex without application-secret bindings.",
+                "Modal runtime templates require the selected Modal harness without application-secret bindings.",
               );
           },
           stores: {

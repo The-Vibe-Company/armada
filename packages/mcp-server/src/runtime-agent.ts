@@ -55,11 +55,14 @@ function runtimeRefusal(
 export function runtimeAgentFor(
   commands: Parameters<typeof createRuntimeAgent>[0],
   ownerId: string,
-  sandbox: Pick<SandboxRecord, "id" | "harness" | "providerSandboxId" | "repositoryDir">,
+  sandbox: Pick<SandboxRecord, "id" | "harness" | "providerSandboxId" | "repositoryDir"> & {
+    provider: "boat" | "modal" | "docker";
+  },
   defaults: ModelChoice,
   cwd = sandbox.repositoryDir ? `/home/user/${sandbox.repositoryDir}` : "/home/user",
 ) {
   return createRuntimeAgent(commands, {
+    provider: sandbox.provider,
     harness: sandbox.harness,
     ownerId,
     sandboxId: sandbox.id,
@@ -169,7 +172,7 @@ export function createRuntimeAgent(
         epoch,
       );
       if (health.ready !== true || health.generation !== epoch || health.workspaceVersion !== 1)
-        throw new Error("Boat runtime workspace setup requires updated runtime artifacts; no native fallback.");
+        throw new Error("Runtime workspace setup requires updated runtime artifacts; no native fallback.");
     },
     async workspaceExec(
       request: import("@armada/core").ExecRequest,

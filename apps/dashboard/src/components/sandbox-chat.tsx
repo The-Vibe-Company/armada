@@ -470,6 +470,7 @@ export function SandboxChat(props: Props) {
             <Composer
               {...props}
               status={status}
+              idlePaused={idlePaused}
               conversation={selected && props.conversations.includes(selected) ? selected : null}
               running={turnRunning}
               onDone={() => {
@@ -934,11 +935,19 @@ function Composer({
   conversation,
   running,
   onDone,
-}: Props & { status: SandboxStatus; conversation: string | null; running: boolean; onDone: () => void }) {
+  idlePaused,
+}: Props & {
+  status: SandboxStatus;
+  conversation: string | null;
+  running: boolean;
+  idlePaused: boolean;
+  onDone: () => void;
+}) {
   const form = useRef<HTMLFormElement>(null);
   const [draft, setDraft] = useState("");
   const [result, setResult] = useState<ActionResult | null>(null);
   const [pending, setPending] = useState<Intent | null>(null);
+  const [waking, setWaking] = useState(false);
   const [, startTransition] = useTransition();
   const [showModel, setShowModel] = useState(false);
   const [override, setOverride] = useState(false);
@@ -985,6 +994,7 @@ function Composer({
       data.set(SEND_KEY_FIELD, sendKey.current.key);
     }
     const action = intent === "send" ? sendToSandbox : intent === "steer" ? steerSandbox : interruptSandbox;
+    setWaking(intent === "send" && idlePaused);
     setPending(intent);
     setResult(null);
     startTransition(async () => {
@@ -995,6 +1005,7 @@ function Composer({
         outcome = { ok: false, error: UNCONFIRMED_ACTION };
       }
       setPending(null);
+      setWaking(false);
       setResult(outcome);
       if (!outcome.ok) return;
       sendKey.current = null;
@@ -1183,7 +1194,8 @@ function Composer({
               onClick={() => run("send")}
             >
               {pending === "send" && <Loader2Icon className="animate-spin" />}
-              {running ? (
+              {waking ? "Waking the sandbox…" : null}
+              {waking ? null : running ? (
                 <>
                   <span className="max-sm:hidden">Send as new turn</span>
                   <span className="sm:hidden">New turn</span>

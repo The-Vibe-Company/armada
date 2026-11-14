@@ -37,7 +37,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
       !sandbox ||
       (!sandbox.boatRuntime && sandbox.runtimeTransport !== "dialout") ||
       !["boat", "modal"].includes(sandbox.provider) ||
-      (sandbox.harness !== "codex" && !(sandbox.provider === "boat" && sandbox.harness === "claude")) ||
+      (sandbox.harness !== "codex" && sandbox.harness !== "claude") ||
       sandbox.provider !== target.provider ||
       (typeof apiKey !== "string" && apiKey.id !== sandbox.provider) ||
       sandbox.visibility !== target.visibility ||
@@ -60,7 +60,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
               ).rows[0];
               if (!member || actor.userId !== sandbox.ownerId)
                 throw new ProviderError({
-                  provider: "boat",
+                  provider: sandbox.provider,
                   code: "forbidden",
                   message: "Runtime owner membership required.",
                   retryable: false,
@@ -76,7 +76,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
               ).rows[0];
               if (!account)
                 throw new ProviderError({
-                  provider: "boat",
+                  provider: sandbox.provider,
                   code: "forbidden",
                   message: "Pinned runtime account is no longer authorized.",
                   retryable: false,
@@ -165,7 +165,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
             return { promptId: request.promptId, status: "failed" as const, done: true };
           if (!last || last.kind !== "prompt")
             throw new ProviderError({
-              provider: "boat",
+              provider: sandbox.provider,
               code: "not_found",
               message: "No archived runtime prompt.",
               retryable: false,
@@ -183,7 +183,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
         },
         events: ({ sandboxId: _physical, ...pagination }) => history(caller, sandbox.id, pagination),
       },
-      sandbox.boatRuntime
+      sandbox.boatRuntime || sandbox.runtimeTransport === "dialout"
         ? {
             interrupt(request) {
               authorize();

@@ -4,6 +4,13 @@ import { memorySessionStore } from "../src/session.ts";
 
 const cases = [
   {
+    name: "sandbox send with paused-compute wake",
+    args: ["send", "11111111-1111-4111-8111-111111111111", "continue", "--json"],
+    path: "/api/v1/sandbox/send",
+    check: "Send request ID:",
+    response: { promptId: "prompt", conversationId: "conversation", status: "queued" },
+  },
+  {
     name: "sandbox stop",
     args: ["stop", "sandbox-1", "--json"],
     path: "/api/v1/sandbox/stop",

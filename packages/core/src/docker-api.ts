@@ -97,6 +97,7 @@ export interface LaunchOptionsResponse {
     skillsVersion?: number;
     variablesVersion?: number;
     usageVersion?: number;
+    claudeVersion?: number;
   };
   boatRuntime: {
     defaultPath?: "native" | "runtime";

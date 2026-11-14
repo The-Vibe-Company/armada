@@ -236,8 +236,8 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
       for (const host of hosts.hosts.filter((h) => h.state !== "revoked"))
         add(
           `Host ${host.name ?? host.id}`,
-          host.state === "online" ? "ok" : "warning",
-          `${host.state}; daemon ${host.version ?? "unknown"}. ${host.state === "online" ? "" : "Check the host machine; run armada host status there."}`,
+          host.state !== "online" ? "warning" : !host.version ? "unknown" : host.version === VERSION ? "ok" : "warning",
+          `${host.state}; daemon ${host.version ?? "unknown"}. ${host.state !== "online" ? "Check the host machine; run armada host status there." : host.version === VERSION ? "" : `CLI ${VERSION}. Check the host installation with armada host status on the host machine.`}`,
         );
     } catch {
       add("Hosts", "unknown", "Could not read hosts. Run armada host list.");
