@@ -1,5 +1,5 @@
 import type { GoldenBuildStatus, SandboxProviderId } from "@armada/core";
-import { snapshotText } from "@/lib/action";
+import { snapshotText } from "./action.ts";
 import {
   type ConnectionMetadataRequest,
   type ConnectionTarget,
