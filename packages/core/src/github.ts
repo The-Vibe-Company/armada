@@ -303,7 +303,7 @@ export interface GitHubConnectionStore {
 
 export type GitHubStatus = "connected" | "not_connected" | "revoked" | "unavailable";
 
-/** The answer of {@link resolveGitHubAccess}: a token for the sandbox, or why there is none. Launch never fails for lack of GitHub. */
+/** Caller GitHub access. Public snapshots can launch anonymously; known private repository refresh requires access. */
 export type GitHubAccess =
   | { status: "connected"; token: string; identity: GitIdentity; expiresAt?: Date }
   | { status: Exclude<GitHubStatus, "connected">; message: string };

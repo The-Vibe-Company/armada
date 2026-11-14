@@ -283,6 +283,18 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         );
       }
       if (/^\/api\/v1\/sandbox\/launch(?:-sized-v1|-access-v1)?$/.test(path)) {
+        if (response.status === 400 && failureCode === "no_credentials")
+          throw new ArmadaApiError(
+            "no_credentials",
+            400,
+            apiMessage(
+              payload,
+              "A configured repository needs a GitHub connection with read access. Run armada github connect, then retry.",
+            ),
+            undefined,
+            undefined,
+            2,
+          );
         if (response.status === 429 && failureCode === "rate_limited")
           throw new ArmadaApiError(
             "rate_limited",

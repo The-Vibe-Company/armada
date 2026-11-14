@@ -375,3 +375,20 @@ test("Docker launch omits an unspecified account for server default resolution w
     }),
   ).toMatchObject({ code: 2 });
 });
+
+test("Docker launch text exposes snapshot refresh warnings", async () => {
+  const result = await capture([...args, "--agent", "codex"], async () =>
+    Response.json({
+      sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "ready" },
+      golden: null,
+      runtime: { epoch: "1" },
+      github: {
+        status: "connected",
+        message: "Warning: repository private could not refresh; launching with its snapshot checkout.",
+      },
+    }),
+  );
+  expect(result.code).toBe(0);
+  expect(result.out).toContain("Note: Warning: repository private");
+  expect(result.out).toContain("snapshot checkout");
+});
