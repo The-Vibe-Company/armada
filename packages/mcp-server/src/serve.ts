@@ -55,6 +55,7 @@ import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOttoApi } from "./otto/api.ts";
+import { createOttoProofApi } from "./otto/proof-api.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
@@ -622,6 +623,17 @@ export async function startServer(
       ...(otto
         ? [
             otto.route,
+            createOttoProofApi(
+              ottoSql ?? sql,
+              otto.scope,
+              (request) =>
+                authenticateCaller(request.headers.get("authorization"), {
+                  store: authStore,
+                  supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+                  now: new Date(),
+                }),
+              env.ARMADA_OTTO_GITHUB_TOKEN,
+            ),
             createOttoApi(
               ottoSql ?? sql,
               otto.scope,

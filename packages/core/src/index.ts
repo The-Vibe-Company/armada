@@ -288,6 +288,7 @@ export type {
   OttoTask,
   OttoTruth,
 } from "./otto/index.ts";
+export type { OttoMechanicalProof } from "./otto/proof.ts";
 export {
   dedupeEvents,
   type PromptOutcome,

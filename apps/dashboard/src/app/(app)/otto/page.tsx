@@ -46,7 +46,14 @@ export default async function OttoPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const [data, query] = await Promise.all([loadOtto(), searchParams]);
-  const header = <PageHeader title="Otto" description={DESCRIPTION} />;
+  const header = (
+    <>
+      <PageHeader title="Otto" description={DESCRIPTION} />
+      <Link href="/otto/evidence" className="underline">
+        Inspect PR evidence
+      </Link>
+    </>
+  );
   if (data.state === "no-org")
     return (
       <>
