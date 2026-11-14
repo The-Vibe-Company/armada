@@ -9,6 +9,21 @@ export interface SqlQuery {
 /** Service-role SQL. The API-only CLI calls the server, never the database directly. */
 export function createSqlAuthStore(db: SqlQuery): AuthStore {
   return {
+    async sessionMemberships(userId, sessionId, now) {
+      const result = await db.query<MemberRow>(
+        `select m.org_id, m.role, o.name
+         from auth.sessions s join auth.users u on u.id=s.user_id
+         left join public.members m on m.user_id=s.user_id
+         left join public.orgs o on o.id=m.org_id
+         where s.id=$1::uuid and s.user_id=$2::uuid
+           and (s.not_after is null or s.not_after>$3::timestamptz)
+           and u.deleted_at is null and (u.banned_until is null or u.banned_until<=$3::timestamptz)
+         order by o.name, m.org_id`,
+        [sessionId, userId, now],
+      );
+      if (!result.rows.length) return null;
+      return result.rows.flatMap((row) => (row.org_id === null ? [] : [mapMember(row)!]));
+    },
     async findTokenWithMembership(kind, hash) {
       assertHash(hash);
       const result = await db.query<TokenRow & { role: MemberRole }>(

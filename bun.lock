@@ -108,6 +108,7 @@
         "@armada/provider-boat": "workspace:*",
         "@armada/provider-modal": "workspace:*",
         "@modelcontextprotocol/sdk": "1.32.2",
+        "jose": "6.2.16",
         "modal": "0.11.1",
         "zod": "4.6.7",
       },
