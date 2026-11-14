@@ -249,6 +249,27 @@ This is not stop. Inspect status and preserve needed work before deleting.
 Use a sandbox UUID from armada list --json; names are not accepted.
 Example: armada rm SANDBOX_UUID --yes --org ORG_UUID --json
 `,
+  status: `Usage: armada status <sandbox-id> [--live] [--org UUID] [--json]
+Read sandbox status after Armada login and server authorization.
+Default: recorded state, without a provider probe. --live reads provider/prompt details.
+Use a sandbox ID from armada list --json. Output is JSON even without --json.
+Recorded state is not proof of current provider readiness.
+Example: armada status SANDBOX_UUID --org ORG_UUID --json
+Example: armada status SANDBOX_UUID --live --org ORG_UUID
+`,
+  detail: `Usage: armada detail <sandbox-id> [--org UUID] [--json]
+Read detailed sandbox information after Armada login and server authorization.
+Use a sandbox ID from armada list --json. Output is JSON even without --json.
+For recorded status without a provider probe, use armada status instead.
+Example: armada detail SANDBOX_UUID --org ORG_UUID --json
+`,
+  wait: `Usage: armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
+Wait for sandbox activity through the server after Armada login and authorization.
+Timeout is an integer from 0 to 600 seconds (default 60); zero is accepted.
+Use a sandbox ID from armada list --json. Output is JSON even without --json.
+Inspect the returned state; a bounded wait is not proof that your task is complete.
+Example: armada wait SANDBOX_UUID --timeout 60 --org ORG_UUID --json
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
