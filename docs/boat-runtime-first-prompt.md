@@ -613,3 +613,22 @@ Repeat for an existing routine referencing that template. Confirm launch logs
 are `source:armada-runtime`. A secret-bound template must still refuse without
 allocating. Use only existing authorized resources; no worker production access
 or provider call was performed, and Boat is never a staging/release-gate probe.
+
+### Repeating launch settings on Boat follow-up
+
+Boat runtime `send` accepts explicit `model` and/or `reasoning_effort` only when
+identical to the persisted launch settings. Omitted and identical settings produce
+the same durable command, so retrying the same request ID without redundant
+fields does not start another turn or overwrite a newer task. Actual changes
+still refuse before command admission, and the locked account/model/effort checks
+remain in force. No model/account switch or new conversation is enabled. Modal
+admission is unchanged. Existing omitted-field clients need no changes.
+
+Coordinator-only production check after normal release: on an existing authorized
+Boat runtime Codex or Claude sandbox, use ordinary `sandbox/send` with a new
+`request_id`, a short prompt, and that sandbox's exact persisted `model` and
+`reasoning_effort`. Require a normal runtime receipt and a finished answer bearing
+the receipt's prompt ID in `logs/read`. Replay the identical request ID/prompt
+without the two redundant fields: require the same receipt and no extra turn.
+A different model/effort must refuse without starting work. Do not allocate a
+sandbox just for this check; Boat is never included in staging acceptance.
