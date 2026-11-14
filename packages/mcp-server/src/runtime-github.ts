@@ -16,6 +16,7 @@ import { createSqlData } from "./data.ts";
 import { matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { Route } from "./http.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
@@ -104,12 +105,7 @@ export function createRuntimeGitHub(options: {
     if (
       !s ||
       s.ownerId !== caller.userId ||
-      !(
-        s.provider === "docker" ||
-        (((s.provider === "boat" && native?.boatRuntime) ||
-          (s.provider === "modal" && native?.runtimeTransport === "dialout")) &&
-          (s.harness === "codex" || s.harness === "claude" || (s.provider === "modal" && s.harness === "opencode")))
-      ) ||
+      !(s.provider === "docker" || (native && runtimeBridgeTarget(native))) ||
       s.deletedAt
     )
       return denied();
