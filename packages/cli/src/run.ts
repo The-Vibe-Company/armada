@@ -115,6 +115,7 @@ Usage:
                                            Create/update admit a durable job, then poll for up to --timeout
                                            seconds (default 60, max 600; 0 returns after admission).
                                            Disconnecting never resubmits or cancels the job.
+  armada golden build-cancel <job-id> [--org <org>] [--json]  Cancel your queued, never-started build
   armada golden build-status <job-id>      Read the authenticated durable build status
   armada golden build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
@@ -683,6 +684,23 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         body: JSON.stringify({ id: oneName(args.positionals), visibility, org: single(args, "--org") }),
       });
       io.out(`${JSON.stringify(result)}\n`);
+      return 0;
+    }
+    case "build-cancel": {
+      const auth = authOf(io, deps);
+      const client = await createArmadaApiClient({
+        env: auth.env,
+        fetch: deps.fetch ?? auth.fetch,
+        session: auth.session,
+      });
+      const job = await client.request<GoldenBuildStatus>("/api/v1/golden/build/cancel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jobId: oneName(args.positionals), org: single(args, "--org") }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (flag(args, "--json")) io.out(JSON.stringify(job) + "\n");
+      else io.out(`Build ${job.jobId}: ${goldenBuildFailureText(job)}\n`);
       return 0;
     }
     case "build-status": {

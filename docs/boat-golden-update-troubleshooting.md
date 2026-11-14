@@ -39,8 +39,17 @@ Neither capacity nor a missing binding proves a GitHub authorization problem.
 Durable running jobs have fenced leases and deadlines. Expired jobs transition
 to recovery; reservations are released only after safe builder reconciliation.
 A timeout must not simply clear a reservation while a provider operation could
-still publish a snapshot. There is currently no owner-facing cancellation or
-orphan-reservation repair command. An administrator must investigate these
+still publish a snapshot. Owners can cancel a queued, never-started build using Cancel queued build beside
+its tracked status in the dashboard, or:
+
+    armada golden build-cancel <job-id> --org <org-id>
+
+Cancellation is idempotent and only releases that admission's reservation. A
+rebuild keeps its existing golden binding and snapshot. If a worker has already
+claimed the job, cancellation refuses with a conflict and retains capacity;
+check status and ask an administrator to reconcile running or uncertain work.
+There is still no owner-facing running-build cancellation or orphan-reservation
+repair command. An administrator must investigate these
 states; this change does not add an unsafe automatic unlock.
 
 After the actual blocker is resolved and the fix is released, retry with the
