@@ -461,7 +461,12 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       sandbox,
       golden: null,
       helper: null,
-      github: receipt?.github ?? { status: "unavailable", message: "GitHub is unavailable on Docker hosts." },
+      github: receipt?.github ?? {
+        status: "unavailable",
+        message: receipt
+          ? "GitHub access requires repositories in the Docker launch or snapshot configuration."
+          : "GitHub preparation has not completed for this launch.",
+      },
       runtime: receipt ? { kind: "armada", epoch: receipt.epoch } : null,
       ttlSeconds: row.effective_ttl_seconds,
       expiresAt: iso(row.expires_at),

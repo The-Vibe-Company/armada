@@ -413,7 +413,10 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
     },
     golden: null,
     helper: null,
-    github: { status: "unavailable" },
+    github: {
+      status: "unavailable",
+      message: "GitHub access requires repositories in the Docker launch or snapshot configuration.",
+    },
     runtime: { kind: "armada", epoch: f.session()?.epoch },
     ttlSeconds: 14400,
     promptId: f.receipt.promptId,
@@ -1418,7 +1421,11 @@ test("deferred launch reconciles an uncertain first-prompt receipt without marki
     },
   };
   const server = f.service(interrupted, true, 10000, officialImage, true);
-  await server.launch(f.caller, f.body);
+  const pending = await server.launch(f.caller, f.body);
+  expect(pending.github).toEqual({
+    status: "unavailable",
+    message: "GitHub preparation has not completed for this launch.",
+  });
   await server.drain();
   expect(failed).toBe(true);
   expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("starting");
