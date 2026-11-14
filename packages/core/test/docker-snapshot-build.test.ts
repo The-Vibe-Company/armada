@@ -33,6 +33,7 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
   };
   const images = new Map<string, { Id: string; Config: { Labels: Record<string, string> } }>();
   let proofFailure: unknown;
+  const commands: (readonly string[])[] = [];
   let builds = 0,
     directory = "";
   const executor = createDockerMachineExecutor({
@@ -41,10 +42,13 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
     now: () => 1000,
     cli: {
       async run(argv, stdin, timeout) {
+        commands.push(argv);
         if (argv[0] === "image" && argv[1] === "ls")
           return { exitCode: 0, stdout: [...images.values()].map((image) => image.Id).join("\n") };
         if (argv[0] === "image" && argv[1] === "inspect")
           return { exitCode: images.has(argv[2]!) ? 0 : 1, stdout: JSON.stringify([images.get(argv[2]!)]) };
+        if (argv[0] === "buildx" || (argv[0] === "container" && argv[1] === "update"))
+          return { exitCode: 0, stdout: "" };
         if (argv[0] !== "build") throw Error("Unexpected Docker operation");
         builds++;
         try {
@@ -52,6 +56,8 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
           expect(stdin).toBeUndefined();
           expect(argv.join(" ")).not.toContain(token);
           expect(timeout).toEqual({ timeoutMs: 60000, githubBuildToken: token });
+          expect(argv).toContain("--load");
+          expect(argv).toContain("--builder");
           expect(argv).toContain("id=github,type=env,env=ARMADA_SNAPSHOT_GITHUB_TOKEN");
           expect((await lstat(directory)).mode & 0o777).toBe(0o700);
           for (const path of [
@@ -113,6 +119,23 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
   await expect(lstat(directory)).rejects.toMatchObject({ code: "ENOENT" });
   expect(await executor.buildSnapshot(job, true)).toBe(`sha256:${"b".repeat(64)}`);
   expect(builds).toBe(1);
+  const setup = commands.find((args) => args[0] === "buildx" && args[1] === "create")!;
+  expect(setup).toContain("docker-container");
+  expect(setup.some((arg) => arg.startsWith("memory="))).toBe(true);
+  const memory = setup.find((arg) => arg.startsWith("memory="))!.slice(7);
+  expect(setup).toContain(`memory-swap=${memory}`);
+  expect(setup).toContain("cpu-period=100000");
+  expect(Number(setup.find((arg) => arg.startsWith("cpu-quota="))!.slice(10))).toBeGreaterThan(0);
+  const processLimit = commands.findIndex((args) => args[0] === "container" && args[1] === "update");
+  expect(commands[processLimit]).toEqual([
+    "container",
+    "update",
+    "--pids-limit",
+    "4096",
+    `buildx_buildkit_armada-builder-${id}0`,
+  ]);
+  expect(processLimit).toBeLessThan(commands.findIndex((args) => args[0] === "build"));
+  expect(commands).toContainEqual(["buildx", "rm", "--force", `armada-builder-${id}`]);
   const image = [...images.values()][0]!;
   image.Config.Labels["dev.armada.environment.armada-version"] = "2.27.0";
   await expect(executor.buildSnapshot(job, true)).rejects.toThrow("Docker snapshot build failed or outcome unknown.");

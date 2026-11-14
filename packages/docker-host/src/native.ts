@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
+import { dockerHostResources } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
 import { type Api, type Job, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
@@ -227,13 +228,21 @@ export function httpApi(request: typeof fetch = fetch): Api & {
       return (await post(server, "register", token, { installationId })) as { hostId: string; hostToken: string };
     },
     async poll(state, options) {
-      return (await post(state.server, "poll", state.hostToken, {
+      const body = {
         installationId: state.installationId,
         version: VERSION,
         ...(options?.skipSnapshots ? { skipSnapshots: true } : {}),
-      })) as {
-        job: Job | null;
       };
+      try {
+        return (await post(state.server, "poll", state.hostToken, {
+          ...body,
+          resources: dockerHostResources(),
+        })) as { job: Job | null };
+      } catch (error) {
+        // Older servers reject the additive resource field before claiming a job.
+        if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
+        return (await post(state.server, "poll", state.hostToken, body)) as { job: Job | null };
+      }
     },
     async result(state, receipt, expired) {
       const body = {

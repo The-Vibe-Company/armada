@@ -5,6 +5,7 @@ import {
   isDockerImageReference,
   parseDockerSnapshotBinding,
 } from "./docker-image.ts";
+import { dockerHostResources, dockerResourceArgs } from "./docker-resources.ts";
 import { buildDockerSnapshot } from "./docker-snapshot-build.ts";
 
 /** Direct argv execution only; adapters must never invoke a shell or log stdin/output. */
@@ -300,6 +301,7 @@ export function createDockerMachineExecutor(options: {
       const result = await run([
         "container",
         "create",
+        ...dockerResourceArgs(dockerHostResources()),
         "--name",
         state.containerName,
         "--user",
