@@ -11,6 +11,7 @@ import { mcpUrl } from "@/lib/env";
 import {
   deliveryOutcome,
   INVITATION_COOKIE,
+  invitationActionFailure,
   isInvitationToken,
   isInviteRole,
   normalizeInviteEmail,
@@ -34,7 +35,8 @@ async function orgOf(data: FormData): Promise<string | ActionResult> {
 }
 
 const reported = (error: unknown): ActionResult => {
-  if (error instanceof ControlError) return fail(error.message);
+  if (error instanceof ControlError)
+    return fail(invitationActionFailure(error.reason, error.status, error.retryAfterSeconds));
   throw error;
 };
 

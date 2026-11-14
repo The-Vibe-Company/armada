@@ -257,3 +257,21 @@ export const invitationCookieOptions = (secure: boolean) => ({
  * browser, as on the login page.
  */
 export const DISCARD_LINK_CREDENTIALS_SCRIPT = `(function(){if(location.hash)history.replaceState(history.state,"",location.pathname)})()`;
+
+/** Admin invitation changes are not acceptance links; unknown responses never echo server diagnostics. */
+export function invitationActionFailure(
+  reason: string | undefined,
+  status: number | undefined,
+  retryAfterSeconds?: number,
+): string {
+  if (reason === "already_member") return "That address is already a member of this organization.";
+  if (reason === "pending_exists") return "That address already has a pending invitation. Resend it instead.";
+  if (reason === "rate_limited") return refusalMessage(reason, status, retryAfterSeconds);
+  if (status === 401) return "Your session ended. Sign in again, then reload this organization.";
+  if (status === 403)
+    return "Only an organization admin manages invitations. Reload this organization to check your access.";
+  if (status === 404)
+    return "This invitation is no longer available. Reload this organization to check its current state.";
+  if (status === 400) return "The invitation was not accepted. Check the email address and role before trying again.";
+  return "The invitation change could not be confirmed. Reload this organization to check its current state before trying again.";
+}

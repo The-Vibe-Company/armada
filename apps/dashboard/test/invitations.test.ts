@@ -6,6 +6,7 @@ import {
   deliveryOutcome,
   expiryLabel,
   INVITATION_COOKIE,
+  invitationActionFailure,
   normalizeInviteEmail,
   parseInvitation,
   parsePreview,
@@ -203,4 +204,15 @@ describe("invitation control client", () => {
     );
     await expect(control.accept(TOKEN)).rejects.toThrow("did not confirm");
   });
+});
+
+test("admin invitation failures retain actionable reasons without confirming an unknown change", () => {
+  expect(invitationActionFailure("already_member", 409)).toContain("already a member");
+  expect(invitationActionFailure("pending_exists", 409)).toContain("Resend it instead");
+  expect(invitationActionFailure(undefined, 401)).toContain("Sign in again");
+  expect(invitationActionFailure(undefined, 403)).toContain("organization admin");
+  expect(invitationActionFailure(undefined, 404)).toContain("Reload this organization");
+  expect(invitationActionFailure(undefined, 400)).toContain("email address and role");
+  for (const status of [undefined, 409, 503])
+    expect(invitationActionFailure(undefined, status)).toContain("could not be confirmed");
 });
