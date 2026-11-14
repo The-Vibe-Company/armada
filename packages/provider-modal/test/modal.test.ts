@@ -54,6 +54,7 @@ function fixture(
   beforePrompt?: ModalProviderOptions["beforePrompt"],
   beforeResume?: ModalProviderOptions["beforeResume"],
   commonRuntime?: true,
+  admissionSleep: NonNullable<ModalProviderOptions["admissionSleep"]> = Bun.sleep,
 ) {
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
@@ -214,6 +215,7 @@ function fixture(
     },
   };
   const provider = createModalProvider({
+    admissionSleep,
     scope: accessScope,
     ...(commonRuntime ? { commonRuntime } : {}),
     ...(beforePrompt ? { beforePrompt } : {}),
@@ -2281,7 +2283,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log).not.toContain("prompt");
   });
   test("golden exec alone takes scoped leased SDK root control, worker exec stays journaled runner, and unsupported/closed requests refuse", async () => {
-    const f = fixture();
+    const delays: number[] = [];
+    const f = fixture(scope, db, undefined, undefined, undefined, async (ms) => {
+      delays.push(ms);
+    });
     const builder = await f.provider.createGolden({});
     await f.provider.exec({ sandboxId: builder.id, command: "root scanner", timeoutSeconds: 600 });
     expect(f.log).toContain("root-exec");
@@ -2302,6 +2307,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         providerCode: "lifecycle_lease_busy",
       });
     });
+    expect(delays).toEqual(Array(99).fill(20));
+    expect(f.log.filter((x) => x === "root-exec")).toHaveLength(count);
     const name = crypto.randomUUID();
     await f.provider.snapshot({ sandboxId: builder.id, name });
     await expect(f.provider.exec({ sandboxId: builder.id, command: "must not unseal" })).rejects.toMatchObject({
@@ -2311,6 +2318,31 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.exec({ sandboxId: worker.id, command: "worker exec" });
     expect(f.log).toContain("exec");
     expect(f.log.filter((x) => x === "root-exec")).toHaveLength(count);
+  });
+  test("admission never retries a busy-shaped error after entering the callback", async () => {
+    const delays: number[] = [];
+    const f = fixture(scope, db, undefined, undefined, undefined, async (ms) => {
+      delays.push(ms);
+    });
+    const worker = await runningFork(f);
+    let calls = 0;
+    f.onRpc(async () => {
+      calls++;
+      throw new ProviderError({
+        provider: "modal",
+        code: "conflict",
+        message: "uncertain outcome",
+        providerCode: "lifecycle_lease_busy",
+        retryable: true,
+      });
+    });
+    await expect(f.provider.exec({ sandboxId: worker.id, command: "once", onlyIfRunning: true })).rejects.toMatchObject(
+      {
+        providerCode: "lifecycle_lease_busy",
+      },
+    );
+    expect(calls).toBe(1);
+    expect(delays).toEqual([]);
   });
   test("native harness cwd is durable per harness and forwarded privately on prompt/resume without changing text, exec or steer", async () => {
     const f = fixture();
