@@ -348,6 +348,22 @@ Output is JSON even without --json.
 Example: armada report SANDBOX_UUID blocked --prompt-id PROMPT_ID --reason "Need owner input"
 Example: armada report SANDBOX_UUID ready --prompt-id PROMPT_ID --pr-number 123
 `,
+  "snapshot retirement dry-run": `Usage: armada snapshot retirement dry-run <snapshot-UUID> [--limit <1-50>] [--org UUID] [--json]
+Review bounded historical snapshot retirement candidates after Armada login.
+Requires server owner/admin authorization. Limit defaults to 20; output is always JSON.
+Use the snapshot record UUID, not a sandbox ID or provider artifact ID.
+Review the results and receipts before using retirement reconcile. No provider mutation in this review.
+Example: armada snapshot retirement dry-run SNAPSHOT_UUID --org ORG_UUID --limit 20
+`,
+  "snapshot retirement reconcile": `Usage: armada snapshot retirement reconcile <snapshot-UUID> [--file <path>] [--limit <1-50>] [--org UUID] [--json]
+Reconcile reviewed history and enqueue eligible retirement work after Armada login and authorization.
+Supply reviewed dry-run JSON via stdin or --file; do not invent receipts.
+The JSON must contain 1–50 valid receipts in results. Limit defaults to 20.
+Omit --file for stdin; --file - is not the stdin spelling for this command.
+Server rechecks authority, history and references; eligible work is queued, not proof of deletion.
+Output is always JSON. Use the snapshot record UUID, not a provider artifact ID.
+Example: armada snapshot retirement reconcile SNAPSHOT_UUID --org ORG_UUID --file reviewed.json
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
@@ -639,6 +655,7 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (
     parts[0] === "golden" &&
     [
+      "retirement",
       "create",
       "update",
       "get",
