@@ -35,6 +35,30 @@ describe("the golden form request", () => {
     });
   });
 
+  test.each(["full", "shallow"] as const)(
+    "repository history %s survives editing and form serialization",
+    (history) => {
+      const defaults = editDefaults({
+        config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web", history }], init: [] },
+      });
+      expect(defaults.repos[0]?.history).toBe(history);
+      const parsed = goldenRequest({ ...base, mode: "update", ...defaults });
+      expect(parsed.ok && parsed.value.body.config.repos[0]).toEqual({
+        url: "https://github.com/acme/web.git",
+        branch: "main",
+        dir: "web",
+        history,
+      });
+    },
+  );
+
+  test("invalid repository history is refused before submission", () => {
+    expect(goldenRequest({ ...base, repos: [{ ...row("acme/web"), history: "arbitrary" }] })).toEqual({
+      ok: false,
+      error: "Repository 1 history must be full or shallow.",
+    });
+  });
+
   test("the provider is sent as given, and anything but Boat or Modal is refused", () => {
     const modal = goldenRequest({ ...base, provider: "modal", repos: [row("acme/web")] });
     expect(modal.ok && modal.value.body.provider).toBe("modal");

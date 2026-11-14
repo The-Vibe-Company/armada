@@ -6,6 +6,7 @@ import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError } from "./errors.ts";
 import { execCredentialValues, validateExecEnvironment, validateExecReadables } from "./exec-env.ts";
+import { githubRuntimeEnvironment } from "./github-tools.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import type { Journal } from "./journal.ts";
 import { mcpDigest, mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
@@ -81,6 +82,9 @@ export class Runner {
       ...validateExecReadables(execution.readableVariables, this.credentialFreeBuilder),
       ...execEnv,
       ...(execution.ghConfigDir ? { GH_CONFIG_DIR: execution.ghConfigDir } : {}),
+      ...(execution.githubToolsRoot
+        ? githubRuntimeEnvironment({ PATH: execEnv.PATH ?? process.env.PATH }, execution.githubToolsRoot)
+        : {}),
     });
     journal.assertRestoreSource(grant);
     this.barrier = journal.checkpointPending(grant);
@@ -159,7 +163,28 @@ export class Runner {
       return Response.json({ error: "unauthorized" }, { status: 401 });
     try {
       if (Number(request.headers.get("content-length") ?? 0) > 1048576) throw Error("request_too_large");
-      const raw = await request.text();
+      const reader = request.body?.getReader();
+      const decoder = new TextDecoder();
+      let raw = "";
+      let bytes = 0;
+      try {
+        if (reader) {
+          while (true) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            bytes += chunk.value.byteLength;
+            if (bytes > 1048576) {
+              // Cancellation is advisory; a producer must not hold the refusal open.
+              void reader.cancel().catch(() => {});
+              throw Error("request_too_large");
+            }
+            raw += decoder.decode(chunk.value, { stream: true });
+          }
+          raw += decoder.decode();
+        }
+      } finally {
+        reader?.releaseLock();
+      }
       if (Buffer.byteLength(raw) > 1048576) throw Error("request_too_large");
       let r: RunnerRequest;
       try {

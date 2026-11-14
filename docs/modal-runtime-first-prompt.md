@@ -514,3 +514,75 @@ and all prior lifecycle proofs. Matching normal server/runtime artifacts are
 required; no new migration or manual artifact publication. Coordinator receipts
 are still required for live acceptance, ordinary default-path rollout and the
 production-day gate before tunnel deletion.
+
+
+## Promptless direct launch and first send
+
+Add `--idle` to launch the selected Modal golden without an initial prompt, then
+send the first instruction through the ordinary durable send route:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --idle --resume
+```
+
+This requires `idleLaunchVersion:1` before allocating. Combine with `--claude` or
+`--opencode` and the existing matching account/model inputs to check those
+harnesses; no new configuration or credentials. It still uses one allocation and
+one retained activation. The initial model turn moves from launch to first send;
+it is not an additional billable prompt.
+
+Before first send, the receipt must identify a ready sandbox with no conversation
+or prompt, and common archive reads must contain no inference events. The smoke
+records a first-send request UUID before dispatch, omits `conversation_id`, then
+requires the same enrolled epoch and a new conversation/prompt acknowledgement.
+It never retries an uncertain first send. Existing answer, follow-up/session
+recall, checkpoint/stop and optional retained resume checks remain required.
+
+The server-generated `first_<request UUID>` conversation identity is stable
+across uncertain delivery and replay. Only an owned live opted-in runtime with
+no conversation/task can take this path; normal account, membership, epoch,
+lease and payload-replay fences remain authoritative. Publishing that empty
+ready launch preserves authority only under its live launch lease with all
+identity/account/model/lifetime fields unchanged. Expired leases or changed pins
+still revoke it.
+
+Matching schema/server/runtime deployment must include
+`20261114090000_runtime_idle_publication.sql`. Native Modal behavior is unchanged.
+The template extension below adds promptless pinned claims. Stop/wake of a sandbox
+that has never had a conversation, default rollout and authorized tunnel deletion
+remain separate work. Live acceptance requires a coordinator receipt, not these tests.
+
+
+## Promptless pinned templates
+
+Combine `--idle --variables` to launch an existing eligible published Modal
+template without an initial prompt, then issue the first instruction once:
+
+```sh
+ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --idle --variables --usage --skills --mcp --github --resume
+```
+
+Select the matching account/model/harness (`--claude` or `--opencode` when needed)
+and existing pinned template/readable/default-skill/MCP/GitHub inputs. The smoke
+requires `idleTemplateVersion:1` in addition to existing idle/template capabilities
+before allocation. It freezes the same revision and request key, delivers the
+same immutable readable manifest privately, and uses the existing template claim
+and replay policy rather than a second launch implementation.
+
+A template receipt has no synthesized conversation list: before first send, the
+smoke reads the actual sandbox status and requires its ID, ready state, empty
+conversation list and null prompt, in addition to the receipt and archive checks.
+Foreign/stale/active status evidence cannot trigger a first send. Hash evidence
+is collected only after the first instruction runs with the frozen readables.
+The initial prompt is absent from the launch request, not a blank placeholder.
+
+Completed request replay returns the original ready receipt even after source
+variables or the template header change; adding a prompt to the same request key
+is a conflict, never another fork or inference. Explicit blank/null prompts,
+application-secret bindings and mixed template/source identities remain refused.
+Same one allocation/one retained activation and model turns; uncertain delivery
+is not retried. No new credentials, schema migration or configuration mutations.
+Matching normal server/runtime deployment and the existing
+`20261114090000_runtime_idle_publication.sql` prerequisite are required. Live
+acceptance remains coordinator-owned; this does not enable default cutover or
+tunnel deletion.

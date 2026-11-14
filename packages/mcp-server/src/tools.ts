@@ -60,6 +60,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
+import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
@@ -73,6 +74,7 @@ import {
   isStatusReadFenced,
   latestPrompt,
   readStatus,
+  recordedStatus,
   type StatusReport,
   waitSettled,
 } from "./turns.ts";
@@ -87,7 +89,7 @@ export interface ToolContext {
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
-  storedProvider?(target: ProviderTarget): Promise<Provider>;
+  storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
   templates?: TemplateService;
   skillDefaults?: SkillDefaultsService;
   applicationVault?: ApplicationVault;
@@ -107,6 +109,7 @@ export interface ToolContext {
   now(): Date;
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
+  ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   connections?: LaunchStores["connections"];
   /** Secure, server-orchestrated multi-repo golden creation. Absent: `golden_create` refuses. */
   goldenBuilds?: GoldenBuildJobs;
@@ -658,16 +661,16 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
   const statusOf = async (sandboxId: string, promptId: string | undefined, stored = false): Promise<StatusReport> => {
     const found = await measure("sandbox_read", () => visible(sandboxId));
-    const useStored = stored && found.provider === "modal" && context.storedProvider !== undefined;
+    const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
     const provider =
       found.status === "deleted" || isStatusReadFenced(found)
         ? null
-        : useStored
-          ? await context.storedProvider!(found)
+        : storedProvider
+          ? await storedProvider(found)
           : await context.provider(found);
     const result = await measure("state", () =>
       readStatus(provider, data.sandboxes, found, {
-        stored: useStored,
+        stored: storedProvider !== undefined,
         ...(promptId ? { promptId } : {}),
         now: context.now(),
       }),
@@ -991,6 +994,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes.",
         input: {
           ...(launchTool === "launch_sized_v1" ? { size_policy_version: z.literal(1) } : {}),
+          idempotencyKey: z
+            .string()
+            .min(16)
+            .max(128)
+            .optional()
+            .describe("Reuse this key for retries; inspect launch_receipt after an unknown outcome."),
           visibility: z.enum(["private", "org"]).optional(),
           skills: z.array(z.string()).max(20).optional(),
           skipSkillDefaults: z.boolean().optional(),
@@ -1068,43 +1077,83 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
         resolveRepositoryDir(chosen, args.repo);
         const provider = await context.provider(chosen);
-        const result = await launchSandbox(
-          provider,
-          {
-            ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
-            goldens: data.goldens,
-            sandboxes: data.sandboxes,
-            credentials: context.launchCredentials,
-            ...(context.connections ? { connections: context.connections } : {}),
-          },
-          actor,
-          {
-            golden: args.golden,
-            ...(args.size === undefined ? {} : { size: args.size }),
-            provider: chosen.provider,
-            harness: args.harness,
-            ...(args.repo === undefined ? {} : { repo: args.repo }),
-            ...(args.model === undefined ? {} : { model: args.model }),
-            ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
-            ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
-            ...(args.skills === undefined ? {} : { skills: args.skills }),
-            ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
-            ...(args.connections === undefined ? {} : { connections: args.connections }),
-            ...(args.credentialId ? { credentialId: args.credentialId } : {}),
-            ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
-            ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
-            ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
-          },
-          context.launch ?? {},
-        );
-        return {
-          ...launchResponse(result),
-          helper: result.helper,
-          visibility: result.sandbox.visibility ?? result.golden.visibility,
+        const dispatch = async (receiptId?: string) => {
+          const result = await launchSandbox(
+            provider,
+            {
+              ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
+              goldens: data.goldens,
+              sandboxes: data.sandboxes,
+              credentials: context.launchCredentials,
+              ...(context.connections ? { connections: context.connections } : {}),
+            },
+            actor,
+            {
+              golden: args.golden,
+              ...(args.size === undefined ? {} : { size: args.size }),
+              provider: chosen.provider,
+              harness: args.harness,
+              ...(args.repo === undefined ? {} : { repo: args.repo }),
+              ...(args.model === undefined ? {} : { model: args.model }),
+              ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+              ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
+              ...(args.skills === undefined ? {} : { skills: args.skills }),
+              ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
+              ...(args.connections === undefined ? {} : { connections: args.connections }),
+              ...(args.credentialId ? { credentialId: args.credentialId } : {}),
+              ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
+              ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+              ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
+            },
+            { ...context.launch, ...(receiptId ? { newId: () => receiptId } : {}) },
+          );
+          return {
+            ...launchResponse(result),
+            helper: result.helper,
+            visibility: result.sandbox.visibility ?? result.golden.visibility,
+          };
         };
+        if (!context.ordinaryLaunchReceipts) {
+          if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
+          return dispatch();
+        }
+        return context.ordinaryLaunchReceipts.run(
+          actor,
+          args.idempotencyKey ?? crypto.randomUUID(),
+          { ...args, goldenId: chosen.id },
+          dispatch,
+        );
       },
     );
   }
+
+  tool(
+    "launch_receipt",
+    {
+      title: "Inspect an ordinary launch receipt",
+      description:
+        "Owner-only allocation recovery by durable receipt id. An empty lookup is not proof of no allocation; never refork an unknown receipt. Discovered provider ids can be retired by an operator through provider controls.",
+      input: {
+        id: z.string().uuid(),
+        golden: z.string().min(1),
+        org: z.string().optional(),
+        provider: z.enum(SANDBOX_PROVIDERS).optional(),
+      },
+      output: {
+        id: z.string(),
+        response: z.unknown(),
+        allocations: z.array(z.object({ id: z.string(), state: z.string() })),
+        outcome: z.string(),
+      },
+    },
+    async (args) => {
+      const actor = await launchActor(args.golden, args.org);
+      const chosen = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
+      if (!context.ordinaryLaunchReceipts)
+        throw new ToolError("invalid", "Durable launch receipts are not configured.");
+      return context.ordinaryLaunchReceipts.inspect(actor, args.id, await context.provider(chosen));
+    },
+  );
 
   tool(
     "list",
@@ -1204,11 +1253,26 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
         "running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
         "the reason. settled is true when the agent is not working.",
-      input: { id, prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest.") },
+      input: {
+        id,
+        prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
+        recorded: z
+          .boolean()
+          .optional()
+          .describe(
+            "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
+          ),
+      },
       output: status,
       readOnly: true,
     },
-    (args) => statusOf(args.id, args.prompt_id, true),
+    async (args) =>
+      args.recorded
+        ? {
+            ...recordedStatus(await visible(args.id)),
+            statusMessage: `Recorded state only; use armada status ${args.id} --live for provider and prompt details.`,
+          }
+        : statusOf(args.id, args.prompt_id, args.recorded === undefined),
   );
 
   tool(
@@ -1268,10 +1332,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const found = await visible(args.id);
       if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
-      const provider =
-        found.provider === "modal" && context.storedProvider
-          ? await context.storedProvider(found)
-          : await context.provider(found);
+      const storedProvider = context.storedProviders?.[found.provider];
+      const provider = storedProvider ? await storedProvider(found) : await context.provider(found);
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),

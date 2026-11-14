@@ -332,7 +332,7 @@ path; this private operation is launch-only.
 Remaining refusals:
 - OpenCode on Boat, private scoped Armada-access launches, and requested helper
   capabilities. Claude support is merged separately; it is not implemented here.
-- Templates/routines requiring native readable-variable or application-secret
+- Templates/routines requiring native application-secret
   environment delivery; plain requests still traverse the runtime default policy.
 - Pinned local stdio MCP; connected remote HTTP/SSE defaults remain supported.
 - Legacy unbound model credentials; runtime requires an authorized bound account.
@@ -586,3 +586,30 @@ answer, follow-up/recall success, and normal stop/delete/cleanup. If still faili
 retain receipt ID plus cursor/page event IDs to distinguish ID mismatch from
 pagination; do not infer a pass from historical logs alone. No worker provider
 call was made, and Boat must never be added to staging/release acceptance.
+
+### Frozen readable variables on Boat templates/routines
+
+With the existing server setting `ARMADA_BOAT_AGENT_PATH=runtime`, ordinary
+Boat template/routine launches now deliver their frozen readable-variable map
+through encrypted runtime enrolment. Codex and Claude receive the values in their
+selected harness environment; the runtime also receives `readableVariables` for
+its existing model-credential-free execution environment. No native variable
+installation, new public flag or mutable-source lookup is used. Resume uses the
+same manifest projection before the retained machine activates; source edits do
+not change the admitted values. Native launches remain unchanged.
+
+Application-secret bindings still refuse before allocation. This slice does not
+enable raw secret delivery, OpenCode on Boat, scoped child/helper launches or a
+runtime default switch. Reserved keys, mismatched account/provider/actor metadata
+and corrupted frozen manifests refuse rather than becoming an empty environment.
+
+Coordinator-only production acceptance after normal release: use the existing
+Boat runtime-default server deployment and an existing Boat Codex or Claude
+template with a non-secret readable binding (no secret bindings). Launch through
+`armada template launch <template>`; use ordinary send/exec to read the bound key
+and confirm the exact admitted value. Change the source variable, stop the
+sandbox, and wake it through ordinary send: the admitted value must be preserved.
+Repeat for an existing routine referencing that template. Confirm launch logs
+are `source:armada-runtime`. A secret-bound template must still refuse without
+allocating. Use only existing authorized resources; no worker production access
+or provider call was performed, and Boat is never a staging/release-gate probe.
