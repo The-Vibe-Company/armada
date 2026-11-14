@@ -338,3 +338,12 @@ source SHAs and results to the issue when the coordinator performs these checks.
 Until then, report provider acceptance as **not verified**, not passed. No agent
 should trigger a release, change provider settings or apply SQL to fill this
 ledger. Follow the owner cutover and recovery procedures above.
+
+## Railway IaC cutover (#1918)
+
+Server settings now live in [.railway/railway.ts](../.railway/railway.ts), not
+railway.json. **Before the next publishing release**, the Railway owner must
+complete the [staging-first cutover checklist](../.railway/README.md) for both
+environments. `railway up` uploads source but does not apply IaC. Actions order,
+CLI pin and disabled Git autodeploy remain unchanged. Code and unit CI do not
+establish that the live environments have been migrated.
