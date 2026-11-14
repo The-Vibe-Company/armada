@@ -37,7 +37,7 @@ export function isReadableVariableBinding(value: unknown): value is ReadableVari
     Number.isSafeInteger(binding.version) &&
     binding.version > 0 &&
     typeof binding.key === "string" &&
-    /^ARMADA_PARITY_[A-Z0-9_]{1,96}$/.test(binding.key)
+    /^PARITY_READABLE_[A-Z0-9_]{1,96}$/.test(binding.key)
   );
 }
 
