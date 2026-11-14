@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.35.2](https://github.com/The-Vibe-Company/armada/compare/v2.35.1...v2.35.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **cli:** clarify MCP connection definition help ([#1912](https://github.com/The-Vibe-Company/armada/issues/1912)) ([e1b847c](https://github.com/The-Vibe-Company/armada/commit/e1b847c057033bd456deaca5246a55be6324cb97))
+* **cli:** clarify MCP registry management help ([#1910](https://github.com/The-Vibe-Company/armada/issues/1910)) ([3e5caa4](https://github.com/The-Vibe-Company/armada/commit/3e5caa4d4222397680ba0d4b55199344ef364931))
+* **cli:** clarify shell completion help ([#1914](https://github.com/The-Vibe-Company/armada/issues/1914)) ([5e9bdd3](https://github.com/The-Vibe-Company/armada/commit/5e9bdd36964c4f7606272e2926b3ee2f1d8b0b09))
+* **cli:** provide focused doctor help ([#1917](https://github.com/The-Vibe-Company/armada/issues/1917)) ([b051a7b](https://github.com/The-Vibe-Company/armada/commit/b051a7bd8e48cd36eee51f3dacc458801d33a545))
+
+
+### Performance Improvements
+
+* **dashboard:** overlap sandbox enrichment with setup reads ([#1915](https://github.com/The-Vibe-Company/armada/issues/1915)) ([fa3dfbf](https://github.com/The-Vibe-Company/armada/commit/fa3dfbfac4676f11b219f6d2645e14df35bde0fa))
+* **db:** index enabled and paused routine lists by organization ([#1913](https://github.com/The-Vibe-Company/armada/issues/1913)) ([8688dae](https://github.com/The-Vibe-Company/armada/commit/8688daee1e855dec0f79ab41cb060f75550133da))
+* **db:** resolve organization list memberships once per statement ([#1909](https://github.com/The-Vibe-Company/armada/issues/1909)) ([b58b20c](https://github.com/The-Vibe-Company/armada/commit/b58b20cd467a384bf2466a5fc3fcb6e288407b81))
+* **server:** expose SQL and total control request timing ([#1911](https://github.com/The-Vibe-Company/armada/issues/1911)) ([11afa66](https://github.com/The-Vibe-Company/armada/commit/11afa667e7e227c0fd8764461c54505645e3232e))
+
 ## [2.35.1](https://github.com/The-Vibe-Company/armada/compare/v2.35.0...v2.35.1) (2026-11-14)
 
 
