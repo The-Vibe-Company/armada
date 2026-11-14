@@ -100,6 +100,7 @@ export interface LaunchOptionsResponse {
     claudeVersion?: number;
     opencodeVersion?: number;
     opencodeShellProofVersion?: number;
+    opencodeMcpProofVersion?: number;
   };
   boatRuntime: {
     defaultPath?: "native" | "runtime";

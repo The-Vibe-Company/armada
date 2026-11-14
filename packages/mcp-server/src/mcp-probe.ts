@@ -253,9 +253,11 @@ export async function probeRemoteMcp(input: {
       budget.signal.throwIfAborted();
       await client.connect(transport, request);
       const capabilities = client.getServerCapabilities();
+      const toolNames: string[] = [];
       const toolCount = capabilities?.tools
         ? await count(async (cursor) => {
             const page = await client.listTools(cursor === undefined ? {} : { cursor }, request);
+            toolNames.push(...page.tools.map((tool) => tool.name));
             return {
               length: page.tools.length,
               ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
@@ -280,7 +282,7 @@ export async function probeRemoteMcp(input: {
             };
           })
         : 0;
-      return { toolCount, resourceCount, promptCount };
+      return { toolCount, resourceCount, promptCount, toolNames };
     });
   } finally {
     await budget

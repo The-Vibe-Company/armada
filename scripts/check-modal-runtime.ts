@@ -53,7 +53,9 @@ interface Reply {
     claudeVersion?: number;
     opencodeVersion?: number;
     opencodeShellProofVersion?: number;
+    opencodeMcpProofVersion?: number;
   };
+  mcpToolInventory?: { connectionId: string; tools: string[] }[];
   usage?: SandboxUsage;
   skills?: unknown;
   sandbox?: { id?: string; goldenId?: string; skills?: unknown; provider?: string; runtimeTransport?: string };
@@ -107,8 +109,8 @@ const harness = process.argv.includes("--opencode")
 if (harness === "opencode") {
   if (options.modalRuntime.opencodeVersion !== 1)
     throw Error("Modal enrolled OpenCode v1 is unavailable; no launch attempted.");
-  if (process.argv.includes("--mcp"))
-    throw Error("OpenCode MCP tool-proof smoke is not yet admitted; no launch attempted.");
+  if (process.argv.includes("--mcp") && options.modalRuntime.opencodeMcpProofVersion !== 1)
+    throw Error("OpenCode native MCP proof v1 is unavailable; no launch attempted.");
   if (
     ["--variables", "--github"].some((flag) => process.argv.includes(flag)) &&
     options.modalRuntime.opencodeShellProofVersion !== 1
@@ -173,6 +175,30 @@ if (mcpMode) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw Error("MCP arguments must be a non-secret JSON object; no launch attempted.");
   mcpArguments = parsed as Record<string, unknown>;
+}
+const mcpServer = `armada_${mcpConnection.replaceAll("-", "_")}`;
+const nativeMcpName = `${mcpServer}_${mcpTool.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+let mcpInventoryOrg: string | undefined;
+let frozenToolInventory: string[] | undefined;
+function checkMcpInventory(reply: Reply) {
+  const inventory = reply.mcpToolInventory;
+  if (
+    !Array.isArray(inventory) ||
+    inventory.length !== 1 ||
+    inventory[0]?.connectionId !== mcpConnection ||
+    !Array.isArray(inventory[0].tools) ||
+    inventory[0].tools.length > 10000 ||
+    inventory[0].tools.some((name) => typeof name !== "string" || !name || name.length > 512)
+  )
+    throw Error("Complete authorized OpenCode MCP tool inventory is unavailable.");
+  const tools = inventory[0].tools;
+  const matches = tools.filter((name) => `${mcpServer}_${name.replace(/[^a-zA-Z0-9_-]/g, "_")}` === nativeMcpName);
+  if (matches.length !== 1 || matches[0] !== mcpTool)
+    throw Error("OpenCode MCP native tool name is missing or ambiguous; no proof accepted.");
+  const ordered = [...tools].sort();
+  if (frozenToolInventory && canonical(frozenToolInventory) !== canonical(ordered))
+    throw Error("OpenCode MCP tool inventory changed; no proof accepted.");
+  frozenToolInventory = ordered;
 }
 if (githubMode && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
   throw Error("GitHub check requires existing ARMADA_RUNTIME_GITHUB_REPOSITORY=owner/repo; no launch attempted.");
@@ -257,11 +283,15 @@ if (githubMode || mcpMode || skillsMode || variablesMode) {
       runtimeVersion: 1,
       org: choices[0].orgId,
       connections: [mcpConnection],
+      ...(harness === "opencode" ? { toolInventory: true } : {}),
     });
     if (preflight.mcpReady !== true) throw Error("Modal MCP preflight refused; no launch attempted.");
+    if (harness === "opencode") {
+      mcpInventoryOrg = choices[0].orgId;
+      checkMcpInventory(preflight);
+    }
   }
 }
-const mcpServer = `armada_${mcpConnection.replaceAll("-", "_")}`;
 const mcpInstruction = `Call the read-only MCP tool ${mcpTool} on server ${mcpServer} with exactly these non-secret JSON arguments: ${JSON.stringify(mcpArguments)}. Do not substitute a shell or another tool.`;
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -363,6 +393,26 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
     for (const event of page.events ?? []) {
       if (usageMode) usageCheck.observe(event);
       if (event.promptId !== expectedPromptId) continue;
+      if (harness === "opencode" && mcpMode && event.kind === "other" && event.type === "armada/opencodeMcp") {
+        const proof = event.data as Record<string, unknown> | undefined;
+        const result = proof?.result as { output?: unknown; isError?: unknown } | undefined;
+        if (
+          proof?.version === 1 &&
+          typeof proof.nativeMessageId === "string" &&
+          proof.nativeMessageId &&
+          typeof proof.callId === "string" &&
+          proof.callId &&
+          typeof proof.configurationRevision === "string" &&
+          proof.configurationRevision &&
+          proof.server === mcpServer &&
+          proof.nativeToolName === nativeMcpName &&
+          canonical(proof.input) === canonical(mcpArguments) &&
+          result?.isError === false &&
+          typeof result.output === "string" &&
+          result.output.includes(mcpExpected)
+        )
+          foundMcp = true;
+      }
       if (harness === "opencode" && event.kind === "other" && event.type === "armada/opencodeShell") {
         const proof = event.data as Record<string, unknown> | undefined;
         if (
@@ -476,6 +526,16 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
     throw Error(
       "Timed out waiting for this Modal prompt's archived answer, tool proof, harness usage and finished event.",
     );
+  if (harness === "opencode" && mcpMode) {
+    const inventory = await api("sandbox/mcp-preflight-v1", {
+      runtimeVersion: 1,
+      org: mcpInventoryOrg,
+      connections: [mcpConnection],
+      toolInventory: true,
+    });
+    if (inventory.mcpReady !== true) throw Error("OpenCode MCP authorization changed; no proof accepted.");
+    checkMcpInventory(inventory);
+  }
   await verifyUsageStatus();
 };
 
