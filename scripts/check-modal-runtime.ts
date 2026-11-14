@@ -37,6 +37,8 @@ interface Reply {
   githubReady?: boolean;
   mcpReady?: boolean;
   status?: string;
+  conversationIds?: string[];
+  prompt?: unknown;
   revision?: string;
   configured?: boolean;
   credentialRequests?: number;
@@ -46,6 +48,7 @@ interface Reply {
     enabled?: boolean;
     followupVersion?: number;
     idleLaunchVersion?: number;
+    idleTemplateVersion?: number;
     resumeVersion?: number;
     mcpVersion?: number;
     skillsVersion?: number;
@@ -131,8 +134,8 @@ if (harness === "claude" && options.modalRuntime.claudeVersion !== 1)
 const idleMode = process.argv.includes("--idle");
 if (idleMode && options.modalRuntime.idleLaunchVersion !== 1)
   throw Error("Modal promptless launch/first-send v1 is unavailable; no launch attempted.");
-if (idleMode && process.argv.includes("--variables"))
-  throw Error("Idle smoke currently requires a direct golden, not a template; no launch attempted.");
+if (idleMode && process.argv.includes("--variables") && options.modalRuntime.idleTemplateVersion !== 1)
+  throw Error("Modal promptless template v1 is unavailable; no launch attempted.");
 const resumeMode = process.argv.includes("--resume");
 if (resumeMode && options.modalRuntime.resumeVersion !== 1)
   throw Error("Modal retained resume v1 is unavailable; no launch attempted.");
@@ -666,6 +669,21 @@ try {
     (!idleMode && (!promptId || !launched.conversationId))
   )
     throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
+  if (idleMode && templateSource) {
+    const current = await api("sandbox/status", { id });
+    if (
+      raw.status !== "ready" ||
+      current.id !== id ||
+      current.status !== "ready" ||
+      !Array.isArray(current.conversationIds) ||
+      current.conversationIds.length ||
+      current.prompt !== null
+    )
+      throw Error("Promptless template current status is not empty and ready; no first send attempted.");
+    // Status evidence comes from the actual sandbox, never a synthesized empty list.
+    launched.sandbox.status = current.status;
+    launched.sandbox.conversationIds = current.conversationIds;
+  }
   if (idleMode) {
     if (
       launched.sandbox.status !== "ready" ||
