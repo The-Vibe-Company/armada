@@ -8,7 +8,13 @@ import { readDockerLaunchOption, readSelectedDockerHosts, viewerDockerHosts } fr
 import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { connectedHostName, dockerHostLimitsInput, HOSTS_PATH, hostNameInput } from "@/lib/docker-hosts";
+import {
+  connectedHostName,
+  dockerHostActionFailure,
+  dockerHostLimitsInput,
+  HOSTS_PATH,
+  hostNameInput,
+} from "@/lib/docker-hosts";
 import {
   dockerHarnesses,
   dockerLaunchBlocker,
@@ -60,7 +66,7 @@ export async function registerDockerHost(
     return { ok: true, ...registration };
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    return { ok: false, error: error.message };
+    return { ok: false, error: dockerHostActionFailure(error.status, "register") };
   }
 }
 
@@ -96,7 +102,7 @@ export async function revokeDockerHost(_previous: ActionResult | null, data: For
     return done("The host is revoked: it takes no new work.");
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    return fail(error.message);
+    return fail(dockerHostActionFailure(error.status, "revoke"));
   }
 }
 
@@ -164,7 +170,7 @@ export async function launchOnDockerHost(
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     if (error.outcomeUnknown || error.code === "outcome_unknown") return fail(UNKNOWN_DOCKER_LAUNCH);
-    return fail(error.message);
+    return fail(dockerHostActionFailure(error.status, "launch"));
   }
   if (!id) return fail("The Armada server did not answer with a Docker sandbox.");
   revalidatePath("/sandboxes");
@@ -195,6 +201,6 @@ export async function updateDockerHostLimits(_previous: ActionResult | null, dat
     return done("Host limits updated. They apply to future starts and resumes.");
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    return fail(error.message);
+    return fail(dockerHostActionFailure(error.status, "limits"));
   }
 }

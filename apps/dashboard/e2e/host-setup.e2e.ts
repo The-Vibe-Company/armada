@@ -42,3 +42,28 @@ test("an existing link to unfinished setup still opens its details", async ({ pa
   await expect(panel).toContainText("Office workstation");
   await expect(panel.getByRole("button", { name: "Copy host ID" })).toBeVisible();
 });
+
+test("missing host setup gives plain recovery without losing the machine name", async ({ page }) => {
+  // The existing fixture offers host listing but no registration route: an older server surface.
+  await signIn(page, "alice@example.com", "/hosts");
+  await page.getByRole("button", { name: "Add host", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add a Docker host" });
+  await dialog.getByLabel("Name", { exact: false }).fill("Build machine");
+  await dialog.getByRole("button", { name: "Get install command", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Host setup is not available here");
+  await expect(dialog.getByRole("alert")).not.toContainText("404");
+  await expect(dialog.getByLabel("Name", { exact: false })).toHaveValue("Build machine");
+  for (const [name, width] of [
+    ["desktop", 1280],
+    ["mobile", 390],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await dialog.getByRole("alert").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `test-results/host-action-after-${name}.png`, fullPage: true });
+  }
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("list", { name: "Docker hosts", exact: true }).locator(`[data-host="${ONLINE}"]`),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "Unfinished setup (1)", exact: true })).toBeVisible();
+});
