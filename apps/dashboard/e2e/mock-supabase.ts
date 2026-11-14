@@ -1002,7 +1002,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   const text = (value: unknown, isError = false) =>
     reply({ content: [{ type: "text", text: JSON.stringify(value) }], isError });
   if (!target || !visible) return text("not found", true);
-  if (driving && state.failNextTool) {
+  if ((driving || name === "stop") && state.failNextTool) {
     const failure = state.failNextTool;
     state.failNextTool = null;
     return reply({ content: [{ type: "text", text: failure }], isError: true });
