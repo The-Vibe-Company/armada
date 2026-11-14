@@ -210,6 +210,7 @@ const sandboxUsage = z
     turnCount: z.number().nullable(),
     cost: z
       .object({
+        classification: z.enum(["priced", "included_in_subscription", "unknown"]),
         currency: z.literal("USD"),
         usd: z.string().nullable(),
         basis: z.enum(["estimated", "api_equivalent"]).nullable(),

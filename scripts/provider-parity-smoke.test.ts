@@ -14,6 +14,11 @@ for (const mode of [
   "h_opencode",
   "h_missing",
   "h_failed",
+
+  "subscription",
+  "subscription_priced",
+  "subscription_bad_billing",
+  "custom_unknown",
   "docker_send_pending",
   "github",
   "github_scp",
@@ -279,13 +284,20 @@ for (const mode of [
                     inputTokens: mode === "usage_missing" ? null : 10,
                     outputTokens: 5,
                     pricing: {
+                      ...(mode.startsWith("subscription")
+                        ? {
+                            basis: "api_equivalent",
+                            billing: mode === "subscription_bad_billing" ? "per_token" : "subscription",
+                            credentialId: "account",
+                          }
+                        : {}),
                       unknown:
-                        mode === "accounts_unknown" ||
+                        ["accounts_unknown", "subscription", "custom_unknown"].includes(mode) ||
                         (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                           ? "price"
                           : null,
                       usd:
-                        mode === "accounts_unknown" ||
+                        ["accounts_unknown", "subscription", "custom_unknown"].includes(mode) ||
                         (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                           ? null
                           : mode === "price_changed" && (turns.get(p)?.length ?? 0) > 1
@@ -298,20 +310,33 @@ for (const mode of [
                     },
                   })),
                   cost: {
+                    classification: mode.startsWith("subscription")
+                      ? "included_in_subscription"
+                      : mode.startsWith("accounts_unknown") ||
+                          mode === "custom_unknown" ||
+                          mode === "accounts_price_lost"
+                        ? "unknown"
+                        : "priced",
                     currency: "USD",
-                    basis: "estimated",
+                    basis: mode.startsWith("subscription") ? "api_equivalent" : "estimated",
                     unknown:
                       mode.startsWith("accounts_unknown") ||
+                      mode === "subscription" ||
+                      mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? "price"
                         : null,
                     unpricedTurns:
                       mode.startsWith("accounts_unknown") ||
+                      mode === "subscription" ||
+                      mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? turns.get(p)?.length
                         : 0,
                     usd:
                       mode.startsWith("accounts_unknown") ||
+                      mode === "subscription" ||
+                      mode === "custom_unknown" ||
                       (mode === "accounts_price_lost" && (turns.get(p)?.length ?? 0) > 1)
                         ? null
                         : mode === "cost_mismatch"
@@ -507,6 +532,24 @@ for (const mode of [
           expect(report.features.cleanup[provider].status).toBe("pass");
           if (mode === "h_failed") expect(cell.reason).toBe("send: turn_failed");
         }
+      }
+      return;
+    }
+
+    if (mode === "subscription_bad_billing") {
+      expect(passed).toBe(false);
+      expect(report.features["exact-cost"].modal).toMatchObject({ status: "fail", reason: "invalid_cost_receipt" });
+      return;
+    }
+    if (mode.startsWith("subscription") || mode === "custom_unknown") {
+      expect(passed).toBe(true);
+      for (const provider of ["modal", "docker"]) {
+        for (const name of ["exact-cost", "exact-cost-before-resume", "exact-cost-after-resume"])
+          expect(report.features[name][provider]).toMatchObject({
+            status: "pass",
+            reason: mode.startsWith("subscription") ? "included in subscription" : "unknown: price",
+          });
+        expect(turns.get(provider)).toHaveLength(2);
       }
       return;
     }
@@ -751,7 +794,13 @@ function productionBoatFixture(
                 outputTokens: 2,
                 pricing: { unknown: null, usd: "0.1" },
               })),
-              cost: { currency: "USD", unknown: null, unpricedTurns: 0, usd: `0.${turns.length}` },
+              cost: {
+                classification: "priced",
+                currency: "USD",
+                unknown: null,
+                unpricedTurns: 0,
+                usd: `0.${turns.length}`,
+              },
             },
           });
         case "sandbox/status":

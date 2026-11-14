@@ -1268,3 +1268,18 @@ harness is proved. To exercise multiple available accounts/harnesses, use the
 existing `--parity --accounts` matrix: each configured account case runs these
 same harness rows and cleanup. Missing account cells remain not-run. Boat stays
 outside staging acceptance; its coordinator-only production opt-in is unchanged.
+
+### Cost classification in parity receipts
+
+`usage.cost.classification` separates the billing meaning from an optional USD
+quote: `priced` is a precise persisted list/connection-price estimate (not an
+invoice); `included_in_subscription` means admitted subscription turns have no
+per-token bill; `unknown` means a complete USD estimate cannot be established.
+A subscription may still carry a frozen `api_equivalent` USD reference, or null
+USD with `unknown: price`. Missing admission or turn coverage is never inferred
+to be a subscription. Custom endpoints without declared prices remain unknown.
+
+The historical `exact-cost` parity row now proves this classification before and
+after resume. It validates precise USD sums when quotes exist, explicit null USD
+and price reasons otherwise, and preserves the earlier per-turn quotes across
+resume. A subscription pass is labeled `included in subscription`, not zero USD.

@@ -173,7 +173,14 @@ test.each([
           snapshot: { revision: originalQuote.snapshot.revision },
         });
       }
-      const cost = { currency: "USD", usd, basis, unknown: null, unpricedTurns: 0 } as const;
+      const cost = {
+        classification: basis === "api_equivalent" ? "included_in_subscription" : "priced",
+        currency: "USD",
+        usd,
+        basis,
+        unknown: null,
+        unpricedTurns: 0,
+      } as const;
       expect((await store.get(launched.sandbox.id))?.usage?.cost).toEqual(cost);
       expect((await store.list({ limit: 10 })).rows[0]?.usage?.cost).toEqual(cost);
       // A closed stored read may not need a native provider, fresh credentials or current prices.
