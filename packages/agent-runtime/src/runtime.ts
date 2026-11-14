@@ -9,7 +9,8 @@ import { execCredentialValues, validateExecEnvironment, validateExecReadables } 
 import { githubRuntimeEnvironment } from "./github-tools.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import type { Journal } from "./journal.ts";
-import { mcpDigest, mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
+import { mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
+import { recordMcpRevision } from "./mcp-revisions.ts";
 import { NativeEpoch } from "./native-epoch.ts";
 import { groupState, type ProcessIdentity, processIdentity } from "./processes.ts";
 import {
@@ -312,35 +313,7 @@ export class Runner {
     if (this.credentialFreeBuilder && Object.keys(configuration.servers).length)
       throw Error("builder_credentials_forbidden");
     if (values.some((v) => v === configuration.revision)) throw Error("invalid_mcp_configuration");
-    const prefix = `mcp:v2:${checkpointIdentityKey(this.grant)}:`,
-      key = prefix + mcpDigest(configuration.revision),
-      digest = mcpDigest(configuration);
-    const previous = this.journal.db.query("SELECT value FROM metadata WHERE key=?").get(key) as {
-      value: string;
-    } | null;
-    const current = this.journal.db.query("SELECT value FROM metadata WHERE key=?").get(`${prefix}current`) as {
-      value: string;
-    } | null;
-    if (previous && previous.value !== digest) throw Error("mcp_revision_conflict");
-    if (previous && current && current.value !== key) throw Error("stale_mcp_revision");
-    if (
-      !previous &&
-      Number(
-        (
-          this.journal.db
-            .query("SELECT count(*) AS n FROM metadata WHERE substr(key,1,?)=? AND key<>?")
-            .get(prefix.length, prefix, `${prefix}current`) as { n: number }
-        ).n,
-      ) >= 4096
-    )
-      throw Error("mcp_revision_limit");
-    if (Date.now() >= this.grant.expiresAt) throw Error("unauthorized");
-    // Register before SQL metadata, snapshot replacement, events, native stderr or any acknowledgement.
-    this.journal.registerSecrets(values);
-    this.journal.db.transaction(() => {
-      this.journal.db.query("INSERT OR REPLACE INTO metadata VALUES(?,?)").run(key, digest);
-      this.journal.db.query("INSERT OR REPLACE INTO metadata VALUES(?,?)").run(`${prefix}current`, key);
-    })();
+    recordMcpRevision(this.journal, this.grant, configuration, values);
     this.mcp = configuration;
     return { revision: configuration.revision };
   }
