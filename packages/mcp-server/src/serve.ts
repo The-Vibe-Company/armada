@@ -2,7 +2,6 @@ import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada
 import {
   createApplicationVault,
   createGoldenAdoption,
-  createRoutineScheduler,
   createRoutineService,
   createSkillDefaultsService,
   createSqlVaultStore,
@@ -13,7 +12,6 @@ import {
   githubInstallationAppFromEnv,
   type LaunchOptions,
   resolveBoatKey,
-  type Sql,
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
@@ -22,7 +20,7 @@ import { readBoatRuntimeManifest } from "./boat-runtime-manifest.ts";
 import { boatRuntimeResume } from "./boat-runtime-resume.ts";
 import { authenticateCaller } from "./caller.ts";
 import { configFromEnv } from "./config.ts";
-import { type ConfiguredControlOptions, handleControlRequest, templateRuntime } from "./control.ts";
+import { type ConfiguredControlOptions, handleControlRequest } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
@@ -59,7 +57,6 @@ import { createOttoApi } from "./otto/api.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
-import { observeRoutinePrompt } from "./routine-observer.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
 import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint } from "./runtime-checkpoint.ts";
@@ -82,6 +79,7 @@ import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
+import { createServerRoutineScheduler } from "./server-routines.ts";
 import { startServerWorkers } from "./server-workers.ts";
 import { bunSql } from "./sql.ts";
 import { createSubscriptionMigration } from "./subscription-migration.ts";
@@ -727,72 +725,7 @@ export async function startServer(
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations
       ? startInvitationWorker(control.invitations)
       : undefined;
-  const routineScheduler = createRoutineScheduler(sql, {
-    observe: async (actor, turn) => {
-      const orgId = actor.orgs[0]?.orgId;
-      const member = (
-        await sql.query<{ role: "admin" | "member" }>(
-          "select role from public.members where org_id=$1 and user_id=$2",
-          [orgId, actor.userId],
-        )
-      ).rows[0];
-      if (!member) return "unknown";
-      const caller = { userId: actor.userId, orgs: [{ orgId: orgId!, role: member.role }], via: "service" as const };
-      return observeRoutinePrompt(caller, turn, {
-        ...(control.dockerControls ? { docker: control.dockerControls } : {}),
-        get: (id) => data(caller).sandboxes.get(id),
-        provider: (sandbox) => providers.resolve(sandbox, caller),
-      });
-    },
-    launch: async (actor, input, admission) => {
-      // Re-read the persisted execution owner's role, never impersonate the editing admin.
-      const orgId = input.org as string;
-      const member = (
-        await sql.query<{ role: "admin" | "member" }>(
-          "select role from public.members where org_id=$1 and user_id=$2",
-          [orgId, actor.userId],
-        )
-      ).rows[0];
-      if (!member) throw new Error("Routine owner unavailable.");
-      const caller = { userId: actor.userId, orgs: [{ orgId, role: member.role }], via: "service" as const };
-      const runtime = templateRuntime(control, caller);
-      if (!runtime) throw new VaultError("unavailable", "Routine launch runtime unavailable.");
-      const authorize = async (tx: Sql = sql) => {
-        const grant = (
-          await tx.query(
-            `select m.user_id from public.routine_runs run
-          join public.routines r on r.id=run.routine_id
-          join public.members m on m.org_id=r.org_id and m.user_id=run.owner_id
-          where run.request_key=$1 and run.owner_id=$2 and run.org_id=$3
-          and (r.scope='personal' or m.role='admin')`,
-            [input.requestKey, actor.userId, orgId],
-          )
-        ).rows[0];
-        if (!grant) throw new VaultError("forbidden", "Routine owner authorization changed.");
-      };
-      return templates.command(caller, "launch", input, {
-        ...runtime,
-        beforeDockerReserve: async (tx: Sql, id: string) => {
-          await authorize(tx);
-          await admission.beforeFork(tx);
-          await runtime.options?.beforeFork?.(id);
-        },
-        beforeDockerStart: () => authorize(),
-        options: {
-          ...runtime.options,
-          beforeFork: async (id) => {
-            await authorize();
-            await runtime.options?.beforeFork?.(id);
-            await admission.beforeFork();
-          },
-          beforeStart: async (provider, sandbox) => {
-            await authorize();
-            await runtime.options?.beforeStart?.(provider, sandbox);
-          },
-        },
-      });
-    },
-  });
+  const routineScheduler = createServerRoutineScheduler({ sql, control, templates, providers, data });
   const routineWorker = startRoutineWorker(routineScheduler, options.logError);
   const ottoWorker = otto?.start();
   const allWorkersDone = Promise.all([workers.done, invitationWorker?.done, routineWorker.done, ottoWorker?.done]).then(
