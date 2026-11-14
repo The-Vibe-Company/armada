@@ -312,3 +312,24 @@ main without its release migrations. No agent performs provider changes or deplo
 
 The canonical [release configuration list](#release-configuration-names) above
 applies to both environments. No tokenless exception remains.
+
+## Deployment policy acceptance ledger (#1547)
+
+The repository implementation is present; issue closure still requires the
+coordinator's provider-side evidence. Merged code and a green PR verdict do not
+prove that a provider's independent Git writer is disabled. Do not interpret
+this ledger as a deployment receipt or permission to deploy.
+
+| Acceptance criterion | Repository implementation | Outstanding owner evidence |
+| --- | --- | --- |
+| No Vercel builds or PR previews | `apps/dashboard/vercel.json` disables Git deployments; the shared deployment script runs `vercel pull`, `vercel build`, then `vercel deploy --prebuilt` in Actions | Compare both Vercel projects' deployment lists before/after a new PR push; confirm no new deployment or Vercel check |
+| Staging follows main | `staging-gated-production.yml` handles main pushes; queued ordinary sources are superseded before mutation; active work finishes | Confirm staging Railway Git is disabled and old queued writers are drained, then record one main SHA, Actions run, Railway deployment ID, dashboard Ready deployment and Modal/Docker smoke receipts |
+| Production only follows releases | `release.yml` requires exact-release staging smoke before protected production; the deployment script applies migrations before server upload and uploads a prebuilt dashboard | Confirm production Git and other independent writers remain disabled; compare production deployment history across an ordinary main push and an authorized publishing release |
+| Fast PR verdict is unchanged | Builds and provider smoke stay in post-merge/release workflows, not PR checks | Record the latest PR aggregate verdict and elapsed time; no new required check is introduced |
+
+Existing recovery/cutover comments on #1547 are historical context, not fresh
+proof for another environment or deployment. Attach actual non-secret IDs,
+source SHAs and results to the issue when the coordinator performs these checks.
+Until then, report provider acceptance as **not verified**, not passed. No agent
+should trigger a release, change provider settings or apply SQL to fill this
+ledger. Follow the owner cutover and recovery procedures above.
