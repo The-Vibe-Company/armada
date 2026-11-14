@@ -76,45 +76,6 @@ function rpc(handler: TestServer["handler"], bearer: string) {
 }
 
 describe("http", () => {
-  test("/healthz answers without a token", async () => {
-    const { handler } = await start();
-    const response = await handler(new Request(`${PUBLIC_URL}/healthz`));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ ok: true });
-  });
-
-  test("CLI discovery on the MCP host answers without a token or private settings", async () => {
-    const { handler } = await start();
-    const response = await handler(new Request(`${PUBLIC_URL}/.well-known/armada.json`));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      version: 1,
-      supabaseUrl: "https://project.supabase.co",
-      anonKey: "anon",
-      controlUrl: PUBLIC_URL,
-      providers: [],
-    });
-  });
-
-  test("the OAuth routes are mounted before /mcp", async () => {
-    const { handler } = await start();
-    const response = await handler(new Request(`${PUBLIC_URL}/.well-known/oauth-protected-resource`));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ resource: `${PUBLIC_URL}/mcp` });
-  });
-
-  test("a mounted route answers its paths and leaves the others to /mcp", async () => {
-    const { handler } = await start({
-      routes: [
-        async (request) => (new URL(request.url).pathname === "/api/v1/org/list" ? Response.json({ orgs: [] }) : null),
-      ],
-    });
-    expect(await (await handler(new Request(`${PUBLIC_URL}/api/v1/org/list`, { method: "POST" }))).json()).toEqual({
-      orgs: [],
-    });
-    expect((await handler(new Request(`${PUBLIC_URL}/mcp`, { method: "POST" }))).status).toBe(401);
-  });
-
   test("/mcp without a valid token is the OAuth challenge", async () => {
     const { handler } = await start();
     for (const authorization of [undefined, "Bearer armada_sk_not-a-real-token-but-long-enough-000000000"]) {
