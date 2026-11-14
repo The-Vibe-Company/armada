@@ -5,6 +5,13 @@ import { join } from "node:path";
 
 test.each([
   "success",
+  "ordinary",
+  "ordinary-idle",
+  "ordinary-claude-resume",
+  "ordinary-native-default",
+  "ordinary-unknown-default",
+  "ordinary-native-receipt",
+  "ordinary-wrong-source",
   "idle",
   "idle-resume",
   "idle-not-ready",
@@ -69,10 +76,11 @@ test.each([
   "workspace-resume-rerun",
   "old-workspace",
 ] as const)("one-launch coordinator check is fail-closed (%s)", async (mode) => {
-  const idle = mode.startsWith("idle");
+  const ordinary = mode.startsWith("ordinary");
+  const idle = mode.startsWith("idle") || mode === "ordinary-idle";
   const workspace = mode.startsWith("workspace") || mode === "old-workspace";
   const workspaceResume = workspace && mode.includes("resume");
-  const claude = mode === "claude-resume";
+  const claude = mode === "claude-resume" || mode === "ordinary-claude-resume";
   const usage = mode.startsWith("usage");
   const usageResume = usage && mode.includes("resume");
   const skills = mode.startsWith("skills") || mode === "mcp-skills-resume";
@@ -100,7 +108,7 @@ process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops}))
 globalThis.fetch=async(url,options)=>{
  if(new Headers(options.headers).get('authorization')!=='Bearer '+process.env.ARMADA_TOKEN)throw Error('bad auth transport');
  const path=new URL(url).pathname,body=JSON.parse(options.body);
- if(path.endsWith('/launch/options'))return Response.json({boatRuntime:{enabled:${mode !== "disabled"},diagnosticsVersion:${mode === "old-diagnostics" ? 0 : 1},followupVersion:${mode === "old-followup" ? 0 : 1},checkpointVersion:${mode === "old-checkpoint" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},githubVersion:${mode === "old-github" ? 0 : 1},mcpVersion:${mode === "old-mcp" ? 1 : 2},skillsVersion:1,workspaceVersion:${mode === "old-workspace" ? 0 : 1}}});
+ if(path.endsWith('/launch/options'))return Response.json({boatRuntime:{defaultPath:${mode === "ordinary-unknown-default" ? "undefined" : JSON.stringify(mode === "ordinary-native-default" ? "native" : "runtime")},enabled:${mode !== "disabled"},diagnosticsVersion:${mode === "old-diagnostics" ? 0 : 1},followupVersion:${mode === "old-followup" ? 0 : 1},checkpointVersion:${mode === "old-checkpoint" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},githubVersion:${mode === "old-github" ? 0 : 1},mcpVersion:${mode === "old-mcp" ? 1 : 2},skillsVersion:1,workspaceVersion:${mode === "old-workspace" ? 0 : 1}}});
  if(path.endsWith('/golden/list'))return Response.json({goldens:[{id:'wrong',name:'fixture',orgId:'org',provider:'modal'},{id:'golden',name:'fixture',orgId:'org',provider:'boat',config:{repos:[{}],init:['setup']}}]});
  if(path.endsWith('/skills/defaults/get')){defaultReads++;if(body.org!=='org'||(body.scope==='golden'?body.goldenId!=='golden':Object.hasOwn(body,'goldenId')))throw Error('wrong defaults scope');return Response.json({skills:${mode === "skills-empty"}?[]:({golden:['catalog/notes@1.0.0','catalog/other@1.0.0'],org:['notes@2.0.0'],personal:[]}[body.scope])});}
  if(path.endsWith('/sandbox/status')){skillStatuses++;return Response.json({skills:${mode === "skills-status"}?receipts.slice(1):receipts,...(${usage}?{usage:projectedUsage()}:{})});}
@@ -109,16 +117,17 @@ globalThis.fetch=async(url,options)=>{
  if(path.endsWith('/mcp/list'))return Response.json({connections:[{id:'${mcpId}',defaultForLaunch:${mode !== "mcp-no-default"}}]});
  if(path.endsWith('/github/refresh')){githubConfigurations++;if(phase>=3 && ${mode === "github-resume-lost-refresh"})throw Error('lost new epoch configuration');return Response.json({status:'connected',revision:phase>=3?'4':'3',runtime:{kind:'armada',epoch:phase>=3?'2':'1'}});}
  if(path.endsWith('/github/runtime-status'))return Response.json({configured:phase===3 ? ${mode !== "github-resume-stale-status"} : true,revision:phase>=3?'4':'3',credentialRequests:${mode === "github-no-audit" ? 0 : 1}*(phase>=3 && ${mode === "github-resume-no-audit"} ? 0 : 1),runtime:{kind:'armada',epoch:phase>=3?'2':'1'}});
- if(path.endsWith('/sandbox/launch-runtime-v1')){if(++launches!==1)throw Error('allocation repeated');if(${mcp}){if(Object.hasOwn(body,'connections'))throw Error('MCP defaults were bypassed');mcpConfigurations=1;}
-  if(body.runtimeVersion!==1||body.boatRuntime!==true||body.harness!==${JSON.stringify(claude ? "claude" : "codex")})throw Error('missing explicit opt-in');
+ if(path.endsWith(${JSON.stringify(ordinary ? "/sandbox/launch" : "/sandbox/launch-runtime-v1")})){if(++launches!==1)throw Error('allocation repeated');if(${mcp}){if(Object.hasOwn(body,'connections'))throw Error('MCP defaults were bypassed');mcpConfigurations=1;}
+  if(${ordinary} ? (Object.hasOwn(body,'runtimeVersion')||Object.hasOwn(body,'boatRuntime')) : (body.runtimeVersion!==1||body.boatRuntime!==true))throw Error('wrong launch selection');
+  if(body.provider!=='boat'||body.harness!==${JSON.stringify(claude ? "claude" : "codex")})throw Error('wrong launch harness');
   if(${skills}&&(defaultReads!==3||Object.hasOwn(body,'skills')||Object.hasOwn(body,'skipSkillDefaults')))throw Error('defaults bypassed');
   if(${idle}){if(Object.hasOwn(body,'prompt'))throw Error('idle launch sent a prompt');phase=0;return Response.json({sandbox:{id:'worker',boatRuntime:true,status:'${mode === "idle-not-ready" ? "running" : "ready"}',conversationIds:${mode === "idle-conversation" ? "['unexpected']" : "[]"}},runtime:{kind:'armada',epoch:'1'}});}
-  marker=body.prompt.match(/ARMADA_RUNTIME_[a-f0-9]+/)[0];memory=body.prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)?.[0]??'';return Response.json({sandbox:{id:'worker',goldenId:'${mode === "skills-golden" ? "wrong" : "golden"}',boatRuntime:true,...(${skills}?{skills:receipts}:{})},runtime:{kind:'armada',epoch:'1'},promptId:'prompt',conversationId:'conversation'});}
+  marker=body.prompt.match(/ARMADA_RUNTIME_[a-f0-9]+/)[0];memory=body.prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)?.[0]??'';return Response.json({sandbox:{id:'worker',goldenId:'${mode === "skills-golden" ? "wrong" : "golden"}',boatRuntime:${mode !== "ordinary-native-receipt"},...(${skills}?{skills:receipts}:{})},runtime:{kind:'armada',epoch:'1'},promptId:'prompt',conversationId:'conversation'});}
  if(path.endsWith('/sandbox/send')){sends++;if(${idle}&&phase===0){if(body.id!=='worker'||!body.request_id||Object.hasOwn(body,'conversation_id'))throw Error('invalid first send');if(${mode === "idle-lost-send"})throw Error('unknown first send');marker=body.prompt.match(/ARMADA_RUNTIME_[a-f0-9]+/)[0];memory=body.prompt.match(/ARMADA_MEMORY_[a-f0-9]+/)?.[0]??'';phase=1;return Response.json({promptId:'prompt',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'1'}});}if(body.id!=='worker'||body.conversation_id!=='conversation'||!body.request_id||body.prompt.includes(memory))throw Error('wrong continuation');if(${mode === "followup-lost"})throw Error('lost follow-up response');if(phase>=3){if(${combined || triple} && githubConfigurations!==2)throw Error('no new epoch GitHub setup');if(${mcp} && mcpConfigurations!==2)throw Error('no new epoch automatic MCP setup');phase=4;return Response.json({promptId:'github-resumed',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'2'}});}phase=2;return Response.json({promptId:'followup',conversationId:'conversation',requestId:body.request_id,runtime:{kind:'armada',epoch:'1'}});}
  if(path.endsWith('/logs/read') && ${mode === "runtime-failed"})return Response.json({source:'armada-runtime',events:[],runtimeFailure:{status:'failed',reason:'Armada runtime process failed.'}});
  if(path.endsWith('/sandbox/resume-runtime-v1')){if(++resumes!==1||stops!==1||body.id!=='worker'||body.conversation_id!=='conversation'||!body.request_id||body.runtimeVersion!==1||body.prompt.includes(memory))throw Error('wrong resume or repeated activation');if(${mode === "resume-lost"})throw Error('lost resume');phase=3;if(${mcp})mcpConfigurations=2;return Response.json({id:'worker',requestId:body.request_id,resumed:true,runtime:{kind:'armada',epoch:'${mode === "bad-resume" ? "1" : "2"}'},sourceCheckpoint:{epoch:'1',watermark:4},promptId:'resumed',conversationId:'conversation'});}
  if(path.endsWith('/sandbox/checkpoint-runtime-v1')){checkpoints++;if(${mode === "checkpoint-lost"})throw Error('lost checkpoint response');return Response.json({id:'worker',requestId:body.request_id,runtime:{kind:'armada',epoch:phase>=3?'2':'1'},checkpoint:{state:'complete',watermark:phase===4?8:phase===3?6:4,acknowledgedSequence:${mode === "bad-checkpoint" ? 3 : 4}+(phase===4?4:phase===3?2:0)}});}
- if(path.endsWith('/logs/read')){const events=[{id:'answer',at:1,kind:'message',promptId:'prompt',partial:false,responseKind:'assistant',text:marker,tools:[]},{id:'terminal',at:2,kind:'prompt',promptId:'prompt',status:'finished',text:''}];if(phase>=2)events.push({id:'answer2',at:3,kind:'message',promptId:'followup',partial:false,responseKind:'assistant',text:memory,tools:[]},{id:'terminal2',at:4,kind:'prompt',promptId:'followup',status:'finished',text:''});if(phase>=2&&${["github", "github-no-audit"].includes(mode) || combined || triple})events.push({id:'github-tool',at:3,kind:'message',promptId:'followup',partial:false,text:'',tools:[{id:'cmd',name:'commandExecution',input:{command:'gh api repos/example/web --jq .full_name'},result:{isError:false,output:'example/web\\n'}}]});if(${mcp})events.push({id:'mcp-initial',at:1,kind:'message',promptId:'prompt',partial:false,text:'',tools:[{id:'mcp0',server:'${mode === "mcp-wrong-server" ? "another_server" : mcpServer}',name:'read_counter',input:{probe:'${mode === "mcp-wrong-args" ? "wrong" : "safe"}'},result:{isError:false,output:'${mode === "mcp-no-result" ? "wrong" : "expected MCP value"}'}}]});if(phase>=3 && ${mcp && mode !== "mcp-resume-no-tool"})events.push({id:'mcp-resumed',at:5,kind:'message',promptId:'resumed',partial:false,text:'',tools:[{id:'mcp3',server:'${mcpServer}',name:'read_counter',input:{probe:'safe'},result:{isError:false,output:'expected MCP value'}}]});if(phase>=2 && ${mcp})events.push({id:'mcp-tool',at:3,kind:'message',promptId:'followup',partial:false,text:'',tools:[{id:'mcp',server:'${mode === "mcp-wrong-server" ? "another_server" : mcpServer}',name:'read_counter',input:{probe:'${mode === "mcp-wrong-args" ? "wrong" : "safe"}'},result:{isError:false,output:'${mode === "mcp-no-result" ? "wrong" : "expected MCP value"}'}}]});if(phase===4 && ${mcp && mode !== "mcp-resume-no-tool"})events.push({id:'mcp-tool4',at:7,kind:'message',promptId:'github-resumed',partial:false,text:'',tools:[{id:'mcp4',server:'${mcpServer}',name:'read_counter',input:{probe:'safe'},result:{isError:false,output:'expected MCP value'}}]});if(phase>=3)events.push({id:'answer3',at:5,kind:'message',promptId:'resumed',partial:false,responseKind:'assistant',text:memory,tools:[]},{id:'terminal3',at:6,kind:'prompt',promptId:'resumed',status:'finished',text:''});if(phase===4 && !(stops===2 && ${mode === "github-resume-lost-history"})){events.push({id:'answer4',at:7,kind:'message',promptId:'github-resumed',partial:false,responseKind:'assistant',text:memory,tools:[]},{id:'terminal4',at:8,kind:'prompt',promptId:'github-resumed',status:'finished',text:''});if(${mode !== "github-resume-no-tool"})events.push({id:'github-tool4',at:7,kind:'message',promptId:'github-resumed',partial:false,text:'',tools:[{id:'cmd4',name:'commandExecution',input:{command:'gh api repos/example/web --jq .full_name'},result:{isError:false,output:'example/web'}}]});}if(${usage}&&${mode !== "usage-no-event"})for(const promptId of usagePrompts())events.push({id:'usage-'+promptId,at:10,kind:'other',type:'armada/turnUsage',promptId,data:usageData()});if(${workspace}){const work=${mode === "workspace-missing"}?[]:['repository','init'].flatMap(phase=>['running','finished'].map(status=>({id:'workspace-'+phase+'-'+status,at:0,kind:'other',type:'armada/workspaceStep',data:{phase,index:0,attempt:0,status}})));if(${mode === "workspace-resume-rerun"}&&phase>=3)work.push({id:'repeated-workspace',at:0,kind:'other',type:'armada/workspaceStep',data:{phase:'init',index:0,attempt:0,status:'finished'}});if(${mode === "workspace-late"})events.push(...work);else events.unshift(...work);}return Response.json({source:'${mode === "wrong-source" ? "native" : "armada-runtime"}',events,hasMore:false});}
+ if(path.endsWith('/logs/read')){const events=[{id:'answer',at:1,kind:'message',promptId:'prompt',partial:false,responseKind:'assistant',text:marker,tools:[]},{id:'terminal',at:2,kind:'prompt',promptId:'prompt',status:'finished',text:''}];if(phase>=2)events.push({id:'answer2',at:3,kind:'message',promptId:'followup',partial:false,responseKind:'assistant',text:memory,tools:[]},{id:'terminal2',at:4,kind:'prompt',promptId:'followup',status:'finished',text:''});if(phase>=2&&${["github", "github-no-audit"].includes(mode) || combined || triple})events.push({id:'github-tool',at:3,kind:'message',promptId:'followup',partial:false,text:'',tools:[{id:'cmd',name:'commandExecution',input:{command:'gh api repos/example/web --jq .full_name'},result:{isError:false,output:'example/web\\n'}}]});if(${mcp})events.push({id:'mcp-initial',at:1,kind:'message',promptId:'prompt',partial:false,text:'',tools:[{id:'mcp0',server:'${mode === "mcp-wrong-server" ? "another_server" : mcpServer}',name:'read_counter',input:{probe:'${mode === "mcp-wrong-args" ? "wrong" : "safe"}'},result:{isError:false,output:'${mode === "mcp-no-result" ? "wrong" : "expected MCP value"}'}}]});if(phase>=3 && ${mcp && mode !== "mcp-resume-no-tool"})events.push({id:'mcp-resumed',at:5,kind:'message',promptId:'resumed',partial:false,text:'',tools:[{id:'mcp3',server:'${mcpServer}',name:'read_counter',input:{probe:'safe'},result:{isError:false,output:'expected MCP value'}}]});if(phase>=2 && ${mcp})events.push({id:'mcp-tool',at:3,kind:'message',promptId:'followup',partial:false,text:'',tools:[{id:'mcp',server:'${mode === "mcp-wrong-server" ? "another_server" : mcpServer}',name:'read_counter',input:{probe:'${mode === "mcp-wrong-args" ? "wrong" : "safe"}'},result:{isError:false,output:'${mode === "mcp-no-result" ? "wrong" : "expected MCP value"}'}}]});if(phase===4 && ${mcp && mode !== "mcp-resume-no-tool"})events.push({id:'mcp-tool4',at:7,kind:'message',promptId:'github-resumed',partial:false,text:'',tools:[{id:'mcp4',server:'${mcpServer}',name:'read_counter',input:{probe:'safe'},result:{isError:false,output:'expected MCP value'}}]});if(phase>=3)events.push({id:'answer3',at:5,kind:'message',promptId:'resumed',partial:false,responseKind:'assistant',text:memory,tools:[]},{id:'terminal3',at:6,kind:'prompt',promptId:'resumed',status:'finished',text:''});if(phase===4 && !(stops===2 && ${mode === "github-resume-lost-history"})){events.push({id:'answer4',at:7,kind:'message',promptId:'github-resumed',partial:false,responseKind:'assistant',text:memory,tools:[]},{id:'terminal4',at:8,kind:'prompt',promptId:'github-resumed',status:'finished',text:''});if(${mode !== "github-resume-no-tool"})events.push({id:'github-tool4',at:7,kind:'message',promptId:'github-resumed',partial:false,text:'',tools:[{id:'cmd4',name:'commandExecution',input:{command:'gh api repos/example/web --jq .full_name'},result:{isError:false,output:'example/web'}}]});}if(${usage}&&${mode !== "usage-no-event"})for(const promptId of usagePrompts())events.push({id:'usage-'+promptId,at:10,kind:'other',type:'armada/turnUsage',promptId,data:usageData()});if(${workspace}){const work=${mode === "workspace-missing"}?[]:['repository','init'].flatMap(phase=>['running','finished'].map(status=>({id:'workspace-'+phase+'-'+status,at:0,kind:'other',type:'armada/workspaceStep',data:{phase,index:0,attempt:0,status}})));if(${mode === "workspace-resume-rerun"}&&phase>=3)work.push({id:'repeated-workspace',at:0,kind:'other',type:'armada/workspaceStep',data:{phase:'init',index:0,attempt:0,status:'finished'}});if(${mode === "workspace-late"})events.push(...work);else events.unshift(...work);}return Response.json({source:'${["wrong-source", "ordinary-wrong-source"].includes(mode) ? "native" : "armada-runtime"}',events,hasMore:false});}
  if(path.endsWith('/sandbox/stop')){stops++;return Response.json({status:'stopping'});}
  if(path.endsWith('/sandbox/list')){if(stops<1||stops>2)throw Error('no cleanup');return Response.json({sandboxes:[{id:'worker',status:'${mode === "runtime-failed" ? "failed" : "stopped"}',stoppedAt:'2026-11-13T02:00:00.000Z'}]});}
  throw Error('unexpected API path');};`,
@@ -131,6 +140,7 @@ globalThis.fetch=async(url,options)=>{
         "--preload",
         preload,
         "scripts/check-boat-runtime.ts",
+        ...(ordinary ? ["--ordinary"] : []),
         ...(idle ? ["--idle"] : []),
         ...(mcp ? ["--mcp"] : []),
         ...(skills ? ["--skills"] : []),
@@ -145,7 +155,15 @@ globalThis.fetch=async(url,options)=>{
         triple
           ? ["--github"]
           : []),
-        ...(["idle-resume", "claude-resume", "resume", "old-resume", "resume-lost", "bad-resume"].includes(mode) ||
+        ...([
+          "ordinary-claude-resume",
+          "idle-resume",
+          "claude-resume",
+          "resume",
+          "old-resume",
+          "resume-lost",
+          "bad-resume",
+        ].includes(mode) ||
         combined ||
         mcpResume ||
         skillResume ||
@@ -181,6 +199,9 @@ globalThis.fetch=async(url,options)=>{
       [
         "claude-resume",
         "success",
+        "ordinary",
+        "ordinary-idle",
+        "ordinary-claude-resume",
         "idle",
         "idle-resume",
         "followup",
@@ -201,7 +222,7 @@ globalThis.fetch=async(url,options)=>{
         "workspace-resume",
       ].includes(mode),
     );
-    if (["success", "idle", "claude-resume"].includes(mode)) {
+    if (["success", "idle", "claude-resume", "ordinary", "ordinary-idle", "ordinary-claude-resume"].includes(mode)) {
       const timing = out
         .split("\n")
         .map((line) => {
@@ -216,21 +237,27 @@ globalThis.fetch=async(url,options)=>{
         harness: claude ? "claude" : "codex",
         mode: idle ? "idle" : "prompt",
         boundary: "launch_request_to_response",
+        launchPath: ordinary ? "ordinary" : "runtime-opt-in",
       });
       expect(Number.isFinite(timing.launchRequestMs)).toBe(true);
       expect(timing.launchRequestMs).toBeGreaterThanOrEqual(0);
     }
     expect(out + err).not.toContain(token);
     expect(out + err).not.toContain(privateArgument);
+    if (["ordinary-native-default", "ordinary-unknown-default"].includes(mode))
+      expect(out + err).toContain("Ordinary Boat launch requires server runtime default; no launch attempted.");
     if (mode === "mcp-invalid-json")
       expect(out + err).toContain("MCP args must be valid non-secret JSON; no launch attempted.");
     expect(out).toContain(
-      `COUNTERS ${JSON.stringify({ launches: ["invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : 1, stops: ["invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : ["idle-resume", "claude-resume", "resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume || skillResume || usageResume || workspaceResume ? 2 : 1 })}`,
+      `COUNTERS ${JSON.stringify({ launches: ["ordinary-native-default", "ordinary-unknown-default", "invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : 1, stops: ["ordinary-native-default", "ordinary-unknown-default", "invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : ["ordinary-claude-resume", "idle-resume", "claude-resume", "resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume || skillResume || usageResume || workspaceResume ? 2 : 1 })}`,
     );
     if (
       [
         "claude-resume",
         "success",
+        "ordinary",
+        "ordinary-idle",
+        "ordinary-claude-resume",
         "idle",
         "idle-resume",
         "followup",
