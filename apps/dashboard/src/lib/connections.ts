@@ -603,3 +603,24 @@ export function hostOf(url: string): string {
     return url;
   }
 }
+
+/** Action failures are status-only: upstream diagnostics may contain implementation details or credential context. */
+export function connectionFailure(status: number | undefined): string {
+  if (status === 401) return "This session cannot manage Tools. Sign in again, then reload Tools.";
+  if (status === 403) return "You no longer have permission to change this tool. Ask an organization admin for help.";
+  if (status === 400) return "This tool's settings were not accepted. Check the form before trying again.";
+  if (status === 404) return "This tool is no longer available. Reload Tools to check its current state.";
+  if (status === 409) return "This tool changed. Reload Tools before trying again.";
+  return "The tool change could not be confirmed. Reload Tools to check its current state before trying again.";
+}
+
+/** Next steps for a reported connection problem, never the registry's lastError verbatim. */
+export function connectionRecovery(connection: Pick<McpConnection, "status" | "transport" | "authType">): string {
+  if (connection.status === "disabled") return "Enable this tool before connecting again.";
+  if (connection.status === "connected")
+    return "The last check reported a problem. Review this tool's settings and saved status.";
+  if (connection.transport === "stdio")
+    return "Check this tool's command and pinned package version, then configure it again.";
+  if (connection.authType === "oauth") return "Check this tool's settings, then reconnect it and finish signing in.";
+  return "Check this tool's server address and credentials, then try connecting again.";
+}

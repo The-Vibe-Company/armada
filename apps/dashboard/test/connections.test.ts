@@ -6,6 +6,8 @@ import {
   checkStdio,
   completeUpdate,
   connectAction,
+  connectionFailure,
+  connectionRecovery,
   launchSelection,
   type McpConnection,
   oauthCallbackInput,
@@ -209,4 +211,19 @@ test("a stdio connection reads as configured for launch, never as a live connect
   expect(statusLabel({ transport: "stdio", status: "connected" })).toBe("Configured for launch");
   expect(statusLabel({ transport: "stdio", status: "not_connected" })).toBe("Not configured");
   expect(statusLabel({ transport: "http", status: "connected" })).toBe("Connected");
+});
+
+test("tool action failures offer access or observation recovery without upstream text", () => {
+  expect(connectionFailure(401)).toContain("Sign in again");
+  expect(connectionFailure(403)).toContain("organization admin");
+  for (const status of [undefined, 409, 503]) expect(connectionFailure(status)).toContain("Reload Tools");
+});
+
+test("reported tool problems give recovery appropriate to their saved state and authentication", () => {
+  const http = { status: "needs_reconnect", transport: "http", authType: "bearer" } as const;
+  expect(connectionRecovery(http)).toContain("server address and credentials");
+  expect(connectionRecovery({ ...http, authType: "oauth" })).toContain("finish signing in");
+  expect(connectionRecovery({ ...http, transport: "stdio" })).toContain("pinned package version");
+  expect(connectionRecovery({ ...http, status: "disabled" })).toContain("Enable this tool");
+  expect(connectionRecovery({ ...http, status: "connected" })).toContain("saved status");
 });

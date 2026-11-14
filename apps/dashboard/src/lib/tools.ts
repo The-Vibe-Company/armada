@@ -57,7 +57,7 @@ export function serviceOffer(
 
 /** Each connection the viewer can fix, named by its fix ("Reconnect Acme Sentry"); its row's panel holds the button. */
 export function toolBlockers(
-  rows: readonly { key: string; connection: Pick<McpConnection, "name" | "lastError">; state: ToolState }[],
+  rows: readonly { key: string; connection: Pick<McpConnection, "name">; state: ToolState }[],
 ): Blocker[] {
   return rows.flatMap(({ key, connection, state }) =>
     state.bucket === "action" && state.action
@@ -65,7 +65,7 @@ export function toolBlockers(
           {
             key: `fix-${key}`,
             label: `${state.action} ${connection.name}`,
-            detail: connection.lastError ?? `${state.label}: agents cannot use it until it is fixed.`,
+            detail: `${state.label}: agents cannot use it until it is fixed.`,
             target: { item: key },
           },
         ]

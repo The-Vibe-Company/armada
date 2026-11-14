@@ -67,6 +67,7 @@ import {
   type ConnectionAuthType,
   type ConnectionScope,
   connectAction,
+  connectionRecovery,
   hostOf,
   type McpCatalogService,
   type McpConnection,
@@ -1083,7 +1084,7 @@ export function ToolPanel({
           <ConnectionStatusBadge connection={connection} />
           <ScopeBadge scope={connection.scope} />
         </div>
-        {connection.lastError && <p className="text-sm text-destructive">{connection.lastError}</p>}
+        {connection.lastError && <p className="text-sm text-destructive">{connectionRecovery(connection)}</p>}
         {canManage && primary && (
           <RowAction
             action={connectConnection}

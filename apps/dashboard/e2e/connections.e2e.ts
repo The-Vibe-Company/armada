@@ -289,7 +289,17 @@ test("a bearer token is write-only: refused tokens are reported, and the field n
   await dialog.getByLabel("Server URL").fill("https://api.internal.test/mcp?project_ref=abcd&read_only=true");
   await dialog.getByLabel("Bearer token").fill("bad-token");
   await dialog.getByRole("button", { name: "Add and connect" }).click();
-  await expect(dialog.getByRole("alert")).toContainText("Needs reconnect. The server refused the token (401).");
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Needs reconnect. Check this tool's server address and credentials",
+  );
+  await expect(dialog.getByRole("alert")).not.toContainText("(401)");
+  for (const [name, width] of [
+    ["desktop", 1280],
+    ["mobile", 390],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.screenshot({ path: `test-results/tool-action-after-${name}.png`, fullPage: true });
+  }
   await expect(dialog.getByLabel("Bearer token")).toHaveValue("");
   await page.keyboard.press("Escape");
 
@@ -298,6 +308,11 @@ test("a bearer token is write-only: refused tokens are reported, and the field n
   await expect(row).toContainText("Needs reconnect");
   await expect(row).toContainText("api.internal.test");
   await expect(await panel(page, "Internal API")).toContainText("project_ref=abcd");
+  await expect(page.locator("body")).not.toContainText("The server refused the token (401)");
+  await expect(page.locator('[data-connection="Internal API"] [data-connection-status]')).not.toHaveAttribute(
+    "title",
+    /\(401\)/,
+  );
   await expect(page.locator("body")).not.toContainText("bad-token");
   const state = await mockState();
   expect(state.controlCalls.find((call) => call.operation === "create")?.body.authentication).toBe("bad-token");
@@ -590,9 +605,9 @@ test("a catalog service adds a second named account through its sign-in, and Sla
   await fetch(`${MOCK}/__test/fail-connect`, { method: "POST" });
   await services.getByRole("button", { name: "Connect Notion" }).click();
   await notion.getByRole("button", { name: "Continue to Notion" }).click();
-  await expect(notion.getByRole("alert")).toContainText(
-    "Notion was added, but connecting failed: The authorization server did not answer.",
-  );
+  await expect(notion.getByRole("alert")).toContainText("Notion was added, but connecting could not be confirmed.");
+  await expect(notion.getByRole("alert")).toContainText("Reload Tools");
+  await expect(notion.getByRole("alert")).not.toContainText("The authorization server did not answer");
   await expect(notion.getByRole("button", { name: "Continue to Notion" })).toHaveCount(0);
   await notion.locator("[data-service-outcome]").getByRole("button", { name: "Close" }).click();
   await expect(card(page, "Notion").getByRole("button", { name: "Connect Notion" })).toBeVisible();
