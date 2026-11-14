@@ -57,7 +57,7 @@ for (const [native, expected] of [
   ["Login was not completed", "native sign-in did not complete"],
   ["fixture-sensitive", "unrecognized details withheld"],
 ] as const)
-  test(`post-approval native failure distinguishes ${expected} without raw provider text`, () => {
+  test(`native completion failure distinguishes ${expected} without raw provider text`, () => {
     const { protocol } = started();
     protocol.receive(challenge);
     let message = "";
