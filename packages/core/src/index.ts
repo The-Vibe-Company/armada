@@ -92,6 +92,7 @@ export type {
   DockerHostListResponse,
   DockerHostRegistrationRequest,
   DockerHostRegistrationResponse,
+  DockerHostResourceSummary,
   DockerHostRevokeRequest,
   DockerHostRevokeResponse,
   DockerHostSummary,
@@ -115,6 +116,7 @@ export {
   type DockerJobFailureReason,
   type DockerSnapshotRecord,
 } from "./docker-api.ts";
+export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export {
   DOCKER_LOCAL_IMAGE_LABELS,
   type DockerSnapshotBinding,

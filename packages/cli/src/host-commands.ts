@@ -1,8 +1,10 @@
 import {
   type DockerHostListResponse,
   type DockerHostRegistrationResponse,
+  dockerHostResourceDisplay,
   GoldenError,
   isRecord as record,
+  validDockerHostResources,
 } from "@armada/core";
 import { parseArgs, single } from "./args.ts";
 import { type ArmadaApiClient, createArmadaApiClient } from "./armada-api.ts";
@@ -10,7 +12,7 @@ import type { AuthIo } from "./auth-commands.ts";
 
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const HELP =
-  "Usage: armada host add [--name NAME] [--org UUID] | list [--json] [--org UUID] | revoke UUID [--org UUID]\n";
+  "Usage: armada host add [--name NAME] [--org UUID] | list [--json] [--org UUID] | show HOST [--json] [--org UUID] | revoke UUID [--org UUID]\n";
 const invalid = (message: string): never => {
   throw new GoldenError("invalid_config", message);
 };
@@ -36,6 +38,8 @@ export async function listHosts(client: ArmadaApiClient, org: string): Promise<D
         (typeof host.lastSeenAt === "string" && Number.isFinite(Date.parse(host.lastSeenAt)))
       ) ||
       !(host.version === undefined || host.version === null || typeof host.version === "string") ||
+      (host.running !== undefined && (!Number.isSafeInteger(host.running) || Number(host.running) < 0)) ||
+      (host.resources !== undefined && host.resources !== null && !validDockerHostResources(host.resources)) ||
       !Number.isSafeInteger(host.sandboxes) ||
       Number(host.sandboxes) < 0
     )
@@ -66,7 +70,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
   const allowed =
     operation === "add"
       ? ["--org", "--name"]
-      : operation === "list"
+      : operation === "list" || operation === "show"
         ? ["--org", "--json"]
         : operation === "revoke"
           ? ["--org"]
@@ -74,7 +78,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
   if (
     !allowed.length ||
     [...args.options.keys()].some((key) => !allowed.includes(key)) ||
-    args.positionals.length !== (operation === "revoke" ? 1 : 0)
+    args.positionals.length !== (["revoke", "show"].includes(operation) ? 1 : 0)
   )
     return invalid(HELP.trim());
   const org = single(args, "--org");
@@ -85,15 +89,25 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
   const hostId = args.positionals[0];
   if (operation === "revoke" && (!hostId || !UUID.test(hostId))) return invalid("host revoke requires a host UUID.");
   const client = await createArmadaApiClient(auth);
-  if (operation === "list") {
+  if (operation === "list" || operation === "show") {
     const result = await listHosts(client, org);
+    if (operation === "show") {
+      const matches = result.hosts.filter((host) =>
+        UUID.test(hostId ?? "") ? host.id === hostId?.toLowerCase() : host.name === hostId && host.state !== "revoked",
+      );
+      if (matches.length !== 1)
+        return invalid("Host not found or name is ambiguous. Use a UUID from armada host list.");
+      result.hosts = matches;
+    }
     if (args.options.has("--json")) auth.out(`${JSON.stringify(result, null, 2)}\n`);
     else {
-      auth.out("ID\tNAME\tSTATE\tLAST SEEN\tVERSION\tSANDBOXES\n");
-      for (const host of result.hosts)
+      auth.out("ID\tNAME\tSTATE\tLAST SEEN\tVERSION\tRETAINED\tMACHINE\tPER SANDBOX\tRUNNING/CAPACITY\n");
+      for (const host of result.hosts) {
+        const resources = dockerHostResourceDisplay(host);
         auth.out(
-          `${host.id}\t${host.name ?? "—"}\t${host.state}\t${host.lastSeenAt ?? "never"}\t${host.version ?? "unknown"}\t${host.sandboxes}\n`,
+          `${host.id}\t${host.name ?? "—"}\t${host.state}\t${host.lastSeenAt ?? "never"}\t${host.version ?? "unknown"}\t${host.sandboxes}\t${resources.machine}\t${resources.limits}\t${resources.usage}\n`,
         );
+      }
     }
     return 0;
   }

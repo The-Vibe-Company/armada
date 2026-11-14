@@ -158,3 +158,24 @@ test("host add stops waiting when its unused registration disappears without cla
   expect(result.out).toContain("canceled or expired");
   expect(result.out).not.toContain(`${hostId} is online`);
 });
+
+test("host show resolves exact names and renders resources, automatic limits and reserved capacity", async () => {
+  const resources = {
+    machine: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
+    perSandbox: { cpus: 2, memoryBytes: 4 * 1024 ** 3, pids: 4096 },
+    capacity: 6,
+    mode: "automatic",
+  };
+  for (const selector of ["office", hostId]) {
+    const result = await capture(["host", "show", selector], async () =>
+      Response.json({ placement: true, hosts: [{ ...summary, running: 3, resources }] }),
+    );
+    expect(result.code).toBe(0);
+    for (const text of ["8 CPUs · 26 GiB RAM", "2 CPUs · 4 GiB RAM · 4096 processes (automatic)", "3/6"])
+      expect(result.out).toContain(text);
+  }
+  const unknown = await capture(["host", "show", "missing"], async () =>
+    Response.json({ placement: true, hosts: [summary] }),
+  );
+  expect(unknown.code).not.toBe(0);
+});

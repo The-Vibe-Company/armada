@@ -270,6 +270,15 @@ test("host capacity reserves pending starts, preserves retries, and releases onl
   await hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });
   await db.query("update public.docker_hosts set name='capacity-host' where id=$1", [f.hostId]);
   const first = await service.reserve(f.actor, f.input);
+  expect((await hosts.list(f.actor))[0]).toMatchObject({
+    running: 1,
+    resources: {
+      capacity: 1,
+      mode: "automatic",
+      machine: { cpus: 2, memoryBytes: 6 * 1024 ** 3 },
+      perSandbox: { cpus: 2, memoryBytes: 4 * 1024 ** 3, pids: 4096 },
+    },
+  });
   expect(await service.reserve(f.actor, f.input)).toEqual(first);
   const next = { ...f.input, requestId: randomUUID() };
   await expect(service.reserve(f.actor, next)).rejects.toThrow(

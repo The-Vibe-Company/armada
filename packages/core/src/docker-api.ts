@@ -15,6 +15,12 @@ import type { SandboxPlacementProviderId } from "./sandbox-provider.ts";
 export interface DockerHostListRequest {
   org: string;
 }
+export interface DockerHostResourceSummary {
+  machine: { cpus: number; memoryBytes: number };
+  perSandbox: { cpus: number; memoryBytes: number; pids: number };
+  capacity: number;
+  mode: "automatic" | "manual";
+}
 export interface DockerHostSummary {
   id: string;
   name: string | null;
@@ -25,6 +31,10 @@ export interface DockerHostSummary {
   revokedAt: string | null;
   /** The daemon version the host last reported (#1453); absent or null until a host has reported one. */
   version?: string | null;
+  /** Physical reservations, including pending starts until confirmed stopped. */
+  running?: number;
+  /** Missing on older servers; null until upgraded host hardware has been observed. */
+  resources?: DockerHostResourceSummary | null;
   /** Retained sandboxes, including stopped/failed, excluding deleted. */
   sandboxes: number;
 }
