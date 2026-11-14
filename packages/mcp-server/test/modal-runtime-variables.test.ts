@@ -9,16 +9,19 @@ import {
   resolveModelChoice,
   type Sql,
 } from "@armada/core/server";
+import { boatRuntimeConfiguration } from "../src/boat-runtime-configuration.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { launchCredentials } from "../src/launch-credentials.ts";
 import { modalRuntimeConfiguration, readModalRuntimeVariables } from "../src/modal-runtime-variables.ts";
+import { readRuntimeVariables } from "../src/runtime-readable-variables.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
 // Real template claims/manifests and HTTP authorization; only physical compute is fake.
-async function fixture(isolated = false, harness: "codex" | "claude" = "codex") {
+async function fixture(isolated = false, harness: "codex" | "claude" = "codex", provider: "boat" | "modal" = "modal") {
   const { db, people } = await (isolated ? database() : sharedDatabase());
   const sql: Sql = { query: (q, v) => db.query(q, v), transaction: (work) => db.transaction((tx) => work(tx)) };
   const templates = createTemplateService(sql, ENCRYPTION_KEY);
@@ -29,13 +32,17 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
     via: "supabase" as const,
   };
   const binding = { workspace: "workspace", environment: "main", appId: "app" };
-  const modal = (
-    await db.query<{ id: string }>(
-      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+  const modal =
+    provider === "boat"
+      ? (await db.query<{ id: string }>("select id from goldens where name='shared' and org_id=$1", [people.org]))
+          .rows[0]!
+      : (
+          await db.query<{ id: string }>(
+            `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
      values($1,$2,'variables-modal','private','modal','master','image',$3,$4,$5,'{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":[]}') returning id`,
-      [people.org, people.owner, binding.workspace, binding.environment, binding.appId],
-    )
-  ).rows[0]!;
+            [people.org, people.owner, binding.workspace, binding.environment, binding.appId],
+          )
+        ).rows[0]!;
   const variable = await application.command(caller, "variable", "set", {
     org: people.org,
     scope: "personal",
@@ -51,7 +58,7 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
   ).rows[0]!;
   const definition = {
     goldenId: modal.id,
-    provider: "modal",
+    provider,
     harness,
     ...resolveModelChoice(harness, {}),
     modelAccount: account,
@@ -62,7 +69,7 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
   const physical = fakeBoat();
   const host = {
     ...physical.provider,
-    id: "modal" as const,
+    id: provider,
     configureReadableVariables: async () => {
       throw Error("Enrolled templates must never call the native variable port");
     },
@@ -82,6 +89,7 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
     },
     providers: {
       resolve: async () => {
+        if (provider === "boat") return host;
         throw Error("Enrolled template launch must not resolve a native provider");
       },
     },
@@ -90,7 +98,11 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
       start: async ({ sandbox, actor, credentials }) => {
         // A trusted descriptor fixture, not a CLI-install fixture; this owner
         // projects private credentials and readables into the selected environment.
-        const plan = await modalRuntimeConfiguration(sql, {
+        const project =
+          provider === "boat"
+            ? (input: Parameters<typeof boatRuntimeConfiguration>[0]) => boatRuntimeConfiguration(input, sql)
+            : (input: Parameters<typeof modalRuntimeConfiguration>[1]) => modalRuntimeConfiguration(sql, input);
+        const plan = await project({
           sandbox,
           actor,
           credentials,
@@ -109,7 +121,10 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
         expect(selectedEnv[key]).toBe(credentials.env[key]);
         expect(plan.configuration.readableVariables.APP_REGION).toBe(selectedEnv.APP_REGION);
         expect(plan.configuration.execEnv).not.toHaveProperty(key);
-        expect(Reflect.get(plan.configuration, "mcp")).toEqual({ revision: "modal_runtime_empty_v1", servers: {} });
+        expect(Reflect.get(plan.configuration, "mcp")).toEqual({
+          revision: provider === "boat" ? "boat_runtime_empty_v1" : "modal_runtime_empty_v1",
+          servers: {},
+        });
         starts.push(Object.fromEntries(Object.entries(selectedEnv).filter(([key]) => key === "APP_REGION")));
         return {
           epoch: "7",
@@ -121,6 +136,16 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
       },
     },
   };
+  if (provider === "boat") {
+    options.launch = {
+      boatRuntimeDefault: {
+        policy: options.modalRuntimeLaunch!,
+        provider: async () => host,
+        credentials: launchCredentials(options.store, ENCRYPTION_KEY),
+        connections: { validate: async () => {}, bind: async () => {}, prepare: async () => {} },
+      },
+    };
+  }
   const create = async (def: unknown = definition) =>
     (
       await templates.command(caller, "create", {
@@ -130,7 +155,10 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
         definition: def,
       })
     ).item as LaunchTemplate;
-  const api = async (body: Record<string, unknown>, path = "sandbox/launch-modal-runtime-v1") => {
+  const api = async (
+    body: Record<string, unknown>,
+    path = provider === "boat" ? "templates/launch" : "sandbox/launch-modal-runtime-v1",
+  ) => {
     const response = await handleControlRequest(
       new Request(`https://armada.test/api/v1/${path}`, {
         method: "POST",
@@ -145,10 +173,7 @@ async function fixture(isolated = false, harness: "codex" | "claude" = "codex") 
     return response;
   };
   const request = (id: string) => ({
-    runtimeVersion: 1,
-    runtimeTransport: "dialout",
-    provider: "modal",
-    harness,
+    ...(provider === "modal" ? { runtimeVersion: 1, runtimeTransport: "dialout", provider, harness } : {}),
     org: people.org,
     id,
     revision: 1,
@@ -258,58 +283,61 @@ test("Modal template selection rejects secrets, foreign provider/harness, invali
   expect(f.starts).toEqual([]);
 });
 
-test("frozen Modal environment rejects reserved keys and secret manifests even if internal storage is corrupted", async () => {
-  // This test deliberately bypasses an immutable-row trigger in an isolated DB;
-  // settings/trigger mutations must never use the row-only shared fixture.
-  const f = await fixture(true);
-  try {
-    const template = await f.create();
-    const response = await f.api(f.request(template.id));
-    expect(response.status).toBe(200);
-    const launched = (await response.json()) as { id: string };
-    const row = (
-      await f.db.query<{ manifest: Record<string, unknown> & { definition: Record<string, unknown> } }>(
-        "select manifest from template_launch_requests where sandbox_id=$1",
-        [launched.id],
-      )
-    ).rows[0]!;
-    for (const manifest of [
-      {
-        ...row.manifest,
-        variables: { OPENAI_API_KEY: "readable-canary" },
-        definition: {
-          ...row.manifest.definition,
-          variables: [{ key: "OPENAI_API_KEY", variableId: f.variableId, version: 1 }],
+test.each(["modal", "boat"] as const)(
+  "frozen %s environment rejects reserved keys and secret manifests even if internal storage is corrupted",
+  async (provider) => {
+    // This test deliberately bypasses an immutable-row trigger in an isolated DB;
+    // settings/trigger mutations must never use the row-only shared fixture.
+    const f = await fixture(true, "codex", provider);
+    try {
+      const template = await f.create();
+      const response = await f.api(f.request(template.id));
+      expect(response.status).toBe(200);
+      const launched = (await response.json()) as { id: string };
+      const row = (
+        await f.db.query<{ manifest: Record<string, unknown> & { definition: Record<string, unknown> } }>(
+          "select manifest from template_launch_requests where sandbox_id=$1",
+          [launched.id],
+        )
+      ).rows[0]!;
+      for (const manifest of [
+        {
+          ...row.manifest,
+          variables: { OPENAI_API_KEY: "readable-canary" },
+          definition: {
+            ...row.manifest.definition,
+            variables: [{ key: "OPENAI_API_KEY", variableId: f.variableId, version: 1 }],
+          },
         },
-      },
-      {
-        ...row.manifest,
-        definition: {
-          ...row.manifest.definition,
-          secrets: [{ key: "APP_TOKEN", secretId: crypto.randomUUID(), version: 1 }],
+        {
+          ...row.manifest,
+          definition: {
+            ...row.manifest.definition,
+            secrets: [{ key: "APP_TOKEN", secretId: crypto.randomUUID(), version: 1 }],
+          },
         },
-      },
-    ]) {
-      await f.db.exec("set session_replication_role=replica");
-      try {
-        await f.db.query("update template_launch_requests set manifest=$2::jsonb where sandbox_id=$1", [
-          launched.id,
-          JSON.stringify(manifest),
-        ]);
-      } finally {
-        await f.db.exec("set session_replication_role=origin");
+      ]) {
+        await f.db.exec("set session_replication_role=replica");
+        try {
+          await f.db.query("update template_launch_requests set manifest=$2::jsonb where sandbox_id=$1", [
+            launched.id,
+            JSON.stringify(manifest),
+          ]);
+        } finally {
+          await f.db.exec("set session_replication_role=origin");
+        }
+        await expect(
+          readRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, provider),
+        ).rejects.toMatchObject({
+          code: "unavailable",
+          message: "Frozen runtime readable configuration is unavailable.",
+        });
       }
-      await expect(
-        readModalRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id),
-      ).rejects.toMatchObject({
-        code: "unavailable",
-        message: "Frozen runtime readable configuration is unavailable.",
-      });
+    } finally {
+      await f.db.close();
     }
-  } finally {
-    await f.db.close();
-  }
-});
+  },
+);
 
 // The opt-in route strips transport headers before calling the shared service;
 // its trusted runtime selection must still be part of durable request identity.
@@ -328,4 +356,48 @@ test("native template replay cannot adopt an enrolled request key", async () => 
   expect(replay.status).toBe(409);
   expect(f.physical.forks).toHaveLength(1);
   expect(f.prompts()).toBe(1);
+});
+
+for (const harness of ["codex", "claude"] as const)
+  test(`Boat runtime template privately freezes readable variables (${harness})`, async () => {
+    const f = await fixture(false, harness, "boat");
+    const template = await f.create();
+    const request = f.request(template.id);
+    const first = await f.api(request);
+    expect(first.status).toBe(200);
+    const launched = (await first.json()) as { id: string };
+    expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
+    await f.application.command(f.caller, "variable", "update", {
+      org: f.people.org,
+      id: f.variableId,
+      expectedVersion: 1,
+      value: "changed",
+    });
+    expect(
+      await readRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, "boat"),
+    ).toEqual({ APP_REGION: "original\n$(not-a-command)" });
+    const replay = await f.api(request);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(launched);
+    expect(f.physical.forks).toHaveLength(1);
+    expect(f.starts).toHaveLength(1);
+  });
+
+test("Boat runtime default refuses application secrets before allocation", async () => {
+  const f = await fixture(false, "codex", "boat");
+  const secret = (
+    await f.db.query<{ id: string }>(
+      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+      [f.people.org, f.people.owner, await encryptSecret("not-a-real-secret", ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const template = await f.create({
+    ...f.definition,
+    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
+  });
+  const response = await f.api(f.request(template.id));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ state: "failed" });
+  expect(f.physical.forks).toHaveLength(0);
+  expect(f.starts).toEqual([]);
 });
