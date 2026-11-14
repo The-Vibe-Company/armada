@@ -291,7 +291,8 @@ test.each([false, true])(
       f.runtime.provider = async () => {
         throw Error("provider resolution unavailable");
       };
-      await f.due();
+      // Use distinct hourly occurrences, independent of execution speed or timestamp precision.
+      await f.due(1);
       const admissions: RoutineLaunchAdmission[] = [];
       await createRoutineScheduler(f.sql, {
         launch: async (...args) => {

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 import { smokeReceipts } from "./smoke-sandbox-cleanup.ts";
 
@@ -9,6 +10,15 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "readable_valid",
+  "readable_missing",
+  "readable_full",
+  "readable_non_canary",
+  "readable_manifest",
+  "readable_wrong_answer",
+  "readable_wrong_environment",
+  "readable_unsupported",
+  "readable_no_exec",
   "idle_wake",
   "idle_pause",
   "idle_wrong_reason",
@@ -30,6 +40,12 @@ for (const mode of [
   "template_account",
   "template_placement",
   "template_pending",
+  "template_transport_recovery",
+  "template_timeout_recovery",
+  "template_first_quota",
+  "template_transport_unknown",
+  "template_lost_identity",
+  "template_forbidden",
   "template_identity",
   "template_final_missing",
   "template_unknown",
@@ -117,6 +133,8 @@ for (const mode of [
     const routines = new Map<string, Record<string, unknown>>();
     const dueDates = new Map<string, number>();
     const routineSandbox = (p: string) => `30000000-0000-4000-8000-00000000000${p === "modal" ? "1" : "2"}`;
+    const readableValue = `parity_readable_${crypto.randomUUID()}`;
+    const readableDigests = new Map<string, string>();
     const templateCalls = new Map<string, number>();
     const templateRequests = new Map<string, object>();
     const debtFeature =
@@ -142,8 +160,18 @@ for (const mode of [
               provider,
               ...(mode === "routine_full" ? { routine: true } : {}),
               ...((mode.startsWith("template_") && mode !== "template_missing") ||
-              (mode.startsWith("routine_") && mode !== "routine_missing")
+              (mode.startsWith("routine_") && mode !== "routine_missing") ||
+              (mode.startsWith("readable_") && mode !== "readable_missing")
                 ? { template: { id: "10000000-0000-4000-8000-000000000001", revision: 2 } }
+                : {}),
+              ...(mode.startsWith("readable_") && mode !== "readable_missing"
+                ? {
+                    readableVariable: {
+                      id: "70000000-0000-4000-8000-000000000001",
+                      version: 1,
+                      key: "ARMADA_PARITY_READABLE",
+                    },
+                  }
                 : {}),
               org: provider,
               harness: configuredHarness,
@@ -161,37 +189,41 @@ for (const mode of [
           { provider: "boat", harness: "invalid" },
         ]),
       },
-      mode.startsWith("idle_")
-        ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
-        : mode.startsWith("snapshot_")
-          ? ["--parity", "--feature", "launch-snapshot"]
-          : mode === "routine_full"
-            ? ["--parity"]
-            : mode.startsWith("routine_")
-              ? ["--parity", "--feature", "routines"]
-              : mode === "template_full"
+      mode === "readable_full"
+        ? ["--parity"]
+        : mode.startsWith("readable_")
+          ? ["--parity", "--feature", "readable-variables"]
+          : mode.startsWith("idle_")
+            ? ["--parity", "--feature", mode === "idle_pause" ? "idle-pause" : "wake-on-send"]
+            : mode.startsWith("snapshot_")
+              ? ["--parity", "--feature", "launch-snapshot"]
+              : mode === "routine_full"
                 ? ["--parity"]
-                : mode.startsWith("template_")
-                  ? ["--parity", "--feature", "templates"]
-                  : mode.startsWith("h_")
-                    ? ["--parity", "--feature", requestedHarness]
-                    : ["control_api_unsupported", "control_full"].includes(mode)
-                      ? ["--parity"]
-                      : mode.startsWith("control_")
-                        ? ["--parity", "--feature", controlFeature]
-                        : mode.startsWith("github")
-                          ? ["--parity", "--feature", "github"]
-                          : mode.startsWith("accounts")
-                            ? ["--parity", "--accounts"]
-                            : mode === "usage_filter"
-                              ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
-                              : mode === "filtered"
-                                ? ["--parity", "--only", "docker", "--feature", "exec"]
-                                : debtFeature
-                                  ? ["--parity", "--feature", debtFeature]
-                                  : mode === "invalid_filter"
-                                    ? ["--parity", "--feature", "typo"]
-                                    : ["--parity"],
+                : mode.startsWith("routine_")
+                  ? ["--parity", "--feature", "routines"]
+                  : mode === "template_full"
+                    ? ["--parity"]
+                    : mode.startsWith("template_")
+                      ? ["--parity", "--feature", "templates"]
+                      : mode.startsWith("h_")
+                        ? ["--parity", "--feature", requestedHarness]
+                        : ["control_api_unsupported", "control_full"].includes(mode)
+                          ? ["--parity"]
+                          : mode.startsWith("control_")
+                            ? ["--parity", "--feature", controlFeature]
+                            : mode.startsWith("github")
+                              ? ["--parity", "--feature", "github"]
+                              : mode.startsWith("accounts")
+                                ? ["--parity", "--accounts"]
+                                : mode === "usage_filter"
+                                  ? ["--parity", "--only", "docker", "--feature", "exact-cost"]
+                                  : mode === "filtered"
+                                    ? ["--parity", "--only", "docker", "--feature", "exec"]
+                                    : debtFeature
+                                      ? ["--parity", "--feature", debtFeature]
+                                      : mode === "invalid_filter"
+                                        ? ["--parity", "--feature", "typo"]
+                                        : ["--parity"],
       {
         now: () => clock,
         sleep: async (ms) => {
@@ -237,8 +269,9 @@ for (const mode of [
                   capabilities: {
                     steer: mode.startsWith("control_") && mode !== "control_unsupported",
                     interrupt: mode.startsWith("control_") && mode !== "control_unsupported",
+                    variables: mode !== "readable_unsupported",
                     launch: true,
-                    exec: true,
+                    exec: mode !== "readable_no_exec",
                     github: mode !== "github_unsupported",
                     followupPrompts: true,
                     status: true,
@@ -250,6 +283,7 @@ for (const mode of [
                   unsupportedReasons: {
                     steer: "Steer unavailable for this harness.",
                     interrupt: "Interrupt unavailable for this harness.",
+                    variables: "Readable variables unavailable (#1532).",
                     github: "GitHub disabled by server.",
                     stop: "Stop unavailable | <test>\n(#1579)",
                     resume: "Server resume disabled.",
@@ -278,11 +312,20 @@ for (const mode of [
             case "docker/hosts/list":
               result = { hosts: [{ id: "owned-host", state: mode === "offline" ? "offline" : "online" }] };
               break;
+            case "variables/read":
+              result = {
+                item: { id: body.id, version: 1, status: "active" },
+                value: mode === "readable_non_canary" ? "private_config_placeholder" : readableValue,
+              };
+              break;
             case "templates/get":
               result = {
                 revision: {
                   revision: 2,
                   definition: {
+                    variables: [
+                      { key: "ARMADA_PARITY_READABLE", variableId: "70000000-0000-4000-8000-000000000001", version: 1 },
+                    ],
                     provider: p,
                     harness: "codex",
                     model: "fake-model",
@@ -346,11 +389,28 @@ for (const mode of [
               else expect(body).toEqual(templateRequests.get(p));
               expect(body.revision).toBe(2);
               expect(body.prompt).toBeUndefined();
+              if (
+                mode === "template_transport_unknown" ||
+                (["template_transport_recovery", "template_lost_identity"].includes(mode) && n === 1)
+              )
+                throw new Error("transport_placeholder");
+              if (mode === "template_timeout_recovery" && n === 1)
+                return Response.json({ error: { code: "api_failed", message: "Request timed out." } }, { status: 408 });
+              if (mode === "template_first_quota")
+                return Response.json(
+                  { error: { code: "rate_limited", message: "Start quota refused." } },
+                  { status: 429 },
+                );
+              if (mode === "template_forbidden")
+                return Response.json(
+                  { error: { code: "forbidden", message: "Template access refused." } },
+                  { status: 403 },
+                );
               states.set(p, "ready");
               turns.set(p, []);
               result = {
                 id:
-                  mode === "template_final_missing" && n > 1
+                  (mode === "template_final_missing" || mode === "template_lost_identity") && n > 1
                     ? undefined
                     : mode === "template_identity" && n > 1
                       ? `${p}-other`
@@ -360,7 +420,7 @@ for (const mode of [
                   ? {}
                   : { provider: p }),
                 state:
-                  mode === "template_refused"
+                  mode === "template_refused" || mode === "template_lost_identity"
                     ? "failed"
                     : (["template_pending", "template_identity", "template_final_missing"].includes(mode) && n === 1) ||
                         mode === "template_unknown"
@@ -368,6 +428,13 @@ for (const mode of [
                       : "succeeded",
                 reason: "environment_unavailable",
                 manifest: {
+                  variableProvenance: [
+                    {
+                      key: "ARMADA_PARITY_READABLE",
+                      variableId: "70000000-0000-4000-8000-000000000001",
+                      version: mode === "readable_manifest" ? 2 : 1,
+                    },
+                  ],
                   templateId: body.id,
                   revision: mode === "template_revision" ? 3 : 2,
                   account: { id: mode === "template_account" ? "wrong-account" : "fake-account", version: 1 },
@@ -445,6 +512,17 @@ for (const mode of [
               result = { id: p, interrupted: true };
               break;
             case "sandbox/send": {
+              if (mode.startsWith("readable_") && String(body.prompt).includes("SHA-256 digest")) {
+                const nonce = String(body.prompt).match(/'([a-f0-9-]{36})'/)?.[1];
+                expect(nonce).toBeDefined();
+                expect(body.prompt).not.toContain(readableValue);
+                readableDigests.set(
+                  p,
+                  mode === "readable_wrong_answer"
+                    ? "wrong_digest"
+                    : createHash("sha256").update(`${readableValue}:${nonce}`).digest("hex"),
+                );
+              }
               if (mode.startsWith("idle_") && body.prompt.startsWith("What PARITY_")) {
                 expect(states.get(p)).toBe("stopped");
                 woken.add(p);
@@ -465,6 +543,21 @@ for (const mode of [
               break;
             }
             case "logs/read":
+              if (readableDigests.has(p)) {
+                result = {
+                  events: [
+                    { id: "terminal", kind: "prompt", promptId: turns.get(p)?.at(-1), status: "finished" },
+                    {
+                      id: "digest",
+                      kind: "message",
+                      promptId: turns.get(p)?.at(-1),
+                      text: readableDigests.get(p),
+                      partial: false,
+                    },
+                  ],
+                };
+                break;
+              }
               if (mode.startsWith("routine_") && body.id === routineSandbox(p)) {
                 const prompt = String(routines.get(p)?.prompt);
                 result = {
@@ -517,6 +610,20 @@ for (const mode of [
               };
               break;
             case "sandbox/exec":
+              if (mode.startsWith("readable_") && String(body.command).includes("sha256sum")) {
+                const nonce = String(body.command).match(/'([a-f0-9-]{36})'/)?.[1];
+                expect(nonce).toBeDefined();
+                expect(body.command).not.toContain(readableValue);
+                result = {
+                  exitCode: 0,
+                  timedOut: false,
+                  stdout:
+                    mode === "readable_wrong_environment"
+                      ? "wrong_digest"
+                      : createHash("sha256").update(`${readableValue}:${nonce}`).digest("hex"),
+                };
+                break;
+              }
               if (String(body.command).includes("PARITY_GITHUB_OK")) {
                 expect(body.command).toContain("clone --quiet");
                 expect(body.command).toContain("core.hooksPath=/dev/null");
@@ -958,6 +1065,51 @@ for (const mode of [
       }
       return;
     }
+    if (mode.startsWith("readable_")) {
+      expect(passed).toBe(!["readable_manifest", "readable_wrong_answer", "readable_wrong_environment"].includes(mode));
+      expect(report.starts).toBe(
+        ["readable_missing", "readable_non_canary", "readable_unsupported", "readable_no_exec"].includes(mode)
+          ? 0
+          : mode === "readable_full"
+            ? 4
+            : 2,
+      );
+      for (const provider of ["modal", "docker"]) {
+        if (mode === "readable_missing")
+          expect(report.features["readable-variables"][provider].reason).toBe("readable_variable_probe_not_configured");
+        if (mode === "readable_non_canary")
+          expect(report.features["readable-variables"][provider].diagnostic).toMatchObject({
+            code: "readable_canary_required",
+            notRun: true,
+          });
+        if (mode === "readable_no_exec")
+          expect(report.features["readable-variables"][provider].reason).toBe("exec_required_for_readable_proof");
+        const status = report.features["readable-variables"][provider].status;
+        expect(status).toBe(
+          mode === "readable_unsupported"
+            ? "unsupported"
+            : ["readable_valid", "readable_full"].includes(mode)
+              ? "pass"
+              : "not-run",
+        );
+        if (
+          [
+            "readable_valid",
+            "readable_full",
+            "readable_manifest",
+            "readable_wrong_answer",
+            "readable_wrong_environment",
+          ].includes(mode)
+        ) {
+          expect(templateCalls.get(provider)).toBe(1);
+          expect(
+            report.features[mode === "readable_full" ? "readable-variables-cleanup" : "cleanup"][provider].status,
+          ).toBe("pass");
+        }
+        if (mode === "readable_full") expect(report.features.templates[provider].status).toBe("pass");
+      }
+      return;
+    }
     if (mode.startsWith("routine_")) {
       expect(passed).toBe(true);
       expect(report.starts).toBe(
@@ -992,6 +1144,9 @@ for (const mode of [
         "template_refused",
         "template_no_answer",
         "template_unknown",
+        "template_transport_unknown",
+        "template_lost_identity",
+        "template_forbidden",
         "template_identity",
         "template_final_missing",
       ].includes(mode);
@@ -999,27 +1154,56 @@ for (const mode of [
       expect(report.starts).toBe(mode === "template_missing" ? 0 : mode === "template_full" ? 4 : 2);
       for (const provider of ["modal", "docker"]) {
         expect(report.features.templates[provider].status).toBe(
-          mode === "template_missing" || failure ? "not-run" : "pass",
+          mode === "template_missing" || mode === "template_first_quota" || failure ? "not-run" : "pass",
         );
         if (mode === "template_missing")
           expect(report.features.templates[provider].reason).toBe("template_revision_not_configured");
         else {
           expect(templateCalls.get(provider)).toBe(
-            mode === "template_unknown"
+            mode === "template_unknown" || mode === "template_transport_unknown"
               ? 600
-              : ["template_pending", "template_identity", "template_final_missing"].includes(mode)
+              : [
+                    "template_pending",
+                    "template_identity",
+                    "template_final_missing",
+                    "template_transport_recovery",
+                    "template_timeout_recovery",
+                    "template_lost_identity",
+                  ].includes(mode)
                 ? 2
                 : 1,
           );
-          expect(journaled).toContain(provider);
+          if (
+            ![
+              "template_transport_unknown",
+              "template_lost_identity",
+              "template_forbidden",
+              "template_first_quota",
+            ].includes(mode)
+          )
+            expect(journaled).toContain(provider);
           if (mode === "template_identity") {
             expect(journalClaims).toContain(provider);
             expect(journalClaims).toContain(`${provider}-other`);
             expect(calls.filter((call) => call === `${provider}:sandbox/delete`)).toHaveLength(2);
           }
-          expect(report.features[mode === "template_full" ? "templates-cleanup" : "cleanup"][provider].status).toBe(
-            "pass",
-          );
+          if (mode === "template_forbidden" || mode === "template_first_quota") {
+            expect(report.features.cleanup?.[provider]).toBeUndefined();
+            expect(report.features.templates[provider].diagnostic.code).toBe(
+              mode === "template_forbidden" ? "forbidden" : "rate_limited",
+            );
+            continue;
+          }
+          if (mode === "template_transport_unknown" || mode === "template_lost_identity") {
+            expect(report.features.cleanup?.[provider]).toMatchObject({
+              status: "fail",
+              reason: "allocation_unconfirmed",
+            });
+            expect(calls).not.toContain(`${provider}:sandbox/delete`);
+          } else
+            expect(report.features[mode === "template_full" ? "templates-cleanup" : "cleanup"][provider].status).toBe(
+              "pass",
+            );
           if (mode === "template_refused")
             expect(report.features.templates[provider].diagnostic.code).toBe("environment_unavailable");
         }

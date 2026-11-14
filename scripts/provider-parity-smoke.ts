@@ -4,6 +4,12 @@ import type { LaunchProviderOption } from "../packages/core/src/index.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
+import {
+  isReadableVariableBinding,
+  prepareReadableProbe,
+  ReadableProbeError,
+  type ReadableVariableBinding,
+} from "./provider-parity-readable-variable.ts";
 import { probeRoutine, RoutineProbeError } from "./provider-parity-routine.ts";
 import { STAGING_ORIGIN } from "./smoke-sandbox-cleanup.ts";
 import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
@@ -53,6 +59,12 @@ const localCodes = new Set([
 ]);
 function diagnostic(error: unknown): Diagnostic {
   if (error instanceof ParityError) return error.diagnostic;
+  if (error instanceof ReadableProbeError)
+    return {
+      code: error.code,
+      message: error.code.replaceAll("_", " "),
+      ...(error.code === "readable_canary_required" ? { notRun: true } : {}),
+    };
   const code = error instanceof Error && localCodes.has(error.message) ? error.message : "transport_or_receipt_failed";
   return { code, message: code.replaceAll("_", " ") };
 }
@@ -109,6 +121,7 @@ const accountMatrix = {
 } as const;
 
 interface Case {
+  readableVariable?: ReadableVariableBinding;
   routine?: boolean;
   template?: { id: string; revision: number };
   githubRepository?: string;
@@ -216,6 +229,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         !(productionBoat ? c.provider === "boat" : ["modal", "docker"].includes(c.provider)) ||
         !isHarness(c.harness) ||
         (c.routine !== undefined && typeof c.routine !== "boolean") ||
+        (c.readableVariable !== undefined && !isReadableVariableBinding(c.readableVariable)) ||
         (c.template !== undefined &&
           (typeof c.template !== "object" ||
             c.template === null ||
@@ -377,6 +391,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       record("launch-snapshot", c.provider, "unsupported", "Docker has no golden snapshot launch source (#1532).");
       if (feature === "launch-snapshot") continue;
     }
+    if ((!feature || feature === "readable-variables") && (!c.readableVariable || !c.template)) {
+      record("readable-variables", c.provider, "not-run", "readable_variable_probe_not_configured");
+      if (feature === "readable-variables") continue;
+    }
     if (!feature && c.routine !== true) record("routines", c.provider, "not-run", "routine_probe_not_enabled");
     if (feature === "routines" && !c.template) {
       record("routines", c.provider, "not-run", "routine_template_revision_not_configured");
@@ -390,7 +408,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     if (
       feature &&
       !Object.hasOwn(steps, feature) &&
-      !["resume-recall", "usage", "exact-cost", "launch-snapshot", "templates", "routines"].includes(feature) &&
+      ![
+        "resume-recall",
+        "usage",
+        "exact-cost",
+        "launch-snapshot",
+        "templates",
+        "routines",
+        "readable-variables",
+      ].includes(feature) &&
       !requestedHarness
     )
       continue;
@@ -402,6 +428,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     let option: LaunchProviderOption | undefined;
     let id: string | undefined;
     const templateClaims = new Set<string>();
+    let templateIntentUnknown = false;
     let stopped = false;
     let deleted = false;
     let stopRequested = false;
@@ -412,6 +439,18 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     let blocked: string | undefined;
     let blockedDiagnostic: Diagnostic | undefined;
     const api = <T>(path: string, body: object = {}) => request<T>(path, { org: c.org, ...body });
+    const readableUntil = Math.min(deadline, io.now() + 110_000);
+    let readable: Awaited<ReturnType<typeof prepareReadableProbe>> | undefined;
+    const readableApi = async <T>(path: string, body: object = {}) => {
+      const previous = requestDeadline;
+      requestDeadline = Math.min(readableUntil, previous ?? Number.POSITIVE_INFINITY);
+      try {
+        return await api<T>(path, body);
+      } finally {
+        requestDeadline = previous;
+      }
+    };
+    const discoveryApi = feature === "readable-variables" ? readableApi : api;
     async function checkUsage(promptId: string) {
       if (feature && !["usage", "exact-cost"].includes(feature)) return;
       const observe = (name: string, status: Cell["status"], reason: string | null = null, detail?: Diagnostic) => {
@@ -915,12 +954,33 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       return receipt;
     }
     try {
-      const options = await api<{ providers: LaunchProviderOption[] }>("launch/options");
+      const options = await discoveryApi<{ providers: LaunchProviderOption[] }>("launch/options");
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
+      if (feature === "readable-variables") {
+        if (option.capabilities.variables === false) {
+          record(
+            "readable-variables",
+            c.provider,
+            "unsupported",
+            option.unsupportedReasons.variables ?? "Readable variables unavailable (#1532).",
+          );
+          continue;
+        }
+        if (option.capabilities.exec === false) {
+          record("readable-variables", c.provider, "not-run", "exec_required_for_readable_proof");
+          continue;
+        }
+        if (!c.template || !c.readableVariable) throw new Error("invalid_template_receipt");
+        readable = await prepareReadableProbe(c.template, c.readableVariable, {
+          request: readableApi,
+          poll,
+          until: readableUntil,
+        });
+      }
       if ((!feature || feature === "launch-snapshot") && c.provider !== "docker") {
-        const listed = await api<{
+        const listed = await discoveryApi<{
           goldens: Array<{ id: string; name: string; provider: string; providerSnapshotId: string | null }>;
         }>("golden/list");
         if (!Array.isArray(listed.goldens)) throw new Error("invalid_snapshot_source");
@@ -943,10 +1003,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       ) {
         // Runtime GitHub grants are bound to the frozen golden repositories.
         // Do not allocate a sandbox whose grant cannot authorize this fixture.
-        const configured = await api<{ provider: string; repositories: { url: string }[] }>("golden/size-policy", {
-          golden: c.golden,
-          provider: c.provider,
-        });
+        const configured = await discoveryApi<{ provider: string; repositories: { url: string }[] }>(
+          "golden/size-policy",
+          {
+            golden: c.golden,
+            provider: c.provider,
+          },
+        );
         if (
           configured.provider !== c.provider ||
           !configured.repositories.some(
@@ -962,7 +1025,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           });
       }
       if (c.provider === "docker" && option.capabilities.launch) {
-        const hosts = await api<{ hosts: { id: string; state: string }[] }>("docker/hosts/list");
+        const hosts = await discoveryApi<{ hosts: { id: string; state: string }[] }>("docker/hosts/list");
         if (!hosts.hosts.some((h) => h.id === c.hostId && h.state === "online")) {
           blocked = "host_offline";
           record("host_offline", c.provider, "fail", blocked);
@@ -987,6 +1050,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         ((feature === "github" ||
           feature === "launch-snapshot" ||
           feature === "templates" ||
+          feature === "readable-variables" ||
           idleFeature ||
           requestedHarness) &&
           step === "send") ||
@@ -1076,7 +1140,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     throw error;
                   }
                 })()
-              : feature === "templates"
+              : feature === "templates" || feature === "readable-variables"
                 ? await (async () => {
                     const template = c.template;
                     if (!template) throw new Error("invalid_template_receipt");
@@ -1087,6 +1151,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       ttlSeconds: 1800,
                       skipSkillDefaults: true,
                     };
+                    let uncertain = false;
+                    templateIntentUnknown = true;
+                    io.out(
+                      JSON.stringify({ step: "parity_template_intent", provider: c.provider, org: c.org, ...input }),
+                    );
                     type Receipt = {
                       state: string;
                       reason?: string;
@@ -1095,6 +1164,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       manifest?: {
                         templateId?: string;
                         revision?: number;
+                        variableProvenance?: unknown;
                         account?: { id?: string; version?: number };
                         golden?: { id?: string; name?: string; provider?: string } | null;
                         definition?: {
@@ -1108,12 +1178,44 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     };
                     const receipt = await poll(
                       async () => {
-                        const value = await api<Receipt>("templates/launch", input);
+                        let value: Receipt;
+                        try {
+                          value = await api<Receipt>("templates/launch", input);
+                        } catch (error) {
+                          const detail = diagnostic(error);
+                          if (
+                            !detail.quota &&
+                            ([
+                              "transport_or_receipt_failed",
+                              "outcome_unknown",
+                              "unavailable",
+                              "provider_unavailable",
+                              "dependency_unavailable",
+                              "sandbox_not_ready",
+                            ].includes(detail.code) ||
+                              [408, 425, 500, 502, 503, 504].includes(detail.httpStatus ?? 0))
+                          ) {
+                            uncertain = true;
+                            return { state: "reconciling" };
+                          }
+                          const refusedBeforeAdmission =
+                            detail.quota ||
+                            ([400, 422].includes(detail.httpStatus ?? 0) &&
+                              ["invalid", "invalid_request"].includes(detail.code)) ||
+                            (detail.httpStatus === 401 && detail.code === "unauthorized") ||
+                            (detail.httpStatus === 403 && detail.code === "forbidden") ||
+                            ([404, 405].includes(detail.httpStatus ?? 0) &&
+                              ["not_found", "unknown_route", "method_not_allowed"].includes(detail.code));
+                          if (!uncertain && refusedBeforeAdmission) templateIntentUnknown = false;
+                          throw error;
+                        }
+                        if (value.state !== "succeeded" && value.state !== "failed") uncertain = true;
                         // Journal the durable claimed sandbox before waiting for allocation acknowledgement.
                         const ownProvider =
                           value.provider === c.provider ||
                           (value.provider === undefined && value.manifest?.definition?.provider === c.provider);
                         if (value.id && ownProvider) {
+                          templateIntentUnknown = false;
                           if (!templateClaims.has(value.id)) {
                             templateClaims.add(value.id);
                             id ??= value.id;
@@ -1131,6 +1233,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       },
                       // This durable requestKey is replayed unchanged; never a new launch intent.
                       (value) => value.state === "succeeded" || value.state === "failed",
+                      feature === "readable-variables" ? 110 : 600,
+                      feature === "readable-variables" ? readableUntil : Math.min(deadline, io.now() + OBSERVATION_MS),
                     );
                     if (
                       receipt.state === "failed" &&
@@ -1162,6 +1266,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                           manifest.definition.goldenId !== manifest.golden.id)
                     )
                       throw new Error("invalid_template_receipt");
+                    readable?.verifyManifest(manifest);
                     return { sandbox: { id, provider: receipt.provider } };
                   })()
                 : await api<{ sandbox: { id: string; provider: string } }>("sandbox/launch", {
@@ -1192,17 +1297,29 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           if (typeof result.sandbox?.id !== "string" || !result.sandbox.id || result.sandbox.provider !== c.provider)
             throw new Error("invalid_launch_receipt");
           id = result.sandbox.id;
-          if (c.provider !== "boat" && feature !== "templates" && feature !== "routines")
+          if (
+            c.provider !== "boat" &&
+            feature !== "templates" &&
+            feature !== "routines" &&
+            feature !== "readable-variables"
+          )
             await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`, c.provider);
         } else {
           if (!id) throw new Error("launch_not_available");
           if (step === "send") {
-            await runTurn();
-            if (io.accountProbe) await runTurn(true);
-            if (!feature || requestedHarness) record(harnessFeature, c.provider, "pass");
-            if ((!feature || feature === "launch-snapshot") && snapshotSourceVerified)
-              record("launch-snapshot", c.provider, "pass");
-            if (feature === "templates") record("templates", c.provider, "pass");
+            if (feature === "readable-variables") {
+              if (!readable) throw new Error("invalid_template_receipt");
+              await readable.verify(id, c.provider);
+              record("readable-variables", c.provider, "pass");
+              record("prerequisite:templates", c.provider, "pass");
+            } else {
+              await runTurn();
+              if (io.accountProbe) await runTurn(true);
+              if (!feature || requestedHarness) record(harnessFeature, c.provider, "pass");
+              if ((!feature || feature === "launch-snapshot") && snapshotSourceVerified)
+                record("launch-snapshot", c.provider, "pass");
+              if (feature === "templates") record("templates", c.provider, "pass");
+            }
           } else if (step === "idle-pause") {
             await observeIdle();
           } else if (step === "wake-on-send") {
@@ -1357,7 +1474,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         source?.cell?.diagnostic,
       );
     }
-    if ((feature === "templates" || feature === "routines") && report[feature]?.[c.provider]?.status !== "pass") {
+    if (
+      (feature === "templates" || feature === "routines" || feature === "readable-variables") &&
+      report[feature]?.[c.provider]?.status !== "pass"
+    ) {
       const source = ["launch", "send"]
         .map((step) => ({ step, cell: report[`prerequisite:${step}`]?.[c.provider] }))
         .find(({ cell }) => cell && cell.status !== "pass");
@@ -1423,11 +1543,14 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
       io.out(JSON.stringify({ step: "parity_cleanup", provider: c.provider, id, deleted }));
     }
+    if (templateIntentUnknown) record("cleanup", c.provider, "fail", "allocation_unconfirmed");
   }
   // A separate launch path needs its own allocation; never relabel an ordinary launch as template proof.
   if (!feature)
     for (const { c, probe } of cases.flatMap((c) => [
-      ...(c.template ? [{ c, probe: "templates" as const }] : []),
+      ...(c.template
+        ? [{ c, probe: c.readableVariable ? ("readable-variables" as const) : ("templates" as const) }]
+        : []),
       ...(c.routine ? [{ c, probe: "routines" as const }] : []),
     ])) {
       if (io.now() >= deadline) {
@@ -1461,6 +1584,16 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         cell?.reason ?? (cell ? null : `${probe}_probe_unconfirmed`),
         cell?.diagnostic,
       );
+      if (probe === "readable-variables") {
+        const template = child?.features["prerequisite:templates"]?.[c.provider];
+        record(
+          "templates",
+          c.provider,
+          template?.status ?? "not-run",
+          template?.reason ?? (template ? null : "readable_variable_probe_not_observed"),
+          template?.diagnostic ?? cell?.diagnostic,
+        );
+      }
       const cleanup = child?.features.cleanup?.[c.provider];
       if (cleanup) record(`${probe}-cleanup`, c.provider, cleanup.status, cleanup.reason, cleanup.diagnostic);
       // Failed prerequisites remain failures even when the template row is honestly unobserved.
@@ -1492,7 +1625,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       const cells = Object.values(report).map((row) => row[provider]);
       return `${provider}: ${cells.filter((cell) => cell?.status === "unsupported").length} unsupported; ${cells.filter((cell) => cell?.status === "not-run").length} not-run`;
     }),
-    `Launch attempts: ${starts} (one lifecycle launch per selected provider plus configured template/routine probes; resume may allocate provider compute).`,
+    `Launch attempts: ${starts} (one lifecycle launch per selected provider plus configured template/routine probes (readable-variable proof shares its template launch); resume may allocate provider compute).`,
   ].join("\n");
   if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${table}\n`);
   else io.out(table);
