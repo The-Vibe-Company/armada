@@ -44,6 +44,18 @@ Cancel your queued, never-started build. Requires Armada login.
 Started builds cannot be cancelled with this command. Inspect status before retrying an uncertain operation.
 Example: armada snapshot build-cancel build-id --org my-team
 `,
+  "snapshot list": `Usage: armada snapshot list [--provider boat|modal|docker] [--org <org>] [--json]
+List snapshots visible to you after Armada login; use --provider to filter.
+Docker snapshots require --org UUID.
+Use --json for structured output and reusable snapshot IDs.
+Example: armada snapshot list --provider modal --org my-team --json
+`,
+  "snapshot capabilities": `Usage: armada snapshot capabilities [--provider boat|modal] [--org <org>] [--json]
+Read server-authoritative snapshot capacity after Armada login.
+A null maximum means unbounded or unknown, not zero available snapshots.
+Docker is not supported by this command.
+Example: armada snapshot capabilities --provider modal --org my-team --json
+`,
   "snapshot size-policy": `Usage: armada snapshot size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
 Inspect snapshot machine-size defaults, or replace them with a versioned JSON object.
 Requires Armada login; changes affect future launches only, not existing machines.
@@ -64,7 +76,10 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
   // Keep the legacy spelling usable without changing literal arguments.
-  if (parts[0] === "golden" && ["size-policy", "build-find", "build-status", "build-cancel"].includes(parts[1] ?? ""))
+  if (
+    parts[0] === "golden" &&
+    ["size-policy", "build-find", "build-status", "build-cancel", "list", "capabilities"].includes(parts[1] ?? "")
+  )
     parts[0] = "snapshot";
   const command = parts.join(" ");
   return Object.hasOwn(HELP, command) ? HELP[command] : undefined;
