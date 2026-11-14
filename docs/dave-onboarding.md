@@ -382,7 +382,9 @@ Connections perform a bounded, read-only authentication check before encrypted s
 credential or unavailable provider leaves the stored credential unchanged. No sandbox or App is created.
 
 In the dashboard, an admin connects, replaces and disconnects the active organization's providers in
-Settings. New snapshots, rebuilds and launches use only a provider the organization has connected; snapshots
+[Providers → Overview](/providers/cloud). Select the intended organization first; these Boat/Modal controls
+are separate from Settings personal provider keys and model accounts. Members must ask an org admin to connect compute.
+New snapshots, rebuilds and launches use only a provider the organization has connected; snapshots
 and sandboxes already on a disconnected provider stay listed and manageable.
 
 The shared authenticated control API exposes `POST org/provider/status` (`{org}`),

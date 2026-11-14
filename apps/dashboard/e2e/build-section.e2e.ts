@@ -19,7 +19,7 @@ test("the strip names what blocks launching and opens its fix; the list puts wha
   const strip = page.locator("[data-readiness]");
   await expect(strip).toContainText("2 items need attention");
   await expect(strip.getByRole("link")).toHaveText([/^Connect Modal/, /^Snapshot alice-private/]);
-  await expect(strip.getByRole("link", { name: /^Connect Modal/ })).toHaveAttribute("href", "/settings");
+  await expect(strip.getByRole("link", { name: /^Connect Modal/ })).toHaveAttribute("href", "/providers/cloud");
   // Needs action (by name), then ready.
   await expect(page.locator("[data-golden]")).toHaveText([/^alice-private/, /^modal-golden/, /^shared-golden/]);
 

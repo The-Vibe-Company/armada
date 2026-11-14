@@ -329,7 +329,7 @@ export function goldenLaunchReadiness({
       kind: "provider-missing",
       tone: "neutral",
       label: `${label} not connected`,
-      detail: `Connect ${label} in Settings to launch.`,
+      detail: `An org admin connects ${label} in Providers → Overview to launch.`,
       connect: true,
     };
   return { kind: "ready" };

@@ -88,7 +88,12 @@ describe("an environment's row", () => {
     });
     expect(
       environmentState({ provider: "modal", readiness: missing, providerMissing: true, buildBlocker: "x" }),
-    ).toMatchObject({ bucket: "action", label: "Modal not connected", action: "connect" });
+    ).toMatchObject({
+      bucket: "action",
+      label: "Modal not connected",
+      detail: "An org admin connects Modal in Providers → Overview to build and launch it.",
+      action: "connect",
+    });
   });
 
   test("a server that is not configured or a provider status that cannot be read offers no row action", () => {

@@ -109,7 +109,9 @@ test("errors are never hidden: an invalid model stays focusable, a refused launc
   await post("/__test/clear-legacy-boat", { org: ACME });
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
   const refusal = dialog.getByRole("alert");
-  await expect(refusal).toHaveText("Boat is not connected for this organization. An admin connects it in Settings.");
+  await expect(refusal).toHaveText(
+    "Boat is not connected for this organization. An admin connects it in Providers → Overview.",
+  );
   await expect(refusal).toBeFocused();
   await expect(dialog.getByLabel("Task")).toHaveValue("Keep me");
   await expect(dialog.getByRole("radio", { name: "Codex" })).toBeChecked();
