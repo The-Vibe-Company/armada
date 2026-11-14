@@ -51,6 +51,18 @@ function runtimeRefusal(
   });
 }
 
+type RuntimeRestore = { epoch: string; watermark: number; conversationId: string };
+/** Shared enrolled readiness and retained-session proof; transports keep envelope authorization. */
+export function runtimeHealthMatches(value: unknown, epoch: string, expected?: RuntimeRestore) {
+  const health = value as Record<string, unknown> | undefined;
+  const restored = health?.restoredFrom as Record<string, unknown> | undefined;
+  return (
+    health?.ready === true &&
+    health.generation === epoch &&
+    (!expected || (["epoch", "watermark", "conversationId"] as const).every((key) => restored?.[key] === expected[key]))
+  );
+}
+
 /** Build the bridge from persisted identity; callers retain owner/defaults and any authoritative cwd. */
 export function runtimeAgentFor(
   commands: Parameters<typeof createRuntimeAgent>[0],
@@ -131,7 +143,7 @@ export function createRuntimeAgent(
     /** The launcher must first await enrolment; no native readiness/resume is implied. */
     async health(
       signal?: AbortSignal,
-      expectedRestore?: { epoch: string; watermark: number; conversationId: string },
+      expectedRestore?: RuntimeRestore,
     ): Promise<{ runtime: "armada"; epoch: string }> {
       const command = { ...identity(), op: "health" as const };
       // Retain epoch alongside the result for provenance validation.
@@ -142,25 +154,12 @@ export function createRuntimeAgent(
         throw refusal("sandbox_not_ready");
       }
       const body = reply.body;
-      const result = body.result as
-        | {
-            ready?: unknown;
-            generation?: unknown;
-            restoredFrom?: { epoch?: unknown; watermark?: unknown; conversationId?: unknown };
-          }
-        | undefined;
       if (
         reply.status !== 200 ||
         body.version !== 1 ||
         body.requestId !== command.requestId ||
         body.error !== undefined ||
-        !result ||
-        result.ready !== true ||
-        result.generation !== reply.epoch ||
-        (expectedRestore &&
-          (result.restoredFrom?.epoch !== expectedRestore.epoch ||
-            result.restoredFrom.watermark !== expectedRestore.watermark ||
-            result.restoredFrom.conversationId !== expectedRestore.conversationId))
+        !runtimeHealthMatches(body.result, reply.epoch, expectedRestore)
       )
         throw refusal("sandbox_not_ready");
       return { runtime: "armada", epoch: reply.epoch };
