@@ -285,6 +285,33 @@ Availability depends on the provider/harness; the server can refuse unsupported 
 Output is JSON even without --json.
 Example: armada interrupt SANDBOX_UUID --org ORG_UUID --json
 `,
+  send: `Usage: armada send <sandbox-id> <text> [--conversation <id>] [--model <id>] [--reasoning-effort <level>]
+  [--request-id UUID] [--org UUID] [--json]
+Send a new instruction after Armada login and server authorization.
+Use steer to redirect a running turn. Retained stopped sandboxes can wake on send.
+Native model/effort overrides apply to this turn only; runtime model/effort remain launch-pinned.
+For uncertain runtime delivery, reuse the request ID with identical input.
+Native providers do not deduplicate by request ID; inspect state before retrying.
+Output is JSON; human mode also reports acceptance progress on stderr.
+Put options before -- when the literal text contains option-like words.
+Example: armada send SANDBOX_UUID --org ORG_UUID -- "Review the changes"
+`,
+  steer: `Usage: armada steer <sandbox-id> <text> [--conversation <id>] [--org UUID] [--json]
+Redirect a currently running turn after Armada login and server authorization.
+Refused when no turn is running; use send for a new turn.
+Delivery may join the turn natively or interrupt/restart the same conversation;
+inspect the returned delivery field. Output is JSON even without --json.
+Put options before -- to pass literal option-like text.
+Example: armada steer SANDBOX_UUID --org ORG_UUID -- "Focus on the failing test"
+`,
+  exec: `Usage: armada exec <sandbox-id> <command> [--cwd <path>] [--timeout <seconds>] [--org UUID] [--json]
+Run a shell command after Armada login and server authorization; not an agent prompt.
+Default cwd is /home/user. Timeout is integer seconds 1–600 (default 120).
+Output is JSON with command exitCode, stdout/stderr and timeout/truncation information.
+Inspect exitCode and timedOut; a successful CLI request is not proof the shell command succeeded.
+Put options before -- so command flags are passed literally, not parsed as Armada options.
+Example: armada exec SANDBOX_UUID --org ORG_UUID -- "git status --short"
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
