@@ -56,6 +56,7 @@ import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOttoApi } from "./otto/api.ts";
+import { createOttoEngineApi } from "./otto/engine-api.ts";
 import { createOttoObjectivesApi } from "./otto/objectives-api.ts";
 import { createOttoProofApi } from "./otto/proof-api.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
@@ -634,7 +635,7 @@ export async function startServer(
             otto.route,
             createOttoProofApi(
               ottoSql ?? sql,
-              otto.scope,
+              otto.scopes,
               (request) =>
                 authenticateCaller(request.headers.get("authorization"), {
                   store: authStore,
@@ -683,6 +684,13 @@ export async function startServer(
             ),
           ]
         : []),
+      createOttoEngineApi(sql, store, config.encryptionKey, (request) =>
+        authenticateCaller(request.headers.get("authorization"), {
+          store: authStore,
+          supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+          now: new Date(),
+        }),
+      ),
       createDockerHostInstallRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, config.publicUrl),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
       runtimeEnrolments.route,

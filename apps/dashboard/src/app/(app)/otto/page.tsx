@@ -65,8 +65,11 @@ export default async function OttoPage({
   const header = (
     <>
       <PageHeader title="Otto" description={DESCRIPTION} />
-      <Link href="/otto/evidence" className="underline">
+      <Link href="/otto/evidence" className="mr-4 underline">
         Inspect PR evidence
+      </Link>
+      <Link href="/otto/engine" className="mb-4 inline-block text-sm underline">
+        Engine settings
       </Link>
       <Button asChild variant="outline" className="mb-4">
         <Link href="/otto/objectives">Your objectives</Link>
