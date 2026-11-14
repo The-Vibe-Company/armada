@@ -1,15 +1,12 @@
 import { createHash } from "node:crypto";
+import { type EnvironmentDigestIo, verifyEnvironmentDigest } from "./provider-parity-environment-digest.ts";
 
 export interface ReadableVariableBinding {
   id: string;
   version: number;
   key: string;
 }
-export interface ReadableProbeIo {
-  request<T>(path: string, body: object): Promise<T>;
-  poll<T>(read: () => Promise<T>, done: (value: T) => boolean, attempts: number, until: number): Promise<T>;
-  until: number;
-}
+export type { EnvironmentDigestIo as ReadableProbeIo } from "./provider-parity-environment-digest.ts";
 export class ReadableProbeError extends Error {
   constructor(
     readonly code:
@@ -45,7 +42,7 @@ export function isReadableVariableBinding(value: unknown): value is ReadableVari
 export async function prepareReadableProbe(
   template: { id: string; revision: number },
   binding: ReadableVariableBinding,
-  io: ReadableProbeIo,
+  io: EnvironmentDigestIo,
 ) {
   if (!isReadableVariableBinding(binding)) fail("invalid_readable_binding");
   const variableId = binding.id.toLowerCase();
@@ -87,86 +84,16 @@ export async function prepareReadableProbe(
   const expected = createHash("sha256").update(`${read.value}:${nonce}`).digest("hex");
   // The validated key and public nonce are the only substitutions. The canary is never embedded.
   const command = `test "\${${binding.key}+x}" = x && printf '%s:%s' "$${binding.key}" '${nonce}' | sha256sum | cut -d ' ' -f 1`;
-  const prompt = `Use your terminal tool to run exactly this command: ${command}\nReply with only its SHA-256 digest, no formatting or other text. Do not modify files or print environment values.`;
   return {
     verifyManifest(manifest: unknown) {
       if (!matches(object(manifest).variableProvenance)) fail("invalid_readable_binding");
     },
     async verify(id: string, provider: "boat" | "modal" | "docker") {
-      const execution = await io.request<{ exitCode?: number; timedOut?: boolean; stdout?: string }>("sandbox/exec", {
-        id,
-        command,
-        cwd: "/tmp",
-        timeout_seconds: 30,
-        ...(provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+      await verifyEnvironmentDigest(id, provider, command, expected, io, (code) => {
+        if (code === "invalid_receipt") fail("invalid_readable_receipt");
+        if (code === "delivery_mismatch") fail("readable_delivery_mismatch");
+        fail("readable_turn_failed");
       });
-      if (execution?.exitCode !== 0 || execution.timedOut !== false || execution.stdout?.trim() !== expected)
-        fail("readable_delivery_mismatch");
-      const turn = await io.request<{ promptId?: string }>("sandbox/send", {
-        id,
-        prompt,
-        ...(provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
-      });
-      if (typeof turn?.promptId !== "string" || !turn.promptId) fail("invalid_readable_receipt");
-      let cursor: string | undefined;
-      let finished = false;
-      let lastParent: string | undefined;
-      const messages = new Map<string, { text: string; eligible: boolean }>();
-      await io.poll(
-        () =>
-          io.request<{
-            cursor?: string;
-            hasMore?: boolean;
-            events?: Array<{
-              id: string;
-              messageId?: string;
-              kind: string;
-              promptId?: string;
-              status?: string;
-              text?: string;
-              textMode?: string;
-              partial?: boolean;
-              responseKind?: string;
-              parentToolUseId?: string;
-              retracted?: boolean;
-            }>;
-          }>("logs/read", {
-            id,
-            coalesce: true,
-            limit: 200,
-            maxBytes: 262144,
-            ...(cursor ? { cursor } : {}),
-          }),
-        (page) => {
-          if (!Array.isArray(page?.events)) fail("invalid_readable_receipt");
-          cursor = page.cursor;
-          for (const event of page.events) {
-            if (event.promptId !== turn.promptId) continue;
-            if (event.kind === "prompt") {
-              if (["failed", "interrupted"].includes(event.status ?? "")) fail("readable_turn_failed");
-              finished ||= event.status === "finished";
-            }
-            if (event.kind !== "message" || typeof event.id !== "string") continue;
-            const key = event.messageId ?? event.id;
-            if (!event.parentToolUseId && event.responseKind !== "tool_result") lastParent = key;
-            const text =
-              event.textMode === "delta" ? (messages.get(key)?.text ?? "") + (event.text ?? "") : (event.text ?? "");
-            messages.set(key, {
-              text: text.slice(0, 4096),
-              eligible:
-                text.length <= 4096 &&
-                event.partial === false &&
-                !event.parentToolUseId &&
-                event.responseKind !== "tool_result" &&
-                !event.retracted,
-            });
-          }
-          const answer = lastParent ? messages.get(lastParent) : undefined;
-          return page.hasMore !== true && finished && answer?.eligible === true && answer.text.trim() === expected;
-        },
-        110,
-        io.until,
-      );
     },
   };
 }

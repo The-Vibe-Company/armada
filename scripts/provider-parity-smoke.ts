@@ -11,6 +11,12 @@ import {
   type ReadableVariableBinding,
 } from "./provider-parity-readable-variable.ts";
 import { probeRoutine, RoutineProbeError } from "./provider-parity-routine.ts";
+import {
+  isSecretProbeBinding,
+  prepareSecretProbe,
+  type SecretProbeBinding,
+  SecretProbeError,
+} from "./provider-parity-secret.ts";
 import { isSkillsProbeBinding, prepareSkillsProbe, type SkillsProbeBinding } from "./provider-parity-skills.ts";
 import { STAGING_ORIGIN } from "./smoke-sandbox-cleanup.ts";
 import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
@@ -63,6 +69,12 @@ const localCodes = new Set([
 ]);
 function diagnostic(error: unknown): Diagnostic {
   if (error instanceof ParityError) return error.diagnostic;
+  if (error instanceof SecretProbeError)
+    return {
+      code: error.code,
+      message: error.code.replaceAll("_", " "),
+      ...(error.code === "secret_canary_expiry_unsupported" ? { notRun: true } : {}),
+    };
   if (error instanceof ReadableProbeError)
     return {
       code: error.code,
@@ -125,6 +137,7 @@ const accountMatrix = {
 } as const;
 
 interface Case {
+  applicationSecret?: SecretProbeBinding;
   skill?: SkillsProbeBinding;
   readableVariable?: ReadableVariableBinding;
   routine?: boolean;
@@ -233,6 +246,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       if (
         !(productionBoat ? c.provider === "boat" : ["modal", "docker"].includes(c.provider)) ||
         !isHarness(c.harness) ||
+        (c.applicationSecret !== undefined && !isSecretProbeBinding(c.applicationSecret)) ||
         (c.skill !== undefined && !isSkillsProbeBinding(c.skill)) ||
         (c.routine !== undefined && typeof c.routine !== "boolean") ||
         (c.readableVariable !== undefined && !isReadableVariableBinding(c.readableVariable)) ||
@@ -397,6 +411,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       record("launch-snapshot", c.provider, "unsupported", "Docker has no golden snapshot launch source (#1532).");
       if (feature === "launch-snapshot") continue;
     }
+    if ((!feature || feature === "application-secrets") && (!c.applicationSecret || !c.template)) {
+      record("application-secrets", c.provider, "not-run", "secret_probe_not_configured");
+      if (feature === "application-secrets") continue;
+    }
     if ((!feature || feature === "skills") && (!c.skill || !c.template)) {
       record("skills", c.provider, "not-run", "skills_probe_not_configured");
       if (feature === "skills") continue;
@@ -427,6 +445,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         "routines",
         "readable-variables",
         "skills",
+        "application-secrets",
       ].includes(feature) &&
       !requestedHarness
     )
@@ -451,6 +470,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     let blockedDiagnostic: Diagnostic | undefined;
     const api = <T>(path: string, body: object = {}) => request<T>(path, { org: c.org, ...body });
     const readableUntil = Math.min(deadline, io.now() + 110_000);
+    let secret: Awaited<ReturnType<typeof prepareSecretProbe>> | undefined;
     let skills: Awaited<ReturnType<typeof prepareSkillsProbe>> | undefined;
     let readable: Awaited<ReturnType<typeof prepareReadableProbe>> | undefined;
     const readableApi = async <T>(path: string, body: object = {}) => {
@@ -462,7 +482,9 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         requestDeadline = previous;
       }
     };
-    const discoveryApi = ["readable-variables", "skills"].includes(feature ?? "") ? readableApi : api;
+    const discoveryApi = ["readable-variables", "skills", "application-secrets"].includes(feature ?? "")
+      ? readableApi
+      : api;
     async function checkUsage(promptId: string) {
       if (feature && !["usage", "exact-cost"].includes(feature)) return;
       const observe = (name: string, status: Cell["status"], reason: string | null = null, detail?: Diagnostic) => {
@@ -970,6 +992,36 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
+      if (feature === "application-secrets") {
+        if (option.capabilities.secrets !== true) {
+          record(
+            "application-secrets",
+            c.provider,
+            option.capabilities.secrets === false ? "unsupported" : "not-run",
+            option.unsupportedReasons.secrets ?? "secret_delivery_not_advertised",
+          );
+          continue;
+        }
+        if (option.capabilities.followupPrompts === false) {
+          record(
+            "application-secrets",
+            c.provider,
+            "unsupported",
+            option.unsupportedReasons.followupPrompts ?? "followup_required_for_secret_proof",
+          );
+          continue;
+        }
+        if (option.capabilities.exec === false) {
+          record("application-secrets", c.provider, "not-run", "exec_required_for_secret_proof");
+          continue;
+        }
+        if (!c.template || !c.applicationSecret) throw new SecretProbeError("invalid_secret_binding");
+        secret = await prepareSecretProbe(c.template, c.applicationSecret, {
+          request: readableApi,
+          poll,
+          until: readableUntil,
+        });
+      }
       if (feature === "skills") {
         if (option.capabilities.exec === false) {
           record("skills", c.provider, "not-run", "exec_required_for_skills_proof");
@@ -1072,6 +1124,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           feature === "templates" ||
           feature === "readable-variables" ||
           feature === "skills" ||
+          feature === "application-secrets" ||
           idleFeature ||
           requestedHarness) &&
           step === "send") ||
@@ -1110,7 +1163,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
       const operationStarted = io.now();
       try {
-        if (feature === "skills") requestDeadline = step === "stop" || step === "delete" ? undefined : readableUntil;
+        if (feature === "skills" || feature === "application-secrets")
+          requestDeadline = step === "stop" || step === "delete" ? undefined : readableUntil;
         if (step === "launch") {
           if (feature !== "routines") starts++;
           const result =
@@ -1162,7 +1216,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     throw error;
                   }
                 })()
-              : feature === "templates" || feature === "readable-variables" || feature === "skills"
+              : feature === "templates" ||
+                  feature === "readable-variables" ||
+                  feature === "skills" ||
+                  feature === "application-secrets"
                 ? await (async () => {
                     const template = c.template;
                     if (!template) throw new Error("invalid_template_receipt");
@@ -1192,6 +1249,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                         golden?: { id?: string; name?: string; provider?: string } | null;
                         definition?: {
                           skills?: unknown;
+                          secrets?: unknown;
                           provider?: string;
                           harness?: string;
                           model?: string;
@@ -1257,8 +1315,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       },
                       // This durable requestKey is replayed unchanged; never a new launch intent.
                       (value) => value.state === "succeeded" || value.state === "failed",
-                      ["readable-variables", "skills"].includes(feature ?? "") ? 110 : 600,
-                      ["readable-variables", "skills"].includes(feature ?? "")
+                      ["readable-variables", "skills", "application-secrets"].includes(feature ?? "") ? 110 : 600,
+                      ["readable-variables", "skills", "application-secrets"].includes(feature ?? "")
                         ? readableUntil
                         : Math.min(deadline, io.now() + OBSERVATION_MS),
                     );
@@ -1294,6 +1352,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       throw new Error("invalid_template_receipt");
                     readable?.verifyManifest(manifest);
                     skills?.verifyManifest(manifest);
+                    secret?.verifyManifest(manifest);
                     return { sandbox: { id, provider: receipt.provider } };
                   })()
                 : await api<{ sandbox: { id: string; provider: string } }>("sandbox/launch", {
@@ -1329,13 +1388,19 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             feature !== "templates" &&
             feature !== "routines" &&
             feature !== "readable-variables" &&
-            feature !== "skills"
+            feature !== "skills" &&
+            feature !== "application-secrets"
           )
             await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`, c.provider);
         } else {
           if (!id) throw new Error("launch_not_available");
           if (step === "send") {
-            if (feature === "skills") {
+            if (feature === "application-secrets") {
+              if (!secret) throw new SecretProbeError("invalid_secret_binding");
+              await secret.verify(id, c.provider);
+              record("application-secrets", c.provider, "pass");
+              record("prerequisite:templates", c.provider, "pass");
+            } else if (feature === "skills") {
               if (!skills) throw Error("invalid_skills_binding");
               await skills.verify(id, c.provider, c.harness);
               record("skills", c.provider, "pass");
@@ -1508,7 +1573,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       );
     }
     if (
-      (feature === "templates" || feature === "routines" || feature === "readable-variables" || feature === "skills") &&
+      (feature === "templates" ||
+        feature === "routines" ||
+        feature === "readable-variables" ||
+        feature === "skills" ||
+        feature === "application-secrets") &&
       report[feature]?.[c.provider]?.status !== "pass"
     ) {
       const source = ["launch", "send"]
@@ -1559,7 +1628,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     }
     // Probe failures never replace cleanup. A failed journal write or lost
     // resume acknowledgement still leaves a known allocation to reconcile.
-    if (feature === "skills") requestDeadline = undefined;
+    if (feature === "skills" || feature === "application-secrets") requestDeadline = undefined;
     for (const cleanupId of new Set([...(id ? [id] : []), ...templateClaims])) {
       if (cleanupId !== id) {
         id = cleanupId;
@@ -1587,6 +1656,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         : []),
       ...(c.routine ? [{ c, probe: "routines" as const }] : []),
       ...(c.template && c.skill ? [{ c, probe: "skills" as const }] : []),
+      ...(c.template && c.applicationSecret ? [{ c, probe: "application-secrets" as const }] : []),
     ])) {
       if (io.now() >= deadline) {
         record(probe, c.provider, "not-run", "run_budget_exhausted");
