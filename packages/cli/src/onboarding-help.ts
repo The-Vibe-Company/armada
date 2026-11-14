@@ -213,6 +213,15 @@ Read the object from stdin or --file. Keep authentication values out of command 
 Updates cannot change scope; --scope is not accepted. Output is always JSON.
 Example: armada mcp update CONNECTION_UUID --file /private/connection.json --org ORG_UUID
 `,
+  doctor: `Usage: armada doctor [--org UUID] [--json]
+Inspect setup metadata and report check statuses with next-step guidance.
+Checks include session/server, GitHub, organization selection, Docker-host and model-account metadata.
+Use --org to override a saved selection; a sole organization can be selected automatically.
+This is not a full provider lifecycle test or proof that a model request will work.
+--json returns a checks array; otherwise output is a table.
+Exits 1 if any check is failed, otherwise 0; warnings and unknowns are not passes.
+Example: armada doctor --org ORG_UUID --json
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
@@ -485,6 +494,15 @@ Example: armada mcp ${action} CONNECTION_UUID --org ORG_UUID --no-browser --time
 `;
 }
 
+function completionHelp(shell?: "bash" | "zsh" | "fish"): string {
+  return `Usage: armada completion ${shell ?? "bash|zsh|fish"}
+Print a shell-completion script to stdout. No login or network request is needed.
+Choose the shell you actually use; inspect the generated script before sourcing it.
+This command does not install completion or modify your shell configuration.
+Example: armada completion ${shell ?? "bash"} > armada-completion.${shell ?? "bash"}
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -510,6 +528,10 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   )
     parts[0] = "snapshot";
   const command = parts.join(" ");
+  if (command === "completion") return completionHelp();
+  if (command === "completion bash") return completionHelp("bash");
+  if (command === "completion zsh") return completionHelp("zsh");
+  if (command === "completion fish") return completionHelp("fish");
   if (command === "mcp connect") return mcpAuthorizationHelp("connect");
   if (command === "mcp reconnect") return mcpAuthorizationHelp("reconnect");
   if (command === "github connect") return githubAuthorizationHelp("connect");
