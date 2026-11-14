@@ -189,7 +189,8 @@ Usage:
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
                                            send accepts --request-id UUID to reuse an uncertain runtime instruction.
   armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
-  armada golden remove <golden-id> [--org UUID] [--json]
+  armada golden remove <name|golden-id> [--provider boat|modal] [--org UUID] [--json]
+                                           Names must match one visible golden; use provider/org or golden list --json to disambiguate.
                                            Remove from launch selection; retain children and provider artifacts
   armada golden visibility <golden-id> --visibility private|org [--org UUID]
   armada mcp catalog|rename ID NAME|default ID on|off [--org UUID]
@@ -713,10 +714,34 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         fetch: deps.fetch ?? auth.fetch,
         session: auth.session,
       });
+      let id = oneName(args.positionals);
+      let org = single(args, "--org");
+      const provider = providerFlag(args);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        const { goldens } = await client.request<{ goldens: GoldenRecord[] }>("/api/v1/golden/list", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...(org === undefined ? {} : { org }) }),
+        });
+        const matches = goldens.filter(
+          (row) => row.name === id && (provider === undefined || row.provider === provider),
+        );
+        const match = matches[0];
+        if (matches.length !== 1 || !match) {
+          throw new GoldenError(
+            matches.length ? "conflict" : "not_found",
+            matches.length
+              ? "More than one visible golden has this name. Select --provider and --org, or use the exact id from armada golden list --json. Nothing was removed."
+              : "No visible golden matches this name and provider. Run armada golden list --json to check its name, id and organization. Nothing was removed.",
+          );
+        }
+        id = match.id;
+        org ??= match.orgId;
+      }
       const result = await client.request("/api/v1/golden/remove", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: oneName(args.positionals), org: single(args, "--org") }),
+        body: JSON.stringify({ id, org }),
       });
       io.out(`${JSON.stringify(result)}
 `);
