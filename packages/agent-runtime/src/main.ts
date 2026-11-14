@@ -346,7 +346,7 @@ async function main(dialout = false) {
   // Fixed before drivers/exec capture their environments. Installation contains no secrets.
   for (const env of [config.claudeEnv, config.codexEnv, opencodeEnv])
     Object.assign(env, githubRuntimeEnvironment(env, githubRoot));
-  Object.assign(process.env, githubRuntimeEnvironment({PATH:process.env.PATH}, githubRoot));
+  Object.assign(process.env, githubRuntimeEnvironment({ PATH: process.env.PATH }, githubRoot));
   let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
   let githubConfiguration = Promise.resolve();
   const ensureGitHubTools = async (identity?: { name: string; email: string }) => {
