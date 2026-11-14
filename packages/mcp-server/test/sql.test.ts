@@ -130,6 +130,6 @@ test("standalone queries count attempts, measure acquisition and release the sam
     if (failure === "none") expect(await result).toEqual({ rows: [{ ok: true }] });
     else await expect(result).rejects.toBe(error);
     expect(calls).toEqual(failure === "acquire" ? ["acquire"] : ["acquire", "query", "release"]);
-    expect(timing.header()).toMatch(/^db_acquire;dur=\d+\.\d{2}, sql;dur=\d+\.\d{2};desc="1"$/);
+    expect(timing.header()).toMatch(/^db_acquire;dur=\d+\.\d{2}, sql;dur=\d+\.\d{2};desc="1", sql_1;dur=\d+\.\d{2}$/);
   }
 });

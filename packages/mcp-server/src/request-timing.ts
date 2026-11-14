@@ -27,23 +27,29 @@ export type TimingPhase =
 
 export class RequestTiming {
   private sqlStatements = 0;
+  // Only sequence numbers and durations; keep headers bounded on query-heavy operations.
+  private readonly statements = new Map<number, number>();
   private readonly durations = new Map<TimingPhase, number>();
   async measure<T>(phase: TimingPhase, work: () => Promise<T>): Promise<T> {
-    if (phase === "sql") this.sqlStatements++;
+    const statement = phase === "sql" ? ++this.sqlStatements : undefined;
     const start = performance.now();
     try {
       return await work();
     } finally {
-      this.durations.set(phase, (this.durations.get(phase) ?? 0) + performance.now() - start);
+      const duration = performance.now() - start;
+      this.durations.set(phase, (this.durations.get(phase) ?? 0) + duration);
+      if (statement !== undefined && statement <= 32) this.statements.set(statement, duration);
     }
   }
   header(): string {
-    return [...this.durations]
-      .map(
-        ([name, duration]) =>
-          `${name};dur=${duration.toFixed(2)}${name === "sql" ? `;desc="${this.sqlStatements}"` : ""}`,
-      )
-      .join(", ");
+    const phases = [...this.durations].map(
+      ([name, duration]) =>
+        `${name};dur=${duration.toFixed(2)}${name === "sql" ? `;desc="${this.sqlStatements}"` : ""}`,
+    );
+    const statements = [...this.statements]
+      .sort(([a], [b]) => a - b)
+      .map(([number, duration]) => `sql_${number};dur=${duration.toFixed(2)}`);
+    return [...phases, ...statements].join(", ");
   }
 }
 
