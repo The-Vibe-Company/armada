@@ -107,11 +107,57 @@ export default async function GoldensPage({ searchParams }: Props) {
   // New builds, rebuilds and launches run on a provider the organization has connected (#598): exactly that one, never
   // another. Existing goldens and builds the page already tracks stay manageable without it; an org with neither is
   // sent to Settings to connect one. Null: the status could not be read, a retryable error rather than "none".
-  const [setup, hostRead, snapshotRead, dockerOption] = await Promise.all([
-    selected ? readProviderSetup(selected.org.id) : null,
+  const setupRead = selected ? readProviderSetup(selected.org.id) : Promise.resolve(null);
+  const pending = listMemberships(supabase, viewer.id).then((items) =>
+    items.filter((item) => item.org.id === selected?.org.id),
+  );
+  const serverUrl = mcpUrl();
+  // Only capability discovery depends on provider status. Other page reads must not queue behind it.
+  const capabilitiesRead = setupRead.then((setup) =>
+    selected
+      ? allCapabilities(
+          serverUrl,
+          viewer.token,
+          selected.org.id,
+          setup && setup.state !== "unavailable" ? connectedProviders(setup.status) : [],
+        )
+      : null,
+  );
+  const [
+    setup,
+    hostRead,
+    snapshotRead,
+    dockerOption,
+    goldens,
+    history,
+    memberships,
+    directory,
+    github,
+    capabilities,
+    listed,
+    accountList,
+    templateList,
+    vault,
+  ] = await Promise.all([
+    setupRead,
     readSelectedDockerHosts(),
     readSelectedDockerSnapshots(),
     readDockerLaunchOption(),
+    listGoldens(supabase),
+    listGoldenHistory(supabase),
+    pending,
+    pending.then((items) =>
+      memberDirectory(
+        supabase,
+        items.map((item) => item.org.id),
+      ),
+    ),
+    getGitHubConnection(supabase).catch(() => null),
+    capabilitiesRead,
+    listSelectedConnections(),
+    listSelectedAccounts(),
+    listSelectedTemplates(),
+    listSelectedVault(),
   ]);
   const hosts = hostRead.state === "ready" ? hostRead.list.hosts.filter((host) => host.state !== "revoked") : [];
   const snapshots = snapshotRead.state === "ready" ? snapshotRead.snapshots : [];
@@ -120,28 +166,6 @@ export default async function GoldensPage({ searchParams }: Props) {
   const connected = setup && setup.state !== "unavailable" ? connectedProviders(setup.status) : null;
   const canStart = (connected?.length ?? 0) > 0 || hasDocker;
   const tracked = (scope: string) => query[`build.${scope}`] !== undefined || query[`build-key.${scope}`] !== undefined;
-  const pending = listMemberships(supabase, viewer.id).then((items) =>
-    items.filter((item) => item.org.id === selected?.org.id),
-  );
-  const serverUrl = mcpUrl();
-  const [goldens, history, memberships, directory, github, capabilities, listed, accountList, templateList, vault] =
-    await Promise.all([
-      listGoldens(supabase),
-      listGoldenHistory(supabase),
-      pending,
-      pending.then((items) =>
-        memberDirectory(
-          supabase,
-          items.map((item) => item.org.id),
-        ),
-      ),
-      getGitHubConnection(supabase).catch(() => null),
-      selected ? allCapabilities(serverUrl, viewer.token, selected.org.id, connected ?? []) : null,
-      listSelectedConnections(),
-      listSelectedAccounts(),
-      listSelectedTemplates(),
-      listSelectedVault(),
-    ]);
   const connections: LaunchConnections =
     listed.state === "ready"
       ? { connections: listed.connections }
