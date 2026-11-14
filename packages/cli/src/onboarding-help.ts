@@ -98,6 +98,20 @@ Change snapshot visibility after Armada login and server authorization.
 Use the snapshot ID from armada snapshot list --json, not its display name.
 Example: armada snapshot visibility SNAPSHOT_UUID --visibility private --org my-team
 `,
+  "snapshot get": `Usage: armada snapshot get <snapshot-UUID> --provider docker --org UUID [--json]
+Inspect a Docker snapshot's saved build state after Armada login.
+Get the snapshot ID from armada snapshot list --provider docker --org UUID --json.
+Output is JSON even without --json. Boat/Modal do not support this command.
+Example: armada snapshot get SNAPSHOT_UUID --provider docker --org ORG_UUID
+`,
+  "snapshot rebuild": `Usage: armada snapshot rebuild <snapshot-UUID> --provider docker --org UUID [--request-id UUID] [--json]
+Build a new Docker snapshot from saved repositories/setup on its original host.
+Requires Armada login and server authorization; the old snapshot stays unchanged.
+A request ID is generated if omitted and printed to stderr before submission.
+After an unknown outcome, inspect that ID; retry with the same --request-id.
+Use a request UUID different from the original snapshot UUID.
+Example: armada snapshot rebuild SNAPSHOT_UUID --provider docker --org ORG_UUID --request-id NEW_UUID
+`,
   "snapshot size-policy": `Usage: armada snapshot size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
 Inspect snapshot machine-size defaults, or replace them with a versioned JSON object.
 Requires Armada login; changes affect future launches only, not existing machines.
@@ -123,6 +137,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
     [
       "create",
       "update",
+      "get",
+      "rebuild",
       "size-policy",
       "build-find",
       "build-status",

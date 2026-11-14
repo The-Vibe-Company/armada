@@ -31,6 +31,10 @@ test("nested onboarding help is focused and performs no authenticated or secret 
     "golden remove",
     "snapshot visibility",
     "golden visibility",
+    "snapshot get",
+    "golden get",
+    "snapshot rebuild",
+    "golden rebuild",
     "snapshot size-policy",
     "golden size-policy",
   ]) {
@@ -54,7 +58,7 @@ test("nested onboarding help is focused and performs no authenticated or secret 
       );
       expect({ code, err }).toEqual({ code: 0, err: "" });
       expect(out).toContain(
-        `Usage: armada ${command.replace(/^golden (create|update|size-policy|build-find|build-status|build-cancel|list|capabilities|connect|snapshot|remove|visibility)$/, "snapshot $1")}`,
+        `Usage: armada ${command.replace(/^golden (get|rebuild|create|update|size-policy|build-find|build-status|build-cancel|list|capabilities|connect|snapshot|remove|visibility)$/, "snapshot $1")}`,
       );
       expect(out).toContain("Example: armada");
     }
@@ -78,6 +82,8 @@ test("help detection leaves malformed operations and literal payloads to their p
     ["snapshot", "visibility", "--visibility", "-h"],
     ["snapshot", "create", "starter", "--help"],
     ["snapshot", "update", "--config", "-h"],
+    ["snapshot", "get", "snapshot-id", "--help"],
+    ["snapshot", "rebuild", "--request-id", "-h"],
     ["constructor", "--help"],
     ["toString", "-h"],
   ])
