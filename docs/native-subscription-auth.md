@@ -33,6 +33,59 @@ credentials in arguments, shell history, chat or logs. Replacement uses
 `--id ACCOUNT_UUID --expected-version REVISION`; explicit replacement changes the
 account version, unlike an ordinary broker refresh.
 
+## Device-login completion and diagnostics (#1579)
+
+Run native sign-in from a persistent terminal. This is a foreground operation,
+not a resumable background login: **the Armada process must remain alive until
+it says the account was imported**. Browser approval alone does not publish an
+Armada account. Closing its shell/SSH command runner cancels the operation;
+SIGHUP, SIGTERM and Ctrl-C are diagnosed and the isolated native process/home
+are cleaned up. SIGKILL cannot be caught or resumed. For a remote session, start
+`tmux new-session -s armada-codex-login` (or screen) before running the command;
+reattach rather than destroying that session while approving in the browser.
+
+For the owner's staging retry, from a checkout containing this CLI fix:
+
+```sh
+export ARMADA_URL=https://armada-mcp-staging.up.railway.app
+# Keep the owner's Armada staging login/token configured; no provider token in argv.
+bun run armada creds login codex --name hello --org STAGING_ORG_NAME
+```
+
+The app-server has 30 seconds to initialize and return a device challenge. Once
+the official challenge is shown, Armada allows 16 minutes for native approval
+and account setup; it no longer cuts off after five minutes. Codex 0.166.0's
+[native device poll window is 15 minutes](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/login/src/device_code_auth.rs#L107-L139).
+The native process owns its OAuth/device exchange; Armada does not implement a
+second login server or retry a possibly consumed authorization code.
+
+Failures identify the boundary without printing native stderr, raw error bodies,
+auth.json, tokens, URLs containing credentials or token claims:
+
+| Diagnostic | Meaning |
+| --- | --- |
+| Could not start Codex / JSON-RPC code and initializing step | Local executable, permissions or native startup/initialization failed. |
+| Codex reported device approval expired | Native's device code expired; this is not an Armada account-publication failure. Start a new attempt. |
+| Codex reported authorization-code/token exchange failed | Native approval polling reached the exchange, which failed. Provider-controlled details are withheld. |
+| Codex reported workspace discovery / requirements failed | Native account setup failed after the device step. Codex can reject completion even after saving tokens; Armada does not import after native `success:false`. |
+| Codex approved the login, but wrote no auth.json | Native reported completion but the isolated file was absent; no file-read retry or older login file is used. |
+| Approved auth.json contains no access/refresh token | A renewable native credential was not written; nothing is uploaded. |
+| Approved auth.json contains no stable ChatGPT account ID | Native permits a nullable ID, but Armada's subscription binding/refresh broker requires it. Do not invent an ID or derive a workspace from an unverified access-token claim; native account/workspace setup must supply it. |
+| Parent shell/session closed (SIGHUP) | The foreground owner process was cancelled. Browser approval cannot finish a terminated attempt; retry in a persistent terminal. |
+| Local 30-second / 16-minute timeout, or native exit code/signal | Distinguishes startup, waiting for approval/account setup, cancellation and an early native process exit. |
+
+A nonempty refresh token and stable account identity remain mandatory; an API-key
+file is not silently relabeled as a subscription. Explicit `--org` remains the
+requested publication scope and its normal server admin checks still apply.
+The subsequent Armada API write has its own permission/network diagnostics; an
+uncertain API response is not rewritten as a native-login failure.
+
+The old generic failure cannot reveal retrospectively which branch an owner's
+attempt took. Real 0.166.0 handshake/challenge inspection (isolated home, stopped
+before approval) proves that initial protocol shape; it is **not** a completed
+owner login or model-turn proof. After retrying, share only the new safe failure
+line if needed, never the authentication file or native provider logs.
+
 ## Deployment and coordinator acceptance
 
 Deploy the matching server and native runtime from #1186 together. Build with

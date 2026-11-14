@@ -19,11 +19,13 @@ function reported(error: unknown): string {
   else if (/^workspace routing discovery timed out/i.test(text))
     reason = "workspace discovery timed out after approval";
   else if (/^workspace routing discovery failed/i.test(text)) reason = "workspace discovery failed after approval";
-  else if (/^failed to load workspace requirements:/i.test(text)) reason = "workspace requirements could not be loaded";
+  else if (/^failed to (?:load|reload) workspace requirements:/i.test(text))
+    reason = "workspace requirements could not be loaded";
   else if (/^account changed before sign-in completed$/i.test(text))
     reason = "the selected account changed before completion";
   else if (/^Login was not completed$/i.test(text)) reason = "native sign-in did not complete";
-  const rpc = object(error) && Number.isSafeInteger(error.code) ? `; JSON-RPC ${error.code}` : "";
+  const rpcCodes: readonly unknown[] = [-32700, -32600, -32601, -32602, -32603, -32000];
+  const rpc = object(error) && rpcCodes.includes(error.code) ? `; JSON-RPC ${error.code}` : "";
   return `Codex reported: ${reason}${status ? ` (HTTP ${status})` : ""}${rpc}`;
 }
 
@@ -114,16 +116,16 @@ export class NativeCodexLoginProtocol {
 
 /** Native permits a null account_id; Armada's refresh/binding broker cannot safely use an unidentified account. */
 export function validateNativeCodexAuth(raw: string, approved = true): string {
-  const prefix = approved ? "Codex approved the login, but" : "The native Codex ChatGPT auth.json";
+  const prefix = approved ? "Codex approved the login, but its auth.json" : "The native Codex ChatGPT auth.json";
   const fail = (detail: string): never => {
     throw new VaultError(approved ? "unavailable" : "invalid", `${prefix} ${detail}.${unpublished}`);
   };
-  if (Buffer.byteLength(raw) > 65536) fail("the authentication file exceeds 64 KiB");
+  if (Buffer.byteLength(raw) > 65536) fail("exceeds 64 KiB");
   let auth: unknown;
   try {
     auth = JSON.parse(raw);
   } catch {
-    fail("the authentication file is not valid JSON");
+    fail("is not valid JSON");
   }
   if (!object(auth)) return fail("contains no native ChatGPT tokens");
   const tokens = auth.tokens;

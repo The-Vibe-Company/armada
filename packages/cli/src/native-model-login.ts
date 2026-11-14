@@ -79,6 +79,8 @@ export async function nativeCodexLogin(options: {
       );
       child.once("exit", (code, reason) => reject(protocol.exited(code, reason)));
       child.stderr.resume();
+      child.stderr.on("error", () => reject(protocol.failure("The Codex diagnostic stream failed")));
+      child.stdout.on("error", () => reject(protocol.failure("The Codex login protocol stream failed")));
       child.stdin.on("error", () => reject(protocol.failure("The connection to the Codex app-server closed")));
       child.stdout.on("data", (chunk: Buffer) => {
         bytes += chunk.length;
