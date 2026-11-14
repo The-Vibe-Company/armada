@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.34.0](https://github.com/The-Vibe-Company/armada/compare/v2.33.0...v2.34.0) (2026-11-14)
+
+
+### Features
+
+* **modal:** finish empty lifecycle and prepare ordinary runtime routing ([#1776](https://github.com/The-Vibe-Company/armada/issues/1776)) ([78b439e](https://github.com/The-Vibe-Company/armada/commit/78b439e5b7671e8ee74a7eec7d1d10239ac9a943))
+
+
+### Bug Fixes
+
+* **boat:** accept unchanged runtime follow-up settings ([#1802](https://github.com/The-Vibe-Company/armada/issues/1802)) ([c17d0f7](https://github.com/The-Vibe-Company/armada/commit/c17d0f7b4ce6bd1b424265ff36c997b7fb432ded))
+* **cli:** clarify snapshot size-policy help ([#1809](https://github.com/The-Vibe-Company/armada/issues/1809)) ([267493e](https://github.com/The-Vibe-Company/armada/commit/267493ef24a7f4fdd0efd800683f6fce69e27e79))
+* **core:** authorize private repository refresh during launch ([#1800](https://github.com/The-Vibe-Company/armada/issues/1800)) ([5cb346e](https://github.com/The-Vibe-Company/armada/commit/5cb346edbeb03f704e734fd788a85d021b93f0eb))
+* **core:** prevent partial credential disclosure during redaction ([#1812](https://github.com/The-Vibe-Company/armada/issues/1812)) ([8459502](https://github.com/The-Vibe-Company/armada/commit/845950211941022ca01268790c0e7b43c9138ae5))
+* **docker-host:** bound durable receipt history and reserve cleanup capacity ([#1814](https://github.com/The-Vibe-Company/armada/issues/1814)) ([1c2310e](https://github.com/The-Vibe-Company/armada/commit/1c2310e9a0fa88e6281a5051234665c5f49f8d85))
+* **mcp:** pin launch receipt allocation authority ([#1813](https://github.com/The-Vibe-Company/armada/issues/1813)) ([0e59564](https://github.com/The-Vibe-Company/armada/commit/0e595649cf061d06654fad39025a4427e4b48129))
+* **runtime:** query prompt journal by primary key ([#1838](https://github.com/The-Vibe-Company/armada/issues/1838)) ([0c8772a](https://github.com/The-Vibe-Company/armada/commit/0c8772a9c9d6534eba2ef4a50f2cecfb350c47a3))
+
 ## [2.33.0](https://github.com/The-Vibe-Company/armada/compare/v2.32.0...v2.33.0) (2026-11-14)
 
 
