@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { forwardControl } from "../src/app/api/v1/[...path]/control-proxy.ts";
-import { DELETE, GET, POST } from "../src/app/api/v1/[...path]/route.ts";
+import { POST } from "../src/app/api/v1/[...path]/route.ts";
 
 const env = process.env.ARMADA_MCP_URL;
 
