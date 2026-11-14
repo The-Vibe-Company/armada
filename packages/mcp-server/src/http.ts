@@ -29,6 +29,7 @@ import type { DataSource } from "./data.ts";
 import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
 import { redactForLog } from "./log.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
+import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
@@ -112,6 +113,7 @@ export interface HandlerOptions {
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   launch?: LaunchOptions;
+  ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   templates?: import("@armada/core/server").TemplateService;
   skillDefaults?: import("@armada/core/server").SkillDefaultsService;
   applicationVault?: import("@armada/core/server").ApplicationVault;
@@ -214,14 +216,15 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
               providerMetadata: (selection) => options.providerMetadata!(selection, caller),
             }
           : {}),
-        ...(options.storedProviderFor
-          ? { storedProvider: (target: ProviderTarget) => options.storedProviderFor!(target, caller) }
-          : {}),
+        storedProviders: options.storedProviderFor
+          ? { modal: (target) => options.storedProviderFor!(target, caller) }
+          : {},
         provider: (target) => providerRegistry(options).resolve(target, caller),
         deletionProvider: (sandbox) => providerRegistry(options).resolve(sandbox, { userId: sandbox.ownerId }),
         now,
         sleep,
         logError: log,
+        ...(options.ordinaryLaunchReceipts ? { ordinaryLaunchReceipts: options.ordinaryLaunchReceipts } : {}),
         ...(options.launch ? { launch: options.launch } : {}),
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),

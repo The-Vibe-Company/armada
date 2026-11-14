@@ -529,6 +529,7 @@ function sandbox(
 
 let state = seed();
 let dockerHosts: Row[] | null = null;
+let snapshotListFailure: string | null = null;
 let templateListFailure: { unsupported: boolean; message: string } | null = null;
 let vaultListFailure: { unsupported: boolean; message: string } | null = null;
 let accountListFailure: string | null = null;
@@ -2241,6 +2242,24 @@ async function goldenJobStatus(body: Row, request: Request): Promise<Response> {
   return json(jobJson(job));
 }
 
+function findGoldenJob(body: Row, request: Request): Response {
+  const userId = viewer(request);
+  if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+  const target = rebuildTarget(body, userId);
+  if (target instanceof Response) return target;
+  const job = [...goldenJobs.values()]
+    .reverse()
+    .find(
+      (item) =>
+        item.owner === userId &&
+        item.body.org === target.org_id &&
+        item.body.name === target.name &&
+        (item.body.provider ?? (item.route === "golden/update" ? target.provider : "boat")) === target.provider &&
+        ["queued", "running", "recovery_required"].includes(item.status.state),
+    );
+  return json({ build: job ? jobJson(job) : null });
+}
+
 function cancelGoldenJob(body: Row, request: Request): Response {
   const userId = viewer(request);
   if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
@@ -2734,6 +2753,8 @@ function control(url: URL, body: Row): Response {
     vaultListFailure = null;
     accountListFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
+    snapshotListFailure = typeof body.snapshotListFailure === "string" ? body.snapshotListFailure : null;
+    if (body.emptyGoldens) state.goldens = [];
     // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
     if (body.missingTemplateRevision)
       state.templateRevisions = state.templateRevisions.filter((row) => row.templateId !== id(91));
@@ -2995,6 +3016,10 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/golden-release") {
     state.goldenGate.hold = false;
     state.goldenGate.holdQueued = false;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/snapshot-list-failure") {
+    snapshotListFailure = typeof body.message === "string" ? body.message : null;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/goldens") {
@@ -3326,6 +3351,12 @@ const server = Bun.serve({
           return controlFail(403, "forbidden", "Only organization members can list hosts.");
         return json({ placement: true, hosts: dockerHosts });
       }
+      if (route === "docker/snapshots/list" && dockerHosts !== null) {
+        const caller = viewer(request);
+        if (!caller || !isMember(body.org, caller))
+          return controlFail(403, "forbidden", "Only organization members can list snapshots.");
+        return snapshotListFailure ? controlFail(503, "unavailable", snapshotListFailure) : json({ snapshots: [] });
+      }
       if (route === "launch/options" && dockerHosts !== null) {
         if (!viewer(request)) return controlFail(401, "unauthorized", "Sign in again.");
         return json({
@@ -3345,6 +3376,7 @@ const server = Bun.serve({
       if (route === "skillpack/catalog" || route === "skillpack/versions")
         return skillCatalogRoute(route, body, request);
       if (route === "golden/build/status") return goldenJobStatus(body, request);
+      if (route === "golden/build/find") return findGoldenJob(body, request);
       if (route === "golden/build/cancel") return cancelGoldenJob(body, request);
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);

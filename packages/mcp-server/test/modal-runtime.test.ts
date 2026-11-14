@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { createSqlSandboxStore, type Sql } from "@armada/core/server";
+import type { Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -48,11 +48,9 @@ test("Modal OpenCode dial-out persists routing and retains enrolled authority th
       reasoningEffort: "default",
     });
     expect((await store.get(row.id))?.runtimeTransport).toBe("dialout");
-    expect(
-      (await createSqlSandboxStore(sql).listBefore(new Date(Date.now() + 1000).toISOString())).find(
-        (r) => r.id === row.id,
-      )?.runtimeTransport,
-    ).toBe("dialout");
+    expect((await sql.query("select runtime_transport from sandboxes where id=$1", [row.id])).rows).toEqual([
+      { runtime_transport: "dialout" },
+    ]);
     await expect(db.query("update sandboxes set runtime_transport=null where id=$1", [row.id])).rejects.toThrow(
       "transport is immutable",
     );

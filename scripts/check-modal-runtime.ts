@@ -37,6 +37,8 @@ interface Reply {
   githubReady?: boolean;
   mcpReady?: boolean;
   status?: string;
+  conversationIds?: string[];
+  prompt?: unknown;
   revision?: string;
   configured?: boolean;
   credentialRequests?: number;
@@ -45,6 +47,8 @@ interface Reply {
     version?: number;
     enabled?: boolean;
     followupVersion?: number;
+    idleLaunchVersion?: number;
+    idleTemplateVersion?: number;
     resumeVersion?: number;
     mcpVersion?: number;
     skillsVersion?: number;
@@ -58,7 +62,15 @@ interface Reply {
   mcpToolInventory?: { connectionId: string; tools: string[] }[];
   usage?: SandboxUsage;
   skills?: unknown;
-  sandbox?: { id?: string; goldenId?: string; skills?: unknown; provider?: string; runtimeTransport?: string };
+  sandbox?: {
+    id?: string;
+    status?: string;
+    conversationIds?: string[];
+    goldenId?: string;
+    skills?: unknown;
+    provider?: string;
+    runtimeTransport?: string;
+  };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
   conversationId?: string;
@@ -119,6 +131,11 @@ if (harness === "opencode") {
 }
 if (harness === "claude" && options.modalRuntime.claudeVersion !== 1)
   throw Error("Modal enrolled Claude v1 is unavailable; no launch attempted.");
+const idleMode = process.argv.includes("--idle");
+if (idleMode && options.modalRuntime.idleLaunchVersion !== 1)
+  throw Error("Modal promptless launch/first-send v1 is unavailable; no launch attempted.");
+if (idleMode && process.argv.includes("--variables") && options.modalRuntime.idleTemplateVersion !== 1)
+  throw Error("Modal promptless template v1 is unavailable; no launch attempted.");
 const resumeMode = process.argv.includes("--resume");
 if (resumeMode && options.modalRuntime.resumeVersion !== 1)
   throw Error("Modal retained resume v1 is unavailable; no launch attempted.");
@@ -571,6 +588,10 @@ try {
         requestKey: templateRequestKey,
       }),
     );
+  const initialPrompt =
+    mcpMode || variablesMode
+      ? `Remember token ${memory}. ${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} After it succeeds, reply exactly ${answer}. Do not change files.`
+      : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`;
   const raw = await api("sandbox/launch-modal-runtime-v1", {
     runtimeVersion: 1,
     runtimeTransport: "dialout",
@@ -587,10 +608,7 @@ try {
         }),
     ...(!skillsMode ? { skills: [], skipSkillDefaults: true } : {}),
     ttlSeconds: 900,
-    prompt:
-      mcpMode || variablesMode
-        ? `Remember token ${memory}. ${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} After it succeeds, reply exactly ${answer}. Do not change files.`
-        : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`,
+    ...(!idleMode ? { prompt: initialPrompt } : {}),
   });
   id = templateSource ? raw.id : raw.sandbox?.id;
   shouldStop = Boolean(id);
@@ -639,19 +657,69 @@ try {
         },
       }
     : raw;
-  conversationId = launched.conversationId;
+  conversationId = launched.conversationId ?? undefined;
   epoch = launched.runtime?.epoch;
-  promptId = launched.promptId;
+  promptId = launched.promptId ?? undefined;
   if (
     !id ||
     launched.sandbox?.provider !== "modal" ||
     launched.sandbox.runtimeTransport !== "dialout" ||
     launched.runtime?.kind !== "armada" ||
     !/^[1-9][0-9]{0,18}$/.test(epoch ?? "") ||
-    !promptId ||
-    !launched.conversationId
+    (!idleMode && (!promptId || !launched.conversationId))
   )
     throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
+  if (idleMode && templateSource) {
+    const current = await api("sandbox/status", { id });
+    if (
+      raw.status !== "ready" ||
+      current.id !== id ||
+      current.status !== "ready" ||
+      !Array.isArray(current.conversationIds) ||
+      current.conversationIds.length ||
+      current.prompt !== null
+    )
+      throw Error("Promptless template current status is not empty and ready; no first send attempted.");
+    // Status evidence comes from the actual sandbox, never a synthesized empty list.
+    launched.sandbox.status = current.status;
+    launched.sandbox.conversationIds = current.conversationIds;
+  }
+  if (idleMode) {
+    if (
+      launched.sandbox.status !== "ready" ||
+      !Array.isArray(launched.sandbox.conversationIds) ||
+      launched.sandbox.conversationIds.length ||
+      promptId !== undefined ||
+      conversationId !== undefined
+    )
+      throw Error("Idle Modal launch did not publish an empty ready sandbox.");
+    const history = await api("logs/read", { id, limit: 1000 });
+    if (
+      history.source !== "armada-runtime" ||
+      history.runtimeFailure ||
+      !Array.isArray(history.events) ||
+      history.events.some((event) => event.kind === "prompt" || event.kind === "message")
+    )
+      throw Error("Idle archive already contains inference or lacks common-runtime provenance.");
+    const firstRequestId = crypto.randomUUID();
+    console.log(JSON.stringify({ operation: "runtime_first_send", sandboxId: id, requestId: firstRequestId }));
+    const first = await api("sandbox/send", { id, request_id: firstRequestId, prompt: initialPrompt });
+    if (
+      first.requestId !== firstRequestId ||
+      first.runtime?.kind !== "armada" ||
+      first.runtime.epoch !== epoch ||
+      typeof first.promptId !== "string" ||
+      !first.promptId ||
+      typeof first.conversationId !== "string" ||
+      !first.conversationId
+    )
+      throw Error(
+        "Missing current-epoch first-send acknowledgement; reconcile the same request identity, never resend.",
+      );
+    launched.promptId = promptId = first.promptId;
+    launched.conversationId = conversationId = first.conversationId;
+  }
+  if (!promptId || !conversationId) throw Error("Missing admitted initial Modal conversation.");
   if (skillsMode && launched.sandbox.goldenId !== defaultGoldenId)
     throw Error("Modal launch selected a different golden than the default-skill policy; no retry.");
   launchSkills = launched.sandbox.skills;
@@ -703,6 +771,7 @@ try {
       epoch,
       source: "armada-runtime",
       answer: "verified",
+      ...(idleMode ? { idleFirstSend: "verified" } : {}),
       checkpoint: "verified",
       ...(githubMode ? { github: "verified" } : {}),
       ...(mcpMode ? { mcp: "verified" } : {}),

@@ -61,6 +61,18 @@ class NormalLaunchReceiptTest(unittest.TestCase):
             module.normal_launch_receipt(api, {"requestId": "sandbox"}, 10)
         api.assert_called_once()
 
+    def test_github_proof_reports_the_launch_connection_reason_before_misattributing_a_missing_tool(self):
+        from unittest.mock import Mock
+        receipt = {"sandbox": {"id": "sandbox", "provider": "docker", "status": "running"},
+                   "promptId": "prompt", "conversationId": "conversation",
+                   "github": {"status": "not_connected", "message": "This caller has no GitHub connection."}}
+        api = Mock(return_value=receipt)
+        with self.assertRaisesRegex(RuntimeError, "GitHub proof blocked: This caller has no GitHub connection"):
+            module.normal_launch_receipt(api, {"requestId": "sandbox"}, 10, require_github=True)
+        api.assert_called_once()
+        receipt["github"] = {"status": "connected", "login": "owner"}
+        self.assertIs(module.normal_launch_receipt(api, {"requestId": "sandbox"}, 10, require_github=True), receipt)
+
     def test_pending_preparation_has_a_bounded_deadline(self):
         from unittest.mock import Mock, patch
         api = Mock(return_value={"sandbox": {"id": "sandbox", "provider": "docker", "status": "starting"},

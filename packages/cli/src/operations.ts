@@ -27,7 +27,7 @@ export async function operation(
           : command === "list"
             ? ["--status", "--harness", "--golden", "--owner", "--page", "--limit"]
             : [],
-    command === "list" ? ["--page-info"] : command === "rm" ? ["--yes"] : [],
+    command === "list" ? ["--page-info"] : command === "rm" ? ["--yes"] : command === "status" ? ["--live"] : [],
   );
   if (command === "rm") {
     const [id, ...extra] = args.positionals;
@@ -55,6 +55,7 @@ export async function operation(
       "Repository context is immutable; select --repo at launch, not on later operations.",
     );
   const body: Record<string, unknown> = {};
+  if (command === "status") body.recorded = !flag(args, "--live");
   for (const [flag, key] of Object.entries({
     "--org": "org",
     "--model": "model",

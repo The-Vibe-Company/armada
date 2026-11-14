@@ -44,9 +44,12 @@ import { launchDocker } from "./docker-launch.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { hostCommand } from "./host-commands.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
+import { onboardingHelp } from "./onboarding-help.ts";
 import { operation, parseTtl } from "./operations.ts";
+import { profileStores, selectProfile } from "./profiles.ts";
 import { printOptionalResourceAdvice } from "./resource-advice.ts";
 import { routineCommand } from "./routine-commands.ts";
+import { promptSecret } from "./secret-input.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
 import { templateCommand } from "./template-commands.ts";
@@ -62,7 +65,7 @@ export interface Deps {
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   readFile?: (path: string) => Promise<string>;
-  /** Values for credential/application vault writes. By default stdin, only when piped. */
+  /** Values for credential/application vault writes. By default hidden terminal input, or stdin when piped. */
   readStdin?: () => Promise<string>;
   /** Separate native Docker host binary boundary; no Armada session required. */
   localHost?: LocalHostIo;
@@ -71,6 +74,8 @@ export interface Deps {
 }
 
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
+
+Global: --profile NAME (or ARMADA_PROFILE) isolates login and preferences; login --url sets its server.
 
 Exit codes: 0 success; 1 authentication/server/operation failure; 2 invalid usage or missing configuration.
 
@@ -108,16 +113,18 @@ Usage:
                                            server over your own GitHub connection. No BOAT_API_KEY needed.
                                            --setup reads a local script and sends its content to run after
                                            cloning, before the scan.
-  armada golden update <name> (--add-repo <url>[@branch] ... | --repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
+  armada golden update <name> (--add-repo <url>[@branch] ... | --replace --repo <url>[@branch] ... | --replace --config <file>) [--init <cmd> ...]
                                [--setup <local-file>] [--provider boat|modal] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
                                            Rebuild the existing golden in place. One golden may contain
                                            many repositories; visibility and ownership stay unchanged.
-                                           --repo/--config REPLACE the complete repository list and init commands.
-                                           --add-repo preserves all stored repositories and init commands (requires updated server).
+                                           Use --add-repo to append safely, preserving stored repositories and init commands.
+                                           --repo/--config require --replace: they replace the ENTIRE config, even if no repos are dropped.
                                            Create/update admit a durable job, then poll for up to --timeout
                                            seconds (default 60, max 600; 0 returns after admission).
                                            Disconnecting never resubmits or cancels the job.
   armada golden build-cancel <job-id> [--org <org>] [--json]  Cancel your queued, never-started build
+  armada golden build-find <name> [--provider boat|modal] [--org <org>] [--json]
+                                           Find the latest visible active build without a job ID or admission key.
   armada golden build-status <job-id>      Read the authenticated durable build status
   armada golden build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
@@ -174,14 +181,17 @@ Usage:
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
   armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
-  armada detail|status|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
+  armada status <sandbox-id> [--live] [--org UUID] [--json]
+                                           Recorded state by default (no provider probe); --live reads provider/prompt details
+  armada detail|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
   armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
                                            Timeout is 0–600 seconds, default 60.
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
                                            send accepts --request-id UUID to reuse an uncertain runtime instruction.
   armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
-  armada golden remove <golden-id> [--org UUID] [--json]
+  armada golden remove <name|golden-id> [--provider boat|modal] [--org UUID] [--json]
+                                           Names must match one visible golden; use provider/org or golden list --json to disambiguate.
                                            Remove from launch selection; retain children and provider artifacts
   armada golden visibility <golden-id> --visibility private|org [--org UUID]
   armada mcp catalog|rename ID NAME|default ID on|off [--org UUID]
@@ -202,7 +212,7 @@ Usage:
   armada org list
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
-                                           Connect an org provider using stdin or a file
+                                           Connect an org provider using hidden input, stdin or a file
   armada org use <name|UUID|none>           Persist selection for this Armada server
   armada org current                        Show selected organization
   armada account status|logout              Account identity / revoke current login session
@@ -227,17 +237,17 @@ Usage:
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
   armada creds presets [--json]             List the same model connection providers as the dashboard
   armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
-                                           Provider key from stdin/file; custom providers take --models and --base-url
+                                           Provider key from hidden input, stdin/file; custom providers take --models and --base-url
                                            Azure models are resource deployment names; official Azure addresses are tested
                                            with a tiny billable request per deployment. A failed check saves nothing.
   armada creds set <kind> [--org <name>] [--file <path>]
-                                           Store a credential, encrypted; the value is read from stdin or a file
+                                           Store a credential, encrypted; hidden input in a terminal, or stdin/file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
                                            Codex: --base-url URL --models deployment,model [--api-version VERSION]
-                                           Key from stdin/file; Azure requires actual deployment names, not model catalog IDs
+                                           Key from hidden input, stdin/file; Azure requires actual deployment names, not model catalog IDs
                                            Codex endpoints require Modal and the Responses API, not chat completions
                                            Claude: --base-url URL [--endpoint-auth bearer|api-key] (default bearer)
-                                           Claude gateways require Modal and support Claude models only; key from stdin/file
+                                           Claude gateways require Modal and support Claude models only; key from hidden input, stdin/file
                                            Endpoint prices: --price-model ID --price-input USD --price-output USD
                                            [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
                                            Replacing a connection replaces its prices too; re-enter all rates to keep them
@@ -299,9 +309,11 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     error instanceof AuthError &&
     (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
-    if (argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? ""))
+    // Native host management is login-free, including when a global profile flag is present.
+    const localArgs = selectProfile(argv, {}).args;
+    if (localArgs[0] === "host" && ["install", "status", "uninstall"].includes(localArgs[1] ?? ""))
       return await localHostCommand(
-        argv.slice(1),
+        localArgs.slice(1),
         io,
         deps.localHost ??
           productionLocalHostIo({
@@ -309,6 +321,44 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
             ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
           }),
       );
+    const focusedHelp = onboardingHelp(localArgs);
+    if (focusedHelp) {
+      io.out(focusedHelp);
+      return 0;
+    }
+    const selected = selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
+    argv = selected.args;
+    deps = { ...deps, env: selected.env };
+    if (selected.env.ARMADA_PROFILE !== undefined) {
+      const stores = profileStores(selected.env);
+      const env: NodeJS.ProcessEnv = { ...selected.env };
+      const discovery =
+        (argv.length === 1 && ["--help", "-h", "--version", "-v"].includes(argv[0] ?? "")) ||
+        (argv.length === 2 && ["--help", "-h"].includes(argv[1] ?? "")) ||
+        argv[0] === "completion";
+      if (!env.ARMADA_TOKEN && !discovery && argv[0] !== "logout") {
+        const login = argv[0] === "login";
+        const explicitLoginOrigin = login && argv.some((arg) => arg === "--url" || arg.startsWith("--url="));
+        const saved = explicitLoginOrigin ? null : await stores.session.read();
+        if (
+          !login &&
+          env.ARMADA_URL &&
+          saved?.armadaUrl &&
+          armadaApiUrl(env.ARMADA_URL) !== armadaApiUrl(saved.armadaUrl)
+        )
+          throw new AuthError(
+            "Profile login belongs to another server. Choose its server or log in to a different profile.",
+            "usage",
+          );
+        env.ARMADA_URL ??= saved?.armadaUrl;
+        if (!env.ARMADA_URL && !(login && argv.some((arg) => arg === "--url" || arg.startsWith("--url="))))
+          throw new AuthError(
+            `Configure this profile first: armada --profile ${env.ARMADA_PROFILE} login --url <server-origin>.`,
+            "usage",
+          );
+      }
+      deps = { ...deps, env, auth: { ...(deps.auth ?? productionAuthIo(io, env)), env, ...stores } };
+    }
     auth = authOf(io, deps);
     try {
       if (argv.length === 0) {
@@ -566,7 +616,11 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     return sizePolicyCommand(rest, authOf(io, deps), (path) =>
       path ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path) : (deps.readStdin ?? (() => Bun.stdin.text()))(),
     );
-  const args = parseArgs(rest, subcommand === "retirement" ? ["--limit"] : ["--host", "--request-id"]);
+  const args = parseArgs(
+    rest,
+    subcommand === "retirement" ? ["--limit"] : ["--host", "--request-id"],
+    subcommand === "update" ? ["--replace"] : [],
+  );
   if (args.options.has("--add-repo") && subcommand !== "update")
     throw new GoldenError("invalid_config", "--add-repo is only supported by golden update.");
   if (single(args, "--provider") === "docker") {
@@ -666,10 +720,34 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         fetch: deps.fetch ?? auth.fetch,
         session: auth.session,
       });
+      let id = oneName(args.positionals);
+      let org = single(args, "--org");
+      const provider = providerFlag(args);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        const { goldens } = await client.request<{ goldens: GoldenRecord[] }>("/api/v1/golden/list", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...(org === undefined ? {} : { org }) }),
+        });
+        const matches = goldens.filter(
+          (row) => row.name === id && (provider === undefined || row.provider === provider),
+        );
+        const match = matches[0];
+        if (matches.length !== 1 || !match) {
+          throw new GoldenError(
+            matches.length ? "conflict" : "not_found",
+            matches.length
+              ? "More than one visible golden has this name. Select --provider and --org, or use the exact id from armada golden list --json. Nothing was removed."
+              : "No visible golden matches this name and provider. Run armada golden list --json to check its name, id and organization. Nothing was removed.",
+          );
+        }
+        id = match.id;
+        org ??= match.orgId;
+      }
       const result = await client.request("/api/v1/golden/remove", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: oneName(args.positionals), org: single(args, "--org") }),
+        body: JSON.stringify({ id, org }),
       });
       io.out(`${JSON.stringify(result)}
 `);
@@ -708,6 +786,27 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       });
       if (flag(args, "--json")) io.out(JSON.stringify(job) + "\n");
       else io.out(`Build ${job.jobId}: ${goldenBuildFailureText(job)}\n`);
+      return 0;
+    }
+    case "build-find": {
+      const name = oneName(args.positionals);
+      const auth = authOf(io, deps);
+      const client = await createArmadaApiClient(
+        { env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session },
+        { preserveServerErrors: true },
+      );
+      const result = await client.request<{ build: GoldenBuildStatus | null }>("/api/v1/golden/build/find", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, provider: providerFlag(args), org: single(args, "--org") }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (flag(args, "--json")) io.out(JSON.stringify(result) + "\n");
+      else if (result.build) {
+        io.out(
+          `Build ${result.build.jobId}: ${result.build.state} (${result.build.phase}).\nRead details with armada golden build-status ${result.build.jobId}. Only its owner can cancel a queued, never-started build with golden build-cancel.\n`,
+        );
+      } else io.out("No visible active build was found. A reservation may still need administrator investigation.\n");
       return 0;
     }
     case "build-status": {
@@ -827,6 +926,16 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
     throw new GoldenError(
       "invalid_config",
       "--add-repo preserves the stored config. Do not combine it with --repo, --config, --init or --setup; use --config for intentional replacement.",
+    );
+  if (additions.length && flag(args, "--replace"))
+    throw new GoldenError(
+      "invalid_config",
+      "--replace cannot be combined with --add-repo; choose append or replacement.",
+    );
+  if (!additions.length && !flag(args, "--replace"))
+    throw new GoldenError(
+      "invalid_config",
+      "Full replacement can drop stored repositories and init commands. Use --add-repo to append safely, or pass --replace with --repo/--config to confirm replacing the entire config.",
     );
   let config: GoldenConfig | undefined;
   try {
@@ -1469,7 +1578,7 @@ function vaultIo(io: Io, deps: Deps, strictUtf8 = false): VaultIo {
     readStdin:
       deps.readStdin ??
       (async () => {
-        if (process.stdin.isTTY) throw new Error("stdin is a terminal");
+        if (process.stdin.isTTY) return promptSecret();
         return strictUtf8
           ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.stdin.arrayBuffer())
           : Bun.stdin.text();

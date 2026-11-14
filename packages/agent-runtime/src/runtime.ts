@@ -6,6 +6,7 @@ import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError } from "./errors.ts";
 import { execCredentialValues, validateExecEnvironment, validateExecReadables } from "./exec-env.ts";
+import { githubRuntimeEnvironment } from "./github-tools.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import type { Journal } from "./journal.ts";
 import { mcpDigest, mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
@@ -23,6 +24,7 @@ import {
   type StoredPrompt,
   type Turn,
 } from "./protocol.ts";
+import { readRuntimeJson } from "./request-framing.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills } from "./skills.ts";
 import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
@@ -81,6 +83,9 @@ export class Runner {
       ...validateExecReadables(execution.readableVariables, this.credentialFreeBuilder),
       ...execEnv,
       ...(execution.ghConfigDir ? { GH_CONFIG_DIR: execution.ghConfigDir } : {}),
+      ...(execution.githubToolsRoot
+        ? githubRuntimeEnvironment({ PATH: execEnv.PATH ?? process.env.PATH }, execution.githubToolsRoot)
+        : {}),
     });
     journal.assertRestoreSource(grant);
     this.barrier = journal.checkpointPending(grant);
@@ -158,15 +163,7 @@ export class Runner {
     )
       return Response.json({ error: "unauthorized" }, { status: 401 });
     try {
-      if (Number(request.headers.get("content-length") ?? 0) > 1048576) throw Error("request_too_large");
-      const raw = await request.text();
-      if (Buffer.byteLength(raw) > 1048576) throw Error("request_too_large");
-      let r: RunnerRequest;
-      try {
-        r = JSON.parse(raw) as RunnerRequest;
-      } catch {
-        throw Error("invalid_request");
-      }
+      const r = (await readRuntimeJson(request)) as RunnerRequest;
       if (this.closing) throw Error("sandbox_not_ready");
       if (!r || typeof r !== "object" || Array.isArray(r)) throw Error("invalid_request");
       if (r.version !== 1 || r.sandboxId !== this.grant.sandboxId || typeof r.requestId !== "string" || !r.requestId)

@@ -167,7 +167,9 @@ export async function snapshotGoldenRoute(
   await data.goldens.assertBackendBinding?.(golden, provider);
   const target = (await connectGolden(provider, data.goldens, actor, golden.name)).golden;
   if (!target.providerSandboxId) throw new GoldenError("conflict", `Golden '${target.name}' has no sandbox yet.`);
-  await scanGoldenSandbox(provider, target.providerSandboxId);
+  await scanGoldenSandbox(provider, target.providerSandboxId, {
+    repositories: target.config.repos.map((repo) => repo.dir),
+  });
   const saved = await snapshotGolden(provider, data.goldens, actor, target.name, options.launch ?? {});
   return { name: saved.golden.name, snapshot: saved.snapshotName };
 }
@@ -223,7 +225,7 @@ function requiredBoolean(body: Record<string, unknown>, key: string, fallback: b
   return value;
 }
 
-function selectGolden(rows: GoldenRecord[], body: Record<string, unknown>): GoldenRecord | undefined {
+export function selectGolden(rows: GoldenRecord[], body: Record<string, unknown>): GoldenRecord | undefined {
   const provider = optional(body, "provider");
   if (provider !== undefined && !isSandboxProvider(provider))
     throw new VaultError("invalid", "Provider is boat or modal.");
