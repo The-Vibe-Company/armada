@@ -626,7 +626,7 @@ current-epoch revision distinct from the old one before its explicit refresh;
 automatic reauthorization is not mistaken for surviving stale credentials.
 
 Matching schema/server/runtime must include
-`20261114121000_runtime_empty_checkpoint_resume.sql` (private server-only mode;
+`20261114150137_runtime_empty_checkpoint_resume.sql` (private server-only mode;
 existing operations default to nonempty). No default flip, native fallback, new
 credentials or manual artifact publication. Live acceptance remains coordinator
 owned; secrets/multi-conversation/default readiness and the production-day gate
