@@ -16,7 +16,7 @@ import type { TemplateHeader } from "@/lib/templates";
 
 export const metadata: Metadata = { title: "Routines" };
 export const dynamic = "force-dynamic";
-const DESCRIPTION = "A template and a prompt, on a schedule. No overlapping runs.";
+const DESCRIPTION = "Scheduled template launches for your agents.";
 export default async function RoutinesPage({
   searchParams,
 }: {
@@ -28,11 +28,15 @@ export default async function RoutinesPage({
     return (
       <>
         {header}
-        <Empty title="No organization yet">
-          <Link href="/orgs" className="underline">
-            Create an organization
-          </Link>{" "}
-          to schedule routines.
+        <Empty
+          title="No organization yet"
+          action={
+            <Button asChild>
+              <Link href="/orgs">Choose an organization</Link>
+            </Button>
+          }
+        >
+          Create or join an organization before scheduling launches.
         </Empty>
       </>
     );
@@ -40,12 +44,27 @@ export default async function RoutinesPage({
     return (
       <>
         {header}
-        <Alert variant={list.state === "error" ? "destructive" : "default"}>
-          <AlertTitle>Routines are unavailable</AlertTitle>
+        <Alert
+          variant={list.state === "error" ? "destructive" : "default"}
+          role={list.state === "error" ? "alert" : "status"}
+        >
+          <AlertTitle>
+            {list.state === "unsupported"
+              ? "Routine management needs an update"
+              : list.state === "not-configured"
+                ? "Routine setup is not ready here"
+                : "Routines could not be loaded"}
+          </AlertTitle>
           <AlertDescription>
-            {"message" in list ? list.message : "The Armada server is not configured for this dashboard."}
+            <p>
+              {list.state === "unsupported"
+                ? "Ask an Armada administrator to update Armada before scheduling routines here."
+                : list.state === "not-configured"
+                  ? "Ask an Armada administrator to finish setup, then reload Routines."
+                  : "Check your connection and reload Routines. If this continues, ask an Armada administrator to check routine access."}
+            </p>
             <Button asChild variant="outline" size="sm" className="mt-2">
-              <Link href="/routines">Try again</Link>
+              <a href="/routines">Reload Routines</a>
             </Button>
           </AlertDescription>
         </Alert>
@@ -152,25 +171,42 @@ export default async function RoutinesPage({
       rows={rows}
       blockers={[]}
       initial={typeof query.item === "string" ? query.item : null}
-      actions={<CreateRoutineDialog orgId={orgId} isAdmin={admin} templates={templates} />}
+      actions={
+        templatesUnavailable ? (
+          <Button asChild variant="outline">
+            <a href="/routines">Reload Routines</a>
+          </Button>
+        ) : templates.length > 0 ? (
+          <CreateRoutineDialog orgId={orgId} isAdmin={admin} templates={templates} />
+        ) : (
+          <Button asChild>
+            <Link href="/templates">Create a template</Link>
+          </Button>
+        )
+      }
       notices={
         templatesUnavailable ? (
           <Alert>
             <AlertDescription>
-              Templates could not be loaded. Existing schedules remain unchanged; refresh before creating a routine.
+              Templates could not be loaded. Existing schedules remain unchanged; use Reload Routines before creating a
+              schedule.
             </AlertDescription>
           </Alert>
         ) : undefined
       }
       empty={
         <Empty title="No routines yet" icon={<Clock3Icon />}>
-          Schedule a template with a prompt. New routines stay paused until you enable them.
+          {templatesUnavailable
+            ? "Reload Routines to check templates before creating a schedule."
+            : templates.length === 0
+              ? "Create a template first, then return here to schedule it. New routines stay paused until you enable them."
+              : "Choose New to schedule a template with a prompt. New routines stay paused until you enable them."}
         </Empty>
       }
       footer={
         <p className="text-xs text-muted-foreground">
-          Minimum interval: one hour. Personal routines are yours alone; organization routines are managed by admins.
-          Templates stay pinned to their selected revision.
+          Personal routines are yours alone; organization routines are managed by admins. New routines start paused so
+          you can check them before enabling. Templates stay pinned to their selected revision.
         </p>
       }
     />

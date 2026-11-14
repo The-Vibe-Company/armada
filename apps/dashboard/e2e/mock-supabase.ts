@@ -3193,6 +3193,7 @@ function control(url: URL, body: Row): Response {
     }
     if ("failure" in body) state.routineFailure = body.failure as Fail | null;
     if (body.empty) state.routines = [];
+    if (body.templatesEmpty) for (const template of state.templates) template.status = "deleted";
     if (body.stale) {
       const item = state.routines.find((r) => r.id === body.stale);
       if (item) item.version = Number(item.version) + 1;
