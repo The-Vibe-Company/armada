@@ -91,6 +91,28 @@ Revoke a service token with authenticated access and server authorization.
 Use its ID from armada token list --json, never the secret token value.
 Example: armada token revoke TOKEN_UUID
 `,
+  "github status": `Usage: armada github status [--json]
+Read your GitHub connection and installation metadata after Armada login.
+Output is JSON even without --json. Use an installation ID with github manage.
+Example: armada github status --json
+`,
+  "github manage": `Usage: armada github manage <installation-id> [--no-browser]
+Open settings for one of your GitHub installations after Armada login.
+Choose an installation ID from armada github status, not a sandbox ID.
+--no-browser prints the settings URL to stdout instead of opening a browser.
+Example: armada github manage INSTALLATION_ID --no-browser
+`,
+  "github refresh": `Usage: armada github refresh <sandbox-id> [--json]
+Request GitHub credential refresh for an existing sandbox after Armada login.
+Requires server authorization; use a sandbox ID, not an installation ID.
+Output is JSON even without --json. This is not a reconnect of your GitHub account.
+Example: armada github refresh SANDBOX_UUID --json
+`,
+  "github disconnect": `Usage: armada github disconnect [--json]
+Disconnect your GitHub connection after Armada login and server authorization.
+Output is JSON even without --json. To connect again, use armada github connect.
+Example: armada github disconnect
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
