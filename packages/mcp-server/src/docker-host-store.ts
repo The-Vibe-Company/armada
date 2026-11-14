@@ -303,7 +303,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (operation !== "create" && operation !== "bootstrap" && operation !== "resume") return;
     await tx.query(
       `update public.sandboxes set status='failed',status_reason=$2,
-       lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running','stopping')`,
+       lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
       [
         row.id,
         reason === "image_unavailable" && operation === "create"
@@ -658,11 +658,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
     },
     poll(hostToken: string, installationId: string, version?: string, skipSnapshots = false): Promise<Job | null> {
       return transaction(async (tx) => {
+        // Cleanup bypasses queued startup/snapshot work; already executing native work remains serial.
+        // Stop intent fences every later startup, so an absent-resource ACK cannot admit a queued create.
         // Peek before member/host locks: never acquire a late actor lock behind the host.
         const hint = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null and (not $3::boolean or j.snapshot_id is null) order by (j.snapshot_id is not null),j.position limit 1`,
+           where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null and (not $3::boolean or j.snapshot_id is null) order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
             [hash(hostToken), installationId, skipSnapshots],
           )
         ).rows[0];
@@ -705,7 +707,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         const row = (
           await tx.query<StoredJob>(
-            `select * from public.docker_host_jobs where host_id=$1 and outcome is null and (not $2::boolean or snapshot_id is null) order by (snapshot_id is not null),position limit 1`,
+            `select * from public.docker_host_jobs where host_id=$1 and outcome is null and (not $2::boolean or snapshot_id is null) order by case when bound_operation in ('stop','delete') then 0 else 1 end,(snapshot_id is not null),position limit 1`,
             [host.id, skipSnapshots],
           )
         ).rows[0];

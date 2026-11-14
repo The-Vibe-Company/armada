@@ -224,3 +224,15 @@ uses verified artifacts from the current server; the baseline is not a version
 alias. The legacy `DOCKER_DEFAULT_IMAGE` remains available for explicit operator
 preview APIs only. A normal launch's GitHub delivery diagnostic names the
 `configureGitHub` step; it is not evidence of a missing user grant.
+
+An accepted Docker launch can be followed immediately by `sandbox/send`. The
+server waits within the send admission budget for launch preparation and its
+initial conversation, then admits the follow-up with the original request ID.
+If preparation outlasts that budget, the outcome is retryable pending, not a
+starting-state conflict; retry identical input with the same request ID. The
+dashboard retains that key and draft on an unconfirmed send.
+
+Stop/delete mailbox work takes priority over queued startups and snapshot builds.
+Stop intent fences queued creation/bootstrap before a physical stop ACK can
+settle it. Already executing native work remains serial: cancellation does not
+publish a fake stopped state or allow a late create to resurrect compute.
