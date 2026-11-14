@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
-import { HARNESSES, validateReadableVariables } from "@armada/core";
+import { HARNESSES } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
@@ -26,6 +26,7 @@ import {
   type StoredPrompt,
   type Turn,
 } from "./protocol.ts";
+import { ReadableConfigurations } from "./readable-configurations.ts";
 import { readRuntimeJson } from "./request-framing.ts";
 import { executeWithReceipt } from "./request-receipts.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
@@ -51,7 +52,7 @@ export class Runner {
   private refreshNativeSecrets: (() => void) | undefined;
   private commands = new Set<Promise<unknown>>();
   private resumingNative = false;
-  private readableDigests = new Map<string, string>();
+  private readonly readableConfigurations: ReadableConfigurations;
   private configureGitHub: RunnerExecutionOptions["configureGitHub"];
   constructor(
     readonly journal: Journal,
@@ -73,6 +74,7 @@ export class Runner {
     if (execution.credentialFreeBuilder !== undefined && typeof execution.credentialFreeBuilder !== "boolean")
       throw Error("invalid_exec_environment");
     this.credentialFreeBuilder = execution.credentialFreeBuilder ?? false;
+    this.readableConfigurations = new ReadableConfigurations(drivers);
     this.configureGitHub = execution.configureGitHub;
     this.refreshNativeSecrets = execution.refreshNativeSecrets;
     this.publishNativeAuth = execution.publishNativeAuth;
@@ -231,16 +233,7 @@ export class Runner {
           Object.keys(r).some((k) => !["version", "requestId", "sandboxId", "op", "harness", "variables"].includes(k))
         )
           throw Error("invalid_request");
-        const variables = validateReadableVariables(r.variables);
-        const digest = JSON.stringify(Object.entries(variables).sort());
-        const previous = this.readableDigests.get(r.harness);
-        if (previous !== undefined && previous !== digest) throw Error("invalid_request");
-        if (previous === digest)
-          return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
-        const bootstrap = this.drivers[r.harness]?.configureReadableVariables;
-        if (!bootstrap) throw Error("invalid_request");
-        bootstrap.call(this.drivers[r.harness], variables);
-        this.readableDigests.set(r.harness, digest);
+        this.readableConfigurations.configure(r.harness, r.variables);
         return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
       }
       if (r.op === "configureGitHub") {
