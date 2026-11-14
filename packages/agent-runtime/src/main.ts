@@ -43,7 +43,7 @@ async function main(dialout = false) {
     restoreCheckpoint?: {
       epoch: string;
       watermark: number;
-      conversationId: string;
+      conversationId: string | null;
       model: string;
       reasoningEffort: string;
     };
@@ -238,8 +238,7 @@ async function main(dialout = false) {
       !enrolled ||
       !["codex", "claude", "opencode"].includes(config.selectedHarness as string) ||
       !/^[1-9][0-9]{0,18}$/.test(restore.epoch) ||
-      typeof restore.conversationId !== "string" ||
-      !restore.conversationId ||
+      (restore.conversationId !== null && (typeof restore.conversationId !== "string" || !restore.conversationId)) ||
       typeof restore.model !== "string" ||
       !restore.model ||
       typeof restore.reasoningEffort !== "string"
@@ -496,7 +495,7 @@ async function main(dialout = false) {
       githubToolsRoot: githubRoot,
     },
   );
-  if (restore) {
+  if (restore && restore.conversationId !== null) {
     const session = journal.session(restore.conversationId);
     if (!session) throw Error("resume_checkpoint_mismatch");
     const response = await runner.handle(

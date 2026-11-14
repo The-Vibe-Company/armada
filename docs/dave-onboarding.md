@@ -4,7 +4,8 @@ This guide takes a new user from nothing to a coding agent running on Boat or Mo
 
 | What | Value |
 | --- | --- |
-| Armada server (control API, OAuth, health) | `https://armada-mcp-production.up.railway.app` |
+| CLI default and dashboard | `https://armada.thevibecompany.co` |
+| Direct server (control API, OAuth, health) | `https://armada-mcp-production.up.railway.app` |
 | MCP endpoint (Streamable HTTP) | `https://armada-mcp-production.up.railway.app/mcp` |
 | npm package | `@the-vibe-company/armada` (the `armada` command) |
 
@@ -12,7 +13,7 @@ This guide takes a new user from nothing to a coding agent running on Boat or Mo
 
 ## 1. Install the CLI
 
-The package ships a prebuilt binary for linux and macOS (x64 and arm64), so it needs neither Bun nor a build. Version 2 replaces the legacy CLI under the `latest` dist-tag (docs/releasing.md):
+The package ships a prebuilt binary for linux and macOS (x64 and arm64), so it needs neither Bun nor a build. Version 2 replaces the legacy CLI under the `latest` dist-tag ([release guide](releasing.md)):
 
 ```sh
 npx @the-vibe-company/armada --help        # run once, with Node 18 or later
@@ -27,7 +28,7 @@ From a clone of this repository, `bun run armada <args>` runs the same CLI from 
 
 ## 2. Point the CLI at production
 
-The CLI talks only to the Armada API. It needs no Supabase, provider or database settings, and the production server, `https://armada.thevibecompany.co`, is its default. For another deployment pass its full URL to `armada login --url https://<your-armada>`, or set `ARMADA_URL`.
+The CLI talks only to the Armada API. It needs no Supabase, provider or database settings. Its default origin, `https://armada.thevibecompany.co`, is the dashboard, which forwards control API requests to the server. MCP clients use the direct server’s `/mcp` endpoint in the table above, not the dashboard origin. For another deployment pass its full URL to `armada login --url https://<your-armada>`, or set `ARMADA_URL`.
 
 ## 3. Sign in
 

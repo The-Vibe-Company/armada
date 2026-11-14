@@ -3934,6 +3934,7 @@ export type Database = {
           verified_at: string | null;
           receipt: Json | null;
           created_at: string;
+          empty_checkpoint: boolean;
         };
         Insert: {
           sandbox_id: string;
@@ -3949,6 +3950,7 @@ export type Database = {
           verified_at?: string | null;
           receipt?: Json | null;
           created_at?: string;
+          empty_checkpoint?: boolean;
         };
         Update: {
           sandbox_id?: string;
@@ -3964,6 +3966,7 @@ export type Database = {
           verified_at?: string | null;
           receipt?: Json | null;
           created_at?: string;
+          empty_checkpoint?: boolean;
         };
         Relationships: [
           {

@@ -800,3 +800,77 @@ test("poll policy is applied before machine work and older-server absence resets
   await tick(f.store, f.api, f.executor);
   expect(applied).toEqual([limits, undefined]);
 });
+
+test("compaction preserves cleanup capacity, TTL facts and restart replay fences", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-ledger-"));
+  try {
+    const store = await fileStore(directory);
+    const f = fixture("delete");
+    const initial = await f.store.load();
+    const old = {
+      requestId: crypto.randomUUID(),
+      operation: "stop" as const,
+      outcome: "completed" as const,
+      request: {
+        ...f.job.request,
+        sandboxId: crypto.randomUUID(),
+        generation: crypto.randomUUID(),
+        image: `sha256:${"a".repeat(64)}`,
+      },
+    };
+    initial.receipts = Array.from({ length: 51500 }, () => ({
+      ...old,
+      requestId: crypto.randomUUID(),
+      request: { ...old.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() },
+    }));
+    const replay = initial.receipts[0]!;
+    const pending = { request: old.request, operation: "stop" as const, requestId: crypto.randomUUID() };
+    const active = { ...old, requestId: crypto.randomUUID(), operation: "create" as const };
+    initial.receipts.push(pending, active);
+    expect(Buffer.byteLength(JSON.stringify(initial))).toBeGreaterThan(15 * 1024 * 1024);
+    await store.save(initial);
+    let effects = 0;
+    const executor: Executor = {
+      async create() {
+        effects++;
+      },
+      async stop() {
+        effects++;
+      },
+      async delete() {
+        effects++;
+      },
+      async stopIfExpired() {
+        return true;
+      },
+    };
+    let job: Job = f.job;
+    const expiredReports: string[] = [];
+    const outcomes: string[] = [];
+    const api: Api = {
+      ...f.api,
+      async poll() {
+        return { job };
+      },
+      async result(_state, receipt, expired) {
+        if (expired) expiredReports.push(receipt.requestId);
+        else outcomes.push(receipt.outcome ?? "pending");
+      },
+    };
+    await tick(store, api, executor);
+    const saved = await store.load();
+    expect(effects).toBe(1);
+    expect(saved.receipts.some((r) => r.requestId === pending.requestId && !r.outcome)).toBe(true);
+    expect(saved.retired?.some((r) => r[0] === active.requestId)).toBe(true);
+    expect(expiredReports).toContain(active.requestId);
+    job = { requestId: replay.requestId, operation: replay.operation, request: replay.request } as Job;
+    await tick(store, api, executor);
+    expect(outcomes.at(-1)).toBe("completed");
+    expect(effects).toBe(1);
+    job = { request: active.request, requestId: crypto.randomUUID(), operation: "create" };
+    await expect(tick(store, api, executor)).rejects.toThrow("Retired machine generation");
+    expect(effects).toBe(1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

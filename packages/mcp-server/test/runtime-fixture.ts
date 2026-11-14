@@ -266,7 +266,7 @@ export async function runtimeFixture(
     send,
     context,
     input,
-    async reboot(restore: { epoch: string; watermark: number; conversationId: string }, attest = true) {
+    async reboot(restore: { epoch: string; watermark: number; conversationId: string | null }, attest = true) {
       await runner.flushOutbox().catch(() => {});
       journal.close();
       active = await authority.enrol(
@@ -313,7 +313,7 @@ export async function runtimeFixture(
                 : Promise.resolve(),
         },
       );
-      if (attest) {
+      if (attest && restore.conversationId !== null) {
         const response = await runner.handle(
           new Request("http://runtime/v1", {
             method: "POST",

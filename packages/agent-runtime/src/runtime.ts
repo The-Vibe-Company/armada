@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
-import { HARNESSES, validateReadableVariables } from "@armada/core";
+import { HARNESSES } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
@@ -11,6 +11,7 @@ import { checkpointIdentityKey } from "./identity.ts";
 import type { Journal } from "./journal.ts";
 import { mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
 import { recordMcpRevision } from "./mcp-revisions.ts";
+import { withNativeAuthPublication } from "./native-auth-publication.ts";
 import { NativeEpoch } from "./native-epoch.ts";
 import { observeRuntime } from "./observation.ts";
 import { groupState, type ProcessIdentity, processIdentity } from "./processes.ts";
@@ -26,6 +27,7 @@ import {
   type StoredPrompt,
   type Turn,
 } from "./protocol.ts";
+import { ReadableConfigurations } from "./readable-configurations.ts";
 import { readRuntimeJson } from "./request-framing.ts";
 import { executeWithReceipt } from "./request-receipts.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
@@ -51,7 +53,7 @@ export class Runner {
   private refreshNativeSecrets: (() => void) | undefined;
   private commands = new Set<Promise<unknown>>();
   private resumingNative = false;
-  private readableDigests = new Map<string, string>();
+  private readonly readableConfigurations: ReadableConfigurations;
   private configureGitHub: RunnerExecutionOptions["configureGitHub"];
   constructor(
     readonly journal: Journal,
@@ -73,6 +75,7 @@ export class Runner {
     if (execution.credentialFreeBuilder !== undefined && typeof execution.credentialFreeBuilder !== "boolean")
       throw Error("invalid_exec_environment");
     this.credentialFreeBuilder = execution.credentialFreeBuilder ?? false;
+    this.readableConfigurations = new ReadableConfigurations(drivers);
     this.configureGitHub = execution.configureGitHub;
     this.refreshNativeSecrets = execution.refreshNativeSecrets;
     this.publishNativeAuth = execution.publishNativeAuth;
@@ -231,16 +234,7 @@ export class Runner {
           Object.keys(r).some((k) => !["version", "requestId", "sandboxId", "op", "harness", "variables"].includes(k))
         )
           throw Error("invalid_request");
-        const variables = validateReadableVariables(r.variables);
-        const digest = JSON.stringify(Object.entries(variables).sort());
-        const previous = this.readableDigests.get(r.harness);
-        if (previous !== undefined && previous !== digest) throw Error("invalid_request");
-        if (previous === digest)
-          return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
-        const bootstrap = this.drivers[r.harness]?.configureReadableVariables;
-        if (!bootstrap) throw Error("invalid_request");
-        bootstrap.call(this.drivers[r.harness], variables);
-        this.readableDigests.set(r.harness, digest);
+        this.readableConfigurations.configure(r.harness, r.variables);
         return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
       }
       if (r.op === "configureGitHub") {
@@ -369,49 +363,14 @@ export class Runner {
       const resume = this.drivers[r.input.harness]?.resumeSession?.bind(this.drivers[r.input.harness]);
       if (!resume) throw Error("native_resume_unsupported");
       this.resumingNative = true;
-      // Consume actual604's sync redactor refresh and async private publication
-      // from the SAME execution object. A native handshake can rotate auth even
-      // without inference; its ACK must wait for publication, including failures.
-      const refresh = () => {
-        const callback = Reflect.get(this.execution, "refreshNativeSecrets");
-        if (callback === undefined) return;
-        if (typeof callback !== "function" || Reflect.apply(callback, this.execution, []) !== undefined)
-          throw Error("native_auth_state_unacknowledged");
-      };
-      const publish = async () => {
-        const callback = Reflect.get(this.execution, "publishNativeAuth");
-        if (callback === undefined) return;
-        if (typeof callback !== "function") throw Error("native_auth_state_unacknowledged");
-        await Reflect.apply(callback, this.execution, []);
-      };
-      const work = Promise.resolve().then(async () => {
-        try {
-          refresh();
-        } catch {
-          throw Error("native_auth_state_unacknowledged");
-        }
-        const outcome = await Promise.resolve()
-          .then(() =>
-            resume({
-              request: r.input,
-              sessionId: saved.session,
-              signal: AbortSignal.timeout(Math.max(1, Math.min(90000, this.grant.expiresAt - Date.now()))),
-              ...(this.mcp ? { mcp: this.mcp } : {}),
-            }),
-          )
-          .then(
-            (value) => ({ ok: true as const, value }),
-            (error) => ({ ok: false as const, error }),
-          );
-        try {
-          refresh();
-          await publish();
-        } catch {
-          throw Error("native_auth_state_unacknowledged");
-        }
-        if (!outcome.ok) throw outcome.error;
-        return outcome.value;
-      });
+      const work = withNativeAuthPublication(this.execution, () =>
+        resume({
+          request: r.input,
+          sessionId: saved.session,
+          signal: AbortSignal.timeout(Math.max(1, Math.min(90000, this.grant.expiresAt - Date.now()))),
+          ...(this.mcp ? { mcp: this.mcp } : {}),
+        }),
+      );
       this.commands.add(work);
       try {
         const result = await work;
