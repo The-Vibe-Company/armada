@@ -525,6 +525,7 @@ export async function startServer(
     runtimeCheckpoint,
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
+    ...(control.sandboxBillingAccount ? { sandboxBillingAccount: control.sandboxBillingAccount } : {}),
     ready: createDatabaseReadiness(sql),
     idlePauseDelayMs: idleDelayMs,
     ...(env.RAILWAY_GIT_COMMIT_SHA ? { commitSha: env.RAILWAY_GIT_COMMIT_SHA } : {}),

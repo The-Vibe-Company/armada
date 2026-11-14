@@ -969,6 +969,9 @@ async function dispatch(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
+        ...(options.sandboxBillingAccount
+          ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(scopedCaller, id) }
+          : {}),
         ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
@@ -1012,12 +1015,6 @@ async function dispatch(
       toolName,
       body,
     );
-    if (toolName === "status") {
-      const billingAccount = (await options.sandboxBillingAccount?.(scopedCaller, required(body, "id"))) ?? null;
-      if (!result || typeof result !== "object" || Array.isArray(result))
-        throw new VaultError("unavailable", "Invalid sandbox status receipt.");
-      return { ...result, billingAccount };
-    }
     return result;
   }
   const { store, encryptionKey } = options;

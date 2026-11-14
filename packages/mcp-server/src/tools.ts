@@ -80,6 +80,7 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  sandboxBillingAccount?: (id: string) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
@@ -301,6 +302,16 @@ const skillReceipts = z
   .optional();
 
 const status = {
+  billingAccount: z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      kind: z.string(),
+      billing: z.enum(["subscription", "api-key"]),
+      version: z.number().int(),
+    })
+    .nullable()
+    .optional(),
   skills: skillReceipts,
   usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
@@ -372,7 +383,15 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       (async (args: z.infer<z.ZodObject<In>>): Promise<CallToolResult> => {
         try {
           const routed = name === "send" ? undefined : await context.dockerControls?.invoke(caller, name, args);
-          const result = routed?.handled ? routed.result : await run(args);
+          const value = routed?.handled ? routed.result : await run(args);
+          const sandboxId = (args as Record<string, unknown>).id;
+          const result =
+            (name === "status" || name === "wait") && context.sandboxBillingAccount && typeof sandboxId === "string"
+              ? {
+                  ...(value as Record<string, unknown>),
+                  billingAccount: await context.sandboxBillingAccount(sandboxId),
+                }
+              : value;
           return {
             structuredContent: result as Record<string, unknown>,
             content: [{ type: "text", text: JSON.stringify(result) }],
