@@ -357,8 +357,8 @@ selected account, not a forced upstream token renewal. Offline boundary tests
 exercise access-only delivery, refresh revision, token registration, and refusal
 after epoch replacement or membership/pin/stop/ownership changes during refresh.
 Live subscription refresh acceptance remains coordinator-owned and is not
-claimed by these tests. OpenCode, workspace setup, default cutover and tunnel
-deletion remain separate #1421 work.
+claimed by these tests. Workspace setup is described below; OpenCode, default
+cutover and tunnel deletion remain separate #1421 work.
 
 ## Claude lifecycle extension
 
@@ -408,4 +408,3 @@ configured init scripts now actually execute: launch success is not a live
 workspace acceptance receipt until the coordinator runs it. Native Modal setup
 is unchanged; retained resume does not rerun first-launch setup. OpenCode and
 default/cutover/deletion gates remain separate #1421 work.
-
