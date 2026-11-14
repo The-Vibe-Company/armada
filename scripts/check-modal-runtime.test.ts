@@ -10,6 +10,21 @@ test.each([
   "success",
   "opencode",
   "opencode-resume",
+  "opencode-mcp",
+  "opencode-mcp-resume",
+  "opencode-usage-variables-skills-mcp-github-resume",
+  "opencode-mcp-no-result",
+  "opencode-mcp-error-result",
+  "opencode-mcp-wrong-server",
+  "opencode-mcp-wrong-tool",
+  "opencode-mcp-wrong-args",
+  "opencode-mcp-old-prompt",
+  "opencode-mcp-resume-replay",
+  "opencode-mcp-collision",
+  "opencode-mcp-duplicate-name",
+  "opencode-mcp-inventory-missing",
+  "opencode-mcp-inventory-drift",
+  "opencode-mcp-display-only",
   "opencode-github",
   "opencode-github-resume",
   "opencode-variables",
@@ -25,7 +40,7 @@ test.each([
   "opencode-usage",
   "opencode-skills-resume",
   "opencode-old-version",
-  "opencode-tools-blocked",
+  "opencode-mcp-old-version",
   "opencode-claude-conflict",
   "claude",
   "claude-resume",
@@ -140,26 +155,35 @@ test.each([
   const opencode = scenario.startsWith("opencode");
   const claude = scenario.startsWith("claude") || scenario === "opencode-claude-conflict";
   const shellOld = scenario === "opencode-shell-old";
-  const mode =
-    scenario === "opencode-github-display-only"
-      ? "github-missing-tool"
-      : ["opencode-variables-bad-exit", "opencode-variables-truncated"].includes(scenario)
-        ? "variables-wrong-hash"
-        : shellOld
-          ? "old-followup"
-          : scenario === "opencode" || scenario === "claude"
-            ? "success"
-            : ["opencode-old-version", "opencode-claude-conflict", "claude-old-version"].includes(scenario)
-              ? "old-followup"
-              : scenario === "opencode-tools-blocked"
-                ? "mcp-old-version"
-                : scenario === "claude-mcp-wrong-result-id"
-                  ? "mcp-no-result"
-                  : opencode
-                    ? scenario.slice("opencode-".length)
-                    : claude
-                      ? scenario.slice("claude-".length)
-                      : scenario;
+  const inventoryReject = [
+    "opencode-mcp-collision",
+    "opencode-mcp-duplicate-name",
+    "opencode-mcp-inventory-missing",
+  ].includes(scenario);
+  const proofReject = ["opencode-mcp-inventory-drift", "opencode-mcp-display-only"].includes(scenario);
+  const mode = inventoryReject
+    ? "mcp-preflight-denied"
+    : proofReject
+      ? "mcp-no-result"
+      : scenario === "opencode-github-display-only"
+        ? "github-missing-tool"
+        : ["opencode-variables-bad-exit", "opencode-variables-truncated"].includes(scenario)
+          ? "variables-wrong-hash"
+          : shellOld
+            ? "old-followup"
+            : scenario === "opencode" || scenario === "claude"
+              ? "success"
+              : ["opencode-old-version", "opencode-claude-conflict", "claude-old-version"].includes(scenario)
+                ? "old-followup"
+                : scenario === "opencode-mcp-old-version"
+                  ? "mcp-old-version"
+                  : scenario === "claude-mcp-wrong-result-id"
+                    ? "mcp-no-result"
+                    : opencode
+                      ? scenario.slice("opencode-".length)
+                      : claude
+                        ? scenario.slice("claude-".length)
+                        : scenario;
   const github = mode.includes("github");
   const mcp = mode.includes("mcp");
   const skills = mode.includes("skills");
@@ -178,7 +202,7 @@ test.each([
     await writeFile(
       preload,
       `
-let launches=0,stops=0,checkpoints=0,sends=0,resumes=0,answer='',memory='',now=0,firstCheckpoint='',githubRevision=0,goldenReads=0,defaultReads=0,skillStatuses=0,variableCommand='',actualVariableOutput='',usagePages=0;
+let launches=0,stops=0,checkpoints=0,sends=0,resumes=0,answer='',memory='',now=0,firstCheckpoint='',githubRevision=0,goldenReads=0,defaultReads=0,skillStatuses=0,variableCommand='',actualVariableOutput='',usagePages=0,mcpPreflights=0;
 const variableValues=${JSON.stringify(variableValues)};
 const variableDigest='${variableDigest}';
 const templateDefinition={provider:'modal',harness:'${opencode ? "opencode" : claude ? "claude" : "codex"}',goldenId:'${mode === "variables-wrong-golden" ? "foreign" : "golden-id"}',model:'${usage ? "gpt-6.1-sol" : "fixture-model"}',reasoningEffort:'high',modelAccount:{id:'${mode === "variables-wrong-account" ? "foreign" : accountId}',version:1},variables:${mode === "variables-missing-vars"}?[]:[{key:'APP_REGION',variableId:'region',version:1},{key:'${mode === "variables-wrong-keys" ? "APP_REGION" : "EMPTY_VALUE"}',variableId:'empty',version:1}],secrets:${mode === "variables-secrets"}?[{key:'APP_TOKEN',secretId:'foreign',version:1}]:[],skills:[],connections:${mcp}?['${mcpId}']:[]};
@@ -196,10 +220,11 @@ process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops,ch
 globalThis.fetch=async(url,options)=>{
  const path=new URL(url).pathname,body=JSON.parse(options.body);
  if(new Headers(options.headers).get('authorization')!=='Bearer '+process.env.ARMADA_TOKEN)throw Error('auth');
- if(path.endsWith('/launch/options'))return Response.json({modalRuntime:{version:1,enabled:${mode !== "disabled"},followupVersion:${mode === "old-followup" && !claude && !opencode ? 0 : 1},claudeVersion:${scenario === "claude-old-version" ? 0 : 1},opencodeVersion:${scenario === "opencode-old-version" ? 0 : 1},opencodeShellProofVersion:${shellOld ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},mcpVersion:${mode === "mcp-old-version" ? 1 : 2},skillsVersion:${mode === "skills-old-version" ? 0 : 1},variablesVersion:${mode === "variables-old-version" ? 0 : 1},usageVersion:${mode === "usage-old-version" ? 0 : 1}}});
+ if(path.endsWith('/launch/options'))return Response.json({modalRuntime:{version:1,enabled:${mode !== "disabled"},followupVersion:${mode === "old-followup" && !claude && !opencode ? 0 : 1},claudeVersion:${scenario === "claude-old-version" ? 0 : 1},opencodeVersion:${scenario === "opencode-old-version" ? 0 : 1},opencodeShellProofVersion:${shellOld ? 0 : 1},opencodeMcpProofVersion:${scenario === "opencode-mcp-old-version" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},mcpVersion:${mode === "mcp-old-version" ? 1 : 2},skillsVersion:${mode === "skills-old-version" ? 0 : 1},variablesVersion:${mode === "variables-old-version" ? 0 : 1},usageVersion:${mode === "usage-old-version" ? 0 : 1}}});
  if(path.endsWith('/golden/list')){if(++goldenReads!==1)throw Error('golden resolved twice');return Response.json({goldens:[{id:'golden-id',name:'golden',provider:'modal',orgId:'org-id'}]});}
  if(path.endsWith('/templates/get')){if(body.org!=='org-id'||body.id!=='${templateId}'||Object.hasOwn(body,'revision'))throw Error('wrong template lookup');return Response.json({item:{id:'${mode === "variables-wrong-template" ? "foreign" : templateId}',status:'active',orgId:'org-id'},revision:{id:'44444444-4444-4444-8444-444444444444',revision:2,definition:templateDefinition}});}
- if(path.endsWith('/sandbox/mcp-preflight-v1')){if(body.org!=='org-id'||body.runtimeVersion!==1||JSON.stringify(body.connections)!==JSON.stringify(['${mcpId}']))throw Error('wrong MCP preflight');return Response.json({mcpReady:${mode !== "mcp-preflight-denied"}});}
+ if(path.endsWith('/sandbox/mcp-preflight-v1')){if(body.org!=='org-id'||body.runtimeVersion!==1||JSON.stringify(body.connections)!==JSON.stringify(['${mcpId}']))throw Error('wrong MCP preflight');if(${opencode}&&body.toolInventory!==true)throw Error('missing inventory admission');
+ mcpPreflights++;return Response.json({mcpReady:${mode !== "mcp-preflight-denied" || inventoryReject},...(${opencode}&&!${scenario === "opencode-mcp-inventory-missing"}?{mcpToolInventory:[{connectionId:'${mcpId}',tools:['read_counter',...(${scenario === "opencode-mcp-collision"}?['read.counter']:[]),...(${scenario === "opencode-mcp-duplicate-name"}?['read_counter']:[]),...(${scenario === "opencode-mcp-inventory-drift"}&&mcpPreflights>1?['changed']:[])]}]}:{})});}
  if(path.endsWith('/skills/defaults/get')){defaultReads++;if(body.org!=='org-id'||(body.scope==='golden'?body.goldenId!=='golden-id':Object.hasOwn(body,'goldenId')))throw Error('wrong defaults scope');return Response.json({skills:${mode === "skills-empty"}?[]:({golden:['catalog/notes@1.0.0','catalog/other@1.0.0'],org:['notes@2.0.0'],personal:['personal/notes@3.0.0']}[body.scope])});}
  if(path.endsWith('/sandbox/status')){skillStatuses++;return Response.json({...(${usage}?{usage:projectedUsage()}:{}),skills:${mode === "skills-status-mismatch"}||(resumes&&stops===1&&${mode === "skills-resume-status-mismatch"})||(stops===2&&${mode === "skills-resume-stop-status-mismatch"})?receipts.slice(1):receipts});}
  if(path.endsWith('/sandbox/github-preflight-v1')){if(body.org!=='org-id'||body.repository!=='example/web')throw Error('bad preflight');return Response.json({githubReady:true,provider:${mode === "github-old-preflight"}?undefined:'modal'});}
@@ -244,7 +269,7 @@ globalThis.fetch=async(url,options)=>{
     const promptIds=[...new Set(events.filter(event=>event.kind==='message').map(event=>event.promptId))];
     for(const promptId of promptIds) {
       if(resumes&&promptId==='resumed'&&${mode === "mcp-resume-replay"})continue;
-      events.push({id:'mcp-'+promptId,at:3,promptId:${mode === "mcp-old-prompt"}?'foreign':promptId,kind:'message',partial:false,text:'',tools:[{id:'mcp',server:'${mode === "mcp-wrong-server" ? "foreign" : mcpServer}',name:'${mode === "mcp-wrong-tool" ? "foreign" : "read_counter"}',input:{label:'fixture',nested:{a:1,b:${mode === "mcp-wrong-args" ? 3 : 2}}},...(${mode === "mcp-no-result" && scenario !== "claude-mcp-wrong-result-id"}?{}:{result:{isError:${mode === "mcp-error-result"},output:'${mode === "mcp-wrong-output" ? "foreign" : "independent result"}'}})}]});
+      events.push({id:'mcp-'+promptId,at:3,promptId:${mode === "mcp-old-prompt"}?'foreign':promptId,kind:'message',partial:false,text:'',tools:[{id:'mcp',server:'${mode === "mcp-wrong-server" ? "foreign" : mcpServer}',name:'${mode === "mcp-wrong-tool" ? "foreign" : "read_counter"}',input:{label:'fixture',nested:{a:1,b:${mode === "mcp-wrong-args" ? 3 : 2}}},...(${mode === "mcp-no-result" && scenario !== "claude-mcp-wrong-result-id" && !proofReject}?{}:{result:{isError:${mode === "mcp-error-result"},output:'${mode === "mcp-wrong-output" ? "foreign" : "independent result"}'}})}]});
     }
   }
   if(${variables}&&!${mode === "variables-no-tool"}) {
@@ -264,6 +289,10 @@ globalThis.fetch=async(url,options)=>{
   if((stops===1&&!resumes&&${mode === "resume-lost-stopped-history"})||(resumes&&${mode === "resume-lost-old-history"}))events=events.filter(event=>event.promptId==='resumed');
   if(${opencode}&&!${scenario === "opencode-github-display-only"}) {
     for(const event of [...events])for(const tool of event.tools??[]) {
+      if(tool.server&&tool.result&&!${scenario === "opencode-mcp-display-only"})events.push({id:event.id+'-native-mcp',at:4,promptId:event.promptId,kind:'other',type:'armada/opencodeMcp',data:{
+        version:1,nativeMessageId:'native-'+event.promptId,callId:tool.id,server:tool.server,configurationRevision:'r'+resumes,
+        nativeToolName:tool.server.replace(/[^a-zA-Z0-9_-]/g,'_')+'_'+tool.name.replace(/[^a-zA-Z0-9_-]/g,'_'),input:tool.input,result:tool.result,
+      }});
       if(tool.name!=='commandExecution'||!tool.result)continue;
       events.push({id:event.id+'-native',at:4,promptId:event.promptId,kind:'other',type:'armada/opencodeShell',data:{
         version:1,nativeMessageId:'native-'+event.promptId,callId:tool.id,tool:'bash',command:tool.input.command,
@@ -347,8 +376,13 @@ globalThis.fetch=async(url,options)=>{
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
-    if (scenario === "opencode-tools-blocked")
-      expect(stderr).toContain("OpenCode MCP tool-proof smoke is not yet admitted");
+    if (scenario === "opencode-mcp-old-version")
+      expect(stderr).toContain("OpenCode native MCP proof v1 is unavailable");
+    if (scenario === "opencode-mcp-collision" || scenario === "opencode-mcp-duplicate-name")
+      expect(stderr).toContain("missing or ambiguous");
+    if (scenario === "opencode-mcp-inventory-missing")
+      expect(stderr).toContain("Complete authorized OpenCode MCP tool inventory is unavailable");
+    if (scenario === "opencode-mcp-inventory-drift") expect(stderr).toContain("inventory changed");
     if (shellOld) expect(stderr).toContain("OpenCode native shell proof v1 is unavailable");
     if (scenario === "opencode-old-version") expect(stderr).toContain("Modal enrolled OpenCode v1 is unavailable");
     if (scenario === "opencode-claude-conflict") expect(stderr).toContain("Select only one harness");

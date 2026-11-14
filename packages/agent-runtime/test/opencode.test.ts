@@ -295,3 +295,60 @@ test.each([
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test.each([
+  "success",
+  "failed",
+  "truncated",
+  "duplicate",
+  "foreign-session",
+  "unknown-server",
+  "ambiguous-server",
+  "oversized",
+] as const)("OpenCode MCP proof binds new native results to the selected configuration (%s)", async (mode) => {
+  const root = await mkdtemp(join(tmpdir(), "opencode-mcp-proof-"));
+  const env = { EXPORT_STAGE: "1", EXPORT_MCP: mode, PATH: process.env.PATH ?? "/usr/bin:/bin" };
+  const driver = new OpenCodeDriver({
+    executable: `${import.meta.dir}/fixtures/opencode.ts`,
+    root,
+    cwd: root,
+    env,
+    redact: createRedactor([]),
+  });
+  const proofs: unknown[] = [];
+  const server = { type: "http" as const, url: "https://gateway.example/mcp" };
+  const context = {
+    request: { sandboxId: "s", harness: "opencode" as const, text: "hello" },
+    signal: new AbortController().signal,
+    mcp: { revision: "r1", servers: { armada_fixture: server } },
+    emit: (event: import("../src/protocol.ts").DriverEvent) => {
+      if (event.kind === "other" && event.type === "armada/opencodeMcp") proofs.push(event.data);
+    },
+    session: () => {},
+  };
+  const expected = (id: string) => ({
+    version: 1,
+    nativeMessageId: id,
+    callId: `call-${id}`,
+    server: "armada_fixture",
+    configurationRevision: "r1",
+    nativeToolName: "armada_fixture_read_counter",
+    input: { label: "fixture", nested: { a: 1, b: 2 } },
+    result: { output: "native MCP result", isError: false },
+  });
+  try {
+    expect(await driver.start(context).done).toBe("finished");
+    expect(proofs).toEqual([expected("old")]);
+    proofs.length = 0;
+    env.EXPORT_STAGE = "2";
+    const mcp =
+      mode === "ambiguous-server"
+        ? { revision: "r2", servers: { ...context.mcp.servers, armada_fixture_read: server } }
+        : context.mcp;
+    expect(await driver.start({ ...context, sessionId: "session-1", mcp }).done).toBe("finished");
+    expect(proofs).toEqual(mode === "success" ? [expected("new-tool")] : []);
+  } finally {
+    await driver.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

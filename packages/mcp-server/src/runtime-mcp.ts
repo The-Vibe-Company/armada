@@ -24,7 +24,7 @@ export function createRuntimeMcp(options: {
   key: string;
   origin: string;
   commands: ReturnType<typeof createRuntimeCommands>;
-  probe?: (userId: string, orgId: string, connectionId: string) => Promise<{ status: string }>;
+  probe?: (userId: string, orgId: string, connectionId: string) => Promise<{ status: string; toolNames?: string[] }>;
 }) {
   const { sql, key } = options,
     authority = createRuntimeEnrolments(sql, key);
@@ -50,13 +50,25 @@ export function createRuntimeMcp(options: {
     }
     return result;
   }
-  async function preflight(caller: Caller, input: { org: string; connections: string[] }) {
+  async function preflight(caller: Caller, input: { org: string; connections: string[]; toolInventory?: boolean }) {
     if (!caller.orgs.some((m) => m.orgId === input.org)) return deny();
     const selected = ids(input.connections);
     await connections(sql, caller, input.org, selected);
-    for (const id of selected)
-      if (options.probe && (await options.probe(caller.userId, input.org, id)).status !== "connected") return deny();
-    return { mcpReady: true, connections: selected };
+    const inventory: { connectionId: string; tools: string[] }[] = [];
+    for (const id of selected) {
+      const result = await options.probe?.(caller.userId, input.org, id);
+      if (result && result.status !== "connected") return deny();
+      if (input.toolInventory) {
+        if (
+          !result?.toolNames ||
+          result.toolNames.length > 10000 ||
+          result.toolNames.some((name) => typeof name !== "string" || !name || name.length > 512)
+        )
+          throw new VaultError("unavailable", "Complete MCP tool inventory is unavailable.");
+        inventory.push({ connectionId: id, tools: [...result.toolNames] });
+      }
+    }
+    return { mcpReady: true, connections: selected, ...(input.toolInventory ? { mcpToolInventory: inventory } : {}) };
   }
   async function owner(caller: Caller, id: string) {
     const docker = (
