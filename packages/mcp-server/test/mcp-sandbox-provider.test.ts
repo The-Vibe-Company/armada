@@ -99,16 +99,19 @@ test("MCP renewal finds a private Modal machine forked from an org golden with i
     const connection = crypto.randomUUID(),
       grant = crypto.randomUUID(),
       lease = crypto.randomUUID();
+    // One bounded setup statement; the returned IDs preserve FK dependencies.
     await db.query(
-      "insert into mcp_connections(id,org_id,owner_id,scope,name,transport,url,auth_type) values($1,$2,$3,'personal','renew','http','https://mcp.example','none')",
-      [connection, people.org, people.owner],
+      `with connection as (
+        insert into mcp_connections(id,org_id,owner_id,scope,name,transport,url,auth_type)
+        values($1,$2,$3,'personal','renew','http','https://mcp.example','none') returning id
+      ), connected_grant as (
+        insert into mcp_grants(id,connection_id,status)
+        select $4,id,'connected' from connection returning id,connection_id
+      )
+      insert into mcp_bindings(sandbox_id,connection_id,grant_id)
+      select $5,connection_id,id from connected_grant`,
+      [connection, people.org, people.owner, grant, sandbox],
     );
-    await db.query("insert into mcp_grants(id,connection_id,status) values($1,$2,'connected')", [grant, connection]);
-    await db.query("insert into mcp_bindings(sandbox_id,connection_id,grant_id) values($1,$2,$3)", [
-      sandbox,
-      connection,
-      grant,
-    ]);
     await db.query(
       "insert into mcp_bootstraps(sandbox_id,physical_generation,revision,configured) values($1,$2,'installed',true)",
       [sandbox, JSON.stringify(["modal", "bx-renew", "1"])],
