@@ -1448,3 +1448,37 @@ the guarded stop API. Transient reads and the same idempotent DELETE can be
 reconciled after lost acknowledgements. Permanent refusals and exhausted hard
 deadlines still retain receipts and fail cleanup. Successful reconciliation
 never converts a failed functional probe into a pass.
+
+### Installed skill-content parity
+
+Configure a dedicated existing template revision with at least one exact skill
+pin, then add `skill` to that provider case:
+
+```json
+"skill": {
+  "reference": "parity-fixture@1.0.0",
+  "projectDir": "/home/user/project",
+  "fileSha256": "<64 lowercase hexadecimal characters>"
+}
+```
+
+`fileSha256` is the independently known SHA-256 of that published fixture's
+`SKILL.md`, not its package checksum. Use a non-secret smoke skill. `projectDir`
+is the actual project installation root for the chosen template/environment;
+the probe never searches unrelated projects or prints skill contents.
+
+Run `--parity --feature skills`, optionally `--only modal|docker`. The probe
+checks the authorized template revision, exact frozen skill pins, valid launch
+receipts and identical persisted status identities, then hashes the installed
+file in the harness's skill root (`.claude/skills` for Claude Code,
+`.agents/skills` for Codex/OpenCode). Receipt acknowledgements alone cannot pass.
+Missing configuration or unavailable exec stays explicit not-run without an
+allocation. The proof requests share a 110-second budget; cleanup retains its
+independent window and durable template-admission reconciliation.
+
+A full run adds one template allocation per configured skill case, counted and
+cleaned in the same parity table. This slice proves explicit template-pinned
+installation and installed content, not model invocation of the skill, default
+pin precedence, or skill persistence after resume. Keep the older coordinator
+checks until all their additional behaviors have replacement rows. Boat remains
+coordinator-only via `--only boat --production-boat`, never the release gate.
