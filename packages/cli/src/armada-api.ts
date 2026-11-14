@@ -249,7 +249,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           401: "Run armada login or update ARMADA_TOKEN.",
           403: "Template access denied. Current membership is required; only admins can mutate organization templates.",
           404: "Template or revision not found or not visible.",
-          409: "Template reference changed or is unavailable. Check its golden, connections, variable and model-account versions before retrying.",
+          409: "Template reference changed or is unavailable. Check its snapshot, connections, variable and model-account versions before retrying.",
         };
         const message = apiMessage(payload, "");
         throw new ArmadaApiError(
