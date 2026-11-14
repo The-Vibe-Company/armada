@@ -1,16 +1,26 @@
 import { expect, spyOn, test } from "bun:test";
 import type { Sql } from "@armada/core/server";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
 // Owning boundary: real one-use authority/lifecycle locks -> fixed server logs
 // and durable failure readback; never a client-provided sandbox/log message.
 test("guest progress is ticket/epoch authenticated, non-secret, and failures survive handler restart with an empty journal", async () => {
-  const { db, people } = await database();
+  const db = await openMigratedDatabase();
+  const people = { org: crypto.randomUUID(), owner: crypto.randomUUID() };
   const log = spyOn(console, "info").mockImplementation(() => {});
   try {
+    // Progress reports need an owned sandbox, not launch credentials.
+    await db.query("insert into auth.users(id) values($1)", [people.owner]);
+    await db.query("insert into orgs(id,name) values($1,'Runtime progress')", [people.org]);
+    await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [people.org, people.owner]);
+    await db.query("insert into goldens(org_id,owner_id,name,visibility) values($1,$2,'progress-source','private')", [
+      people.org,
+      people.owner,
+    ]);
     const id = crypto.randomUUID();
     await db.query(
       `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime)
