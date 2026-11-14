@@ -1,3 +1,4 @@
+import { validDockerHostResources } from "@armada/core";
 import { cache } from "react";
 import { ControlError, controlPost } from "@/lib/control";
 import {
@@ -42,6 +43,15 @@ export async function viewerDockerHosts() {
           "The Armada server did not answer with an install command. It may need an update to add hosts with one command.",
         );
       return registration;
+    },
+    async limits(
+      org: string,
+      hostId: string,
+      patch: { auto: true } | { cpus?: number; memoryBytes?: number; maxSandboxes?: number },
+    ): Promise<void> {
+      const answer = await post(DOCKER_HOST_ROUTES.limits, { org, hostId, ...patch });
+      if (!validDockerHostResources(answer.resources))
+        throw new ControlError("The Armada server did not confirm the host limits.");
     },
     async revoke(org: string, hostId: string): Promise<void> {
       const answer = await post(DOCKER_HOST_ROUTES.revoke, { org, hostId });

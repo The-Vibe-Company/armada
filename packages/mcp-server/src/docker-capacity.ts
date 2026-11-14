@@ -1,17 +1,46 @@
 import { ProviderError, type Sql } from "@armada/core";
-import { type DockerHostResources, dockerResourceLimits, GIB } from "../../core/src/docker-resources.ts";
+import {
+  type DockerHostResources,
+  type DockerResourceOverrides,
+  dockerResourcePolicy,
+} from "../../core/src/docker-resources.ts";
 
 /** Unknown hardware on older daemons deliberately retains the pre-limit behavior. */
-export function dockerHostCapacity(resources: DockerHostResources | null): number | null {
-  if (!resources) return null;
-  const limits = dockerResourceLimits(resources);
-  return Math.max(
-    1,
-    Math.min(
-      Math.floor(Math.max(0, resources.memoryBytes - 2 * GIB) / limits.memoryBytes),
-      Math.floor((resources.cpus * 2) / limits.cpus),
-    ),
-  );
+export function dockerHostCapacity(
+  resources: DockerHostResources | null,
+  overrides: DockerResourceOverrides = {},
+): number | null {
+  return resources ? dockerResourcePolicy(resources, overrides).capacity : null;
+}
+export type DockerPolicyRow = {
+  machine_cpus: number | null;
+  machine_memory_bytes: number | string | null;
+  sandbox_cpus: number | null;
+  sandbox_memory_bytes: number | string | null;
+  max_sandboxes: number | null;
+};
+export function hostResourcePolicy(host: DockerPolicyRow) {
+  if (host.machine_cpus == null || host.machine_memory_bytes == null) return null;
+  try {
+    return dockerResourcePolicy(
+      { cpus: Number(host.machine_cpus), memoryBytes: Number(host.machine_memory_bytes) },
+      {
+        ...(host.sandbox_cpus == null ? {} : { cpus: Number(host.sandbox_cpus) }),
+        ...(host.sandbox_memory_bytes == null ? {} : { memoryBytes: Number(host.sandbox_memory_bytes) }),
+        ...(host.max_sandboxes == null ? {} : { maxSandboxes: host.max_sandboxes }),
+      },
+    );
+  } catch {
+    throw new DockerLimitsRefused(
+      "conflict",
+      "Host hardware changed; stop its sandboxes and reset or adjust its resource limits.",
+    );
+  }
+}
+export class DockerLimitsRefused extends ProviderError {
+  constructor(code: "conflict" | "invalid_request", message: string) {
+    super({ provider: "docker", code, retryable: false, message });
+  }
 }
 
 export class DockerHostFull extends ProviderError {
@@ -31,16 +60,13 @@ export class DockerHostFull extends ProviderError {
  */
 export async function admitDockerCapacity(tx: Sql, hostId: string): Promise<void> {
   const host = (
-    await tx.query<{ name: string | null; machine_cpus: number | null; machine_memory_bytes: string | number | null }>(
-      "select name,machine_cpus,machine_memory_bytes from public.docker_hosts where id=$1",
+    await tx.query<DockerPolicyRow & { name: string | null }>(
+      "select name,machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes from public.docker_hosts where id=$1",
       [hostId],
     )
   ).rows[0];
   if (!host || host.machine_cpus == null || host.machine_memory_bytes == null) return;
-  const capacity = dockerHostCapacity({
-    cpus: Number(host.machine_cpus),
-    memoryBytes: Number(host.machine_memory_bytes),
-  })!;
+  const capacity = hostResourcePolicy(host)!.capacity;
   const { rows } = await tx.query<{ running: string | number }>(
     `select (${DOCKER_CAPACITY_USAGE_SQL}) as running from public.docker_hosts h where h.id=$1`,
     [hostId],

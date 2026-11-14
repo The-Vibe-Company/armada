@@ -1,24 +1,23 @@
 import { availableParallelism, totalmem } from "node:os";
+import {
+  type DockerHostResources,
+  type DockerResourceOverrides,
+  dockerResourceLimits,
+} from "./docker-resource-policy.ts";
 
-export type DockerHostResources = { cpus: number; memoryBytes: number };
-export const GIB = 1024 ** 3;
-
-/** Physical defaults; memory is bounded even on machines smaller than the usual allocation. */
-export function dockerResourceLimits(resources: DockerHostResources) {
-  if (
-    !Number.isFinite(resources.cpus) ||
-    resources.cpus <= 0 ||
-    !Number.isSafeInteger(resources.memoryBytes) ||
-    resources.memoryBytes < 6 * 1024 ** 2
-  )
-    throw new Error("Invalid Docker host resources");
-  return { cpus: Math.min(2, resources.cpus), memoryBytes: Math.min(4 * GIB, resources.memoryBytes), pids: 4096 };
-}
+export {
+  type DockerHostResources,
+  type DockerResourceOverrides,
+  type DockerSandboxLimits,
+  dockerResourceLimits,
+  dockerResourcePolicy,
+  GIB,
+} from "./docker-resource-policy.ts";
 export function dockerHostResources(): DockerHostResources {
   return { cpus: availableParallelism(), memoryBytes: totalmem() };
 }
-export function dockerResourceArgs(resources: DockerHostResources): string[] {
-  const limits = dockerResourceLimits(resources);
+export function dockerResourceArgs(resources: DockerHostResources, overrides: DockerResourceOverrides = {}): string[] {
+  const limits = dockerResourceLimits(resources, overrides);
   return [
     "--cpus",
     String(limits.cpus),

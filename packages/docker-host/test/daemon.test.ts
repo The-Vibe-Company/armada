@@ -781,3 +781,22 @@ test("snapshot failures durably report a bounded reason and log no exception out
     console.error = original;
   }
 });
+
+test("poll policy is applied before machine work and older-server absence resets it", async () => {
+  const f = fixture();
+  const limits = { cpus: 0.5, memoryBytes: 512 * 1024 ** 2, pids: 4096 };
+  const applied: unknown[] = [];
+  f.executor.configureLimits = (value) => {
+    applied.push(value);
+  };
+  const original = f.executor.create;
+  f.executor.create = async (request) => {
+    expect(applied).toEqual([limits]);
+    return original(request);
+  };
+  f.api.poll = async () => ({ job: f.job, limits });
+  await tick(f.store, f.api, f.executor);
+  f.api.poll = async () => ({ job: null });
+  await tick(f.store, f.api, f.executor);
+  expect(applied).toEqual([limits, undefined]);
+});

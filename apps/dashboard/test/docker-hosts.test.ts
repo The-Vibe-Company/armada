@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   connectedHostName,
   type DockerHost,
+  dockerHostLimitsInput,
   expiryCountdown,
   hostFact,
   hostName,
@@ -184,5 +185,41 @@ test("resource observations survive parsing while malformed capacity data is exc
     { ...resources, perSandbox: { ...resources.perSandbox, cpus: 99 } },
   ]) {
     expect(parseDockerHostList({ placement: true, hosts: [{ ...value, resources: broken }] })?.skipped).toBe(1);
+  }
+});
+
+test("host limit permissions and daemon support survive parsing without granting them to older hosts", () => {
+  const parse = (fields: Record<string, unknown>) =>
+    parseDockerHostList({ placement: true, hosts: [{ ...host(), ...fields }] });
+  expect(parse({ canManageLimits: true, limitsSupported: false })?.hosts[0]).toMatchObject({
+    canManageLimits: true,
+    limitsSupported: false,
+  });
+  expect(parse({})?.hosts[0]?.canManageLimits).toBeUndefined();
+  expect(parse({})?.hosts[0]?.limitsSupported).toBeUndefined();
+  for (const fields of [{ canManageLimits: "true" }, { limitsSupported: 1 }])
+    expect(parse(fields)).toMatchObject({ hosts: [], skipped: 1 });
+});
+
+test("limit form serialization preserves blank overrides and resets all overrides only for automatic", () => {
+  const data = new FormData();
+  data.set("cpus", " 2.5 ");
+  data.set("memory", "4g");
+  data.set("maxSandboxes", "");
+  expect(dockerHostLimitsInput(data)).toEqual({
+    ok: true,
+    patch: { cpus: 2.5, memoryBytes: 4 * 1024 ** 3 },
+  });
+  data.set("mode", "auto");
+  expect(dockerHostLimitsInput(data)).toEqual({ ok: true, patch: { auto: true } });
+  expect(dockerHostLimitsInput(new FormData())).toMatchObject({ ok: false });
+  for (const [field, value] of [
+    ["cpus", "NaN"],
+    ["memory", "four gigs"],
+    ["maxSandboxes", "1.5"],
+  ]) {
+    const invalid = new FormData();
+    invalid.set(field, value);
+    expect(dockerHostLimitsInput(invalid)).toMatchObject({ ok: false });
   }
 });

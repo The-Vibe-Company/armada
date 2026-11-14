@@ -2,6 +2,7 @@ import { readBoundedText } from "@armada/auth";
 import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import type { CallerResult } from "./caller.ts";
+import { DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import type { DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
@@ -19,6 +20,7 @@ const ownerPaths = [
   "/api/v1/docker/snapshots/create",
   "/api/v1/docker/snapshots/rebuild",
   "/api/v1/docker/hosts/list",
+  "/api/v1/docker/hosts/limits",
   "/api/v1/docker/hosts/register-token",
   "/api/v1/docker/hosts/revoke",
 ];
@@ -63,20 +65,27 @@ export function createDockerHostRoutes(
         }
         fields(
           body,
-          path.endsWith("/revoke")
-            ? ["org", "hostId"]
-            : path.endsWith("/register-token") && "name" in body
-              ? ["org", "name"]
-              : ["org"],
+          path.endsWith("/limits")
+            ? ["org", "hostId", ...["cpus", "memoryBytes", "maxSandboxes", "auto"].filter((k) => k in body)]
+            : path.endsWith("/revoke")
+              ? ["org", "hostId"]
+              : path.endsWith("/register-token") && "name" in body
+                ? ["org", "name"]
+                : ["org"],
         );
         const orgId = string(body.org);
         const listing = path.endsWith("/list");
+        const limits = path.endsWith("/limits");
         if (
           !uuid.test(orgId) ||
-          !result.caller.orgs.some((org) => org.orgId === orgId && (listing || org.role === "admin"))
+          !result.caller.orgs.some((org) => org.orgId === orgId && (listing || limits || org.role === "admin"))
         )
           throw new DockerHostDenied();
         actor = { userId: result.caller.userId, orgId };
+        if (limits) {
+          const { org: _org, hostId, ...patch } = body;
+          return Response.json(await store.setLimits(actor, string(hostId), patch), { headers });
+        }
         if (listing)
           return Response.json({ placement: options.placement === true, hosts: await store.list(actor) }, { headers });
         if (path.endsWith("/register-token")) {
@@ -115,6 +124,7 @@ export function createDockerHostRoutes(
                 "installationId",
                 "version",
                 ...("resources" in body ? ["resources"] : []),
+                ...("resourcePolicyVersion" in body ? ["resourcePolicyVersion"] : []),
                 ...("skipSnapshots" in body ? ["skipSnapshots"] : []),
               ]
             : ["installationId"],
@@ -135,6 +145,7 @@ export function createDockerHostRoutes(
             throw new InvalidInput();
           }
         }
+        if (body.resourcePolicyVersion !== undefined && body.resourcePolicyVersion !== 1) throw new InvalidInput();
         const version = body.version === undefined ? undefined : string(body.version);
         if (version !== undefined && !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new InvalidInput();
         if (body.skipSnapshots !== undefined && body.skipSnapshots !== true) throw new InvalidInput();
@@ -146,7 +157,9 @@ export function createDockerHostRoutes(
               version,
               body.skipSnapshots === true,
               body.resources as { cpus: number; memoryBytes: number } | undefined,
+              body.resourcePolicyVersion as 1 | undefined,
             ),
+            ...(body.resourcePolicyVersion === 1 ? { limits: await store.limitsForHost(token, installationId) } : {}),
           },
           { headers },
         );
@@ -175,6 +188,11 @@ export function createDockerHostRoutes(
       });
       return Response.json({ requestId }, { headers });
     } catch (error) {
+      if (error instanceof DockerLimitsRefused)
+        return Response.json(
+          { error: { code: error.code, message: error.message } },
+          { status: error.code === "invalid_request" ? 400 : 409, headers },
+        );
       return Response.json(
         {
           error:

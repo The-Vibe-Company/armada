@@ -788,3 +788,44 @@ the next #1773 slice, not a capability claimed by this display.
 Coordinator-only check: compare CLI text/JSON and dashboard Facts with the
 host's observed hardware and Docker inspection, then stop a sandbox and confirm
 the running/capacity display changes after the physical stop ACK.
+
+### Owner overrides (#1773, final implementation slice)
+
+Apply `20261114140000_docker_host_limit_overrides.sql` via the authorized release
+path before deploying this server. Upgrade every participating host daemon and
+wait for its policy-version heartbeat before enabling overrides. Old daemons
+without that capability keep automatic operation; once a manual override exists,
+they receive cleanup jobs but no new starts/builds until upgraded.
+
+The current host owner (a current organization member, not another admin) uses:
+
+```text
+armada host limits HOST --cpus 1 --memory 2g --max-sandboxes 4
+armada host limits HOST --auto
+```
+
+HOST is an exact name or UUID. Omitted options preserve existing overrides.
+`--auto` resets all overrides and cannot be combined with other options.
+The dashboard offers the same owner-scoped controls under host resource limits.
+CPU and memory must fit observed hardware (minimum 0.01 CPU / 6 MiB).
+Automatic capacity retains the 2 GiB reserve and 2x CPU budget. A manual max can
+use that reserve but cannot exceed total RAM / per-sandbox RAM or the 2x CPU
+budget; memory is never deliberately overcommitted.
+
+Stop all sandboxes and finish pending work/builds before changing CPU or memory;
+only future starts and resumes receive those changes. Capacity-only edits are
+allowed while running, but never below existing reservations. Host-row locking
+serializes edits with launch/wake admission. Retained containers receive the
+current policy through Docker update before resume, and new containers and
+request-scoped builders use the same limits. Hardware shrink invalidating a
+manual policy refuses new work while preserving cleanup; drain and reset using
+`--auto` or the dashboard's Use automatic action.
+
+Coordinator-only acceptance: on the owner's real host, stop running work, set
+small CPU/memory limits through CLI, launch and inspect NanoCpus/Memory/
+MemorySwap/PidsLimit, then stop/resume and inspect again. Verify a snapshot
+builder's caps during a build. Launch to manual capacity, verify one extra
+launch and paused wake are refused, raise capacity within hardware budget and
+retry. Use dashboard edits and automatic reset and compare displayed mode and
+running/capacity. Confirm another org admin cannot edit this owner's limits.
+No deployment, remote migration or real-host acceptance was performed here.

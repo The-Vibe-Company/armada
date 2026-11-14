@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { DockerHostListResponse, Sql } from "@armada/core";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
+import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 async function fixture() {
@@ -255,6 +256,8 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       lastSeenAt: null,
       revokedAt: null,
       sandboxes: 0,
+      canManageLimits: false,
+      limitsSupported: false,
       running: 0,
       resources: null,
       version: null,
@@ -269,9 +272,11 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     expect(byId.get(revoked.hostId)?.revokedAt).not.toBeNull();
     for (const host of result.hosts) {
       expect(Object.keys(host).sort()).toEqual([
+        "canManageLimits",
         "createdAt",
         "id",
         "lastSeenAt",
+        "limitsSupported",
         "name",
         "resources",
         "revokedAt",
@@ -320,6 +325,82 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     const denied = await post("/api/v1/docker/hosts/list", "fixture-member-token", { org: orgId });
     expect(denied.status).toBe(403);
     expect(await denied.json()).toEqual({ error: "docker_host_denied" });
+  } finally {
+    await db.close();
+  }
+});
+
+test("only the owner changes a drained capable host; policy reaches admission and the daemon", async () => {
+  const { db, userId, orgId, store, post } = await fixture();
+  try {
+    const actor = { userId, orgId };
+    const ticket = await store.issueRegistration(actor);
+    const installationId = randomUUID();
+    const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+    const body = { org: orgId, hostId: host.hostId };
+    const endpoint = "/api/v1/docker/hosts/limits";
+    expect((await post(endpoint, "fixture-user-token", { ...body, auto: true })).status).toBe(409);
+    const poll = (capable: boolean) =>
+      post("/api/docker-host/poll", host.hostToken, {
+        installationId,
+        version: "2.31.0",
+        resources: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
+        ...(capable ? { resourcePolicyVersion: 1 } : {}),
+      });
+    const first = await poll(true);
+    expect(await first.json()).toMatchObject({ limits: { cpus: 2, memoryBytes: 4 * 1024 ** 3, pids: 4096 } });
+    expect((await post(endpoint, "fixture-member-token", { ...body, cpus: 1 })).status).toBe(403);
+    for (const patch of [{ cpus: 99 }, { memoryBytes: 0 }, { cpus: null }, { auto: true, cpus: 1 }])
+      expect((await post(endpoint, "fixture-user-token", { ...body, ...patch })).status).toBe(400);
+    const changed = await post(endpoint, "fixture-user-token", {
+      ...body,
+      cpus: 1,
+      memoryBytes: 2 * 1024 ** 3,
+      maxSandboxes: 3,
+    });
+    expect(changed.status).toBe(200);
+    expect(await changed.json()).toMatchObject({ resources: { capacity: 3, mode: "manual" } });
+    const sql: Sql = {
+      query: (q, p) => db.query(q, p),
+      transaction: (work) => db.transaction((tx) => work({ query: (q, p) => tx.query(q, p) })),
+    };
+    const sandboxes = createDockerSandboxService(sql, Buffer.alloc(32, 8).toString("base64"), { enabled: true });
+    const credentialId = randomUUID();
+    await db.query("insert into credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)", [
+      credentialId,
+      userId,
+      new Uint8Array([1]),
+    ]);
+    const input = { hostId: host.hostId, image: `worker@sha256:${"a".repeat(64)}`, credentialId, credentialVersion: 1 };
+    const rows = [];
+    for (let i = 0; i < 3; i++) rows.push(await sandboxes.reserve(actor, { ...input, requestId: randomUUID() }));
+    await expect(sandboxes.reserve(actor, { ...input, requestId: randomUUID() })).rejects.toThrow("3/3");
+    expect((await post(endpoint, "fixture-user-token", { ...body, auto: true })).status).toBe(409);
+    const raised = await post(endpoint, "fixture-user-token", { ...body, maxSandboxes: 4 });
+    expect(raised.status).toBe(200);
+    expect(await raised.json()).toMatchObject({ resources: { capacity: 4, mode: "manual" } });
+    expect((await post(endpoint, "fixture-user-token", { ...body, maxSandboxes: 2 })).status).toBe(409);
+    // An older daemon cannot execute override-sensitive starts, but cleanup stays available.
+    expect(await (await poll(false)).json()).toEqual({ job: null });
+    const delivery = await (await poll(true)).json();
+    expect(delivery).toMatchObject({
+      job: { operation: "create" },
+      limits: { cpus: 1, memoryBytes: 2 * 1024 ** 3, pids: 4096 },
+    });
+    for (const row of rows) {
+      await store.complete(host.hostToken, installationId, { requestId: row.id, outcome: "completed" });
+      await store.expired(host.hostToken, installationId, { requestId: row.id });
+    }
+    const reset = await post(endpoint, "fixture-user-token", { ...body, auto: true });
+    expect(reset.status).toBe(200);
+    expect(await reset.json()).toMatchObject({ resources: { capacity: 6, mode: "automatic" } });
+    await post(endpoint, "fixture-user-token", { ...body, cpus: 4 });
+    await store.poll(host.hostToken, installationId, "2.31.0", false, { cpus: 2, memoryBytes: 26 * 1024 ** 3 }, 1);
+    await expect(sandboxes.reserve(actor, { ...input, requestId: randomUUID() })).rejects.toThrow(
+      "Host hardware changed",
+    );
+    expect((await store.list(actor))[0]?.resources).toBeNull();
+    expect((await post(endpoint, "fixture-user-token", { ...body, auto: true })).status).toBe(200);
   } finally {
     await db.close();
   }

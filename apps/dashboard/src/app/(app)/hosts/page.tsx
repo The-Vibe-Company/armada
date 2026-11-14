@@ -5,7 +5,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { CopyButton } from "@/components/copy-button";
 import { CreatedAt } from "@/components/created-at";
-import { AddHostDialog, HostMark, RevokeHost } from "@/components/docker-hosts";
+import { AddHostDialog, HostLimitsDialog, HostMark, RevokeHost } from "@/components/docker-hosts";
 import { DockerLaunchDialog } from "@/components/docker-launch";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
@@ -200,6 +200,9 @@ function row(
               initialHarness={launch.harnesses.initial ?? "codex"}
             />
           )}
+        </PanelSection>
+        <PanelSection title="Resource limits">
+          <HostLimitsDialog orgId={orgId} host={host} />
         </PanelSection>
         <PanelSection title="Facts">
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
