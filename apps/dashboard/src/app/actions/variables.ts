@@ -47,8 +47,7 @@ async function guarded(
     return result;
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    // A refusal without a code is the transport's (signed out, unreachable, an older server): its words are right.
-    return fail(error.code ? vaultFailure(error.status, error.message) : error.message);
+    return fail(vaultFailure(error.status));
   }
 }
 
@@ -129,6 +128,6 @@ export async function readVariableValue(
     return { ok: true, value: await vault.readVariable({ org, id }) };
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    return { ok: false, error: error.code ? vaultFailure(error.status, error.message) : error.message };
+    return { ok: false, error: vaultFailure(error.status) };
   }
 }
