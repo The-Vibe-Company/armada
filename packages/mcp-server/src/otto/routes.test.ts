@@ -21,4 +21,8 @@ test("Otto web routes remain mounted without observer configuration", async () =
     }
     expect(response?.status).toBe(401);
   }
+  expect(
+    (await routes[0]!(new Request("https://armada.test/api/v1/otto/interviews/11111111-1111-4111-8111-111111111111")))
+      ?.status,
+  ).toBe(401);
 });

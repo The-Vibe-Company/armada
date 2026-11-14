@@ -138,6 +138,26 @@ test("journal persists before effect, claims once and never repeats ambiguous ef
   expect(success).toEqual({ status: "succeeded", result: { receipt: "acknowledged" } });
   expect(await dispatchIntention(sql, scope, "message_once", "message", { body: "Begin" }, effect)).toEqual(success);
   expect(calls).toBe(1);
+  let busy = true;
+  const pending = () =>
+    dispatchIntention(
+      sql,
+      scope,
+      "busy_message",
+      "engine_message",
+      { revision: 1 },
+      async () => ({ receipt: "delivered" }),
+      async () => {
+        if (busy) throw Error("Engine active");
+      },
+    );
+  await expect(pending()).rejects.toThrow("Engine active");
+  expect(
+    (await db.query<{ state: string }>("select state from public.otto_intentions where idempotency_key='busy_message'"))
+      .rows[0]?.state,
+  ).toBe("pending");
+  busy = false;
+  expect(await pending()).toEqual({ status: "succeeded", result: { receipt: "delivered" } });
 });
 
 test("user JWT can reopen its own snapshots but cannot read another owner or the effect journal", async () => {

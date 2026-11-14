@@ -10,7 +10,11 @@ import { ottoRequest } from "@/lib/otto-request";
 
 export type InterviewView = {
   interview: OttoInterview | null;
-  effects: { kind: string; state: string }[];
+  effects: {
+    kind: string;
+    state: string;
+    skills?: { reference: string; version: string; checksum: string }[] | null;
+  }[];
   goldens: { id: string; name: string; provider: string }[];
 };
 export async function interviewRequest(orgId: string, id: string, body?: unknown): Promise<InterviewView> {

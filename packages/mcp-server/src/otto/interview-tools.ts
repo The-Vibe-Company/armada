@@ -87,8 +87,14 @@ export function createOttoInterviewRoute(options: OttoInterviewToolsOptions): Ro
       if (request.method === "GET") {
         const goldens = (await options.sessions?.goldens(caller, orgId)) ?? [];
         const effects = (
-          await sql.query<{ kind: string; state: string }>(
-            `select kind,state from public.otto_intentions where org_id=$1 and owner_id=$2 and objective_id=$3 order by created_at`,
+          await sql.query<{
+            kind: string;
+            state: string;
+            skills: { reference: string; version: string; checksum: string }[] | null;
+          }>(
+            `select kind,state,case when kind='engine_start' and state='succeeded' then
+              (select jsonb_agg(jsonb_build_object('reference',skill->>'reference','version',skill->>'version','checksum',skill->>'checksum')) from jsonb_array_elements(coalesce(result->'skills','[]'::jsonb)) skill)
+              else null end as skills from public.otto_intentions where org_id=$1 and owner_id=$2 and objective_id=$3 order by created_at`,
             [orgId, caller.userId, objectiveId],
           )
         ).rows;

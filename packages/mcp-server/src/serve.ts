@@ -55,7 +55,7 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
-import { createOttoEngineSessions } from "./otto/engine-session.ts";
+import { createOttoEngineSessions, isOttoInterviewProviderSandbox } from "./otto/engine-session.ts";
 import { createOttoRepositoryFileReader } from "./otto/interview-tools.ts";
 import { createOttoRoutes } from "./otto/routes.ts";
 import { createOttoRuntime } from "./otto/runtime.ts";
@@ -199,13 +199,16 @@ export async function startServer(
       beforeResume: async (provider, id) => {
         if (!caller) throw Error("Native resume requires trusted Armada caller scope.");
         await modelAuth.beforeResume(provider, id, caller);
+        if (await isOttoInterviewProviderSandbox(sql, provider.id, id)) return false;
         return mcp.beforeResume(provider, id, caller);
       },
       beforePrompt: async (provider, id) => {
         if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
-        await mcp.beforePrompt(provider, id, caller);
         await modelAuth.beforePrompt(provider, id, caller);
-        await sandboxArmadaAccess.beforePrompt(provider, id);
+        if (!(await isOttoInterviewProviderSandbox(sql, provider.id, id))) {
+          await mcp.beforePrompt(provider, id, caller);
+          await sandboxArmadaAccess.beforePrompt(provider, id);
+        }
       },
       beforeSnapshot: async (provider, id) => {
         if (caller) await modelAuth.capture(provider, id, caller);
@@ -233,8 +236,10 @@ export async function startServer(
     publicUrl: config.publicUrl,
     github: { store, app: githubApp },
     beforePrompt: async (provider, id, caller) => {
-      await mcp.beforePrompt(provider, id, caller);
-      await sandboxArmadaAccess.beforePrompt(provider, id);
+      if (!(await isOttoInterviewProviderSandbox(sql, provider.id, id))) {
+        await mcp.beforePrompt(provider, id, caller);
+        await sandboxArmadaAccess.beforePrompt(provider, id);
+      }
     },
   });
   const modalProviderFor: typeof modal.modalProviderFor = async (...args) =>

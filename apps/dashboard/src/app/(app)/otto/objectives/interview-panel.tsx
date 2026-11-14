@@ -81,14 +81,32 @@ export async function InterviewPanel({ orgId, id }: { orgId: string; id: string 
               <dd>{interview.sandboxId ?? "Not yet bound"}</dd>
               <dt>Access</dt>
               <dd>Interview tools and read-only repository facts. No GitHub credential is delivered to Otto.</dd>
-              <dt>Skill</dt>
+              <dt>Requested skill</dt>
               <dd>grilling@1.1.1 (unchanged Skillpack package)</dd>
+              <dt>Observed installation receipts</dt>
+              <dd>
+                {effects.flatMap((e) => e.skills ?? []).length
+                  ? effects
+                      .flatMap((e) => e.skills ?? [])
+                      .map((skill) => (
+                        <p key={skill.reference}>
+                          {skill.reference} · {skill.version} · {skill.checksum}
+                        </p>
+                      ))
+                  : "No installation receipt observed yet."}
+              </dd>
             </dl>
           </details>
           {effects.some((e) => e.state === "unknown" || e.state === "dispatching") && (
             <p role="status" className="text-sm">
               An effect is awaiting reconciliation. A bound session is not proof that launch or delivery succeeded. No
               duplicate session will be launched.
+            </p>
+          )}
+          {effects.some((e) => e.kind === "engine_message" && e.state === "pending") && (
+            <p role="status" className="text-sm">
+              Your answers are saved pending delivery. When Otto finishes the current turn, use Continue from saved
+              state.
             </p>
           )}
           <p className="text-xs text-muted-foreground">

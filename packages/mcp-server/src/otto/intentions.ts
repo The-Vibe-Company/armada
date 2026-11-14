@@ -10,6 +10,7 @@ export async function dispatchIntention(
   kind: string,
   payload: unknown,
   effect: () => Promise<unknown>,
+  prepare?: () => Promise<void>,
 ): Promise<DispatchResult> {
   if (!key.trim() || !kind.trim()) throw new Error("Intention key and kind are required");
   const serialized = JSON.stringify(payload);
@@ -32,6 +33,8 @@ export async function dispatchIntention(
   if (!row.matches) throw new Error("Idempotency key reused with different intention");
   if (row.state !== "pending")
     return { status: row.state === "succeeded" ? "succeeded" : "unknown", result: row.result };
+  // Read-only admission can refuse a busy engine without poisoning its durable pending delivery.
+  await prepare?.();
   const claimed = (
     await sql.query<{ id: string }>(
       `update public.otto_intentions set state='dispatching',updated_at=now()
