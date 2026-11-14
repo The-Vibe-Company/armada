@@ -270,6 +270,21 @@ Use a sandbox ID from armada list --json. Output is JSON even without --json.
 Inspect the returned state; a bounded wait is not proof that your task is complete.
 Example: armada wait SANDBOX_UUID --timeout 60 --org ORG_UUID --json
 `,
+  stop: `Usage: armada stop <sandbox-id> [--org UUID] [--json]
+Stop the machine after Armada login and server authorization, not just the running turn.
+Modal retains its disk only if checkpoint succeeds; fallback termination cannot resume.
+Inspect the returned status/preservation note; do not assume disk retention.
+After an uncertain outcome, inspect status/list before retrying. This is not permanent rm deletion.
+Output is JSON even without --json.
+Example: armada stop SANDBOX_UUID --org ORG_UUID --json
+`,
+  interrupt: `Usage: armada interrupt <sandbox-id> [--conversation <id>] [--org UUID] [--json]
+Interrupt the running turn of one conversation, or all, after Armada login and authorization.
+The sandbox stays up for the next send. This does not stop or delete the machine.
+Availability depends on the provider/harness; the server can refuse unsupported interruption.
+Output is JSON even without --json.
+Example: armada interrupt SANDBOX_UUID --org ORG_UUID --json
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
