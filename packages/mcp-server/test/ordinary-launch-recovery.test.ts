@@ -23,6 +23,8 @@ test("MCP allocation before failed registration returns a recoverable handle and
   };
   const data = createSqlData(sql)(caller);
   const boat = fakeBoat();
+  // Production providerRegistry supplies immutable credential management provenance.
+  boat.provider.managementIdentity = async () => ({ scope: "org", ownerId: people.org });
   let allocations = 0;
   let logical = "";
   boat.provider.list = async () => ({ items: [boat.sandbox("bx_1").info], cursor: null });
@@ -52,7 +54,7 @@ test("MCP allocation before failed registration returns a recoverable handle and
   await expect(callSharedTool(context, "launch", { ...input, prompt: "conflict" })).rejects.toMatchObject({
     code: "conflict",
   });
-  const receipt = await callSharedTool(context, "launch_receipt", { id: logical, golden: "shared" });
+  const receipt = await callSharedTool(context, "launch_receipt", { id: logical });
   expect(receipt).toMatchObject({
     id: logical,
     outcome: "unknown",
