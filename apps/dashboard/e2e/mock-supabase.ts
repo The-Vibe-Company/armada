@@ -2667,6 +2667,8 @@ function singleton(route: string, body: Row, scope: "user" | "org", owner: strin
   return json({ ok: true });
 }
 
+let modelActionFailure: { operation: string; message: string } | null = null;
+
 function accounts(route: string, body: Row, request: Request): Response {
   const userId = viewer(request);
   state.accountCalls.push({ route, body: { ...body, ...(body.value === undefined ? {} : { value: "[sent]" }) } });
@@ -2706,6 +2708,11 @@ function accounts(route: string, body: Row, request: Request): Response {
     return controlFail(403, "forbidden", "Only an org admin can do that.");
   const owner = scope === "org" ? body.org : userId;
   if (route === "creds/set" || route === "creds/rm") return singleton(route, body, scope, String(owner));
+  if (modelActionFailure && route === `creds/accounts/${modelActionFailure.operation}`) {
+    const message = modelActionFailure.message;
+    modelActionFailure = null;
+    return controlFail(503, "unavailable", message);
+  }
   const mine = (row: Row) => row.scope === scope && row.owner_id === owner && model(row) && row.status !== "deleted";
   const target = body.id === undefined ? undefined : state.credentials.find((row) => row.id === body.id && mine(row));
   if (body.id !== undefined && !target) return controlFail(404, "not_found", "No such account.");
@@ -2776,6 +2783,7 @@ function control(url: URL, body: Row): Response {
     vaultListFailure = null;
     vaultActionFailure = null;
     accountListFailure = null;
+    modelActionFailure = null;
     skillpackActionFailure = null;
     dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
     invitationListFailure = typeof body.invitationListFailure === "string" ? body.invitationListFailure : null;
@@ -3074,6 +3082,7 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   if (url.pathname === "/__test/accounts") {
+    if (body.actionFailure !== undefined) modelActionFailure = body.actionFailure as typeof modelActionFailure;
     if (body.listFailure !== undefined)
       accountListFailure = typeof body.listFailure === "string" ? body.listFailure : null;
     if (body.legacy !== undefined) state.legacyAccounts = body.legacy === true;

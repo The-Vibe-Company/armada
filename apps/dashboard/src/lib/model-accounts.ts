@@ -403,7 +403,7 @@ export function checkAccountChoice(
   if (list.state !== "ready")
     return {
       ok: false,
-      error: `Model accounts could not be loaded${list.state === "error" ? `: ${list.message}` : "."} Reload and try again.`,
+      error: "Model accounts could not be loaded. Reload Models and try again.",
     };
   const compatible = accountsFor(list.accounts, harness);
   if (compatible.length === 0) {
@@ -779,3 +779,15 @@ export const PASTE_SIGN_IN: Partial<Record<AccountKind, { command: string; paste
       "Sign in with ChatGPT when your browser opens, then paste the whole JSON it prints and clear your terminal. On a machine without a browser, use codex login --device-auth; with CODEX_HOME set, the file is $CODEX_HOME/auth.json.",
   },
 };
+
+/** Account mutations may be unconfirmed; never display an upstream credential service diagnostic. */
+export function modelAccountFailure(status: number | undefined, code?: string): string {
+  if (status === 409 || code === "conflict") return "This account changed elsewhere. Reload the page and try again.";
+  if (status === 401) return "This session cannot manage model accounts. Sign in again, then reload Models.";
+  if (status === 403)
+    return "You no longer have permission to change this account. Reload Models and ask its owner or an organization admin for help.";
+  if (status === 400)
+    return "The account settings were not accepted. Check the form and account type before trying again.";
+  if (status === 404) return "This account is no longer available. Reload Models to check its current state.";
+  return "The account change could not be confirmed. Reload Models to check its current state before trying again.";
+}

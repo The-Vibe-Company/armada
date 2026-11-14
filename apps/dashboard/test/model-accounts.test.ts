@@ -12,6 +12,7 @@ import {
   kindFor,
   launchDefault,
   type ModelAccount,
+  modelAccountFailure,
   orderAccounts,
   PASTE_SIGN_IN,
   parseAuthCapabilities,
@@ -109,10 +110,10 @@ describe("the account a launch request bills, as the server action checks it", (
     ["a malformed id", ready(work), "claude", "not-a-uuid", { ok: false, error: "That request is not valid." }],
     [
       "an unreadable list",
-      { state: "error", message: "Timed out." } as const,
+      { state: "error", message: "HTTP 503: credential_version unavailable" } as const,
       "claude",
       work.id,
-      { ok: false, error: "Model accounts could not be loaded: Timed out. Reload and try again." },
+      { ok: false, error: "Model accounts could not be loaded. Reload Models and try again." },
     ],
     ["no Armada server", { state: "not-configured" } as const, "claude", "", { ok: false }],
   ] as const)("%s", (_name, list, harness, requested, expected) => {
@@ -463,4 +464,13 @@ test("a shared Morph account is selectable for both supported harnesses, not Ope
   expect(accountsFor([morph], "codex")).toEqual([morph]);
   expect(accountsFor([morph], "opencode")).toEqual([]);
   expect(KIND_INFO.morph.harnessLabel).toBe("Claude Code and Codex");
+});
+
+test("account action errors retain conflict/access recovery without upstream diagnostics", () => {
+  expect(modelAccountFailure(409)).toContain("changed elsewhere");
+  expect(modelAccountFailure(undefined, "conflict")).toContain("changed elsewhere");
+  expect(modelAccountFailure(401)).toContain("Sign in again");
+  expect(modelAccountFailure(403)).toContain("permission");
+  expect(modelAccountFailure(404)).toContain("Reload Models");
+  for (const status of [undefined, 502, 503]) expect(modelAccountFailure(status)).toContain("could not be confirmed");
 });

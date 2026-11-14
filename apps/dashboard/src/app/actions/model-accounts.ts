@@ -16,6 +16,7 @@ import {
   checkDefaultChoice,
   HARNESS_PATH,
   KIND_INFO,
+  modelAccountFailure,
 } from "@/lib/model-accounts";
 import { connectionTestOutcome, matchesConnectionTestSandbox } from "@/lib/model-connection-check";
 import {
@@ -61,9 +62,7 @@ function version(data: FormData): number | null {
 /** The control API's failure in words for the person; a stale version is a change made elsewhere. */
 function explain(error: unknown): ActionResult {
   if (!(error instanceof ControlError)) throw error;
-  if (error.status === 409 || error.code === "conflict")
-    return fail("This account changed elsewhere. Reload the page and try again.");
-  return fail(error.message);
+  return fail(modelAccountFailure(error.status, error.code));
 }
 
 /** A pasted secret, checked by the server's own parser. The error never repeats the value. */
@@ -119,7 +118,11 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
       await context.control.makeDefault(target(context, saved.id));
     } catch (error) {
       if (!(error instanceof ControlError)) throw error;
-      return fail(`${saved.name} was saved, but not made the default: ${error.message}`);
+      const recovery =
+        error.status === 401
+          ? "Sign in again, then reload Models."
+          : "Reload Models and check the saved account before adding another.";
+      return fail(`${saved.name} was saved; its default setting is unconfirmed. ${recovery}`);
     }
     return done(`${saved.name} saved as the default ${KIND_INFO[saved.kind].harnessLabel} account.`);
   }
