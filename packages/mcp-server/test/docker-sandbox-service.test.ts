@@ -295,3 +295,45 @@ test("host capacity reserves pending starts, preserves retries, and releases onl
   await hosts.expired(f.hostToken, f.installationId, { requestId: second.id });
   expect((await service.reserve(f.actor, { ...f.input, requestId: randomUUID() })).status).toBe("starting");
 });
+
+test("available resource admission and displayed held-back slots agree without evicting reservations", async () => {
+  const f = await fixture();
+  const hardware = { cpus: 16, memoryBytes: 38 * 1024 ** 3 };
+  await hosts.poll(
+    f.hostToken,
+    f.installationId,
+    "2.33.0",
+    false,
+    { ...hardware, availableCpus: 8, availableMemoryBytes: 30 * 1024 ** 3 },
+    1,
+  );
+  const saved = [];
+  for (let i = 0; i < 5; i++) saved.push(await service.reserve(f.actor, { ...f.input, requestId: randomUUID() }));
+  expect((await hosts.list(f.actor))[0]).toMatchObject({ running: 5, resources: { capacity: 7, heldBack: 2 } });
+  await hosts.poll(
+    f.hostToken,
+    f.installationId,
+    "2.33.0",
+    false,
+    { ...hardware, availableCpus: 0, availableMemoryBytes: 0 },
+    1,
+  );
+  expect((await hosts.list(f.actor))[0]).toMatchObject({ running: 5, resources: { capacity: 5, heldBack: 4 } });
+  await expect(service.reserve(f.actor, { ...f.input, requestId: randomUUID() })).rejects.toMatchObject({
+    code: "host_full",
+  });
+  // Earlier admitted UUIDs reconcile, rather than consuming another slot under pressure.
+  expect((await service.reserve(f.actor, { ...f.input, requestId: saved[0]!.id })).id).toBe(saved[0]!.id);
+  await hosts.poll(
+    f.hostToken,
+    f.installationId,
+    "2.33.0",
+    false,
+    { ...hardware, availableCpus: 8, availableMemoryBytes: 30 * 1024 ** 3 },
+    1,
+  );
+  expect((await service.reserve(f.actor, { ...f.input, requestId: randomUUID() })).status).toBe("starting");
+  // An older daemon's next poll removes stale observations rather than inventing current headroom.
+  await hosts.poll(f.hostToken, f.installationId, "2.32.0", false, hardware, 1);
+  expect((await hosts.list(f.actor))[0]?.resources?.capacity).toBe(9);
+});

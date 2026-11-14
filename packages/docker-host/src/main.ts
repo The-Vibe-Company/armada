@@ -8,6 +8,7 @@ import {
   dockerResourceLimits,
 } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
+import { createAvailabilitySampler } from "./availability.ts";
 import { register, serverOrigin, tick, validToken } from "./daemon.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
@@ -153,7 +154,7 @@ async function main(args: string[]) {
     }
   };
   try {
-    const api = httpApi();
+    const api = httpApi(fetch, createAvailabilitySampler(dockerCli));
     if (command === "register" || command === "install") {
       if (await store.exists()) throw new Error("Host already registered");
       const token = (await Bun.stdin.text()).trim();

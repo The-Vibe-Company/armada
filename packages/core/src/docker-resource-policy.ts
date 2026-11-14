@@ -1,5 +1,23 @@
 /** Browser-safe policy, shared by server admission and the host's Docker argv. */
-export type DockerHostResources = { cpus: number; memoryBytes: number };
+export type DockerHostResources = {
+  cpus: number;
+  memoryBytes: number;
+  /** Headroom for Armada, including its current working set/CPU use; missing on older daemons. */
+  availableCpus?: number;
+  availableMemoryBytes?: number;
+};
+export function validDockerAvailability(machine: DockerHostResources): boolean {
+  if (machine.availableCpus === undefined && machine.availableMemoryBytes === undefined) return true;
+  return (
+    typeof machine.availableCpus === "number" &&
+    Number.isFinite(machine.availableCpus) &&
+    machine.availableCpus >= 0 &&
+    machine.availableCpus <= machine.cpus &&
+    Number.isSafeInteger(machine.availableMemoryBytes) &&
+    machine.availableMemoryBytes! >= 0 &&
+    machine.availableMemoryBytes! <= machine.memoryBytes
+  );
+}
 export type DockerResourceOverrides = { cpus?: number; memoryBytes?: number; maxSandboxes?: number };
 export type DockerSandboxLimits = { cpus: number; memoryBytes: number; pids: number };
 export const GIB = 1024 ** 3;
@@ -27,7 +45,12 @@ export function dockerResourceLimits(
     throw new Error("Sandbox limits must fit the host (CPU at least 0.01; memory at least 6 MiB).");
   return { cpus, memoryBytes, pids: 4096 };
 }
-export function dockerResourcePolicy(machine: DockerHostResources, overrides: DockerResourceOverrides = {}) {
+export function dockerResourcePolicy(
+  machine: DockerHostResources,
+  overrides: DockerResourceOverrides = {},
+  running = 0,
+) {
+  if (!validDockerAvailability(machine)) throw new Error("Invalid Docker availability report.");
   const limits = dockerResourceLimits(machine, overrides);
   const cpuCapacity = Math.floor((machine.cpus * 2) / limits.cpus);
   const automatic = Math.max(
@@ -42,10 +65,25 @@ export function dockerResourcePolicy(machine: DockerHostResources, overrides: Do
       overrides.maxSandboxes > hardCapacity)
   )
     throw new Error(`Max sandboxes must be between 1 and ${hardCapacity} for this host and per-sandbox limits.`);
+  const headroom =
+    machine.availableCpus === undefined
+      ? automatic
+      : Math.max(
+          0,
+          Math.min(
+            automatic,
+            Math.floor((machine.availableCpus * 2) / limits.cpus),
+            Math.floor(Math.max(0, machine.availableMemoryBytes! - 2 * GIB) / limits.memoryBytes),
+          ),
+        );
+  const capacity = overrides.maxSandboxes ?? Math.max(running, headroom);
   return {
     machine,
     perSandbox: limits,
-    capacity: overrides.maxSandboxes ?? automatic,
+    capacity,
+    ...(machine.availableCpus === undefined || overrides.maxSandboxes !== undefined
+      ? {}
+      : { heldBack: Math.max(0, automatic - capacity) }),
     mode: Object.values(overrides).some((value) => value !== undefined) ? ("manual" as const) : ("automatic" as const),
   };
 }

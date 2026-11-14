@@ -874,3 +874,41 @@ test("compaction preserves cleanup capacity, TTL facts and restart replay fences
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("native poll carries sampled availability without changing the private credential boundary", async () => {
+  const f = fixture();
+  const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
+  const api = httpApi(
+    Object.assign(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        expect(body.resources).toEqual(resources);
+        expect(JSON.stringify(body)).not.toContain(f.state().hostToken);
+        return Response.json({ job: null });
+      },
+      { preconnect: fetch.preconnect },
+    ),
+    async () => resources,
+  );
+  expect(await api.poll(await f.store.load())).toEqual({ job: null });
+});
+
+test("older policy-capable servers retain the quota handshake when availability fields are refused", async () => {
+  const f = fixture();
+  let calls = 0;
+  const api = httpApi(
+    Object.assign(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        calls++;
+        const body = JSON.parse(String(init?.body));
+        expect(body.resourcePolicyVersion).toBe(1);
+        if ("availableCpus" in body.resources) return new Response(null, { status: 400 });
+        return Response.json({ job: null, limits: { cpus: 1, memoryBytes: 1024 ** 3, pids: 4096 } });
+      },
+      { preconnect: fetch.preconnect },
+    ),
+    async () => ({ cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 2, availableMemoryBytes: 10 * 1024 ** 3 }),
+  );
+  expect(await api.poll(await f.store.load())).toMatchObject({ limits: { cpus: 1 } });
+  expect(calls).toBe(2);
+});

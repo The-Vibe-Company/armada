@@ -48,3 +48,18 @@ test("manual policy fits hardware, recomputes capacity and parses exact memory u
   for (const raw of ["-1g", "unlimited", "1", "4foo", "Infinity", "0.000000001g"])
     expect(() => parseDockerMemory(raw)).toThrow();
 });
+
+test("automatic headroom withholds busy-machine slots, retains running reservations and honors explicit max", () => {
+  const machine = { cpus: 16, memoryBytes: 38 * GIB, availableCpus: 8, availableMemoryBytes: 30 * GIB };
+  expect(dockerResourcePolicy(machine, {}, 5)).toMatchObject({ capacity: 7, heldBack: 2 });
+  expect(dockerResourcePolicy({ ...machine, availableMemoryBytes: 2 * GIB }, {}, 5)).toMatchObject({
+    capacity: 5,
+    heldBack: 4,
+  });
+  expect(dockerResourcePolicy({ ...machine, availableMemoryBytes: 0, availableCpus: 0 })).toMatchObject({
+    capacity: 0,
+    heldBack: 9,
+  });
+  expect(dockerResourcePolicy(machine, { maxSandboxes: 9 }, 5)).toMatchObject({ capacity: 9 });
+  expect(() => dockerResourcePolicy({ ...machine, availableMemoryBytes: -1 })).toThrow();
+});

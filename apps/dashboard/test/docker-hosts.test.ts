@@ -223,3 +223,19 @@ test("limit form serialization preserves blank overrides and resets all override
     expect(dockerHostLimitsInput(invalid)).toMatchObject({ ok: false });
   }
 });
+
+test("busy-machine capacity including zero remains visible with held-back guidance", () => {
+  const resources = {
+    machine: { cpus: 16, memoryBytes: 38 * 1024 ** 3 },
+    perSandbox: { cpus: 2, memoryBytes: 4 * 1024 ** 3, pids: 4096 },
+    capacity: 7,
+    heldBack: 2,
+    mode: "automatic" as const,
+  };
+  const parsed = parseDockerHostList({ placement: true, hosts: [host({ resources, running: 5 })] });
+  expect(hostFact(parsed!.hosts[0]!)).toContain("5/7 (2 held back: machine busy)");
+  expect(
+    parseDockerHostList({ placement: true, hosts: [host({ resources: { ...resources, capacity: 0 }, running: 0 })] })
+      ?.skipped,
+  ).toBe(0);
+});

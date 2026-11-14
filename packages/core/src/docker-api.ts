@@ -16,9 +16,11 @@ export interface DockerHostListRequest {
   org: string;
 }
 export interface DockerHostResourceSummary {
-  machine: { cpus: number; memoryBytes: number };
+  machine: { cpus: number; memoryBytes: number; availableCpus?: number; availableMemoryBytes?: number };
   perSandbox: { cpus: number; memoryBytes: number; pids: number };
   capacity: number;
+  /** Automatic slots withheld because external workloads consume headroom. */
+  heldBack?: number;
   mode: "automatic" | "manual";
 }
 export interface DockerHostSummary {

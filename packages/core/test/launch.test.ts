@@ -1842,3 +1842,22 @@ test("generated refresh uses the installed caller helper without writing its tok
   expect(result.stdout).toContain("merge-authorized");
   expect(spec.command + result.stdout + result.stderr).not.toContain(secret);
 });
+
+test("host_full fork refusal remains definite and does not publish or clean up a sandbox", async () => {
+  const world = setup({ golden: golden("org") });
+  const refusal = new ProviderError({
+    provider: "docker",
+    code: "host_full",
+    retryable: false,
+    message: "Stop a sandbox on the selected host or raise its limit.",
+  });
+  world.provider.fork = async () => {
+    throw refusal;
+  };
+  await expect(launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "codex" })).rejects.toBe(
+    refusal,
+  );
+  expect(world.rows.size).toBe(0);
+  expect(world.stopped).toEqual([]);
+  expect(world.deleted).toEqual([]);
+});

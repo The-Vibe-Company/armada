@@ -43,6 +43,7 @@ export function providerFailureResponse(error: ProviderError) {
     ["rate_limited", 429],
     ["payment_required", 402],
     ["conflict", 409],
+    ["host_full", 409],
     ["forbidden", 403],
     ["invalid_request", 400],
   ]);

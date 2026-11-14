@@ -856,3 +856,48 @@ doing so removes replay protection. Preserve the private state for investigation
 never copy it into a new installation or publish it (it contains the host token).
 Disk-full or permission failures still require operator storage repair; reserved
 logical capacity cannot repair unavailable storage.
+
+### Available-machine automatic capacity (#1773 follow-up)
+
+Apply `20261114160000_docker_available_resources.sql` through the authorized
+release path before deploying the server, then upgrade the host daemon.
+Each poll samples Linux MemAvailable and one-minute load, plus the current
+registration's labelled running sandbox containers using
+[Docker stats](https://docs.docker.com/reference/cli/docker/container/stats/).
+The CLI's memory metric excludes inactive file cache. Armada's working-set
+memory and CPU use are credited back, so its own running agents are not charged
+twice. Unrelated containers and host processes consume the remaining headroom.
+Snapshot builders are conservatively treated as other work during their build.
+
+Headroom decreases immediately and recovers through a quarter-weight EWMA
+on successful polls (normally every 20 seconds), snapping within 0.05 CPU /
+16 MiB to avoid permanently losing an integer boundary slot. This deliberately
+favors safety over instant recovery after a load spike. Sampling errors report
+zero headroom, not invented free hardware; cleanup remains available.
+These are estimates, not reservations against unrelated workloads; Docker's
+per-container caps remain the enforcement boundary.
+
+Automatic admission uses the smaller of total-hardware capacity and available
+CPU/memory capacity, retaining the 2 GiB reserve and 2x CPU budget. It can be zero
+on an entirely busy host, but never below already-admitted running/pending
+reservations. Existing sandboxes are never killed or stopped by a lower sample.
+The CLI and dashboard show e.g. `5/7 (2 held back: machine busy)`.
+Explicit max-sandbox overrides remain an owner's deliberate capacity choice;
+CPU/memory overrides without an explicit max still get automatic headroom-based
+capacity. Automatic reset and its response use current observed headroom.
+
+Old daemons with no availability report retain total-hardware behavior; their
+next poll clears old availability values. New daemons fall back to the earlier
+quota handshake if a preceding server rejects the new fields, preserving manual
+limits during an upgrade. A full host returns HTTP 409 with `host_full` through
+normal control and preview APIs; CLI JSON retains that code and both clients
+provide stop/raise-limit guidance rather than claiming an unknown launch outcome.
+
+Coordinator-only follow-up acceptance: on the verified owner host, compare idle
+automatic capacity to capacity while an unrelated container consumes memory/CPU.
+Confirm held-back slots and gradual recovery after freeing that workload, with
+existing sandboxes untouched. Fill capacity and verify normal launch and idle
+wake return `host_full`, including CLI JSON and dashboard refusal. Repeat with
+an explicit manual max and with an old-daemon/preceding-server pairing.
+No deployment, remote SQL, unrelated workload changes or real-host proof was
+performed by this PR.

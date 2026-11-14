@@ -345,6 +345,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           sandbox_cpus: number | null;
           sandbox_memory_bytes: string | number | null;
           max_sandboxes: number | null;
+          available_cpus: number | null;
+          available_memory_bytes: number | string | null;
           machine_cpus: number | null;
           machine_memory_bytes: number | string | null;
           running: number;
@@ -358,7 +360,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
+            h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -378,7 +380,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           running: host.running,
           resources: (() => {
             try {
-              return hostResourcePolicy(host);
+              return hostResourcePolicy(host, host.running);
             } catch (error) {
               if (error instanceof DockerLimitsRefused) return null;
               throw error;
@@ -396,7 +398,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const host = await authenticate(tx, hostToken, installationId);
         const row = (
           await tx.query<DockerPolicyRow>(
-            "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes from public.docker_hosts where id=$1",
+            "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,available_cpus,available_memory_bytes from public.docker_hosts where id=$1",
             [host.id],
           )
         ).rows[0]!;
@@ -433,7 +435,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const host =
           (
             await tx.query<DockerPolicyRow & { resource_policy_version: number | null }>(
-              "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,resource_policy_version from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and revoked_at is null for update",
+              "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,resource_policy_version,available_cpus,available_memory_bytes from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and revoked_at is null for update",
               [hostId, actor.orgId, actor.userId],
             )
           ).rows[0] ?? deny();
@@ -494,7 +496,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
           "update public.docker_hosts set sandbox_cpus=$2,sandbox_memory_bytes=$3,max_sandboxes=$4 where id=$1",
           [hostId, next.cpus ?? null, next.memoryBytes ?? null, next.maxSandboxes ?? null],
         );
-        return { resources };
+        return {
+          resources: hostResourcePolicy(
+            {
+              ...host,
+              sandbox_cpus: next.cpus ?? null,
+              sandbox_memory_bytes: next.memoryBytes ?? null,
+              max_sandboxes: next.maxSandboxes ?? null,
+            },
+            Number(busy.running),
+          )!,
+        };
       });
     },
     issueRegistration(actor: Actor, name?: string) {
@@ -813,15 +825,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
         ).rows[0];
         const host = await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
         await tx.query(
-          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3 where id=$1`,
+          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null where id=$1`,
           [host.id, version ?? null, resourcePolicyVersion ?? null],
         );
         if (resources) {
-          await tx.query("update public.docker_hosts set machine_cpus=$2,machine_memory_bytes=$3 where id=$1", [
-            host.id,
-            resources.cpus,
-            resources.memoryBytes,
-          ]);
+          await tx.query(
+            "update public.docker_hosts set machine_cpus=$2,machine_memory_bytes=$3,available_cpus=$4,available_memory_bytes=$5 where id=$1",
+            [
+              host.id,
+              resources.cpus,
+              resources.memoryBytes,
+              resources.availableCpus ?? null,
+              resources.availableMemoryBytes ?? null,
+            ],
+          );
         }
         await tx.query(
           "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build expired before an image was published.' where host_id=$1 and status='building' and build_expires_at<=now()",
@@ -865,7 +882,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (!["stop", "delete"].includes(row.bound_operation ?? "")) {
           const policyRow = (
             await tx.query<DockerPolicyRow>(
-              "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes from public.docker_hosts where id=$1",
+              "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,available_cpus,available_memory_bytes from public.docker_hosts where id=$1",
               [host.id],
             )
           ).rows[0]!;
