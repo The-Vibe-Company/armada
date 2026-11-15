@@ -10,7 +10,7 @@ const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** Pinned OpenCode 1.19.5 /event emits session.status directly, unlike /global/event's payload envelope. */
-export async function readOpenCodeRetryEvents(
+async function readOpenCodeRetryEvents(
   stream: ReadableStream<Uint8Array>,
   sessionId: string,
   observe: (delayMs: number, reason?: "model_provider_retry") => void,

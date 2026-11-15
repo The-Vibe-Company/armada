@@ -23,13 +23,13 @@ export interface OrchestratorEpochBinding {
   epoch: string;
   physicalGeneration: string;
 }
-export interface InstallOrchestratorEpochRequest {
+interface InstallOrchestratorEpochRequest {
   op: "installOrchestratorEpoch";
   token: string;
   binding: OrchestratorEpochBinding;
   url: string;
 }
-export interface ScrubOrchestratorEpochRequest {
+interface ScrubOrchestratorEpochRequest {
   op: "scrubOrchestratorEpoch";
   tokenHash?: string;
 }
