@@ -58,6 +58,7 @@ import type { Caller } from "./caller.ts";
 import { describeFailure } from "./caller.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
+import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
@@ -122,7 +123,6 @@ export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "st
 export const DEFAULT_WAIT_SECONDS = 60;
 export const MAX_WAIT_SECONDS = 600;
 const OUTPUT_LIMIT = 20_000;
-const MAX_LOG_PAGES = 100;
 /** Mirrors `GoldenCreateService`'s own limit: one GitHub App installation token covers at most this many repos. */
 const MAX_CREATE_REPOS = 16;
 
@@ -2203,37 +2203,22 @@ async function readLogs(
     maxBytes?: number;
     coalesce?: boolean;
   },
-): Promise<{
-  events: Awaited<ReturnType<Provider["events"]>>["events"];
-  cursor: string | null;
-  olderCursor?: string;
-  hasMore: boolean;
-}> {
+) {
   if (args.direction === "backward" && args.all) throw new Error("Backward reads cannot drain all pages.");
-  let olderCursor: string | undefined;
-  const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
-  let cursor = args.since_cursor;
-  let hasMore = false;
-  for (let pageNumber = 0; pageNumber < (args.all ? MAX_LOG_PAGES : 1); pageNumber += 1) {
-    const page = await provider.events({
-      sandboxId,
-      ...(args.direction ? { direction: args.direction } : {}),
-      ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
-      ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
-      ...(cursor ? { cursor } : {}),
-      ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
-      ...(args.limit ? { limit: args.limit } : {}),
-    });
-    olderCursor = page.olderCursor;
-    events.push(...page.events);
-    hasMore = page.hasMore;
-    const next = page.cursor ?? cursor;
-    if (!page.hasMore || !next || next === cursor) {
-      cursor = next;
-      break;
-    }
-    cursor = next;
-  }
+  const { events, cursor, hasMore, olderCursor } = await readEventPages(
+    (cursor) =>
+      provider.events({
+        sandboxId,
+        ...(args.direction ? { direction: args.direction } : {}),
+        ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
+        ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
+        ...(cursor ? { cursor } : {}),
+        ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+        ...(args.limit ? { limit: args.limit } : {}),
+      }),
+    args.since_cursor,
+    args.all === true,
+  );
   return {
     ...(olderCursor ? { olderCursor } : {}),
     events: dedupeEvents(events).filter((event) => !isPrivateModelEvent(event)),
