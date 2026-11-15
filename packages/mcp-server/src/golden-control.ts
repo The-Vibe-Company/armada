@@ -25,10 +25,15 @@ import { optional, required } from "./control-input.ts";
 
 type ProviderControlOptions = Pick<ControlOptions, "providers" | "providerFor" | "store" | "encryptionKey">;
 type GoldenControlOptions = ProviderControlOptions &
-  Pick<ControlOptions, "goldenBuilds" | "goldenTarget" | "data" | "launch">;
+  Pick<ControlOptions, "goldenBuilds" | "goldenTarget" | "data" | "launch" | "listGoldenRecords">;
 
 /** The same visibility-filtered representation returned by MCP golden_list. */
-export async function listGoldens(options: GoldenControlOptions, caller: Caller): Promise<{ goldens: GoldenJson[] }> {
+export async function listGoldens(
+  options: GoldenControlOptions,
+  caller: Caller,
+  ref?: string,
+): Promise<{ goldens: GoldenJson[] }> {
+  if (options.listGoldenRecords) return { goldens: (await options.listGoldenRecords(caller, ref)).map(goldenJson) };
   if (!options.data) throw new VaultError("unavailable", "Golden listing is not configured on this server.");
   const data = options.data(caller);
   const goldens = (await Promise.all(caller.orgs.map(({ orgId }) => data.goldens.list(orgId)))).flat();
