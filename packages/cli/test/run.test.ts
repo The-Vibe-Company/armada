@@ -53,6 +53,8 @@ describe("run", () => {
     expect(out).toContain("armada launch <snapshot> --agent claude|codex");
     expect(out).toContain("armada login");
     expect(out).toContain("armada token create");
+    expect(out).toContain("--profile overrides ARMADA_PROFILE");
+    expect(out).toContain("ARMADA_TOKEN is not isolated by profiles");
   });
 
   test.each([
