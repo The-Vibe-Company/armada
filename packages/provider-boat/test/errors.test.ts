@@ -138,51 +138,55 @@ describe("boat errors become typed errors", () => {
   });
 });
 
-test("allocation failures emit one safe reason line without credential-bearing diagnostics", async () => {
-  const logs: string[] = [];
-  const log = spyOn(console, "error").mockImplementation((line) => {
-    logs.push(String(line));
-  });
-  const secret = "private-model-canary";
-  try {
-    const boat = fakeBoat(
-      errorBody(429, "rate_limited", `private ${KEY} ${secret}`, undefined, {
+test.each([true, false])(
+  "allocation refusals include a reset hint (reset supplied: %s) and safe diagnostics",
+  async (hasReset) => {
+    const logs: string[] = [];
+    const log = spyOn(console, "error").mockImplementation((line) => {
+      logs.push(String(line));
+    });
+    const secret = "private-model-canary";
+    try {
+      const boat = fakeBoat(
+        errorBody(429, "rate_limited", `private ${KEY} ${secret}`, undefined, {
+          window: "day",
+          ...(hasReset ? { nextStartAt: "2026-11-12T08:08:00Z", retryAfterSeconds: 120 } : {}),
+        }),
+      );
+      await expect(boat.provider.fork({ from: "snapshot", env: { MODEL_SECRET: secret } })).rejects.toMatchObject({
+        code: "rate_limited",
+        retryable: false,
+        message: hasReset
+          ? "The Boat plan start limit per day has been reached. Boat says the next start is available at 2026-11-12T08:08:00.000Z. Check the selected provider account's plan and limits before another start."
+          : "The Boat plan start limit per day has been reached. Try again after the daily start allowance resets. Check the selected provider account's plan and limits before another start.",
+      });
+      expect(logs).toHaveLength(1);
+      expect(JSON.parse(logs[0] ?? "{}")).toMatchObject({
+        event: "boat_allocation_failed",
+        status: 429,
+        code: "rate_limited",
+        providerCode: "rate_limited",
+        outcome: "refused",
         window: "day",
-        nextStartAt: "2026-11-12T08:08:00Z",
-        retryAfterSeconds: 120,
-      }),
-    );
-    await expect(boat.provider.fork({ from: "snapshot", env: { MODEL_SECRET: secret } })).rejects.toMatchObject({
-      code: "rate_limited",
-      message:
-        "The Boat plan start limit per day has been reached. Boat says the next start is available at 2026-11-12T08:08:00.000Z. Check the selected provider account's plan and limits before another start.",
-    });
-    expect(logs).toHaveLength(1);
-    expect(JSON.parse(logs[0] ?? "{}")).toMatchObject({
-      event: "boat_allocation_failed",
-      status: 429,
-      code: "rate_limited",
-      providerCode: "rate_limited",
-      outcome: "refused",
-      window: "day",
-      nextStartAt: "2026-11-12T08:08:00.000Z",
-      message: expect.stringContaining("plan start limit per day"),
-    });
-    const echoed = fakeBoat(errorBody(429, secret, `private ${KEY}`, undefined, { requestId: KEY }));
-    await echoed.provider.fork({ from: "snapshot", env: { MODEL_SECRET: secret } }).catch(() => {});
-    expect(logs).toHaveLength(2);
-    const network = fakeBoat(new TypeError(`Transport failed ${KEY} ${secret}`));
-    const failure = await network.provider
-      .fork({ from: "snapshot", env: { MODEL_SECRET: secret } })
-      .catch((error: unknown) => error);
-    expect(failure).toMatchObject({ code: "unavailable" });
-    expect(logs).toHaveLength(3);
-    expect(JSON.parse(logs[2] ?? "{}")).toMatchObject({ code: "unavailable", status: null, outcome: "unknown" });
-    expect(JSON.stringify(failure)).not.toContain(KEY);
-    expect(JSON.stringify(failure)).not.toContain(secret);
-    expect(logs.join(" ")).not.toContain(KEY);
-    expect(logs.join(" ")).not.toContain(secret);
-  } finally {
-    log.mockRestore();
-  }
-});
+        nextStartAt: hasReset ? "2026-11-12T08:08:00.000Z" : null,
+        message: expect.stringContaining("plan start limit per day"),
+      });
+      const echoed = fakeBoat(errorBody(429, secret, `private ${KEY}`, undefined, { requestId: KEY }));
+      await echoed.provider.fork({ from: "snapshot", env: { MODEL_SECRET: secret } }).catch(() => {});
+      expect(logs).toHaveLength(2);
+      const network = fakeBoat(new TypeError(`Transport failed ${KEY} ${secret}`));
+      const failure = await network.provider
+        .fork({ from: "snapshot", env: { MODEL_SECRET: secret } })
+        .catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: "unavailable" });
+      expect(logs).toHaveLength(3);
+      expect(JSON.parse(logs[2] ?? "{}")).toMatchObject({ code: "unavailable", status: null, outcome: "unknown" });
+      expect(JSON.stringify(failure)).not.toContain(KEY);
+      expect(JSON.stringify(failure)).not.toContain(secret);
+      expect(logs.join(" ")).not.toContain(KEY);
+      expect(logs.join(" ")).not.toContain(secret);
+    } finally {
+      log.mockRestore();
+    }
+  },
+);
