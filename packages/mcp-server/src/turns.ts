@@ -81,6 +81,7 @@ export interface StatusReport {
   providerState: string | null;
   conversationIds: string[];
   expiresAt: string | null;
+  providerExpiresAt: string | null;
   /** The turn asked about, or the latest one. Null before the first prompt. */
   prompt: PromptReport | null;
   /** The agent is not working: nothing more will happen until the next send. */
@@ -329,7 +330,8 @@ function report(
     providerState: info?.providerState ?? null,
     conversationIds: sandbox.conversationIds,
     preservationNote: [sandbox.preservationNote, info?.stopNote].filter(Boolean).join("; ") || null,
-    expiresAt: sandbox.expiresAt ?? (expiresAt ? expiresAt.toISOString() : null),
+    expiresAt: sandbox.expiresAt ?? null,
+    providerExpiresAt: expiresAt ? expiresAt.toISOString() : null,
     prompt,
     settled:
       !sandbox.stopRequestedAt &&
@@ -394,10 +396,10 @@ export interface WaitReport extends StatusReport {
 }
 
 /** Reads the status until the agent settles or the timeout passes. Never longer than `timeoutMs`. */
-export async function waitSettled(
-  read: () => Promise<StatusReport>,
+export async function waitSettled<T extends StatusReport>(
+  read: () => Promise<T>,
   options: { timeoutMs: number; now: () => Date; sleep: (ms: number) => Promise<void> },
-): Promise<WaitReport> {
+): Promise<T & { timedOut: boolean }> {
   const deadline = options.now().getTime() + options.timeoutMs;
   for (;;) {
     const status = await read();
