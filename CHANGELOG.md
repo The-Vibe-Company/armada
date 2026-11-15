@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.44.1](https://github.com/The-Vibe-Company/armada/compare/v2.44.0...v2.44.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **runtime:** isolate OpenCode retry observer tests and close streams ([#2144](https://github.com/The-Vibe-Company/armada/issues/2144)) ([e02d3b9](https://github.com/The-Vibe-Company/armada/commit/e02d3b953b98f139c66de477d025c2eab053dac1))
+
 ## [2.44.0](https://github.com/The-Vibe-Company/armada/compare/v2.43.0...v2.44.0) (2026-11-15)
 
 
