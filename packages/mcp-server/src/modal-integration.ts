@@ -49,6 +49,7 @@ export async function createModalIntegration(options: {
   publicUrl: string;
   github?: GitHubLaunchOptions;
   /** Root523 lifecycle: called by the actual adapter after ready/restore, outside its lease. */
+  resumeRefused?: (provider: Provider, sandboxId: string) => Promise<void>;
   beforeResume?: (provider: Provider, sandboxId: string, actor: { userId: string; orgId: string }) => Promise<void>;
   beforePrompt?: (provider: Provider, sandboxId: string, actor: { userId: string; orgId: string }) => Promise<void>;
   // MCP lifecycle belongs to #523 post-init/beforePrompt/beforeSnapshot, never bootstrap.
@@ -201,6 +202,7 @@ export async function createModalIntegration(options: {
       signingKey: key,
       ingestUrl,
       artifact,
+      ...(options.resumeRefused ? { resumeRefused: options.resumeRefused } : {}),
       ...(options.beforeResume
         ? {
             beforeResume: (provider: Provider, sandboxId: string) =>

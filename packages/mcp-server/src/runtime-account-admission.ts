@@ -1,4 +1,5 @@
 import { HARNESS_CATALOG, type Sql, VaultError } from "@armada/core/server";
+import { admitAccountCapacity } from "./account-capacity.ts";
 import type { Caller } from "./caller.ts";
 import type { SandboxView } from "./data.ts";
 
@@ -6,7 +7,7 @@ import type { SandboxView } from "./data.ts";
 export async function lockRuntimeAccount(
   tx: Sql,
   caller: Pick<Caller, "userId">,
-  sandbox: Pick<SandboxView, "orgId" | "credentialId" | "credentialVersion" | "harness">,
+  sandbox: Pick<SandboxView, "id" | "orgId" | "credentialId" | "credentialVersion" | "harness">,
   accountError: string,
 ): Promise<void> {
   const member = (
@@ -31,4 +32,5 @@ export async function lockRuntimeAccount(
     )
   ).rows[0];
   if (!account) throw new VaultError("not_found", accountError);
+  if (sandbox.credentialId) await admitAccountCapacity(tx, sandbox.credentialId, sandbox.id);
 }

@@ -30,6 +30,7 @@ import {
   renameAccount,
   replaceAccountSecret,
   testAccountConnection,
+  updateAccountLimits,
 } from "@/app/actions/model-accounts";
 import { SubmitButton } from "@/components/action-form";
 import { PresetConnectionFields } from "@/components/connection-preset-fields";
@@ -462,7 +463,7 @@ export function UsagePanel({
 
 /* ---------------------------------------------------------------- one account */
 
-type RowDialog = "rename" | "replace" | "remove" | null;
+type RowDialog = "limits" | "rename" | "replace" | "remove" | null;
 
 const STATE_ICON = { ok: CircleCheckIcon, warn: CircleHelpIcon, error: CircleAlertIcon } as const;
 
@@ -536,6 +537,9 @@ export function AccountRow({
           </div>
           <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
             <span>{kindNote(account) ?? info.label}</span>
+            <span>
+              {account.runningAgents ?? 0}/{account.maxAgents ?? "unlimited"} agents running
+            </span>
             {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
             <span>
               Updated <time dateTime={account.updatedAt}>{relativeTime(account.updatedAt, now)}</time>
@@ -610,6 +614,9 @@ export function AccountRow({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-44">
+                <DropdownMenuItem onSelect={() => setDialog("limits")}>
+                  <PencilIcon /> Agent limit
+                </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setDialog("rename")}>
                   <PencilIcon /> Rename
                 </DropdownMenuItem>
@@ -633,6 +640,14 @@ export function AccountRow({
 
       {canManage && (
         <>
+          <LimitsDialog
+            account={account}
+            orgId={orgId}
+            onResult={setResult}
+            open={dialog === "limits"}
+            onOpenChange={closeDialog}
+            onCloseAutoFocus={restoreFocus}
+          />
           <RenameDialog
             account={account}
             orgId={orgId}
@@ -718,6 +733,71 @@ function useDialogAction(
     }
   }, [state, onResult, onOpenChange]);
   return { state, formAction, generation };
+}
+
+function LimitsDialog({
+  account,
+  orgId,
+  onResult,
+  open,
+  onOpenChange,
+  onCloseAutoFocus,
+}: {
+  account: ModelAccount;
+  orgId: string;
+  onResult: (result: ActionResult) => void;
+} & Controlled) {
+  const { state, formAction, generation } = useDialogAction(updateAccountLimits, onResult, onOpenChange);
+  const id = useId();
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
+        <DialogHeader>
+          <DialogTitle>Agent limit for {account.name}</DialogTitle>
+          <DialogDescription>New starts are refused at the limit. Existing agents are not stopped.</DialogDescription>
+        </DialogHeader>
+        <form key={generation} action={formAction} className="space-y-4">
+          <TargetFields account={account} orgId={orgId} />
+          <AgentLimitField id={id} defaultValue={account.maxAgents ?? ""} />
+          {state && !state.ok && <ResultLine result={state} />}
+          <SubmitButton>Save limit</SubmitButton>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function AgentLimitField({
+  id,
+  defaultValue,
+  value,
+  onChange,
+}: {
+  id: string;
+  defaultValue?: number | string;
+  value?: string;
+  onChange?: (value: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={`${id}-max-agents`}>Maximum agents running at the same time</Label>
+      <Input
+        id={`${id}-max-agents`}
+        name="maxAgents"
+        type="number"
+        min="1"
+        step="1"
+        defaultValue={defaultValue}
+        value={value}
+        onChange={onChange ? (event) => onChange(event.target.value) : undefined}
+        placeholder="Unlimited"
+        aria-describedby={`${id}-max-agents-hint`}
+      />
+      <p id={`${id}-max-agents-hint`} className="text-xs text-muted-foreground">
+        Leave empty for unlimited. Shared across all sandbox providers.
+      </p>
+    </div>
+  );
 }
 
 function RenameDialog({
@@ -1268,6 +1348,7 @@ export function AddAccountDialog({
   const kind: AccountKind = preset ? preset.kind : (choice as AccountKind);
   const [scope, setScope] = useState<"user" | "org">("user");
   const [name, setName] = useState("");
+  const [maxAgents, setMaxAgents] = useState(initialKind === "morph" ? "2" : "");
   const router = useRouter();
   const id = useId();
   const info = KIND_INFO[kind];
@@ -1286,6 +1367,7 @@ export function AddAccountDialog({
   useEffect(() => {
     if (state?.ok) {
       setName("");
+      setMaxAgents(initialKind === "morph" ? "2" : "");
       setChoice(initialKind);
       setScope("user");
       setOpen(false);
@@ -1306,6 +1388,7 @@ export function AddAccountDialog({
           setOpen(next);
           if (next) return;
           setChoice(initialKind);
+          setMaxAgents(initialKind === "morph" ? "2" : "");
           setScope("user");
           setGeneration((value) => value + 1);
         }}
@@ -1338,7 +1421,10 @@ export function AddAccountDialog({
               <NativeSelect
                 id={`${id}-provider`}
                 value={choice}
-                onChange={(event) => setChoice(event.target.value as AddChoice)}
+                onChange={(event) => {
+                  setChoice(event.target.value as AddChoice);
+                  setMaxAgents(event.target.value === "morph" ? "2" : "");
+                }}
                 aria-describedby={`${id}-provider-hint ${id}-availability`}
               >
                 <optgroup label="Subscriptions">
@@ -1404,10 +1490,12 @@ export function AddAccountDialog({
               />
             </div>
 
+            <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
+
             {terminal ? (
               <>
                 <TerminalSignIn
-                  command={terminal}
+                  command={`${terminal}${maxAgents ? ` --max-agents ${Number(maxAgents)}` : " --unlimited"}`}
                   onDone={() => {
                     setOpen(false);
                     router.refresh();

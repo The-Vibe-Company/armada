@@ -23,6 +23,8 @@ export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
 export type AccountScope = (typeof ACCOUNT_SCOPES)[number];
 
 export interface ModelAccount {
+  maxAgents?: number | null;
+  runningAgents?: number;
   id: string;
   scope: AccountScope;
   kind: AccountKind;
@@ -151,6 +153,8 @@ export function parseAccount(value: unknown): ModelAccount | null {
     expiresAt,
     updatedAt,
     version: value.version,
+    maxAgents: typeof value.maxAgents === "number" ? value.maxAgents : null,
+    runningAgents: typeof value.runningAgents === "number" ? value.runningAgents : 0,
   };
 }
 

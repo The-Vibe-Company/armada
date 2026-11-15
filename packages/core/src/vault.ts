@@ -22,6 +22,8 @@ export interface CredentialInfo {
   id?: string;
   name?: string;
   isDefault?: boolean;
+  maxAgents?: number | null;
+  runningAgents?: number;
   status?: string;
   expiresAt?: string | null;
   updatedAt?: string;
@@ -42,7 +44,8 @@ export interface OrgCredentials extends OrgSummary {
 export interface AccountMutation {
   expectedVersion?: number;
   expiresAt?: string | null;
-  action: "set" | "rename" | "default" | "remove";
+  maxAgents?: number | null;
+  action: "set" | "rename" | "default" | "remove" | "limits";
   scope: CredentialScope;
   org?: string;
   id?: string;
@@ -272,6 +275,14 @@ export async function mutateCredentialAccount(
   input: AccountMutation,
   validate?: CredentialValidator,
 ): Promise<CredentialInfo> {
+  if (
+    input.maxAgents !== undefined &&
+    input.maxAgents !== null &&
+    (!Number.isSafeInteger(input.maxAgents) || input.maxAgents < 1)
+  )
+    throw new VaultError("invalid", "maxAgents must be a positive integer or null for unlimited.");
+  if (input.action === "limits" && input.maxAgents === undefined)
+    throw new VaultError("invalid", "maxAgents is required.");
   if (input.id !== undefined && !UUID.test(input.id)) throw new VaultError("invalid", "Account id must be a UUID.");
   if (!store.mutateAccount) throw new VaultError("unavailable", "Named accounts are unavailable.");
   if (input.kind === "boat" || input.kind === "modal" || input.kind === "skillpack")

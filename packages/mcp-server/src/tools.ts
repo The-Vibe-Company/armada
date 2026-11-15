@@ -1698,7 +1698,9 @@ export function createArmadaServer(context: ToolContext, version: string, option
           },
         };
       },
-    ).catch((error) => publicationFailure(error, acknowledged));
+    )
+      .catch((error) => publicationFailure(error, acknowledged))
+      .finally(() => context.launchCredentials.releaseAdmission?.(found.id));
   }
 
   tool(
