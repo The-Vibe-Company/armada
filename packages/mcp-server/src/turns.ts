@@ -353,9 +353,7 @@ export async function latestPrompt(
       limit: EVENT_PAGE_LIMIT,
       ...(cursor ? { cursor } : {}),
     });
-    for (const event of read.events) {
-      if (event.kind === "prompt" && event.promptId && (!latest || event.at >= latest.at)) latest = event;
-    }
+    latest = latestPromptEvent(read.events);
     if (latest || !read.hasMore) break;
     if (!read.olderCursor || read.olderCursor === cursor) {
       if (complete) throw new Error("Cannot prove latest turn: provider event cursor did not advance.");
@@ -498,4 +496,13 @@ export async function collectSandboxUsage(
   } catch {
     /* Optional telemetry never changes lifecycle success. */
   }
+}
+
+/** Timestamp order with the last encountered body winning ties, without reordering the stream. */
+export function latestPromptEvent(events: readonly AgentEvent[]): AgentEvent | undefined {
+  let latest: AgentEvent | undefined;
+  for (const event of events) {
+    if (event.kind === "prompt" && event.promptId && (!latest || event.at >= latest.at)) latest = event;
+  }
+  return latest;
 }
