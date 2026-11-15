@@ -210,6 +210,7 @@ describe("database", () => {
         }
         if (!secretName.test(column.column_name)) continue;
         if (
+          id === "account_turn_queue.credential_version" ||
           id === "sandboxes.credential_id" ||
           id === "sandboxes.credential_version" ||
           id === "modal_server_harnesses.credential_id" ||
@@ -246,6 +247,8 @@ describe("database", () => {
         });
       }
       expect(ciphertext.sort()).toEqual([
+        "account_turn_queue.input_enc",
+        "account_turn_queue.result_enc",
         "application_secret_uploads.value_enc",
         "application_secrets.value_enc",
         "credentials.value_enc",
