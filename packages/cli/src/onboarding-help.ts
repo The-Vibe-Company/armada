@@ -1,5 +1,29 @@
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
+  host: `Usage: armada host <command> [arguments]
+Manage Docker machines registered with Armada, not individual sandboxes.
+
+Account commands (Armada login or ARMADA_TOKEN required):
+  add      Register a machine and obtain a one-use installer command.
+  list     Inspect host IDs, names, state and resources; supports --json.
+  show     Inspect one host by UUID or exact name; supports --json.
+  limits   Update host resource limits by UUID or exact name.
+  revoke   Revoke a host registration by UUID.
+Select an organization with armada org use or --org UUID.
+Use UUIDs from host list when names are ambiguous.
+
+Local machine commands (run on the Docker machine; no Armada login):
+  install    Install/register the local host daemon using --server HTTPS_ORIGIN.
+  status     Inspect the local host daemon.
+  uninstall  Remove the local host installation.
+For CLI install, supply the one-use registration token on stdin, never in argv.
+Treat installer output as sensitive; do not paste it into shared logs.
+
+Inspect a command's options with armada host <command> --help.
+To launch on a registered host, use armada launch --provider docker.
+Example: armada host list --org ORG_UUID --json
+Example: armada host show workstation --org ORG_UUID
+`,
   launch: `Usage: armada launch <snapshot> --agent claude|codex|opencode ["prompt"] [options]
 Fork a visible snapshot; a prompt starts the agent, otherwise wait for the first send.
 Sign in with armada login or set ARMADA_TOKEN for scripts.
