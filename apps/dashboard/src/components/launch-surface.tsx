@@ -1,7 +1,7 @@
 "use client";
 
 import type { SandboxPlacementProviderId } from "@armada/core";
-import { ChevronDownIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -170,12 +170,14 @@ export function LaunchChoice({
   options,
   onChange,
   disabled = false,
+  tone,
 }: {
   label: string;
   value: string;
   options: readonly { value: string; label: string; group?: string | undefined; reason?: string | undefined }[];
   onChange: (value: string) => void;
   disabled?: boolean;
+  tone?: "warning" | "destructive" | undefined;
 }) {
   const [open, setOpen] = useState(false);
   const [phone, setPhone] = useState(false);
@@ -191,8 +193,8 @@ export function LaunchChoice({
     <button
       type="button"
       disabled={disabled}
-      aria-label={label}
-      className="inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 align-baseline text-sm text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0"
+      aria-label={`${label}: ${selected?.label ?? value}`}
+      className={`inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 align-baseline text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0 ${tone === "destructive" ? "border-destructive text-destructive" : tone === "warning" ? "border-warning text-warning" : "text-foreground"}`}
       onClick={() => setOpen(true)}
     >
       <span className="text-muted-foreground sm:hidden">{label}</span>
@@ -225,6 +227,12 @@ export function LaunchChoice({
                     {option.label}
                     {option.reason && <span className="block text-xs text-muted-foreground">{option.reason}</span>}
                   </span>
+                  {option.value === value && (
+                    <span className="ml-auto">
+                      <CheckIcon aria-hidden="true" className="size-4" />
+                      <span className="sr-only">Selected</span>
+                    </span>
+                  )}
                 </CommandItem>
               ))}
           </CommandGroup>

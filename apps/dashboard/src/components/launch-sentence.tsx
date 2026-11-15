@@ -225,6 +225,7 @@ export function LaunchSentence({
         <LaunchChoice
           label="Agent"
           value={harness}
+          tone={accounts.state === "unavailable" || (accounts.state === "ready" && !chosen) ? "destructive" : undefined}
           options={allowedHarnesses.map((value) => ({
             value,
             label: HARNESS_LABELS[value],
@@ -238,6 +239,7 @@ export function LaunchSentence({
           <PopoverTrigger asChild>
             <button
               type="button"
+              aria-label={`Model: ${entry.models.find((row) => row.id === model)?.label ?? model}`}
               className="inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 text-sm hover:bg-accent max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0"
               onClick={() => setOpen(true)}
             >
@@ -252,16 +254,20 @@ export function LaunchSentence({
           </PopoverContent>
         </Popover>
         <span className="max-sm:hidden"> on </span>
-        <button
-          type="button"
-          data-launch-account-picker
-          className="inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 text-sm hover:bg-accent max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0"
-          onClick={() => setOpen(true)}
-        >
-          <span className="text-muted-foreground sm:hidden">Account</span>
-          <span className={selectedProblem ? "text-warning" : ""}>{chosen?.name ?? "Choose an account"} ⌄</span>
-        </button>
-        <span className="max-sm:hidden">, reasoning effort </span>
+        <span className="whitespace-nowrap max-sm:block">
+          <button
+            type="button"
+            aria-label={`Account: ${chosen?.name ?? "Choose an account"}`}
+            data-launch-account-picker
+            className={`inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 text-sm hover:bg-accent max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0 ${selectedProblem ? "border-warning text-warning" : ""}`}
+            onClick={() => setOpen(true)}
+          >
+            <span className="text-muted-foreground sm:hidden">Account</span>
+            <span className={selectedProblem ? "text-warning" : ""}>{chosen?.name ?? "Choose an account"} ⌄</span>
+          </button>
+          <span className="max-sm:hidden">,</span>
+        </span>
+        <span className="max-sm:hidden"> reasoning effort </span>
         <span className="whitespace-nowrap">
           <LaunchChoice
             label="Effort"
@@ -299,11 +305,13 @@ export function LaunchSentence({
 
 /** Keep the reason, its repairs and the disabled launch together in the pinned footer. */
 export function LaunchAccountNotice({
+  idPrefix,
   harness,
   account,
   accounts,
   onPick,
 }: {
+  idPrefix?: string;
   harness: Harness;
   account: string;
   accounts: LaunchAccounts;
@@ -312,7 +320,11 @@ export function LaunchAccountNotice({
   if (accounts.state === "legacy") return null;
   if (accounts.state === "unavailable")
     return (
-      <p role="alert" className="mr-auto text-xs text-destructive">
+      <p
+        id={idPrefix ? `${idPrefix}-account-unavailable` : undefined}
+        role="alert"
+        className="mr-auto text-xs text-destructive"
+      >
         {accounts.reason}
       </p>
     );
@@ -322,7 +334,11 @@ export function LaunchAccountNotice({
   if (chosen && !problem && !full) return null;
   return (
     <>
-      <p role="alert" className="min-w-0 flex-1 text-xs text-warning">
+      <p
+        id={idPrefix ? `${idPrefix}-account-unavailable` : undefined}
+        role="alert"
+        className="min-w-0 flex-1 text-xs text-warning"
+      >
         {!chosen
           ? `${HARNESS_LABELS[harness]} has no account selected.`
           : full

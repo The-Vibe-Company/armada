@@ -173,11 +173,12 @@ export function DockerLaunchForm({
           <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
             <LaunchProgress />
             {launchBlockedReason && (
-              <p role="alert" className="mr-auto text-xs text-warning">
+              <p id={`${id}-source-blocked`} role="alert" className="mr-auto text-xs text-warning">
                 {launchBlockedReason}
               </p>
             )}
             <LaunchAccountNotice
+              idPrefix={id}
               harness={harness}
               account={credential}
               accounts={accounts}
@@ -185,10 +186,18 @@ export function DockerLaunchForm({
             />
             <SubmitButton
               className="max-sm:ml-auto"
-              disabled={!usable || accounts.state === "unavailable" || !!launchBlockedReason}
+              {...(!usable || accounts.state === "unavailable" || launchBlockedReason
+                ? {
+                    disabled: true,
+                    "aria-describedby": launchBlockedReason ? `${id}-source-blocked` : `${id}-account-unavailable`,
+                  }
+                : {})}
             >
               <RocketIcon /> Launch <SubmitShortcut />
             </SubmitButton>
+            <p className="basis-full text-right text-xs text-muted-foreground">
+              Opens the sandbox page and its conversation.
+            </p>
           </div>
         }
       >

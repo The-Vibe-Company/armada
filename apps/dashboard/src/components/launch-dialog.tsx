@@ -169,8 +169,16 @@ export function LaunchStart(props: LaunchProps | HostLaunchStart) {
               ? item.snapshotId === props.snapshotId
               : item.provider === props.provider && item.golden === props.golden,
         );
-        if (initial) setSelected(initial.id);
-        setOptions(next);
+        // Discovery enriches the initial source without remounting a form the person may already be editing.
+        const initialId = host
+          ? `host:${props.hostId}`
+          : props.snapshotId
+            ? `snapshot:${props.snapshotId}`
+            : `${props.provider}:${props.golden}`;
+        setOptions({
+          ...next,
+          targets: next.targets.map((item) => (item.id === initial?.id ? { ...item, id: initialId } : item)),
+        });
       })
       .catch(() => {
         if (active) setLoadingError("Other snapshots and servers could not be loaded. Close and reopen to try again.");
@@ -357,7 +365,7 @@ function LaunchForm({
         footer={
           <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
             {launchBlockedReason && (
-              <p role="alert" className="mr-auto text-xs text-warning">
+              <p id={`${id}-source-blocked`} role="alert" className="mr-auto text-xs text-warning">
                 {launchBlockedReason}{" "}
                 <Link className="underline" href="/snapshots">
                   Open Snapshots
@@ -365,6 +373,7 @@ function LaunchForm({
               </p>
             )}
             <LaunchAccountNotice
+              idPrefix={id}
               harness={harness}
               account={credential}
               accounts={accounts}
@@ -372,17 +381,27 @@ function LaunchForm({
             />
             {access.alerts(() => {
               focusLaunch.current = true;
-            })}
+            }, id)}
             {/* Only set when blocked: preserve SubmitButton's own pending lock otherwise. */}
             <SubmitButton
               className="max-sm:ml-auto"
               {...(access.held || accountBlocked || accounts.state === "unavailable" || launchBlockedReason
-                ? { disabled: true, "aria-describedby": access.held ? `${id}-held` : `${id}-account-unavailable` }
+                ? {
+                    disabled: true,
+                    "aria-describedby": launchBlockedReason
+                      ? `${id}-source-blocked`
+                      : access.held
+                        ? `${id}-held`
+                        : `${id}-account-unavailable`,
+                  }
                 : {})}
             >
               <RocketIcon /> Launch
               <SubmitShortcut />
             </SubmitButton>
+            <p className="basis-full text-right text-xs text-muted-foreground">
+              Opens the sandbox page and its conversation.
+            </p>
           </div>
         }
       >
@@ -716,11 +735,11 @@ function useLaunchAccess(connections: LaunchConnections) {
     (connection) => chosen.includes(connection.id) && launchBlocker(connection) === null,
   ).length;
 
-  const alerts = (onContinue: () => void): ReactNode => (
+  const alerts = (onContinue: () => void, idPrefix: string): ReactNode => (
     <>
       {unready.length > 0 && (
         <div data-unready-defaults className="contents">
-          <p role="alert" className="flex basis-full items-center gap-2 text-xs text-warning">
+          <p id={`${idPrefix}-held`} role="alert" className="flex basis-full items-center gap-2 text-xs text-warning">
             <CircleAlertIcon className="size-4 shrink-0" />
             {unready.map((connection) => connection.name).join(", ")}{" "}
             {unready.length === 1
