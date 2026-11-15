@@ -54,6 +54,7 @@ import { readLogs } from "./control-logs.ts";
 import { fail } from "./control-response.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { listControlCredentials } from "./credential-list.ts";
+import type { createSqlCredentialList } from "./credential-list-sql.ts";
 import type { DataSource, ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import {
@@ -101,6 +102,8 @@ import { sandboxListInput } from "./tools.ts";
 export const CONTROL_PREFIX = "/api/v1/";
 
 export interface ControlOptions {
+  /** Authenticated own-user metadata and current org membership in one snapshot. */
+  listCredentialMetadata?: ReturnType<typeof createSqlCredentialList>;
   /** SQL list data must enforce fresh UUID selection authority inside its page/count statement. */
   scopedSandboxData?: (caller: Caller, orgId: string) => ScopedData;
   /** Optional read model combining fresh org resolution with visibility-filtered rows. */
@@ -734,7 +737,9 @@ async function dispatch(
       );
       return { ok: true };
     case "creds/list":
-      return listControlCredentials(store, userId, org);
+      return options.listCredentialMetadata
+        ? options.listCredentialMetadata(userId, org)
+        : listControlCredentials(store, userId, org);
     case "creds/accounts/models": {
       // The declared models of visible custom connections (#1483): decrypted here, never the key or the address.
       const member = await resolveOrg(store, userId, org);
