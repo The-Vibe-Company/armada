@@ -1,4 +1,5 @@
 import type { ProviderTarget, SandboxProviderId, Visibility } from "@armada/core/server";
+import { sandboxRowModalBinding } from "@armada/core/server";
 
 export interface PersistedSandboxTargetRow {
   id: string;
@@ -12,18 +13,6 @@ export interface PersistedSandboxTargetRow {
   modal_workspace: string | null;
   modal_environment: string | null;
   modal_app_id: string | null;
-}
-
-/** Incomplete pinned metadata remains null so provider routing fails closed. */
-export function sandboxRowModalBinding(row: {
-  provider: string;
-  modal_workspace?: string | null;
-  modal_environment?: string | null;
-  modal_app_id?: string | null;
-}) {
-  return row.provider === "modal" && row.modal_workspace && row.modal_environment && row.modal_app_id
-    ? { workspace: row.modal_workspace, environment: row.modal_environment, appId: row.modal_app_id }
-    : null;
 }
 
 /** Persisted metadata only; callers retain SQL visibility, membership and lifecycle admission. */

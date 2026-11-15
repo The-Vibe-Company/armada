@@ -397,6 +397,7 @@ export {
   SANDBOX_PLACEMENT_PROVIDERS,
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
+  sandboxRowModalBinding,
 } from "./sandbox-provider.ts";
 export {
   reportedTurnUsage,

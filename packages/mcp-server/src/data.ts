@@ -16,6 +16,7 @@ import {
   type SandboxStore,
   type SandboxUsage,
   type Sql,
+  sandboxRowModalBinding,
   statusReasonOf,
   type TaskOutcome,
   type TurnPriceContext,
@@ -30,7 +31,6 @@ import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/cor
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
-import { sandboxRowModalBinding } from "./provider-sandbox-target.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
