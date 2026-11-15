@@ -197,13 +197,28 @@ export class Journal {
   sanitize() {
     this.db.transaction(() => {
       for (const table of ["events", "prompts", "requests", "processes"]) {
-        for (const row of this.db.query(`SELECT rowid AS recordId,body FROM ${table}`).all() as {
-          recordId: number;
-          body: string;
-        }[])
-          this.db.query(`UPDATE ${table} SET body=? WHERE rowid=?`).run(this.redact(row.body), row.recordId);
+        // A batch is one row: retain O(largest body + its redacted copy), not
+        // cumulative history. Prompts/requests/processes have no body-size cap.
+        // Keyset reads finish before UPDATE; text preserves every SQLite rowid without numeric rounding.
+        const first = this.db.query(`SELECT CAST(rowid AS TEXT) AS recordId,body FROM ${table} ORDER BY rowid LIMIT 1`);
+        const next = this.db.query(
+          `SELECT CAST(rowid AS TEXT) AS recordId,body FROM ${table} WHERE rowid>? ORDER BY rowid LIMIT 1`,
+        );
+        const update = this.db.query(`UPDATE ${table} SET body=? WHERE rowid=?`);
+        let cursor: string | undefined;
+        for (;;) {
+          const row = (cursor === undefined ? first.get() : next.get(cursor)) as {
+            recordId: string;
+            body: string;
+          } | null;
+          if (!row) break;
+          update.run(this.redact(row.body), row.recordId);
+          cursor = row.recordId;
+        }
       }
     })();
+    // The full scan, WAL truncation and VACUUM still require cumulative I/O;
+    // bounded retained bodies do not imply bounded latency or SQLite disk/cache use.
     this.flush();
     this.db.exec("VACUUM");
     this.flush();
