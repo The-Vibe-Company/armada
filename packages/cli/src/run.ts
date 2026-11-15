@@ -616,8 +616,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "token":
       return tokenCommand(parseAuth(rest), authOf(io, deps));
     default:
-      io.err(`armada: unknown command '${command}'. Run 'armada --help'.\n`);
-      return 2;
+      throw new AuthError(`unknown command '${command}'. Run 'armada --help'.`, "usage");
   }
 }
 
