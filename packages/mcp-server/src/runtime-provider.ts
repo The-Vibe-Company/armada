@@ -1,4 +1,5 @@
 import { HARNESS_CAPABILITIES, type Provider, ProviderError } from "@armada/core";
+import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
 /** Sandbox-bound adapter. Caller supplies authorized persisted binding and a
  * compute-only host (no native model-auth lifecycle hooks). No spread/fallback
@@ -28,33 +29,23 @@ export function createRuntimeProvider(
         retryable: false,
       });
   };
-  const capabilities = {
-    ...HARNESS_CAPABILITIES,
-    codex: {
-      ...HARNESS_CAPABILITIES.codex,
-      steer: operations ? HARNESS_CAPABILITIES.codex.steer : ("none" as const),
-      interrupt: Boolean(operations),
-      resume: false,
-      parallelConversations: false,
-    },
-    opencode: {
-      ...HARNESS_CAPABILITIES.opencode,
-      steer: operations ? HARNESS_CAPABILITIES.opencode.steer : ("none" as const),
-      interrupt: Boolean(operations),
-      resume: false,
-      parallelConversations: false,
-    },
-    claude: {
-      ...HARNESS_CAPABILITIES.claude,
-      steer: operations ? HARNESS_CAPABILITIES.claude.steer : ("none" as const),
-      interrupt: Boolean(operations),
-      resume: false,
-      parallelConversations: false,
-    },
-  };
+  const capabilities = Object.fromEntries(
+    Object.entries(HARNESS_CAPABILITIES).map(([harness, capability]) => [
+      harness,
+      {
+        ...capability,
+        steer: operations ? capability.steer : ("none" as const),
+        interrupt: Boolean(operations),
+        resume: false,
+        parallelConversations: false,
+      },
+    ]),
+  );
   return {
     id: host.id,
-    harnesses: host.id === "modal" ? ["codex", "claude", "opencode"] : ["codex", "claude"],
+    harnesses: (["codex", "claude", "opencode"] as const).filter((harness) =>
+      runtimeHarnessSupported(host.id, harness),
+    ),
     capabilities,
     ...(host.managementIdentity ? { managementIdentity: host.managementIdentity.bind(host) } : {}),
     ...(host.backendIdentity ? { backendIdentity: host.backendIdentity.bind(host) } : {}),
