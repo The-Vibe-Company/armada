@@ -1,22 +1,11 @@
-import type { Provider, ProviderRegistry, SandboxProviderId, Sql, Visibility } from "@armada/core/server";
+import type { Provider, ProviderRegistry, Sql } from "@armada/core/server";
+import { type PersistedSandboxTargetRow, sandboxRowProviderTarget } from "./provider-sandbox-target.ts";
 
 /** Resolves an active sandbox's persisted target and source authority for server-owned MCP renewal. */
 export function createMcpSandboxProviderResolver(sql: Sql, providers: ProviderRegistry) {
   return async (id: string): Promise<Provider> => {
     const row = (
-      await sql.query<{
-        id: string;
-        boat_runtime: boolean;
-        runtime_transport: "dialout" | null;
-        provider: SandboxProviderId;
-        org_id: string;
-        owner_id: string;
-        visibility: Visibility;
-        source_golden_visibility: Visibility;
-        modal_workspace: string | null;
-        modal_environment: string | null;
-        modal_app_id: string | null;
-      }>(
+      await sql.query<PersistedSandboxTargetRow>(
         `select s.id,s.runtime_transport,s.boat_runtime,s.provider::text as provider,s.org_id,s.owner_id,s.visibility::text as visibility,s.source_golden_visibility::text as source_golden_visibility,g.modal_workspace,g.modal_environment,g.modal_app_id
         from public.sandboxes s join public.goldens g on g.id=s.golden_id join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
         where s.id=$1::uuid and s.status not in ('stopped','deleted')`,
@@ -24,23 +13,7 @@ export function createMcpSandboxProviderResolver(sql: Sql, providers: ProviderRe
       )
     ).rows[0];
     if (!row) throw Error("No authorized active sandbox for MCP lease renewal.");
-    const modal =
-      row.provider === "modal" && row.modal_workspace && row.modal_environment && row.modal_app_id
-        ? { workspace: row.modal_workspace, environment: row.modal_environment, appId: row.modal_app_id }
-        : null;
-    return providers.resolve(
-      {
-        id: row.id,
-        ...(row.runtime_transport === "dialout" ? { runtimeTransport: "dialout" as const } : {}),
-        ...(row.boat_runtime ? { boatRuntime: true as const } : {}),
-        provider: row.provider,
-        orgId: row.org_id,
-        visibility: row.visibility,
-        sourceGoldenVisibility: row.source_golden_visibility,
-        modal,
-      },
-      { userId: row.owner_id },
-    );
+    return providers.resolve(sandboxRowProviderTarget(row), { userId: row.owner_id });
   };
 }
 
@@ -50,20 +23,7 @@ export function createMcpSandboxProviderResolver(sql: Sql, providers: ProviderRe
 export function createHistoricalSandboxProviderResolver(providers: ProviderRegistry) {
   return async (sql: Sql, id: string): Promise<{ provider: Provider; providerSandboxId: string }> => {
     const row = (
-      await sql.query<{
-        id: string;
-        boat_runtime: boolean;
-        runtime_transport: "dialout" | null;
-        provider: SandboxProviderId;
-        provider_sandbox_id: string | null;
-        org_id: string;
-        owner_id: string;
-        visibility: Visibility;
-        source_golden_visibility: Visibility;
-        modal_workspace: string | null;
-        modal_environment: string | null;
-        modal_app_id: string | null;
-      }>(
+      await sql.query<PersistedSandboxTargetRow & { provider_sandbox_id: string | null }>(
         `select s.id,s.runtime_transport,s.boat_runtime,s.provider::text as provider,s.provider_sandbox_id,s.org_id,s.owner_id,
        coalesce(s.visibility,g.visibility)::text as visibility,
        coalesce(s.source_golden_visibility,g.visibility)::text as source_golden_visibility,
@@ -75,23 +35,7 @@ export function createHistoricalSandboxProviderResolver(providers: ProviderRegis
       )
     ).rows[0];
     if (!row?.provider_sandbox_id) throw Error("Historical native binding cannot be observed.");
-    const modal =
-      row.provider === "modal" && row.modal_workspace && row.modal_environment && row.modal_app_id
-        ? { workspace: row.modal_workspace, environment: row.modal_environment, appId: row.modal_app_id }
-        : null;
-    const provider = await providers.resolve(
-      {
-        id: row.id,
-        ...(row.runtime_transport === "dialout" ? { runtimeTransport: "dialout" as const } : {}),
-        ...(row.boat_runtime ? { boatRuntime: true as const } : {}),
-        provider: row.provider,
-        orgId: row.org_id,
-        visibility: row.visibility,
-        sourceGoldenVisibility: row.source_golden_visibility,
-        modal,
-      },
-      { userId: row.owner_id },
-    );
+    const provider = await providers.resolve(sandboxRowProviderTarget(row), { userId: row.owner_id });
     if (provider.id !== row.provider) throw Error("Historical native provider binding changed.");
     return { provider, providerSandboxId: row.provider_sandbox_id };
   };
