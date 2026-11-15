@@ -272,24 +272,23 @@ export function createModelAuthOwnership(
         row.current_version !== row.credential_version ||
         (row.expires_at !== null &&
           new Date(row.expires_at instanceof Date ? row.expires_at.getTime() : row.expires_at).getTime() <= now());
+      const { accountId, version, sandboxId } = nativeSource;
+      const readState = () => state.read(actor, accountId, version, sandboxId);
+      let retained: Awaited<ReturnType<typeof state.redactionState>>;
       if (retired) {
-        const retained = await state.redactionState(actor, row.credential_id, row.credential_version, row.id);
+        retained = await state.redactionState(actor, row.credential_id, row.credential_version, row.id);
         if (!retained)
           throw new VaultError(
             "credential_binding_required",
             "Legacy native output has no trustworthy secret registry. Stop the sandbox and reconnect with a fresh account version.",
           );
-        const info = await provider.get(providerId);
-        if (info.state === "stopped") return stoppedSecrets(retained);
       } else {
-        const binding = await this.bootstrap(actor, row.credential_id, row.credential_version, row.id);
-        if (!binding) return []; // Unmanaged legacy workspaces retain their existing behavior.
-        const info = await provider.get(providerId);
-        if (info.state === "stopped")
-          return stoppedSecrets(await state.read(actor, row.credential_id, row.credential_version, row.id));
+        await this.bootstrap(actor, row.credential_id, row.credential_version, row.id);
       }
+      const info = await provider.get(providerId);
+      if (info.state === "stopped") return stoppedSecrets(retired ? retained : await readState());
       for (let attempt = 0; attempt < 3; attempt++) {
-        const saved = retired ? undefined : await state.read(actor, row.credential_id, row.credential_version, row.id);
+        const saved = retired ? undefined : await readState();
         const generation =
           provider.id === "modal" ? await modalGeneration(sql, providerId, actor) : String(row.lifecycle_generation);
         const authJson = await captureNative(provider, providerId, {}, quiesced);
@@ -302,7 +301,7 @@ export function createModelAuthOwnership(
         if (retired) return state.retire(observation);
         try {
           await state.publish({ ...observation, expectedRevision: saved?.revision ?? 0 });
-          return (await state.read(actor, row.credential_id, row.credential_version, row.id))?.secrets ?? [];
+          return (await readState())?.secrets ?? [];
         } catch (error) {
           if (!(error instanceof VaultError) || error.code !== "conflict" || attempt === 2) throw error;
         }
