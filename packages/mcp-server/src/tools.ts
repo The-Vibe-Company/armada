@@ -2268,7 +2268,16 @@ async function readLogs(
 
 function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {
   const { code, message } = describe(error);
-  if (["internal", "unavailable", "provider_unavailable", "dependency_unavailable", "outcome_unknown"].includes(code)) {
+  if (
+    [
+      "internal",
+      "unavailable",
+      "provider_unavailable",
+      "dependency_unavailable",
+      "outcome_unknown",
+      "start_failed",
+    ].includes(code)
+  ) {
     logError(redactForLog(`armada serve: tool ${tool} failed (${code}): ${describeFailure(error)}`));
   }
   return {
