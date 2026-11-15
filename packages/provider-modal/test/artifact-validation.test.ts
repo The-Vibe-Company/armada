@@ -53,32 +53,44 @@ test("embedded portable loader rejects empty/unpinned artifacts without requirin
       Bun.file(join(import.meta.dir, "../../agent-runtime/src/opencode-artifact.ts")),
     );
     const dist = join(root, "packages/agent-runtime/dist");
+    const portable = { ...pinned, architecture: "not-the-host", artifact: "portable-bundle" };
+    // Keep file-import isolation, but exercise all loader outcomes in one process.
+    await Bun.write(join(dist, "main.js"), "abc");
+    await Bun.write(join(dist, "manifest.json"), JSON.stringify(portable));
     await Bun.write(
       join(root, "check.ts"),
       `import { loadEmbeddedRunnerArtifact } from "./packages/provider-modal/src/embedded.ts";
-console.log(JSON.stringify(await loadEmbeddedRunnerArtifact()));`,
+const results = [];
+for (const [bundle, manifest] of ${JSON.stringify([
+        ["", portable],
+        ["abc", { ...portable, codex: "wrong" }],
+        ["abc", portable],
+      ])}) {
+  await Bun.write(${JSON.stringify(join(dist, "main.js"))}, bundle);
+  await Bun.write(${JSON.stringify(join(dist, "manifest.json"))}, JSON.stringify(manifest));
+  try {
+    const artifact = await loadEmbeddedRunnerArtifact();
+    results.push({ code: 0, sha256: artifact.sha256 });
+  } catch (error) {
+    results.push({ code: 1, stderr: String(error) });
+  }
+}
+console.log(JSON.stringify(results));`,
     );
-    async function run(bundle: string, manifest: unknown) {
-      await Bun.write(join(dist, "main.js"), bundle);
-      await Bun.write(join(dist, "manifest.json"), JSON.stringify(manifest));
-      const child = Bun.spawn([process.execPath, join(root, "check.ts")], { stdout: "pipe", stderr: "pipe" });
-      const [code, stdout, stderr] = await Promise.all([
-        child.exited,
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-      ]);
-      return { code, stdout, stderr };
-    }
-    const portable = { ...pinned, architecture: "not-the-host", artifact: "portable-bundle" };
-    const empty = await run("", portable);
+    const child = Bun.spawn([process.execPath, join(root, "check.ts")], { stdout: "pipe", stderr: "pipe" });
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const [empty, mismatch, valid] = JSON.parse(stdout);
     expect(empty.code).not.toBe(0);
     expect(empty.stderr).toContain("empty");
-    const mismatch = await run("abc", { ...portable, codex: "wrong" });
     expect(mismatch.code).not.toBe(0);
     expect(mismatch.stderr).toContain("pinned");
-    const valid = await run("abc", portable);
     expect(valid.code).toBe(0);
-    expect(JSON.parse(valid.stdout).sha256).toBe(digest);
+    expect(valid.sha256).toBe(digest);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
