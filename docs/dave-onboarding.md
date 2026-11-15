@@ -404,3 +404,20 @@ Both help spellings work only at those command boundaries; malformed install
 arguments are validated rather than silently returning help. Installation still
 requires an explicit project/global target and `--yes`; requesting help never
 checks out or installs anything.
+
+### Focused sign-in help
+
+Use `armada login --help` or `armada login -h` before configuring a session.
+Email and browser-provider flags are alternatives. Server selection follows
+explicit URL, then ARMADA_URL, then Armada's default API origin.
+Use a named profile and login URL to keep staging login/preferences separate:
+
+```sh
+armada --profile staging login --url https://staging.example.com --provider github
+```
+
+Replace the example origin with your actual staging server. Keep the terminal
+open until sign-in finishes; use an interactive terminal for email code entry.
+A saved personal login does not unset ARMADA_TOKEN: remove that variable from
+a command's environment when you intend to use the saved personal session.
+Never place tokens in command arguments. Help itself starts no sign-in flow.

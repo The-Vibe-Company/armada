@@ -364,6 +364,19 @@ Server rechecks authority, history and references; eligible work is queued, not 
 Output is always JSON. Use the snapshot record UUID, not a provider artifact ID.
 Example: armada snapshot retirement reconcile SNAPSHOT_UUID --org ORG_UUID --file reviewed.json
 `,
+  login: `Usage: armada login [--email <address> | --provider github|google] [--url <server-origin>]
+Sign in to Armada, not directly to a sandbox provider.
+Use --email for email code/link sign-in; --provider chooses an enabled browser method.
+Do not combine --email and --provider. Without either, discover enabled server methods.
+Server selection: --url, then ARMADA_URL, then the default Armada API origin.
+Global --profile NAME (or ARMADA_PROFILE) isolates saved login and preferences;
+use login --url to configure a new profile's server.
+Keep the terminal open while completing sign-in. Use an interactive terminal for email code entry.
+ARMADA_TOKEN supplies service-token authentication to API commands; a saved login
+does not unset that environment variable. Keep tokens in a secure environment, never arguments.
+Example: armada login --email you@example.com
+Example: armada --profile staging login --url https://staging.example.com --provider github
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
