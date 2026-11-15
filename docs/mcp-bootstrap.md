@@ -334,13 +334,14 @@ endpoint policy. The standalone gateway's strict URL/browser-Origin checks are
 unchanged and still run; a wrong browser Origin remains forbidden. A valid public
 anonymous ingress receives a scoped-bearer 401 challenge, not an origin 403.
 
-The integration regression uses a REAL local Bun HTTP server with public Host,
-real SQL lease/binding authorization and an independent SDK MCP upstream. SDK
-initialize/tool traffic crosses that plaintext proxy leg and reaches the upstream.
-Wrong host/port, userinfo, browser-Origin and forwarded spoofing are denied; path
-and repeated query encoding are preserved. Passing the original uncanonicalized
-HTTP request to the standalone gateway demonstrably reproduces SDK POST 403.
-No native VM config or SDK options were rewritten for this network repair.
+The route unit regression exercises anonymous authority admission with in-process
+Requests: correct authority challenges, while wrong host/port, userinfo,
+browser-Origin and forwarded spoofing are denied before SQL or upstream access.
+It does not prove a physical TLS-proxy leg, scoped SQL lease/binding authorization,
+SDK initialize/tool delivery, or repeated query encoding across that composition.
+Those integrated guarantees require separate coordinator staging acceptance;
+this procedure is not evidence of a pass. No native VM config or SDK options
+were rewritten for this network repair.
 
 ## Same-boot Boat restore regression
 
