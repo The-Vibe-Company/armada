@@ -4,6 +4,7 @@ import {
   type GitHubHydrationPhase,
   githubHydrationPhase,
   type LaunchError,
+  VERSION,
 } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 
@@ -77,7 +78,7 @@ import { createArmadaServer, type ToolContext } from "./tools.ts";
 export async function callSharedTool(context: ToolContext, name: string, args: Record<string, unknown>) {
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
   const server = await measure("tool_register", async () =>
-    createArmadaServer(context, "2.0.2", name === "list" ? { onlyTool: "list" } : undefined),
+    createArmadaServer(context, VERSION, name === "list" ? { onlyTool: "list" } : undefined),
   );
   const { client, a, b } = await measure("tool_connect", async () => {
     const client = new Client({ name: "armada-http", version: "1" });
