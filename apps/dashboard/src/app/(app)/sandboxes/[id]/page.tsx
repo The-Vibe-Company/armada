@@ -58,9 +58,7 @@ type Props = { params: Promise<{ id: string }> };
 export default async function SandboxPage({ params }: Props) {
   const { id } = await params;
   if (!isUuid(id)) notFound();
-  const viewer = await requireViewer();
-  const supabase = await createClient();
-  const selected = await selectedOrganization();
+  const [viewer, supabase, selected] = await Promise.all([requireViewer(), createClient(), selectedOrganization()]);
   const pending = listMemberships(supabase, viewer.id).then((items) =>
     items.filter((item) => item.org.id === selected?.org.id),
   );
