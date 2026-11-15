@@ -2,8 +2,8 @@
 
 Normal Docker launches do not accept caller-selected image strings. The server
 selects its official environment, or resolves an authorized host-local snapshot
-selected by `--golden SNAPSHOT_UUID`. The product builds snapshots from the
-versionable golden file and creates all provenance labels automatically. See
+selected by `--golden SNAPSHOT_UUID` (the existing flag spelling). The product
+builds snapshots from the versionable snapshot definition file and creates all provenance labels automatically. See
 [host-local snapshots](docker-snapshots.md) for commands, private/org authorization
 and the single coordinator check on host
 `1bd0db41-6429-430b-99e2-06d60ddf1aa3`. No hand-written labels are required.

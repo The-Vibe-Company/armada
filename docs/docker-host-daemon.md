@@ -1,9 +1,17 @@
 # Docker hosts and placement
 
-Explicit API preview for a **private, plain-image Codex sandbox**. Machine lifecycle
-is the dial-out host daemon; enrolment, health, prompt and journal are the existing
-Armada runtime channel. No inbound host port, Docker socket in the sandbox, agent
-host API, fake golden or Boat compatibility ID. Boat and Modal are unchanged.
+Docker hosts support normal dashboard/API/CLI launch, follow-up and retained
+stop/resume, plus host-local snapshot builds. See the
+[user quickstart](own-machine-quickstart.md) for the current path.
+Machine lifecycle is the dial-out host daemon; enrolment, health, prompt and
+journal use the existing Armada runtime channel. No inbound host port, Docker
+socket in the sandbox, agent host API, fabricated cloud snapshot or Boat
+compatibility ID is needed. Boat and Modal are unchanged.
+
+This reference also retains historical plain-image preview procedures. Their
+Codex-only, no-snapshot and no-resume limits describe that preview slice, not
+the current normal launch path. Use server launch discovery for enabled harnesses;
+later sections describe normal follow-up, snapshots and capacity.
 These procedures do not assert deployed acceptance. Workers do not receive host
 SSH/staging credentials, deploy or apply migrations.
 
@@ -34,7 +42,8 @@ existing Codex subscription broker are reused; no provider credential is a model
 
 Defaults pending later owner decisions: host credential has no expiry and is
 revocable; default sandbox TTL is the existing four hours; no disk quota. Ordinary
-owner-trusted Docker only. Goldens, resume, gVisor and multi-tenancy are not part of this preview. It admits **one native conversation per sandbox**, with explicit follow-up prompts
+owner-trusted Docker only. The historical plain-image preview excludes snapshot
+builds, resume, gVisor and multi-tenancy. That preview admits **one native conversation per sandbox**, with explicit follow-up prompts
 using the returned conversationId. Retries reuse the same request UUID and input;
 a new request without that conversation or for another conversation is refused.
 Wait for the previous turn's acknowledged finished event before sending a follow-up.
@@ -98,7 +107,8 @@ The account's current version is resolved and frozen on first admission; optiona
 `credentialVersion` must match if provided. `prompt` and `ttlSeconds` are optional
 (default TTL four hours, maximum one day). The example selects Codex; the launch
 dialog offers the harnesses advertised by the server. Armada selects the environment, or the user selects a host-local
-snapshot with `--golden`. Boat/Modal goldens and machine-size policy do not apply.
+snapshot with `--golden SNAPSHOT_UUID` (the retained flag spelling, not a cloud
+golden). Boat/Modal snapshots and machine-size policy do not apply.
 The server composes durable create, existing enrolment
 and artifact bootstrap, runtime health and first-prompt admission. It returns the
 existing `DockerLaunchResult`: `sandbox`, null `golden`/`helper`, unavailable
@@ -131,8 +141,9 @@ bun run armada launch --provider docker --org "$ARMADA_ORG" \
   --agent codex --json 'Reply with exactly DOCKER_OK.'
 ```
 
-Normal follow-up send remains unavailable in this slice; the private preview's
-explicit same-conversation follow-up is unchanged.
+Normal follow-up and retained stop/resume are available; see
+[the current contract](#normal-follow-up-and-stopresume-1422). The private
+preview's explicit same-conversation follow-up is a separate historical path.
 
 ### Coordinator acceptance: normal launch on the existing host
 
@@ -449,19 +460,23 @@ reported tokens; stop/delete ACKed.` The host/daemon remain for inspection and m
 be stopped by the coordinator again. Container/volume inventories must match the
 baseline. No registration replacement, prune, migration or worker host access.
 
-## Deferred capabilities, not current guarantees
+## Historical preview exclusions
 
-Docker goldens/recipe builds, snapshot/fork, resume, automatic scheduling/failover,
-public tunnels, gVisor and hostile multi-tenancy remain outside this preview.
+The original preview excluded recipe builds, snapshot/fork, resume, automatic scheduling/failover,
+public tunnels, gVisor and hostile multi-tenancy. Normal host-local snapshot
+builds and retained stop/resume have since shipped; see
+[host-local snapshots](docker-snapshots.md) and the normal follow-up contract
+below. Automatic scheduling/failover, gVisor and hostile multi-tenancy are not
+implied by those additions.
 The existing Boat/Modal declared host capabilities do not authorize weakening
 identity, ownership, source-retention or credential fences; provider names still
 matter for immutable bindings. Modal tunnel removal and Boat native-runner
 retirement are not Docker-host operations.
 
-A future golden would be a credential-free recipe built/scanned separately on
+A host-local snapshot is a credential-free recipe built/scanned separately on
 its host, never a snapshot of a live credential-bearing agent. Docker commit does
 not include mounted volume contents; it cannot by itself promise workspace
-preservation. Future stop/resume must prove quiescence, retained disk/journal and
+preservation. Retained stop/resume must prove quiescence, retained disk/journal and
 fresh enrolment/health, not assume a container start is conversation continuity.
 
 Managed uninstall below drains through normal bound stop/delete jobs and never prunes. Any future implementation must drain,
