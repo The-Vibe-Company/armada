@@ -90,6 +90,40 @@ const failed = (message: string): never => {
 };
 const HELP =
   "Usage: armada host install --server HTTPS_ORIGIN | status | uninstall\nRegistration token is read from stdin; no Armada login is required.\n";
+const LEAF_HELP: Record<string, string> = {
+  install: `Usage: armada host install --server HTTPS_ORIGIN
+Install/register the local Docker host daemon, or safely upgrade an existing registration.
+Run on the Docker machine (Linux x64 or arm64); no Armada login or organization selector.
+Obtain a one-use registration command with armada host add from your signed-in client.
+The token is supplied on stdin, never as an argument. Protect token files and installer output.
+--server must be an HTTPS origin without credentials, path, query or fragment.
+Downloaded artifacts are digest-verified before execution. An already registered machine
+keeps its registration; do not blindly repeat registration after an uncertain failure.
+Inspect armada host status and Docker/systemd access before retrying.
+Example: armada host install --server https://armada.example < /private/registration-token
+`,
+  status: `Usage: armada host status
+Inspect the local Docker host daemon, not an organization host list or sandbox status.
+Run on the Docker machine (Linux x64 or arm64); no Armada login or organization selector.
+Always emits sanitized JSON on stdout; no --json flag is needed or accepted.
+Includes registered/connected, with version and host ID when available. A missing binary
+reports {"registered":false,"connected":false}; it is not an installation attempt.
+Private machine credentials and raw native status output are not printed.
+For server-side host metadata use armada host list/show from a signed-in client.
+Example: armada host status
+`,
+  uninstall: `Usage: armada host uninstall
+Remove the local Armada Docker host installation, not an organization registration command.
+Run on the Docker machine (Linux x64 or arm64); no Armada login or organization selector.
+Delegates to the installed host binary's uninstall/drain lifecycle. Shared images and other
+workloads are preserved. A missing installation is a successful no-op.
+If uninstall does not complete, state is preserved; run armada-docker-host uninstall to
+diagnose or reconcile the drain rather than manually deleting installation state.
+This command prints human output; --json is not accepted.
+Example: armada host uninstall
+`,
+};
+
 interface Status {
   registered: boolean;
   connected: boolean;
@@ -191,7 +225,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
   try {
     const [operation, ...rest] = argv;
     if (rest.length === 1 && ["--help", "-h"].includes(rest[0] ?? "")) {
-      io.out(HELP);
+      io.out(LEAF_HELP[operation ?? ""] ?? HELP);
       return 0;
     }
     const args = parseArgs(rest, ["--server"]);
