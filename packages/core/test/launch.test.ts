@@ -584,7 +584,7 @@ describe("launch", () => {
     const launched = await launchSandbox(provider, world.stores, owner, {
       golden: "web",
       harness: "opencode",
-      model: "armada/deepseek-flash",
+      model: "deepseek-flash",
       prompt: "hello",
     });
     expect(launched.sandbox.harness).toBe("opencode");
