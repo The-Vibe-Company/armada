@@ -47,6 +47,7 @@ export type Database = {
           sequence: number;
           state: string;
           dispatch_generation: number | null;
+          dispatch_until: string | null;
           result_enc: string | null;
           failure_reason: string | null;
         };
@@ -64,6 +65,7 @@ export type Database = {
           sequence: number;
           state?: string;
           dispatch_generation?: number | null;
+          dispatch_until?: string | null;
           result_enc?: string | null;
           failure_reason?: string | null;
         };
@@ -81,6 +83,7 @@ export type Database = {
           sequence?: number;
           state?: string;
           dispatch_generation?: number | null;
+          dispatch_until?: string | null;
           result_enc?: string | null;
           failure_reason?: string | null;
         };

@@ -417,21 +417,21 @@ export async function startServer(
     runtimeMcp.prepare,
     runtimeResume,
   );
-  const dockerControls =
-    env.ARMADA_DOCKER_HOSTS === "1"
-      ? createDockerSandboxControls(sql, config.encryptionKey, {
-          prepareMcp: runtimeMcp.prepare,
-          ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
-          ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
-          ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
-          send: createDockerNormalSend(sql, config.encryptionKey, {
-            prepareMcp: runtimeMcp.prepare,
-            ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
-            enabled: dockerEnabled && Boolean(dockerBootstrap),
-            ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
-          }),
-        })
-      : undefined;
+  const makeDockerControls = (dispatchQueued: boolean) =>
+    createDockerSandboxControls(sql, config.encryptionKey, {
+      prepareMcp: runtimeMcp.prepare,
+      ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
+      ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
+      ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
+      send: createDockerNormalSend(sql, config.encryptionKey, {
+        dispatchQueued,
+        prepareMcp: runtimeMcp.prepare,
+        ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
+        enabled: dockerEnabled && Boolean(dockerBootstrap),
+        ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
+      }),
+    });
+  const dockerControls = env.ARMADA_DOCKER_HOSTS === "1" ? makeDockerControls(false) : undefined;
   const dockerLaunchEnabled = dockerEnabled && Boolean(dockerBootstrap);
   const dockerLaunch =
     env.ARMADA_DOCKER_HOSTS === "1"
@@ -670,7 +670,12 @@ export async function startServer(
   control.configureDockerLaunchRequest = (request) => server.timeout(request, 0);
   const { accountTurns: _queue, ...unqueuedControl } = control;
   accountTurns.setDispatch((caller, input) =>
-    dispatchControlCommand("sandbox/send", caller, { ...input }, unqueuedControl),
+    dispatchControlCommand(
+      "sandbox/send",
+      caller,
+      { ...input },
+      { ...unqueuedControl, ...(dockerControls ? { dockerControls: makeDockerControls(true) } : {}) },
+    ),
   );
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers), {
     delayMs: idleDelayMs,

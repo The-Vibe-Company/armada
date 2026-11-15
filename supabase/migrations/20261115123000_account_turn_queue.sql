@@ -13,6 +13,7 @@ create table public.account_turn_queue (
   sequence bigint generated always as identity unique,
   state text not null default 'queued' check (state in ('queued','dispatching','admitted','failed')),
   dispatch_generation bigint,
+  dispatch_until timestamptz,
   result_enc bytea,
   failure_reason text,
   primary key (sandbox_id,request_id)

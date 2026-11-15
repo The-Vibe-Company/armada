@@ -432,6 +432,12 @@ export function createArmadaServer(context: ToolContext, version: string, option
       // The SDK's callback type is generic over every schema flavour; the input is the parsed `In`.
       (async (args: z.infer<z.ZodObject<In>>): Promise<CallToolResult> => {
         try {
+          if (
+            name === "stop" &&
+            !(args as Record<string, unknown>).only_if_idle &&
+            typeof (args as Record<string, unknown>).id === "string"
+          )
+            await context.accountTurns?.cancelQueued(caller, (args as Record<string, unknown>).id as string);
           const routed = ["send", "status", "wait"].includes(name)
             ? undefined
             : await context.dockerControls?.invoke(caller, name, args);

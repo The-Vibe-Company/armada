@@ -1,9 +1,22 @@
 import { createHash, randomUUID } from "node:crypto";
-import { accountWorkingCountSql, decryptSecret, encryptSecret, type Sql, VaultError } from "@armada/core/server";
+import {
+  accountWorkingCountSql,
+  decryptSecret,
+  encryptSecret,
+  type Harness,
+  resolveModelChoice,
+  type Sql,
+  VaultError,
+} from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import type { Caller } from "./caller.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 
+const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
+  or exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))
+  or exists(select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=q.request_id)
+  or exists(select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id and j.request_id=q.request_id))`;
+const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
 type Entry = {
   sequence: string;
   sandbox_id: string;
@@ -20,7 +33,8 @@ type Entry = {
   conversation_id: string;
 };
 /** Durable encrypted sends. Account locking serializes FIFO admission across server replicas.
- * Dispatching is deliberately not retried: native providers have no idempotent prompt protocol.
+ * Native dispatches are never retried: native providers have no idempotent prompt protocol.
+ * Runtime-backed lanes reconcile the same durable request under a bounded dispatch lease.
  * An uncertain dispatch retains its slot until lifecycle evidence or an owner stop resolves it. */
 export function createAccountTurnQueue(sql: Sql, key: string) {
   const pending = new Set<Promise<unknown>>();
@@ -55,6 +69,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     const entry = await sql.transaction(async (tx) => {
       const target = (
         await tx.query<{
+          harness: Harness;
           provider: string;
           boat_runtime: boolean;
           runtime_transport: string | null;
@@ -65,7 +80,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           org_id: string;
           conversation_ids: string[];
         }>(
-          `select s.provider,s.boat_runtime,s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,s.conversation_ids from public.sandboxes s
+          `select s.harness,s.provider,s.boat_runtime,s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,s.conversation_ids from public.sandboxes s
          join public.members m on m.org_id=s.org_id and m.user_id=$2
          where s.id=$1 and s.owner_id=$2 and s.deleted_at is null`,
           [input.id, caller.userId],
@@ -84,6 +99,18 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         if (Buffer.byteLength(input.prompt) > 262144) throw new VaultError("invalid", "The prompt is too large.");
         if (input.conversation_id !== undefined && !target.conversation_ids.includes(input.conversation_id))
           throw new VaultError("invalid", "Continue an existing runtime conversation.");
+      }
+      if (
+        !(target.boat_runtime || target.runtime_transport === "dialout" || target.provider === "docker") &&
+        (input.model !== undefined || input.reasoning_effort !== undefined)
+      ) {
+        resolveModelChoice(
+          target.harness,
+          { model: input.model, reasoningEffort: input.reasoning_effort },
+          target.model && target.reasoning_effort
+            ? { model: target.model, reasoningEffort: target.reasoning_effort }
+            : undefined,
+        );
       }
       const member = (
         await tx.query<{ epoch: string }>(
@@ -155,6 +182,15 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   }
   return {
     accept,
+    async cancelQueued(caller: Caller, sandboxId: string) {
+      await sql.query(
+        `update public.account_turn_queue q set state='failed',failure_reason='Queued prompt was cancelled.'
+        from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2
+        where q.sandbox_id=s.id and s.id=$1 and s.owner_id=$2 and q.owner_id=$2 and q.state='queued'
+        and s.org_id=any($3::uuid[])`,
+        [sandboxId, caller.userId, caller.orgs.map((org) => org.orgId)],
+      );
+    },
     async status(caller: Caller, sandboxId: string, promptId?: string) {
       promptId = promptId?.toLowerCase();
       const row = (
@@ -180,9 +216,11 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         conversationId: row.conversation_id,
         failed: row.state === "failed",
         message:
-          row.state === "dispatching"
-            ? "Prompt dispatch is pending; uncertain outcomes are not retried."
-            : await waitingMessage(row.account_id),
+          row.state === "failed"
+            ? "Queued prompt was cancelled."
+            : row.state === "dispatching"
+              ? "Prompt dispatch is pending; inspect status before sending another request."
+              : await waitingMessage(row.account_id),
       };
     },
     setDispatch(value: NonNullable<typeof dispatch>) {
@@ -200,7 +238,8 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           and s.activity_lease_id is null and s.status in ('stopped','deleted') and s.lifecycle_generation>q.dispatch_generation`);
         const candidates = (
           await sql.query<Entry>(
-            `select q.* from public.account_turn_queue q where q.state='queued'
+            `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
+             where (q.state='queued' or (q.state='dispatching' and q.dispatch_until<=now() and q.dispatch_generation is not null and ${RUNTIME_LANE} and (${RUNTIME_REQUEST_EVIDENCE} or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null))))
            and not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.sequence<q.sequence)
            order by case when q.sequence>$1::bigint then 0 else 1 end,q.sequence limit 20`,
             [scanAfter],
@@ -208,6 +247,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         ).rows;
         for (const candidate of candidates) {
           scanAfter = String(candidate.sequence);
+          const recovering = candidate.state === "dispatching";
           const admitted = await sql.transaction!(async (tx) => {
             const member = (
               await tx.query<{ role: "admin" | "member"; epoch: string }>(
@@ -218,27 +258,26 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             ).rows[0];
             await tx.query("select id from public.credentials where id=$1 for update", [candidate.account_id]);
             const current = await tx.query(
-              `select q.request_id from public.account_turn_queue q where q.sandbox_id=$1 and q.request_id=$2 and q.state='queued'
+              `select q.request_id from public.account_turn_queue q where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
+              and (q.state='queued' or q.dispatch_until<=now())
               and not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.sequence<q.sequence) for update of q`,
-              [candidate.sandbox_id, candidate.request_id],
+              [candidate.sandbox_id, candidate.request_id, candidate.state],
             );
             if (!current.rows.length) return null;
-            const valid = await tx.query<{ id: string; commands: string; host_jobs: string; resumes: string }>(
-              `select s.id,
-             coalesce((select max(sequence) from public.runtime_commands where sandbox_id=s.id),0)::text as commands,
-             coalesce((select max(position) from public.docker_host_jobs where bound_sandbox_id=s.id),0)::text as host_jobs,
-             (select count(*) from public.runtime_resumes where sandbox_id=s.id)::text as resumes from public.sandboxes s join public.credentials c on c.id=s.credential_id
+            const valid = await tx.query<{ id: string; runtime: boolean }>(
+              `select s.id,${RUNTIME_LANE} as runtime from public.sandboxes s join public.credentials c on c.id=s.credential_id
              where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.credential_id=$4 and s.credential_version=$5
              and c.version=$5 and c.status='active' and (c.expires_at is null or c.expires_at>now())
              and ((c.scope='user' and c.owner_id=$2) or (c.scope='org' and c.owner_id=$3))
              and s.deleted_at is null and s.stop_requested_at is null and s.expires_at>now()
-             and s.status in ('ready','running','stopped') for update of s`,
+             and (s.status in ('ready','running','stopped') or ($6::boolean and s.status='starting')) for update of s`,
               [
                 candidate.sandbox_id,
                 candidate.owner_id,
                 candidate.org_id,
                 candidate.account_id,
                 candidate.credential_version,
+                recovering,
               ],
             );
             if (!member || member.epoch !== String(candidate.actor_epoch) || !valid.rows.length) {
@@ -248,27 +287,32 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               );
               return null;
             }
+            if (recovering && !valid.rows[0]!.runtime) return null;
             const busy = await tx.query(
               `select 1 from public.account_turn_queue where sandbox_id=$1 and state='dispatching'
              union all select 1 from public.sandboxes s where s.id=$1 and (s.reconcile_lease_until>now() or s.activity_lease_id is not null
              or (s.task_prompt_id is not null and s.status='running' and not exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled))) limit 1`,
               [candidate.sandbox_id],
             );
-            if (busy.rows.length) return null;
+            if (!recovering && busy.rows.length) return null;
             try {
-              await admitAccountCapacity(tx, candidate.account_id, candidate.sandbox_id);
+              if (!recovering) await admitAccountCapacity(tx, candidate.account_id, candidate.sandbox_id);
+              else
+                await tx.query(
+                  "insert into public.account_agent_reservations(sandbox_id,account_id) values($1,$2) on conflict(sandbox_id) do nothing",
+                  [candidate.sandbox_id, candidate.account_id],
+                );
             } catch (error) {
               if (error instanceof VaultError && error.code === "conflict") return null;
               throw error;
             }
             const claimed = await tx.query(
-              "update public.account_turn_queue set state='dispatching',dispatch_generation=(select lifecycle_generation from public.sandboxes where id=$1) where sandbox_id=$1 and request_id=$2 and state='queued' returning request_id",
-              [candidate.sandbox_id, candidate.request_id],
+              "update public.account_turn_queue set dispatch_generation=case when state='queued' then (select lifecycle_generation from public.sandboxes where id=$1) else dispatch_generation end,state='dispatching',dispatch_until=now()+interval '15 minutes' where sandbox_id=$1 and request_id=$2 and state=$3 returning request_id",
+              [candidate.sandbox_id, candidate.request_id, candidate.state],
             );
             if (!claimed.rows.length) return null;
             return {
               entry: candidate,
-              before: valid.rows[0]!,
               caller: {
                 userId: candidate.owner_id,
                 via: "service" as const,
@@ -301,21 +345,16 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
               where s.id=$1 and q.state='dispatching' and s.lifecycle_generation=q.dispatch_generation
               and s.activity_lease_id is null
-              and coalesce((select max(sequence) from public.runtime_commands where sandbox_id=s.id),0)=$3::bigint
-              and coalesce((select max(position) from public.docker_host_jobs where bound_sandbox_id=s.id),0)=$4::bigint
-              and (select count(*) from public.runtime_resumes where sandbox_id=s.id)=$5::bigint
+              and not exists(select 1 from public.runtime_commands where sandbox_id=s.id
+                and request_id in ('follow_'||$2::text,'docker_prompt_'||$2::text,'resume_'||$2::text))
+              and not exists(select 1 from public.docker_host_jobs where bound_sandbox_id=s.id and request_id=$2::uuid)
+              and not exists(select 1 from public.runtime_resumes where sandbox_id=s.id and request_id=$2::uuid)
               for update of s,q`,
-              [
-                picked.entry.sandbox_id,
-                picked.entry.request_id,
-                picked.before.commands,
-                picked.before.host_jobs,
-                picked.before.resumes,
-              ],
+              [picked.entry.sandbox_id, picked.entry.request_id],
             );
             if (unchanged.rows.length) {
               await tx.query(
-                `with retried as (update public.account_turn_queue set state='queued',failure_reason=null,dispatch_generation=null
+                `with retried as (update public.account_turn_queue set state='queued',failure_reason=null,dispatch_generation=null,dispatch_until=null
                 where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
                 delete from public.account_agent_reservations r using retried q where r.sandbox_id=q.sandbox_id`,
                 [picked.entry.sandbox_id, picked.entry.request_id],
@@ -323,7 +362,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             } else {
               // No raw exception text: provider diagnostics may contain credentials.
               await tx.query(
-                "update public.account_turn_queue set failure_reason='Dispatch outcome uncertain; inspect or stop the sandbox before sending again.' where sandbox_id=$1 and request_id=$2 and state='dispatching'",
+                `update public.account_turn_queue q set failure_reason='Dispatch outcome uncertain; inspect status.',
+                 dispatch_until=case when ${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE} then now() else q.dispatch_until end
+                 from public.sandboxes s where s.id=q.sandbox_id and q.sandbox_id=$1 and q.request_id=$2 and q.state='dispatching'`,
                 [picked.entry.sandbox_id, picked.entry.request_id],
               );
             }

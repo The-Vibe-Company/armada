@@ -22,7 +22,7 @@ beforeAll(async () => {
     create table orgs(id uuid primary key);
     create table members(org_id uuid,user_id uuid,role text);
     create table mcp_actor_epochs(org_id uuid,user_id uuid,epoch bigint);
-    create table sandboxes(id uuid primary key,provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
+    create table sandboxes(id uuid primary key,harness text default 'codex',provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
       conversation_ids text[],status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
       activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 0,reconcile_lease_until timestamptz);
     create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
@@ -49,7 +49,7 @@ beforeAll(async () => {
 afterAll(() => db.close());
 beforeEach(async () => {
   await db.exec(
-    "delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',task_prompt_id=null,stopped_at=null,lifecycle_generation=0; update mcp_actor_epochs set epoch=1;",
+    "delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',task_prompt_id=null,stopped_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -234,7 +234,7 @@ test("a proven pre-dispatch rejection requeues without leaking the account reser
   queue.setDispatch(async () => {
     calls++;
     if (calls === 1) {
-      await db.query("insert into runtime_commands values($1,1,'readonly_get_prompt')",[input.id]);
+      await db.query("insert into runtime_commands values($1,1,'readonly_get_prompt')", [input.id]);
       throw Error("reconcile lease won admission after getPrompt probe");
     }
     return { promptId: "accepted_after_retry", conversationId: "history", status: "running" };
@@ -266,4 +266,124 @@ test("uppercase request UUIDs preserve one queue identity and status alias", asy
   await queue.reconcileOne(new AbortController().signal);
   await queue.drain();
   expect(await queue.status(caller, input.id, uppercase)).toEqual({ nativePromptId: "case_actual_prompt" });
+});
+
+test.each(["docker", "boat", "modal"] as const)(
+  "pending %s runtime wake reconciles only its original durable request",
+  async (provider) => {
+    const input = { id: ids[1]!, request_id: requests[0]!, prompt: "resume the same conversation" };
+    await db.query(
+      "update sandboxes set provider=$2,boat_runtime=$3,runtime_transport=$4,status='stopped',stopped_at=now() where id=$1",
+      [input.id, provider, provider === "boat", provider === "modal" ? "dialout" : null],
+    );
+    await queue.accept(caller, input);
+    const requestsSeen: unknown[] = [];
+    queue.setDispatch(async (_caller, request) => {
+      requestsSeen.push(request);
+      if (requestsSeen.length === 1) {
+        await db.query(
+          "update sandboxes set status='starting',stopped_at=null,lifecycle_generation=lifecycle_generation+1,activity_lease_id=$2 where id=$1",
+          [input.id, input.request_id],
+        );
+        if (provider === "docker")
+          await db.query("insert into docker_host_jobs values($1,1,$2)", [input.id, input.request_id]);
+        else await db.query("insert into runtime_resumes values($1,$2)", [input.id, input.request_id]);
+        throw Error("wake still pending");
+      }
+      return { promptId: "resumed_prompt", conversationId: "history", status: "running" };
+    });
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await queue.drain();
+    expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(1);
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await queue.drain();
+    expect(requestsSeen).toEqual([input, input]);
+    expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "resumed_prompt" });
+  },
+);
+
+test("native invalid model settings are rejected before a durable prompt is queued", async () => {
+  await expect(
+    queue.accept(caller, {
+      id: ids[1]!,
+      request_id: requests[0]!,
+      prompt: "instruction",
+      model: "invalid model with spaces",
+    }),
+  ).rejects.toThrow();
+  expect((await db.query("select * from account_turn_queue")).rows).toEqual([]);
+});
+
+test("a native request with its own durable mutating command stays uncertain rather than replaying", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "possibly accepted instruction" };
+  await queue.accept(caller, input);
+  let calls = 0;
+  queue.setDispatch(async () => {
+    calls++;
+    await db.query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
+    throw Error("reply lost");
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(calls).toBe(1);
+  expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(1);
+});
+
+test("runtime dispatch leases survive a server restart without replaying while another dispatcher owns the lease", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "recover a claimed instruction" };
+  await db.query("update sandboxes set provider='docker' where id=$1", [input.id]);
+  await queue.accept(caller, input);
+  await db.query(
+    "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()+interval '1 hour' where sandbox_id=$1",
+    [input.id],
+  );
+  await db.query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
+  const restarted = createAccountTurnQueue(sql, btoa("x".repeat(32)));
+  let calls = 0;
+  restarted.setDispatch(async (_caller, request) => {
+    calls++;
+    expect(request).toEqual(input);
+    return { promptId: "recovered_prompt", conversationId: "history", status: "running" };
+  });
+  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
+  await db.query("update account_turn_queue set dispatch_until=now()-interval '1 second' where sandbox_id=$1", [
+    input.id,
+  ]);
+  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(true);
+  await restarted.drain();
+  expect(calls).toBe(1);
+  expect(await restarted.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "recovered_prompt" });
+});
+
+test("explicit owner stop cancels waiting prompts before Docker no-op routing, but idle cleanup and dispatching work stay intact", async () => {
+  const { callSharedTool } = await import("./tool-api.ts");
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "do not wake after explicit stop" };
+  await queue.accept(caller, input);
+  const context = {
+    caller,
+    accountTurns: queue,
+    dockerControls: { invoke: async () => ({ handled: true, result: { id: input.id, status: "stopped" } }) },
+  } as unknown as import("./tools.ts").ToolContext;
+  await callSharedTool(context, "stop", { id: input.id, only_if_idle: true });
+  expect((await queue.status(caller, input.id, input.request_id))?.failed).toBe(false);
+  // The same sandbox may have another admitted/uncertain operation; cancel only queued facts.
+  await db.query(
+    "insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state) select sandbox_id,$2,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'dispatching' from account_turn_queue where sandbox_id=$1",
+    [input.id, requests[1]],
+  );
+  await db.query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
+  await callSharedTool(context, "stop", { id: input.id });
+  expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({
+    failed: true,
+    message: "Queued prompt was cancelled.",
+  });
+  expect((await db.query("select * from account_turn_queue where state='dispatching'")).rows).toHaveLength(1);
+  expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(1);
+  let dispatched = false;
+  queue.setDispatch(async () => {
+    dispatched = true;
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(dispatched).toBe(false);
 });
