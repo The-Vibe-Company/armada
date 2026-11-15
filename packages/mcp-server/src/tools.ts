@@ -252,7 +252,31 @@ const sandboxUsage = z
   .nullable()
   .optional();
 
+// Logical Armada lifetime only; provider deadlines never drive this warning.
+function logicalExpiry(expiresAt: string | null | undefined, now: Date) {
+  const deadline = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+  const timeLeftSeconds = Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - now.getTime()) / 1000)) : null;
+  return {
+    expiresAt: expiresAt ?? null,
+    timeLeftSeconds,
+    expiringSoon: timeLeftSeconds !== null && timeLeftSeconds <= 300,
+  };
+}
+
+const expiryOutput = {
+  timeLeftSeconds: z
+    .number()
+    .int()
+    .nonnegative()
+    .nullable()
+    .describe("Seconds until persisted Armada logical expiry, rounded up and clamped to zero; null if unknown."),
+  expiringSoon: z
+    .boolean()
+    .describe("True when known logical time left is at most five minutes, including expired resources."),
+};
+
 const sandboxListMetadata = z.object({
+  ...expiryOutput,
   idlePaused: z.boolean().optional(),
   statusMessage: z.string().nullable().optional(),
   usage: sandboxUsage,
@@ -302,6 +326,11 @@ const skillReceipts = z
   .optional();
 
 const status = {
+  ...expiryOutput,
+  providerExpiresAt: z
+    .string()
+    .nullable()
+    .describe("Provider physical deadline, when observed; distinct from Armada logical expiry."),
   billingAccount: z
     .object({
       id: z.string(),
@@ -392,7 +421,15 @@ export function createArmadaServer(context: ToolContext, version: string, option
       (async (args: z.infer<z.ZodObject<In>>): Promise<CallToolResult> => {
         try {
           const routed = name === "send" ? undefined : await context.dockerControls?.invoke(caller, name, args);
-          const value = routed?.handled ? routed.result : await run(args);
+          const raw = routed?.handled ? routed.result : await run(args);
+          const value =
+            routed?.handled && (name === "status" || name === "wait")
+              ? {
+                  ...(raw as Record<string, unknown>),
+                  ...logicalExpiry((raw as { expiresAt: string | null }).expiresAt, context.now()),
+                  providerExpiresAt: null,
+                }
+              : raw;
           const sandboxId = (args as Record<string, unknown>).id;
           const result =
             (name === "status" || name === "wait") && context.sandboxBillingAccount && typeof sandboxId === "string"
@@ -684,23 +721,41 @@ export function createArmadaServer(context: ToolContext, version: string, option
     return { ...target, enrolled };
   };
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
-  const statusOf = async (sandboxId: string, promptId: string | undefined, stored = false): Promise<StatusReport> => {
+  const statusOf = async (
+    sandboxId: string,
+    promptId: string | undefined,
+    stored = false,
+    allowRecordedFallback = false,
+  ): Promise<StatusReport & ReturnType<typeof logicalExpiry>> => {
     const found = await measure("sandbox_read", () => visible(sandboxId));
-    const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
-    const provider =
-      found.status === "deleted" || isStatusReadFenced(found)
-        ? null
-        : storedProvider
-          ? await storedProvider(found)
-          : await context.provider(found);
-    const result = await measure("state", () =>
-      readStatus(provider, data.sandboxes, found, {
-        stored: storedProvider !== undefined,
-        ...(promptId ? { promptId } : {}),
-        now: context.now(),
-      }),
-    );
-    return { ...result, statusMessage: idlePauseMessage(result, context.now()) };
+    try {
+      const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
+      const provider =
+        found.status === "deleted" || isStatusReadFenced(found)
+          ? null
+          : storedProvider
+            ? await storedProvider(found)
+            : await context.provider(found);
+      const result = await measure("state", () =>
+        readStatus(provider, data.sandboxes, found, {
+          stored: storedProvider !== undefined,
+          ...(promptId ? { promptId } : {}),
+          now: context.now(),
+        }),
+      );
+      return {
+        ...result,
+        ...logicalExpiry(result.expiresAt, context.now()),
+        statusMessage: idlePauseMessage(result, context.now()),
+      };
+    } catch (error) {
+      if (!allowRecordedFallback || !(error instanceof ProviderError)) throw error;
+      return {
+        ...recordedStatus(found),
+        ...logicalExpiry(found.expiresAt, context.now()),
+        statusMessage: "Provider observation unavailable; showing recorded state.",
+      };
+    }
   };
 
   tool(
@@ -1238,7 +1293,11 @@ export function createArmadaServer(context: ToolContext, version: string, option
           limit,
           hasMore,
           nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
-          sandboxes: rows.map((row) => ({ ...row, statusMessage: idlePauseMessage(row, context.now()) })),
+          sandboxes: rows.map((row) => ({
+            ...row,
+            ...logicalExpiry(row.expiresAt, context.now()),
+            statusMessage: idlePauseMessage(row, context.now()),
+          })),
         };
       },
     );
@@ -1306,13 +1365,15 @@ export function createArmadaServer(context: ToolContext, version: string, option
       output: status,
       readOnly: true,
     },
-    async (args) =>
-      args.recorded
-        ? {
-            ...recordedStatus(await visible(args.id)),
-            statusMessage: `Recorded state only; use armada status ${args.id} --live for provider and prompt details.`,
-          }
-        : statusOf(args.id, args.prompt_id, args.recorded === undefined),
+    async (args) => {
+      if (!args.recorded) return statusOf(args.id, args.prompt_id, args.recorded === undefined, true);
+      const found = await visible(args.id);
+      return {
+        ...recordedStatus(found),
+        ...logicalExpiry(found.expiresAt, context.now()),
+        statusMessage: `Recorded state only; use armada status ${args.id} --live for provider and prompt details.`,
+      };
+    },
   );
 
   tool(

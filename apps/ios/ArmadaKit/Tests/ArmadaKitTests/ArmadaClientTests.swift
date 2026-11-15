@@ -254,6 +254,7 @@ private actor RefreshTransport: ArmadaTransport {
             #expect(ArmadaServerFailure.underlying(error) == cause)
             if cause == .noRunningTurn {
                 #expect(SandboxMutationFailure.classify(error) == .refused)
+                #expect(error.localizedDescription == "No turn was running, so nothing was delivered. Send your text as a normal message to start a new turn.")
             }
         }
         #expect(await transport.requests.count == 2)

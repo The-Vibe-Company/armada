@@ -1,5 +1,7 @@
 # Template ingredient links — #1038, next slice
 
+> Historical first slice. Library backlinks described below as follow-ups were subsequently delivered; see [the completion ledger](navigation-completion.md) and [the integrated navigation record](navigation-structure.md). Running-sandbox counts and model-account backlinks were ideas in the original proposal, not requirements of the owner-approved replacement.
+
 Follows #1040's relationship-first navigation. The template panel's environment, agent, tools, variables, secrets and skill pins are links to their existing management pages. Environments list the current visible templates that reference them, with links back to the template panel.
 
 ## Design and boundaries

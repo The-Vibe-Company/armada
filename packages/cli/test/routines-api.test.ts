@@ -337,15 +337,13 @@ test("routine version conflicts are not retried; ambiguous names never select a 
 });
 
 test("routine help is available without authentication or requests", async () => {
-  // Focused reader and state-change help is owned by onboarding-help.test.ts.
-  for (const action of ["", "create", "update"]) {
-    for (const help of ["--help", "-h"]) {
-      const response = await invoke([...(action ? [action] : []), help], { token: "" });
-      expect(response.code).toBe(0);
-      expect(response.requests).toHaveLength(0);
-      expect(response.out).toContain("at least ONE HOUR apart");
-      expect(response.out).toContain("--expected-version");
-    }
+  // Leaf help is owned by onboarding-help.test.ts.
+  for (const help of ["--help", "-h"]) {
+    const response = await invoke([help], { token: "" });
+    expect(response.code).toBe(0);
+    expect(response.requests).toHaveLength(0);
+    expect(response.out).toContain("at least ONE HOUR apart");
+    expect(response.out).toContain("--expected-version");
   }
 });
 

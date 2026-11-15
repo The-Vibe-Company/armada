@@ -276,8 +276,8 @@ function LaunchForm({
             {provider === "modal"
               ? "Modal supports Claude Code, Codex and OpenCode, including custom model connections."
               : provider === "boat"
-                ? "Boat supports standard Claude Code and Codex accounts here. OpenCode is available through the Boat shared runtime launch API, not this form. Custom model connections require Modal."
-                : `${PROVIDER_LABELS[provider]} supports standard Claude Code and Codex accounts in this form. Choose a Modal snapshot for OpenCode and custom model connections.`}
+                ? "Boat supports Claude Code and Codex here, including custom model connections through the Armada runtime. OpenCode is available through the Boat shared runtime launch API, not this form."
+                : `${PROVIDER_LABELS[provider]} supports Claude Code and Codex, including custom model connections through the Armada runtime. Choose a Modal snapshot for OpenCode in this form.`}
           </p>
           {/* Who is billed stays in view: it is never a collapsed default. */}
           <AccountField

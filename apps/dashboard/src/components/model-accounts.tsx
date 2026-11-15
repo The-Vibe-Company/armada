@@ -966,8 +966,8 @@ function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
             />
           </div>
           <p id={`${idPrefix}-gateway-hint`} className="text-xs text-muted-foreground">
-            Modal only. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages; it must
-            support Anthropic Messages, streaming and tool use.
+            Available on Modal, Docker hosts and runtime-backed Boat. Claude Code supports Claude models only. Use the
+            gateway base URL, not /v1/messages; it must support Anthropic Messages, streaming and tool use.
           </p>
           <div className="space-y-2">
             <Label htmlFor={`${idPrefix}-gateway-auth`}>Gateway authentication</Label>
@@ -1119,8 +1119,8 @@ function CustomEndpointFields({
           </div>
           <p id={`${idPrefix}-endpoint-hint`} className="text-xs text-muted-foreground">
             {codex
-              ? "Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Modal only. Codex cannot use chat-completions-only endpoints such as DeepSeek."
-              : "Modal only. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages. The gateway must support Anthropic Messages, streaming and tool use."}
+              ? "Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Custom endpoints use the Armada runtime on Boat. Codex cannot use chat-completions-only endpoints such as DeepSeek."
+              : "Available on Modal, Docker hosts and runtime-backed Boat. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages. The gateway must support Anthropic Messages, streaming and tool use."}
           </p>
           {codex ? (
             <div className="space-y-2">
@@ -1371,8 +1371,8 @@ export function AddAccountDialog({
                 : kind === "opencode"
                   ? "OpenCode runs on Modal and through the Boat shared runtime API. Native Boat is not supported. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
                   : preset?.models === "choose"
-                    ? "This custom connection requires Modal. It is not available on Boat or Docker hosts."
-                    : "With a standard vendor account, Codex and Claude Code run on Modal, Boat and Docker hosts. Custom endpoints require Modal."}
+                    ? "This custom connection works on Modal, Docker hosts and runtime-backed Boat sandboxes."
+                    : "With a standard vendor account, Codex and Claude Code run on Modal, Boat and Docker hosts. Custom endpoints also work on runtime-backed Boat and Docker hosts."}
             </p>
 
             {isAdmin && (
@@ -1592,7 +1592,7 @@ export function HarnessAccounts({
         <p className="text-xs text-muted-foreground" data-harness-availability>
           {harness === "opencode"
             ? "OpenCode runs on Modal and through the Boat shared runtime API, not native Boat. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
-            : "Standard vendor accounts work on Modal, Boat and Docker hosts. Custom endpoints require Modal; testing also requires a running Modal sandbox."}
+            : "Standard vendor accounts work on Modal, Boat and Docker hosts. Custom endpoints also work on runtime-backed Boat and Docker hosts; testing requires a running Modal sandbox."}
         </p>
         {accounts.length > 0 && <LaunchUses resolved={resolved} harnessLabel={harnessLabel} now={now} />}
       </div>

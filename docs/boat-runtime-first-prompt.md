@@ -685,3 +685,29 @@ uses the standard harness probe and refuses before allocation unless OpenCode
 runtime support is advertised. Boat remains outside staging and the release gate.
 No live provider check, migration application, deployment or default change was
 performed by this worker.
+
+### Custom model endpoints on Boat (#2051)
+
+Custom Claude gateways and Codex Responses endpoints (including Morph and Azure)
+select the shared Armada runtime on Boat even when ordinary launches remain native.
+The server must contain the existing Boat runtime manifest and compiled artifacts;
+missing artifacts refuse before allocation and recommend Modal or a Docker host.
+No deployment-wide native/runtime default change is required.
+
+The old refusal was a delivery-path restriction, not evidence of blocked Boat
+egress: native Boat agent APIs do not consume Armada's endpoint descriptors.
+Modal's runtime and Docker's runtime already parse those descriptors into harness
+configuration. Boat now uses that same runtime machinery: empty fork environment,
+encrypted enrolment carrying the key and endpoint descriptor, persisted model and
+immutable runtime selection for subsequent turns. Keys are not put in Boat account
+environment, public arguments or the golden. OpenCode support is described separately
+above; custom endpoint routing does not broaden template application-secret delivery.
+
+Coordinator-only production acceptance after a normal release: with existing Boat
+golden and Morph accounts, launch Claude and Codex through ordinary launch, verify
+runtime history and a completed answer with the selected Morph model, then send a
+follow-up and stop/delete the owned sandbox. Also verify an existing Azure or
+custom gateway account preserves its base URL/model configuration. Inspect logs
+for absence of credentials. Network reachability and real inference remain
+unverified by offline tests. Do not add Boat to staging or release gates; Modal
+and Docker keep their existing staging acceptance.
