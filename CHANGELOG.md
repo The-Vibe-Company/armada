@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.44.0](https://github.com/The-Vibe-Company/armada/compare/v2.43.0...v2.44.0) (2026-11-15)
+
+
+### Features
+
+* **accounts:** test model connections on running Boat runtimes ([#2120](https://github.com/The-Vibe-Company/armada/issues/2120)) ([79a0c83](https://github.com/The-Vibe-Company/armada/commit/79a0c83b27fc9e312382d4df2d8fa913c44410a0))
+* **smoke:** prove dashboard and CLI stop request parity ([#2101](https://github.com/The-Vibe-Company/armada/issues/2101)) ([8475c67](https://github.com/The-Vibe-Company/armada/commit/8475c6771ff007d690033768fd6d69b6487920bd))
+
+
+### Bug Fixes
+
+* **cli:** avoid unknown-outcome warning for Docker launch refusals ([#2103](https://github.com/The-Vibe-Company/armada/issues/2103)) ([beaba7a](https://github.com/The-Vibe-Company/armada/commit/beaba7aa54caf8498d10b1ee601a46632d684093))
+* **cli:** show bare host usage before account setup ([#2095](https://github.com/The-Vibe-Company/armada/issues/2095)) ([9b97f7a](https://github.com/The-Vibe-Company/armada/commit/9b97f7a02e4a4f8226eb4cb45adf0923865c4595))
+* **cli:** show bare resource indexes before account setup ([#2100](https://github.com/The-Vibe-Company/armada/issues/2100)) ([1bdecb8](https://github.com/The-Vibe-Company/armada/commit/1bdecb891553532961cd670608d990b6ff3f6fae))
+* **dashboard:** align landing and sandbox snapshot terminology ([#2118](https://github.com/The-Vibe-Company/armada/issues/2118)) ([bd13ed4](https://github.com/The-Vibe-Company/armada/commit/bd13ed48d45fc91185bfb263dc5b02e24100f787))
+* **launch:** automatically select Boat runtime for OpenCode ([#2106](https://github.com/The-Vibe-Company/armada/issues/2106)) ([53ae31c](https://github.com/The-Vibe-Company/armada/commit/53ae31c1469c10ce7be010522a86cbef4e698502))
+* **lifecycle:** fence authority-loss stops into operator custody ([#2113](https://github.com/The-Vibe-Company/armada/issues/2113)) ([889ab83](https://github.com/The-Vibe-Company/armada/commit/889ab832b593892384dbd0d3a2fd694e1555c2cd))
+* **release:** reject gaps in forward staging history ([#2115](https://github.com/The-Vibe-Company/armada/issues/2115)) ([ea48e83](https://github.com/The-Vibe-Company/armada/commit/ea48e83af51583980c9fcd0e18bcabd87ae3b372))
+* **release:** tolerate known forward staging migration history ([#2094](https://github.com/The-Vibe-Company/armada/issues/2094)) ([d375422](https://github.com/The-Vibe-Company/armada/commit/d375422102149a2fa77e798d7ce6018b49083209))
+* **runtime:** surface OpenCode native retry waits ([#2097](https://github.com/The-Vibe-Company/armada/issues/2097)) ([0341a04](https://github.com/The-Vibe-Company/armada/commit/0341a048017c74eae37eb7278e79e4ccc8d4019b))
+* **server:** log launch failure causes and document migration recovery ([#2111](https://github.com/The-Vibe-Company/armada/issues/2111)) ([2f373a8](https://github.com/The-Vibe-Company/armada/commit/2f373a864cc0b2e8b4fa173a1a1868e5b1170069))
+
+
+### Performance Improvements
+
+* **ci:** reuse authenticated exact-SHA staging smoke evidence ([#2110](https://github.com/The-Vibe-Company/armada/issues/2110)) ([0efbb1a](https://github.com/The-Vibe-Company/armada/commit/0efbb1a63e401693d893c6154fc72e6d6eac5ba2))
+* **dashboard:** avoid eager sidebar page renders ([#2119](https://github.com/The-Vibe-Company/armada/issues/2119)) ([6788eea](https://github.com/The-Vibe-Company/armada/commit/6788eea1176347b5459db439cdfdd4ec2f0542ce))
+* **dashboard:** overlap sandbox detail enrichment reads ([#2127](https://github.com/The-Vibe-Company/armada/issues/2127)) ([f06198c](https://github.com/The-Vibe-Company/armada/commit/f06198ca725b119b554a877277cfb05b9cd880cf))
+
 ## [2.43.0](https://github.com/The-Vibe-Company/armada/compare/v2.42.0...v2.43.0) (2026-11-15)
 
 
