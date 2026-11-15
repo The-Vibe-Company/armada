@@ -71,9 +71,8 @@ test("SQL makes routing immutable, target-specific and user-JWT read-only", asyn
     );
     const claude = await f.core.insert({ ...f.input(), harness: "claude", boatRuntime: true });
     expect(claude).toMatchObject({ harness: "claude", boatRuntime: true });
-    await expect(f.core.insert({ ...f.input(), harness: "opencode", boatRuntime: true })).rejects.toThrow(
-      "sandboxes_boat_runtime_target",
-    );
+    const opencode = await f.core.insert({ ...f.input(), harness: "opencode", boatRuntime: true });
+    expect(opencode).toMatchObject({ harness: "opencode", boatRuntime: true });
     const modal = (
       await f.db.query<{ id: string }>(
         `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
