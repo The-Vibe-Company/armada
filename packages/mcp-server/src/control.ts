@@ -497,16 +497,20 @@ export async function dispatchControlCommand(
     const provider = await options.providers.resolve(found, scoped);
     if (!provider.testModelConnection)
       throw new VaultError("unavailable", "Runtime connection checks are unavailable.");
-    if (found.provider === "boat" && found.boatRuntime) {
-      // Enqueued commands already fence idle checkpoint/stop under the owner/current epoch.
-      // Generic activity generation handoffs would revoke this non-prompt runtime session.
-      const test = await provider.testModelConnection({
+    const testConnection = async (signal?: AbortSignal) => {
+      const result = await provider.testModelConnection!({
         sandboxId: found.providerSandboxId,
         harness,
         model,
-        signal: AbortSignal.timeout(30000),
+        ...(signal ? { signal } : {}),
       });
-      if (!isModelConnectionTestResult(test)) throw new VaultError("unavailable", "Invalid connection-test receipt.");
+      if (!isModelConnectionTestResult(result)) throw new VaultError("unavailable", "Invalid connection-test receipt.");
+      return result;
+    };
+    if (found.provider === "boat" && found.boatRuntime) {
+      // Enqueued commands already fence idle checkpoint/stop under the owner/current epoch.
+      // Generic activity generation handoffs would revoke this non-prompt runtime session.
+      const test = await testConnection(AbortSignal.timeout(30000));
       return { id: found.id, test };
     }
     const machine = await provider.get(found.providerSandboxId);
@@ -516,16 +520,7 @@ export async function dispatchControlCommand(
       data.sandboxes,
       found,
       {},
-      async () => {
-        const result = await provider.testModelConnection!({
-          sandboxId: found.providerSandboxId,
-          harness,
-          model,
-        });
-        if (!isModelConnectionTestResult(result))
-          throw new VaultError("unavailable", "Invalid connection-test receipt.");
-        return { result, patch: {} };
-      },
+      async () => ({ result: await testConnection(), patch: {} }),
       { deadlineMs: 30000, failurePatch: () => ({}) },
     );
     return { id: found.id, test };
