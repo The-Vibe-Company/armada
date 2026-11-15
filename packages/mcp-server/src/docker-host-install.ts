@@ -102,27 +102,59 @@ curl --fail --silent --show-error --proto '=https' "$server/api/runtime/artifact
 printf '%s  %s\\n' "$digest" "$tmp/host" | sha256sum --check --status
 chmod 700 "$tmp/host"
 
+# The verified current daemon can report the origin even for a legacy installation.
+instance=
+service=armada-docker-host.service
+host_cmd() {
+  executable=$1
+  shift
+  if [ -n "$instance" ]; then "$executable" "$@" --instance "$instance"; else "$executable" "$@"; fi
+}
+target_instance=$(printf '%s' "$server" | sha256sum | cut -d ' ' -f 1)
+if [ -e "$HOME/.local/bin/armada-docker-host@$target_instance" ]; then
+  instance=$target_instance
+  binary="$HOME/.local/bin/armada-docker-host@$instance"
+  service="armada-docker-host@$instance.service"
+elif [ -e "$binary" ]; then
+legacy_status=$("$tmp/host" status) || {
+  echo "Cannot safely identify the existing Docker host; the new token was not exchanged. Run armada host status before retrying." >&2; exit 1;
+}
+case "$legacy_status" in
+  *'"registered":true'*)
+    existing_server=$(printf '%s' "$legacy_status" | sed -n 's/.*"server":"\\([^"]*\\)".*/\\1/p')
+    if [ -z "$existing_server" ]; then
+      echo "Cannot identify the existing server; the new token was not exchanged. Install Bun or Node/npm, then run: armada host install --server $server" >&2; exit 1
+    fi
+    if [ "$existing_server" != "$server" ]; then
+      instance=$(printf '%s' "$server" | sha256sum | cut -d ' ' -f 1)
+      binary="$HOME/.local/bin/armada-docker-host@$instance"
+      service="armada-docker-host@$instance.service"
+      echo "This machine is already connected to $existing_server. Installing an independent instance for $server."
+    fi
+    ;;
+esac
+fi
 [ ! -L "$binary" ] || { echo 'Refusing a symbolic link at the host binary path.' >&2; exit 1; }
 if [ -e "$binary" ]; then
   [ -f "$binary" ] && [ -x "$binary" ] || { echo 'The host binary path must be an executable file.' >&2; exit 1; }
-  status=$("$binary" status) || {
+  status=$(host_cmd "$binary" status) || {
     echo 'Could not read the existing registration. State and the new token have been preserved. Run armada-docker-host status to diagnose it.' >&2; exit 1;
   }
   printf 'Existing Docker host: %s\\n' "$status"
   case "$status" in
     *'"registered":true'*)
-      "$tmp/host" upgrade --server "$server"
-      if ! printf '%s\\n' "$token" | "$tmp/host" reuse-registration --server "$server"; then
+      host_cmd "$tmp/host" upgrade --server "$server"
+      if ! printf '%s\\n' "$token" | host_cmd "$tmp/host" reuse-registration --server "$server"; then
         echo 'This machine is already registered. Could not look up its name; use armada host list. The unused ticket expires automatically.'
       fi
       unset token
       echo 'Keeping the existing registration. Ctrl-C stops host add waiting if the unused ticket could not be canceled.'
       case "$status" in *'"connected":true'*) echo 'connected'; offer_cli; exit 0 ;; esac
       echo 'Restarting the existing user service and waiting for it to reconnect.'
-      systemctl --user restart armada-docker-host.service
+      systemctl --user restart "$service"
       attempt=0
       while [ "$attempt" -lt 60 ]; do
-        if "$binary" status | grep -q '"connected":true'; then echo 'connected'; offer_cli; exit 0; fi
+        if host_cmd "$binary" status | grep -q '"connected":true'; then echo 'connected'; offer_cli; exit 0; fi
         attempt=$((attempt + 1))
         sleep 1
       done
@@ -134,11 +166,11 @@ if [ -e "$binary" ]; then
   esac
 fi
 install -m 700 "$tmp/host" "$binary"
-printf '%s\\n' "$token" | "$binary" install --server "$server"
+printf '%s\\n' "$token" | host_cmd "$binary" install --server "$server"
 unset token
 attempt=0
 while [ "$attempt" -lt 60 ]; do
-  if "$binary" status | grep -q '"connected":true'; then echo 'connected'; offer_cli; exit 0; fi
+  if host_cmd "$binary" status | grep -q '"connected":true'; then echo 'connected'; offer_cli; exit 0; fi
   attempt=$((attempt + 1))
   sleep 1
 done

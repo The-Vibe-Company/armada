@@ -85,12 +85,33 @@ Do not rebuild or substitute tarballs during a bootstrap or recovery.
 ```sh
 npm install --global @the-vibe-company/armada
 armada --version
-armada login --url armada.thevibecompany.co
+armada login --url https://armada.thevibecompany.co
 ```
 
 Installing v2 under the same package replaces the old global `armada` executable. Verify the
 new version before removing any separate legacy installation. Authentication state from v1
 is not reused by v2; sign in once. See [onboarding](dave-onboarding.md).
+
+### Smoke resources and model accounts
+
+User-facing saved environments are **snapshots**. Existing API/MCP names and
+smoke configuration fields such as `golden` and `goldenId` retain their wire
+spelling; do not rename them in case JSON. Model accounts are separate from
+Boat/Modal provider credentials and Docker host registrations.
+
+Morph is a shared model account for Claude Code, Codex and OpenCode on supported
+runtime-backed placements. Its default limit is 2 simultaneous agents per account;
+other account kinds default to unlimited. Stopped/idle-paused sandboxes do not
+count. Existing account caps also apply to smoke admission: refusal is not a
+provider pass, and the runner must not silently choose a different billing
+account. Do not raise limits or reset bindings merely to bypass a failed smoke.
+For deliberate owner-authorized account configuration, use
+`armada creds limits ACCOUNT_UUID --max-agents N` or `--unlimited`, as documented
+in [model accounts](named-model-credentials.md).
+
+These are existing product constraints, not new release inputs or a requirement
+to add Morph/Boat cases. Retain the owner-enabled Modal/Docker release probes;
+Boat remains outside the release gate.
 
 ## Deployment policy (#1547)
 

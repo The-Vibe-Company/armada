@@ -24,7 +24,7 @@ import {
 } from "./docker-capacity.ts";
 
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
 type Job = DockerHostJob;
@@ -745,8 +745,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           if (ticket?.sandbox_id !== sandboxId) deny();
           // All source members, host and sandbox are exclusively prelocked. Reuse the
           // existing capability validator in this very transaction, never a nested one.
-          const scoped: Sql = { query: tx.query.bind(tx), transaction: (work) => work(tx) };
-          return createRuntimeEnrolments(scoped, key).withBootstrap(
+          return createRuntimeEnrolments(scopedRuntimeSql(tx), key).withBootstrap(
             selection.bootstrapDescriptor.enrolmentToken,
             async (_tx, scope) => {
               if (scope.sandboxId !== sandboxId) deny();
@@ -936,6 +935,29 @@ export function createDockerHostStore(sql: Sql, key: string) {
           }
         }
         return readJob(row);
+      });
+    },
+    cleaned(hostToken: string, installationId: string, result: { requestId: string }) {
+      return transaction(async (tx) => {
+        exact(result, ["requestId"]);
+        id(result.requestId);
+        const host = await authenticate(tx, hostToken, installationId);
+        const job =
+          (
+            await tx.query<StoredJob>("select * from public.docker_host_jobs where host_id=$1 and request_id=$2", [
+              host.id,
+              result.requestId,
+            ])
+          ).rows[0] ?? deny();
+        if (!job.bound_sandbox_id || job.bound_operation === "buildSnapshot") deny();
+        const logical = await boundMachine(tx, job, host, installationId);
+        // Physical cleanup is an authenticated machine fact, not owner delete intent.
+        await tx.query(
+          `update public.sandboxes set status='deleted',deleted_at=coalesce(deleted_at,now()),
+           stopped_at=coalesce(stopped_at,now()),lifecycle_generation=lifecycle_generation+case when status='deleted' then 0 else 1 end
+           where id=$1`,
+          [logical.id],
+        );
       });
     },
     expired(hostToken: string, installationId: string, result: { requestId: string }) {

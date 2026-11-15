@@ -260,6 +260,13 @@ export function httpApi(
         }
       }
     },
+    async cleaned(state, requestId) {
+      await post(state.server, "results", state.hostToken, {
+        installationId: state.installationId,
+        requestId,
+        cleaned: true,
+      });
+    },
     async result(state, receipt, expired) {
       const body = {
         installationId: state.installationId,

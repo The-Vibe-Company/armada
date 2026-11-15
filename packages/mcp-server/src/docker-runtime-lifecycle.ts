@@ -6,11 +6,10 @@ import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHealthMatches } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const scopedSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 export class DockerRuntimeDenied extends Error {
   constructor() {
     super("Docker runtime denied");
@@ -72,7 +71,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
     return transaction(async (tx) => {
       if (options.enabled !== true) deny();
       identity(actor, sandboxId);
-      const scoped = scopedSql(tx);
+      const scoped = scopedRuntimeSql(tx);
       const authority = createRuntimeEnrolments(scoped, key);
       const snapshot = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
       if (snapshot.ownerId !== actor.userId) deny();

@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.45.0](https://github.com/The-Vibe-Company/armada/compare/v2.44.1...v2.45.0) (2026-11-15)
+
+
+### Features
+
+* **docker-host:** retain and safely clean finished sandboxes ([#2158](https://github.com/The-Vibe-Company/armada/issues/2158)) ([58c08cd](https://github.com/The-Vibe-Company/armada/commit/58c08cdfc24d2dc389e74682bc1e5e751b165ea1))
+
+
+### Bug Fixes
+
+* **runtime:** eliminate cross-file OpenCode observer mock pollution ([#2163](https://github.com/The-Vibe-Company/armada/issues/2163)) ([96c3e8d](https://github.com/The-Vibe-Company/armada/commit/96c3e8d02ae4658ffb03ce3e80bc28463cf83913))
+
 ## [2.44.1](https://github.com/The-Vibe-Company/armada/compare/v2.44.0...v2.44.1) (2026-11-15)
 
 

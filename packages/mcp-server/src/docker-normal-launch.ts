@@ -50,7 +50,7 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { type RuntimeGitHub, RuntimeGitHubConnectionError, RuntimeGitHubDeliveryError } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 
@@ -320,7 +320,6 @@ const notReady = (row: Row) => {
       : undefined,
   );
 };
-const scoped = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 const iso = (date: Date | string) => new Date(date).toISOString();
 const active = (row: Row) =>
   ["starting", "ready", "running"].includes(row.status) &&
@@ -584,7 +583,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           const exists =
             (await tx.query(`select id from public.sandboxes where id=$1`, [request.requestId])).rows.length > 0;
           if (exists) return load(tx, actor, request, hash);
-          await createDockerSandboxService(scoped(tx), key, { enabled: true }).reserve(
+          await createDockerSandboxService(scopedRuntimeSql(tx), key, { enabled: true }).reserve(
             actor,
             {
               requestId: request.requestId,
@@ -601,24 +600,24 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             snapshotId,
           );
           if (resolved.usagePricing)
-            await createSqlSandboxStore(scoped(tx), { turnModels: true }).recordUsagePricingContext?.(
+            await createSqlSandboxStore(scopedRuntimeSql(tx), { turnModels: true }).recordUsagePricingContext?.(
               request.requestId,
               resolved.usagePricing,
             );
           try {
             if (request.variables?.length)
-              manifest.variables = await resolveLaunchVariables(scoped(tx), actor, request.variables);
+              manifest.variables = await resolveLaunchVariables(scopedRuntimeSql(tx), actor, request.variables);
             if (request.secrets?.length)
               validateReadableVariables({
                 ...manifest.variables,
-                ...(await resolveLaunchSecrets(scoped(tx), actor, request.secrets, key)),
+                ...(await resolveLaunchSecrets(scopedRuntimeSql(tx), actor, request.secrets, key)),
               });
           } catch {
             throw failure("unavailable");
           }
           const encrypted = await encryptSecret(JSON.stringify(manifest), key);
           const connections = manifest.preparation?.connections ?? [];
-          const port = createSqlMcpLaunchPort(scoped(tx), createSqlMcpRegistry(scoped(tx), key));
+          const port = createSqlMcpLaunchPort(scopedRuntimeSql(tx), createSqlMcpRegistry(scopedRuntimeSql(tx), key));
           await port.validate(actor, connections, "private");
           await port.bind(request.requestId, connections);
           const current = await member(tx, actor);
@@ -822,7 +821,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           const receipts = await agent.installSkills(selections.skills, skillKey, receipt.epoch);
           await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (tx, scope) => {
             if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
-            await createSqlSandboxStore(scoped(tx)).recordSkills!(request.requestId, receipts);
+            await createSqlSandboxStore(scopedRuntimeSql(tx)).recordSkills!(request.requestId, receipts);
           });
         }
         if (options.mcp) await options.mcp.prepare(caller, request.requestId);
@@ -868,7 +867,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         }
         const encrypted = await encryptSecret(JSON.stringify(receipt), key);
         return await transaction(async (tx) => {
-          const authority = createRuntimeEnrolments(scoped(tx), key);
+          const authority = createRuntimeEnrolments(scopedRuntimeSql(tx), key);
           // All source actors precede host/sandbox/runtime locks. The transport
           // epoch and logical lifecycle generation are independent counters.
           await authority.lockSourceMembers(tx, request.requestId, actor.userId);

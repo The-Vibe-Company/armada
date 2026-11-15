@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { createDockerMachineExecutor } from "../../core/src/docker-machine.ts";
 import {
@@ -32,6 +33,7 @@ const usage = `Usage:
   armada-docker-host upgrade --server https://ARMADA_ORIGIN
   armada-docker-host status
   armada-docker-host uninstall
+  Managed commands accept --instance SHA256_SERVER_ORIGIN for independent installations.
   armada-docker-host --help
 
 Machine-only Docker host agent. Registration reads a one-use token from stdin;
@@ -60,7 +62,7 @@ async function main(args: string[]) {
   for (let i = 0; i < flags.length; i += 2) {
     const key = flags[i];
     const value = flags[i + 1];
-    if (!key || !value || !["--server", "--state-dir"].includes(key) || options.has(key))
+    if (!key || !value || !["--server", "--state-dir", "--instance"].includes(key) || options.has(key))
       throw new Error("Invalid arguments");
     options.set(key, value);
   }
@@ -72,11 +74,22 @@ async function main(args: string[]) {
   const managed = ["install", "upgrade", "reuse-registration", "status", "uninstall"].includes(command);
   if (
     (managed && options.has("--state-dir")) ||
+    (!managed && options.has("--instance")) ||
     (!managed && !options.has("--state-dir")) ||
     ["register", "install", "upgrade", "reuse-registration"].includes(command) !== options.has("--server")
   )
     throw new Error("Invalid arguments");
-  const directory = managed ? stateDirectory() : (options.get("--state-dir") ?? "");
+  const instance = options.get("--instance");
+  if (
+    instance &&
+    options.has("--server") &&
+    instance !==
+      createHash("sha256")
+        .update(serverOrigin(options.get("--server") ?? ""))
+        .digest("hex")
+  )
+    throw new Error("Docker host instance does not match the server origin.");
+  const directory = managed ? stateDirectory(undefined, instance) : (options.get("--state-dir") ?? "");
   const store = await fileStore(directory);
   if (command === "status") {
     if (!(await store.exists())) {
@@ -91,6 +104,7 @@ async function main(args: string[]) {
         registered: true,
         connected: elapsed >= 0 && elapsed < 60_000,
         hostId: state.hostId,
+        server: state.server,
         version: VERSION,
         lastPollAt: state.lastPollAt ?? null,
         runningSandboxes: local.running,
@@ -99,7 +113,7 @@ async function main(args: string[]) {
     return;
   }
   if (command === "upgrade") {
-    await upgradeService(store, options.get("--server") ?? "");
+    await upgradeService(store, options.get("--server") ?? "", undefined, instance);
     console.log("Upgraded Armada Docker host binary; registration, workloads and user service preserved.");
     return;
   }
@@ -117,10 +131,10 @@ async function main(args: string[]) {
     console.log("The unused registration ticket was canceled; its token was not exchanged for a machine credential.");
     return;
   }
-  if (command === "install") await servicePreflight();
+  if (command === "install") await servicePreflight(instance);
   if (command === "uninstall") {
     const state = await store.load();
-    await validateInstallation(state);
+    await validateInstallation(state, undefined, instance);
     const deadline = Date.now() + 10 * 60_000;
     const api = httpApi();
     // Keep the service alive to execute ordinary bound stop/delete jobs. The
@@ -133,15 +147,15 @@ async function main(args: string[]) {
         );
       await Bun.sleep(Math.min(20_000, Math.max(1, deadline - Date.now())));
     }
-    await uninstallPreflight(await store.load());
-    await stopService();
+    await uninstallPreflight(await store.load(), instance);
+    await stopService(instance);
     const unlock = await store.lock();
     try {
-      await uninstallPreflight(await store.load());
+      await uninstallPreflight(await store.load(), instance);
     } finally {
       await unlock();
     }
-    await removeInstallation();
+    await removeInstallation(instance);
     console.log("Uninstalled Armada Docker host. Shared images, other workloads and linger settings preserved.");
     return;
   }
@@ -162,7 +176,7 @@ async function main(args: string[]) {
       if (command === "install") {
         // Registration is durable before systemd starts the separate lock owner.
         await release();
-        await installService(await store.load());
+        await installService(await store.load(), instance);
       }
       return;
     }
@@ -186,6 +200,13 @@ async function main(args: string[]) {
         cacheDir: join(directory, "runtime-cache"),
       }),
     };
+    if (process.env.ARMADA_DOCKER_RETENTION_SECONDS !== undefined) {
+      const seconds = Number(process.env.ARMADA_DOCKER_RETENTION_SECONDS);
+      if (!/^\d+$/.test(process.env.ARMADA_DOCKER_RETENTION_SECONDS) || !Number.isSafeInteger(seconds))
+        throw new Error("Invalid ARMADA_DOCKER_RETENTION_SECONDS");
+      state.retentionSeconds = seconds;
+      await store.save(state);
+    }
     let stopping = false;
     const stop = () => {
       stopping = true;

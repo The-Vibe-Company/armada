@@ -117,7 +117,13 @@ export function createDockerHostRoutes(
           ? [
               "installationId",
               "requestId",
-              ...("expired" in body ? ["expired"] : "reason" in body ? ["outcome", "reason"] : ["outcome"]),
+              ...("cleaned" in body
+                ? ["cleaned"]
+                : "expired" in body
+                  ? ["expired"]
+                  : "reason" in body
+                    ? ["outcome", "reason"]
+                    : ["outcome"]),
               ...("imageId" in body ? ["imageId"] : []),
             ]
           : path.endsWith("/poll") && "version" in body
@@ -169,6 +175,12 @@ export function createDockerHostRoutes(
           },
           { headers },
         );
+      }
+      if ("cleaned" in body) {
+        if (body.cleaned !== true) throw new InvalidInput();
+        const requestId = string(body.requestId);
+        await store.cleaned(token, installationId, { requestId });
+        return Response.json({ requestId }, { headers });
       }
       if ("expired" in body) {
         if (body.expired !== true) throw new InvalidInput();

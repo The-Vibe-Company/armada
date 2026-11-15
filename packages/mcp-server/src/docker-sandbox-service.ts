@@ -14,6 +14,7 @@ import { admitAccountCapacity } from "./account-capacity.ts";
 import { admitDockerCapacity, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
+import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
 type Reservation = {
@@ -167,8 +168,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
     return transaction(async (tx) => {
       await visible(tx, actor, sandboxId);
       id(requestId);
-      const scoped: Sql = { query: tx.query.bind(tx), transaction: (work) => work(tx) };
-      return createDockerHostStore(scoped, key).enqueueSandbox(actor, sandboxId, { requestId, operation });
+      return createDockerHostStore(scopedSql(tx), key).enqueueSandbox(actor, sandboxId, { requestId, operation });
     });
   }
   return {
@@ -289,8 +289,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
               ],
             )
           ).rows[0] ?? deny();
-        const scoped: Sql = { query: tx.query.bind(tx), transaction: (work) => work(tx) };
-        await createDockerHostStore(scoped, key).enqueueSandbox(actor, row.id, {
+        await createDockerHostStore(scopedSql(tx), key).enqueueSandbox(actor, row.id, {
           requestId: row.id,
           operation: "create",
         });

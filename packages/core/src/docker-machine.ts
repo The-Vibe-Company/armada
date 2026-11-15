@@ -421,6 +421,19 @@ export function createDockerMachineExecutor(options: {
     stop,
     delete: remove,
     stopIfExpired,
+    async deleteStopped(request: DockerMachineRequest): Promise<void> {
+      const state = await owned(request);
+      if (state.container && object(state.container.State).Running !== false) fail("ownership_mismatch");
+      await remove(request);
+    },
+    async isRunning(request: DockerMachineRequest): Promise<boolean> {
+      const state = await owned(request);
+      return !!state.container && object(state.container.State).Running === true;
+    },
+    async isStopped(request: DockerMachineRequest): Promise<boolean> {
+      const state = await owned(request);
+      return !!state.volume && (!state.container || object(state.container.State).Running === false);
+    },
     async buildSnapshot(job: Extract<DockerHostJob, { operation: "buildSnapshot" }>, recoverOnly = false) {
       context(job.request);
       await approveLocalImage(job.request.image);

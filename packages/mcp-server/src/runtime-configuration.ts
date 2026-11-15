@@ -15,9 +15,11 @@ import { VaultError } from "@armada/core/server";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
-const claudeAllowed = new Set(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_ENDPOINT_ENV]);
-const opencodeAllowed = new Set(["OPENCODE_API_KEY", OPENCODE_ENDPOINT_ENV]);
-const codexAllowed = new Set(["OPENAI_API_KEY", CODEX_ENDPOINT_ENV, CODEX_AUTH_ENV, "ARMADA_SERVER_CODEX"]);
+const allowedCredentials = {
+  claude: new Set(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_ENDPOINT_ENV]),
+  opencode: new Set(["OPENCODE_API_KEY", OPENCODE_ENDPOINT_ENV]),
+  codex: new Set(["OPENAI_API_KEY", CODEX_ENDPOINT_ENV, CODEX_AUTH_ENV, "ARMADA_SERVER_CODEX"]),
+};
 
 /** Only metadata consumed by the private harness projection, without a provider DTO or golden. */
 export type RuntimeConfigurationTarget = Pick<
@@ -81,16 +83,7 @@ export async function runtimeConfiguration(
       binding.credentialVersion < 1 ||
       binding.credentialId !== sandbox.credentialId ||
       binding.credentialVersion !== sandbox.credentialVersion ||
-      Object.keys(credentials.env).some(
-        (key) =>
-          !(
-            sandbox.harness === "claude"
-              ? claudeAllowed
-              : sandbox.harness === "opencode"
-                ? opencodeAllowed
-                : codexAllowed
-          ).has(key),
-      )
+      Object.keys(credentials.env).some((key) => !allowedCredentials[sandbox.harness].has(key))
     )
       throw Error();
     const repo = sandbox.repositoryDir;
@@ -109,8 +102,7 @@ export async function runtimeConfiguration(
       !Number.isSafeInteger(manifest.runtime.bytes) ||
       (manifest.runtime.bytes as number) < 1 ||
       (manifest.runtime.bytes as number) > 512 * 1024 * 1024 ||
-      !record(manifest.harnesses) ||
-      (sandbox.harness !== "opencode" && !record(manifest.harnesses[sandbox.harness]))
+      !record(manifest.harnesses)
     )
       throw Error();
     const harnessArtifact = manifest.harnesses[sandbox.harness];

@@ -44,4 +44,7 @@ A URL shortcut cannot also supply `--file` or nonempty stdin. Full JSON creation
 
 `packages/cli/test/parity-shortcuts-api.test.ts` covers the actual command → authenticated canonical Request/body boundary, persisted preference reopen, explicit org override, nullable capacity, Modal failure/mismatch without fallback, URL defaults, file/stdin compatibility and ambiguous/credential-like input rejection. Existing connect/poll tests remain their behavior owner. This is source/contract evidence, not a deployed connection or capacity claim.
 
-Validation of this CLI-only delta: full verify passed (421 pass, 4 skip, 0 fail; 425 tests across 74 files), as did standalone CLI/server builds, linux-x64 packaging and npm/Bun tarball/bin smoke. Only CLI source/docs/tests changed; root's wire decoding, dates, deadlines, shared server/core/dashboard and 2.4.0 release version were not modified. Consolidated integration and deployed acceptance remain coordinator work.
+The historical implementation validation for version 2.4.0 is not a current
+repository or deployment verdict. Verify changes with the repository's current
+lint/typecheck and targeted test commands; real connection/capacity acceptance
+remains coordinator-owned.

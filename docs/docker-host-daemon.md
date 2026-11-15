@@ -394,7 +394,23 @@ Removing the host flag unmounts both Docker API families; other providers are un
 After ACKed deletion, compare inventories with the recorded baseline. The owned
 container and volume for `SANDBOX_ID` must be absent; unrelated workloads/data
 unchanged. All created Docker resources carry `dev.armada.machine.*` labels.
-There is no global prune, shared image removal or automatic purge of host files.
+There is no global prune or shared image removal. The daemon now observes exact
+ownership-verified stopped/failed/expired allocations and persists a local cleanup
+deadline, default 24 hours after first observing physical exit. It removes only that
+registration's labelled container and home volume (including sandbox files) after
+the deadline, even when the server is unreachable. Shared runtime artifact caches
+and user snapshot images are not sandbox files and remain untouched. Set
+`ARMADA_DOCKER_RETENTION_SECONDS` in this host daemon's environment before starting
+it to configure the period (`0` means the next local sweep); this setting persists
+in its private state. Already scheduled deadlines are frozen. A resume observed
+before deletion cancels the deadline; cleanup refuses a running allocation. Missing
+resources are safe to retry. Authenticated physical-cleanup reports reconcile the
+server to `deleted` after reconnection. Deploy the server support before upgrading
+hosts; old servers reject the additive report and the daemon retries it safely.
+
+This backend slice does not yet add `armada host --retention`, dashboard retention
+controls or cleanup-deadline display. Those owner-facing surfaces remain follow-up
+work for #2154, as do agent-declared completion, old-image cleanup and disk floors.
 To uninstall, first confirm every retained sandbox for this host is deleted; then
 revoke `POST /api/v1/docker/hosts/revoke` with `{"org":"<org>","hostId":"<HOST_ID>"}`
 using normal private bearer delivery. Verify the saved PID belongs to the exact
@@ -484,7 +500,7 @@ revoke, reconcile exact labelled/receipt-owned resources, refuse shared/in-use o
 uncertain data, preserve unrelated workloads and report offline remote revocation
 pending. Current manual cleanup above is narrower; it does not delete shared
 images or perform broad prune. Host credential rotation/expiry policy, disk quotas,
-offline retention and stronger resource admission remain owner decisions.
+stronger resource admission remains an owner decision; local offline retention is described above.
 
 ## Terminal reconciliation
 
@@ -952,3 +968,32 @@ configured (or fixture-not-configured otherwise). It never claims that a plain
 image proved snapshot launch. Cloud golden probes remain unchanged. Boat is not
 part of staging/release acceptance. No deployment or real provider check was
 performed by this worker; these instructions are not acceptance evidence.
+
+## Multiple Armada servers on one machine (#2169)
+
+The CLI installer keeps an existing legacy installation untouched when installing
+for a different HTTPS server origin. Additional instances use
+`armada-docker-host@<sha256-of-origin>` for their binary and private state
+directory, and the same name plus `.service` for their systemd user unit.
+Each has independent registration credentials, durable receipts and runtime cache.
+The daemon's existing installation-ID and host-ID ownership labels scope container,
+volume and snapshot operations, including cleanup; shared images remain shared.
+
+Use `armada host status --server https://armada.example` or
+`armada host uninstall --server https://armada.example` to select one.
+Without `--server`, multiple installations are listed, never implicitly removed.
+An old legacy daemon's origin is read from its private state when status does not
+yet expose it. Unreadable registration refuses installation before reading or
+exchanging the new one-use token; repair the existing local installation first.
+Managed daemon commands also accept `--instance SHA256_SERVER_ORIGIN`.
+
+Capacity is computed independently per registration from the same machine.
+Availability sampling treats other instances' workloads as unrelated machine
+load; admission reservations are not coordinated across servers. Simultaneous
+starts can therefore compete; use conservative per-host overrides as needed.
+
+Coordinator acceptance (not performed here): run the production one-click
+installer while staging remains connected; check both dashboards, launch one
+sandbox from each and verify distinct ownership labels and state. Stop/delete
+through each server, uninstall production with `--server`, and confirm staging
+still runs. No production mutation or deployment was performed by this change.

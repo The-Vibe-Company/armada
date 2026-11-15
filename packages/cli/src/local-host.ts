@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import { GoldenError } from "@armada/core";
@@ -28,6 +28,8 @@ export interface LocalHostIo {
     stdin?: string,
     timeoutMs?: number,
   ): Promise<{ code: number; stdout: string }>;
+  listInstances?(): Promise<string[]>;
+  readServer?(path: string): Promise<string | undefined>;
   now(): number;
   sleep(ms: number): Promise<void>;
 }
@@ -36,6 +38,25 @@ export function productionLocalHostIo(
   overrides: { fetch?: typeof fetch; readStdin?: () => Promise<string> } = {},
 ): LocalHostIo {
   return {
+    listInstances: async () => {
+      try {
+        return (await readdir(join(homedir(), ".local/bin"))).filter((name) =>
+          /^armada-docker-host@[a-f0-9]{64}$/.test(name),
+        );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw error;
+      }
+    },
+    readServer: async (path) => {
+      try {
+        const value = JSON.parse(await readFile(path, "utf8"));
+        return typeof value.server === "string" ? new URL(value.server).origin : undefined;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw new Error("Cannot read installation origin");
+      }
+    },
     home: homedir(),
     platform: process.platform,
     arch: process.arch,
@@ -102,7 +123,7 @@ keeps its registration; do not blindly repeat registration after an uncertain fa
 Inspect armada host status and Docker/systemd access before retrying.
 Example: armada host install --server https://armada.example < /private/registration-token
 `,
-  status: `Usage: armada host status
+  status: `Usage: armada host status [--server HTTPS_ORIGIN]
 Inspect the local Docker host daemon, not an organization host list or sandbox status.
 Run on the Docker machine (Linux x64 or arm64); no Armada login or organization selector.
 Always emits sanitized JSON on stdout; no --json flag is needed or accepted.
@@ -112,7 +133,7 @@ Private machine credentials and raw native status output are not printed.
 For server-side host metadata use armada host list/show from a signed-in client.
 Example: armada host status
 `,
-  uninstall: `Usage: armada host uninstall
+  uninstall: `Usage: armada host uninstall [--server HTTPS_ORIGIN]
 Remove the local Armada Docker host installation, not an organization registration command.
 Run on the Docker machine (Linux x64 or arm64); no Armada login or organization selector.
 Delegates to the installed host binary's uninstall/drain lifecycle. Shared images and other
@@ -129,9 +150,14 @@ interface Status {
   connected: boolean;
   hostId?: string;
   version: string;
+  server?: string;
 }
+const instanceArgs = (binary: string): string[] => {
+  const match = /armada-docker-host@([a-f0-9]{64})(?:\.|$)/.exec(binary);
+  return match ? ["--instance", match[1] as string] : [];
+};
 async function status(native: LocalHostIo, binary: string, timeoutMs = 30_000): Promise<Status> {
-  const result = await native.execute(binary, ["status"], undefined, timeoutMs);
+  const result = await native.execute(binary, ["status", ...instanceArgs(binary)], undefined, timeoutMs);
   if (result.code !== 0)
     return failed(
       "Cannot read Docker host status; registration and the new token are preserved. Run armada-docker-host status to diagnose it.",
@@ -157,6 +183,7 @@ async function status(native: LocalHostIo, binary: string, timeoutMs = 30_000): 
     registered: s.registered,
     connected: s.connected,
     version: s.version,
+    ...(typeof s.server === "string" && /^https:\/\/[^\s/]+$/.test(s.server) ? { server: s.server } : {}),
     ...(s.registered ? { hostId: s.hostId as string } : {}),
   };
 }
@@ -222,6 +249,7 @@ async function downloadHost(native: LocalHostIo, server: string): Promise<Uint8A
 }
 
 export async function localHostCommand(argv: readonly string[], io: Io, native: LocalHostIo): Promise<number> {
+  let otherOrigin: string | undefined;
   try {
     const [operation, ...rest] = argv;
     if (rest.length === 1 && ["--help", "-h"].includes(rest[0] ?? "")) {
@@ -232,11 +260,11 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
     if (
       !["install", "status", "uninstall"].includes(operation ?? "") ||
       args.positionals.length ||
-      [...args.options.keys()].some((key) => operation !== "install" || key !== "--server")
+      [...args.options.keys()].some((key) => key !== "--server")
     )
       return invalid(HELP.trim());
     let server: string | undefined;
-    if (operation === "install") {
+    if (operation === "install" || single(args, "--server") !== undefined) {
       const raw = single(args, "--server");
       let url: URL;
       try {
@@ -262,10 +290,49 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       return invalid("Docker host installation requires Linux x64 or arm64.");
     if (!native.home.startsWith(parse(native.home).root) || !parse(native.home).root)
       return failed("An absolute home directory is required.");
-    const binary = join(native.home, ".local/bin/armada-docker-host");
+    const legacy = "armada-docker-host";
+    const names = [legacy, ...((await native.listInstances?.()) ?? [])];
+    const installations: { name: string; server: string | undefined; current: Status }[] = [];
+    for (const name of names) {
+      const path = join(native.home, ".local/bin", name);
+      const present = await checkPath(native, path);
+      if (!present) continue;
+      if (!present.file) return failed("Docker host binary path is not a regular file.");
+      const statePath = join(native.home, ".local/state", name, "state.json");
+      await checkPath(native, statePath);
+      const savedOrigin = await native.readServer?.(statePath);
+      // Explicit selection must not depend on another server's daemon health.
+      const current =
+        server && savedOrigin && savedOrigin !== server
+          ? { registered: true, connected: false, version: "0.0.0" }
+          : await status(native, path);
+      const origin = savedOrigin ?? current.server;
+      installations.push({ name, server: origin, current });
+    }
+    if (!server && installations.length > 1) {
+      io.out(
+        `${JSON.stringify({ instances: installations.map((i) => ({ ...i.current, server: i.server, binary: join(native.home, ".local/bin", i.name) })), next: `armada host ${operation} --server HTTPS_ORIGIN` })}\n`,
+      );
+      return 0;
+    }
+    if (operation === "install" && server)
+      otherOrigin = installations.find((i) => i.server && i.server !== server)?.server;
+    const matched = server ? installations.find((i) => i.server === server) : installations[0];
+    const legacyInstall = installations.find((i) => i.name === legacy);
+    // An older daemon may not expose its origin. Never guess or exchange a token.
+    if (server && legacyInstall?.current.registered && !legacyInstall.server)
+      return failed(
+        "The existing Docker host origin cannot be read; the new token was not consumed. Run armada host status to inspect the existing instance before retrying.",
+      );
+    const name =
+      matched?.name ??
+      (server && installations.length
+        ? `armada-docker-host@${createHash("sha256").update(server).digest("hex")}`
+        : legacy);
+    const binary = join(native.home, ".local/bin", name);
     const info = await checkPath(native, binary);
     if (info && !info.file) return failed("Docker host binary path is not a regular file.");
-    const current = info ? await status(native, binary) : null;
+    const current = matched?.current ?? (info ? await status(native, binary) : null);
     if (operation === "status") {
       io.out(`${JSON.stringify(current ?? { registered: false, connected: false })}\n`);
       return 0;
@@ -275,7 +342,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
         io.out("Docker host is not installed.\n");
         return 0;
       }
-      if ((await native.execute(binary, ["uninstall"], undefined, 660_000)).code !== 0)
+      if ((await native.execute(binary, ["uninstall", ...instanceArgs(binary)], undefined, 660_000)).code !== 0)
         return failed(
           "Docker host uninstall did not complete; state preserved. Run armada-docker-host uninstall to diagnose or reconcile the drain.",
         );
@@ -287,9 +354,18 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       const temporary = `${binary}.${randomUUID()}.tmp`;
       await native.writeExclusive(temporary, bytes);
       try {
-        if ((await native.execute(temporary, ["upgrade", "--server", server ?? ""], undefined, 180_000)).code !== 0)
+        if (
+          (
+            await native.execute(
+              temporary,
+              ["upgrade", "--server", server ?? "", ...instanceArgs(binary)],
+              undefined,
+              180_000,
+            )
+          ).code !== 0
+        )
           return failed(
-            "Could not safely upgrade the existing Docker host; registration preserved. Inspect the local service before retrying.",
+            `Could not upgrade this Docker host; registration and token preserved. Run armada host status --server ${server} before retrying.`,
           );
       } finally {
         await native.remove(temporary);
@@ -297,7 +373,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       const token = (await native.readStdin()).trim();
       if (!/^[a-f0-9]{64}$/.test(token))
         return invalid("Pipe a valid one-use registration token on stdin; never pass it as an argument.");
-      let name: string | null = null;
+      let displayName: string | null = null;
       try {
         const response = await native.fetch(`${server}/api/docker-host/reuse-registration`, {
           method: "POST",
@@ -326,7 +402,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
           )
         )
           throw new Error("Invalid identity");
-        name = identity.name as string | null;
+        displayName = identity.name as string | null;
         io.out("The unused new registration was canceled; its token was not exchanged for machine credentials.\n");
       } catch {
         io.err(
@@ -334,20 +410,20 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
         );
       }
       io.out(
-        `This machine is already registered as ${name === null ? current.hostId : `${JSON.stringify(name)} (${current.hostId})`}.\nExisting Docker host: ${JSON.stringify(current)}\nKeeping its registration; the host binary was checked and upgraded safely.\n`,
+        `This machine is already registered as ${displayName === null ? current.hostId : `${JSON.stringify(displayName)} (${current.hostId})`}.\nExisting Docker host: ${JSON.stringify(current)}\nKeeping its registration; the host binary was checked and upgraded safely.\n`,
       );
       if (!current.connected) {
         io.out("Restarting the existing user service and waiting up to 60 seconds for connection.\n");
-        if ((await native.execute("systemctl", ["--user", "restart", "armada-docker-host.service"])).code !== 0)
+        if ((await native.execute("systemctl", ["--user", "restart", `${name}.service`])).code !== 0)
           return failed("Could not restart the existing Docker host user service; registration and token preserved.");
       }
       return connected(native, binary, io);
     }
     // Never replace an installation whose registration/ownership cannot be read.
     for (const path of [
-      join(native.home, ".local/state/armada-docker-host/state.json"),
-      join(native.home, ".local/state/armada-docker-host/managed.json"),
-      join(native.home, ".config/systemd/user/armada-docker-host.service"),
+      join(native.home, ".local/state", name, "state.json"),
+      join(native.home, ".local/state", name, "managed.json"),
+      join(native.home, ".config/systemd/user", `${name}.service`),
     ]) {
       if (await checkPath(native, path))
         return failed(
@@ -371,14 +447,30 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       }
     }
     io.out(current ? "Replacing the unregistered Docker host binary.\n" : "Installing Docker host user service.\n");
-    if ((await native.execute(binary, ["install", "--server", server ?? ""], `${token}\n`, 660_000)).code !== 0)
+    if (
+      (
+        await native.execute(
+          binary,
+          ["install", "--server", server ?? "", ...instanceArgs(binary)],
+          `${token}\n`,
+          660_000,
+        )
+      ).code !== 0
+    )
       return failed(
         "Docker host installation did not complete. Run armada host status and inspect systemd/Docker access; do not blindly repeat registration.",
       );
     io.out("Waiting up to 60 seconds for the Docker host to connect…\n");
     return connected(native, binary, io);
   } catch (error) {
-    if (error instanceof GoldenError) throw error;
+    if (error instanceof GoldenError) {
+      if (otherOrigin)
+        throw new GoldenError(
+          error.code,
+          `This machine is already connected to ${otherOrigin}. The additional installation could not complete. ${error.message} Next command: armada host status --server ${otherOrigin}`,
+        );
+      throw error;
+    }
     // Do not expose native stdout/stderr, stdin or transport response diagnostics.
     return failed(
       "Docker host command failed; private state and credentials were not printed. Check Docker/systemd access and armada host status before retrying registration.",

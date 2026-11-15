@@ -1,7 +1,6 @@
 # Main merge queue
 
-This change prepares CI only. After it lands, a repository administrator enables
-a ruleset targeting exactly `main` (not a wildcard), with **Require merge queue**,
+A repository administrator owns the ruleset targeting exactly `main` (not a wildcard), with **Require merge queue**,
 **Require status checks to pass**, and squash as the queue's merge method.
 Keep the existing review requirements. Select GitHub Actions as the expected
 source for these exact check names:
@@ -27,7 +26,7 @@ gate. Screenshot evidence workflows and their one-off capture scripts are remove
 | `ci.yml` | Yes | Six unit shards (shard 1 also runs lint/typecheck and migration guards), plus their aggregate. Native/namespace contracts run in release validation. Migration versions compare the entire candidate against `merge_group.base_sha`. |
 | `apple-quality.yml` | No | Optional PR/main workflow filtered to iOS and its generated harness contract inputs. GitHub merge-group events do not support workflow-level path filters. |
 | `migration-preview.yml` | No | Optional PR dry-run, filtered to `supabase/migrations/**`, with no production credentials. |
-| `migrations.yml` | No | Main migration changes or explicit operator dispatch only; apply jobs never appear on PRs. |
+| `migrations.yml` | No | Manual main-only previews/history/owner repair. Production SQL applies only through a validated publishing release, never this standalone workflow or PRs. |
 | `release.yml` | No | Publishes releases from main/tags or manual dispatch. |
 | `staging-gated-production.yml` | No | Deployment/smoke on main, dispatch or explicit reusable call. |
 | `post-deploy-smoke.yml` | No | Main-only manual pinned smoke, not merge validation. |

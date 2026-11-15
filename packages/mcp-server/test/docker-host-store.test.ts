@@ -790,3 +790,18 @@ test("uninstall drains bound machines through stop/delete ACKs before idempotent
   await denied(store.poll(a.hostToken, a.installationId));
   await denied(store.unregister(a.hostToken, randomUUID()));
 });
+
+test("retention cleanup authenticates the bound host and permanently fences runtime idempotently", async () => {
+  const a = await boundStartup("bootstrap");
+  await denied(store.cleaned(a.hostToken, randomUUID(), { requestId: a.startup.requestId }));
+  await denied(store.cleaned(a.hostToken, a.installationId, { requestId: randomUUID() }));
+  await store.cleaned(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+  const deleted = await lifecycle(a.sandboxId);
+  expect(deleted?.status).toBe("deleted");
+  await expect(a.authority.withSession(a.runtime.runtimeToken, a.runtime.epoch, async () => true)).rejects.toThrow(
+    "runtime_enrolment_denied",
+  );
+  await store.cleaned(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+  expect(await lifecycle(a.sandboxId)).toEqual(deleted);
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+});

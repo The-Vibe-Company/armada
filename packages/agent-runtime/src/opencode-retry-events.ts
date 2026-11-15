@@ -1,2 +1,2 @@
-// Keep the driver-facing module separate so driver fixture mocks cannot replace the wire-test subject.
+// Bun mocks propagate through live re-exports. Inject fixture dependencies instead of mocking this module.
 export { createOpenCodeRetryObserver } from "./opencode-retry-observer.ts";
