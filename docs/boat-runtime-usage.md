@@ -14,19 +14,21 @@ counters/models/prices remain unknown. The pinned Codex **0.167.0** recording
 already reports cache writes, so no pricing-policy relaxation, zero inference or
 harness upgrade is needed to produce positive cost for complete observations.
 
-The positive-cost contract is now exercised across the real Codex JSONL driver,
-encrypted runtime upload, shared SQL pricing writer and the same sandbox store
-used by status. The recorded first turn reports 13,143 input / 5 output / 0
+The former offline positive-cost integration replay crossed the real Codex JSONL
+driver, encrypted runtime upload, shared SQL pricing writer and the sandbox store
+used by status. It was removed from unit CI under #2136 because of its slow
+native-process/database work; the narrower retained tests do not prove this
+whole path. The historical recording's first turn reports 13,143 input / 5 output / 0
 cache-read / 13,140 cache-write tokens and prices at USD `0.032906`. A **new
 driver process and runtime epoch**, restoring the closed native rollout, reports
 only the next turn's 13,163 input / 5 output / 13,140 cache-read / 20 cache-write
 tokens: USD `0.00142`, session USD `0.034326`. Replaying either epoch's archive
 cannot duplicate those turns. These are exact frozen public catalog estimates,
-not guest money or live provider invoices. This offline contract does not claim
-real staging inference or that an incomplete observation may be priced.
+not guest money or live provider invoices. These historical offline expectations are not current integrated test evidence,
+real staging inference or permission to price an incomplete observation.
 
-Missing `cacheWriteInputTokens` still means null / `unknown:tokens`; the test
-never fills absent dimensions with zero. Missing model/prices, ambiguous cold
+Missing `cacheWriteInputTokens` still means null / `unknown:tokens`; absent
+dimensions must not be filled with zero. Missing model/prices, ambiguous cold
 resume history and custom endpoints without explicit rates retain their existing
 unknown rules.
 
