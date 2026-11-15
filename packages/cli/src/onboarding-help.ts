@@ -1,5 +1,31 @@
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
+  "template launch": `Usage: armada template launch NAME|ID --request-key KEY [--revision N] [options]
+Launch an existing template, resolving its references into a frozen launch manifest.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org NAME|UUID
+or armada org use. Find template IDs and current revisions with template list/get.
+Names must match exactly and identify one active template; use an ID if names collide.
+
+Options:
+  --revision N                           Positive revision; omission uses current.
+  --prompt TEXT                          Override the launch prompt.
+  --ttl <duration>                       Override lifetime, for example 30m.
+  --size small|medium|large|xlarge        Override machine size.
+  --repo REPO                            Override the initial repository.
+  --model-account UUID                   Select an unpinned model account.
+  --model-account-version N              Required with --model-account; positive integer.
+  --org NAME|UUID                        Organization selector.
+  --json                                 Accepted; launch always emits JSON on stdout.
+A revision's pinned model account cannot be overridden. No inline environment values
+or local environment expansion are supported; definitions hold variable/secret references.
+
+--request-key is required: 1–128 ASCII letters, digits, dots, underscores, colons or hyphens.
+Save the key before submission. After an unknown outcome, retry the SAME key and body,
+including organization, revision and overrides; never invent a new key for that attempt.
+Name-based launch prints the resolved template ID to stderr before submission. Use that ID
+for recovery, so a later rename or deletion cannot prevent the original request's replay.
+Example: armada template launch TEMPLATE_UUID --request-key audit_run_1 --revision 2 --org ORG_UUID --json
+`,
   "template delete": `Usage: armada template delete NAME|ID --expected-revision N [--org NAME|UUID] [--json]
 Mark a launch template deleted; this command is not sandbox deletion.
 Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
