@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.39.1](https://github.com/The-Vibe-Company/armada/compare/v2.39.0...v2.39.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **cli:** focus account family help ([#2023](https://github.com/The-Vibe-Company/armada/issues/2023)) ([dc788c5](https://github.com/The-Vibe-Company/armada/commit/dc788c56d9eb749836bbc691c2573e25e88d863b))
+* **cli:** focus GitHub family navigation help ([#2017](https://github.com/The-Vibe-Company/armada/issues/2017)) ([917e1ab](https://github.com/The-Vibe-Company/armada/commit/917e1ab6575e1f878272cd51d62303d002dffcdf))
+* **cli:** focus service token family help ([#2012](https://github.com/The-Vibe-Company/armada/issues/2012)) ([757556a](https://github.com/The-Vibe-Company/armada/commit/757556ad6d9d64587b9ae13c53f30149e5186e92))
+* **dashboard:** curate self-hosted snapshot action errors ([#2015](https://github.com/The-Vibe-Company/armada/issues/2015)) ([28d168e](https://github.com/The-Vibe-Company/armada/commit/28d168e82e5f171549776be1c40ad7517be2beed))
+* **dashboard:** give template skill failures GUI recovery guidance ([#2019](https://github.com/The-Vibe-Company/armada/issues/2019)) ([90de7dc](https://github.com/The-Vibe-Company/armada/commit/90de7dc3968757e2cd29b9b5db195590831b305b))
+
+
+### Performance Improvements
+
+* **server:** defer sandbox usage aggregation until after pagination ([#2025](https://github.com/The-Vibe-Company/armada/issues/2025)) ([ecf78d2](https://github.com/The-Vibe-Company/armada/commit/ecf78d203d6ceafd7ef9c605c1f06789a584bb5d))
+* **server:** list credential metadata in one statement after auth ([#2014](https://github.com/The-Vibe-Company/armada/issues/2014)) ([c9532ae](https://github.com/The-Vibe-Company/armada/commit/c9532ae6d7e5e8c373fc360268e6a4616adcfe30))
+* **server:** list named-scope sandboxes in one statement ([#2021](https://github.com/The-Vibe-Company/armada/issues/2021)) ([e2a80f2](https://github.com/The-Vibe-Company/armada/commit/e2a80f28ad4095b8c8044bde301b1a4ac25c62b8))
+
 ## [2.39.0](https://github.com/The-Vibe-Company/armada/compare/v2.38.0...v2.39.0) (2026-11-15)
 
 
