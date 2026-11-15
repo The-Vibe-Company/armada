@@ -20,6 +20,10 @@ Boat omission is explicit not-run evidence, never a claimed pass or quota guess.
 an Armada bearer token and the deployed server's `/api/v1/` API. It does not
 deploy, apply migrations, or contact a provider/database directly.
 
+User-facing saved environments are **snapshots**. Existing API/MCP names,
+case keys such as `golden`/`goldenId`, and flags/step identifiers such as
+`--golden-runtime` retain their wire spelling; do not rename them in smoke JSON.
+
 ## Configure staging
 
 The GitHub environment **staging** uses the following exact configuration names.
@@ -32,7 +36,7 @@ Set these at environment scope, not to production values:
 | Secret | `SUPABASE_DB_PASSWORD` | Staging database password; migrations only |
 | Secret | `SUPABASE_ACCESS_TOKEN` | Supabase management token authorized for staging; migrations only |
 | Secret | `ARMADA_SMOKE_TOKEN` | Staging Armada bearer token; smoke only |
-| Secret | `ARMADA_SMOKE_CASES` | JSON array with staging org, golden and model account identifiers; smoke only |
+| Secret | `ARMADA_SMOKE_CASES` | JSON array with staging org, snapshot and model account identifiers; smoke only |
 
 Verify required environment settings before running. Migration credentials are never
 passed to the smoke script. Missing settings in legacy diagnostics can no-op; a
@@ -51,8 +55,8 @@ Example cases (replace placeholders; account IDs are identifiers, not credential
     "provider": "modal",
     "harness": "claude",
     "org": "<staging-org-id>",
-    "golden": "<modal-golden-name>",
-    "goldenId": "<modal-golden-id>",
+    "golden": "<modal-snapshot-name>",
+    "goldenId": "<modal-snapshot-id>",
     "model": "<available-model>",
     "modelAccountId": "<claude-model-account-id>",
     "repo": "/home/user/armada"
@@ -61,8 +65,8 @@ Example cases (replace placeholders; account IDs are identifiers, not credential
     "provider": "modal",
     "harness": "codex",
     "org": "<staging-org-id>",
-    "golden": "<modal-golden-name>",
-    "goldenId": "<modal-golden-id>",
+    "golden": "<modal-snapshot-name>",
+    "goldenId": "<modal-snapshot-id>",
     "model": "<available-model>",
     "modelAccountId": "<codex-model-account-id>",
     "repo": "/home/user/armada"
@@ -71,7 +75,7 @@ Example cases (replace placeholders; account IDs are identifiers, not credential
 ```
 
 Each entry is an explicit provider × harness pair; add entries for every pair
-you want to cover. Goldens must already exist for their provider and contain a
+you want to cover. Snapshots must already exist for their provider and contain a
 git checkout with an `origin` remote at `repo`. Configure the user's model
 accounts and GitHub connection on staging beforehand. For private repositories,
 the token's user must have access. No provider/database credentials belong in
@@ -114,7 +118,7 @@ gate. The flag is operator acknowledgement, not a credential or a substitute for
 the server's normal actor/org authorization.
 
 Coordinator procedure (never executed by workers):
-1. Select one existing production Boat golden and the coordinator's own model
+1. Select one existing production Boat snapshot and the coordinator's own model
    account/org. Supply one valid selected Boat case via ARMADA_SMOKE_CASES.
    These are identifiers, not credentials; no golden/host registration or
    production deployment settings are changed.
@@ -171,8 +175,8 @@ the sandbox and checks provider state.
 
 All selected pairs share staging `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN` and
 `ARMADA_SMOKE_CASES`; no per-pair GitHub/provider key. Each needs an authorized
-model account for its harness, supported model, org UUID, provider-specific golden
-and checkout path with origin. `goldenId` names that same golden, not the other
+model account for its harness, supported model, org UUID, provider-specific snapshot
+and checkout path with origin. `goldenId` names that same snapshot, not the other
 provider's. Optional effort and exact skill pins retain their documented semantics.
 Boat configuration may remain in ARMADA_SMOKE_CASES during rollout, but it is
 ignored and creates no provider/model/GitHub/default/template/vault/expiry probe.
@@ -200,7 +204,7 @@ and polling are bounded, and cleanup runs even after a failed step. This is
 a receipt-scoped smoke, not a fleet-wide resource janitor: a killed runner or an ambiguous create
 response can still require operator reconciliation in the staging dashboard.
 Do not blindly rerun a timed-out create. Without a deletion journal, stopped resources retain provider disks
-according to the normal retention policy; this smoke does not delete goldens or unrelated resources. With a durable journal,
+according to the normal retention policy; this smoke does not delete snapshots or unrelated resources. With a durable journal,
 known sandbox rows are deleted only after their stop/recovery assertions (below).
 
 ## Offline validation
@@ -248,8 +252,10 @@ lifecycle capture overwriting the stop result cannot silently pass.
 
 Budget: two allocations and two trivial model turns per selected pair, instead
 of one. Expect roughly 4–10 minutes per pair (provider/model dependent); the
-whole run remains capped at 35 minutes plus five minutes reserved for cleanup,
-inside the 45-minute workflow limit. Four slow pairs can exhaust this budget and
+functional probe phase has a 35-minute work budget plus five minutes of local
+cleanup. Historical/final receipt reconciliation has separate bounded windows;
+the staging job's outer cap is 85 minutes (see cleanup transition races below).
+Slow selected pairs can exhaust the work budget and
 fail closed. Cost is twice the baseline sandbox/model usage, plus small recovery
 storage; stopped disks/archives retain the normal retention cost. No dollar
 estimate is reliable without the configured provider/model rates. Do not run
@@ -287,7 +293,7 @@ accessible pins. There are no default pins; malformed supplied pins fail configu
 The selected `modelAccountId` is pinned to its current metadata version through
 `creds/list`; no silent default-account substitution is used. The existing
 `repo` remains the absolute exec cwd, not a template repository selector;
-template launches use the golden's default native cwd.
+template launches use the snapshot's default native cwd.
 
 Cases are the explicit enabled provider × harness matrix, as in the baseline.
 There is still no ordinary sandbox capabilities API; a configured unsupported
@@ -434,14 +440,14 @@ org/golden UUIDs; canonical casing is used.
 
 Before any compute, named `default_skills_golden`, `default_skills_org` and
 `default_skills_personal` reads fetch the shipped defaults API. The client derives
-golden < org < personal precedence by skill slug independently of the server's
+snapshot < org < personal precedence by skill slug independently of the server's
 merge helper. No defaults are changed: concurrent settings edits can intentionally
 fail the probe rather than overwrite someone else's configuration.
 
 The clean launch omits both explicit skills and opt-out, then
 `default_skills_receipts` requires exactly the effective pins in both the launch
 and persisted status receipts, including matching versions, IDs, checksums and
-registry origin. Its returned golden ID must match the queried environment.
+registry origin. Its returned snapshot ID must match the queried environment.
 The dirty worker supplies `skipSkillDefaults: true` and no explicit pins;
 `default_skills_opt_out_receipts` requires empty receipt arrays. This still runs
 normal work preservation/recovery checks.
@@ -504,7 +510,7 @@ wins. Normal cleanup stops all known compute. The shipped delegated launch has
 no TTL field: child defaults to4hours (plus existing provider headroom), so a
 rare unconfirmed allocation can require immediate operator reconciliation.
 Never invent a TTL parameter or repeat launch to discover its outcome.
-Use dedicated/exclusive staging smoke actors/cases, clean secretless goldens,
+Use dedicated/exclusive staging smoke actors/cases, clean secretless snapshots,
 named account UUIDs, and a staging public MCP URL; no production origins/sessions.
 No migrations/new credentials/case fields. Offline tests are not live receipts.
 
@@ -565,10 +571,12 @@ and five-minute cleanup reserve. Ready polling allows 120 observations,
 natural expiry 360, cleanup 120, each separated by one second; slow matrices
 can exhaust the shared deadline and fail closed. Staging operators must budget
 this extra compute time. No production, new capabilities or migrations.
-The coordinator executes both providers after merge; fake transport tests
+The coordinator executes the eligible Modal pairs after merge; fake transport tests
 prove verdicts and cleanup, not real-provider expiry success.
 
-### Golden runtime integrity
+<a id="golden-runtime-integrity"></a>
+
+### Snapshot runtime integrity
 
 Both staging entrypoints enable `--golden-runtime`. On the existing ordinary
 worker (only the clean worker when preservation is enabled), named
@@ -580,7 +588,7 @@ before the ordinary worker checks).
 
 The helper must match the bundled architecture-specific digest and closed
 0.1.0/protocol-1 report. Skillpack and skillpack-runtime must match the contents
-of the SHA-256-pinned runtime-v0.3.5 release archive used by the golden bootstrap.
+of the SHA-256-pinned runtime-v0.3.5 release archive used by the snapshot bootstrap.
 The probe downloads that archive to a private temporary directory, verifies its
 pin before extraction, compares both installed executables, and removes its
 temporary files. It never installs, repairs, or executes downloaded binaries.
@@ -589,14 +597,14 @@ the helper is not required on PATH (Modal exec intentionally omits user-local bi
 unsupported-architecture or unavailable-download cases fail closed and the
 existing worker cleanup still runs. Guest output is not printed.
 
-Prerequisite: staging goldens must contain the shipped helper and Skillpack
-runtime (a golden built with the soft Skillpack download warning will fail this
+Prerequisite: staging snapshots must contain the shipped helper and Skillpack
+runtime (a snapshot built with the soft Skillpack download warning will fail this
 check and needs an operator rebuild). No policy, production or database changes.
 Expected added duration: seconds to about one minute per pair; two existing
 60-second exec bounds and the shared 35+5-minute run deadline apply. Cost: one
 pinned release download per pair plus trivial hashing/exec, with no model usage
 or extra worker. Offline transport tests do not prove deployed provider bytes;
-the coordinator runs both enabled providers after merge.
+the coordinator runs the eligible Modal pairs after merge; Boat omission is not a pass.
 
 ## Dashboard read probes (password-free)
 
@@ -623,7 +631,7 @@ These are read-only API calls; no compute or account is created.
 
 **Uncovered:** actual HTML rendering, hydration, session cookies, selected-org
 handling and user-JWT RLS/Supabase RPC paths (including sandbox costs, membership,
-goldens and other resource pages). These probes do not claim full dashboard page
+snapshots and other resource pages). These probes do not claim full dashboard page
 coverage or prove that the dashboard's RPC schema matches the control API.
 
 Coordinator check after merge (workers have no staging access): run the staging
@@ -633,16 +641,16 @@ the bound. No new credentials should be configured. Offline proof:
 through the real parser and confirms only `dashboard_sandboxes` fails, with
 siblings finishing. Staging evidence remains the coordinator's responsibility.
 
-## Legacy independent staging migrations
+## Migration ownership
 
-When release-only gates are disabled, the Database migrations workflow may
-independently link/list/preview/apply staging migrations on main/manual dispatch.
-Manual defaults to dry-run; missing settings can no-op. It does not order schema
-before Railway deploy, so additive compatibility is still necessary. All
-`SUPABASE_*` settings must identify the separate staging project. Production
-promotion/history/repair and authoritative workflow ordering remain in
-[releasing](releasing.md) and [database migrations](database-migrations.md), not a
-legacy successful no-op or unrelated historical smoke check.
+The standalone `migrations.yml` workflow is manual/main-only for previews,
+history and owner repair; it neither independently applies staging SQL nor
+applies production SQL. There is no release-only-gates toggle or successful
+missing-configuration no-op to authorize promotion.
+Staging SQL belongs to the serialized pinned deployment path; production SQL
+belongs only to the validated publishing-release path. See
+[releasing](releasing.md) and [database migrations](database-migrations.md).
+Historical workflow behavior is not a current deployment prerequisite.
 
 ## Targeted staging checks
 
@@ -677,7 +685,7 @@ Product/API contracts live in [templates](templates-cli.md) and [vault](vault-cl
   agent reports a boolean, never prints it; APIs return references only. Rotate,
   require old-version new/later delivery refusal, republish; revoke and require
   denial. Do not claim previously delivered copies were erased.
-- Reject personal refs in org templates, stale account/ref, removed golden,
+- Reject personal refs in org templates, stale account/ref, removed snapshot,
   disabled tool or remap before allocation. Revoke during init: no hydration or
   first prompt, and confirm stopped compute. Concurrent matching key/body and
   replay after restart/lost response keep one allocation; changed input conflicts.
@@ -717,7 +725,12 @@ remains proposed, not a prerequisite silently imposed on owner-approved raw deli
 
 ### Native Boat stop
 
-Use an ordinary **native** Boat staging sandbox, not the enrolled runtime lane.
+**Historical procedure, not a staging/release acceptance step.** Do not execute
+this Boat procedure on staging. On-demand production verification is
+coordinator-only through the explicit parity opt-in above; this old direct
+sequence is not a substitute authorization.
+
+The original procedure used an ordinary **native** Boat sandbox, not the enrolled runtime lane.
 Exercise exec/send/wait/logs, then `armada stop ID --json` twice: return stopping/
 stopped, not lease conflict or a second physical stop. Status/detail remain readable
 while archiving; once Boat confirms archival, list shows stoppedAt. If unconfirmed,
@@ -781,7 +794,7 @@ verify its deletion while an unrelated stopped sandbox remains unchanged.
    "id": "<sandbox UUID>" }`. The key labels the original smoke request in the
    audit manifest; it is **not** a server-side sandbox label. Keep its source run
    URL alongside the manifest. Never manufacture attribution from stopped status,
-   age, owner or golden. Old direct launches did not persist labels: without
+   age, owner or snapshot. Old direct launches did not persist labels: without
    trustworthy receipts, stop and request coordinator attribution.
 2. Set `ARMADA_URL=https://armada-mcp-staging.up.railway.app`,
    `ARMADA_SMOKE_ORG=<exact staging org from receipts>` and
@@ -828,8 +841,9 @@ not that every historical refusal had that cause. Coordinator check: restore tha
 run's exact receipt artifact, run the next staging smoke, require zero remaining
 rows, and inspect any named failure's status/code before attributing it. No worker
 needs staging access to run the fake-fetch regression tests.
-The startup sweep, probe phase and final cleanup share the existing 40-minute
-smoke deadline; waiting for deletion does not add a new unbounded grace period.
+Functional probes and local cleanup retain their 35+5-minute budgets.
+Historical/final receipt reconciliation has separate bounded windows described
+under cleanup transition races below; waiting for deletion is never unbounded.
 
 ### Final delegated cleanup order (#1383)
 
@@ -845,8 +859,9 @@ legacy orchestrator parents and children remain refused. A merely stopped parent
 is not sufficient because it could resume and issue delegated work again.
 
 Stop settling and transient `sandbox_not_ready`/pending deletion now share the
-full existing five-minute cleanup reserve across both waves, also capped by the
-smoke's existing 40-minute deadline. This replaces the previous four-minute
+local five-minute cleanup reserve across both waves. The later
+[cleanup transition-race handling](#cleanup-transition-races-1785) adds separately
+bounded historical/final reconciliation, not unbounded mutation retries. This replaces the previous four-minute
 per-row cutoff; it adds no new overall grace period. A still-busy provider or
 unsettled lease at the bound remains a named failure with its safe HTTP/code
 and a retained receipt, never a falsely successful cleanup.
@@ -869,7 +884,9 @@ a provider-filtered run may supply only that provider case. Unknown or duplicate
 filters are rejected before any request. All
 cases supply `org`, `harness`, `model`, and `modelAccountId`. Modal also
 supplies `golden`; Docker instead supplies `hostId` (an already registered owned
-host) and `image` (the pulled immutable image digest). No SSH, registration,
+host). Normal launch uses the server-selected official environment, or an
+authorized host-local `snapshotId` for the dedicated snapshot probe; do not
+add an `image` selector to a normal launch request. No SSH, registration,
 host startup, preview lifecycle endpoint or provider credentials are used.
 The configured host is checked through host discovery; an offline host produces
 one explicit `host_offline` diagnostic without preventing Modal probes.
@@ -951,30 +968,18 @@ historical five remaining rows or guarantee deletion after provider refusal.
 
 #### Idle pause and wake-on-send (#1562)
 
-The same table now includes distinct `idle-pause` and `wake-on-send` rows.
-They are **not** aliases for `stop`, `resume` or `resume-recall`: those rows
-prove explicit control, not the server's idle timer or an ordinary message
-waking a stopped conversation. Until dedicated probes are implemented, all
-three providers report `not-run: probe_not_implemented` for these rows.
-Selecting either row with `--feature` prints that debt without allocating
-compute or implying a pass; the existing feature/provider filters still apply.
+The table includes implemented `idle-pause` and `wake-on-send` probes, not
+aliases for explicit `stop`/`resume` or permanent `probe_not_implemented`
+placeholders. See [natural idle pause and ordinary-send wake](#natural-idle-pause-and-ordinary-send-wake)
+for current configuration and observation bounds. Both Modal and the owner's
+Docker host use their supported lifecycle paths; Boat remains excluded from
+staging acceptance.
 
-Outstanding proof belongs to #1562 and #1532. The coordinator must observe an
-eligible enrolled runtime's last terminal turn, unchanged absolute deadline,
-checkpoint acknowledgement, and confirmed provider compute shutdown after the
-configured idle delay. Then send through the dashboard's ordinary message
-request and verify a recalled token in the same conversation, with one accepted
-turn on identical request-ID replay. Record the actual times/provider evidence;
-an HTTP stop acknowledgement or a locally mocked test is not sufficient.
-Run the same sequence on Modal and the owner's Docker host; Boat is excluded
-by owner decision 2026-11-13. Docker idle
-checkpoint/pause and ordinary-send wake are not implemented by the Boat/Modal
-runtime paths; do not infer Docker support from those implementations.
-
-A default ten-minute idle delay cannot be proven in a two-minute feature run.
-Any shortened staging-only global idle setting and its restoration require
-coordinator/operator control. This procedure neither changes that setting nor
-adds a new script, CI job, provider call or staging success claim.
+The coordinator still needs actual idle-delay, checkpoint, shutdown and
+same-conversation recall evidence; a mocked test or stop ACK is not enough.
+The default ten-minute delay cannot be proved in a two-minute feature run.
+Any staging-only delay override and restoration require operator control.
+These instructions do not change the deployed setting or claim a live pass.
 
 #### Usage and exact-cost parity rows
 
@@ -1003,12 +1008,28 @@ selected in this mode. Optionally add `--only modal` or `--only docker`.
 Each `ARMADA_SMOKE_CASES` entry additionally declares one stable `account` ID:
 `codex-openai`, `codex-subscription`, `codex-azure`, `claude-anthropic`,
 `claude-subscription`, `claude-gateway`, `opencode-deepseek`, `opencode-openai`,
-`opencode-anthropic`, `opencode-custom`, or `opencode-azure`. Keep the usual
+`opencode-anthropic`, `opencode-custom`, `opencode-azure`, `claude-morph`,
+`codex-morph`, or `opencode-morph`. Keep the usual
 `org`, `harness`, `model`, `modelAccountId`, and `golden` (Modal) or `hostId`
 (Docker). More than one account per provider is allowed; duplicate provider/account
 pairs and mismatched harnesses fail configuration before any allocation.
 The label describes an operator-selected credential; it does not convert a
 credential or assert upstream protocol support.
+
+Morph is one shared model account for Claude Code, Codex and OpenCode, not a
+compute provider. Configure the appropriate Morph account label and compatible
+model for each harness; the same `modelAccountId` may be used across those
+harness cases. Unconfigured Morph cells report `no account configured`, not a
+pass. Do not provision accounts merely to fill unrequested cells.
+
+Per-account simultaneous-agent caps apply to these real launches across all
+providers/harnesses. Morph defaults to 2; other account kinds to unlimited.
+Stopped/idle-paused sandboxes do not count. Busy-account admission refuses; it
+does not silently switch billing. Lowering a cap does not stop existing agents.
+For deliberate owner-authorized configuration, use
+`armada creds limits ACCOUNT_UUID --max-agents N` or `--unlimited`; do not raise
+caps or reset bindings just to force a smoke pass. Account caps are distinct from
+provider snapshot-build and Docker-host capacity.
 
 A normal two-provider configuration has no `account` labels and cannot identify
 which matrix cells to run. Configuration errors include a `field` path and a
@@ -1148,8 +1169,11 @@ For Codex, dashboard **Test connection** (or
 `bun run armada creds test SANDBOX_ID --model "$AZURE_DEPLOYMENT"`) sends a tiny
 billable request through an already idle Modal sandbox pinned to that account
 and revision; it does not launch/resume a machine or prove the full harness
-lifecycle. This check is not implemented for OpenCode. Its live verification is
-the existing `opencode-azure` accounts cell: use the new account ID and
+lifecycle. Custom OpenCode connections with declared models also support this
+check on Modal; OpenCode plan keys do not. The dashboard picker remains Modal-only.
+API/CLI checks additionally support the shared Boat runtime, not Docker; Boat
+verification remains coordinator-only outside the staging gate.
+For full OpenCode harness verification use the existing `opencode-azure` accounts cell: use the new account ID and
 `armada/YOUR-ACTUAL-DEPLOYMENT-NAME` as the model. Codex uses the bare deployment
 name. Run both Modal and owned-Docker cells for answer, follow-up, resumed recall,
 usage, honest costs and cleanup. Creation now performs the bounded Azure
@@ -1231,9 +1255,9 @@ GitHub account has push access; the runner does not create repositories or
 request local/provider credentials. The fixture must have a populated `main`
 branch. Docker declares this repository in its ordinary launch `repos` manifest
 so its runtime grant is bound to it; Boat/Modal require the fixture in the selected
-golden's frozen repository configuration. A read-only `golden/size-policy`
+snapshot's frozen repository configuration. A read-only `golden/size-policy`
 preflight verifies that binding before compute is allocated (the coordinator
-must be authorized to read the golden settings). Invalid owner/repository syntax fails
+must be authorized to read the snapshot settings). Invalid owner/repository syntax fails
 configuration before traffic. Missing configuration is
 `not-run: github_repository_not_configured`; `--feature github` then allocates
 no compute. Example recheck:
@@ -1336,13 +1360,13 @@ not unit-test sleeps or CI provider calls.
 
 ### Saved-snapshot launch row
 
-`--parity --feature launch-snapshot` uses the configured golden on Modal/Boat.
-It first reads the authorized provider-scoped golden list and requires exactly
-one matching golden with a published `providerSnapshotId`, then launches that
-golden and requires a finished, answered turn. Full runs reuse their ordinary
-golden launch rather than allocating another sandbox. This proves launch from
-an existing saved golden snapshot, not creation of a new checkpoint or mutation
-of an operator's golden. A missing snapshot or wrong-provider source cannot pass.
+`--parity --feature launch-snapshot` uses the configured snapshot on Modal/Boat.
+It first reads the authorized provider-scoped snapshot list and requires exactly
+one matching snapshot with a published `providerSnapshotId`, then launches that
+snapshot and requires a finished, answered turn. Full runs reuse their ordinary
+snapshot launch rather than allocating another sandbox. This proves launch from
+an existing saved snapshot, not creation of a new checkpoint or mutation
+of an operator's snapshot. A missing snapshot or wrong-provider source cannot pass.
 For Docker, add an explicit `snapshotId` UUID to the owned-host case and run
 `--parity --only docker --feature launch-snapshot`. The probe verifies the
 existing ready, owned-private snapshot's host, organization and digest before
