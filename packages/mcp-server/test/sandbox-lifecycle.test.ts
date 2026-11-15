@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type Sql, VaultError } from "@armada/core";
+import { type Provider, ProviderError, type Sql, VaultError } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
@@ -716,7 +716,7 @@ test("expired Modal dial-out reaches compute stop without tunnel quiescence or p
   await worker.drain();
 });
 
-for (const loss of ["membership", "credential", "credential_stale_generation"] as const) {
+for (const loss of ["membership", "credential", "credential_stale_generation", "revoked", "transient"] as const) {
   test(`stop-requested sandbox enters operator custody after ${loss} loss without fabricating exit`, async () => {
     const { db, people } = await sharedDatabase();
     const id = crypto.randomUUID();
@@ -733,6 +733,14 @@ for (const loss of ["membership", "credential", "credential_stale_generation"] a
       resolutions++;
       if (loss === "credential_stale_generation")
         await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+      if (loss === "revoked")
+        return {
+          id: "boat",
+          get: async () => {
+            throw new ProviderError({ provider: "boat", code: "unauthorized", retryable: false, message: "revoked" });
+          },
+        } as unknown as Provider;
+      if (loss === "transient") throw Error("transient service failure");
       throw new VaultError("missing_credential", "original authority unavailable");
     });
     expect(await worker.reconcileOne()).toBe(true);
@@ -763,6 +771,10 @@ for (const loss of ["membership", "credential", "credential_stale_generation"] a
     if (loss === "credential_stale_generation") {
       expect(row.reconcile_lease).not.toBeNull();
       expect(row.lifecycle_error).toBeNull();
+      expect(row.held).toBe(false);
+    } else if (loss === "transient") {
+      expect(row.reconcile_lease).toBeNull();
+      expect(row.lifecycle_error).toContain("Retrying");
       expect(row.held).toBe(false);
     } else {
       expect(row.reconcile_lease).toBeNull();
