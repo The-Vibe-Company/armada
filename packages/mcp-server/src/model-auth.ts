@@ -62,6 +62,12 @@ export function createModelAuthOwnership(
     async admitCapacity(accountId: string, sandboxId: string) {
       await sql.transaction!((tx) => admitAccountCapacity(tx, accountId, sandboxId));
     },
+    async releaseProviderCapacity(provider: Provider, providerId: string) {
+      await sql.query(
+        "delete from public.account_agent_reservations r using public.sandboxes s where r.sandbox_id=s.id and s.provider=$1::public.sandbox_provider and s.provider_sandbox_id=$2 and s.status='stopped'",
+        [provider.id, providerId],
+      );
+    },
     async admitSandboxCapacity(sandboxId: string) {
       await sql.transaction!(async (tx) => {
         const row = (

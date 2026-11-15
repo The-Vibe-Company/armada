@@ -62,6 +62,7 @@ export interface ModalProviderOptions extends ModalConnection {
   ssh?: SshPreparation;
   /** Trusted server lifecycle hook. Runs after ready/restore OUTSIDE the store lease; may call
    * get/configureMcp. Failure prevents native submission; incarnation is fenced on reacquisition. */
+  resumeRefused?(provider: ModalProvider, sandboxId: string): Promise<void>;
   beforeResume?(provider: ModalProvider, sandboxId: string): Promise<void>;
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
 }
@@ -474,8 +475,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     if (row.golden && row.quiesced) throw refusal("sandbox_not_ready", "Sealed golden admission cannot be reopened.");
     if (row.phase === "stopped") {
       if (row.commonRuntime) throw refusal("invalid_request", "Enrolled Modal resume is not enabled.");
-      await options.beforeResume?.(provider, row.info.id);
       if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
+      await options.beforeResume?.(provider, row.info.id);
       row.generation++;
       row.quiesced = false;
       delete row.ordinaryStopAttempted;
@@ -487,7 +488,12 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       row.info.state = "starting";
       delete row.physicalId;
       delete row.processBaseline;
-      await save(row);
+      try {
+        await save(row);
+      } catch (error) {
+        await options.resumeRefused?.(provider, row.info.id);
+        throw error;
+      }
     }
     if (row.generation > 1 && ["reserved", "creating", "booting"].includes(row.phase))
       await create(row, save, await distribution.restoreEnv(row));

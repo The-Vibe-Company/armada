@@ -46,6 +46,7 @@ export interface ComposedModalOptions
     | "tokenId"
     | "tokenSecret"
     | "managementAuthority"
+    | "resumeRefused"
     | "beforeResume"
     | "beforePrompt"
     | "measure"
