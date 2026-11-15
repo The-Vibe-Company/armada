@@ -592,7 +592,11 @@ export function authLabel(authType: ConnectionAuthType): string {
 }
 
 export function transportLabel(transport: ConnectionTransport): string {
-  return transport === "stdio" ? "stdio (in sandbox)" : transport === "sse" ? "SSE" : "Streamable HTTP";
+  return transport === "stdio"
+    ? "a command inside the sandbox"
+    : transport === "sse"
+      ? "a service on the web (legacy)"
+      : "a service on the web";
 }
 
 /** The host of a server URL, for a row's one-line meta; the URL itself when it does not parse. */

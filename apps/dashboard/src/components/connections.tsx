@@ -164,9 +164,9 @@ export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; 
 export function AddServerDialog({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
   return (
     <CreateDialog
-      label="Add server"
-      title="Add a custom server"
-      description="Any MCP server by URL, or a command that runs in the sandbox."
+      label="Add a tool"
+      title="Add a tool"
+      description="A service your agents can call, or a command inside the sandbox."
       triggerAttrs={{ "data-add-server": "" }}
     >
       <AddConnectionForm orgId={orgId} orgName={orgName} isAdmin={isAdmin} />
@@ -209,10 +209,10 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
           className="grid-cols-2 gap-1 rounded-lg border bg-muted/50 p-1"
         >
           <KindOption value="remote">
-            <GlobeIcon /> Remote URL
+            <GlobeIcon /> A service on the web
           </KindOption>
           <KindOption value="stdio">
-            <TerminalIcon /> stdio command
+            <TerminalIcon /> A command inside the sandbox
           </KindOption>
         </RadioGroup>
       </fieldset>
@@ -230,7 +230,7 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
 
       <ResultLine result={result} />
       <div className="flex flex-wrap justify-end gap-2">
-        <SubmitButton>{kind === "remote" ? "Add and connect" : "Add connection"}</SubmitButton>
+        <SubmitButton>{kind === "remote" ? "Add and connect" : "Add tool"}</SubmitButton>
       </div>
     </>
   );
@@ -241,7 +241,7 @@ function KindOption({ value, children }: { value: string; children: ReactNode })
   return (
     <RadioGroupItem
       value={value}
-      className="flex h-full w-full min-w-0 items-center justify-center gap-1.5 rounded-md border-0 bg-transparent px-3 py-1.5 text-sm font-medium whitespace-nowrap text-muted-foreground shadow-none hover:text-foreground data-[state=checked]:bg-background data-[state=checked]:text-foreground data-[state=checked]:shadow-xs [&_svg]:size-4"
+      className="flex h-full w-full min-w-0 items-center justify-center gap-1.5 rounded-md border-0 bg-transparent px-3 py-1.5 text-sm font-medium whitespace-normal text-muted-foreground shadow-none hover:text-foreground data-[state=checked]:bg-background data-[state=checked]:text-foreground data-[state=checked]:shadow-xs [&_svg]:size-4"
     >
       {children}
     </RadioGroupItem>
@@ -276,7 +276,7 @@ function RemoteFields({
       <div className={cn(lead && "grid gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]")}>
         {lead}
         <div className="space-y-2">
-          <Label htmlFor={`${id}-url`}>Server URL</Label>
+          <Label htmlFor={`${id}-url`}>Address of the service</Label>
           <Input
             id={`${id}-url`}
             name="url"
@@ -291,91 +291,97 @@ function RemoteFields({
             aria-describedby={`${id}-url-hint`}
           />
           <p id={`${id}-url-hint`} className="text-xs text-muted-foreground">
-            Keys and tokens go in authentication, not the URL.
+            The address its documentation lists under “MCP server”. Keys and tokens go in the options, not the address.
           </p>
         </div>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor={`${id}-transport`}>Transport</Label>
-          <NativeSelect
-            id={`${id}-transport`}
-            name="transport"
-            value={transport}
-            onChange={(event) => setTransport(event.target.value)}
-          >
-            <option value="http">Streamable HTTP</option>
-            <option value="sse">SSE (legacy)</option>
-          </NativeSelect>
+      <details className="space-y-3 rounded-md border p-3">
+        <summary className="cursor-pointer text-sm font-medium">Sign-in and connection options</summary>
+        <p className="text-xs text-muted-foreground">
+          Armada works out how to sign in. Change these only if the service needs a token or special headers.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-transport`}>Connection method</Label>
+            <NativeSelect
+              id={`${id}-transport`}
+              name="transport"
+              value={transport}
+              onChange={(event) => setTransport(event.target.value)}
+            >
+              <option value="http">Streamable HTTP</option>
+              <option value="sse">SSE (legacy)</option>
+            </NativeSelect>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-auth`}>Authentication</Label>
+            <NativeSelect
+              id={`${id}-auth`}
+              name="auth_type"
+              value={authType}
+              aria-describedby={`${id}-auth-hint`}
+              onChange={(event) => onAuthType(event.target.value as ConnectionAuthType)}
+            >
+              {AUTH_CHOICES.map((choice) => (
+                <option key={choice.value} value={choice.value}>
+                  {authLabel(choice.value)}
+                  {choice.value === "auto" ? " (recommended)" : ""}
+                </option>
+              ))}
+            </NativeSelect>
+          </div>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor={`${id}-auth`}>Authentication</Label>
-          <NativeSelect
-            id={`${id}-auth`}
-            name="auth_type"
-            value={authType}
-            aria-describedby={`${id}-auth-hint`}
-            onChange={(event) => onAuthType(event.target.value as ConnectionAuthType)}
-          >
-            {AUTH_CHOICES.map((choice) => (
-              <option key={choice.value} value={choice.value}>
-                {authLabel(choice.value)}
-                {choice.value === "auto" ? " (recommended)" : ""}
-              </option>
-            ))}
-          </NativeSelect>
-        </div>
-      </div>
-      <p id={`${id}-auth-hint`} className="text-xs text-muted-foreground">
-        {authHint}
-      </p>
-      {authType === "bearer" && (
-        <div className="space-y-2">
-          <Label htmlFor={`${id}-bearer`}>Bearer token</Label>
-          <Input
-            id={`${id}-bearer`}
-            name="bearer_token"
-            type="password"
-            required
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="Paste the token"
-          />
-        </div>
-      )}
-      {authType === "headers" && (
-        <HeaderFields idPrefix={id} rows={headers} onChange={setHeaders} nextKey={() => nextKey.current++} />
-      )}
-      {authType === "oauth" && (
-        <Collapsible className="rounded-md border p-3 text-sm">
-          <CollapsibleTrigger asChild>
-            <Button type="button" variant="ghost" size="sm" className="h-auto px-0">
-              Preregistered OAuth client (optional)
-            </Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent forceMount className="space-y-3 pt-3 data-[state=closed]:hidden">
-            <p className="mb-3 text-xs text-muted-foreground">
-              Only for a server that offers neither client metadata nor dynamic registration. Otherwise leave empty.
-            </p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor={`${id}-client-id`}>Client ID</Label>
-                <Input id={`${id}-client-id`} name="oauth_client_id" autoComplete="off" spellCheck={false} />
+        <p id={`${id}-auth-hint`} className="text-xs text-muted-foreground">
+          {authHint}
+        </p>
+        {authType === "bearer" && (
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-bearer`}>Bearer token</Label>
+            <Input
+              id={`${id}-bearer`}
+              name="bearer_token"
+              type="password"
+              required
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Paste the token"
+            />
+          </div>
+        )}
+        {authType === "headers" && (
+          <HeaderFields idPrefix={id} rows={headers} onChange={setHeaders} nextKey={() => nextKey.current++} />
+        )}
+        {authType === "oauth" && (
+          <Collapsible className="rounded-md border p-3 text-sm">
+            <CollapsibleTrigger asChild>
+              <Button type="button" variant="ghost" size="sm" className="h-auto px-0">
+                Preregistered OAuth client (optional)
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent forceMount className="space-y-3 pt-3 data-[state=closed]:hidden">
+              <p className="mb-3 text-xs text-muted-foreground">
+                Only for a server that offers neither client metadata nor dynamic registration. Otherwise leave empty.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor={`${id}-client-id`}>Client ID</Label>
+                  <Input id={`${id}-client-id`} name="oauth_client_id" autoComplete="off" spellCheck={false} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor={`${id}-client-secret`}>Client secret</Label>
+                  <Input
+                    id={`${id}-client-secret`}
+                    name="oauth_client_secret"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor={`${id}-client-secret`}>Client secret</Label>
-                <Input
-                  id={`${id}-client-secret`}
-                  name="oauth_client_secret"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
-      )}
+            </CollapsibleContent>
+          </Collapsible>
+        )}
+      </details>
     </>
   );
 }
@@ -532,9 +538,9 @@ function StdioFields({
     <div className="space-y-4">
       <input type="hidden" name="kind" value="stdio" />
       <p className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-pretty text-muted-foreground">
-        <span className="font-medium text-foreground">Runs in each sandbox launched with it</span>, never on Armada. Pin
-        an exact package version, as in the example below; other programs must already be in the snapshot. No secret is
-        passed in, and everyone who can use it sees its command.
+        <span className="font-medium text-foreground">Runs in each sandbox launched with it</span>, never on Armada.
+        Armada cannot test it before launch. Pin an exact package version, as in the example below; other programs must
+        already be in the snapshot. No secret is passed in, and everyone who can use it sees its command.
       </p>
       <div className={cn(lead && "grid gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]")}>
         {lead}
@@ -565,7 +571,7 @@ function StdioFields({
             aria-controls={`${idPrefix}-import-area`}
             onClick={() => setImporting((open) => !open)}
           >
-            Import JSON definition
+            Paste a JSON definition
           </Button>
         </div>
         {importing && (
@@ -889,7 +895,7 @@ function DefaultCheckbox({ idPrefix }: { idPrefix: string }) {
         className="mt-0.5"
       />
       <div className="space-y-0.5">
-        <Label htmlFor={`${idPrefix}-default`}>Include in new launches by default</Label>
+        <Label htmlFor={`${idPrefix}-default`}>Pre-select it in your launches</Label>
         <p id={`${idPrefix}-default-hint`} className="text-xs text-muted-foreground">
           Preselected when you launch. You can still remove it each time.
         </p>
@@ -970,10 +976,10 @@ function DefaultSwitch({
         checked={on}
         onCheckedChange={() => switchForm.current?.requestSubmit()}
         disabled={pending}
-        aria-label={`Include ${connection.name} by default`}
+        aria-label={`Pre-select ${connection.name} in launches`}
       />
       <Label htmlFor={switchId} className="text-xs font-normal text-muted-foreground">
-        Default
+        {connection.scope === "org" ? "In everyone’s launches" : "In your launches"}
       </Label>
     </form>
   );
@@ -985,24 +991,33 @@ type RowDialog = "rename" | "edit" | "revoke" | "delete" | null;
  * A connection's one expected action on its row of the Tools list (#808): sign in for the first time, sign in
  * again, try again or configure. Its outcome is said under it. Everything else is in {@link ToolPanel}.
  */
-export function ToolRowAction({ connection }: { connection: McpConnection }) {
+export function ToolRowAction({ connection, canManage = true }: { connection: McpConnection; canManage?: boolean }) {
   const [result, setResult] = useState<ActionResult | null>(null);
   const primary = connectAction(connection);
   return (
-    <div className="flex flex-col items-end gap-1">
-      {/* Stays mounted when it no longer applies, so the result of the connect it just ran is still shown. */}
-      <RowAction
-        action={connectConnection}
-        fields={{ org: connection.orgId, id: connection.id }}
-        onResult={setResult}
-        variant={primary === "Retry" ? "outline" : "default"}
-        label={`${primary ?? "Connect"} ${connection.name}`}
-        hidden={primary === null}
-      >
-        {primary === "Retry" && <RefreshCwIcon />}
-        {primary ?? "Connect"}
-      </RowAction>
-      <ResultLine result={result} className="max-w-56 text-right text-xs" />
+    <div className="flex max-w-40 flex-wrap items-center justify-end gap-3 sm:max-w-none">
+      {canManage ? (
+        <DefaultSwitch connection={connection} onResult={setResult} />
+      ) : (
+        <span className="text-xs text-muted-foreground">
+          {connection.defaultForLaunch ? "Pre-selected" : "Not pre-selected"}
+        </span>
+      )}
+      <div className="flex flex-col items-end gap-1">
+        {/* Stays mounted when it no longer applies, so the result of the connect it just ran is still shown. */}
+        <RowAction
+          action={connectConnection}
+          fields={{ org: connection.orgId, id: connection.id }}
+          onResult={setResult}
+          variant={primary === "Retry" ? "outline" : "default"}
+          label={`${primary ?? "Connect"} ${connection.name}`}
+          hidden={!canManage || primary === null}
+        >
+          {primary === "Retry" && <RefreshCwIcon />}
+          {primary ?? "Connect"}
+        </RowAction>
+        <ResultLine result={result} className="max-w-56 text-right text-xs" />
+      </div>
     </div>
   );
 }
