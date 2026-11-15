@@ -1018,6 +1018,29 @@ Example: armada template ${action} ${creating ? "nightly --scope personal" : "TE
 `;
 }
 
+function routineStateHelp(action: "enable" | "pause" | "delete"): string {
+  const effect = {
+    enable:
+      "Enable scheduled launches as the routine owner. Selects the next occurrence, not an immediate manual launch.\nThe owner must still be eligible and the pinned template revision must be available.",
+    pause:
+      "Pause new launch admissions; already admitted runs may finish and running sandboxes are not stopped.\nUse routine enable with a fresh version to schedule future occurrences again.",
+    delete:
+      "Mark a routine deleted and stop new admissions; already admitted runs may finish.\nThis does not stop or delete running sandboxes. Keep the routine ID for routine runs history.",
+  }[action];
+  return `Usage: armada routine ${action} NAME|ID --expected-version N [--org NAME|UUID] [--json]
+${effect}
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Organization-scoped changes require administrator permission.
+Names must match exactly and identify one non-deleted routine; use an ID from routine list
+if names collide. --expected-version is required, a positive integer up to 2147483647.
+Copy the current version from routine show/list. Conflicts are not retried automatically;
+inspect the current routine before deciding whether to apply the change again.
+Human output shows metadata, status and the new version; --json emits the API response.
+${action === "enable" ? "Use routine runs to inspect later admission and task outcomes; enabling is not task success." : "The API response includes admittedRunsMayFinish; a human warning is written to stderr."}
+Example: armada routine ${action} ROUTINE_UUID --expected-version 2 --org ORG_UUID --json
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -1047,6 +1070,9 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   const command = parts.join(" ");
   if (command === "template create") return templateDefinitionHelp("create");
   if (command === "template publish") return templateDefinitionHelp("publish");
+  if (command === "routine enable") return routineStateHelp("enable");
+  if (command === "routine pause") return routineStateHelp("pause");
+  if (command === "routine delete") return routineStateHelp("delete");
   if (command === "completion") return completionHelp();
   if (command === "completion bash") return completionHelp("bash");
   if (command === "completion zsh") return completionHelp("zsh");
