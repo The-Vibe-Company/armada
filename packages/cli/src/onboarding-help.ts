@@ -428,6 +428,29 @@ Keep real credentials in a private file or stdin/hidden input, never command arg
 Use --org to override a saved organization selection.
 Example: armada org connect modal --org my-team --file /private/modal.json
 `,
+  creds: `Usage: armada creds <command> [arguments]
+Manage encrypted model/provider credentials, not application variables/secrets.
+Use a leaf command with --help or -h for its flags and secure input instructions.
+Native subscription accounts:
+  login codex  Authorize native Codex in your browser; keep the terminal open.
+  import       Import an existing Claude token or Codex auth JSON securely.
+API connections:
+  presets      List built-in provider choices without login.
+  connect      Store a named API connection using a preset.
+  set          Store a supported credential kind or custom endpoint.
+  test         Test a sandbox's bound model connection; may incur a provider charge.
+Account metadata:
+  list         List metadata/IDs, never credential values.
+  rename       Rename by account ID.
+  default      Select a default account by ID.
+  remove       Remove an account by ID.
+  rm           Legacy kind-scoped removal; not an alias for remove <id>.
+Native subscriptions require eligible subscription access; API keys use provider billing.
+Read secret inputs from stdin/hidden input or private files, never command arguments.
+For application environment values use vars or secrets instead. Server authorization still applies.
+Example: armada creds presets --json
+Example: armada creds import --help
+`,
   "creds login": `Usage: armada creds login codex (--name <name> | --id <id> --expected-version <version>) [--org <name>]
 Start native Codex device login after Armada login. Keep this terminal open until publishing finishes.
 For Claude, run claude setup-token locally, then use armada creds import claude.
