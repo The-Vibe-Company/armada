@@ -21,7 +21,9 @@ import {
   goldenBuildStatus,
   recoverGoldenBuild,
 } from "@/app/actions/goldens";
+import { SnapshotPlacementWord, useSnapshotPlacement } from "@/components/docker-snapshot-forms";
 import { LaunchDialog } from "@/components/launch-dialog";
+import { LaunchChoice } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -113,6 +115,7 @@ function ScopedGoldenForm({
   defaults,
   canStart = true,
 }: Props) {
+  const placement = useSnapshotPlacement();
   const id = useId();
   const router = useRouter();
   useEffect(() => {
@@ -127,6 +130,7 @@ function ScopedGoldenForm({
   const keyParam = `build-key.${scope}`;
   const providerParam = `build-provider.${scope}`;
   const [admissionKey, setAdmissionKey] = useState("");
+  const [submitted, setSubmitted] = useState(false);
   const [observed, setObserved] = useState<GoldenBuildStatus | null>(null);
   const [pollError, setPollError] = useState("");
   const [cancelling, setCancelling] = useState(false);
@@ -159,6 +163,7 @@ function ScopedGoldenForm({
     const params = new URLSearchParams(window.location.search);
     const savedKey = params.get(keyParam);
     setAdmissionKey(savedKey ?? crypto.randomUUID());
+    setSubmitted(Boolean(savedKey || params.get(jobParam)));
     const savedProvider = params.get(providerParam);
     if (mode === "create" && (savedProvider === "boat" || savedProvider === "modal"))
       setAdmittedProvider(savedProvider);
@@ -221,6 +226,7 @@ function ScopedGoldenForm({
   }, [jobId, jobState]);
 
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
+    setSubmitted(true);
     let result: ActionResult;
     const replacement = data.get("replacement");
     if (typeof replacement === "string" && replacements.some((item) => item.id === replacement)) {
@@ -255,7 +261,9 @@ function ScopedGoldenForm({
   const [chosenVisibility, setChosenVisibility] = useState<"org" | "private">(isAdmin ? "org" : "private");
   const [choice, setChosenProvider] = useState<SandboxProviderId | null>(null);
   // A provider disconnected since it was chosen is not kept: the first connected one is used instead.
-  const chosenProvider = choice !== null && providers.includes(choice) ? choice : (providers[0] ?? null);
+  const contextProvider = placement?.value === "boat" || placement?.value === "modal" ? placement.value : null;
+  const chosenProvider =
+    contextProvider ?? (choice !== null && providers.includes(choice) ? choice : (providers[0] ?? null));
   // Controlled, so a refused build keeps what was typed (React resets a form after its action).
   const formRef = usePreservedActionForm();
   const [goldenName, setGoldenName] = useState("");
@@ -272,15 +280,22 @@ function ScopedGoldenForm({
   const verb = mode === "create" ? "Build snapshot" : "Rebuild snapshot";
   // An admitted job that has not finished keeps the form locked: nothing is edited or sent again meanwhile.
   const jobActive = observed !== null && ["queued", "running", "recovery_required"].includes(observed.state);
-  // Two connected providers are a choice above the name; a single one is a fact beside it.
+  // The placement picker is shared with the own-server form; submission still names the exact cloud provider.
   const providerChoice = chosenProvider && (
-    <ProviderChoice
-      idPrefix={id}
-      value={chosenProvider}
-      onChange={setChosenProvider}
-      providers={providers}
-      capacities={capacities}
-    />
+    <>
+      <input type="hidden" name="provider" value={chosenProvider} />
+      {placement ? (
+        <SnapshotPlacementWord />
+      ) : (
+        <LaunchChoice
+          inline
+          label="Where to build"
+          value={chosenProvider}
+          onChange={(value) => setChosenProvider(value as SandboxProviderId)}
+          options={providers.map((value) => ({ value, label: `${PROVIDER_LABELS[value]} cloud` }))}
+        />
+      )}
+    </>
   );
   if (observed?.state === "succeeded" && observed.result) {
     return (
@@ -318,8 +333,8 @@ function ScopedGoldenForm({
       <fieldset disabled={pending || jobActive} className="space-y-4 disabled:opacity-70">
         {mode === "create" ? (
           <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-lg leading-relaxed">
-              <span>Build</span>
+            <div className="text-lg leading-loose">
+              Build{" "}
               <Input
                 id={`${id}-name`}
                 aria-label="Snapshot name"
@@ -330,24 +345,26 @@ function ScopedGoldenForm({
                 maxLength={120}
                 placeholder="web-app"
                 autoComplete="off"
-                className="h-8 w-36 rounded-none border-0 border-b border-dashed px-1 text-lg shadow-none"
-              />
-              <span>on</span>
-              {providerChoice}
-              <span>, visible to</span>
-              <NativeSelect
-                name="visibility"
+                className="inline-flex h-8 w-36 rounded-none border-0 border-b border-dashed px-1 text-lg shadow-none"
+              />{" "}
+              on {providerChoice}
+              {", visible to "}
+              <LaunchChoice
+                inline
+                label="Who sees it"
                 value={chosenVisibility}
-                aria-label="Who sees it"
-                onChange={(event) => setChosenVisibility(event.target.value as "org" | "private")}
-                className="w-auto max-w-full"
-              >
-                <option value="org" disabled={!isAdmin}>
-                  everyone in {orgName}
-                </option>
-                <option value="private">only you</option>
-              </NativeSelect>
-              <span>.</span>
+                onChange={(value) => setChosenVisibility(value as "org" | "private")}
+                options={[
+                  {
+                    value: "org",
+                    label: `everyone in ${orgName}`,
+                    ...(!isAdmin ? { reason: "Only an organization admin can create a snapshot for everyone." } : {}),
+                  },
+                  { value: "private", label: "only you" },
+                ]}
+              />
+              .
+              <input type="hidden" name="visibility" value={chosenVisibility} />
             </div>
             <p className="flex items-start gap-1.5 text-xs">
               <LockIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
@@ -509,7 +526,10 @@ function ScopedGoldenForm({
           <p>
             Boat allows{" "}
             {capacities?.boat && "capacity" in capacities.boat ? capacities.boat.capacity : "a limited number of"}{" "}
-            snapshots here and it is used.
+            {capacities?.boat && "capacity" in capacities.boat && capacities.boat.capacity === 1
+              ? "snapshot"
+              : "snapshots"}{" "}
+            here and the limit is reached.
           </p>
           <div className="flex flex-wrap gap-2">
             {replacements.map((item) => (
@@ -525,11 +545,22 @@ function ScopedGoldenForm({
               </Button>
             ))}
             {providers.includes("modal") && (
-              <Button type="button" variant="ghost" onClick={() => setChosenProvider("modal")}>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => (placement ? placement.onChange("modal") : setChosenProvider("modal"))}
+              >
                 Build on Modal cloud
               </Button>
             )}
           </div>
+          {(pending || jobActive || !githubConnected) && (
+            <p className="text-xs text-muted-foreground">
+              {!githubConnected
+                ? "Connect GitHub before replacing a snapshot so Armada can download the repositories."
+                : "Wait for the current build to finish before replacing a snapshot."}
+            </p>
+          )}
           <p className="text-xs text-muted-foreground">
             Replacing keeps the existing name and who sees it, and puts these repositories in it. Templates using it
             start from the new build. Owner or admin only.
@@ -681,91 +712,60 @@ function ScopedGoldenForm({
           )}
         </div>
         {pollError && <p role="alert">{pollError}</p>}
-        <Collapsible>
-          <CollapsibleTrigger asChild>
-            <Button type="button" variant="ghost" size="sm" className="text-xs">
-              Technical details
-            </Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-1 px-3 py-2 text-xs text-muted-foreground">
-            <p>
-              Request reference: <code className="break-all">{admissionKey}</code>
+        {submitted && (
+          <>
+            <Collapsible>
+              <CollapsibleTrigger asChild>
+                <Button type="button" variant="ghost" size="sm" className="text-xs">
+                  Technical details
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-1 px-3 py-2 text-xs text-muted-foreground">
+                <p>
+                  Request reference: <code className="break-all">{admissionKey}</code>
+                </p>
+                {observed && (
+                  <p>
+                    Build reference: <code className="break-all">{observed.jobId}</code>
+                  </p>
+                )}
+              </CollapsibleContent>
+            </Collapsible>
+            <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+              <span>If the build response is missing, check this saved request before starting another build.</span>
+              {!observed && (
+                <Button
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0 text-xs"
+                  disabled={finding || pending}
+                  onClick={async () => {
+                    const epoch = statusReadEpoch.current;
+                    try {
+                      const recovered = await recoverGoldenBuild(admissionKey, orgId);
+                      if (epoch !== statusReadEpoch.current) return;
+                      setObserved(recovered);
+                      rememberJob(jobParam, recovered.jobId);
+                      setPollError("");
+                    } catch {
+                      if (epoch !== statusReadEpoch.current) return;
+                      setPollError(
+                        "No saved build could be confirmed yet. Keep this page and check again before starting another build.",
+                      );
+                    }
+                  }}
+                >
+                  Check saved build
+                </Button>
+              )}
             </p>
-            {observed && (
-              <p>
-                Build reference: <code className="break-all">{observed.jobId}</code>
-              </p>
-            )}
-          </CollapsibleContent>
-        </Collapsible>
-        <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-          <span>Keep this page to recover an unconfirmed build. Check its status before starting another.</span>
-          {!observed && (
-            <Button
-              type="button"
-              variant="link"
-              size="sm"
-              className="h-auto p-0 text-xs"
-              disabled={finding || pending}
-              onClick={async () => {
-                const epoch = statusReadEpoch.current;
-                try {
-                  const recovered = await recoverGoldenBuild(admissionKey, orgId);
-                  if (epoch !== statusReadEpoch.current) return;
-                  setObserved(recovered);
-                  rememberJob(jobParam, recovered.jobId);
-                  setPollError("");
-                } catch {
-                  if (epoch !== statusReadEpoch.current) return;
-                  setPollError(
-                    "No saved build could be confirmed yet. Keep this page and check again before starting another build.",
-                  );
-                }
-              }}
-            >
-              Recover build status
-            </Button>
-          )}
-        </p>
+          </>
+        )}
       </div>
     </form>
   );
 }
-
-function ProviderChoice({
-  value,
-  onChange,
-  providers,
-  capacities,
-}: {
-  idPrefix: string;
-  value: SandboxProviderId;
-  onChange: (provider: SandboxProviderId) => void;
-  providers: readonly SandboxProviderId[];
-  capacities: Props["capacities"];
-}) {
-  return (
-    <span className="inline-flex max-w-full flex-wrap items-center gap-2">
-      <NativeSelect
-        name="provider"
-        aria-label="Where to build"
-        value={value}
-        onChange={(event) => onChange(event.target.value as SandboxProviderId)}
-        className="w-auto"
-      >
-        {providers.map((option) => (
-          <option key={option} value={option}>
-            {PROVIDER_LABELS[option]}
-          </option>
-        ))}
-      </NativeSelect>
-      {capacities?.[value]?.kind === "full" && (
-        <span className="text-xs text-warning">This provider is at its snapshot limit.</span>
-      )}
-    </span>
-  );
-}
-
 /** Records an admitted or recovered job in this form's URL scope, so a reload reads it instead of resubmitting. */
 function rememberJob(param: string, jobId: string) {
   const url = new URL(window.location.href);

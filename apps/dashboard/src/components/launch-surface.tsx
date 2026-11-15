@@ -163,8 +163,9 @@ export function useLaunchSurface(root: RefObject<HTMLElement | null>) {
   }, [root]);
 }
 
-/** A boxed word on desktop, a full thumb-sized row and searchable sheet on phones. */
+/** A boxed word, with a searchable phone sheet. Launch forms use full phone rows; compact sentences opt into inline. */
 export function LaunchChoice({
+  inline = false,
   label,
   value,
   options,
@@ -172,6 +173,7 @@ export function LaunchChoice({
   disabled = false,
   tone,
 }: {
+  inline?: boolean;
   label: string;
   value: string;
   options: readonly { value: string; label: string; group?: string | undefined; reason?: string | undefined }[];
@@ -194,10 +196,10 @@ export function LaunchChoice({
       type="button"
       disabled={disabled}
       aria-label={`${label}: ${selected?.label ?? value}`}
-      className={`inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 align-baseline text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0 ${tone === "destructive" ? "border-destructive text-destructive" : tone === "warning" ? "border-warning text-warning" : "text-foreground"}`}
+      className={`inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 align-baseline text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 ${inline ? "min-h-8" : "max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0"} ${tone === "destructive" ? "border-destructive text-destructive" : tone === "warning" ? "border-warning text-warning" : "text-foreground"}`}
       onClick={() => setOpen(true)}
     >
-      <span className="text-muted-foreground sm:hidden">{label}</span>
+      {!inline && <span className="text-muted-foreground sm:hidden">{label}</span>}
       <span className="truncate">
         {selected?.label ?? value} <span aria-hidden="true">⌄</span>
       </span>
@@ -243,7 +245,7 @@ export function LaunchChoice({
   if (phone)
     return (
       <>
-        <span className="block">{trigger}</span>
+        <span className={inline ? "inline" : "block"}>{trigger}</span>
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent side="bottom" className="max-h-[85dvh] overflow-y-auto">
             <SheetTitle>{label}</SheetTitle>

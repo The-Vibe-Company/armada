@@ -5,9 +5,11 @@ import { LockIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
   type ComponentProps,
+  createContext,
   type ReactNode,
   useActionState,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useRef,
@@ -15,6 +17,7 @@ import {
 } from "react";
 import { buildDockerSnapshot, rebuildDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { LaunchDialog } from "@/components/launch-dialog";
+import { LaunchChoice } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -32,6 +35,20 @@ import { Textarea } from "@/components/ui/textarea";
 import { isUuid } from "@/lib/action";
 import type { DockerHost } from "@/lib/docker-hosts";
 import { goldenRequest, type RepoRow } from "@/lib/golden-form";
+
+type SnapshotPlacement = {
+  value: string;
+  onChange: (value: string) => void;
+  options: { value: string; label: string; reason?: string }[];
+};
+const PlacementContext = createContext<SnapshotPlacement | null>(null);
+export function useSnapshotPlacement() {
+  return useContext(PlacementContext);
+}
+export function SnapshotPlacementWord() {
+  const placement = useSnapshotPlacement();
+  return placement ? <LaunchChoice inline label="Where to build" {...placement} /> : null;
+}
 
 /** One create dialog, with the same provider choice for cloud and host-local snapshots. */
 export function SnapshotCreateChoice({
@@ -54,38 +71,39 @@ export function SnapshotCreateChoice({
   launch?: Omit<ComponentProps<typeof LaunchDialog>, "golden" | "provider" | "repositories" | "snapshotId">;
 }) {
   const cloud = (Object.keys(cloudForms) as ("boat" | "modal")[]).slice(0, 1);
-  const [provider, setProvider] = useState<string>(cloud[0] ?? "docker");
-  const id = useId();
+  const [provider, setProvider] = useState<string>(
+    cloud[0] ?? hosts.find((host) => host.state === "online")?.id ?? hosts[0]?.id ?? "",
+  );
+  const options = [
+    ...Object.keys(cloudForms).map((value) => ({ value, label: `${value === "boat" ? "Boat" : "Modal"} cloud` })),
+    ...hosts.map((host) => ({
+      value: host.id,
+      label: `your server ${host.name ?? host.id}`,
+      ...(host.state === "online" ? {} : { reason: "Bring this server online to build." }),
+    })),
+  ];
+  const docker = hosts.some((host) => host.id === provider);
   return (
-    <div className="space-y-4">
-      <div className="space-y-1.5">
-        <Label htmlFor={id}>Build on</Label>
-        <NativeSelect id={id} value={provider} onChange={(event) => setProvider(event.target.value)}>
-          {cloud.map((value) => (
-            <option key={value} value={value}>
-              Cloud
-            </option>
-          ))}
-          {hosts.length > 0 && <option value="docker">Your own server</option>}
-        </NativeSelect>
-      </div>
-      <div hidden={provider !== "docker"}>
-        <DockerSnapshotForm
-          hosts={hosts}
-          orgId={orgId}
-          isAdmin={isAdmin}
-          canBuild={canBuild}
-          githubConnected={githubConnected}
-          snapshots={snapshots}
-          {...(launch ? { launch } : {})}
-        />
-      </div>
-      {cloud.map((value) => (
-        <div key={value} hidden={provider !== value}>
-          {cloudForms[value]}
+    <PlacementContext.Provider value={{ value: provider, onChange: setProvider, options }}>
+      <div className="space-y-4">
+        <div hidden={!docker}>
+          <DockerSnapshotForm
+            hosts={hosts}
+            orgId={orgId}
+            isAdmin={isAdmin}
+            canBuild={canBuild}
+            githubConnected={githubConnected}
+            snapshots={snapshots}
+            {...(launch ? { launch } : {})}
+          />
         </div>
-      ))}
-    </div>
+        {cloud.map((value) => (
+          <div key={value} hidden={docker}>
+            {cloudForms[value]}
+          </div>
+        ))}
+      </div>
+    </PlacementContext.Provider>
   );
 }
 
@@ -106,6 +124,9 @@ function DockerSnapshotForm({
   snapshots?: DockerSnapshotRecord[];
   launch?: Omit<ComponentProps<typeof LaunchDialog>, "golden" | "provider" | "repositories" | "snapshotId">;
 }) {
+  const placement = useSnapshotPlacement();
+  const [hostId, setHostId] = useState(hosts.find((host) => host.state === "online")?.id ?? "");
+  const [visibility, setVisibility] = useState("private");
   const [result, action, pending] = useActionState(buildDockerSnapshot, null);
   const [config, setConfig] = useState("");
   const [advanced, setAdvanced] = useState(false);
@@ -185,40 +206,53 @@ function DockerSnapshotForm({
           </p>
         )}
         <fieldset disabled={pending || (result?.ok && built?.status !== "failed")} className="space-y-4">
-          <div className="flex flex-wrap items-center gap-2 text-lg">
-            <div className="space-y-1.5">
-              <Label htmlFor={`${id}-name`}>Build</Label>
-              <Input
-                id={`${id}-name`}
-                name="name"
-                required
-                maxLength={80}
-                placeholder="armada-warm"
-                className="inline-flex w-44 border-0 border-b border-dashed rounded-none shadow-none"
-                pattern={"[A-Za-z0-9][A-Za-z0-9._\\-]{0,79}"}
-                title="Start with a letter or number; use only letters, numbers, dots, underscores and hyphens."
+          <div className="text-lg leading-loose">
+            Build{" "}
+            <Input
+              id={`${id}-name`}
+              aria-label="Snapshot name"
+              name="name"
+              required
+              maxLength={80}
+              placeholder="armada-warm"
+              className="inline-flex h-8 w-40 border-0 border-b border-dashed rounded-none shadow-none"
+              pattern={"[A-Za-z0-9][A-Za-z0-9._\\-]{0,79}"}
+              title="Start with a letter or number; use only letters, numbers, dots, underscores and hyphens."
+            />{" "}
+            on{" "}
+            {placement ? (
+              <SnapshotPlacementWord />
+            ) : (
+              <LaunchChoice
+                inline
+                label="Where to build"
+                value={hostId}
+                onChange={setHostId}
+                options={hosts.map((host) => ({
+                  value: host.id,
+                  label: `your server ${host.name ?? host.id}`,
+                  ...(host.state === "online" ? {} : { reason: "Bring this server online to build." }),
+                }))}
               />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${id}-host`}>on your server</Label>
-              <NativeSelect id={`${id}-host`} name="hostId" required defaultValue={online[0]?.id ?? ""}>
-                <option value="" disabled>
-                  Choose an online host
-                </option>
-                {hosts.map((host) => (
-                  <option key={host.id} value={host.id} disabled={host.state !== "online"}>
-                    {host.name ?? host.id} · {host.state}
-                  </option>
-                ))}
-              </NativeSelect>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${id}-visibility`}>visible to</Label>
-              <NativeSelect id={`${id}-visibility`} name="visibility" defaultValue="private">
-                <option value="private">Private · only you</option>
-                {isAdmin && <option value="org">Organization · all members</option>}
-              </NativeSelect>
-            </div>
+            )}
+            <input type="hidden" name="hostId" value={placement?.value ?? hostId} />
+            {", visible to "}
+            <LaunchChoice
+              inline
+              label="Who sees it"
+              value={visibility}
+              onChange={setVisibility}
+              options={[
+                { value: "private", label: "only you" },
+                {
+                  value: "org",
+                  label: "everyone in the organization",
+                  ...(!isAdmin ? { reason: "Only an organization admin can create a snapshot for everyone." } : {}),
+                },
+              ]}
+            />
+            .
+            <input type="hidden" name="visibility" value={visibility} />
           </div>
           <p className="flex gap-2 text-sm">
             <LockIcon className="size-4 shrink-0" />
