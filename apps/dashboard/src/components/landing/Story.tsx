@@ -84,19 +84,19 @@ export function Story() {
       </nav>
       <Chapter id="method" title="Set up your repos once." command={STORY.golden} figure={<GoldenFigure />}>
         <p>
-          A golden is your repositories, cloned over your own GitHub connection, set up by your script and saved as a
-          snapshot on the provider you build it for, Boat or Modal. Every agent starts there, already set up, instead of
-          from a cold clone.
+          A snapshot contains your repositories, cloned over your own GitHub connection and set up by your script, saved
+          on the provider you build it for, Boat or Modal. Every agent starts there, already set up, instead of from a
+          cold clone.
         </p>
         <p>
-          Armada scans the working tree and the Git history for GitHub tokens before it saves a snapshot. Share a golden
-          with your org or keep it private.
+          Armada scans the working tree and the Git history for GitHub tokens before it saves a snapshot. Share a
+          snapshot with your org or keep it private.
         </p>
       </Chapter>
 
       <Chapter id="fleet" flip title="Launch one agent, or ten." command={STORY.launch} figure={<FleetFigure />}>
         <p>
-          Each launch forks the golden into a sandbox of its own: its own machine, its own files, and of your stored
+          Each launch forks the snapshot into a sandbox of its own: its own machine, its own files, and of your stored
           keys only its agent's. Run four fixes at once and none of them touches another's checkout.
         </p>
         <p>
@@ -135,7 +135,7 @@ export function Story() {
       >
         <p>
           The dashboard, the <code>armada</code> CLI and the remote MCP server go through the same API under the same
-          rules: who sees a golden, who may launch, which keys a sandbox gets.
+          rules: who sees a snapshot, who may launch, which keys a sandbox gets.
         </p>
         <p>
           Launch from the web, follow the logs in your terminal, and let the agent that plans your work send, steer,
@@ -150,7 +150,7 @@ export function Story() {
         </p>
         <p>
           Of your stored keys, a sandbox gets only its agent's. Git and gh act as you through the GitHub App, with a
-          token that lasts {GITHUB_TOKEN_HOURS} hours. A golden gets no key: a GitHub token found in one stops its
+          token that lasts {GITHUB_TOKEN_HOURS} hours. A snapshot gets no key: a GitHub token found in one stops its
           snapshot.
         </p>
       </Chapter>
@@ -170,8 +170,8 @@ function Install() {
           </h2>
           <div className="lp-ch-body">
             <p>
-              Sign in, connect Boat or Modal to your org, store your agent's key and connect GitHub. Then build a golden
-              and launch.
+              Sign in, connect Boat or Modal to your org, store your agent's key and connect GitHub. Then build a
+              snapshot and launch.
             </p>
           </div>
           <div className="lp-try-actions">
