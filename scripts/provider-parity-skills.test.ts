@@ -21,6 +21,7 @@ for (const mode of [
   "resume_no_resume",
   "resume_no_stop",
   "resume_budget",
+  "resume_stop_budget",
   "resume_echo",
   "resume_missing",
 ] as const) {
@@ -182,6 +183,7 @@ for (const mode of [
               break;
             case "sandbox/stop":
               states.set(id, "stopped");
+              if (mode === "resume_stop_budget") now += 110_001;
               result = { id: body.id, status: "stopped" };
               break;
             case "sandbox/delete":
@@ -197,7 +199,9 @@ for (const mode of [
       ["--feature", mode.startsWith("resume_") ? "skills-resume" : "skills"],
     );
     if (mode.startsWith("resume_")) {
-      expect(passed).toBe(!["resume_content", "resume_status", "resume_budget", "resume_echo"].includes(mode));
+      expect(passed).toBe(
+        !["resume_content", "resume_status", "resume_budget", "resume_echo", "resume_stop_budget"].includes(mode),
+      );
       const report = lines
         .map((line) => {
           try {
@@ -213,7 +217,7 @@ for (const mode of [
       expect(report.starts).toBe(noAllocation ? 0 : 2);
       for (const provider of ["modal", "docker"]) {
         expect(report.features["skills-resume"][provider].status).toBe(
-          mode === "resume_missing" || mode === "resume_quota"
+          mode === "resume_missing" || mode === "resume_quota" || mode === "resume_stop_budget"
             ? "not-run"
             : ["resume_no_followup", "resume_no_resume", "resume_no_stop"].includes(mode)
               ? "unsupported"
@@ -226,6 +230,11 @@ for (const mode of [
           expect(report.features["skills-before-resume"][provider].status).toBe("pass");
           expect(report.features.cleanup[provider].status).toBe("pass");
           expect(calls.filter((call) => call === `${provider}:templates/launch`)).toHaveLength(1);
+        }
+        if (mode === "resume_stop_budget") {
+          expect(report.features["prerequisite:stop"][provider].status).toBe("fail");
+          expect(calls).not.toContain(`${provider}:sandbox/send`);
+          expect(calls).not.toContain(`${provider}:sandbox/resume`);
         }
         if (mode === "resume_valid") {
           expect(executions.get(provider)).toBe(2);

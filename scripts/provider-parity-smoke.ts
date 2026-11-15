@@ -1359,7 +1359,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           feature === "mcp"
         )
           requestDeadline = step === "stop" || step === "delete" ? undefined : readableUntil;
-        if (feature === "subscription-account")
+        if (feature === "subscription-account" || feature === "skills-resume")
           requestDeadline = step === "delete" || (step === "stop" && blocked) ? undefined : readableUntil;
         if (step === "launch") {
           if (feature !== "routines") starts++;
