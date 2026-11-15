@@ -24,7 +24,10 @@ beforeAll(async () => {
     create table mcp_actor_epochs(org_id uuid,user_id uuid,epoch bigint);
     create table sandboxes(id uuid primary key,provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
       conversation_ids text[],status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
-      activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 0);
+      activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 0,reconcile_lease_until timestamptz);
+    create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
+    create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid);
+    create table runtime_resumes(sandbox_id uuid,request_id uuid);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean);
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
   // Apply this migration against a minimal real schema: no hand-written queue store behavior.
@@ -46,7 +49,7 @@ beforeAll(async () => {
 afterAll(() => db.close());
 beforeEach(async () => {
   await db.exec(
-    "delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',task_prompt_id=null,stopped_at=null,lifecycle_generation=0; update mcp_actor_epochs set epoch=1;",
+    "delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',task_prompt_id=null,stopped_at=null,lifecycle_generation=0; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -99,6 +102,7 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
   let calls = 0;
   queue.setDispatch(async () => {
     calls++;
+    await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [ids[1]]);
     throw Error("uncertain");
   });
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
@@ -118,4 +122,148 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
   expect(await queue.status(caller, ids[2]!, requests[1])).toEqual({ nativePromptId: "actual_next" });
+});
+
+test("Docker status and wait resolve the account queue alias before Docker prompt routing", async () => {
+  const { callSharedTool } = await import("./tool-api.ts");
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "queued Docker instruction" };
+  await queue.accept(caller, input);
+  const routedPrompts: unknown[] = [];
+  const context = {
+    caller,
+    accountTurns: queue,
+    data: {
+      sandboxes: {
+        get: async () => {
+          throw Error("Docker routes before native data");
+        },
+      },
+    },
+    dockerControls: {
+      invoke: async (_caller: Caller, name: string, args: Record<string, unknown>) => {
+        expect(name).toBe("status");
+        routedPrompts.push(args.prompt_id);
+        if (args.prompt_id !== undefined && args.prompt_id !== "actual_docker_prompt") throw Error("unknown prompt");
+        return {
+          handled: true,
+          result: {
+            id: input.id,
+            golden: null,
+            visibility: "private",
+            harness: "codex",
+            repositoryDir: null,
+            model: null,
+            reasoningEffort: null,
+            machineSize: null,
+            statusReason: null,
+            providerState: null,
+            conversationIds: ["history"],
+            status: "ready",
+            settled: true,
+            expiresAt: null,
+            prompt: { promptId: "actual_docker_prompt", conversationId: "history", reason: null, state: "finished" },
+          },
+        };
+      },
+    },
+    now: () => new Date(0),
+    sleep: async () => {
+      throw Error("No real waits");
+    },
+  } as unknown as import("./tools.ts").ToolContext;
+  const waiting = await callSharedTool(context, "status", {
+    id: input.id,
+    prompt_id: input.request_id,
+    recorded: true,
+  });
+  expect(waiting).toMatchObject({
+    settled: false,
+    statusMessage: "Waiting for a free agent slot on account Shared account (0/1).",
+  });
+  expect(
+    await callSharedTool(context, "wait", { id: input.id, prompt_id: input.request_id, timeout_seconds: 0 }),
+  ).toMatchObject({ settled: false, timedOut: true });
+  queue.setDispatch(async () => ({ promptId: "actual_docker_prompt", conversationId: "history", status: "finished" }));
+  await queue.reconcileOne(new AbortController().signal);
+  await queue.drain();
+  expect(await callSharedTool(context, "status", { id: input.id, prompt_id: input.request_id })).toMatchObject({
+    settled: true,
+    prompt: { promptId: "actual_docker_prompt" },
+  });
+  expect(
+    await callSharedTool(context, "wait", { id: input.id, prompt_id: input.request_id, timeout_seconds: 0 }),
+  ).toMatchObject({ settled: true, timedOut: false });
+  expect(routedPrompts).toEqual([undefined, undefined, "actual_docker_prompt", "actual_docker_prompt"]);
+});
+
+test("bounded queue scans advance past full accounts without starving another account", async () => {
+  const targets: string[] = [];
+  for (let i = 1; i <= 21; i++) {
+    const suffix = String(i).padStart(12, "0");
+    const accountId = `80000000-0000-4000-8000-${suffix}`;
+    const sandboxId = `90000000-0000-4000-8000-${suffix}`;
+    const requestId = `70000000-0000-4000-8000-${suffix}`;
+    await db.query("insert into credentials values($1,$2,$3,1,'active',null,'user',$4)", [
+      accountId,
+      `Account ${i}`,
+      i === 21 ? 1 : 0,
+      owner,
+    ]);
+    await db.query(
+      "insert into sandboxes(id,credential_id,credential_version,org_id,owner_id,conversation_ids,status,expires_at) values($1,$2,1,$3,$4,array['history'],'ready',now()+interval '1 day')",
+      [sandboxId, accountId, org, owner],
+    );
+    await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: `instruction ${i}` });
+    targets.push(sandboxId);
+  }
+  const dispatched: string[] = [];
+  queue.setDispatch(async (_caller, input) => {
+    dispatched.push(input.id);
+    return { promptId: "actual", conversationId: "history", status: "running" };
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  expect(dispatched).toEqual([targets[20]!]);
+});
+
+test("a proven pre-dispatch rejection requeues without leaking the account reservation", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "retry after admission conflict" };
+  await queue.accept(caller, input);
+  let calls = 0;
+  queue.setDispatch(async () => {
+    calls++;
+    if (calls === 1) {
+      await db.query("insert into runtime_commands values($1,1,'readonly_get_prompt')",[input.id]);
+      throw Error("reconcile lease won admission after getPrompt probe");
+    }
+    return { promptId: "accepted_after_retry", conversationId: "history", status: "running" };
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  expect((await db.query("select * from account_agent_reservations")).rows).toEqual([]);
+  expect((await queue.status(caller, input.id, input.request_id))?.message).toContain("Waiting for a free agent slot");
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  expect(calls).toBe(2);
+  expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "accepted_after_retry" });
+});
+
+test("uppercase request UUIDs preserve one queue identity and status alias", async () => {
+  const uppercase = "ABCDEF00-ABCD-4ABC-8ABC-000000000001";
+  const input = { id: ids[1]!, request_id: uppercase, prompt: "case insensitive request identity" };
+  expect(await queue.accept(caller, input)).toMatchObject({ requestId: uppercase.toLowerCase(), status: "queued" });
+  expect(await queue.accept(caller, { ...input, request_id: uppercase.toLowerCase() })).toMatchObject({
+    requestId: uppercase.toLowerCase(),
+    status: "queued",
+  });
+  expect((await db.query("select * from account_turn_queue")).rows).toHaveLength(1);
+  expect(await queue.status(caller, input.id, uppercase)).toMatchObject({
+    requestId: uppercase.toLowerCase(),
+    failed: false,
+  });
+  queue.setDispatch(async () => ({ promptId: "case_actual_prompt", conversationId: "history", status: "running" }));
+  await queue.reconcileOne(new AbortController().signal);
+  await queue.drain();
+  expect(await queue.status(caller, input.id, uppercase)).toEqual({ nativePromptId: "case_actual_prompt" });
 });

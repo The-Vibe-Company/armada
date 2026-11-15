@@ -94,6 +94,12 @@ test("pending Docker prompt retains capacity until its receipt transfers ownersh
   for (const id of ids)
     await db.query("insert into sandboxes(id,credential_id,status) values($1,$2,'ready')", [id, account]);
   await admitAccountCapacity(sql, account, ids[0]!);
+  await db.query("insert into account_turn_queue values($1,'dispatching',1)", [ids[0]]);
+  await db.query("update sandboxes set status='ready' where id=$1", [ids[0]]);
+  await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
+  // A queued paused Docker wake advances its generation before ready/prompt.
+  await db.query("update sandboxes set lifecycle_generation=2,status='ready' where id=$1", [ids[0]]);
+  await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
   await db.query("insert into runtime_commands values($1,'docker_prompt_pending',null)", [ids[0]]);
   await db.query("update sandboxes set task_prompt_id=null,status='running' where id=$1", [ids[0]]);
   await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
@@ -103,4 +109,8 @@ test("pending Docker prompt retains capacity until its receipt transfers ownersh
   await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
   await db.query("insert into runtime_idle_turns values($1,'native_turn',true)", [ids[0]]);
   await admitAccountCapacity(sql, account, ids[1]!);
+  await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
+  await admitAccountCapacity(sql, account, ids[0]!);
+  await db.query("update sandboxes set status='running' where id=$1", [ids[0]]);
+  await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
 });

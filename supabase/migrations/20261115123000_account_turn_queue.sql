@@ -28,6 +28,15 @@ create index account_turn_queue_waiting on public.account_turn_queue(account_id,
 create or replace function public.release_account_agent_reservation() returns trigger
 language plpgsql security definer set search_path='' as $$
 begin
+  -- Readiness/status observations may repeat the prior settled task while a
+  -- newly claimed send has not yet acquired its activity fence. They cannot
+  -- transfer that new reservation back to historical turn evidence.
+  if exists(select 1 from public.account_turn_queue q where q.sandbox_id=new.id
+      and q.state='dispatching'
+      and not (new.status in ('stopped','deleted') and new.lifecycle_generation>q.dispatch_generation))
+     and (tg_op='INSERT' or new.task_prompt_id is not distinct from old.task_prompt_id) then
+    return new;
+  end if;
   if new.deleted_at is not null or new.stopped_at is not null
      or new.task_prompt_id is not null
      or (new.status='ready' and not exists (
