@@ -421,3 +421,13 @@ open until sign-in finishes; use an interactive terminal for email code entry.
 A saved personal login does not unset ARMADA_TOKEN: remove that variable from
 a command's environment when you intend to use the saved personal session.
 Never place tokens in command arguments. Help itself starts no sign-in flow.
+
+### Credential command discovery
+
+`armada creds --help` (or `-h`) shows a focused index of native subscription
+accounts, preset/custom API connections and account metadata operations.
+Use leaf help for exact flags. Model/provider credentials are separate from
+application vars/secrets. List returns metadata/IDs, not credential values;
+remove takes an account ID while legacy rm takes a credential kind.
+API keys use provider billing; native subscription accounts need eligible access.
+Keep inputs in stdin/hidden input or private files, never command arguments.
