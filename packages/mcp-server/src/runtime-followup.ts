@@ -5,7 +5,7 @@ import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 
@@ -108,11 +108,7 @@ export function createRuntimeFollowup(
     const admitted = await sql.transaction(async (tx) => {
       await lockRuntimeAccount(tx, caller, found, "The pinned runtime account is no longer authorized.");
       // Reuse this transaction; never hold its locks across a second connection or runtime I/O.
-      const local = {
-        ...tx,
-        query: tx.query.bind(tx),
-        transaction: async <T>(work: (tx: Sql) => Promise<T>) => work(tx),
-      };
+      const local = runtimeTransaction(tx);
       return createRuntimeEnrolments(local, key).withOwner(found.id, caller.userId, async (locked, scope) => {
         const current = await createSqlData(locked)(caller).sandboxes.get(found.id);
         const lease = (

@@ -17,6 +17,13 @@ export interface RuntimeSessionScope {
   epoch: string;
 }
 
+/** Reenter an owner-held transaction without opening another connection or changing the callback's SQL object. */
+export const runtimeTransaction = (tx: Sql): Sql => ({
+  ...tx,
+  query: tx.query.bind(tx),
+  transaction: async (work) => work(tx),
+});
+
 /** Internal launcher authority, never a user-facing configuration/credential API. */
 export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options: { allowDockerIssue?: boolean } = {}) {
   const token = (kind: "enrol" | "runtime") => `armada_${kind}_${randomBytes(32).toString("hex")}`;

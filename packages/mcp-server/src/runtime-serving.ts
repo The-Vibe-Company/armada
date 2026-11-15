@@ -12,7 +12,7 @@ import { createSqlData } from "./data.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
 import { createRuntimeProvider } from "./runtime-provider.ts";
 
@@ -103,11 +103,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
                 if (!bound.rows.length)
                   throw new VaultError("conflict", "Runtime connection binding is no longer current.");
               }
-              const local = {
-                ...tx,
-                query: tx.query.bind(tx),
-                transaction: async <T>(work: (tx: Sql) => Promise<T>) => work(tx),
-              };
+              const local = runtimeTransaction(tx);
               await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
                 ownerId,
                 request,
