@@ -61,7 +61,11 @@ const INLINE = [
 const invalid = (message = "Invalid routine command. Run armada routine --help.") => new VaultError("invalid", message);
 
 export async function routineCommand(argv: readonly string[], io: VaultIo): Promise<number> {
-  if (!argv.length || argv.includes("--help") || argv.includes("-h")) {
+  if (
+    !argv.length ||
+    (argv.length === 1 && ["--help", "-h"].includes(argv[0] ?? "")) ||
+    (argv.length === 2 && Object.hasOwn(ROUTES, argv[0] ?? "") && ["--help", "-h"].includes(argv[1] ?? ""))
+  ) {
     io.auth.out(HELP);
     return 0;
   }

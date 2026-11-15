@@ -241,6 +241,8 @@ test("routine input rejects unsupported mutations and incomplete replacements be
     config.timezone,
   ];
   const cases = [
+    { args: ["show", "--help", "--unknown"] },
+    { args: ["unknown", "--help"] },
     { args: [...valid, "--org", org] },
     { args: [...valid, "--scope", "other"] },
     { args: [...valid, "--interval-hours", "0"] },
@@ -335,11 +337,15 @@ test("routine version conflicts are not retried; ambiguous names never select a 
 });
 
 test("routine help is available without authentication or requests", async () => {
-  const response = await invoke(["--help"], { token: "" });
-  expect(response.code).toBe(0);
-  expect(response.requests).toHaveLength(0);
-  expect(response.out).toContain("at least ONE HOUR apart");
-  expect(response.out).toContain("--expected-version");
+  for (const action of ["", "create", "list", "show", "update", "enable", "pause", "delete", "runs"]) {
+    for (const help of ["--help", "-h"]) {
+      const response = await invoke([...(action ? [action] : []), help], { token: "" });
+      expect(response.code).toBe(0);
+      expect(response.requests).toHaveLength(0);
+      expect(response.out).toContain("at least ONE HOUR apart");
+      expect(response.out).toContain("--expected-version");
+    }
+  }
 });
 
 test("inline schedule updates send a complete owner-neutral replacement with the caller version, without retrying conflicts", async () => {
@@ -383,4 +389,40 @@ test("human routine output uses server schedule words and next-run truth, retain
     items: [{ ...routine, cron: null, timezone: "UTC", scheduleDescription: undefined, intervalHours: 7 }],
   });
   expect(legacy.out).toContain("Every 7 hours (legacy UTC interval)");
+});
+
+test("routine help does not swallow literal prompts or names after the terminator", async () => {
+  for (const entry of [
+    {
+      args: [
+        "create",
+        "literal_prompt",
+        "--template",
+        templateId,
+        "--revision",
+        "2",
+        "--prompt",
+        "-h",
+        "--cron",
+        "0 9 * * *",
+        "--timezone",
+        "UTC",
+      ],
+      field: "prompt",
+      value: "-h",
+      file: undefined,
+    },
+    {
+      args: ["create", "--file", "config.json", "--", "--help"],
+      field: "name",
+      value: "--help",
+      file: JSON.stringify(createConfig),
+    },
+  ]) {
+    const result = await invoke(entry.args, entry.file === undefined ? {} : { file: entry.file });
+    expect(result.code).toBe(0);
+    expect(result.requests).toHaveLength(1);
+    expect(await result.requests[0]?.json()).toMatchObject({ [entry.field]: entry.value });
+    expect(result.out).not.toContain("Scheduled template launches");
+  }
 });
