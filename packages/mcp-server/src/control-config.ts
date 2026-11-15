@@ -139,6 +139,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     github: { app: githubApp },
     store,
     listGoldenRecords: createSqlGoldenList(sql, store),
+    scopedSandboxData: (caller, orgId) => createSqlData(sql, orgId)(caller),
     modelAuth,
     providerFor,
     modelUsage: createModelUsageApi(sql),

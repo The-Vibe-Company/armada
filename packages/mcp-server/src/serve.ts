@@ -483,6 +483,7 @@ export async function startServer(
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     store,
     listGoldenRecords: createSqlGoldenList(sql, store),
+    scopedSandboxData: (caller, orgId) => createSqlData(sql, orgId)(caller),
     encryptionKey: config.encryptionKey,
     data,
     connections: mcp.connections,

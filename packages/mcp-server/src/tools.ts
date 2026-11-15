@@ -348,6 +348,15 @@ const event = z.looseObject({
   promptId: z.string().optional(),
 });
 
+export const sandboxListInput = z.object({
+  harness: z.enum(HARNESSES).optional(),
+  golden: z.string().uuid().optional().describe("Golden UUID, not a name."),
+  owner: z.union([z.string().uuid(), z.literal("me")]).optional(),
+  page: z.number().int().min(1).max(1_000_000).optional().describe("1-based page, default 1."),
+  status: z.array(z.enum(SANDBOX_STATUSES)).min(1).optional().describe("Only these statuses."),
+  limit: z.number().int().min(1).max(200).optional().describe("At most this many. Default 25."),
+});
+
 /** One MCP server per request: the principal is fixed for its whole life, and nothing outlives the request. */
 export function createArmadaServer(context: ToolContext, version: string, options?: { onlyTool: "list" }): McpServer {
   const server = new McpServer(
@@ -1189,14 +1198,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         description:
           "Allowlisted metadata of sandboxes in your current organizations, newest first. Interior is owner/admin only. " +
           "Deleted ones are left out unless asked for. Statuses are as recorded; call status for a fresh read.",
-        input: {
-          harness: z.enum(HARNESSES).optional(),
-          golden: z.string().uuid().optional().describe("Golden UUID, not a name."),
-          owner: z.union([z.string().uuid(), z.literal("me")]).optional(),
-          page: z.number().int().min(1).max(1_000_000).optional().describe("1-based page, default 1."),
-          status: z.array(z.enum(SANDBOX_STATUSES)).min(1).optional().describe("Only these statuses."),
-          limit: z.number().int().min(1).max(200).optional().describe("At most this many. Default 25."),
-        },
+        input: sandboxListInput.shape,
         output: {
           sandboxes: z.array(sandboxListMetadata),
           total: z.number().int(),

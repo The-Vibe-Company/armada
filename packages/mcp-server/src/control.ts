@@ -54,7 +54,7 @@ import { readLogs } from "./control-logs.ts";
 import { fail } from "./control-response.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { listControlCredentials } from "./credential-list.ts";
-import type { DataSource } from "./data.ts";
+import type { DataSource, ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import {
   connectGoldenRoute,
@@ -96,10 +96,13 @@ import type { RuntimeResume } from "./runtime-resume.ts";
 import { type createSandboxArmadaAccess, parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
+import { sandboxListInput } from "./tools.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
 
 export interface ControlOptions {
+  /** SQL list data must enforce fresh UUID selection authority inside its page/count statement. */
+  scopedSandboxData?: (caller: Caller, orgId: string) => ScopedData;
   /** Optional read model combining fresh org resolution with visibility-filtered rows. */
   listGoldenRecords?: (caller: Caller, ref: string | undefined) => Promise<GoldenRecord[]>;
   sandboxBillingAccount?: (
@@ -538,7 +541,18 @@ async function dispatch(
       !caller.orgs.some((member) => member.orgId === scopedOrg(caller, optional(body, "org")))
     )
       throw new VaultError("forbidden", "You are not a member of this org.");
-    const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
+    const ref = optional(body, "org");
+    const candidate =
+      route === "sandbox/list" &&
+      options.scopedSandboxData &&
+      ref !== undefined &&
+      sandboxListInput.safeParse(body).success
+        ? scopedOrg(caller, ref)?.trim().toLowerCase()
+        : undefined;
+    const listOrgId = candidate && UUID.test(candidate) ? candidate : undefined;
+    const scopedCaller = listOrgId
+      ? { ...caller, orgs: caller.orgs.filter((org) => org.orgId === listOrgId) }
+      : await selectedCaller(options, caller, ref);
     const result = await callSharedTool(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
@@ -552,7 +566,7 @@ async function dispatch(
         ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
-        data: options.data(scopedCaller),
+        data: listOrgId ? options.scopedSandboxData!(scopedCaller, listOrgId) : options.data(scopedCaller),
         measure: (phase, work) => measureRequestPhase(options.timing, phase, work),
         storedProviders: options.storedProviderFor
           ? {
