@@ -17,7 +17,7 @@ import {
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Fragment } from "react";
+import { Fragment, Suspense } from "react";
 import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CopyButton } from "@/components/copy-button";
@@ -32,7 +32,7 @@ import {
   type LaunchProps,
   LaunchStart,
 } from "@/components/launch-dialog";
-import { LaunchDialogContent } from "@/components/launch-surface";
+import { LaunchDialogContent, LaunchDialogHeader } from "@/components/launch-surface";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
 import { RemoveGolden } from "@/components/remove-golden";
@@ -99,14 +99,16 @@ export const maxDuration = 800;
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
 export default async function GoldensPage({ searchParams }: Props) {
-  const query = await searchParams;
+  const [query, viewer, supabase, selected] = await Promise.all([
+    searchParams,
+    requireViewer(),
+    createClient(),
+    selectedOrganization(),
+  ]);
   const removedParam = query.removed;
-  const viewer = await requireViewer();
-  const supabase = await createClient();
   // The confirmation after a removal: only for a golden of this org the database records as removed, named from it.
-  const removed =
-    typeof removedParam === "string" && isUuid(removedParam) ? await findRemovedGolden(supabase, removedParam) : null;
-  const selected = await selectedOrganization();
+  const removedRead =
+    typeof removedParam === "string" && isUuid(removedParam) ? findRemovedGolden(supabase, removedParam) : null;
   // New builds, rebuilds and launches run on a provider the organization has connected (#598): exactly that one, never
   // another. Existing goldens and builds the page already tracks stay manageable without it; an org with neither is
   // sent to Settings to connect one. Null: the status could not be read, a retryable error rather than "none".
@@ -126,12 +128,21 @@ export default async function GoldensPage({ searchParams }: Props) {
         )
       : null,
   );
+  const hostsRead = readSelectedDockerHosts();
+  const snapshotsRead = readSelectedDockerSnapshots();
+  // Docker discovery determines inventory readiness only when there is a host or snapshot to show.
+  // Cloud-only inventories must not wait for the launch dialog's harness discovery.
+  const dockerOptionRead = Promise.all([hostsRead, snapshotsRead]).then(([hosts, snapshots]) =>
+    (hosts.state === "ready" && hosts.list.hosts.some((host) => host.state !== "revoked")) ||
+    (snapshots.state === "ready" && snapshots.snapshots.length > 0)
+      ? readDockerLaunchOption()
+      : null,
+  );
   const [
     setup,
     hostRead,
     snapshotRead,
     dockerOption,
-    launchOptions,
     goldens,
     history,
     memberships,
@@ -142,12 +153,12 @@ export default async function GoldensPage({ searchParams }: Props) {
     accountList,
     templateList,
     vault,
+    removed,
   ] = await Promise.all([
     setupRead,
-    readSelectedDockerHosts(),
-    readSelectedDockerSnapshots(),
-    readDockerLaunchOption(),
-    readLaunchOptions(),
+    hostsRead,
+    snapshotsRead,
+    dockerOptionRead,
     listGoldens(supabase),
     listGoldenHistory(supabase),
     pending,
@@ -163,6 +174,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     listSelectedAccounts(),
     listSelectedTemplates(),
     listSelectedVault(),
+    removedRead,
   ]);
   const hosts = hostRead.state === "ready" ? hostRead.list.hosts.filter((host) => host.state !== "revoked") : [];
   const snapshots = snapshotRead.state === "ready" ? snapshotRead.snapshots : [];
@@ -212,7 +224,6 @@ export default async function GoldensPage({ searchParams }: Props) {
     viewerId: viewer.id,
     all: goldens,
     serverReady,
-    boatOpenCodeAvailable: boatOpenCodeAvailable(launchOptions),
     connected,
     rebuildsTracked,
     connections,
@@ -490,7 +501,6 @@ export default async function GoldensPage({ searchParams }: Props) {
       repositories={goldenRepositoryDirs(readyCloud.config)}
       connections={connections}
       accounts={accounts}
-      boatOpenCodeAvailable={context.boatOpenCodeAvailable}
     />
   ) : readyHost && selected ? (
     <HostLaunchDialog
@@ -648,7 +658,6 @@ type RowContext = {
   viewerId: string;
   all: Golden[];
   serverReady: boolean;
-  boatOpenCodeAvailable: boolean;
   /** The providers the org has connected; a golden launches and rebuilds only on its own. Null: status unavailable. */
   connected: SandboxProviderId[] | null;
   /** Goldens whose rebuild this page tracks in its URL: their form stays to follow the job, even without a provider. */
@@ -732,7 +741,6 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
       <SnapshotLaunchDialog
         golden={golden.name}
         provider={golden.provider}
-        boatOpenCodeAvailable={context.boatOpenCodeAvailable}
         orgId={golden.org_id}
         catalog={MODEL_CATALOG}
         repositories={directories}
@@ -1170,11 +1178,19 @@ function SnapshotLaunchDialog({ primary = false, ...props }: LaunchProps & { pri
         </Button>
       </DialogTrigger>
       <LaunchDialogContent>
-        <LaunchStart {...props} />
+        <Suspense fallback={<LaunchDialogHeader title="Launch a sandbox" description="Loading launch options…" />}>
+          <SnapshotLaunchStart {...props} />
+        </Suspense>
       </LaunchDialogContent>
     </Dialog>
   );
 }
+/** Launch-only Boat harness discovery streams independently of the snapshot inventory. */
+async function SnapshotLaunchStart(props: LaunchProps) {
+  const openCodeAvailable = props.provider === "boat" && boatOpenCodeAvailable(await readLaunchOptions());
+  return <LaunchStart {...props} boatOpenCodeAvailable={openCodeAvailable} />;
+}
+
 function HostLaunchDialog({ primary = false, ...props }: HostLaunchStart & { primary?: boolean }) {
   return (
     <Dialog>

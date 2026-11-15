@@ -151,7 +151,7 @@ async function SandboxesContent({ searchParams }: Props) {
       <Link href={CLOUD_PROVIDERS_PATH}>Connect a provider</Link>
     </Button>
   ) : selected ? (
-    <SandboxLaunchAction />
+    <SandboxLaunchAction key={selected.org.id} />
   ) : null;
 
   return (

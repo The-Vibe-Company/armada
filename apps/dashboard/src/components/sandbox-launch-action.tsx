@@ -15,7 +15,7 @@ export function SandboxLaunchAction() {
   const [open, setOpen] = useState(false);
   async function onOpenChange(next: boolean) {
     setOpen(next);
-    if (!next || options || loading) return;
+    if (!next || loading) return;
     setLoading(true);
     try {
       setOptions(await readLaunchDialogOptions());
