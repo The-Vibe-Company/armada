@@ -1711,14 +1711,16 @@ export function createArmadaServer(context: ToolContext, version: string, option
           found.credentialId,
           found.credentialVersion ?? undefined,
         );
-      if (enrolled) {
-        const receipt = await provider
+      const dispatchSteer = () =>
+        provider
           .steer({
             sandboxId: found.providerSandboxId,
             text: args.text,
             ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
           })
           .catch(unknownMutationOutcome);
+      if (enrolled) {
+        const receipt = await dispatchSteer();
         return { id: found.id, ...receipt, delivery, mode: receipt.mode ?? null };
       }
       const member = caller.orgs.find((entry) => entry.orgId === found.orgId);
@@ -1736,13 +1738,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
               role: member.role,
             });
 
-          const receipt = await provider
-            .steer({
-              sandboxId: found.providerSandboxId,
-              text: args.text,
-              ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
-            })
-            .catch(unknownMutationOutcome);
+          const receipt = await dispatchSteer();
           acknowledged = true;
           return {
             patch: {
