@@ -52,8 +52,9 @@ the script intentionally resets fixture state. Stop both servers afterwards.
 - Sandboxes: metadata inventory, then costs and host names; directory, provider
   setup and Docker-host discovery run concurrently. Existing Suspense supplies
   loading feedback. No server action is required.
-- Detail: selected-org sandbox and directory, then provider-specific account
-  choices, account metadata, golden label and connection reads. Chat events load
+- Detail: selected-org sandbox, then provider-specific account choices, account
+  metadata, golden label and connection reads. The directory overlaps the
+  authorized sandbox read and its dependent reads rather than gating them. Chat events load
   separately after mounting. Interior authorization must not be bypassed.
 - Snapshots: active goldens and history, setup followed by capabilities, plus
   launch/account/connection/template/vault data. These are concurrent except
@@ -64,3 +65,30 @@ the script intentionally resets fixture state. Stop both servers afterwards.
 The sidebar's forced full prefetch renders all visible dynamic destinations,
 including unrelated expensive setup pages. Measure on-demand navigation separately
 from already-prefetched/back navigation before accepting a policy change.
+
+
+## Server-read waterfall experiment
+
+To observe backend fetches, use **Node** to start the same production build.
+Bun's Next launcher did not apply this preload during measurement, so those
+runs were discarded. In the app directory with the fixture environment above:
+
+```sh
+NODE_OPTIONS="--require=./e2e/github-fetch.cjs --require=../../scripts/perf/dashboard-fetch.cjs" \
+  node node_modules/next/dist/bin/next start -p 3100 -H 0.0.0.0
+```
+
+The server prints local fixture fetch start/end time and duration, path only.
+No headers, request/response bodies or query strings are logged.
+
+For a controlled scheduling experiment, set DASHBOARD_PERF_DELAY_MS=80 on
+that server command. This adds the same 80 ms to the org-member directory
+and sandbox-connection reads on the loopback fixture service only. Run the
+unchanged browser benchmark at both revisions with that same delay. With no
+variable set the preload only traces. The delay is bounded to 0–1000 ms.
+
+This demonstrates overlap when both independent reads have latency, **not**
+real provider/database performance or a production speedup. Build each
+revision first; stop/restart Next between builds; keep the same Node version,
+browser and fixture. Keep browser metrics and server traces together so the
+timing result can be reconciled with dependency ordering.

@@ -41,7 +41,7 @@ const TOKEN_PREFIX = {
   refresh: "armada_mrt_",
 } as const;
 
-export type IssuedKind = keyof typeof TOKEN_PREFIX;
+type IssuedKind = keyof typeof TOKEN_PREFIX;
 
 /** 32 bytes of entropy, prefixed so a bearer can be told from a refresh token before the lookup. */
 export function generateToken(kind: IssuedKind): string {
@@ -57,7 +57,7 @@ export function generateClientId(): string {
   return randomHex(16);
 }
 
-export const TOKEN_PATTERN = /^(armada_sk_|armada_mcp_|armada_mrt_)[A-Za-z0-9_-]{43}$/;
+const TOKEN_PATTERN = /^(armada_sk_|armada_mcp_|armada_mrt_)[A-Za-z0-9_-]{43}$/;
 
 export function bearerKind(token: string): "service" | "access" | "refresh" | null {
   if (!TOKEN_PATTERN.test(token)) return null;

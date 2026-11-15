@@ -1,8 +1,8 @@
-# Golden backend capabilities
+# Snapshot backend capabilities
 
-The authenticated control API and MCP expose the configured provider's golden
+The authenticated control API and MCP expose the configured provider's snapshot
 limit without inspecting or modifying snapshots, builders, slots or database rows.
-This is metadata, not a claim that legacy golden slots have been reconciled.
+This is metadata, not a claim that legacy snapshot slots have been reconciled.
 
 ## Control API
 
@@ -31,6 +31,15 @@ An explicit foreign org is denied before resolving a provider. `provider` defaul
 to `boat`; unknown selectors and unavailable backends fail rather than falling back.
 The dashboard should consume this response, not import a backend adapter or duplicate
 its limits.
+
+## CLI
+
+```sh
+armada snapshot capabilities --provider modal --org ORG_UUID --json
+```
+
+The user-facing CLI calls these same `golden`-named API routes. Do not rename
+wire fields such as `maxGoldens`; they remain the contract, not CLI terminology.
 
 ## MCP
 
