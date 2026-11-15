@@ -2,10 +2,11 @@
 
 The shared runtime owns harness commands, journal events and private model
 configuration. Codex uses app-server; Claude uses the Agent SDK;
-[OpenCode on Modal](runtime/opencode-modal.md) uses ACP v1. The enrolled dial-out
-path currently selects Codex. [Boat runtime](boat-runtime-first-prompt.md) is
-experimental and default off; [Docker placement](docker-host-daemon.md) is an explicit
-preview. Modal retains its existing bootstrap/listener/authenticated tunnel.
+[OpenCode](runtime/opencode-modal.md) uses ACP v1 on Modal, Docker hosts and
+the shared Boat runtime. The enrolled dial-out path selects the admitted
+Claude Code, Codex or OpenCode harness. [Boat runtime](boat-runtime-first-prompt.md) is
+experimental and default off; [Docker placement](docker-host-daemon.md) supports normal host-bound launches
+and retained lifecycle controls behind its server opt-ins. Modal retains its existing bootstrap/listener/authenticated tunnel.
 Neither a successful build nor a synthetic protocol check proves real-provider
 lifecycle acceptance.
 
@@ -25,7 +26,7 @@ The separate `build.ts`/native validation path still serves Modal.
 
 The normal server Docker build runs `scripts/publish-runtime-artifacts.ts` and
 publishes only x64 plus pinned harness/OpenCode bytes. The requestable architecture
-list lives in `packages/agent-runtime/src/publication.ts`: current Boat goldens,
+list lives in `packages/agent-runtime/src/publication.ts`: current Boat snapshots,
 Modal apps and verified Docker hosts are x64. Launch policy composition rejects
 unpublished architectures before allocation. Standalone arm64 builds remain
 available for development, not server publication; native ABI validation is separate. Public
@@ -74,11 +75,12 @@ No user-JWT grants expose those rows.
 
 Every fresh process, including resume, enrols again even with warm caches.
 The response identifies sandbox, immutable epoch, runtime token and private
-configuration. The server supplies `selectedHarness:"codex"`, the matching
-artifact manifest and private root. Before journal/driver construction the
-process installs/verifies the selected CLI, ignoring image CLI paths. Only its
-driver gets credentials and the selected Codex PATH. Other harness-bearing
-commands refuse; dial-out exec is not enabled.
+configuration. The server supplies `selectedHarness`, its matching artifact configuration and
+private root. Before journal/driver construction the process installs/verifies
+the selected CLI, ignoring image CLI paths. Only the selected driver receives its
+credentials and executable configuration. Commands naming another harness refuse.
+Dial-out exec supports bounded synchronous commands; detached exec refuses rather
+than promising an independent process lifetime.
 
 `runtime-startup.ts` coordinates issuance, bounded host bootstrap and health.
 After bootstrap the readiness budget defaults to 90 seconds (maximum 120).
@@ -131,7 +133,7 @@ old commands; active-owner readback labels them superseded. Validated health is
 `/api/runtime/events` accepts at most 1 MiB/1,000 events, checking authenticated
 sandbox/generation and common AgentEvent shapes. One persistent journal producer
 sequence survives all epochs. Never reset an existing sandbox to an empty journal
-or guess an offset; golden forks must begin with empty history.
+or guess an offset; snapshot forks must begin with empty history.
 
 Only a contiguous prefix commits. Identical replay after a lost ACK is safe;
 conflicting replay rolls back. ACK follows encrypted archive **and** applicable
@@ -181,7 +183,12 @@ Optional `ARMADA_COMPILED_SMOKE_MODEL` selects the model. Require COMPILED_OK,
 reported turn usage and successful checkpoint. If cleanup cannot quiesce native
 children, inspect/discard the isolated host rather than claiming it is clean.
 
-Synthetic deployed protocol diagnostics require a disposable active Boat sandbox,
+The following Boat protocol diagnostics are historical operator tools, not
+staging or release acceptance. Boat is not part of the release gate; print
+`boat: not part of the release gate`. Any on-demand Boat verification is
+coordinator-only, outside the staging gate.
+
+These diagnostics require a disposable active Boat sandbox,
 current member owner, no real work and secure environment:
 `ARMADA_STAGING_DATABASE_URL`, `ARMADA_STAGING_ENCRYPTION_KEY`,
 `ARMADA_STAGING_URL`, `ARMADA_STAGING_SANDBOX_ID`, `ARMADA_STAGING_OWNER_ID`.
@@ -203,9 +210,10 @@ exclusive staging subscription holder with no prompt:
 It republishes unchanged auth, not an OAuth refresh; normal stop/release/reconnect
 cleanup is required and the holder must not be repurposed for real work.
 
-Use the [Boat lifecycle check](boat-runtime-first-prompt.md#staging-acceptance)
-for actual inference/continuity. Measure at least five matched native/runtime
-cold, cached and resume launches, same golden/region/model/prompt: report artifact
+For coordinator-only on-demand Boat inference/continuity verification, consult
+the [Boat lifecycle reference](boat-runtime-first-prompt.md#staging-acceptance);
+do not add it to staging acceptance. Measure at least five matched native/runtime
+cold, cached and resume launches, same snapshot/region/model/prompt: report artifact
 bytes, install/readiness, launch-to-ready and first-event median/range. Installer
 or bare-binary timings are not Boat baselines. A >20% regression needs an owner
 decision; no synthetic check establishes production acceptance.
