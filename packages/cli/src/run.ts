@@ -342,9 +342,13 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
             ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
           }),
       );
-    if (localArgs.length === 1 && ["snapshot", "golden", "host"].includes(localArgs[0] ?? "")) {
-      io.out(onboardingHelp([localArgs[0] === "host" ? "host" : "snapshot", "--help"]) ?? HELP);
-      return 2;
+    if (
+      localArgs.length === 1 &&
+      ["snapshot", "golden", "host", "template", "routine", "vars", "secrets"].includes(localArgs[0] ?? "")
+    ) {
+      const family = localArgs[0] === "golden" ? "snapshot" : (localArgs[0] ?? "");
+      io.out(onboardingHelp([family, "--help"]) ?? HELP);
+      return ["snapshot", "host"].includes(family) ? 2 : 0;
     }
     const focusedHelp = onboardingHelp(localArgs);
     if (focusedHelp) {
