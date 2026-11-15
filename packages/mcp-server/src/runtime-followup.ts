@@ -8,6 +8,7 @@ import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
+import { appendConversation } from "./sandbox-activity.ts";
 
 export interface RuntimeFollowupInput {
   id: string;
@@ -228,9 +229,7 @@ export function createRuntimeFollowup(
           patch: {
             status: "running",
             taskPromptId: accepted.promptId,
-            conversationIds: admitted.current.conversationIds.includes(conversation)
-              ? admitted.current.conversationIds
-              : [...admitted.current.conversationIds, conversation],
+            conversationIds: appendConversation(admitted.current.conversationIds, conversation),
             statusReason: null,
           },
         };

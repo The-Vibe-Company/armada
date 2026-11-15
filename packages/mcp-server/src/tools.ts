@@ -67,7 +67,7 @@ import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
-import { sandboxActivity } from "./sandbox-activity.ts";
+import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import {
   collectSandboxUsage,
@@ -1727,9 +1727,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
             /* Logging must not change accepted work. */
           }
         }
-        const conversationIds = found.conversationIds.includes(receipt.conversationId)
-          ? found.conversationIds
-          : [...found.conversationIds, receipt.conversationId];
+        const conversationIds = appendConversation(found.conversationIds, receipt.conversationId);
         return {
           patch: {
             status: "running",
@@ -1849,9 +1847,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
               status: "running",
               // Boat returns a steer-record ID; resolve the actual run from events.
               taskPromptId: "",
-              conversationIds: found.conversationIds.includes(receipt.conversationId)
-                ? found.conversationIds
-                : [...found.conversationIds, receipt.conversationId],
+              conversationIds: appendConversation(found.conversationIds, receipt.conversationId),
             },
             result: {
               id: found.id,
