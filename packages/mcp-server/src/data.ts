@@ -30,6 +30,7 @@ import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/cor
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
+import { sandboxRowModalBinding } from "./provider-sandbox-target.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
@@ -816,10 +817,7 @@ function mapView(row: SandboxViewRow): SandboxView {
     golden: row.golden,
     visibility: visibility(row.visibility),
     sourceGoldenVisibility: visibility(row.source_golden_visibility),
-    modal:
-      row.provider === "modal" && row.modal_workspace && row.modal_environment && row.modal_app_id
-        ? { workspace: row.modal_workspace, environment: row.modal_environment, appId: row.modal_app_id }
-        : null,
+    modal: sandboxRowModalBinding(row),
   };
 }
 
