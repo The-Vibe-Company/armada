@@ -372,3 +372,16 @@ SQL but completes pinned-source smoke; confirm unknown history blocks before any
 provider upload. Inspect the authorized release's production migration inventory
 against its tag; do not inject production drift or repair history to test this.
 No new configuration secrets, CI jobs or required checks are needed.
+
+### Reusing exact-commit staging evidence
+
+A pinned release call checks for a completed successful ordinary `main` push
+run of `staging-gated-production.yml` for the full release SHA. The check runs
+inside the existing staging deployment/smoke lock. It authenticates the source
+repository, workflow path, event, branch, SHA and current run attempt, and requires
+both deployment and smoke steps to have completed successfully. Superseded/no-op,
+skipped, failed, missing or unavailable evidence falls back to direct exact-SHA
+deployment and smoke. Tags created with `GITHUB_TOKEN` need no tag-triggered run.
+Official-image releases always use direct smoke because the generated image pin
+is not part of an ordinary source checkout. This reuses historical acceptance,
+not a claim that staging still serves that SHA after later main deployments.
