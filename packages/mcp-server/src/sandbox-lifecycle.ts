@@ -1,5 +1,6 @@
 import {
   HOST_CAPABILITIES,
+  isFinalPromptStatus,
   isSandboxProvider,
   type Provider,
   ProviderError,
@@ -141,6 +142,37 @@ export function createSandboxLifecycle(
         let info = await operation(signal, () => provider.get(row.provider_sandbox_id));
         const host = isSandboxProvider(provider.id) ? HOST_CAPABILITIES[provider.id] : undefined;
         physicalExit = info.physicalExitConfirmed === true;
+        // A native turn's terminal receipt frees model capacity immediately on observation,
+        // independently of the later machine-idle timer. Never let a stale receipt settle
+        // a new task or an uncertain activity lease.
+        if (
+          native &&
+          row.task_prompt_id &&
+          !row.activity_lease_id &&
+          !row.stop_requested_at &&
+          ["ready", "running"].includes(row.status) &&
+          ["ready", "running"].includes(info.state)
+        ) {
+          const turn = await operation(signal, () =>
+            provider.getPrompt({
+              sandboxId: row.provider_sandbox_id,
+              promptId: row.task_prompt_id!,
+              ...(signal ? { signal } : {}),
+            }),
+          );
+          if (turn.promptId === row.task_prompt_id && turn.done && isFinalPromptStatus(turn.status)) {
+            await sql.query(
+              `insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled)
+               select id,task_prompt_id,true from public.sandboxes
+               where id=$1 and reconcile_lease=$2::uuid and lifecycle_generation=$3
+                 and reconcile_lease_until>now() and activity_lease_id is null
+                 and task_prompt_id=$4 and stop_requested_at is null
+                 and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
+               on conflict(sandbox_id,prompt_id) do update set settled=true`,
+              [row.id, token, row.lifecycle_generation, row.task_prompt_id],
+            );
+          }
+        }
         const idleStop =
           native &&
           !expired &&

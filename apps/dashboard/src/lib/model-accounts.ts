@@ -25,6 +25,7 @@ export type AccountScope = (typeof ACCOUNT_SCOPES)[number];
 export interface ModelAccount {
   maxAgents?: number | null;
   runningAgents?: number;
+  waitingAgents?: number;
   id: string;
   scope: AccountScope;
   kind: AccountKind;
@@ -155,6 +156,7 @@ export function parseAccount(value: unknown): ModelAccount | null {
     version: value.version,
     maxAgents: typeof value.maxAgents === "number" ? value.maxAgents : null,
     runningAgents: typeof value.runningAgents === "number" ? value.runningAgents : 0,
+    waitingAgents: typeof value.waitingAgents === "number" ? value.waitingAgents : 0,
   };
 }
 

@@ -562,7 +562,7 @@ function section(title: string, rows: CredentialInfo[]): string {
   if (rows.length === 0) return `${title}: none`;
   const lines = rows.map(
     (row) =>
-      `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.id ? `  ${row.runningAgents ?? 0}/${row.maxAgents ?? "unlimited"} running` : ""}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`,
+      `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.id ? `  ${row.runningAgents ?? 0} working / ${row.waitingAgents ?? 0} waiting-for-slot / ${row.maxAgents ?? "unlimited"} max` : ""}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`,
   );
   return `${title}:\n${lines.join("\n")}`;
 }
