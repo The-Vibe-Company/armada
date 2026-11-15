@@ -5,6 +5,7 @@ import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
 import { ClientSendError, probeClientSend } from "./provider-parity-client-send.ts";
+import { probeClientStop } from "./provider-parity-client-stop.ts";
 import { isMcpProbeBinding, type McpProbeBinding, McpProbeError, prepareMcpProbe } from "./provider-parity-mcp.ts";
 import {
   isReadableVariableBinding,
@@ -74,7 +75,7 @@ function diagnostic(error: unknown): Diagnostic {
   if (error instanceof ClientSendError)
     return {
       code: error.code,
-      message: `The ${error.client} client send failed (${error.code}).`,
+      message: `The ${error.client} client ${error.action} failed (${error.code}).`,
       ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
       quota:
         error.httpStatus === 429 || ["quota_exceeded", "rate_limited", "start_limit_exceeded"].includes(error.code),
@@ -117,6 +118,7 @@ const harnessFeatures = { codex: "codex", "claude-code": "claude", opencode: "op
 const features = [
   ...Object.keys(steps),
   "client-send",
+  "client-stop",
   "launch-default",
   "launch-snapshot",
   "resume-recall",
@@ -155,6 +157,7 @@ const accountMatrix = {
 } as const;
 
 interface Case {
+  clientStop?: boolean;
   clientSend?: boolean;
   mcpResume?: boolean;
   skillsResume?: boolean;
@@ -275,6 +278,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             typeof c.snapshotId !== "string" ||
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(c.snapshotId))) ||
         (c.subscriptionAccount !== undefined && typeof c.subscriptionAccount !== "boolean") ||
+        (c.clientStop !== undefined && typeof c.clientStop !== "boolean") ||
         (c.clientSend !== undefined && typeof c.clientSend !== "boolean") ||
         (c.mcpResume !== undefined && typeof c.mcpResume !== "boolean") ||
         (c.mcp !== undefined && !isMcpProbeBinding(c.mcp)) ||
@@ -363,7 +367,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       feature === "subscription-account" ||
       feature === "skills-resume" ||
       feature === "mcp-resume" ||
-      feature === "client-send"
+      feature === "client-send" ||
+      feature === "client-stop"
     )
       until = Math.min(until, requestDeadline ?? Number.POSITIVE_INFINITY);
     const started = io.now();
@@ -447,6 +452,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       for (const client of ["dashboard", "cli"])
         record(`client-send-${client}`, c.provider, "not-run", "client_not_observed");
     }
+    if (!feature && c.clientStop !== true)
+      record("client-stop", c.provider, "not-run", "client_stop_probe_not_enabled");
+    if (feature === "client-stop" || (!feature && c.clientStop === true)) {
+      for (const client of ["dashboard", "cli"])
+        record(`client-stop-${client}`, c.provider, "not-run", "client_not_observed");
+    }
     const harnessFeature = c.harness === "claude" ? "claude-code" : c.harness;
     const requestedHarness = feature && Object.hasOwn(harnessFeatures, feature);
     for (const name of Object.keys(harnessFeatures))
@@ -510,6 +521,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       !Object.hasOwn(steps, feature) &&
       ![
         "client-send",
+        "client-stop",
         "resume-recall",
         "subscription-account",
         "usage",
@@ -546,6 +558,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     const retainedPrices = new Map<string, string>();
     let blocked: string | undefined;
     let blockedDiagnostic: Diagnostic | undefined;
+    let clientStopEligible = false;
     const api = <T>(path: string, body: object = {}) => request<T>(path, { org: c.org, ...body });
     const readableUntil = Math.min(deadline, io.now() + 110_000);
     let mcp: Awaited<ReturnType<typeof prepareMcpProbe>> | undefined;
@@ -564,6 +577,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     };
     const discoveryApi = [
       "client-send",
+      "client-stop",
       "readable-variables",
       "skills",
       "skills-resume",
@@ -574,6 +588,77 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     ].includes(feature ?? "")
       ? readableApi
       : api;
+    async function verifyClientStop() {
+      if (!id) throw Error("launch_not_available");
+      const sandboxId = id,
+        until = feature === "client-stop" ? readableUntil : Math.min(deadline, io.now() + 110_000),
+        previous = requestDeadline;
+      requestDeadline = until;
+      try {
+        await probeClientStop(
+          { id: sandboxId, org: c.org, origin, token: env.ARMADA_TOKEN! },
+          {
+            fetch: io.fetch,
+            now: io.now,
+            sleep: io.sleep,
+            until,
+            dispatch: () => {
+              stopRequested = true;
+              stopped = false;
+            },
+            verified: (client) => {
+              stopped = true;
+              record(`client-stop-${client}`, c.provider, "pass");
+            },
+            resume: async () => {
+              stopped = false;
+              stopRequested = false;
+              afterResume = true;
+              try {
+                if (c.provider === "docker") {
+                  const result = await api<{ id?: string; status?: string }>("sandbox/resume", {
+                    id: sandboxId,
+                    request_id: crypto.randomUUID(),
+                  });
+                  if (result.id !== undefined && result.id !== sandboxId) throw Error("invalid_control_receipt");
+                }
+                await runTurn(true, true, until);
+                await poll(
+                  () => api<{ id: string; status: string }>("sandbox/status", { id: sandboxId }),
+                  (value) => value.id === sandboxId && ["ready", "running"].includes(value.status),
+                  110,
+                  until,
+                );
+                record("client-stop-resume-prerequisite", c.provider, "pass");
+              } catch (error) {
+                const detail = diagnostic(error);
+                record(
+                  "client-stop-resume-prerequisite",
+                  c.provider,
+                  detail.quota ? "not-run" : "fail",
+                  detail.quota ? "quota" : detail.code,
+                  detail,
+                );
+                throw error;
+              }
+            },
+          },
+        );
+        record("client-stop", c.provider, "pass");
+      } catch (error) {
+        const detail = diagnostic(error),
+          status = detail.quota || detail.notRun ? "not-run" : "fail";
+        if (error instanceof ClientSendError) {
+          // Only a refusal of the business write, never a later status read, proves non-admission.
+          if (error.writeRefused) stopRequested = false;
+          record(`client-stop-${error.client}`, c.provider, status, detail.quota ? "quota" : detail.code, detail);
+        }
+        record("client-stop", c.provider, status, detail.quota ? "quota" : detail.code, detail);
+        throw error;
+      } finally {
+        requestDeadline = previous;
+      }
+    }
     async function verifyClientSend() {
       if (!id) throw Error("launch_not_available");
       const until = feature === "client-send" ? readableUntil : Math.min(deadline, io.now() + 110_000);
@@ -832,7 +917,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         if (c.subscriptionAccount === true) observe("subscription-account", "fail", detail.code, detail);
       }
     }
-    async function runTurn(recall = false, strictRecall = false) {
+    async function runTurn(recall = false, strictRecall = false, observationUntil?: number) {
       const turnStarted = io.now();
       if (!id) throw new Error("launch_not_available");
       const turn = await api<{ promptId: string }>("sandbox/send", {
@@ -896,7 +981,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             finished ||= page.events.some(
               (e) => e.promptId === turn.promptId && e.kind === "prompt" && e.status === "finished",
             );
-            if (c.subscriptionAccount === true || feature === "skills-resume") {
+            if (
+              c.subscriptionAccount === true ||
+              feature === "skills-resume" ||
+              feature === "client-stop" ||
+              observationUntil !== undefined
+            ) {
               for (const event of page.events) {
                 if (event.promptId !== turn.promptId || event.kind !== "message") continue;
                 if (typeof event.id !== "string") throw new Error("invalid_turn_receipt");
@@ -939,7 +1029,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             return finished && answered;
           },
           600,
-          Math.min(deadline, turnStarted + OBSERVATION_MS),
+          Math.min(deadline, turnStarted + OBSERVATION_MS, observationUntil ?? Number.POSITIVE_INFINITY),
           (_elapsed, count) => {
             elapsedMs = io.now() - turnStarted;
             polls = count;
@@ -969,7 +1059,9 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           }),
         );
       }
-      await checkUsage(turn.promptId);
+      // Bounded auxiliary wake turns are included in the later ordinary lifecycle usage read.
+      if (observationUntil === undefined) await checkUsage(turn.promptId);
+      else measuredPrompts.add(turn.promptId);
     }
     type IdleState = {
       id: string;
@@ -1269,6 +1361,20 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         (options.boatRuntime?.opencodeVersion !== 1 || options.boatRuntime.defaultPath !== "runtime")
       )
         throw new Error("boat_opencode_runtime_not_advertised");
+      if (feature === "client-stop" || (!feature && c.clientStop === true)) {
+        const missing = (["stop", "resume", "followupPrompts", "logs", "status"] as const).find(
+          (name) => option!.capabilities[name] !== true,
+        );
+        if (missing) {
+          record(
+            "client-stop",
+            c.provider,
+            option.capabilities[missing] === false ? "unsupported" : "not-run",
+            option.unsupportedReasons[missing] ?? `${missing}_required_for_client_stop_proof`,
+          );
+          if (feature === "client-stop") continue;
+        } else clientStopEligible = true;
+      }
       if (feature === "client-send") {
         const missing = (["followupPrompts", "logs"] as const).find((name) => option!.capabilities[name] !== true);
         if (missing) {
@@ -1522,6 +1628,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         (step === "stop" && !["steer", "interrupt"].includes(feature ?? "")) ||
         step === "delete" ||
         ((feature === "client-send" ||
+          feature === "client-stop" ||
           feature === "github" ||
           feature === "launch-snapshot" ||
           feature === "templates" ||
@@ -1587,6 +1694,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       try {
         if (
           feature === "client-send" ||
+          feature === "client-stop" ||
           feature === "skills" ||
           feature === "skills-resume" ||
           feature === "application-secrets" ||
@@ -1989,6 +2097,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       : "github_probe_failed";
               throw new ParityError({ code, message: code.replaceAll("_", " ") });
             }
+          } else if (
+            step === "stop" &&
+            clientStopEligible &&
+            (feature === "client-stop" || (!feature && c.clientStop === true))
+          ) {
+            await verifyClientStop();
           } else if (step === "status") {
             const result = await api<{ id: string; provider?: string; status: string }>("sandbox/status", { id });
             // The shared schema makes provider optional. Docker retains running
@@ -2167,7 +2281,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     }
     // These probes already share the provider's lifecycle sandbox. If a
     // prerequisite prevents observation, report that cause, not implementation debt.
-    for (const name of ["resume-recall", "usage", "exact-cost", "subscription-account", "client-send"]) {
+    for (const name of ["resume-recall", "usage", "exact-cost", "subscription-account", "client-send", "client-stop"]) {
       if (feature && feature !== name) continue;
       const cell = report[name]?.[c.provider];
       if (cell?.status !== "not-run" || !["probe_not_implemented", "resume_not_observed"].includes(cell.reason ?? ""))
@@ -2189,6 +2303,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     // resume acknowledgement still leaves a known allocation to reconcile.
     if (
       feature === "client-send" ||
+      feature === "client-stop" ||
       feature === "skills" ||
       feature === "skills-resume" ||
       feature === "application-secrets" ||

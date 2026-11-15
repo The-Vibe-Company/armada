@@ -1,118 +1,45 @@
-import { createGateway, GatewayError, sandboxGateway } from "../apps/dashboard/src/lib/gateway.ts";
-import { AuthError } from "../packages/auth/src/index.ts";
-import { ArmadaApiError, createArmadaApiClient } from "../packages/cli/src/armada-api.ts";
-import { operation } from "../packages/cli/src/operations.ts";
+import { createParityClients, type ProofClient } from "./provider-parity-clients.ts";
 
-export type SendClient = "dashboard" | "cli";
-export class ClientSendError extends Error {
-  constructor(
-    readonly client: SendClient,
-    readonly code: string,
-    readonly httpStatus?: number,
-  ) {
-    super(code);
-  }
-}
+export type { ProofClient as SendClient } from "./provider-parity-clients.ts";
+export { ClientProofError as ClientSendError } from "./provider-parity-clients.ts";
+
 interface Io {
   fetch(url: string, init: RequestInit): Promise<Response>;
   now(): number;
   sleep(ms: number): Promise<void>;
   until: number;
-  verified(client: SendClient): void;
+  verified(client: ProofClient): void;
 }
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-
 /** Exercise the production dashboard MCP and CLI send paths, not hand-copied payloads. */
 export async function probeClientSend(
   input: { id: string; org: string; origin: string; token: string; conversationId: string },
   io: Io,
 ) {
-  let client: SendClient = "dashboard";
-  let expired = false;
-  let lastStatus: number | undefined;
-  function fail(code: string): never {
-    throw new ClientSendError(client, code);
-  }
-  const relay = async (raw: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(typeof raw === "string" ? raw : raw instanceof URL ? raw.href : raw.url);
-    if (
-      url.origin !== input.origin ||
-      url.search ||
-      url.hash ||
-      !["/mcp", "/api/v1/sandbox/send", "/api/v1/logs/read"].includes(url.pathname) ||
-      init?.method !== "POST"
-    )
-      fail("client_send_unexpected_request");
-    const remaining = io.until - io.now();
-    if (remaining <= 0) {
-      expired = true;
-      fail("client_send_timeout");
-    }
-    const signal = AbortSignal.timeout(Math.max(1, Math.min(110_000, remaining)));
-    lastStatus = undefined;
-    const result = await io.fetch(url.href, {
-      ...init,
-      redirect: "error",
-      signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
-    });
-    lastStatus = result.status;
-    if (io.now() > io.until) {
-      expired = true;
-      fail("client_send_timeout");
-    }
-    return result;
-  };
-  let output = "";
-  const noSession = async (): Promise<never> => fail("client_send_session_fallback");
-  const auth = {
-    env: { ARMADA_URL: input.origin, ARMADA_TOKEN: input.token },
-    fetch: relay,
-    session: { read: noSession, write: noSession, clear: noSession },
-    now: () => new Date(io.now()),
-    open: () => fail("client_send_session_fallback"),
-    out: (text: string) => {
-      output += text;
-      if (output.length > 262144) fail("invalid_client_send_receipt");
-    },
-    err: () => {},
-  };
-  const api = await createArmadaApiClient(auth);
-  const dashboard = sandboxGateway(
-    createGateway({ url: `${input.origin}/mcp`, token: input.token, fetch: relay as typeof fetch }),
-  );
+  const session = await createParityClients(input, io, "send");
+  const fail: (code: string) => never = session.fail;
   for (const selected of ["dashboard", "cli"] as const) {
-    client = selected;
-    try {
+    await session.run(selected, async () => {
+      const client = selected;
       const marker = `PARITY_CLIENT_${client.toUpperCase()}_${crypto.randomUUID()}`;
       const prompt = `Reply with exactly ${marker} and nothing else. Do not use tools or change files.`;
       const requestId = crypto.randomUUID();
       let receipt: unknown;
-      if (client === "dashboard") receipt = await dashboard.send(input.id, prompt, {}, input.conversationId, requestId);
+      if (client === "dashboard")
+        receipt = await session.dashboard.send(input.id, prompt, {}, input.conversationId, requestId);
       else {
-        output = "";
-        const result = await operation(
-          "send",
-          [
-            input.id,
-            prompt,
-            "--org",
-            input.org,
-            "--conversation",
-            input.conversationId,
-            "--request-id",
-            requestId,
-            "--json",
-          ],
-          auth,
-          async () => fail("client_send_file_read"),
-        );
-        if (result !== 0) fail("invalid_client_send_receipt");
-        try {
-          receipt = JSON.parse(output);
-        } catch {
-          fail("invalid_client_send_receipt");
-        }
+        receipt = await session.command([
+          input.id,
+          prompt,
+          "--org",
+          input.org,
+          "--conversation",
+          input.conversationId,
+          "--request-id",
+          requestId,
+          "--json",
+        ]);
       }
       const promptId = object(receipt).promptId;
       if (typeof promptId !== "string" || !promptId) fail("invalid_client_send_receipt");
@@ -122,7 +49,7 @@ export async function probeClientSend(
         done = false;
       const messages = new Map<string, { text: string; eligible: boolean }>();
       for (let reads = 0; reads < 110 && io.now() < io.until; reads++) {
-        const page = await api.request<{
+        const page = await session.api.request<{
           cursor?: string;
           hasMore?: boolean;
           events?: Array<{
@@ -184,34 +111,6 @@ export async function probeClientSend(
       }
       if (!done) fail("client_send_timeout");
       io.verified(client);
-    } catch (error) {
-      if (error instanceof ClientSendError) throw error;
-      if (expired || io.now() >= io.until) fail("client_send_timeout");
-      const code =
-        error instanceof ArmadaApiError
-          ? error.serverCode
-          : error instanceof GatewayError
-            ? error.code
-            : error instanceof AuthError && error.code === "unauthorized"
-              ? "unauthorized"
-              : undefined;
-      const status =
-        error instanceof ArmadaApiError || error instanceof GatewayError
-          ? error.status
-          : lastStatus !== undefined && lastStatus >= 400
-            ? lastStatus
-            : undefined;
-      throw new ClientSendError(
-        client,
-        typeof code === "string" && /^[a-zA-Z0-9_-]{1,80}$/.test(code)
-          ? code
-          : status === 401
-            ? "unauthorized"
-            : status === 403
-              ? "forbidden"
-              : "client_send_failed",
-        status,
-      );
-    }
+    });
   }
 }

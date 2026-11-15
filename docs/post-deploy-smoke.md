@@ -1765,3 +1765,37 @@ and the uploaded journal omits both IDs. Then confirm the next main staging
 smoke does not sweep them again and the exact-commit release smoke passes.
 The unit recovery test exercises two invocations against the same journal while
 keeping an unrelated deferred receipt and a functional launch failure.
+
+### Stop request parity: dashboard and CLI
+
+`--parity --feature client-stop`, optionally `--only modal|docker`, primes one
+private sandbox and exercises the production dashboard `sandboxGateway.stop`
+over MCP, then CLI `operation("stop", ...)` over the control API. Neither request
+body is copied or augmented by the runner. Before each client stop, the same
+sandbox must be ready/running; acceptance alone never passes—an ID-matched
+`stopped` observation is required. Between clients the normal server lifecycle
+wakes that sandbox and proves answered recall, so the second stop cannot pass by
+merely observing the first client's already-stopped machine.
+
+The phase requires stop/resume/follow-up/logs/status capabilities. Missing support
+is unsupported/not-run without allocation in filtered mode. Dashboard and CLI
+rows retain partial success and safe code/status diagnostics. Actual outbound
+stop attempts are recorded before dispatch; lost acknowledgements are observed
+without blindly replaying the client stop. Definite authentication/request-schema
+refusals permit the ordinary cleanup path. Unknown stop/cleanup outcomes remain
+failures with their resource identity; no acknowledgement is treated as deletion.
+
+The clients share the same origin/target/action/deadline-confined transport as
+`client-send`, using only the explicitly provided environment token, never a
+saved login or raw error output. Filtered proof has 110 seconds including launch
+and prime; full runs grant the client phase 110 seconds inside the existing outer
+run deadline. Cleanup remains independent. Set `clientStop: true` for full-run
+inclusion: it replaces the ordinary stop step with both client stops, reuses the
+same allocation, and adds one intermediate wake turn. The normal final resume,
+recall, usage/cost and cleanup checks remain. Unsupported full-run depth falls
+back to the ordinary stop, not a client-parity pass.
+
+This covers stop requests, not browser rendering/CORS, physical compute billing,
+other client actions or the intermediate resume's client-request parity. Live
+Modal/Docker acceptance is coordinator-owned. Boat remains coordinator-only via
+`--only boat --production-boat`, never the release gate.
