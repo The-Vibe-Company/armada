@@ -38,6 +38,7 @@ import {
 } from "@/lib/connections";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
+import { initialLaunchSelection } from "@/lib/launch-picker";
 import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import {
   accountProblem,
@@ -153,12 +154,7 @@ function LaunchForm({
 }: LaunchProps) {
   const id = useId();
   const [harness, setHarness] = useState<Harness>("claude");
-  const initialAccount = (agent: Harness) => {
-    if (accounts.state !== "ready") return "";
-    const resolved = launchDefault(accounts.accounts, agent, accounts.now);
-    return resolved.state === "resolved" ? resolved.account.id : "";
-  };
-  const [credential, setCredential] = useState(() => initialAccount("claude"));
+  const [credential, setCredential] = useState(() => initialLaunchSelection(accounts, catalog, "claude").credentialId);
   const [accountBlocked, setAccountBlocked] = useState(false);
   const [armadaAccess, setArmadaAccess] = useState(false);
   const usableCodexAccount = (value: string) =>

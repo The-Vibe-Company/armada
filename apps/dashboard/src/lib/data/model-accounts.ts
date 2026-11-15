@@ -31,7 +31,7 @@ export const listSelectedAccounts = cache(async (): Promise<AccountList> => {
   const control = await viewerAccountControl();
   if (!control) return { state: "not-configured" };
   try {
-    const [{ accounts: listed, legacy }, models] = await Promise.all([
+    const [{ accounts: listed, legacy, defaults }, models] = await Promise.all([
       control.list(selected.org.id),
       control.connectionModels(selected.org.id),
     ]);
@@ -40,7 +40,13 @@ export const listSelectedAccounts = cache(async (): Promise<AccountList> => {
       const declared = models.get(account.id);
       return declared ? { ...account, models: declared } : account;
     });
-    return { state: "ready", orgId: selected.org.id, orgName: selected.org.name, accounts };
+    return {
+      state: "ready",
+      orgId: selected.org.id,
+      orgName: selected.org.name,
+      accounts,
+      ...(defaults ? { defaults } : {}),
+    };
   } catch (error) {
     if (error instanceof ControlError) return { state: "error", message: error.message };
     throw error;

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type AgentDefault,
   CONNECTION_PRESETS,
   type ConnectionPreset,
   type ConnectionPresetId,
@@ -15,7 +16,6 @@ import {
   EllipsisIcon,
   KeyRoundIcon,
   PencilIcon,
-  PlusIcon,
   StarIcon,
   Trash2Icon,
   UserIcon,
@@ -26,15 +26,18 @@ import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, 
 import {
   addAccount,
   makeDefaultAccount,
+  pollModelAccounts,
   removeAccount,
   renameAccount,
   replaceAccountSecret,
+  setPersonalAgentDefault,
   testAccountConnection,
   updateAccountLimits,
 } from "@/app/actions/model-accounts";
 import { SubmitButton } from "@/components/action-form";
 import { PresetConnectionFields } from "@/components/connection-preset-fields";
-import { ChoiceCard, ResultLine } from "@/components/connections";
+import { ResultLine } from "@/components/connections";
+import { CreateDialog } from "@/components/create-dialog";
 import { Disclosure } from "@/components/disclosure";
 import { Empty } from "@/components/page-header";
 import {
@@ -67,7 +70,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
-import { RadioGroup } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
@@ -79,24 +81,27 @@ import {
   type AccountUsage,
   type AuthCapabilities,
   accountProblem,
-  accountState,
+  accountsFor,
   creditText,
   formatDuration,
   formatMoney,
+  HARNESS_ORDER,
   HARNESS_PATH,
   KIND_INFO,
   kindNote,
   type LaunchDefault,
   MAX_ACCOUNT_NAME,
   type ModelAccount,
+  orderAccounts,
   PASTE_SIGN_IN,
   relativeTime,
-  terminalLogin,
+  shellQuote,
   type UsageView,
   usageView,
 } from "@/lib/model-accounts";
 import type { ConnectionTestChoices } from "@/lib/model-connection-check";
 import { connectionModelsNote } from "@/lib/model-picker";
+import { modelsPageDefault, modelsPageModel, modelsPageStatus } from "@/lib/models-page";
 import { cn } from "@/lib/utils";
 
 type Action = (previous: ActionResult | null, data: FormData) => Promise<ActionResult>;
@@ -127,22 +132,14 @@ function ConnectionTestDialog({
   orgId: string;
   choices: ConnectionTestChoices;
 }) {
-  const descriptionId = useId();
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          aria-label={`Test connection, ${account.name}`}
-          aria-describedby={descriptionId}
-        >
+        <Button variant="outline" size="sm" aria-label={`Test connection, ${account.name}`}>
           Test connection
         </Button>
       </DialogTrigger>
-      <p id={descriptionId} className="mt-1 text-xs text-muted-foreground">
-        API-key accounts only, using a running Modal sandbox. Subscription sign-ins cannot be tested here.
-      </p>
+
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Test {account.name}</DialogTitle>
@@ -338,7 +335,7 @@ export function UsagePanel({
   const view: UsageView = usageView(usage, account);
   if ("reason" in view) {
     const label = {
-      unknown: "Usage unknown",
+      unknown: "Not reported",
       unavailable: "Usage unavailable",
       error: "Usage not read",
       unreadable: "Usage not shown",
@@ -355,7 +352,7 @@ export function UsagePanel({
   return (
     <div className="space-y-2" data-usage={view.kind}>
       {view.windows.length > 0 && (
-        <ul className="grid gap-3 sm:grid-cols-2">
+        <ul className="grid gap-3">
           {view.windows.map((window) => {
             const left = window.usedPercent === null ? null : Math.round(100 - window.usedPercent);
             return (
@@ -474,6 +471,7 @@ const STATE_ICON = { ok: CircleCheckIcon, warn: CircleHelpIcon, error: CircleAle
  */
 export function AccountRow({
   account,
+  previousDefault,
   orgId,
   orgName,
   canManage,
@@ -482,6 +480,7 @@ export function AccountRow({
   testChoices,
 }: {
   account: ModelAccount;
+  previousDefault?: ModelAccount | undefined;
   orgId: string;
   orgName: string;
   canManage: boolean;
@@ -497,7 +496,7 @@ export function AccountRow({
   /** Which control opened the dialog, so closing it gives focus back there. */
   const opener = useRef<"menu" | "row">("menu");
   const info = KIND_INFO[account.kind];
-  const state = accountState(account, now);
+  const state = modelsPageStatus(account, now);
   const StateIcon = STATE_ICON[state.tone];
   const headingId = `account-${account.id}`;
   const expiry = account.expiresAt
@@ -518,66 +517,86 @@ export function AccountRow({
   }, []);
 
   return (
-    <li className="px-4 py-3" data-account={account.name} aria-labelledby={headingId}>
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 sm:grid-cols-[minmax(0,1fr)_9rem_11rem]">
-        <div className="col-span-2 min-w-0 space-y-0.5 sm:col-span-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 id={headingId} className="font-medium break-all">
-              {account.name}
-            </h3>
-            <Badge variant="secondary" className="gap-1" data-account-scope={account.scope}>
-              {account.scope === "user" ? <UserIcon /> : <UsersIcon />}
-              {account.scope === "user" ? "Personal" : orgName}
+    <tr
+      className="block border-b p-4 last:border-0 sm:table-row sm:p-0 [&>td]:py-1.5 sm:[&>td]:py-3 sm:[&>td]:px-3 [&>td]:align-top"
+      data-account={account.name}
+      aria-labelledby={headingId}
+    >
+      <td className="block min-w-0 space-y-1 sm:table-cell">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 id={headingId} className="font-medium break-all">
+            {account.name}
+          </h3>
+          <Badge variant="secondary" className="gap-1" data-account-scope={account.scope}>
+            {account.scope === "user" ? <UserIcon /> : <UsersIcon />}
+            {account.scope === "user" ? "Personal" : orgName}
+          </Badge>
+          {account.isDefault && (
+            <Badge variant="outline" className="gap-1" data-default>
+              <StarIcon className="fill-current" /> Account-wide default
             </Badge>
-            {account.isDefault && (
-              <Badge variant="outline" className="gap-1" data-default>
-                <StarIcon className="fill-current" /> Default
-              </Badge>
-            )}
-          </div>
-          <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-            <span>{kindNote(account) ?? info.label}</span>
-            <span>
-              {account.runningAgents ?? 0} working / {account.waitingAgents ?? 0} waiting-for-slot /{" "}
-              {account.maxAgents ?? "unlimited"} max
-            </span>
-            {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
-            <span>
-              Updated <time dateTime={account.updatedAt}>{relativeTime(account.updatedAt, now)}</time>
-            </span>
-          </p>
-          {account.models?.length ? (
-            <p data-account-models className="text-xs text-muted-foreground">
-              {connectionModelsNote(account.models.map((declared) => declared.model))}
-            </p>
-          ) : null}
-          {/* OpenCode plan keys keep vendor-owned routing; only declared custom connections can be checked. */}
-          {info.billing === "api" &&
-            (account.kind !== "opencode" || !!account.models?.length) &&
-            account.status === "active" && (
-              <div className="pt-1.5">
-                <ConnectionTestDialog account={account} orgId={orgId} choices={testChoices} />
-              </div>
-            )}
-          {/* A revoked or removed account has no usage to read: its state already says what to do. */}
-          {info.billing === "subscription" && account.status === "active" && (
-            <div className="pt-1.5">
-              <UsagePanel usage={usage} account={account} now={now} />
-            </div>
           )}
         </div>
+        <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+          <span>{kindNote(account) ?? info.label}</span>
+          {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
+          <span>
+            Updated <time dateTime={account.updatedAt}>{relativeTime(account.updatedAt, now)}</time>
+          </span>
+        </p>
+        {account.models?.length ? (
+          <p data-account-models className="text-xs text-muted-foreground">
+            {connectionModelsNote(account.models.map((declared) => declared.model))}
+          </p>
+        ) : null}
+        {/* OpenCode plan keys keep vendor-owned routing; only declared custom connections can be checked. */}
+        {info.billing === "api" &&
+          (account.kind !== "opencode" || !!account.models?.length) &&
+          account.status === "active" && (
+            <div className="pt-1.5">
+              <ConnectionTestDialog account={account} orgId={orgId} choices={testChoices} />
+            </div>
+          )}
+      </td>
 
+      <td className="block sm:table-cell">
         <p
           className={cn("flex items-center gap-1.5 text-sm", STATE_TONE[state.tone])}
           data-account-status={account.status}
           data-account-state={state.label.toLowerCase()}
         >
           <StateIcon className="size-4 shrink-0" aria-hidden />
-          {state.label}
+          {state.label === "Ready" ? "Connected" : state.label === "Expired" ? "Sign-in expired" : state.label}
         </p>
-
+      </td>
+      <td className="block text-sm sm:table-cell">
+        <span className="text-muted-foreground sm:hidden">Works with: </span>
+        {info.harnessLabel}
+      </td>
+      <td className="block tabular-nums sm:table-cell sm:text-right">
+        <span className="text-muted-foreground sm:hidden">Agents running: </span>
+        {account.runningAgents ?? 0}
+        {account.maxAgents == null ? (
+          <span className="block text-xs text-muted-foreground">no limit</span>
+        ) : (
+          ` of ${account.maxAgents}`
+        )}
+        {account.waitingAgents !== undefined && account.waitingAgents > 0 && (
+          <span className="block text-xs text-muted-foreground">
+            {account.waitingAgents} {account.waitingAgents === 1 ? "message" : "messages"} waiting
+          </span>
+        )}
+      </td>
+      <td className="block sm:table-cell">
+        {info.billing === "subscription" && account.status === "active" ? (
+          <UsagePanel usage={usage} account={account} now={now} />
+        ) : (
+          <span className="text-xs text-muted-foreground">Not reported</span>
+        )}
+      </td>
+      <td className="block sm:table-cell">
         {canManage ? (
-          <div className="flex items-center justify-end gap-1">
+          <div className="flex flex-wrap items-center justify-end gap-1">
             {/* A default that cannot run would refuse launches that name no account: Reconnect leads instead. */}
             {state.needsAction ? (
               <Button
@@ -587,22 +606,14 @@ export function AccountRow({
                   opener.current = "row";
                   setDialog("replace");
                 }}
-                aria-label={`Reconnect, ${account.name}`}
+                aria-label={`${info.billing === "subscription" ? "Reconnect" : "Replace key"}, ${account.name}`}
               >
-                Reconnect
+                {info.billing === "subscription" ? "Reconnect" : "Replace key"}
               </Button>
             ) : (
-              !account.isDefault && (
-                <InlineAction
-                  action={makeDefaultAccount}
-                  fields={<TargetFields account={account} orgId={orgId} />}
-                  onResult={setResult}
-                  label={`Make default, ${account.name}`}
-                >
-                  Make default
-                </InlineAction>
-              )
+              <DefaultAccountAction account={account} previous={previousDefault} orgId={orgId} onResult={setResult} />
             )}
+
             <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -615,6 +626,19 @@ export function AccountRow({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-44">
+                {!state.needsAction && !account.isDefault && (
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      menuTrigger.current
+                        ?.closest("tr")
+                        ?.querySelector<HTMLButtonElement>('button[aria-label^="Make default"]')
+                        ?.click()
+                    }
+                  >
+                    Set account-wide default for {info.harnessLabel}
+                  </DropdownMenuItem>
+                )}
+
                 <DropdownMenuItem onSelect={() => setDialog("limits")}>
                   <PencilIcon /> Agent limit
                 </DropdownMenuItem>
@@ -623,7 +647,7 @@ export function AccountRow({
                 </DropdownMenuItem>
                 {!state.needsAction && (
                   <DropdownMenuItem onSelect={() => setDialog("replace")}>
-                    <KeyRoundIcon /> Replace {secretWord}
+                    <KeyRoundIcon /> {info.billing === "subscription" ? "Reconnect" : `Replace ${secretWord}`}
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuSeparator />
@@ -634,52 +658,107 @@ export function AccountRow({
             </DropdownMenu>
           </div>
         ) : (
-          <p className="text-right text-xs text-muted-foreground">Managed by the org&apos;s admins.</p>
+          <p className="text-right text-xs text-muted-foreground">Managed by the organization&apos;s admins.</p>
         )}
-      </div>
-      <ResultLine result={result} />
+        <ResultLine result={result} />
 
-      {canManage && (
-        <>
-          <LimitsDialog
-            account={account}
-            orgId={orgId}
-            onResult={setResult}
-            open={dialog === "limits"}
-            onOpenChange={closeDialog}
-            onCloseAutoFocus={restoreFocus}
-          />
-          <RenameDialog
-            account={account}
-            orgId={orgId}
-            onResult={setResult}
-            open={dialog === "rename"}
-            onOpenChange={closeDialog}
-            onCloseAutoFocus={restoreFocus}
-          />
-          <ReplaceDialog
-            account={account}
-            orgId={orgId}
-            reconnect={state.needsAction}
-            onResult={setResult}
-            open={dialog === "replace"}
-            onOpenChange={closeDialog}
-            onCloseAutoFocus={restoreFocus}
-          />
-          <RemoveDialog
-            account={account}
-            orgId={orgId}
-            open={dialog === "remove"}
-            onOpenChange={closeDialog}
-            onCloseAutoFocus={restoreFocus}
-          />
-        </>
-      )}
-    </li>
+        {canManage && (
+          <>
+            <LimitsDialog
+              account={account}
+              orgId={orgId}
+              onResult={setResult}
+              open={dialog === "limits"}
+              onOpenChange={closeDialog}
+              onCloseAutoFocus={restoreFocus}
+            />
+            <RenameDialog
+              account={account}
+              orgId={orgId}
+              onResult={setResult}
+              open={dialog === "rename"}
+              onOpenChange={closeDialog}
+              onCloseAutoFocus={restoreFocus}
+            />
+            <ReplaceDialog
+              account={account}
+              orgId={orgId}
+              reconnect={state.needsAction}
+              onResult={setResult}
+              open={dialog === "replace"}
+              onOpenChange={closeDialog}
+              onCloseAutoFocus={restoreFocus}
+            />
+            <RemoveDialog
+              account={account}
+              orgId={orgId}
+              open={dialog === "remove"}
+              onOpenChange={closeDialog}
+              onCloseAutoFocus={restoreFocus}
+            />
+          </>
+        )}
+      </td>
+    </tr>
   );
 }
 
 const STATE_TONE = { ok: "text-success", warn: "text-warning", error: "text-destructive" } as const;
+
+function DefaultAccountAction({
+  account,
+  previous,
+  orgId,
+  onResult,
+}: {
+  account: ModelAccount;
+  previous?: ModelAccount | undefined;
+  orgId: string;
+  onResult: (result: ActionResult) => void;
+}) {
+  const [undo, setUndo] = useState<ModelAccount | null>(null);
+  const change = async (_: ActionResult | null, data: FormData) => {
+    const result = await makeDefaultAccount(null, data);
+    if (result.ok && previous) {
+      try {
+        const list = await pollModelAccounts(orgId);
+        const current = list?.find((item) => item.id === previous.id);
+        if (current) setUndo({ ...previous, version: current.version });
+      } catch {
+        // The default was saved; a failed follow-up read must not turn that success into an action error.
+      }
+    }
+    onResult(result);
+    return result;
+  };
+  return (
+    <div className="space-y-1">
+      {!account.isDefault && (
+        <InlineAction
+          action={change}
+          fields={<TargetFields account={account} orgId={orgId} />}
+          onResult={ignoreResult}
+          label={`Make default account-wide, ${account.name}`}
+        >
+          Make account-wide default
+        </InlineAction>
+      )}
+      {undo && (
+        <InlineAction
+          action={makeDefaultAccount}
+          fields={<TargetFields account={undo} orgId={orgId} />}
+          onResult={(result) => {
+            onResult(result);
+            if (result.ok) setUndo(null);
+          }}
+          label="Undo default change"
+        >
+          Undo
+        </InlineAction>
+      )}
+    </div>
+  );
+}
 
 function InlineAction({
   action,
@@ -1130,13 +1209,15 @@ function CustomEndpointFields({
   idPrefix,
   kind,
   requireChoice = false,
+  defaultCustom = false,
 }: {
   idPrefix: string;
   kind: "openai" | "anthropic";
   requireChoice?: boolean;
+  defaultCustom?: boolean;
 }) {
   const codex = kind === "openai";
-  const [custom, setCustom] = useState(false);
+  const [custom, setCustom] = useState(defaultCustom);
   const [chosen, setChosen] = useState(!requireChoice);
   // Replacement may re-enter a provider-preset connection with its models (#1483).
   const [preset, setPreset] = useState<ConnectionPreset | null>(null);
@@ -1168,6 +1249,8 @@ function CustomEndpointFields({
             ))}
           </NativeSelect>
         </div>
+      ) : defaultCustom ? (
+        <input type="hidden" name="customEndpoint" value="on" />
       ) : (
         <Label htmlFor={`${idPrefix}-custom`} className="flex items-center gap-2 text-sm font-normal">
           <Checkbox
@@ -1204,28 +1287,19 @@ function CustomEndpointFields({
               : "Available on Modal, Docker hosts and runtime-backed Boat. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages. The gateway must support Anthropic Messages, streaming and tool use."}
           </p>
           {codex ? (
-            <div className="space-y-2">
-              <Label htmlFor={`${idPrefix}-api-version`}>API version (optional)</Label>
-              <Input
-                id={`${idPrefix}-api-version`}
-                name="apiVersion"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="Not needed for Foundry v1"
-              />
-            </div>
+            <p className="text-xs text-muted-foreground">Sent as Bearer (Authorization). This endpoint serves Codex.</p>
           ) : (
             <div className="space-y-2">
-              <Label htmlFor={`${idPrefix}-endpoint-auth`}>Gateway authentication</Label>
+              <Label htmlFor={`${idPrefix}-endpoint-auth`}>Sent as</Label>
               <NativeSelect id={`${idPrefix}-endpoint-auth`} name="endpointAuth" defaultValue="bearer">
-                <option value="bearer">Bearer token (Authorization)</option>
-                <option value="api-key">API key (x-api-key)</option>
+                <option value="bearer">Bearer (Authorization)</option>
+                <option value="api-key">x-api-key</option>
               </NativeSelect>
             </div>
           )}
           {codex && (
             <div className="space-y-2">
-              <Label htmlFor={`${idPrefix}-custom-models`}>Deployment/model IDs</Label>
+              <Label htmlFor={`${idPrefix}-custom-models`}>Models it serves</Label>
               <Textarea
                 id={`${idPrefix}-custom-models`}
                 name="customModels"
@@ -1243,7 +1317,23 @@ function CustomEndpointFields({
               </p>
             </div>
           )}
-          <ModelPriceFields idPrefix={idPrefix} />
+          <Disclosure summary="Prices and API version" defaultOpen={false}>
+            <div className="space-y-3">
+              {codex && (
+                <div className="space-y-2">
+                  <Label htmlFor={`${idPrefix}-api-version`}>API version (optional)</Label>
+                  <Input
+                    id={`${idPrefix}-api-version`}
+                    name="apiVersion"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="Not needed for Foundry v1"
+                  />
+                </div>
+              )}
+              <ModelPriceFields idPrefix={idPrefix} />
+            </div>
+          </Disclosure>
         </fieldset>
       )}
       {preset ? (
@@ -1318,25 +1408,23 @@ function OpenCodeReplacementFields({ idPrefix }: { idPrefix: string }) {
 /** Subscriptions sign in; every other connection starts from a provider preset (#1483). */
 const SUBSCRIPTION_KINDS = ACCOUNT_KINDS.filter((value) => KIND_INFO[value].billing === "subscription");
 /** A subscription kind, or a provider preset; a plain-key kind's id is also its preset's id. */
-type AddChoice = AccountKind | ConnectionPresetId;
+type AddChoice = AccountKind | ConnectionPresetId | "your-endpoint" | "your-endpoint-claude";
 
 /** One provider choice leads to the existing sign-in or key form, without a wall of connection cards. */
 export function AddAccountDialog({
   orgId,
   orgName,
   isAdmin,
-  capabilities,
+  capabilities: _capabilities,
   initialKind = "claude_oauth",
-  triggerLabel = "Add a model account",
-  triggerVariant = "default",
+  triggerLabel = "Add account",
+  triggerVariant: _triggerVariant = "default",
 }: {
   orgId: string;
   orgName: string;
   isAdmin: boolean;
-  /** What this deployment offers for connecting accounts; null offers paste only. */
   capabilities: AuthCapabilities | null;
   initialKind?: AccountKind;
-  /** The trigger's words, when it opens on one harness's kind (an empty harness's "Add a Codex subscription"). */
   triggerLabel?: string;
   triggerVariant?: "default" | "outline";
 }) {
@@ -1346,253 +1434,279 @@ export function AddAccountDialog({
   const [state, formAction] = useActionState(addAccount, null);
   const [choice, setChoice] = useState<AddChoice>(initialKind);
   const preset = connectionPreset(choice);
-  const kind: AccountKind = preset ? preset.kind : (choice as AccountKind);
+  const kind: AccountKind =
+    choice === "your-endpoint-claude"
+      ? "anthropic"
+      : choice === "your-endpoint"
+        ? "openai"
+        : preset
+          ? preset.kind
+          : (choice as AccountKind);
   const [scope, setScope] = useState<"user" | "org">("user");
-  const [name, setName] = useState("");
+  const [name, setName] = useState(KIND_INFO[initialKind].label);
   const [maxAgents, setMaxAgents] = useState(initialKind === "morph" ? "2" : "");
   const router = useRouter();
   const id = useId();
   const info = KIND_INFO[kind];
   const subscription = info.billing === "subscription";
   const pasteSignIn = PASTE_SIGN_IN[kind];
-  // Only a personal account signs in from the terminal; an org account is pasted by its admin.
-  const terminal = scope === "user" ? terminalLogin(capabilities, kind, name) : null;
-  const defaultBox = (
-    <Label htmlFor={`${id}-default-account`} className="flex items-center gap-2 text-sm font-normal">
-      <Checkbox id={`${id}-default-account`} name="default" value="on" />
-      Make it the default for {info.harnessLabel}
-    </Label>
-  );
+  const command = subscription
+    ? `${kind === "claude_oauth" ? "claude setup-token && armada creds import claude" : "armada creds login codex"} --name ${shellQuote(name.trim() || info.label)}${scope === "org" ? ` --org ${shellQuote(orgId)}` : ""}${maxAgents ? ` --max-agents ${Number(maxAgents)}` : " --unlimited"}`
+    : null;
 
-  // Each opening leads with the subscription sign-in again (#805): an API key chosen last time is not kept.
   useEffect(() => {
-    if (state?.ok) {
-      setName("");
-      setMaxAgents(initialKind === "morph" ? "2" : "");
-      setChoice(initialKind);
-      setScope("user");
-      setOpen(false);
-      setGeneration((value) => value + 1);
-    }
-  }, [state, initialKind]);
+    if (!state?.ok) return;
+    setOpen(false);
+    setGeneration((value) => value + 1);
+  }, [state]);
 
-  return (
+  // Read only safe metadata. Capture a baseline so an existing namesake cannot close the dialog.
+  useEffect(() => {
+    if (!open || !subscription) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let baseline: Set<string> | null = null;
+    const poll = async () => {
+      try {
+        const accounts = await pollModelAccounts(orgId);
+        if (stopped) return;
+        if (accounts) {
+          if (!baseline) baseline = new Set(accounts.map((account) => `${account.id}:${account.version}`));
+          else if (
+            accounts.some(
+              (account) =>
+                account.kind === kind &&
+                account.name === (name.trim() || info.label) &&
+                account.scope === scope &&
+                !baseline?.has(`${account.id}:${account.version}`),
+            )
+          ) {
+            setOpen(false);
+            router.refresh();
+            return;
+          }
+        }
+      } catch {
+        // Keep the paste fallback and manual refresh available when the list cannot be read.
+      }
+      if (!stopped) timer = setTimeout(poll, 3000);
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [open, subscription, orgId, kind, name, scope, info.label, router]);
+
+  const endpoint = choice === "your-endpoint" || choice === "your-endpoint-claude";
+  const secretFields = endpoint ? (
+    <CustomEndpointFields
+      key={choice}
+      idPrefix={id}
+      kind={kind === "anthropic" ? "anthropic" : "openai"}
+      defaultCustom
+    />
+  ) : preset?.models === "choose" ? (
+    <PresetConnectionFields key={preset.id} preset={preset} secretField={<SecretField idPrefix={id} kind={kind} />} />
+  ) : kind === "openai" || kind === "anthropic" ? (
+    <CustomEndpointFields key={kind} idPrefix={id} kind={kind} />
+  ) : (
+    <SecretField key={kind} idPrefix={id} kind={kind} />
+  );
+  const saveFields = (
     <>
-      {state?.ok && !open && (
-        <p role="status" className="text-sm text-success">
-          {state.message}
-        </p>
-      )}
-      <Dialog
-        open={open}
-        onOpenChange={(next) => {
-          setOpen(next);
-          if (next) return;
-          setChoice(initialKind);
-          setMaxAgents(initialKind === "morph" ? "2" : "");
+      {secretFields}
+      <Label htmlFor={`${id}-default-account`} className="flex items-center gap-2 text-sm font-normal">
+        <Checkbox id={`${id}-default-account`} name="default" value="on" />
+        Make it the default for {info.harnessLabel}
+      </Label>
+      {state && !state.ok && <ResultLine result={state} />}
+      <SubmitButton>{preset?.deploymentNames ? "Test and add account" : "Add account"}</SubmitButton>
+    </>
+  );
+  const choose = (next: AddChoice) => {
+    const nextPreset = connectionPreset(next);
+    const nextKind =
+      next === "your-endpoint-claude"
+        ? "anthropic"
+        : next === "your-endpoint"
+          ? "openai"
+          : (nextPreset?.kind ?? (next as AccountKind));
+    setChoice(next);
+    setName(
+      next === "your-endpoint" || next === "your-endpoint-claude"
+        ? "Your endpoint"
+        : (nextPreset?.label ?? KIND_INFO[nextKind].label),
+    );
+    setMaxAgents(nextKind === "morph" ? "2" : "");
+  };
+  return (
+    <CreateDialog
+      label={triggerLabel}
+      title="Add an account"
+      description="A subscription, an API key, or your own endpoint. Choose what you have."
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) {
+          choose(initialKind);
           setScope("user");
           setGeneration((value) => value + 1);
-        }}
-      >
-        <DialogTrigger asChild>
-          <Button size="sm" variant={triggerVariant}>
-            <PlusIcon /> {triggerLabel}
-          </Button>
-        </DialogTrigger>
-        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Add a model account</DialogTitle>
-            <DialogDescription>
-              {preset?.deploymentNames
-                ? "Paste the key and enter your Azure deployment names. Testing sends a tiny billable request per deployment; nothing is saved if a check fails."
-                : preset?.models === "choose"
-                  ? "Paste the key and tick the models you want. Billed per token by the provider."
-                  : subscription
-                    ? "Sign in with the plan you already pay for. Add as many as you have; each launch names the one it bills."
-                    : "Billed per token by the provider. Add as many as you have; each launch names the one it bills."}
-            </DialogDescription>
-          </DialogHeader>
-          <form ref={formRef} key={generation} action={formAction} className="min-w-0 space-y-5">
-            <input type="hidden" name="org" value={orgId} />
-            <input type="hidden" name="kind" value={kind} />
-            {preset?.models === "choose" && <input type="hidden" name="preset" value={preset.id} />}
-            <input type="hidden" name="scope" value={scope} />
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-provider`}>Provider</Label>
-              <NativeSelect
-                id={`${id}-provider`}
-                value={choice}
-                onChange={(event) => {
-                  setChoice(event.target.value as AddChoice);
-                  setMaxAgents(event.target.value === "morph" ? "2" : "");
-                }}
-                aria-describedby={`${id}-provider-hint ${id}-availability`}
-              >
-                <optgroup label="Subscriptions">
-                  {SUBSCRIPTION_KINDS.map((value) => (
-                    <option key={value} value={value}>
-                      {KIND_INFO[value].label}
-                    </option>
-                  ))}
-                </optgroup>
-                <optgroup label="API keys and connections">
-                  {CONNECTION_PRESETS.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))}
-                </optgroup>
-              </NativeSelect>
-              <p id={`${id}-provider-hint`} className="text-xs text-muted-foreground">
-                For {info.harnessLabel}
-                {preset ? ` · ${preset.hint}` : " using your subscription"}.
-              </p>
-            </div>
-            <p
-              id={`${id}-availability`}
-              className="rounded-md border bg-muted/30 p-3 text-sm"
-              data-connection-availability
+        }
+      }}
+    >
+      <form ref={formRef} key={generation} action={formAction} className="min-w-0 space-y-4">
+        <input type="hidden" name="org" value={orgId} />
+        <input type="hidden" name="kind" value={kind} />
+        {preset?.models === "choose" && <input type="hidden" name="preset" value={preset.id} />}
+        <input type="hidden" name="scope" value={scope} />
+        <fieldset className="grid grid-cols-2 gap-2 sm:grid-cols-3" aria-label="Account provider">
+          {SUBSCRIPTION_KINDS.map((value) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={choice === value}
+              onClick={() => choose(value)}
+              className={cn(
+                "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
+                choice === value && "border-primary bg-accent",
+              )}
             >
-              {kind === "morph"
-                ? "Claude Code and Codex share this account and its Morph plan models on Modal, Docker hosts and runtime-backed Boat sandboxes. Boat native gateways and OpenCode are not supported by this account."
-                : kind === "opencode"
-                  ? "OpenCode runs on Modal, Docker hosts and through the Boat shared runtime API. Native Boat is not supported. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
-                  : preset?.models === "choose"
-                    ? "This custom connection works on Modal, Docker hosts and runtime-backed Boat sandboxes."
-                    : "With a standard vendor account, Codex and Claude Code run on Modal, Boat and Docker hosts. Custom endpoints also work on runtime-backed Boat and Docker hosts."}
-            </p>
-
-            {isAdmin && (
-              <fieldset className="space-y-2">
-                <legend className="text-sm font-medium">Who uses it</legend>
-                <RadioGroup
-                  value={scope}
-                  onValueChange={(value) => setScope(value as "user" | "org")}
-                  aria-label="Who uses it"
-                  className="sm:grid-cols-2"
-                >
-                  <ChoiceCard value="user" icon={<UserIcon />} title="Only you" hint="Your launches." />
-                  <ChoiceCard value="org" icon={<UsersIcon />} title={orgName} hint="Every member's launches." />
-                </RadioGroup>
-              </fieldset>
+              {value === "claude_oauth" ? "Claude" : "ChatGPT"}
+              <span className="block text-xs text-muted-foreground">Subscription</span>
+            </button>
+          ))}
+          <button
+            type="button"
+            aria-pressed={endpoint}
+            onClick={() => choose("your-endpoint")}
+            className={cn(
+              "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
+              endpoint && "border-primary bg-accent",
             )}
-
+          >
+            Your endpoint<span className="block text-xs text-muted-foreground">Azure, gateway</span>
+          </button>
+          {CONNECTION_PRESETS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              aria-pressed={choice === option.id}
+              onClick={() => choose(option.id)}
+              className={cn(
+                "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
+                choice === option.id && "border-primary bg-accent",
+              )}
+            >
+              {option.label}
+              <span className="block text-xs text-muted-foreground">
+                {option.models === "choose" ? "Connection" : "API key"}
+              </span>
+            </button>
+          ))}
+        </fieldset>
+        <div
+          key={choice}
+          className="space-y-4 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-150"
+        >
+          {endpoint && (
             <div className="space-y-2">
-              <Label htmlFor={`${id}-name`}>Name</Label>
-              <Input
-                id={`${id}-name`}
-                name="name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                required
-                maxLength={MAX_ACCOUNT_NAME}
-                autoComplete="off"
-                placeholder="Choose a name"
-              />
+              <Label htmlFor={`${id}-endpoint-agent`}>Agent</Label>
+              <NativeSelect
+                id={`${id}-endpoint-agent`}
+                value={choice}
+                onChange={(event) => choose(event.target.value as AddChoice)}
+              >
+                <option value="your-endpoint">Codex</option>
+                <option value="your-endpoint-claude">Claude Code</option>
+              </NativeSelect>
             </div>
-
-            <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
-
-            {terminal ? (
-              <>
-                <TerminalSignIn
-                  command={`${terminal}${maxAgents ? ` --max-agents ${Number(maxAgents)}` : " --unlimited"}`}
-                  onDone={() => {
-                    setOpen(false);
-                    router.refresh();
-                  }}
-                />
-                <Disclosure summary={`Paste ${info.valueLabel} instead`} defaultOpen={false}>
-                  <div className="space-y-4">
-                    {pasteSignIn ? (
-                      <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />
-                    ) : (
-                      <p className="text-xs text-muted-foreground">{info.hint}</p>
-                    )}
-                    {kind === "openai" || kind === "anthropic" ? (
-                      <CustomEndpointFields key={kind} idPrefix={id} kind={kind} />
-                    ) : (
-                      <SecretField idPrefix={id} kind={kind} />
-                    )}
-                    {defaultBox}
-                    {state && !state.ok && <ResultLine result={state} />}
-                    <SubmitButton>{subscription ? "Add subscription" : "Add API key"}</SubmitButton>
-                  </div>
-                </Disclosure>
-              </>
-            ) : (
-              <>
-                <div className="space-y-3 rounded-md border p-3">
-                  <p className="text-sm">
-                    <span className="font-medium">{subscription ? "Sign in on your machine" : "Paste the key"}.</span>{" "}
-                    <span className="text-muted-foreground">
-                      {pasteSignIn
-                        ? "The vendor's own CLI signs you in; Armada stores the result encrypted."
-                        : preset?.models === "choose" || kind === "opencode"
-                          ? (preset?.keyHint ?? info.hint)
-                          : kind === "openai"
-                            ? "From OpenAI or your gateway. Billed per token."
-                            : kind === "anthropic"
-                              ? "From Anthropic or your gateway. Billed per token."
-                              : info.hint}
-                    </span>
-                  </p>
-                  {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
-                  {preset?.models === "choose" ? (
-                    <PresetConnectionFields
-                      key={preset.id}
-                      preset={preset}
-                      secretField={<SecretField idPrefix={id} kind={kind} />}
-                    />
-                  ) : kind === "openai" || kind === "anthropic" ? (
-                    <CustomEndpointFields key={kind} idPrefix={id} kind={kind} />
-                  ) : (
-                    <SecretField idPrefix={id} kind={kind} />
-                  )}
-                </div>
-                {defaultBox}
-                {state && !state.ok && <ResultLine result={state} />}
-                <SubmitButton>
-                  {subscription
-                    ? "Add subscription"
-                    : preset?.deploymentNames
-                      ? "Test and add connection"
-                      : preset?.models === "choose"
-                        ? "Add connection"
-                        : "Add API key"}
-                </SubmitButton>
-              </>
+          )}
+          <p className="text-xs text-muted-foreground" data-connection-availability>
+            Works with {info.harnessLabel}.{" "}
+            {kind === "morph"
+              ? "One Morph key for Claude Code, Codex and OpenCode."
+              : "Stored encrypted, never shown again."}
+          </p>
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-name`}>Name</Label>
+            <Input
+              id={`${id}-name`}
+              name="name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              required
+              maxLength={MAX_ACCOUNT_NAME}
+              autoComplete="off"
+            />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {isAdmin && (
+              <div className="space-y-2">
+                <Label htmlFor={`${id}-scope`}>Who uses it</Label>
+                <NativeSelect
+                  id={`${id}-scope`}
+                  value={scope}
+                  onChange={(event) => setScope(event.target.value as "user" | "org")}
+                >
+                  <option value="user">Only you</option>
+                  <option value="org">{orgName}</option>
+                </NativeSelect>
+              </div>
             )}
-          </form>
-        </DialogContent>
-      </Dialog>
-    </>
+            <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
+          </div>
+          {command ? (
+            <>
+              <TerminalSignIn
+                command={command}
+                onDone={() => {
+                  setOpen(false);
+                  router.refresh();
+                }}
+              />
+              <Disclosure summary="No terminal here, or on a phone? Paste a sign-in token instead" defaultOpen={false}>
+                <div className="space-y-4">
+                  {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
+                  {saveFields}
+                </div>
+              </Disclosure>
+            </>
+          ) : (
+            saveFields
+          )}
+        </div>
+      </form>
+    </CreateDialog>
   );
 }
 
-/**
- * The terminal sign-in: one command, copied rather than run for the person, that opens the service's own login.
- * The account appears on this page when the command finishes; nothing here waits on it.
- */
+/** Polling belongs to the dialog; a manual refresh remains available if its list read fails. */
 function TerminalSignIn({ command, onDone }: { command: string; onDone: () => void }) {
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
-  // A new name is a new command: "Copied." would otherwise describe the previous one.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the reset is keyed on the command on purpose.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: changing the command invalidates copy feedback.
   useEffect(() => setCopied("idle"), [command]);
   return (
     <div className="min-w-0 space-y-3 rounded-md border p-3" data-terminal-login>
-      <p className="text-sm">
-        <span className="font-medium">Sign in from your terminal.</span>{" "}
-        <span className="text-muted-foreground">It opens the official sign-in, then saves the account here.</span>
-      </p>
+      <p className="text-sm font-medium">Sign in from your terminal</p>
       <CommandLine command={command} onCopied={setCopied} />
+      <p className="text-xs text-muted-foreground">
+        It opens the official sign-in and saves the account here. This dialog closes when the account arrives.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        Needs the Armada CLI: <code className="break-all">npm i -g @the-vibe-company/armada</code>
+      </p>
       <div className="flex flex-wrap items-center gap-3">
+        <p role="status" className="text-xs text-muted-foreground">
+          {copied === "copied"
+            ? "Copied. Waiting for the sign-in…"
+            : copied === "failed"
+              ? "Copy failed: select the command instead."
+              : "Waiting for the sign-in…"}
+        </p>
         <Button type="button" variant="outline" size="sm" onClick={onDone}>
           I signed in
         </Button>
-        <p role="status" className="text-xs text-muted-foreground">
-          {copied === "copied" ? "Copied." : copied === "failed" ? "Copy failed: select the command instead." : ""}
-        </p>
       </div>
     </div>
   );
@@ -1642,83 +1756,324 @@ function CommandLine({ command, onCopied }: { command: string; onCopied: (state:
 
 /* ---------------------------------------------------------------- the page's groups */
 
-export function HarnessAccounts({
-  harness,
-  harnessLabel,
-  resolved,
+/** One account appears once, even when it serves more than one agent. */
+export function ModelsOverview({
   accounts,
   orgId,
   orgName,
   isAdmin,
   usage,
   now,
-  emptyAction,
   testChoices,
+  emptyAction,
+  defaults,
 }: {
-  testChoices: ConnectionTestChoices;
-  harness: Harness;
-  harnessLabel: string;
-  /** What fills an agent with no account yet: the add dialog opened on its kind. */
-  emptyAction?: ReactNode;
-  resolved: LaunchDefault;
+  defaults?: AgentDefault[] | undefined;
   accounts: ModelAccount[];
   orgId: string;
   orgName: string;
   isAdmin: boolean;
   usage: Record<string, AccountUsage | null>;
   now: number;
+  testChoices: ConnectionTestChoices;
+  emptyAction: ReactNode;
 }) {
-  const headingId = `accounts-${harness}`;
-  const subscriptionAvailable = ACCOUNT_KINDS.some(
-    (kind) => KIND_INFO[kind].harness === harness && KIND_INFO[kind].billing === "subscription",
-  );
   return (
-    <section className="space-y-3" aria-labelledby={headingId} data-harness={harness}>
-      <div className="space-y-0.5">
-        <h2 id={headingId} className="text-base font-semibold">
-          {harnessLabel}
+    <div className="space-y-8">
+      <section aria-labelledby="launch-defaults" className="rounded-lg border px-5 py-2">
+        <h2 id="launch-defaults" className="pt-3 text-sm font-medium text-muted-foreground">
+          When you launch
         </h2>
-        <p className="text-xs text-muted-foreground" data-harness-availability>
-          {harness === "opencode"
-            ? "OpenCode runs on Modal, Docker hosts and through the Boat shared runtime API, not native Boat. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
-            : "Standard vendor accounts work on Modal, Boat and Docker hosts. Custom endpoints also work on runtime-backed Boat and Docker hosts; testing requires a running Modal sandbox."}
-        </p>
-        {accounts.length > 0 && <LaunchUses resolved={resolved} harnessLabel={harnessLabel} now={now} />}
-      </div>
-      {accounts.length === 0 && (
-        <div data-launch-uses="none">
-          <Empty
-            icon={<KeyRoundIcon />}
-            title={`No ${harnessLabel} ${subscriptionAvailable ? "subscription" : "account"} yet`}
-            action={emptyAction}
-          >
-            {subscriptionAvailable ? (
-              <>Add one to launch {harnessLabel}. An API key works too.</>
-            ) : (
-              <>
-                Add an OpenCode plan key, or connect DeepSeek, OpenRouter or another OpenAI-compatible provider. Runs on
-                Modal and Docker hosts.
-              </>
-            )}
+        {HARNESS_ORDER.map((harness) => (
+          <PersonalDefaultSentence
+            key={harness}
+            harness={harness}
+            accounts={accounts}
+            defaults={defaults}
+            now={now}
+            orgId={orgId}
+            isAdmin={isAdmin}
+            emptyAction={emptyAction}
+          />
+        ))}
+      </section>
+      <section aria-labelledby="all-accounts" className="space-y-3">
+        <h2 id="all-accounts" className="text-base font-semibold">
+          Accounts
+        </h2>
+        {accounts.length ? (
+          <div className="rounded-lg border">
+            <table className="block w-full table-fixed text-sm sm:table">
+              <thead className="hidden border-b text-left text-xs text-muted-foreground sm:table-header-group">
+                <tr>
+                  {["Account", "Status", "Works with", "Agents running", "Usage", "Actions"].map((label) => (
+                    <th key={label} className={cn("px-3 py-3 font-medium", label === "Agents running" && "text-right")}>
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="block sm:table-row-group">
+                {orderAccounts(accounts, now).map((account) => (
+                  <AccountRow
+                    key={account.id}
+                    account={account}
+                    previousDefault={accounts.find(
+                      (other) =>
+                        other.id !== account.id &&
+                        other.scope === account.scope &&
+                        other.isDefault &&
+                        accountsFor([other], KIND_INFO[account.kind].harness).length > 0,
+                    )}
+                    orgId={orgId}
+                    orgName={orgName}
+                    canManage={account.scope === "user" || isAdmin}
+                    usage={usage[account.id] ?? null}
+                    now={now}
+                    testChoices={testChoices}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <Empty title="Connect what your agents run on" action={emptyAction}>
+            A subscription you already pay for, an API key, or your own endpoint. One is enough to launch.
           </Empty>
-        </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/** These controls store personal per-agent choices, not the account-wide legacy default. */
+function PersonalDefaultSentence({
+  harness,
+  accounts,
+  defaults,
+  now,
+  orgId,
+  isAdmin,
+  emptyAction,
+}: {
+  harness: Harness;
+  accounts: ModelAccount[];
+  defaults: AgentDefault[] | undefined;
+  now: number;
+  orgId: string;
+  isAdmin: boolean;
+  emptyAction: ReactNode;
+}) {
+  const router = useRouter();
+  const original = defaults?.find((row) => row.harness === harness) ?? { harness, credentialId: null, model: null };
+  const [local, setLocal] = useState<AgentDefault | null>(null);
+  const current = local ?? original;
+  const [undo, setUndo] = useState<AgentDefault | null>(null);
+  const [open, setOpen] = useState(false);
+  const opener = useRef<HTMLButtonElement | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const resolved = modelsPageDefault(accounts, harness, now, [current]);
+  const account = resolved.state === "resolved" || resolved.state === "unusable" ? resolved.account : null;
+  const id = useId();
+  const save = async (next: AgentDefault, restoring = false) => {
+    setPending(true);
+    setError(null);
+    const data = new FormData();
+    data.set("org", orgId);
+    data.set("harness", harness);
+    data.set("credentialId", next.credentialId ?? "");
+    data.set("model", next.model ?? "");
+    try {
+      const result = await setPersonalAgentDefault(null, data);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      setUndo(restoring ? null : current);
+      setLocal(next);
+      setOpen(false);
+      router.refresh();
+    } catch {
+      setError("The default could not be confirmed. Reload Models before trying again.");
+    } finally {
+      setPending(false);
+    }
+  };
+  const word =
+    "rounded-sm border-b border-dotted text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring";
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b py-4 last:border-0">
+      <div className="min-w-0">
+        <p className="text-lg">
+          {HARNESS_LABELS[harness]}{" "}
+          {account ? (
+            <>
+              runs{" "}
+              <button
+                type="button"
+                className={cn(word, "break-all font-mono text-base")}
+                onClick={(event) => {
+                  opener.current = event.currentTarget;
+                  setOpen(true);
+                }}
+                aria-label={`Change default model for ${HARNESS_LABELS[harness]}`}
+              >
+                {current.model ?? modelsPageModel(account, harness)}
+              </button>{" "}
+              on{" "}
+              <button
+                type="button"
+                className={word}
+                onClick={(event) => {
+                  opener.current = event.currentTarget;
+                  setOpen(true);
+                }}
+                aria-label={`Change default account for ${HARNESS_LABELS[harness]}`}
+              >
+                {account.name}
+              </button>
+            </>
+          ) : resolved.state === "missing" ? (
+            "has an unavailable default account"
+          ) : resolved.state === "ambiguous" ? (
+            "needs a default account"
+          ) : (
+            "has no account yet"
+          )}
+        </p>
+        {account && accountProblem(account, now) && (
+          <p className="text-sm text-destructive">
+            ● {account.name}: {accountProblem(account, now)}. Repair this account below before launching.
+          </p>
+        )}
+        {resolved.state === "missing" && (
+          <p className="text-sm text-destructive">
+            ● Choose another account or clear your personal selection before launching.
+          </p>
+        )}
+        {account && modelsPageStatus(account, now).label === "At its limit" && (
+          <p className="text-sm text-warning">
+            {account.runningAgents} of {account.maxAgents} agents running. New launches are refused until one finishes.
+          </p>
+        )}
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        {undo && (
+          <Button variant="link" size="sm" disabled={pending} onClick={() => void save(undo, true)}>
+            Undo default change
+          </Button>
+        )}
+      </div>
+      {account && accountProblem(account, now) && (account.scope === "user" || isAdmin) && (
+        <Button
+          size="sm"
+          onClick={() =>
+            document
+              .getElementById(`account-${account.id}`)
+              ?.closest("tr")
+              ?.querySelector<HTMLButtonElement>('button[aria-label^="Reconnect"], button[aria-label^="Replace key"]')
+              ?.click()
+          }
+        >
+          {KIND_INFO[account.kind].billing === "subscription" ? "Reconnect" : "Replace key"}
+        </Button>
       )}
-      {accounts.length > 0 && (
-        <ul className="divide-y rounded-lg border">
-          {accounts.map((account) => (
-            <AccountRow
-              key={account.id}
-              account={account}
-              orgId={orgId}
-              orgName={orgName}
-              canManage={account.scope === "user" || isAdmin}
-              usage={usage[account.id] ?? null}
-              now={now}
-              testChoices={testChoices}
-            />
-          ))}
-        </ul>
-      )}
-    </section>
+      {!account &&
+        (resolved.state === "missing" || accountsFor(accounts, harness).length ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={(event) => {
+              opener.current = event.currentTarget;
+              setOpen(true);
+            }}
+          >
+            Choose default
+          </Button>
+        ) : (
+          emptyAction
+        ))}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent
+          className="sm:max-w-md"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            opener.current?.focus();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>{HARNESS_LABELS[harness]} launch default</DialogTitle>
+            <DialogDescription>
+              Only your launches change. Other agents and account-wide defaults stay unchanged.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            key={`${open}:${current.credentialId}:${current.model}`}
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const data = new FormData(event.currentTarget);
+              void save({
+                harness,
+                credentialId: String(data.get("credentialId") || "") || null,
+                model: String(data.get("model") || "").trim() || null,
+              });
+            }}
+          >
+            <div className="space-y-2">
+              <Label htmlFor={`${id}-account`}>Account</Label>
+              <NativeSelect
+                id={`${id}-account`}
+                name="credentialId"
+                defaultValue={current.credentialId ?? account?.id ?? ""}
+              >
+                <option value="">Use account-wide defaults</option>
+                {accountsFor(accounts, harness).map((choice) => (
+                  <option key={choice.id} value={choice.id} disabled={!!accountProblem(choice, now)}>
+                    {choice.name}
+                    {accountProblem(choice, now) ? ` — ${accountProblem(choice, now)}` : ""}
+                  </option>
+                ))}
+              </NativeSelect>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={`${id}-model`}>Model ID</Label>
+              <Input
+                id={`${id}-model`}
+                name="model"
+                defaultValue={current.model ?? ""}
+                placeholder="Use the agent's default model"
+                maxLength={256}
+              />
+              <p className="text-xs text-muted-foreground">
+                Use the exact catalog or endpoint model ID. Leave empty to use its default.
+              </p>
+            </div>
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            <div className="flex justify-between gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={pending}
+                onClick={() => void save({ harness, credentialId: null, model: null })}
+              >
+                Clear selection
+              </Button>
+              <Button type="submit" disabled={pending}>
+                {pending ? "Saving…" : "Save default"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

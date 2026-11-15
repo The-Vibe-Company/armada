@@ -10,8 +10,8 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { EFFORT_LABEL, HARNESS_LABELS } from "@/lib/labels";
-import { launchPickerGroups } from "@/lib/launch-picker";
-import { KIND_INFO, type LaunchAccounts, launchDefault } from "@/lib/model-accounts";
+import { initialLaunchSelection, launchPickerGroups } from "@/lib/launch-picker";
+import { KIND_INFO, type LaunchAccounts } from "@/lib/model-accounts";
 
 const word =
   "max-w-full [overflow-wrap:anywhere] rounded-sm border-b border-dotted border-muted-foreground px-1 text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -37,11 +37,7 @@ export function LaunchSentence({
   boatOpenCodeDisabled: boolean;
 }) {
   const root = useRef<HTMLElement>(null);
-  const [model, setModel] = useState(() =>
-    accounts.state === "ready"
-      ? (accounts.accounts.find((row) => row.id === account)?.models?.[0]?.model ?? catalog[harness].defaultModel)
-      : catalog[harness].defaultModel,
-  );
+  const [model, setModel] = useState(() => initialLaunchSelection(accounts, catalog, harness).model);
   const [effort, setEffort] = useState(catalog[harness].defaultReasoningEffort);
   const [other, setOther] = useState(false);
   const [query, setQuery] = useState("");
@@ -60,10 +56,9 @@ export function LaunchSentence({
   const efforts = entry.models.find((row) => row.id === model)?.reasoningEfforts ?? entry.reasoningEfforts;
   function changeAgent(next: Harness) {
     onHarness(next);
-    const resolved = accounts.state === "ready" ? launchDefault(rows, next, accounts.now) : null;
-    const nextAccount = resolved?.state === "resolved" ? resolved.account : undefined;
-    onAccount(nextAccount?.id ?? "");
-    setModel(nextAccount?.models?.[0]?.model ?? catalog[next].defaultModel);
+    const selection = initialLaunchSelection(accounts, catalog, next);
+    onAccount(selection.credentialId);
+    setModel(selection.model);
     setEffort(catalog[next].defaultReasoningEffort);
     setOther(false);
   }

@@ -1,7 +1,7 @@
 import { CircleAlertIcon, InfoIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { AddAccountDialog, HarnessAccounts } from "@/components/model-accounts";
+import { AddAccountDialog, ModelsOverview } from "@/components/model-accounts";
 import { Empty, PageHeader } from "@/components/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -14,17 +14,8 @@ import {
 } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { HARNESS_LABELS } from "@/lib/labels";
-import {
-  type AuthCapabilities,
-  accountsFor,
-  HARNESS_ORDER,
-  HARNESS_PATH,
-  KIND_INFO,
-  kindFor,
-  launchDefault,
-  orderAccounts,
-} from "@/lib/model-accounts";
+
+import { type AuthCapabilities, HARNESS_PATH } from "@/lib/model-accounts";
 
 export const metadata: Metadata = { title: "Models" };
 export const dynamic = "force-dynamic";
@@ -138,37 +129,25 @@ async function HarnessSections({
     readConnectionTestChoices(list.accounts),
   ]);
   return (
-    <>
-      {HARNESS_ORDER.map((harness) => (
-        <HarnessAccounts
-          key={harness}
-          harness={harness}
-          harnessLabel={HARNESS_LABELS[harness]}
-          resolved={launchDefault(list.accounts, harness, now)}
-          accounts={orderAccounts(accountsFor(list.accounts, harness), now)}
+    <ModelsOverview
+      accounts={list.accounts}
+      defaults={list.defaults}
+      orgId={selected.org.id}
+      orgName={selected.org.name}
+      isAdmin={selected.role === "admin"}
+      usage={usage}
+      now={now}
+      testChoices={testChoices}
+      emptyAction={
+        <AddAccountDialog
           orgId={selected.org.id}
           orgName={selected.org.name}
           isAdmin={selected.role === "admin"}
-          usage={usage}
-          now={now}
-          testChoices={testChoices}
-          emptyAction={
-            <AddAccountDialog
-              orgId={selected.org.id}
-              orgName={selected.org.name}
-              isAdmin={selected.role === "admin"}
-              capabilities={capabilities}
-              initialKind={kindFor(harness)}
-              triggerLabel={
-                KIND_INFO[kindFor(harness)].billing === "subscription"
-                  ? `Add a ${HARNESS_LABELS[harness]} subscription`
-                  : `Add an ${HARNESS_LABELS[harness]} key`
-              }
-              triggerVariant="outline"
-            />
-          }
+          capabilities={capabilities}
+          triggerLabel="Add account"
+          triggerVariant="outline"
         />
-      ))}
-    </>
+      }
+    />
   );
 }

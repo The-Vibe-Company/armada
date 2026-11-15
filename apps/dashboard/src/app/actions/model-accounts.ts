@@ -1,11 +1,11 @@
 "use server";
 
-import { parseCredentialValue, VaultError } from "@armada/core";
+import { HARNESSES, type Harness, parseCredentialValue, resolveModelChoice, VaultError } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import type { AccountControl, AccountTarget } from "@/lib/account-control";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { ControlError } from "@/lib/control";
-import { viewerAccountControl } from "@/lib/data/model-accounts";
+import { listSelectedAccounts, viewerAccountControl } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import {
@@ -198,7 +198,7 @@ export async function makeDefaultAccount(_previous: ActionResult | null, data: F
     if (!allowed.ok) return fail(allowed.error);
     const saved = await context.control.makeDefault(target(context, id));
     refresh();
-    return done(`${saved.name} is now the default for ${KIND_INFO[saved.kind].harnessLabel}.`);
+    return done(`${saved.name} is now the account-wide default for ${KIND_INFO[saved.kind].harnessLabel}.`);
   } catch (error) {
     return explain(error);
   }
@@ -278,5 +278,35 @@ export async function updateAccountLimits(_previous: ActionResult | null, data: 
     return done(`${saved.name} limit updated.`);
   } catch (error) {
     return explain(error);
+  }
+}
+
+/** Safe metadata only, for a subscription dialog waiting for a CLI import. */
+export async function pollModelAccounts(orgId: string) {
+  const list = await listSelectedAccounts();
+  if (list.state !== "ready" || list.orgId !== orgId) return null;
+  return list.accounts.map(({ id, version, kind, scope, name }) => ({ id, version, kind, scope, name }));
+}
+
+/** Personal selections never mutate organization-owned accounts. */
+export async function setPersonalAgentDefault(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const selected = await selectedOrganization();
+  if (!selected || formString(data, "org") !== selected.org.id) return fail("Switch to that organization first.");
+  const harness = formString(data, "harness") as Harness;
+  const credentialId = formString(data, "credentialId") || null;
+  const model = formString(data, "model") || null;
+  if (!HARNESSES.includes(harness) || (credentialId !== null && !isUuid(credentialId)))
+    return fail("Choose a compatible account.");
+  try {
+    if (model) resolveModelChoice(harness, { model });
+    const control = await viewerAccountControl();
+    if (!control) return fail("Account management is not configured.");
+    await control.setAgentDefault({ org: selected.org.id, harness, credentialId, model });
+    refresh();
+    return done("Personal launch default updated.");
+  } catch (error) {
+    if (error instanceof ControlError) return explain(error);
+    if (error instanceof Error && error.name === "LaunchError") return fail("Choose a valid model for this agent.");
+    throw error;
   }
 }
