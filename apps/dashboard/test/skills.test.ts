@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { installedSkills, parseSkillCatalogPage, parseSkillVersions, skillPinProblem } from "../src/lib/skills.ts";
+import {
+  installedSkills,
+  parseSkillCatalogPage,
+  parseSkillVersions,
+  skillCatalogFailure,
+  skillPinProblem,
+} from "../src/lib/skills.ts";
 
 test("additional skills require distinct exact pins, exclude Armada tools and cap the selection", () => {
   expect(skillPinProblem(["team/review@1.2.3", "testing@2.0.0-beta.1"])).toBeNull();
@@ -161,4 +167,13 @@ test("runtime versions are exact for the requested reference and exclude unrelat
   expect(parseSkillVersions({ versions: ["2.1.0"] }, "public", "review-code")).toBeNull();
   expect(parseSkillVersions({ versions: ["2.1.0"] }, "private", "team/review-code")).toBeNull();
   expect(parseSkillVersions({ versions: ["2.1.0"] }, "private", "armada-tools")).toBeNull();
+});
+
+test("skill discovery failures preserve credential recovery and exact-pin fallback without diagnostic text", () => {
+  for (const code of ["missing_credential", "credential_refused"])
+    expect(skillCatalogFailure(403, code)).toContain("Skillpack key in Skills");
+  expect(skillCatalogFailure(401)).toContain("Sign in again");
+  expect(skillCatalogFailure(403)).toContain("organization access");
+  expect(skillCatalogFailure(400)).toContain("exact name and version");
+  for (const status of [undefined, 404, 503]) expect(skillCatalogFailure(status)).toContain("enter an exact pin");
 });

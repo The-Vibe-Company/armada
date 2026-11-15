@@ -42,12 +42,23 @@ test("search metadata, select exact workspace and public versions, then launch",
   expect(state.launches[0].skills).toEqual(["review-code@2.0.0", "example/browser-testing@1.4.0"]);
 });
 test("unavailable discovery retains exact-pin fallback and rejects floating versions", async ({ page }) => {
-  await post("/__test/skill-catalog-unavailable", { unavailable: true });
+  const diagnostic = "HTTP 503: skillpack_token_enc registry_id unavailable; digest sha256:example";
+  await post("/__test/skill-catalog-unavailable", { unavailable: true, message: diagnostic });
   await signIn(page, "alice@example.com", "/environments");
   const launch = await openLaunch(page, "shared-golden");
   await launch.getByRole("button", { name: "Add skills", exact: true }).click();
   const picker = page.getByRole("dialog", { name: "Choose additional skills" });
   await expect(picker.getByRole("alert")).toContainText("unavailable");
+  await expect(picker.getByRole("alert")).not.toContainText(diagnostic);
+  await expect(picker.getByText("No matching skills in the loaded results.", { exact: true })).toHaveCount(0);
+  for (const [name, width] of [
+    ["desktop", 1280],
+    ["mobile", 390],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await picker.getByRole("alert").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `test-results/skill-picker-after-${name}.png`, fullPage: true });
+  }
   await picker.getByRole("button", { name: "Enter exact pin" }).click();
   await expect(picker.getByLabel("Exact skill pin")).toBeFocused();
   await picker.getByLabel("Exact skill pin").fill("notes@latest");
