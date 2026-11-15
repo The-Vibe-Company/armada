@@ -1,11 +1,10 @@
-import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { AuthError, type AuthFetch, assertEmail, type Provider } from "@armada/auth";
 import { createArmadaApiClient, DEFAULT_ARMADA_API_URL } from "./armada-api.ts";
 import { browserLogin } from "./browser-login.ts";
 import { emailLogin } from "./email-login.ts";
 import type { Preferences } from "./preferences.ts";
-import { profileDirectory, profileStores } from "./profiles.ts";
+import { profileStores } from "./profiles.ts";
 import type { SessionStore } from "./session.ts";
 
 export interface AuthIo {
@@ -28,10 +27,6 @@ export interface AuthIo {
   emailPreferences?: Preferences;
   launchPreferences?: Preferences;
   chooseLaunch?: (title: string, options: { value: string; label: string }[], preferred?: string) => Promise<string>;
-}
-
-export function defaultSessionPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(profileDirectory(env), "session.json");
 }
 
 export function productionAuthIo(
