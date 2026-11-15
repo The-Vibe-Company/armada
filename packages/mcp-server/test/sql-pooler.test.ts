@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { bunSql } from "../src/sql.ts";
 
-test("only shared transaction endpoints disable named statements and normalize unnamed binds on every pool path", async () => {
+test("shared session and transaction endpoints avoid named Describe setup and normalize unnamed binds on every pool path", async () => {
   const original = Bun.SQL;
   const options: { prepare?: boolean }[] = [];
   const sent: unknown[][] = [];
@@ -25,7 +25,10 @@ test("only shared transaction endpoints disable named statements and normalize u
   try {
     for (const [url, prepare] of [
       ["postgres://db.example:5432/postgres", undefined],
-      ["postgres://aws-1-eu-west-3.pooler.supabase.com:5432/postgres", undefined],
+      ["postgres://db.example:6543/postgres", undefined],
+      ["postgres://aws-1-eu-west-3.pooler.supabase.com:5432/postgres", false],
+      ["postgres://aws-1-eu-west-3.pooler.supabase.com/postgres", false],
+      ["postgres://aws-1-eu-west-3.pooler.supabase.com:6544/postgres", undefined],
       ["postgres://aws-1-eu-west-3.pooler.supabase.com:6543/postgres", false],
       ["postgres://pooler.supabase.com.example:6543/postgres", undefined],
     ] as const) {
