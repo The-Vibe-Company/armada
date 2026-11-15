@@ -249,6 +249,7 @@ async function downloadHost(native: LocalHostIo, server: string): Promise<Uint8A
 }
 
 export async function localHostCommand(argv: readonly string[], io: Io, native: LocalHostIo): Promise<number> {
+  let otherOrigin: string | undefined;
   try {
     const [operation, ...rest] = argv;
     if (rest.length === 1 && ["--help", "-h"].includes(rest[0] ?? "")) {
@@ -297,18 +298,25 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       const present = await checkPath(native, path);
       if (!present) continue;
       if (!present.file) return failed("Docker host binary path is not a regular file.");
-      const current = await status(native, path);
       const statePath = join(native.home, ".local/state", name, "state.json");
       await checkPath(native, statePath);
-      const origin = current.server ?? (await native.readServer?.(statePath));
+      const savedOrigin = await native.readServer?.(statePath);
+      // Explicit selection must not depend on another server's daemon health.
+      const current =
+        server && savedOrigin && savedOrigin !== server
+          ? { registered: true, connected: false, version: "0.0.0" }
+          : await status(native, path);
+      const origin = savedOrigin ?? current.server;
       installations.push({ name, server: origin, current });
     }
     if (!server && installations.length > 1) {
       io.out(
-        `${JSON.stringify({ instances: installations.map((i) => ({ ...i.current, server: i.server, binary: join(native.home, ".local/bin", i.name) })) })}\nSelect an instance with armada host ${operation} --server HTTPS_ORIGIN.\n`,
+        `${JSON.stringify({ instances: installations.map((i) => ({ ...i.current, server: i.server, binary: join(native.home, ".local/bin", i.name) })), next: `armada host ${operation} --server HTTPS_ORIGIN` })}\n`,
       );
       return 0;
     }
+    if (operation === "install" && server)
+      otherOrigin = installations.find((i) => i.server && i.server !== server)?.server;
     const matched = server ? installations.find((i) => i.server === server) : installations[0];
     const legacyInstall = installations.find((i) => i.name === legacy);
     // An older daemon may not expose its origin. Never guess or exchange a token.
@@ -455,7 +463,14 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
     io.out("Waiting up to 60 seconds for the Docker host to connect…\n");
     return connected(native, binary, io);
   } catch (error) {
-    if (error instanceof GoldenError) throw error;
+    if (error instanceof GoldenError) {
+      if (otherOrigin)
+        throw new GoldenError(
+          error.code,
+          `This machine is already connected to ${otherOrigin}. The additional installation could not complete. ${error.message} Next command: armada host status --server ${otherOrigin}`,
+        );
+      throw error;
+    }
     // Do not expose native stdout/stderr, stdin or transport response diagnostics.
     return failed(
       "Docker host command failed; private state and credentials were not printed. Check Docker/systemd access and armada host status before retrying registration.",

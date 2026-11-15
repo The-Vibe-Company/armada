@@ -305,7 +305,8 @@ test("another server installs independently; ambiguous uninstall lists without r
   expect(m.calls.some((c) => c.args[0] === "upgrade")).toBe(false);
   m.native.listInstances = async () => [`armada-docker-host@${suffix}`];
   m.native.readServer = async (path) => (path.includes("@") ? other : "https://armada.example");
-  expect((await m.capture(["host", "uninstall"])).code).toBe(0);
+  const listed = await m.capture(["host", "uninstall"]);
+  expect(listed.code).toBe(0);
   expect(m.calls.some((c) => c.args[0] === "uninstall")).toBe(false);
   expect((await m.capture(["host", "uninstall", "--server", other])).code).toBe(0);
   expect(m.calls.find((c) => c.args[0] === "uninstall")?.program).toBe(`${binary}@${suffix}`);
