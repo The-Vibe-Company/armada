@@ -198,6 +198,36 @@ uses `--id UUID --expected-version N`.
 Values are read from hidden input, stdin or a private file, stored encrypted and never
 shown again. They do not belong in a snapshot, setup script, command argument or chat.
 
+### Morph and per-account agent limits
+
+Morph is a model account, not a sandbox provider. In the dashboard use
+**Models → Add a model account → Morph**, or store its API key from a private file:
+
+```sh
+armada creds connect morph --name shared --file ~/.config/armada/morph-key
+armada creds list
+armada creds limits ACCOUNT_UUID --max-agents 2
+```
+
+Replace `ACCOUNT_UUID` with the ID returned by list. The same Morph account supports
+Claude Code and Codex, not OpenCode. On a Modal snapshot, choose it explicitly:
+
+```sh
+armada launch first-modal --org my-team --provider modal --agent codex   --credential-id ACCOUNT_UUID --model morph-kimik31 "Summarize the repositories"
+```
+
+Build `first-modal` below before running that launch. Morph also supports Docker
+and runtime-backed Boat; native Boat Claude gateways are refused. See
+[Morph accounts](morph.md) for all model IDs and compatibility limits.
+
+Every model account can cap agents running simultaneously across sandbox providers.
+Morph defaults to **2** and other account kinds to unlimited. Set `--max-agents N`
+or `--unlimited` on `creds connect`, `import`, `login` or `set`; use
+`creds limits ACCOUNT_UUID --max-agents N` (or `--unlimited`) to change an existing
+account. Org accounts require an org admin and `--org my-team`.
+Stopped and idle-paused sandboxes do not count. Starts beyond the cap are refused
+before allocation, and lowering a cap does not stop existing running agents.
+
 ### Authorize GitHub
 
 ```sh

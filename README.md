@@ -98,6 +98,18 @@ armada creds set codex-auth --file ~/.codex/auth.json              # Codex; or k
 armada creds list
 ```
 
+Morph is another model-account option for both Claude Code and Codex (not a sandbox provider):
+`armada creds connect morph --name shared --file /private/morph-key`.
+Select its account ID with `--credential-id ACCOUNT_UUID` and a Morph model such as
+`--model morph-kimik31`; use Modal, Docker or runtime-backed Boat, not native Boat.
+See [Morph accounts](docs/morph.md) for supported models and restrictions.
+
+Model accounts have a per-account simultaneous-agent limit across sandbox providers.
+Morph defaults to **2**; other accounts default to unlimited. Set `--max-agents N`
+or `--unlimited` when adding an account, or change it with
+`armada creds limits ACCOUNT_UUID --max-agents 2`. Starts beyond the cap are refused
+before allocating a machine; lowering it does not stop existing agents.
+
 **4. Connect GitHub.** Snapshots are cloned over your own GitHub connection, and sandboxes use it so commits and pull requests come from you.
 
 ```sh

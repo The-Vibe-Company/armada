@@ -8,6 +8,7 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 - [Snapshots](golden-create.md) and [build jobs](golden-build-jobs.md): create a workspace and track durable build outcomes.
 - [Templates CLI](templates-cli.md): use published launch presets; consult its stated limits rather than assuming all proposed template features are available.
 - [Armada skill installation](armada-skill-install.md): install the pinned tool-knowledge skill for your coding agent.
+- [Morph model accounts](morph.md): one account for Claude Code and Codex; model selection, compatibility and staging acceptance. Model accounts support per-account simultaneous-agent limits (Morph defaults to two); see [onboarding](dave-onboarding.md#morph-and-per-account-agent-limits).
 - [Organization invitations](cli-invitations.md): distinguish direct membership from invitations and explicit acceptance.
 
 ## Develop
@@ -23,7 +24,7 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 - [Runtime](runtime-startup.md): artifacts, verified caches, private enrolment/epochs, dial-out commands and journal reconciliation.
 - [Boat runtime](boat-runtime-first-prompt.md): default-off Codex lifecycle, checkpoint/resume, explicit GitHub, automatic MCP and staged acceptance.
 - [Docker hosts](docker-host-daemon.md): daemon installation, registration, ownership/TTL, API preview and cleanup limits.
-- [OpenCode](runtime/opencode-modal.md): Modal-only ACP harness, accounts, portable state and lifecycle checks.
+- [OpenCode](runtime/opencode-modal.md): ACP harness on Modal, Docker hosts and runtime-backed Boat, accounts, portable state and lifecycle checks.
 
 ## Operate
 
