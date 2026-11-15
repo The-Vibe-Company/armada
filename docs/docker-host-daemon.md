@@ -42,9 +42,10 @@ Unresolved RPC admission blocks new requests; the runtime owns busy-turn refusal
 
 ## Dashboard availability
 
-The dashboard contains a Hosts page, admin add/revoke dialogs and a Codex launch
-form for an online host: digest-pinned image, usable account, model/effort and
-optional task. It acts as the signed-in viewer through server-side control calls;
+The dashboard contains a Hosts page, admin add/revoke dialogs and a launch form
+for an online host: supported agent, usable account, model/effort and optional
+task. Armada chooses the image; users never type or choose a base image.
+It acts as the signed-in viewer through server-side control calls;
 registration tickets are shown once, never stored/logged. Launch keeps a stable
 request key for identical choices after an unanswered request, rather than
 allocating again blindly.
@@ -70,8 +71,8 @@ installed-feature discovery, not authorization or account health. With all three
 staging inputs above and a valid installed runtime manifest, Docker advertises
 `capabilities.launch:true` and the host list advertises `placement:true`.
 Host-only opt-in retains normal list/status/logs/stop/delete without admitting new
-placement. A request field cannot enable placement. Docker is an image/Codex
-source with null goldenId/golden and no fabricated Boat alias; golden providers
+placement. A request field cannot enable placement. Docker is a host-bound
+source with no fabricated Boat alias; golden providers
 remain Boat/Modal. The explicit preview API below is unchanged.
 
 ### Normal dashboard/API/CLI launch
@@ -83,7 +84,6 @@ remain Boat/Modal. The explicit preview API below is unchanged.
   "org": "ORG_UUID",
   "provider": "docker",
   "hostId": "HOST_UUID",
-  "image": "IMAGE@sha256:DIGEST",
   "harness": "codex",
   "credentialId": "MODEL_ACCOUNT_UUID",
   "requestId": "FRESH_SANDBOX_UUID",
@@ -96,9 +96,10 @@ remain Boat/Modal. The explicit preview API below is unchanged.
 
 The account's current version is resolved and frozen on first admission; optional
 `credentialVersion` must match if provided. `prompt` and `ttlSeconds` are optional
-(default TTL four hours, maximum one day). Only private Codex/plain digest-pinned
-images are supported: no golden, repo/size policy, skills, connections or GitHub
-setup is silently applied. The server composes durable create, existing enrolment
+(default TTL four hours, maximum one day). The example selects Codex; the launch
+dialog offers the harnesses advertised by the server. Armada selects the environment, or the user selects a host-local
+snapshot with `--golden`. Boat/Modal goldens and machine-size policy do not apply.
+The server composes durable create, existing enrolment
 and artifact bootstrap, runtime health and first-prompt admission. It returns the
 existing `DockerLaunchResult`: `sandbox`, null `golden`/`helper`, unavailable
 `github`, `runtime:{kind:"armada",epoch}`, TTL/expiry and optional native
@@ -112,18 +113,20 @@ The request and receipt are encrypted in a service-only ledger; no model secret
 is copied into it. A completed retry returns its original admission receipt with
 current sandbox metadata (even after stop/delete), never restarts the sandbox.
 
-The API-only CLI uses the same normal route, not the private preview. `image` is
-optional everywhere (API, CLI, dashboard): without it the launch uses
-`DOCKER_DEFAULT_IMAGE` from `@armada/core`, a digest-pinned Debian
-`buildpack-deps` image (#1507). The resolved image is part of the request's
-identity: the CLI and dashboard send it explicitly, so a retry with the same
-`requestId` stays identical even if a later release changes the default. A raw API
-caller that omits `image` should do the same when it retries across an upgrade.
-`--image` overrides the default:
+The API-only CLI uses the same normal route, not the private preview. Normal
+API requests, CLI launches and dashboard forms do not accept an image selector.
+Armada chooses the official image pinned by the deployed server's release;
+source/dev builds without a release pin use the server-owned immutable bootstrap
+baseline. Users may instead select their own host-local snapshot. See
+[official image policy](official-sandbox-image.md#slice-2-normal-launch-policy).
+The server freezes the admitted image for exact request retries, including
+retries across a release upgrade; clients must not send an `image` field.
+The host automatically fetches a missing image. The dashboard shows preparation
+progress, and a failed fetch is reported in plain language.
 
 ```sh
 bun run armada launch --provider docker --org "$ARMADA_ORG" \
-  --host "$DOCKER_HOST_ID" --image "$DOCKER_IMAGE" \
+  --host "$DOCKER_HOST_ID" \
   --credential-id "$ARMADA_CREDENTIAL" --request-id "$REQUEST_ID" \
   --agent codex --json 'Reply with exactly DOCKER_OK.'
 ```
@@ -655,7 +658,7 @@ reports pending, not failed registration or permission to replay a token.
 CLI: `armada host add [--name NAME] [--org UUID]` prints that command and waits
 boundedly for the exact host. `armada host list [--json]` shows safe metadata;
 `armada host revoke UUID` revokes through the admin API. Selected organization is
-reused. `armada launch --provider docker --host UUID_OR_NAME [--image DIGEST_REF]`
+reused. `armada launch --provider docker --host UUID_OR_NAME`
 resolves names exactly among nonrevoked hosts in the selected org and refuses
 ambiguous names. Names are optional, nonempty trimmed display strings up to64
 characters, never identity or authority.
