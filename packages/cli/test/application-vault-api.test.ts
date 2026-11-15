@@ -202,6 +202,8 @@ test("unsafe vault arguments and input failures are value-free and never reach t
     ["secrets", "rotate", item.id, "--expected-version", canary],
     ["secrets", "delete", item.id, "--expected-version", "0"],
     ["vars", "list", "--file", canary],
+    ["vars", "set", item.name, "--file", "--help"],
+    ["secrets", "set", item.name, "--file", "--help"],
     ["vars", "list", "--", "-h"],
     ["vars", "set", item.name, "--scope", "-h"],
     ["secrets", "revoke", item.id, "--expected-version", "-h"],
@@ -289,5 +291,15 @@ test("vault file input rejects malformed UTF-8 and preserves valid BOM and multi
     expect(accepted.out).not.toContain(valid);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("vault long help after the terminator remains a literal target instead of swallowing the operation", async () => {
+  for (const resource of ["vars", "secrets"]) {
+    const result = await invoke([resource, "set", "--", "--help"]);
+    expect(result.code).toBe(0);
+    expect(result.requests).toHaveLength(1);
+    expect(await result.requests[0]?.json()).toMatchObject({ name: "--help", value: canary });
+    expect(result.out).not.toContain("Application variables and write-only secrets");
   }
 });

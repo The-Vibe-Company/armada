@@ -28,12 +28,12 @@ before reusing a revoked name. No sandbox delivery or upstream rotation is perfo
 
 const VALUE_OPTIONS = ["--org", "--file", "--scope", "--expected-version"];
 
-function shortHelpRequested(argv: readonly string[]): boolean {
+function helpRequested(argv: readonly string[]): boolean {
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index] ?? "";
     if (argument === "--") return false;
-    if (argument === "-h") return true;
-    // A value such as --file -h is input, not a help request.
+    if (argument === "-h" || argument === "--help") return true;
+    // Option values are input, not help requests; the parser validates malformed values.
     if (VALUE_OPTIONS.includes(argument)) index += 1;
   }
   return false;
@@ -45,7 +45,7 @@ export async function applicationVaultCommand(
   argv: readonly string[],
   io: VaultIo,
 ): Promise<number> {
-  if (argv.length === 0 || argv.includes("--help") || shortHelpRequested(argv)) {
+  if (argv.length === 0 || helpRequested(argv)) {
     io.auth.out(HELP);
     return 0;
   }
