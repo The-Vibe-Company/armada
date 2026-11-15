@@ -131,10 +131,26 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
   expect(calls).toEqual([]);
 });
 
+test.each([
+  { status: 409, code: "conflict", message: "Account morph is at its limit: 2/2 agents running." },
+  { status: 409, code: "host_full", message: "The selected Docker host is full." },
+  { status: 400, code: "invalid_request", message: "Invalid Docker launch request." },
+  { status: 401, code: "unauthorized", message: "Run armada login or update ARMADA_TOKEN." },
+])("Docker pre-allocation refusal $code does not claim an unknown outcome", async ({ status, code, message }) => {
+  const result = await capture(args, async () => Response.json({ error: { code, message } }, { status }));
+  expect(result.code).not.toBe(0);
+  expect(result.out).toBe("");
+  expect(result.err).toContain(message);
+  expect(result.err).not.toContain("Docker launch request ");
+  expect(result.err).not.toContain("outcome is unknown");
+});
+
 test("unknown Docker launch outcome retains a stable request UUID for exact retry", async () => {
-  for (const mode of ["lost", "wrong-sandbox"]) {
+  for (const mode of ["lost", "wrong-sandbox", "server-failure", "explicit-unknown"]) {
     const result = await capture(args, async () => {
       if (mode === "lost") throw Error("offline");
+      if (mode === "server-failure") return new Response("Gateway unavailable", { status: 503 });
+      if (mode === "explicit-unknown") return Response.json({ error: { code: "outcome_unknown" } }, { status: 409 });
       return Response.json({ sandbox: { provider: "docker", id: host }, golden: null, runtime: { epoch: "1" } });
     });
     expect(result.code).not.toBe(0);
