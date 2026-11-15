@@ -82,6 +82,10 @@ Use a matching ARMADA_URL for token-authenticated scripts; never put tokens in a
 Example: armada --profile staging login --url https://staging.example.com --provider github
 
 Exit codes: 0 success; 1 authentication/server/operation failure; 2 invalid usage or missing configuration.
+Scripts: check exit status before consuming stdout; failed operations may have partial output.
+Common typed errors with --json use {error:{code,message}} on stderr, not stdout.
+Progress/warnings can also use stderr; do not assume the entire stream is one JSON document.
+See command --help for supported JSON output; keep captured values/tokens out of shared logs.
 
 Quick start / common examples:
   armada login --email you@example.com

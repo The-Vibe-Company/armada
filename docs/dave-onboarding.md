@@ -498,3 +498,44 @@ choices without making requests or signing out. Remote account logout requires
 a personal session; local `armada logout` only clears saved login. Use leaf
 help for details, including ARMADA_TOKEN precedence. Bare no-argument account
 invocation retains its existing behavior.
+
+### Script output, errors and exit codes
+
+Check a command's exit status before using its stdout. Exit `0` means the
+command succeeded; `1` covers authentication/server/operation failures and `2`
+covers usage or missing configuration. For example, an intentionally unknown
+command exits `2`, including when `--json` is requested. A pipeline's final
+parser status alone does not prove that Armada succeeded.
+
+Commands that support `--json` describe their response in leaf help. Common
+typed failures emit `{"error":{"code":"...","message":"..."}}` on **stderr**,
+not stdout; some API errors may additionally include `legacyCode`. Successful
+output and human diagnostics are separate streams. Warnings/progress can also
+appear on stderr, so do not assume the whole diagnostics stream is a single
+JSON document. A failed multi-page/long operation may have already produced
+partial stdout: do not treat that partial data as a complete successful result.
+
+Capture streams separately in a private temporary directory, check the command
+status first, and only then parse its successful JSON. This metadata-only list
+example uses POSIX shell syntax and requires `jq`:
+
+```sh
+umask 077
+work=$(mktemp -d) || exit 1
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+if armada list --json >"$work/result.json" 2>"$work/diagnostics.log"; then
+  jq -r '.sandboxes[].id' "$work/result.json"
+else
+  status=$?
+  printf 'Armada failed (exit %s); no result parsed.\n' "$status" >&2
+  # For local diagnosis, retain protected files here before exit; never publish them blindly.
+  exit "$status"
+fi
+```
+
+The trap removes captured files when the shell exits. For a failure you need to
+investigate later, retain the files only in a protected location before exiting.
+Do not adapt this into logging raw values: `vars read`, token creation and
+installer output can be sensitive. Never put credential values in arguments.
+For an uncertain launch outcome, inspect existing sandbox/receipt state before
+retrying; template launches must preserve their original request key and body.
