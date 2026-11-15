@@ -79,6 +79,9 @@ export function NavMobileTrigger() {
   );
 }
 
+/** Read dynamic destinations on demand instead of eagerly rendering every sidebar page.
+ * The shared loading boundary keeps navigation responsive; visited routes still use the router cache.
+ */
 export function NavLinks({ className, optIns }: { className?: string; optIns: NavOptIns }) {
   const pathname = usePathname();
   const { setOpenMobile } = useSidebar();
@@ -114,7 +117,7 @@ export function NavLinks({ className, optIns }: { className?: string; optIns: Na
                       >
                         <Link
                           href={href}
-                          prefetch={true}
+                          prefetch={false}
                           onClick={() => setOpenMobile(false)}
                           aria-current={active ? "page" : undefined}
                         >
