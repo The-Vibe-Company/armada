@@ -173,7 +173,7 @@ describe("template state", () => {
     // Two aliases of the same stale source require the same single revision fix, not duplicate warnings.
     expect(stale.problems).toHaveLength(1);
     expect(stale).toMatchObject({ bucket: "action", tone: "warning", label: "Variable changed" });
-    expect(stale.problems[0]?.text).toContain("publish a new revision");
+    expect(stale.problems[0]?.text).toContain("save a new version");
     expect(templateState(item({ connections: [MINE] }), lookups).label).toBe("Tool not ready");
     expect(templateState(item({ goldenId: PRIVATE }), lookups).label).toBe("Snapshot unavailable");
     expect(templateState({ revision: null }, lookups)).toMatchObject({ bucket: "rest", label: "Details unavailable" });
@@ -287,7 +287,7 @@ describe("template revision from the form", () => {
     const tools = templateRequest(form({ variables: [REGION] }), { ...lookups, connections: null }, previous);
     expect(tools).toEqual({
       ok: false,
-      error: "Tools could not be read, so this revision's tools would be lost. Refresh and try again.",
+      error: "Tools could not be read, so this version's tools would be lost. Refresh and try again.",
     });
     const variables = templateRequest(form({ connections: [DOCS] }), { ...lookups, variables: null }, previous);
     expect(variables.ok ? null : variables.error).toContain("variables would be lost");
@@ -299,7 +299,7 @@ describe("template revision from the form", () => {
 describe("template launch", () => {
   test("refusals are said in words, a pending launch keeps its meaning", () => {
     expect(templateFailure(409, "Template launch refused: variable_version_changed.")).toContain(
-      "Publish a new revision",
+      "Publish a new version",
     );
     for (const [reason, action] of [
       ["model_account_ambiguous", "Set a default in Account > Models"],
@@ -307,9 +307,9 @@ describe("template launch", () => {
     ]) {
       const message = templateFailure(409, `Template launch refused: ${reason}.`);
       expect(message).toContain(action);
-      expect(message).not.toContain("newer revision");
+      expect(message).not.toContain("newer version");
     }
-    expect(templateFailure(409, "Template revision changed.")).toContain("newer revision");
+    expect(templateFailure(409, "Template revision changed.")).toContain("newer version");
     expect(templateFailure(409, "Request key already used with a different request.")).toContain(
       "still being confirmed",
     );
@@ -345,7 +345,7 @@ describe("template launch", () => {
       { ...lookups, variables: [] },
     );
     expect(target).toMatchObject({
-      goldenName: "shared",
+      goldenName: "shared · Boat cloud",
       repositories: ["web"],
       tools: ["Docs"],
       sizing: { policy: null },
@@ -472,4 +472,21 @@ test("template skill refusals give GUI recovery without internal codes or CLI in
   }
   expect(launchReason("skillpack_credential_missing")).toContain("key in Skills");
   expect(launchReason("skillpack_cli_unavailable")).toContain("rebuild the snapshot");
+});
+
+test("host template pins the exact selected snapshot and rejects private organization bindings", () => {
+  const sources: TemplateLookups = {
+    ...lookups,
+    hosts: [{ id: SHARED, name: "Build server" }],
+    snapshots: [{ id: PRIVATE, hostId: SHARED, name: "Warm", status: "ready", visibility: "private" }],
+  };
+  const selection = { placement: `${SHARED}:${PRIVATE}`, goldenId: "" };
+  const personal = templateRequest(form({ ...selection, scope: "personal" }), sources);
+  expect(personal.ok && personal.value.definition).toMatchObject({
+    provider: "docker",
+    hostId: SHARED,
+    snapshotId: PRIVATE,
+  });
+  expect(templateRequest(form({ ...selection, scope: "org" }), sources).ok).toBe(false);
+  expect(templateRequest(form({ placement: `${SHARED}:`, goldenId: "" }), sources).ok).toBe(true);
 });

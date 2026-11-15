@@ -17,6 +17,8 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { listSelectedConnections } from "@/lib/data/connections";
+import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
+import { readSelectedDockerSnapshots } from "@/lib/data/docker-snapshots";
 import { type GoldenRow, listGoldens } from "@/lib/data/goldens";
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -47,7 +49,7 @@ export const maxDuration = 800;
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
 const TITLE = "Templates";
-const DESCRIPTION = "Reusable launch setups for your agents.";
+const DESCRIPTION = "Saved launch setups: one click, then write the task.";
 
 export default async function TemplatesPage({ searchParams }: Props) {
   // Lookup reads do not depend on template headers or their revision fan-out. Keep their
@@ -57,6 +59,8 @@ export default async function TemplatesPage({ searchParams }: Props) {
     listSelectedConnections(),
     listSelectedVault(),
     listSelectedAccounts(),
+    readSelectedDockerHosts(),
+    readSelectedDockerSnapshots(),
   ]);
   const [selected, list, query] = await Promise.all([selectedOrganization(), listSelectedTemplates(), searchParams]);
   const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
@@ -127,7 +131,14 @@ export default async function TemplatesPage({ searchParams }: Props) {
   const connections = fulfilled(results[1]);
   const vault = fulfilled(results[2]);
   const accounts = fulfilled(results[3]);
-  const lookups = { ...lookupsFrom(goldens, connections, vault), accounts: launchAccounts(accounts, Date.now()) };
+  const hosts = fulfilled(results[4]);
+  const snapshots = fulfilled(results[5]);
+  const lookups: TemplateLookups = {
+    ...lookupsFrom(goldens, connections, vault),
+    accounts: launchAccounts(accounts, Date.now()),
+    hosts: hosts.state === "ready" ? hosts.list.hosts : [],
+    snapshots: snapshots.state === "ready" ? snapshots.snapshots : [],
+  };
   const isAdmin = selected.role === "admin";
   const org = { id: selected.org.id, name: selected.org.name };
   const viewer = { userId: list.userId, admin: isAdmin };
@@ -158,8 +169,8 @@ export default async function TemplatesPage({ searchParams }: Props) {
       footer={
         <p className="text-xs text-pretty text-muted-foreground">
           Personal templates are yours alone. Org templates can be launched by every member of {org.name};{" "}
-          {isAdmin ? "you manage them." : "only an admin changes them."} Each publication is a new revision: a published
-          revision never changes.
+          {isAdmin ? "you manage them." : "only an admin changes them."} Each save creates a new version. Existing
+          routines keep the version they were set up with.
         </p>
       }
       empty={
@@ -189,17 +200,20 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
     : undefined;
   const environment = definition
     ? definition.provider === "docker"
-      ? `${definition.hostId} on Docker`
-      : `${golden?.name ?? "Unavailable snapshot"} on ${PROVIDER_LABELS[definition.provider]}`
+      ? `${lookups.snapshots?.find((snapshot) => snapshot.id === definition.snapshotId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official Armada image")} · your server ${lookups.hosts?.find((host) => host.id === definition.hostId)?.name ?? "Unavailable server"}`
+      : `${golden?.name ?? "Unavailable snapshot"} on ${PROVIDER_LABELS[definition.provider]} cloud`
     : null;
   const meta = definition
     ? [
-        environment,
-        modelLabel(definition.harness, definition.model),
-        plural(definition.connections.length, "tool"),
+        `${HARNESS_LABELS[definition.harness]} running ${modelLabel(definition.harness, definition.model)}, effort ${definition.reasoningEffort}, from ${environment}`,
+        definition.connections.length
+          ? definition.connections
+              .map((id) => lookups.connections?.find((tool) => tool.id === id)?.name ?? "Unavailable tool")
+              .join(", ")
+          : "No tools",
         plural(definition.variables.length, "variable"),
       ].join(" · ")
-    : `Revision ${item.currentRevision}`;
+    : `Version ${item.currentRevision}`;
   const target = launchTarget(item, context.goldens, lookups);
   const blocker = target?.blocker ?? null;
 
@@ -235,7 +249,9 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
               <p className="text-sm">{environment}</p>
             )}
             {definition.provider === "docker" && (
-              <p className="text-xs text-muted-foreground">Official Armada snapshot</p>
+              <p className="text-xs text-muted-foreground">
+                {definition.snapshotId ? "Exact snapshot on this server." : "Official Armada image."}
+              </p>
             )}
           </PanelSection>
           <PanelSection title="Agent">
@@ -328,13 +344,13 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
         </>
       ) : (
         <p className="text-sm text-muted-foreground">
-          Its current revision could not be read. Refresh the page to try again.
+          Its current version could not be read. Refresh the page to try again.
         </p>
       )}
       <PanelSection title="About">
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
-          <dt className="text-muted-foreground">Revision</dt>
-          <dd className="tabular-nums">{item.currentRevision} (published revisions never change)</dd>
+          <dt className="text-muted-foreground">Version</dt>
+          <dd className="tabular-nums">{item.currentRevision} (published versions never change)</dd>
           <dt className="text-muted-foreground">Who can launch it</dt>
           <dd>{templateAudience(item.scope, org.name)}</dd>
           <dt className="text-muted-foreground">Who can change it</dt>
@@ -345,12 +361,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
           </dd>
         </dl>
       </PanelSection>
-      {context.manage && definition?.provider === "docker" && (
-        <p className="border-t pt-4 text-xs text-muted-foreground">
-          Manage this host-based template with the Armada CLI.
-        </p>
-      )}
-      {context.manage && item.revision && definition?.provider !== "docker" ? (
+      {context.manage && item.revision ? (
         <TemplateManage
           editing={{
             id: item.id,
@@ -385,8 +396,8 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
         {item.scope === "personal" ? "Personal" : "Org"}
       </RowTag>
     ),
-    meta,
-    subtitle: `Revision ${item.currentRevision} · ${templateAudience(item.scope, org.name)}`,
+    meta: <span className="block whitespace-normal leading-relaxed">{meta}</span>,
+    subtitle: `Version ${item.currentRevision} · ${templateAudience(item.scope, org.name)}`,
     state: <StateCell tone={state.tone} label={state.label} data-template-state={state.label} />,
     fact: templateAudience(item.scope, org.name),
     ...(target && !blocker ? { action: <TemplateLaunchDialog target={target} /> } : {}),
