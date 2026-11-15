@@ -458,3 +458,12 @@ output out of public logs and store it securely. List shows metadata/IDs, and
 revoke takes an ID, not a secret value. Armada service tokens authenticate
 scripts via ARMADA_TOKEN; they are not model/provider API credentials.
 Family help makes no API request or token mutation.
+
+### GitHub command discovery
+
+`armada github --help` (or `-h`) shows a focused integration index.
+Manage uses an installation ID from status; refresh uses a sandbox ID.
+Connect/reconnect concern account authorization, and install waits for a new
+installation. Leaf help explains browser and no-browser output and bounded
+waiting. A URL is not authorization proof. Family help does not open browsers
+or call GitHub/Armada, and bare no-argument behavior is unchanged.

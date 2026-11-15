@@ -140,6 +140,22 @@ Revoke a service token with authenticated access and server authorization.
 Use its ID from armada token list --json, never the secret token value.
 Example: armada token revoke TOKEN_UUID
 `,
+  github: `Usage: armada github <command> [arguments]
+Manage your GitHub connection after Armada login.
+Use leaf --help/-h for exact flags, timeouts and server authorization requirements.
+  status      Read connection and installation metadata as JSON.
+  connect     Start authorization and wait for its connected state.
+  reconnect   Start reauthorization and wait for its connected state.
+  disconnect  Disconnect the GitHub connection.
+  install     Start App installation and wait for a newly observed installation.
+  manage      Open settings using an installation ID from status.
+  refresh     Refresh credentials using a sandbox ID, not an installation ID.
+Manage --no-browser prints a settings URL to stdout; authorization --no-browser
+prints instructions to stderr. A URL alone is not proof of authorization.
+Help does not open a browser or make GitHub/API requests.
+Example: armada github status --json
+Example: armada github connect --help
+`,
   "github status": `Usage: armada github status [--json]
 Read your GitHub connection and installation metadata after Armada login.
 Output is JSON even without --json. Use an installation ID with github manage.
