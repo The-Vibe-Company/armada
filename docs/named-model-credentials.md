@@ -3,15 +3,16 @@
 Boat and Modal remain canonical singleton provider credentials. Model accounts use
 `credentials.id` (UUID), canonical encrypted `value_enc`, and safe metadata:
 `id`, `kind`, `name`, `isDefault`, `status`, `expiresAt`, `updatedAt`, `version`
-(and the legacy `createdAt`). No account DTO contains ciphertext or plaintext.
+(and the legacy `createdAt`, plus `maxAgents`). No account DTO contains ciphertext or plaintext.
 
 All control routes are authenticated POSTs under `/api/v1/`:
 
 - `creds/list`: optional `org`; returns `{user, orgs}` with safe metadata.
-- `creds/accounts/set`: `scope`, optional `org`, `kind`, `value`, optional `id`, `name`, `expiresAt`. Existing-ID writes require `expectedVersion`; stale revisions return conflict before publication.
+- `creds/accounts/set`: `scope`, optional `org`, `kind`, `value`, optional `id`, `name`, `expiresAt`, `maxAgents`. Existing-ID writes require `expectedVersion`; stale revisions return conflict before publication.
   Without ID creates an account; with ID rotates that account's secret. Kind is immutable.
 - `creds/accounts/rename`: `scope`, optional `org`, `id`, `name`.
 - `creds/accounts/default`: `scope`, optional `org`, `id`.
+- `creds/accounts/limits`: `scope`, optional `org`, `id`, `maxAgents` (positive integer or null for unlimited).
 - `creds/accounts/remove`: `scope`, optional `org`, `id`; retains a deleted tombstone.
 
 Mutations return `{account}`. Org writes require a fresh admin check inside the
@@ -22,6 +23,22 @@ CLI equivalents: `armada creds set openai --name Work` (stdin or `--file`),
 `creds default <uuid>`, `creds remove <uuid>`, and `creds list --json`.
 Each supports `--org <org>` where applicable. `launch --credential-id <uuid>`
 selects an explicit account (`credentialId` in the control API and MCP launch).
+
+Morph accounts support Claude Code, Codex and OpenCode. Connect with
+`armada creds connect morph --name shared --file /private/morph-key`;
+select the account ID and a supported Morph model at launch. Morph defaults to
+2 simultaneous agents per account; other kinds default to unlimited. Creation/
+replacement accepts `--max-agents N` or `--unlimited`. Update capacity with:
+
+```sh
+armada creds limits ACCOUNT_UUID --max-agents 2
+armada creds limits ACCOUNT_UUID --unlimited
+```
+
+Limits span providers and harnesses; stopped/idle-paused sandboxes do not count.
+Over-cap starts refuse before allocation; lowering a cap leaves existing running
+agents alone. Limit edits do not rotate the secret or account binding version.
+See [Morph](morph.md) for models and runtime restrictions.
 
 Legacy `creds set/rm <kind>` updates/removes the sole nondeleted row of that kind;
 multiple rows produce a conflict requiring an ID. Legacy set also rejects duplicate
@@ -45,9 +62,10 @@ not. Deleted rows remain for historical identity and cause pinned sends to fail
 explicitly. Native authentication/usage consumers should use this binding and
 must not resolve a current default. Legacy unbound sandboxes remain unbound.
 
-Follow [the202 maintenance cutover](named-model-credentials-cutover.md): remove
-old production writers before202, deploy the new backend before #618, and reopen
-named writes only after backend and frontend are both ready.
+For the historical [migration 202 maintenance cutover](named-model-credentials-cutover.md), remove
+old production writers before applying migration 202 and reopen named writes only
+after backend and frontend are both ready. This historical procedure is not a
+request to reapply a migration or evidence of current production state.
 Native login/quota collection and dashboard account controls are separate work.
 
 Direct user-JWT model-account INSERT, UPDATE and DELETE are deliberately fenced;
@@ -80,12 +98,16 @@ retained recovery image and no lifecycle/activity/reconciliation lease. Active,
 uncertain and leased states return HTTP 409 `credential_binding_unsafe` with stop
 and reconciliation guidance. An unbound send/restore returns
 `credential_binding_required` (409 at the control API) with chooser/CLI guidance.
-Already-bound or partially inconsistent records return `conflict`; recovery
-cannot replace a bound account.
+Partially inconsistent records refuse rather than guessing a binding.
+Already-bound workspaces now support explicit owner account changes on supported
+placements; see [existing sandbox billing accounts](account-binding-change.md).
+That flow can safely stop ready compute before changing the pin; it is not
+limited to legacy unbound Modal recovery.
 
 Recovery atomically CAS-pins the same ID/version on the public sandbox, private
 Modal harness policy and safe machine labels. It preserves conversation IDs,
 physical identity, generation, recovery image and workspace; it performs no
-provider request, restart, resume or allocation. A later normal send resumes the
+provider request, restart, resume or allocation for the stopped legacy recovery
+case described here. A later normal send resumes the
 same retained workspace using the explicitly selected account. Success is the
 safe DTO `{id, credentialId, credentialVersion, harness, status:"bound"}`.
