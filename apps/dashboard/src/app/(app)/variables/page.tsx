@@ -1,177 +1,36 @@
-import { CircleAlertIcon, InfoIcon, UserIcon, UsersIcon, VariableIcon } from "lucide-react";
+import { randomUUID } from "node:crypto";
 import type { Metadata } from "next";
-import Link from "next/link";
-import { Empty, PageHeader } from "@/components/page-header";
-import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
-import { RowTag, StateCell } from "@/components/state-cell";
-import { TemplateUsage } from "@/components/template-usage";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { AddVaultDialog, VaultMark, VaultPanel } from "@/components/variables";
+import VariablesContent from "@/components/pages/variables-content";
+import { RevalidatingContent } from "@/components/revalidating-content";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { listSelectedTemplates, type TemplateList } from "@/lib/data/templates";
-import { listSelectedVault } from "@/lib/data/variables";
-import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
-import { audience, canManage, itemKey, type VaultItem, vaultState } from "@/lib/variables";
+import { requireViewer } from "@/lib/data/viewer";
+import { refreshVariables } from "./refresh";
 
 export const metadata: Metadata = { title: "Variables" };
 export const dynamic = "force-dynamic";
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
-const TITLE = "Variables";
-const DESCRIPTION = "Configuration and write-only secrets for your agents.";
-
 export default async function VariablesPage({ searchParams }: Props) {
-  // Template usage is independent of the resource list. Settle speculative failures so
-  // the resource's unavailable/no-org fallback still takes precedence.
-  const templatesRead = Promise.allSettled([listSelectedTemplates()]);
-  const [selected, list, query] = await Promise.all([selectedOrganization(), listSelectedVault(), searchParams]);
-  const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
-
-  if (!selected || list.state === "no-org") {
-    return (
-      <>
-        {header}
-        <Empty
-          title="No organization yet"
-          action={
-            <Button asChild>
-              <Link href="/orgs">Choose an organization</Link>
-            </Button>
-          }
-        >
-          Create or join an organization before adding variables and secrets.
-        </Empty>
-      </>
-    );
+  const [viewer, selected, query] = await Promise.all([requireViewer(), selectedOrganization(), searchParams]);
+  const scope = `${viewer.id}:${selected?.org.id ?? "none"}`;
+  const renderId = randomUUID();
+  const params = new URLSearchParams();
+  for (const key of Object.keys(query).sort()) {
+    const value = query[key];
+    if (Array.isArray(value)) for (const item of value) params.append(key, item);
+    else if (value !== undefined) params.append(key, value);
   }
-  if (list.state === "not-configured" || list.state === "unsupported") {
-    // Not a failure of anything the viewer did: said plainly, not in red.
-    return (
-      <>
-        {header}
-        <Alert>
-          <InfoIcon />
-          <AlertTitle>
-            {list.state === "unsupported" ? "Variable management needs an update" : "Variable setup is not ready here"}
-          </AlertTitle>
-          <AlertDescription>
-            <p>
-              {list.state === "unsupported"
-                ? "Ask an Armada administrator to update Armada before managing variables and secrets here."
-                : "Ask an Armada administrator to finish setup, then reload Variables."}
-            </p>
-            <Button asChild variant="outline" size="sm" className="mt-2">
-              <a href="/variables">Reload Variables</a>
-            </Button>
-          </AlertDescription>
-        </Alert>
-      </>
-    );
-  }
-  if (list.state === "error") {
-    return (
-      <>
-        {header}
-        <Alert variant="destructive">
-          <CircleAlertIcon />
-          <AlertTitle>Variables could not be loaded</AlertTitle>
-          <AlertDescription>
-            <p>
-              Check your connection and reload Variables. If this continues, ask an Armada administrator to check
-              variable management.
-            </p>
-            <Button asChild variant="outline" size="sm" className="mt-2">
-              <a href="/variables">Reload Variables</a>
-            </Button>
-          </AlertDescription>
-        </Alert>
-      </>
-    );
-  }
-
-  const [templateResult] = await templatesRead;
-  if (templateResult.status === "rejected") throw templateResult.reason;
-  const templates = templateResult.value;
-  const isAdmin = selected.role === "admin";
-  const orgName = selected.org.name;
-  const viewer = { userId: list.userId, admin: isAdmin };
-  const now = Date.now();
-  const rows = sortResources<ResourceRow & { bucket: Bucket; tie: string }>(
-    list.items.map((item) => row(item, orgName, canManage(item, viewer), now, templates)),
-  );
-  const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
-
+  const path = `/variables${params.size ? `?${params}` : ""}`;
   return (
-    <ResourceBrowser
-      title={TITLE}
-      description={DESCRIPTION}
-      meta={rows.length > 0 ? rows.length : undefined}
-      label="Variables and secrets"
-      rows={rows}
-      blockers={[]}
-      initial={requested}
-      actions={<AddVaultDialog orgId={selected.org.id} orgName={orgName} isAdmin={isAdmin} />}
-      footer={
-        <p className="text-xs text-pretty text-muted-foreground">
-          Personal entries are visible only to you in Armada. Org entries are shared with every member of {orgName};{" "}
-          {isAdmin ? "you manage them." : "only an admin changes them."} Variables are readable configuration, not
-          secrets. Stored secret values cannot be read back from this page. Bind entries through templates on supported
-          sandboxes. Delivered values can be inspected by people or agents with access to the sandbox; changing or
-          revoking an entry does not erase copies already delivered.
-        </p>
-      }
-      empty={
-        <Empty title="No variables or secrets yet" icon={<VariableIcon />}>
-          Choose Add to store readable configuration or a write-only secret, then bind it through a template on a
-          supported sandbox.
-        </Empty>
-      }
-    />
+    <RevalidatingContent
+      key={renderId}
+      scope={scope}
+      path={path}
+      renderId={renderId}
+      refresh={refreshVariables.bind(null, scope, query)}
+    >
+      {await VariablesContent({ searchParams: Promise.resolve(query) })}
+    </RevalidatingContent>
   );
-}
-
-/** One variable or secret as a row: its kind and scope, whether it is active, and who can use it. */
-function row(
-  item: VaultItem,
-  orgName: string,
-  manage: boolean,
-  now: number,
-  templates: TemplateList,
-): ResourceRow & { bucket: Bucket; tie: string } {
-  const state = vaultState(item);
-  const meta = `${item.kind === "secret" ? "Write-only secret" : "Variable"} · version ${item.version}`;
-  return {
-    key: itemKey(item),
-    name: item.name,
-    tie: item.kind,
-    bucket: state.bucket,
-    search: [item.name, item.kind, item.scope, item.status].join(" "),
-    mark: <VaultMark kind={item.kind} />,
-    tags: (
-      <RowTag>
-        {item.scope === "personal" ? <UserIcon aria-hidden /> : <UsersIcon aria-hidden />}
-        {item.scope === "personal" ? "Personal" : "Org"}
-      </RowTag>
-    ),
-    meta,
-    subtitle: meta,
-    state: <StateCell tone={state.tone} label={state.label} data-vault-status={item.status} />,
-    fact: audience(item, orgName),
-    detail: (
-      <div className="space-y-4">
-        <VaultPanel item={item} orgName={orgName} canManage={manage} now={now} />
-        <TemplateUsage
-          list={templates}
-          uses={(definition) =>
-            item.kind === "variable"
-              ? definition.variables.some((binding) => binding.variableId === item.id)
-              : (definition.secrets ?? []).some((binding) => binding.secretId === item.id)
-          }
-        />
-      </div>
-    ),
-    attrs: { "data-vault-item": item.name, "data-vault-kind": item.kind },
-  };
 }
