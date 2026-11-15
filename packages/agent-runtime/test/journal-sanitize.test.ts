@@ -5,7 +5,7 @@ test("sanitation visits every one-row batch, preserves identities and repeats fo
   const journal = new Journal(":memory:", (text) => text);
   try {
     for (const table of ["events", "prompts", "requests", "processes"]) {
-      for (const id of [-1, 2, 9]) {
+      for (const id of [-1n, 2n, 9n, 9007199254740993n]) {
         const body = `keep_${id} old_secret later_secret`;
         if (table === "prompts")
           journal.db
@@ -22,8 +22,8 @@ test("sanitation visits every one-row batch, preserves identities and repeats fo
     journal.sanitize();
     journal.sanitize();
     for (const table of ["events", "prompts", "requests", "processes"]) {
-      expect(journal.db.query(`SELECT rowid AS id,body FROM ${table} ORDER BY rowid`).all()).toEqual(
-        [-1, 2, 9].map((id) => ({ id, body: `keep_${id} [REDACTED] [REDACTED]` })),
+      expect(journal.db.query(`SELECT CAST(rowid AS TEXT) AS id,body FROM ${table} ORDER BY rowid`).all()).toEqual(
+        [-1n, 2n, 9n, 9007199254740993n].map((id) => ({ id: String(id), body: `keep_${id} [REDACTED] [REDACTED]` })),
       );
     }
   } finally {
