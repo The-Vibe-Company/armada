@@ -1,5 +1,28 @@
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
+  routine: `Usage: armada routine <command> [arguments]
+Manage scheduled template launches that run as the routine owner.
+
+  create  Create a paused routine from file or inline configuration.
+  list    List visible IDs, names, status, versions and next occurrences.
+  show    Inspect configuration, prompt and current version.
+  update  Replace configuration from file, or change only the inline schedule.
+  enable  Schedule the next occurrence, not an immediate manual launch.
+  pause   Stop new admissions; already admitted runs may finish.
+  delete  Mark deleted; does not stop or delete running sandboxes.
+  runs    Read the latest 100 decisions and original-prompt outcomes.
+
+Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
+NAME|UUID or armada org use. Organization-scoped writes require administrator permission.
+Use IDs from routine list when exact names collide; keep IDs for history after deletion.
+Updates and state changes require --expected-version from routine show/list;
+conflicts are not retried automatically. Prompts are readable configuration, not secrets.
+Schedules use five-field cron and IANA time zones, with runs at least one hour apart.
+Launch success is not task success; unknown is not success. Inspect routine runs.
+Inspect a command's options with armada routine <command> --help.
+Example: armada routine list --org ORG_UUID --json
+Example: armada routine runs ROUTINE_UUID --org ORG_UUID --json
+`,
   template: `Usage: armada template <command> [arguments]
 Manage reusable launch definitions and their immutable revisions.
 
