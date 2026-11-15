@@ -114,6 +114,7 @@ const features = [
   "application-secrets",
   "mcp",
   "skills",
+  "skills-resume",
   "templates",
   "routines",
   "usage",
@@ -141,6 +142,7 @@ const accountMatrix = {
 } as const;
 
 interface Case {
+  skillsResume?: boolean;
   subscriptionAccount?: boolean;
   mcp?: McpProbeBinding;
   applicationSecret?: SecretProbeBinding;
@@ -255,6 +257,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         (c.subscriptionAccount !== undefined && typeof c.subscriptionAccount !== "boolean") ||
         (c.mcp !== undefined && !isMcpProbeBinding(c.mcp)) ||
         (c.applicationSecret !== undefined && !isSecretProbeBinding(c.applicationSecret)) ||
+        (c.skillsResume !== undefined && typeof c.skillsResume !== "boolean") ||
         (c.skill !== undefined && !isSkillsProbeBinding(c.skill)) ||
         (c.routine !== undefined && typeof c.routine !== "boolean") ||
         (c.readableVariable !== undefined && !isReadableVariableBinding(c.readableVariable)) ||
@@ -334,7 +337,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     until = Math.min(deadline, io.now() + OBSERVATION_MS),
     observed?: (elapsedMs: number, polls: number) => void,
   ) {
-    if (feature === "subscription-account") until = Math.min(until, requestDeadline ?? Number.POSITIVE_INFINITY);
+    if (feature === "subscription-account" || feature === "skills-resume")
+      until = Math.min(until, requestDeadline ?? Number.POSITIVE_INFINITY);
     const started = io.now();
     const previousRequestDeadline = requestDeadline;
     requestDeadline = until;
@@ -440,9 +444,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       record("application-secrets", c.provider, "not-run", "secret_probe_not_configured");
       if (feature === "application-secrets") continue;
     }
-    if ((!feature || feature === "skills") && (!c.skill || !c.template)) {
-      record("skills", c.provider, "not-run", "skills_probe_not_configured");
-      if (feature === "skills") continue;
+    if (!feature && c.skillsResume !== true)
+      record("skills-resume", c.provider, "not-run", "skills_resume_probe_not_enabled");
+    if ((!feature || feature === "skills" || feature === "skills-resume") && (!c.skill || !c.template)) {
+      if (!feature || feature === "skills") record("skills", c.provider, "not-run", "skills_probe_not_configured");
+      if (feature === "skills-resume" || (!feature && c.skillsResume === true))
+        record("skills-resume", c.provider, "not-run", "skills_probe_not_configured");
+      if (feature === "skills" || feature === "skills-resume") continue;
     }
     if ((!feature || feature === "readable-variables") && (!c.readableVariable || !c.template)) {
       record("readable-variables", c.provider, "not-run", "readable_variable_probe_not_configured");
@@ -471,6 +479,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         "routines",
         "readable-variables",
         "skills",
+        "skills-resume",
         "application-secrets",
         "mcp",
       ].includes(feature) &&
@@ -513,12 +522,27 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     const discoveryApi = [
       "readable-variables",
       "skills",
+      "skills-resume",
       "application-secrets",
       "mcp",
       "subscription-account",
     ].includes(feature ?? "")
       ? readableApi
       : api;
+    async function verifySkills() {
+      const probe = skills;
+      if (!probe || !id) throw Error("invalid_skills_binding");
+      const sandboxId = id;
+      await poll(
+        async () => {
+          await probe.verify(sandboxId, c.provider, c.harness);
+          return true;
+        },
+        (value) => value,
+        1,
+        readableUntil,
+      );
+    }
     async function checkUsage(promptId: string) {
       if (feature && !["usage", "exact-cost", "subscription-account"].includes(feature)) return;
       const observe = (name: string, status: Cell["status"], reason: string | null = null, detail?: Diagnostic) => {
@@ -719,7 +743,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       let finished = false;
       let answered = false;
       let finalParent: string | undefined;
-      const subscriptionAnswers = new Map<string, { text: string; eligible: boolean }>();
+      const finalAnswers = new Map<string, { text: string; eligible: boolean }>();
       let serverStarted: number | undefined;
       let serverFinished: number | undefined;
       let elapsedMs = 0;
@@ -766,7 +790,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             finished ||= page.events.some(
               (e) => e.promptId === turn.promptId && e.kind === "prompt" && e.status === "finished",
             );
-            if (c.subscriptionAccount === true) {
+            if (c.subscriptionAccount === true || feature === "skills-resume") {
               for (const event of page.events) {
                 if (event.promptId !== turn.promptId || event.kind !== "message") continue;
                 if (typeof event.id !== "string") throw new Error("invalid_turn_receipt");
@@ -774,9 +798,9 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                 if (!event.parentToolUseId && event.responseKind !== "tool_result") finalParent = key;
                 const text =
                   event.textMode === "delta"
-                    ? (subscriptionAnswers.get(key)?.text ?? "") + (event.text ?? "")
+                    ? (finalAnswers.get(key)?.text ?? "") + (event.text ?? "")
                     : (event.text ?? "");
-                subscriptionAnswers.set(key, {
+                finalAnswers.set(key, {
                   text: text.slice(0, 4096),
                   eligible:
                     text.length <= 4096 &&
@@ -786,7 +810,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     !event.retracted,
                 });
               }
-              const answer = finalParent ? subscriptionAnswers.get(finalParent) : undefined;
+              const answer = finalParent ? finalAnswers.get(finalParent) : undefined;
               return (
                 page.hasMore !== true &&
                 finished &&
@@ -1161,9 +1185,23 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           until: readableUntil,
         });
       }
-      if (feature === "skills") {
+      if (feature === "skills" || feature === "skills-resume") {
+        if (feature === "skills-resume") {
+          const missing = (["stop", "resume", "followupPrompts", "logs", "exec"] as const).find(
+            (name) => option!.capabilities[name] !== true,
+          );
+          if (missing) {
+            record(
+              "skills-resume",
+              c.provider,
+              option.capabilities[missing] === false ? "unsupported" : "not-run",
+              option.unsupportedReasons[missing] ?? `${missing}_required_for_skills_resume_proof`,
+            );
+            continue;
+          }
+        }
         if (option.capabilities.exec === false) {
-          record("skills", c.provider, "not-run", "exec_required_for_skills_proof");
+          record(feature, c.provider, "not-run", "exec_required_for_skills_proof");
           continue;
         }
         if (!c.template || !c.skill) throw Error("invalid_skills_binding");
@@ -1263,13 +1301,16 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           feature === "templates" ||
           feature === "readable-variables" ||
           feature === "skills" ||
+          feature === "skills-resume" ||
           feature === "application-secrets" ||
           feature === "mcp" ||
           idleFeature ||
           requestedHarness) &&
           step === "send") ||
         (feature === "wake-on-send" && step === "idle-pause") ||
-        (["resume", "resume-recall", "usage", "exact-cost", "subscription-account"].includes(feature ?? "") &&
+        (["resume", "resume-recall", "usage", "exact-cost", "subscription-account", "skills-resume"].includes(
+          feature ?? "",
+        ) &&
           ["send", "resume"].includes(step));
       if (!needed) continue;
       const selected = !feature || step === feature;
@@ -1292,6 +1333,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         blocked = "proof_budget_exhausted";
         blockedDiagnostic = { code: "poll_limit_exceeded", message: "Subscription proof budget exhausted." };
       }
+      if (feature === "skills-resume" && io.now() >= readableUntil && !blocked) {
+        blocked = "proof_budget_exhausted";
+        blockedDiagnostic = { code: "poll_limit_exceeded", message: "Skill resume proof budget exhausted." };
+      }
       // Cleanup operations still run after an earlier probe failed.
       if (blocked && !((step === "stop" || step === "delete") && id)) {
         record(
@@ -1307,7 +1352,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
       const operationStarted = io.now();
       try {
-        if (feature === "skills" || feature === "application-secrets" || feature === "mcp")
+        if (
+          feature === "skills" ||
+          feature === "skills-resume" ||
+          feature === "application-secrets" ||
+          feature === "mcp"
+        )
           requestDeadline = step === "stop" || step === "delete" ? undefined : readableUntil;
         if (feature === "subscription-account")
           requestDeadline = step === "delete" || (step === "stop" && blocked) ? undefined : readableUntil;
@@ -1365,6 +1415,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               : feature === "templates" ||
                   feature === "readable-variables" ||
                   feature === "skills" ||
+                  feature === "skills-resume" ||
                   feature === "application-secrets" ||
                   feature === "mcp"
                 ? await (async () => {
@@ -1464,14 +1515,24 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       },
                       // This durable requestKey is replayed unchanged; never a new launch intent.
                       (value) => value.state === "succeeded" || value.state === "failed",
-                      ["readable-variables", "skills", "application-secrets", "mcp", "subscription-account"].includes(
-                        feature ?? "",
-                      )
+                      [
+                        "readable-variables",
+                        "skills",
+                        "skills-resume",
+                        "application-secrets",
+                        "mcp",
+                        "subscription-account",
+                      ].includes(feature ?? "")
                         ? 110
                         : 600,
-                      ["readable-variables", "skills", "application-secrets", "mcp", "subscription-account"].includes(
-                        feature ?? "",
-                      )
+                      [
+                        "readable-variables",
+                        "skills",
+                        "skills-resume",
+                        "application-secrets",
+                        "mcp",
+                        "subscription-account",
+                      ].includes(feature ?? "")
                         ? readableUntil
                         : Math.min(deadline, io.now() + OBSERVATION_MS),
                     );
@@ -1545,6 +1606,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             feature !== "routines" &&
             feature !== "readable-variables" &&
             feature !== "skills" &&
+            feature !== "skills-resume" &&
             feature !== "application-secrets" &&
             feature !== "mcp"
           )
@@ -1562,10 +1624,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               await secret.verify(id, c.provider);
               record("application-secrets", c.provider, "pass");
               record("prerequisite:templates", c.provider, "pass");
-            } else if (feature === "skills") {
-              if (!skills) throw Error("invalid_skills_binding");
-              await skills.verify(id, c.provider, c.harness);
-              record("skills", c.provider, "pass");
+            } else if (feature === "skills" || feature === "skills-resume") {
+              await verifySkills();
+              if (feature === "skills-resume") {
+                record("skills-before-resume", c.provider, "pass");
+                record("prerequisite:skills", c.provider, "pass");
+                record("skills-resume", c.provider, "not-run", "resume_not_observed");
+              } else record("skills", c.provider, "pass");
               record("prerequisite:templates", c.provider, "pass");
             } else if (feature === "readable-variables") {
               if (!readable) throw new Error("invalid_template_receipt");
@@ -1668,7 +1733,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             const invoke = () => api<{ status: string }>(`sandbox/${step}`, { id, request_id: requestId });
             let receipt: { status: string };
             if (step === "resume" && c.provider !== "docker") {
-              await runTurn(true);
+              await runTurn(feature !== "skills-resume");
               receipt = { status: "ready" };
             } else if (step === "delete") {
               receipt = await deleteKnown();
@@ -1680,6 +1745,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               );
             else if (receipt.status !== "deleted") throw new Error("delete_unconfirmed");
             stopped = step !== "resume";
+            if (step === "resume" && feature === "skills-resume") {
+              if (c.provider === "docker") await runTurn();
+              await verifySkills();
+              record("skills-after-resume", c.provider, "pass");
+              record("skills-resume", c.provider, "pass");
+            }
             if (
               step === "resume" &&
               (!feature || ["resume-recall", "usage", "exact-cost", "subscription-account"].includes(feature))
@@ -1709,6 +1780,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           detail.quota ? "quota" : detail.code,
           detail,
         );
+        if (feature === "skills-resume" && step === "resume") {
+          const status = detail.quota || detail.notRun ? "not-run" : "fail";
+          record("skills-after-resume", c.provider, status, detail.quota ? "quota" : detail.code, detail);
+          record("skills-resume", c.provider, status, detail.quota ? "quota" : detail.code, detail);
+        }
         blocked = `${step}_failed`;
         blockedDiagnostic = detail;
         if (
@@ -1745,11 +1821,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         feature === "routines" ||
         feature === "readable-variables" ||
         feature === "skills" ||
+        feature === "skills-resume" ||
         feature === "application-secrets" ||
         feature === "mcp") &&
-      report[feature]?.[c.provider]?.status !== "pass"
+      report[feature]?.[c.provider]?.status !== "pass" &&
+      report[feature]?.[c.provider]?.status !== "fail"
     ) {
-      const source = ["launch", "send"]
+      const source = (feature === "skills-resume" ? ["launch", "send", "stop", "resume"] : ["launch", "send"])
         .map((step) => ({ step, cell: report[`prerequisite:${step}`]?.[c.provider] }))
         .find(({ cell }) => cell && cell.status !== "pass");
       record(
@@ -1799,6 +1877,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     // resume acknowledgement still leaves a known allocation to reconcile.
     if (
       feature === "skills" ||
+      feature === "skills-resume" ||
       feature === "application-secrets" ||
       feature === "mcp" ||
       feature === "subscription-account"
@@ -1830,7 +1909,9 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         ? [{ c, probe: c.readableVariable ? ("readable-variables" as const) : ("templates" as const) }]
         : []),
       ...(c.routine ? [{ c, probe: "routines" as const }] : []),
-      ...(c.template && c.skill ? [{ c, probe: "skills" as const }] : []),
+      ...(c.template && c.skill
+        ? [{ c, probe: c.skillsResume ? ("skills-resume" as const) : ("skills" as const) }]
+        : []),
       ...(c.template && c.applicationSecret ? [{ c, probe: "application-secrets" as const }] : []),
       ...(c.template && c.mcp ? [{ c, probe: "mcp" as const }] : []),
     ])) {
@@ -1865,6 +1946,20 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         cell?.reason ?? (cell ? null : `${probe}_probe_unconfirmed`),
         cell?.diagnostic,
       );
+      if (probe === "skills-resume") {
+        for (const name of ["skills-before-resume", "skills-after-resume"]) {
+          const stage = child?.features[name]?.[c.provider];
+          if (stage) record(name, c.provider, stage.status, stage.reason, stage.diagnostic);
+        }
+        const initial = child?.features["prerequisite:skills"]?.[c.provider];
+        record(
+          "skills",
+          c.provider,
+          initial?.status ?? "not-run",
+          initial?.reason ?? (initial ? null : "skills_initial_delivery_not_observed"),
+          initial?.diagnostic ?? cell?.diagnostic,
+        );
+      }
       if (probe === "readable-variables") {
         const template = child?.features["prerequisite:templates"]?.[c.provider];
         record(

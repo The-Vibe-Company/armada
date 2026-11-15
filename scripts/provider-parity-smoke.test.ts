@@ -52,6 +52,7 @@ for (const mode of [
   "template_refused",
   "template_no_answer",
   "template_full",
+  "skills_resume_full",
   "h_codex",
   "h_claude",
   "h_opencode",
@@ -162,6 +163,14 @@ for (const mode of [
     const routineSandbox = (p: string) => `30000000-0000-4000-8000-00000000000${p === "modal" ? "1" : "2"}`;
     const readableValue = `parity_readable_${crypto.randomUUID()}`;
     const readableDigests = new Map<string, string>();
+    const skillExecutions = new Map<string, number>();
+    const skillReceipt = {
+      reference: "parity-fixture@1.0.0",
+      version: "1.0.0",
+      skillId: "10000000-0000-4000-8000-000000000002",
+      checksum: `sha256:${"b".repeat(64)}`,
+      origin: "https://skillpack.app/v1",
+    };
     const templateCalls = new Map<string, number>();
     const templateRequests = new Map<string, object>();
     const debtFeature =
@@ -193,7 +202,18 @@ for (const mode of [
                 ? { subscriptionAccount: true }
                 : {}),
               ...(mode === "routine_full" ? { routine: true } : {}),
-              ...((mode.startsWith("template_") && mode !== "template_missing") ||
+              ...(mode === "skills_resume_full"
+                ? {
+                    skillsResume: true,
+                    skill: {
+                      reference: skillReceipt.reference,
+                      projectDir: "/home/user/project",
+                      fileSha256: "a".repeat(64),
+                    },
+                  }
+                : {}),
+              ...(mode === "skills_resume_full" ||
+              (mode.startsWith("template_") && mode !== "template_missing") ||
               (mode.startsWith("routine_") && mode !== "routine_missing") ||
               (mode.startsWith("readable_") && mode !== "readable_missing")
                 ? { template: { id: "10000000-0000-4000-8000-000000000001", revision: 2 } }
@@ -359,6 +379,7 @@ for (const mode of [
                 revision: {
                   revision: 2,
                   definition: {
+                    ...(mode === "skills_resume_full" ? { skills: [skillReceipt.reference] } : {}),
                     variables: [
                       { key: "PARITY_READABLE_CANARY", variableId: "70000000-0000-4000-8000-000000000001", version: 1 },
                     ],
@@ -421,8 +442,11 @@ for (const mode of [
             case "templates/launch": {
               const n = (templateCalls.get(p) ?? 0) + 1;
               templateCalls.set(p, n);
-              if (n === 1) templateRequests.set(p, body);
-              else expect(body).toEqual(templateRequests.get(p));
+              if (n === 1 || mode === "skills_resume_full") {
+                if (n > 1)
+                  expect(body.requestKey).not.toBe((templateRequests.get(p) as { requestKey?: string })?.requestKey);
+                templateRequests.set(p, body);
+              } else expect(body).toEqual(templateRequests.get(p));
               expect(body.revision).toBe(2);
               expect(body.prompt).toBeUndefined();
               if (
@@ -446,11 +470,13 @@ for (const mode of [
               turns.set(p, []);
               result = {
                 id:
-                  (mode === "template_final_missing" || mode === "template_lost_identity") && n > 1
-                    ? undefined
-                    : mode === "template_identity" && n > 1
-                      ? `${p}-other`
-                      : p,
+                  mode === "skills_resume_full"
+                    ? `${p}-template-${n}`
+                    : (mode === "template_final_missing" || mode === "template_lost_identity") && n > 1
+                      ? undefined
+                      : mode === "template_identity" && n > 1
+                        ? `${p}-other`
+                        : p,
                 ...(mode === "template_unknown" ||
                 (["template_pending", "template_identity", "template_final_missing"].includes(mode) && n === 1)
                   ? {}
@@ -464,6 +490,7 @@ for (const mode of [
                       : "succeeded",
                 reason: "environment_unavailable",
                 manifest: {
+                  ...(mode === "skills_resume_full" ? { skillReceipts: [skillReceipt] } : {}),
                   variableProvenance: [
                     {
                       key: "PARITY_READABLE_CANARY",
@@ -480,6 +507,7 @@ for (const mode of [
                     provider: p,
                   },
                   definition: {
+                    ...(mode === "skills_resume_full" ? { skills: [skillReceipt.reference] } : {}),
                     provider: p,
                     harness: "codex",
                     model: "fake-model",
@@ -679,15 +707,17 @@ for (const mode of [
                         ? "tool_result"
                         : "assistant",
                     text:
-                      mode === "snapshot_answer_missing" || mode === "template_no_answer"
-                        ? "WRONG"
-                        : mode.startsWith("subscription_probe")
-                          ? (turns.get(p)?.length ?? 0) > 1
-                            ? prompts.get(p)
-                            : "SMOKE_OK"
-                          : mode.startsWith("idle_") && woken.has(p)
-                            ? prompts.get(p)
-                            : `SMOKE_OK ${prompts.get(p)}`,
+                      mode === "skills_resume_full" && String(body.id).endsWith("template-2")
+                        ? "SMOKE_OK"
+                        : mode === "snapshot_answer_missing" || mode === "template_no_answer"
+                          ? "WRONG"
+                          : mode.startsWith("subscription_probe")
+                            ? (turns.get(p)?.length ?? 0) > 1
+                              ? prompts.get(p)
+                              : "SMOKE_OK"
+                            : mode.startsWith("idle_") && woken.has(p)
+                              ? prompts.get(p)
+                              : `SMOKE_OK ${prompts.get(p)}`,
                   },
                   ...(mode === "subscription_probe_later_answer" && (turns.get(p)?.length ?? 0) > 1
                     ? [
@@ -705,6 +735,12 @@ for (const mode of [
               };
               break;
             case "sandbox/exec":
+              if (mode === "skills_resume_full" && String(body.command).includes("parity-fixture/SKILL.md")) {
+                expect(body.id).toBe(`${p}-template-2`);
+                skillExecutions.set(p, (skillExecutions.get(p) ?? 0) + 1);
+                result = { exitCode: 0, timedOut: false, stdout: "a".repeat(64) };
+                break;
+              }
               if (mode.startsWith("readable_") && String(body.command).includes("sha256sum")) {
                 const nonce = String(body.command).match(/'([a-f0-9-]{36})'/)?.[1];
                 expect(nonce).toBeDefined();
@@ -778,8 +814,12 @@ for (const mode of [
                 );
               if (mode === "subscription_probe_budget") clock += 110_001;
               result = {
-                id: mode === "template_identity" || mode.startsWith("routine_") ? body.id : p,
+                id:
+                  mode === "template_identity" || mode.startsWith("routine_") || mode === "skills_resume_full"
+                    ? body.id
+                    : p,
                 status: states.get(p),
+                ...(mode === "skills_resume_full" ? { skills: [skillReceipt] } : {}),
                 usage: {
                   turnCount: turns.get(p)?.length ?? 0,
                   turns: (mode === "usage_lost" && (turns.get(p)?.length ?? 0) > 1
@@ -890,7 +930,7 @@ for (const mode of [
                 id:
                   mode === "wrong_delete_id"
                     ? "another-sandbox"
-                    : mode === "template_identity" || mode.startsWith("routine_")
+                    : mode === "template_identity" || mode.startsWith("routine_") || mode === "skills_resume_full"
                       ? body.id
                       : p,
                 status: mode === "delete_failure" && p === "docker" ? "pending" : "deleted",
@@ -1225,6 +1265,26 @@ for (const mode of [
       } else {
         expect(report.starts).toBe(0);
         expect(report.features["launch-snapshot"].modal.diagnostic.code).toBe("invalid_snapshot_source");
+      }
+      return;
+    }
+    if (mode === "skills_resume_full") {
+      expect(passed).toBe(true);
+      expect(report.starts).toBe(6);
+      expect(new Set(journalClaims)).toEqual(
+        new Set(["modal", "docker", "modal-template-1", "docker-template-1", "modal-template-2", "docker-template-2"]),
+      );
+      for (const provider of ["modal", "docker"]) {
+        expect(templateCalls.get(provider)).toBe(2);
+        expect(skillExecutions.get(provider)).toBe(2);
+        for (const name of [
+          "skills",
+          "skills-resume",
+          "skills-before-resume",
+          "skills-after-resume",
+          "skills-resume-cleanup",
+        ])
+          expect(report.features[name][provider].status).toBe("pass");
       }
       return;
     }
