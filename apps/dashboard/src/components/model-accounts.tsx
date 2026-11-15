@@ -1369,7 +1369,7 @@ export function AddAccountDialog({
               {kind === "morph"
                 ? "Claude Code and Codex share this account and its Morph plan models on Modal, Docker hosts and runtime-backed Boat sandboxes. Boat native gateways and OpenCode are not supported by this account."
                 : kind === "opencode"
-                  ? "OpenCode runs on Modal only. Boat and Docker hosts are not supported. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
+                  ? "OpenCode runs on Modal and Docker hosts. Native Boat is not supported. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
                   : preset?.models === "choose"
                     ? "This custom connection works on Modal, Docker hosts and runtime-backed Boat sandboxes."
                     : "With a standard vendor account, Codex and Claude Code run on Modal, Boat and Docker hosts. Custom endpoints also work on runtime-backed Boat and Docker hosts."}
@@ -1591,7 +1591,7 @@ export function HarnessAccounts({
         </h2>
         <p className="text-xs text-muted-foreground" data-harness-availability>
           {harness === "opencode"
-            ? "Modal only. OpenCode is not available on Boat or Docker hosts. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
+            ? "OpenCode runs on Modal and Docker hosts, not native Boat. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
             : "Standard vendor accounts work on Modal, Boat and Docker hosts. Custom endpoints also work on runtime-backed Boat and Docker hosts; testing requires a running Modal sandbox."}
         </p>
         {accounts.length > 0 && <LaunchUses resolved={resolved} harnessLabel={harnessLabel} now={now} />}
@@ -1607,8 +1607,8 @@ export function HarnessAccounts({
               <>Add one to launch {harnessLabel}. An API key works too.</>
             ) : (
               <>
-                Add an OpenCode plan key, or connect DeepSeek, OpenRouter or another OpenAI-compatible provider. Modal
-                only.
+                Add an OpenCode plan key, or connect DeepSeek, OpenRouter or another OpenAI-compatible provider. Runs on
+                Modal and Docker hosts.
               </>
             )}
           </Empty>

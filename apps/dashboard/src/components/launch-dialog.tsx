@@ -265,7 +265,7 @@ function LaunchForm({
               options={(Object.keys(catalog) as Harness[]).map((value) => ({
                 value,
                 label: HARNESS_LABELS[value],
-                disabled: value === "opencode" && provider !== "modal",
+                disabled: value === "opencode" && provider === "boat",
               }))}
             />
             {repositories.length > 1 && (
@@ -273,9 +273,9 @@ function LaunchForm({
             )}
           </div>
           <p id={`${id}-availability`} className="text-xs text-muted-foreground" data-launch-availability>
-            {provider === "modal"
-              ? "Modal supports Claude Code, Codex and OpenCode, including custom model connections."
-              : `${PROVIDER_LABELS[provider]} supports Claude Code and Codex, including custom model connections through the Armada runtime. OpenCode requires Modal.`}
+            {provider === "boat"
+              ? "Boat supports Claude Code and Codex, including custom model connections through the Armada runtime. Choose Modal or Docker for OpenCode."
+              : `${PROVIDER_LABELS[provider]} supports Claude Code, Codex and OpenCode, including custom model connections through the Armada runtime.`}
           </p>
           {/* Who is billed stays in view: it is never a collapsed default. */}
           <AccountField
