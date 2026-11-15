@@ -3,20 +3,18 @@
 import type { Harness } from "@armada/core";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { LaunchChoice } from "@/components/launch-surface";
 import type { ModelCatalog } from "@/components/model-fields";
+import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
-import { NativeSelect } from "@/components/ui/native-select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { EFFORT_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { initialLaunchSelection, launchPickerGroups } from "@/lib/launch-picker";
-import { KIND_INFO, type LaunchAccounts } from "@/lib/model-accounts";
+import { accountProblem, KIND_INFO, type LaunchAccounts } from "@/lib/model-accounts";
 
-const word =
-  "max-w-full [overflow-wrap:anywhere] rounded-sm border-b border-dotted border-muted-foreground px-1 text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 export function LaunchSentence({
-  idPrefix,
   onBlocked,
   harness,
   onHarness,
@@ -25,6 +23,7 @@ export function LaunchSentence({
   accounts,
   catalog,
   boatOpenCodeDisabled,
+  allowedHarnesses = ["claude", "codex", "opencode"],
 }: {
   idPrefix: string;
   onBlocked: (blocked: boolean) => void;
@@ -35,6 +34,7 @@ export function LaunchSentence({
   accounts: LaunchAccounts;
   catalog: ModelCatalog;
   boatOpenCodeDisabled: boolean;
+  allowedHarnesses?: readonly Harness[];
 }) {
   const root = useRef<HTMLElement>(null);
   const [model, setModel] = useState(() => initialLaunchSelection(accounts, catalog, harness).model);
@@ -78,7 +78,7 @@ export function LaunchSentence({
       .includes(query.toLowerCase());
   const selectedProblem = groups.find((group) => group.account.id === account)?.reason;
   useEffect(
-    () => onBlocked(accounts.state === "ready" && (!chosen || !!selectedProblem)),
+    () => onBlocked(accounts.state === "unavailable" || (accounts.state === "ready" && (!chosen || !!selectedProblem))),
     [onBlocked, accounts.state, chosen, selectedProblem],
   );
   const picker = (
@@ -127,6 +127,7 @@ export function LaunchSentence({
               {group.options.map((option) => {
                 const reason =
                   group.reason ??
+                  (!allowedHarnesses.includes(option.harness) ? "This agent is not available on this server." : null) ??
                   (option.harness === "opencode" && boatOpenCodeDisabled
                     ? "OpenCode is not available on this snapshot."
                     : null);
@@ -159,7 +160,7 @@ export function LaunchSentence({
                       setModel(option.id);
                       setEffort(catalog[option.harness].defaultReasoningEffort);
                       setOther(false);
-                      setOpen(phone);
+                      setOpen(false);
                     }}
                   >
                     <span className="min-w-0">
@@ -189,7 +190,7 @@ export function LaunchSentence({
                 onSelect={() => {
                   setModel(option.id);
                   setOther(false);
-                  setOpen(phone);
+                  setOpen(false);
                 }}
               >
                 {option.label}
@@ -214,63 +215,62 @@ export function LaunchSentence({
       <input type="hidden" name="harness" value={harness} />
       <input type="hidden" name="credential" value={account} />
       <input type="hidden" name="model" value={other ? "other" : model} />
-      <div className="text-xl leading-relaxed">
-        Launch{" "}
-        <select
-          aria-label="Agent"
-          className={word}
+      <input
+        type="hidden"
+        name="reasoning_effort"
+        value={efforts.includes(effort) ? effort : entry.defaultReasoningEffort}
+      />
+      <div className="text-[17px] leading-loose">
+        <span className="max-sm:hidden">Launch </span>
+        <LaunchChoice
+          label="Agent"
           value={harness}
-          onChange={(e) => changeAgent(e.target.value as Harness)}
-        >
-          {(["claude", "codex", "opencode"] as const).map((agent) => (
-            <option key={agent} value={agent} disabled={agent === "opencode" && boatOpenCodeDisabled}>
-              {HARNESS_LABELS[agent]}
-            </option>
-          ))}
-        </select>{" "}
-        running{" "}
-        {phone ? (
-          <button type="button" className={word} onClick={() => setOpen(true)}>
-            {catalog[harness].models.find((option) => option.id === model)?.label ?? (
-              <span className="font-mono">{model}</span>
-            )}
-          </button>
-        ) : (
-          <Popover open={open} onOpenChange={setOpen}>
-            <PopoverTrigger asChild>
-              <button type="button" className={word}>
-                {catalog[harness].models.find((option) => option.id === model)?.label ?? (
-                  <span className="font-mono">{model}</span>
-                )}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent
-              className="w-[min(540px,calc(100vw-2rem))] p-0 duration-150 motion-reduce:animate-none data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100"
-              align="start"
+          options={allowedHarnesses.map((value) => ({
+            value,
+            label: HARNESS_LABELS[value],
+            reason:
+              value === "opencode" && boatOpenCodeDisabled ? "OpenCode is not available on this snapshot." : undefined,
+          }))}
+          onChange={(value) => changeAgent(value as Harness)}
+        />
+        <span className="max-sm:hidden"> running </span>
+        <Popover open={open && !phone} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 text-sm hover:bg-accent max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0"
+              onClick={() => setOpen(true)}
             >
-              {picker}
-            </PopoverContent>
-          </Popover>
-        )}{" "}
-        on{" "}
-        <button type="button" className={word} onClick={() => setOpen(true)}>
-          {chosen?.name ?? "choose an account"}
-        </button>
-        , reasoning effort{" "}
-        <select
-          aria-label="Reasoning effort"
-          name="reasoning_effort"
-          className={word}
-          value={efforts.includes(effort) ? effort : entry.defaultReasoningEffort}
-          onChange={(e) => setEffort(e.target.value)}
+              <span className="text-muted-foreground sm:hidden">Model</span>
+              <span className="truncate">
+                {entry.models.find((row) => row.id === model)?.label ?? <span className="font-mono">{model}</span>} ⌄
+              </span>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[min(540px,calc(100vw-2rem))] p-0" align="start">
+            {picker}
+          </PopoverContent>
+        </Popover>
+        <span className="max-sm:hidden"> on </span>
+        <button
+          type="button"
+          data-launch-account-picker
+          className="inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 text-sm hover:bg-accent max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0"
+          onClick={() => setOpen(true)}
         >
-          {efforts.map((level) => (
-            <option key={level} value={level}>
-              {EFFORT_LABEL[level] ?? level}
-            </option>
-          ))}
-        </select>
-        .
+          <span className="text-muted-foreground sm:hidden">Account</span>
+          <span className={selectedProblem ? "text-warning" : ""}>{chosen?.name ?? "Choose an account"} ⌄</span>
+        </button>
+        <span className="max-sm:hidden">, reasoning effort </span>
+        <span className="whitespace-nowrap">
+          <LaunchChoice
+            label="Effort"
+            value={efforts.includes(effort) ? effort : entry.defaultReasoningEffort}
+            options={efforts.map((value) => ({ value, label: EFFORT_LABEL[value] ?? value }))}
+            onChange={setEffort}
+          />
+          <span className="max-sm:hidden">.</span>
+        </span>
       </div>
       {other && (
         <Input
@@ -281,24 +281,6 @@ export function LaunchSentence({
           onChange={(e) => setModel(e.target.value)}
         />
       )}
-      {accounts.state === "unavailable" && (
-        <p id={`${idPrefix}-account-unavailable`} role="alert" className="text-sm text-destructive">
-          {accounts.reason}
-        </p>
-      )}
-      {!chosen && accounts.state === "ready" && (
-        <p className="text-sm text-muted-foreground">
-          {HARNESS_LABELS[harness]} has no account selected.{" "}
-          <Link href="/harness" className="underline">
-            Add account
-          </Link>
-        </p>
-      )}
-      {selectedProblem && (
-        <p role="alert" className="text-sm text-destructive">
-          {selectedProblem}
-        </p>
-      )}
       <Sheet open={open && phone} onOpenChange={setOpen}>
         <SheetContent
           side="bottom"
@@ -306,38 +288,55 @@ export function LaunchSentence({
         >
           <SheetTitle>Choose model and account</SheetTitle>
           {picker}
-          <p className="text-sm">
-            {HARNESS_LABELS[harness]} running{" "}
-            {catalog[harness].models.find((option) => option.id === model)?.label ?? model} on{" "}
-            {chosen?.name ?? "no account"}.
-          </p>
-          <label htmlFor="launch-sheet-effort" className="text-sm">
-            Reasoning effort
-            <NativeSelect
-              id="launch-sheet-effort"
-              aria-label="Sheet reasoning effort"
-              value={efforts.includes(effort) ? effort : entry.defaultReasoningEffort}
-              onChange={(e) => setEffort(e.target.value)}
-            >
-              {efforts.map((level) => (
-                <option key={level} value={level}>
-                  {EFFORT_LABEL[level] ?? level}
-                </option>
-              ))}
-            </NativeSelect>
-          </label>
-          <button
-            type="button"
-            className="sticky bottom-0 rounded-md bg-primary p-3 text-primary-foreground"
-            onClick={() => {
-              setOpen(false);
-              root.current?.closest("form")?.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
-            }}
-          >
-            Launch
+          <button type="button" className="rounded-md border p-3 text-sm" onClick={() => setOpen(false)}>
+            Done
           </button>
         </SheetContent>
       </Sheet>
     </section>
+  );
+}
+
+/** Keep the reason, its repairs and the disabled launch together in the pinned footer. */
+export function LaunchAccountNotice({
+  harness,
+  account,
+  accounts,
+  onPick,
+}: {
+  harness: Harness;
+  account: string;
+  accounts: LaunchAccounts;
+  onPick: () => void;
+}) {
+  if (accounts.state === "legacy") return null;
+  if (accounts.state === "unavailable")
+    return (
+      <p role="alert" className="mr-auto text-xs text-destructive">
+        {accounts.reason}
+      </p>
+    );
+  const chosen = accounts.accounts.find((row) => row.id === account);
+  const problem = chosen ? accountProblem(chosen, accounts.now) : null;
+  const full = chosen?.maxAgents != null && (chosen.runningAgents ?? 0) >= chosen.maxAgents;
+  if (chosen && !problem && !full) return null;
+  return (
+    <>
+      <p role="alert" className="min-w-0 flex-1 text-xs text-warning">
+        {!chosen
+          ? `${HARNESS_LABELS[harness]} has no account selected.`
+          : full
+            ? `${chosen.runningAgents ?? 0} of ${chosen.maxAgents} agents are working on ${chosen.name}.`
+            : `${chosen.name} is ${problem}.`}
+      </p>
+      <Button asChild variant="outline" size="sm">
+        <Link href="/harness">{!chosen ? "Add an account" : full ? "Change account limit" : "Reconnect account"}</Link>
+      </Button>
+      {accounts.accounts.length > 0 && (
+        <Button type="button" variant="ghost" size="sm" onClick={onPick}>
+          Pick another account
+        </Button>
+      )}
+    </>
   );
 }

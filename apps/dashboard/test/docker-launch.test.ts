@@ -120,6 +120,7 @@ test("the launch body omits image overrides: the chosen agent, private, the form
       model: "gpt-5",
       reasoningEffort: "medium",
       prompt: "Say Hello",
+      ttlSeconds: 28800,
     }),
   ).toStrictEqual({
     org: ORG,
@@ -132,6 +133,7 @@ test("the launch body omits image overrides: the chosen agent, private, the form
     reasoningEffort: "medium",
     visibility: "private",
     prompt: "Say Hello",
+    ttlSeconds: 28800,
   });
   expect(() =>
     dockerLaunchBody({

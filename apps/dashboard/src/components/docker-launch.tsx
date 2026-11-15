@@ -7,23 +7,23 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm, SubmitButton } from "@/components/action-form";
-import { AccountField, Segmented } from "@/components/launch-dialog";
+import { LaunchStart } from "@/components/launch-dialog";
+import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
 import {
   LaunchAdvanced,
   LaunchDialogContent,
-  LaunchDialogHeader,
   LaunchFields,
+  LaunchLocation,
   LaunchTaskField,
   useLaunchSurface,
 } from "@/components/launch-surface";
 import { SubmitShortcut } from "@/components/mod-key";
-import { ModelFields } from "@/components/model-fields";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import type { ActionResult } from "@/lib/action";
 import { dockerLaunchKeyStorage, preferredHarness, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
-import { HARNESS_LABELS } from "@/lib/labels";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
+import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
 
 /**
@@ -58,13 +58,10 @@ export function DockerLaunchDialog({
         </Button>
       </DialogTrigger>
       <LaunchDialogContent>
-        <LaunchDialogHeader
-          title={`Launch on ${hostName}`}
-          description="An agent in a private sandbox, using the official Armada environment on this host."
-        />
-        <DockerLaunchForm
+        <LaunchStart
           orgId={orgId}
           hostId={hostId}
+          hostName={hostName}
           accounts={accounts}
           unavailable={unavailable}
           harnesses={harnesses}
@@ -75,20 +72,36 @@ export function DockerLaunchDialog({
   );
 }
 
-function DockerLaunchForm({
+export function DockerLaunchForm({
   orgId,
   hostId,
+  hostName,
   accounts,
   unavailable,
   harnesses,
   initialHarness,
+  starts,
+  selectedStart,
+  onStart,
+  idleDelaySeconds,
+  task,
+  onTask,
+  launchBlockedReason,
 }: {
   orgId: string;
   hostId: string;
+  hostName: string;
   accounts: LaunchAccounts;
   unavailable: { name: string; reason: string }[];
   harnesses: Harness[];
   initialHarness: Harness;
+  starts?: readonly LaunchStartTarget[];
+  selectedStart?: string;
+  onStart?: (id: string) => void;
+  idleDelaySeconds?: number | undefined;
+  launchBlockedReason?: string | undefined;
+  task?: string;
+  onTask?: (value: string) => void;
 }) {
   const id = useId();
   const hasUsableAccount = (agent: Harness) =>
@@ -105,7 +118,11 @@ function DockerLaunchForm({
   useLaunchSurface(root);
   const storage = dockerLaunchKeyStorage(hostId);
   const router = useRouter();
-  const usable = hasUsableAccount(harness);
+  const [credential, setCredential] = useState(
+    () => initialLaunchSelection(accounts, MODEL_CATALOG, harness).credentialId,
+  );
+  const [blocked, setBlocked] = useState(false);
+  const usable = hasUsableAccount(harness) && !blocked;
 
   useEffect(() => {
     const node = root.current;
@@ -155,43 +172,54 @@ function DockerLaunchForm({
         footer={
           <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
             <LaunchProgress />
-            {usable ? (
-              <SubmitButton className="w-full sm:w-auto">
-                <RocketIcon /> Launch <SubmitShortcut />
-              </SubmitButton>
-            ) : (
-              <>
-                <p id={`${id}-no-account`} className="mr-auto text-xs text-warning">
-                  A usable {HARNESS_LABELS[harness]} account is needed to launch.
-                </p>
-                <Button type="button" className="w-full sm:w-auto" disabled aria-describedby={`${id}-no-account`}>
-                  <RocketIcon /> Launch
-                </Button>
-              </>
+            {launchBlockedReason && (
+              <p role="alert" className="mr-auto text-xs text-warning">
+                {launchBlockedReason}
+              </p>
             )}
+            <LaunchAccountNotice
+              harness={harness}
+              account={credential}
+              accounts={accounts}
+              onPick={() => root.current?.querySelector<HTMLButtonElement>("[data-launch-account-picker]")?.click()}
+            />
+            <SubmitButton
+              className="max-sm:ml-auto"
+              disabled={!usable || accounts.state === "unavailable" || !!launchBlockedReason}
+            >
+              <RocketIcon /> Launch <SubmitShortcut />
+            </SubmitButton>
           </div>
         }
       >
         <input type="hidden" name="org" value={orgId} />
         <input type="hidden" name="hostId" value={hostId} />
         <LaunchFields>
-          <LaunchTaskField idPrefix={id} />
-          {harnesses.length > 1 ? (
-            <Segmented
-              legend="Agent"
-              name="harness"
-              value={harness}
-              onChange={setHarness}
-              options={harnesses.map((value) => ({ value, label: HARNESS_LABELS[value] }))}
-            />
-          ) : (
-            <p className="text-sm">
-              <input type="hidden" name="harness" value={harness} />
-              <span className="text-muted-foreground">Agent:</span> {HARNESS_LABELS[harness]}
-            </p>
-          )}
-          <AccountField key={harness} idPrefix={id} harness={harness} accounts={accounts} onChange={() => {}} />
-          <ModelFields key={`${harness}-model`} idPrefix={id} harness={harness} catalog={MODEL_CATALOG} />
+          <LaunchTaskField idPrefix={id} value={task} onChange={onTask} />
+          <LaunchSentence
+            idPrefix={id}
+            harness={harness}
+            onHarness={setHarness}
+            account={credential}
+            onAccount={setCredential}
+            onBlocked={setBlocked}
+            accounts={accounts}
+            catalog={MODEL_CATALOG}
+            boatOpenCodeDisabled={false}
+            allowedHarnesses={harnesses}
+          />
+          <LaunchLocation
+            provider="docker"
+            start={selectedStart ?? `Empty machine · ${hostName}`}
+            starts={starts?.map((item) => ({
+              value: item.id,
+              label: item.label,
+              group: item.group,
+              reason: item.reason,
+            }))}
+            onStart={onStart}
+            idleDelaySeconds={idleDelaySeconds}
+          />
           <LaunchAdvanced summary={<span className="text-xs text-muted-foreground">Armada official environment</span>}>
             <p className="text-sm">
               <span className="text-muted-foreground">Environment:</span> Armada official (fetched by your host the

@@ -28,6 +28,7 @@ import { LAUNCH_PATH, LAUNCH_TIMEOUT_MS } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
 import { checkAccountChoice } from "@/lib/model-accounts";
 import { modelChoice } from "@/lib/model-choice";
+import { ttlChoice } from "@/lib/templates";
 
 /**
  * The Hosts page's writes (#1380), one control API call each as the signed-in viewer from the dashboard's server.
@@ -134,6 +135,8 @@ export async function launchOnDockerHost(
   const harness = (formString(data, "harness") || "codex") as Harness;
   if (!dockerHarnesses(option).offered.includes(harness))
     return fail("This Armada server does not launch that agent on Docker hosts.");
+  const ttl = ttlChoice(formString(data, "ttl"), "docker");
+  if (!ttl.ok) return fail(ttl.error);
   const choice = modelChoice(harness, {
     model: formString(data, "model"),
     otherModel: formString(data, "other_model"),
@@ -162,6 +165,7 @@ export async function launchOnDockerHost(
           requestId,
           model: choice.args.model,
           reasoningEffort: choice.args.reasoningEffort,
+          ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
           ...(prompt ? { prompt } : {}),
         }),
         "launching on Docker hosts",
@@ -169,7 +173,8 @@ export async function launchOnDockerHost(
     );
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    if (error.outcomeUnknown || error.code === "outcome_unknown") return fail(UNKNOWN_DOCKER_LAUNCH);
+    if (error.outcomeUnknown || error.code === "outcome_unknown")
+      return fail(UNKNOWN_DOCKER_LAUNCH, { href: "/sandboxes?owner=me&sort=newest", label: "See newest sandboxes" });
     return fail(dockerHostActionFailure(error.status, "launch"));
   }
   if (!id) return fail("The Armada server did not answer with a Docker sandbox.");

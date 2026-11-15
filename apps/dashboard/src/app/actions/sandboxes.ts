@@ -1,6 +1,6 @@
 "use server";
 
-import { type Harness, validateSkillPins } from "@armada/core";
+import { type Harness, MODEL_CATALOG, validateSkillPins } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -17,17 +17,21 @@ import {
 import { CONNECTION_CHOICE_FIELD, launchSelection } from "@/lib/connections";
 import { ControlError } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
+import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
+import { readSelectedDockerSnapshots } from "@/lib/data/docker-snapshots";
 import { viewerGateway } from "@/lib/data/gateway";
 import { listGoldens } from "@/lib/data/goldens";
 import { readLaunchOptions } from "@/lib/data/launch-options";
-import { listSelectedAccounts } from "@/lib/data/model-accounts";
-import { newWorkBlocker } from "@/lib/data/provider-setup";
+import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
+import { newWorkBlocker, readProviderSetup } from "@/lib/data/provider-setup";
 import { getSandbox } from "@/lib/data/sandboxes";
-import { isSelectedOrganization } from "@/lib/data/selected-org";
+import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
+import { dockerHarnesses, dockerLaunchBlocker } from "@/lib/docker-launch";
+import { snapshotLaunchEnabled } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { GatewayError } from "@/lib/gateway";
-import { PROVIDER_LABELS } from "@/lib/golden-form";
+import { goldenLaunchReadiness, PROVIDER_LABELS } from "@/lib/golden-form";
 import {
   decodeLaunchAttempt,
   encodeLaunchAttempt,
@@ -38,13 +42,17 @@ import {
   launchSandbox,
 } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
-import { MACHINE_SIZE_LABELS, PROVIDER_REFUSALS, policyHasDefaults } from "@/lib/machine-size";
+import { boatOpenCodeAvailable } from "@/lib/launch-options";
+import type { LaunchStartTarget } from "@/lib/launch-picker";
+import { goldenSizing, MACHINE_SIZE_LABELS, PROVIDER_REFUSALS, policyHasDefaults } from "@/lib/machine-size";
 import { checkAccountChoice } from "@/lib/model-accounts";
 import { chosenConnection, launchArgs, type ModelFields, type SendArgs, sendOverride } from "@/lib/model-choice";
+import { connectedProviders } from "@/lib/provider-setup";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { filtersToSearch } from "@/lib/sandbox-filters";
 import { lifecycleFailure } from "@/lib/sandbox-lifecycle";
 import { createClient } from "@/lib/supabase/server";
+import { ttlChoice } from "@/lib/templates";
 
 async function gatewayFor(id: string) {
   const viewer = await requireViewer();
@@ -212,6 +220,8 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     discovery,
   );
   if (!parsed.ok) return fail(parsed.error);
+  const ttl = ttlChoice(formString(data, "ttl"), parsed.args.provider);
+  if (!ttl.ok) return fail(ttl.error);
   if (!isUuid(parsed.args.org)) return fail("That request is not valid.");
   // A connection model is billed to its own connection: never run it on another account.
   const connection = chosenConnection(modelFields(data));
@@ -313,6 +323,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
           { serverUrl, token },
           {
             ...parsed.args,
+            ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
             ...(skills.length ? { skills } : {}),
             ...(connections === undefined ? {} : { connections }),
             ...(repository.repo === undefined ? {} : { repo: repository.repo }),
@@ -368,4 +379,119 @@ async function accountChoice(
 ): Promise<{ ok: true; id: string | undefined } | { ok: false; error: string }> {
   if (requested && !isUuid(requested)) return { ok: false, error: "That request is not valid." };
   return checkAccountChoice(await listSelectedAccounts(), harness, requested, Date.now());
+}
+
+/** Read the selected organization's visible launch sources only, using the viewer's JWT. */
+export async function readLaunchDialogOptions() {
+  const selected = await selectedOrganization();
+  if (!selected) throw new Error("Choose an organization first.");
+  const supabase = await createClient();
+  const [goldens, hostRead, snapshotRead, dockerOption, discovery, listed, accountList, setup, idleDelaySeconds] =
+    await Promise.all([
+      listGoldens(supabase),
+      readSelectedDockerHosts(),
+      readSelectedDockerSnapshots(),
+      readDockerLaunchOption(),
+      readLaunchOptions(),
+      listSelectedConnections(),
+      listSelectedAccounts(),
+      readProviderSetup(selected.org.id),
+      readLaunchIdleDelay(),
+    ]);
+  const connected = setup.state === "unavailable" ? null : connectedProviders(setup.status);
+  const targets: LaunchStartTarget[] = goldens.flatMap((golden): LaunchStartTarget[] => {
+    if (golden.provider === "docker") return [];
+    const repositories = goldenRepositoryDirs(golden.config);
+    const sizing = goldenSizing(golden, repositories);
+    const readiness = goldenLaunchReadiness({
+      provider: golden.provider,
+      hasSnapshot: Boolean(golden.provider_snapshot_id),
+      serverReady: Boolean(mcpUrl()),
+      connected,
+    });
+    return [
+      {
+        id: golden.id,
+        golden: golden.name,
+        provider: golden.provider,
+        label: `${golden.name} · ${golden.provider === "boat" ? "Boat" : "Modal"} cloud`,
+        group: `${golden.provider === "boat" ? "Boat" : "Modal"} cloud`,
+        repositories,
+        ...(readiness.kind === "ready" ? {} : { reason: readiness.detail }),
+        ...(sizing.kind === "ready" ? { sizing: { policy: sizing.policy } } : {}),
+        ...(sizing.kind === "unreadable" ? { reason: sizing.reason } : {}),
+      },
+    ];
+  });
+  const agents = dockerHarnesses(dockerOption);
+  if (hostRead.state === "ready") {
+    for (const host of hostRead.list.hosts.filter((host) => host.state !== "revoked")) {
+      const reason = dockerLaunchBlocker(dockerOption, hostRead.list.placement, host);
+      targets.push({
+        id: host.id,
+        golden: "",
+        provider: "docker",
+        hostId: host.id,
+        label: `Empty machine · ${host.name ?? "Your server"}`,
+        group: `${host.name ?? "Your server"} · your own server · ${host.state}`,
+        repositories: [],
+        harnesses: agents.offered,
+        ...(agents.initial ? { initialHarness: agents.initial } : {}),
+        ...(reason ? { reason } : {}),
+      });
+      if (snapshotRead.state === "ready") {
+        for (const snapshot of snapshotRead.snapshots.filter((snapshot) => snapshot.hostId === host.id)) {
+          const blocked =
+            reason ??
+            (snapshot.status !== "ready"
+              ? "Not built yet. Open Snapshots to build it."
+              : !snapshot.hostAvailable
+                ? "This server is unavailable."
+                : !snapshotLaunchEnabled(dockerOption, hostRead.list.placement)
+                  ? "This server does not support snapshot launches."
+                  : null);
+          targets.push({
+            id: snapshot.id,
+            golden: snapshot.name,
+            provider: "docker",
+            snapshotId: snapshot.id,
+            label: `${snapshot.name} · ${host.name ?? "Your server"}`,
+            group: `${host.name ?? "Your server"} · your own server · ${host.state}`,
+            repositories: [],
+            harnesses: agents.offered,
+            ...(blocked ? { reason: blocked } : {}),
+          });
+        }
+      }
+    }
+  }
+  return {
+    orgId: selected.org.id,
+    targets,
+    catalog: MODEL_CATALOG,
+    accounts: launchAccounts(accountList, Date.now()),
+    connections:
+      listed.state === "ready" ? { connections: listed.connections } : { unavailable: "Tools could not be loaded." },
+    boatOpenCodeAvailable: boatOpenCodeAvailable(discovery),
+    ...(idleDelaySeconds === undefined ? {} : { idleDelaySeconds }),
+  };
+}
+
+/** The server publishes its resolved idle policy in healthz; never substitute a dashboard default. */
+async function readLaunchIdleDelay(): Promise<number | undefined> {
+  const serverUrl = mcpUrl();
+  if (!serverUrl) return undefined;
+  try {
+    const response = await fetch(new URL("/healthz", serverUrl), {
+      cache: "no-store",
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!response.ok) return undefined;
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || !("idlePauseDelayMs" in body)) return undefined;
+    const delay = body.idlePauseDelayMs;
+    return typeof delay === "number" && Number.isSafeInteger(delay) && delay > 0 ? delay / 1_000 : undefined;
+  } catch {
+    return undefined;
+  }
 }
