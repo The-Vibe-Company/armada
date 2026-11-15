@@ -724,17 +724,21 @@ async function dispatch(
     case "members/remove":
       await removeMember(store, userId, { org, email: required(body, "email") });
       return { ok: true };
+    case "creds/accounts/limits":
     case "creds/accounts/set":
     case "creds/accounts/rename":
     case "creds/accounts/default":
     case "creds/accounts/remove": {
-      const action = route.split("/").at(-1) as "set" | "rename" | "default" | "remove";
+      const action = route.split("/").at(-1) as "set" | "rename" | "default" | "remove" | "limits";
       const account = await mutateCredentialAccount(
         store,
         encryptionKey,
         userId,
         {
           action,
+          ...(body.maxAgents === undefined
+            ? {}
+            : { maxAgents: body.maxAgents === null ? null : requiredNumber(body, "maxAgents") }),
           ...(body.expectedVersion === undefined ? {} : { expectedVersion: requiredNumber(body, "expectedVersion") }),
           ...(optional(body, "expiresAt") ? { expiresAt: required(body, "expiresAt") } : {}),
           scope: scope(body),

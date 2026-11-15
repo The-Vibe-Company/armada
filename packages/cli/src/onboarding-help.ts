@@ -829,6 +829,7 @@ Example: armada creds presets --json
 `,
   "creds connect": `Usage: armada creds connect <preset> --name <name> [--file <path>] [--org <name>] [--json]
   [--models <id,...>] [--base-url <HTTPS-url>] [--api-version <version>]
+  [--max-agents <positive-integer> | --unlimited]
 Store a named connection after Armada login. Choose a preset with armada creds presets --json.
 Supply only the API key through stdin/hidden input or a private --file, never command arguments or JSON.
 Presets with harness models reject --models, --base-url and --api-version.
@@ -836,10 +837,18 @@ Chosen-model presets require --models and, unless fixed by the preset, --base-ur
 Fixed-address presets reject --base-url; --api-version is only accepted by supporting presets.
 Official Azure addresses are tested with a tiny billable request per deployment before saving;
 a failed check saves nothing. Omit --org for personal scope.
+Morph defaults to 2 simultaneous agents; other accounts default to unlimited.
+Use --max-agents N or --unlimited on connect, import, login and set.
+Change an existing cap with armada creds limits ACCOUNT_UUID --max-agents 2 or --unlimited.
 Morph: armada creds connect morph --name shared --file /private/morph-key
 One account supports Claude Code and Codex. At launch choose --credential-id ACCOUNT_UUID
 and --model morph-kimik31, morph-dsv41flash or morph-dsv41flash-1017.
 Example: armada creds connect openai --name personal --file /private/api-key
+`,
+  "creds limits": `Usage: armada creds limits <account-id> --max-agents N | --unlimited [--org <name>] [--json]
+Set the maximum agents running at the same time across sandbox providers.
+Stopped and idle-paused sandboxes do not count. New starts beyond the cap are refused before allocation.
+Existing running agents are not stopped when lowering the cap.
 `,
   "creds test": `Usage: armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]
 Test a sandbox's bound model connection after Armada login and server authorization.

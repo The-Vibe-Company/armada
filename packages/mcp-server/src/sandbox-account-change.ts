@@ -35,7 +35,7 @@ export type QuiesceAccountChange = (id: string, org: string) => Promise<void>;
 /** Account changes quiesce compute before replacing pins; never hot-swap a live driver's environment. */
 export function createSandboxAccountChange(
   sql: Sql,
-  credentials: Pick<LaunchCredentialResolver, "resolve" | "admit">,
+  credentials: Pick<LaunchCredentialResolver, "resolve" | "enrollAccount">,
   legacy: CredentialBindingRecovery,
 ): CredentialBindingRecovery {
   const transaction = sql.transaction?.bind(sql);
@@ -115,7 +115,7 @@ export function createSandboxAccountChange(
     )
       throw new VaultError("unavailable", "The selected account's pricing identity is inconsistent.");
     if (before.status === "ready") await stopOwnedIdle();
-    await credentials.admit?.(actor, resolved, before.id);
+    await credentials.enrollAccount?.(actor, resolved);
     return transaction(async (tx) => {
       // Follow the member -> account -> sandbox lock order used by turn admission.
       await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [

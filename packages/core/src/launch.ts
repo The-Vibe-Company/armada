@@ -108,6 +108,8 @@ export interface LaunchCredentialResolver {
     repos: readonly GoldenRepo[],
   ): Promise<void>;
   /** Server-owned native credential admission, before provider allocation/hydration. */
+  enrollAccount?(actor: GoldenActor, credentials: HarnessCredentials): Promise<void>;
+  releaseAdmission?(sandboxId: string): Promise<void>;
   admit?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
   hydrateNative?(
     actor: GoldenActor,
@@ -814,6 +816,8 @@ export async function launchSandbox(
     failed = true;
     throw error;
   } finally {
+    // Model auth is delivered only after the sandbox row is recorded; an unknown fork has no account access.
+    await stores.credentials.releaseAdmission?.(id);
     // An unrecorded physical outcome remains owned by this durable fence.
     if (childRecorded || noAllocation) {
       await releaseOperation?.().catch((error) => {

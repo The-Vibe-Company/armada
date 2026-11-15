@@ -10,6 +10,7 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core";
+import { admitAccountCapacity } from "./account-capacity.ts";
 import { admitDockerCapacity, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
@@ -256,6 +257,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           if (!managed.rows.length) deny();
           return record(row);
         }
+        if (request.credentialId) await admitAccountCapacity(tx, request.credentialId, request.requestId);
         await admitDockerCapacity(tx, request.hostId);
         const generation = randomUUID();
         const physical = `armada-${host.installation_id}-${request.hostId}-${request.requestId}-${generation}`;

@@ -140,6 +140,7 @@ export interface BoatProviderOptions {
   /** The boat API key. It stays in this object: no error or event carries it. */
   apiKey: string;
   /** Recheck/fence stopped authority before resume; false skips a stale observed resume. */
+  resumeRefused?: (provider: Provider, sandboxId: string) => Promise<void>;
   beforeResume?: (provider: Provider, sandboxId: string) => Promise<boolean>;
   /** Called only after explicit physical readiness, before Boat creates the native turn. */
   beforeStop?: (provider: Provider, sandboxId: string) => Promise<void>;
@@ -586,6 +587,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
               lifecycleTrace(request.sandboxId, "resume", "api_dispatch", "prompt");
               await call(() => api.resume({ sandboxId: request.sandboxId }, { signal }));
             } catch (error) {
+              const observed = await provider.get(request.sandboxId, { signal }).catch(() => null);
+              if (observed?.state === "stopped") await options.resumeRefused?.(provider, request.sandboxId);
               if (!(error instanceof ProviderError) || error.status !== 409) throw error;
               const concurrent = await provider.get(request.sandboxId, { signal });
               if (!["starting", "ready", "running"].includes(concurrent.state)) throw error;
