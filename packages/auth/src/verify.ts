@@ -7,7 +7,7 @@ import type { AuthStore, MemberRole } from "./types.ts";
  * keeps no cache, so a revocation or a removed membership fails the next request.
  * #464 should not cache this result.
  */
-export interface Principal {
+interface Principal {
   userId: string;
   orgId: string;
   tokenId: string;
@@ -15,7 +15,7 @@ export interface Principal {
   role: MemberRole;
 }
 
-export type AuthResult = { ok: true; principal: Principal } | { ok: false; error: "invalid_token" };
+type AuthResult = { ok: true; principal: Principal } | { ok: false; error: "invalid_token" };
 
 /**
  * Resolves `(user, org)` from an `Authorization: Bearer` header.
