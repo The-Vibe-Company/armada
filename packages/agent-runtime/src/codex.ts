@@ -140,8 +140,10 @@ export class CodexDriver implements Driver {
         pending.set(id, { resolve: (x) => resolve(x as T), reject, timer });
         child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
       });
+    let retryWait: AbortController | undefined;
     const fail = () => {
       closed = true;
+      retryWait?.abort();
       for (const p of pending.values()) {
         clearTimeout(p.timer);
         p.reject(new HarnessError("harness_process_lost"));
@@ -466,7 +468,6 @@ export class CodexDriver implements Driver {
       }
     })();
     if (!resumeOnly) current = initialized.then(() => begin(c.request.text));
-    let retryWait: AbortController | undefined;
     const interrupt = async () => {
       stopping = true;
       retryWait?.abort();
@@ -476,7 +477,7 @@ export class CodexDriver implements Driver {
         return;
       }
       const active = await current;
-      await rpc("turn/interrupt", { threadId, turnId });
+      if (!terminalTurns.has(turnId)) await rpc("turn/interrupt", { threadId, turnId });
       try {
         await bounded(active.terminal, 10000);
       } catch (error) {
@@ -533,6 +534,7 @@ export class CodexDriver implements Driver {
               retryWait = undefined;
             }
             if (stopping || c.signal.aborted) return "interrupted" as const;
+            if (closed) throw new HarnessError("harness_process_lost");
             if (active !== current) continue;
             current = begin(
               "Continue from where the model provider request was rate limited. Do not repeat completed work.",
@@ -601,7 +603,7 @@ export class CodexDriver implements Driver {
         steerFinished = (async () => {
           try {
             const active = await current;
-            await rpc("turn/interrupt", { threadId, turnId });
+            if (!terminalTurns.has(turnId)) await rpc("turn/interrupt", { threadId, turnId });
             try {
               await bounded(active.terminal, 10000);
             } catch (error) {

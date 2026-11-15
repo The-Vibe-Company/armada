@@ -815,3 +815,34 @@ nativeTest("Codex resumes the same thread after throttling without a real wait",
     await driver.close();
   }
 });
+
+nativeTest.each(["interrupt", "steer"] as const)(
+  "Codex %s during model backoff needs no native interrupt",
+  async (action) => {
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/app-server.ts`,
+      cwd: import.meta.dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", OPENAI_API_KEY: "synthetic-not-a-real-key" },
+    });
+    let turn: Turn;
+    let actionDone: Promise<void> | undefined;
+    try {
+      turn = driver.start({
+        request: { sandboxId: "s", harness: "codex", text: "rateLimitExceeded" },
+        signal: new AbortController().signal,
+        session: () => {},
+        emit: (event) => {
+          if (event.kind === "other" && event.type === "armada/modelRateLimit") {
+            queueMicrotask(() => {
+              actionDone = action === "interrupt" ? turn.interrupt() : turn.steer("redirect");
+            });
+          }
+        },
+      });
+      expect(await turn.done).toBe(action === "interrupt" ? "interrupted" : "finished");
+      await actionDone;
+    } finally {
+      await driver.close();
+    }
+  },
+);
