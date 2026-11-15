@@ -264,6 +264,7 @@ export {
   modelPrice,
   type PriceVendor,
 } from "./model-prices.ts";
+export { type ModelRateLimit, modelRateLimit } from "./model-rate-limit.ts";
 export {
   type HarnessModels,
   MODEL_CATALOG,

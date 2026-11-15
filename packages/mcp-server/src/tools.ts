@@ -303,6 +303,17 @@ const sandboxListMetadata = z.object({
 });
 
 const prompt = z.object({
+  rateLimit: z
+    .object({
+      retryCount: z.number(),
+      delayMs: z.number(),
+      totalWaitMs: z.number(),
+      retryAt: z.number(),
+      waiting: z.boolean(),
+      message: z.string(),
+    })
+    .nullable()
+    .optional(),
   promptId: z.string(),
   conversationId: z.string().nullable(),
   state: z.enum(["running", "finished", "interrupted", "failed"]),

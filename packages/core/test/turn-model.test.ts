@@ -147,3 +147,25 @@ test.each(["sonnet", "best", "fable", "sonnet[1m]", "opus[1m]", "claude-sonnet-5
     ).toMatchObject({ observedModel: "claude-sonnet-5", modelSelectionReason: "model_selection_unverified" });
   },
 );
+
+test("compatible native usage reports an observed model without proving exact response selection", () => {
+  expect(
+    turnModelEvidence(
+      [
+        message(undefined),
+        {
+          id: "usage",
+          at: 2,
+          promptId: "turn",
+          kind: "other",
+          type: "armada/turnUsage",
+          data: { model: "compatible/kimi" },
+        },
+      ],
+      { promptId: "turn", requestedModel: "kimi", complete: true },
+    ),
+  ).toMatchObject({
+    observedModel: "compatible/kimi",
+    modelSelectionReason: "model_selection_unverified",
+  });
+});

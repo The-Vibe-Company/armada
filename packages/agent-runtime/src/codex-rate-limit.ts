@@ -1,4 +1,5 @@
 import type { CodexErrorInfo } from "./codex-schema/v2/CodexErrorInfo.ts";
+import { modelRetryDelay } from "./model-rate-limit.ts";
 
 /** App-server exposes status codes, but currently does not forward Retry-After headers. */
 export function codexRateLimited(info: CodexErrorInfo | null | undefined): boolean {
@@ -11,5 +12,5 @@ export function codexRateLimited(info: CodexErrorInfo | null | undefined): boole
 }
 
 export function codexRetryDelay(attempt: number, random = Math.random()): number {
-  return Math.min(300_000, 1000 * 2 ** Math.min(attempt, 9)) * (0.5 + random * 0.5);
+  return modelRetryDelay(attempt, random);
 }
