@@ -14,7 +14,7 @@ import {
   type Sql,
   type TemplateService,
 } from "@armada/core/server";
-import { bootstrapBoatMcp, type McpBootstrap, normalizeNativeMcpBootstrap } from "./mcp-native.ts";
+import { configureNativeMcp, type McpBootstrap, normalizeNativeMcpBootstrap } from "./mcp-native.ts";
 import { resolveMcpStdioExecutable } from "./mcp-stdio-bootstrap.ts";
 
 /** Server-authorized lease reconciliation; no VM or user receives the signing key. */
@@ -217,14 +217,7 @@ export function createMcpLifecycle(options: {
             throw Error("MCP lease is no longer active.");
         return;
       }
-      if (provider.configureMcp) {
-        try {
-          await provider.configureMcp({ sandboxId: sandbox.providerSandboxId, configuration: nativeConfig });
-        } catch {
-          throw Error("Native MCP configuration I/O failed; no turn was started.");
-        }
-      } else if (provider.id === "boat") await bootstrapBoatMcp(provider, sandbox.providerSandboxId, nativeConfig);
-      else throw Error("Provider must support authenticated configureMcp before starting a connected sandbox.");
+      await configureNativeMcp(provider, sandbox.providerSandboxId, nativeConfig);
       for (const tokenHash of prepared.hashes)
         if (!(await createSqlMcpLeasePort(tx).validate(tokenHash, "tools")))
           throw Error("MCP authority changed during native configuration.");
@@ -263,9 +256,7 @@ export function createMcpLifecycle(options: {
   const launch = createSqlMcpLaunchPort(sql, registry);
   const connections: NonNullable<LaunchStores["connections"]> = {
     ...launch,
-    renewLifetime: async (provider, sandboxId) => {
-      await lifecycle.renewLeases(provider, sandboxId);
-    },
+    renewLifetime: (provider, sandboxId) => lifecycle.renewLeases(provider, sandboxId),
     validate: async (actor, ids, visibility) => {
       await launch.validate(actor, ids, visibility);
       for (const id of ids) {
@@ -406,15 +397,7 @@ export function createMcpLifecycle(options: {
         update public.mcp_bootstraps b set configured=false from fenced f where b.sandbox_id=f.id`,
         [provider.id, sandboxId],
       );
-      if (provider.id === "boat")
-        await bootstrapBoatMcp(provider, sandboxId, { revision: "snapshot_scrub", servers: {} });
-      else if (provider.configureMcp) {
-        try {
-          await provider.configureMcp({ sandboxId, configuration: { revision: "snapshot_scrub", servers: {} } });
-        } catch {
-          throw Error("Native MCP snapshot scrub I/O failed.");
-        }
-      } else throw Error("Provider cannot scrub transient MCP configuration before snapshot.");
+      await configureNativeMcp(provider, sandboxId, { revision: "snapshot_scrub", servers: {} }, true);
     },
   };
   return lifecycle;
