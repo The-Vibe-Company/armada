@@ -280,9 +280,10 @@ export async function startServer(
         modelAuth,
       })
     : undefined;
-  if (config.boatAgentPath === "runtime") {
-    if (!runtimeLaunch) throw Error("Boat runtime default requires installed runtime artifacts.");
-    launch.boatRuntimeDefault = {
+  if (config.boatAgentPath === "runtime" && !runtimeLaunch)
+    throw Error("Boat runtime default requires installed runtime artifacts.");
+  if (runtimeLaunch) {
+    launch.boatEndpointRuntime = {
       policy: runtimeLaunch,
       credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, { store, app: githubApp }),
       connections: runtimeMcp.connections,
@@ -297,6 +298,7 @@ export async function startServer(
           ).key,
         }),
     };
+    if (config.boatAgentPath === "runtime") launch.boatRuntimeDefault = launch.boatEndpointRuntime;
   }
   let modalRuntimePolicy: ReturnType<typeof modalRuntimeLaunch> | undefined;
   if (env.ARMADA_MODAL_DIALOUT === "1") {
