@@ -21,7 +21,7 @@ import {
 } from "@/lib/github";
 import { createClient } from "@/lib/supabase/server";
 
-export const metadata: Metadata = { title: "Settings" };
+export const metadata: Metadata = { title: "Your connections" };
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ github?: string }> }) {
@@ -41,14 +41,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
   return (
     <>
-      <PageHeader title="Settings" />
+      <PageHeader title="Your connections" description="What Armada uses in your name." />
       {result && (
         <Alert variant={result.ok ? "default" : "destructive"}>
           <AlertDescription>{result.text}</AlertDescription>
         </Alert>
       )}
-
-      <PersonalProviderKeys owner={viewer.id} rows={personalKeys} />
 
       <Card data-settings="github">
         <CardHeader>
@@ -56,7 +54,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             <GitPullRequestIcon className="size-4" />
             GitHub
           </CardTitle>
-          <CardDescription>Sandboxes commit, push and use gh as you.</CardDescription>
+          <CardDescription>Sandboxes commit and push as you.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {!configured && (
@@ -80,10 +78,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                   </span>
                   <ConnectionBadge state="connected" />
                 </p>
-                <p className="text-xs break-all text-muted-foreground">
+                <details className="text-xs break-all text-muted-foreground">
+                  <summary className="cursor-pointer">Technical details</summary>
                   {connection.github_id}+{connection.login}@users.noreply.github.com, since{" "}
                   {new Date(connection.created_at).toISOString().slice(0, 10)}
-                </p>
+                </details>
               </div>
               <div className="flex items-center gap-2">
                 {configured && (
@@ -127,7 +126,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               )}
             </div>
           )}
-
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Armada's GitHub App</CardTitle>
+          <CardDescription>
+            Installed on your GitHub account, it lets sandboxes reach your repositories.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
           {connection && !revoked && installations.length === 0 && (
             <Alert variant="destructive" data-github-installations="missing">
               <AlertDescription>
@@ -136,7 +144,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                   <>
                     {" "}
                     <a href={installUrl} className="underline underline-offset-4" target="_blank" rel="noreferrer">
-                      Install the app
+                      Install
                     </a>
                     .
                   </>
@@ -185,7 +193,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               <>
                 {" "}
                 <a href={installUrl} className="underline underline-offset-4" target="_blank" rel="noreferrer">
-                  Install the app on your repositories
+                  Install on your account
                 </a>
                 .
               </>
@@ -200,6 +208,18 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               </>
             ) : null}
           </p>
+        </CardContent>
+      </Card>
+      <PersonalProviderKeys owner={viewer.id} rows={personalKeys} />
+      <Card>
+        <CardContent className="flex items-center justify-between gap-3 pt-6">
+          <div className="min-w-0">
+            <h2 className="text-sm font-medium">Model accounts</h2>
+            <p className="text-sm text-muted-foreground">Subscriptions and API keys your agents run on.</p>
+          </div>
+          <Button variant="outline" asChild>
+            <a href="/harness">Models</a>
+          </Button>
         </CardContent>
       </Card>
     </>

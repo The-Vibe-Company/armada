@@ -132,8 +132,8 @@ export function AddVaultDialog({ orgId, orgName, isAdmin }: { orgId: string; org
   );
   return (
     <CreateDialog
-      label="Add"
-      title="Add a variable or secret"
+      label="Add a setting or a secret"
+      title="Add a setting or a secret"
       description="Values your agents will read from their environment."
       open={open}
       onOpenChange={(next) => {
@@ -179,14 +179,14 @@ function AddVaultForm({
         <ChoiceCard
           value="variable"
           icon={<BracesIcon />}
-          title="Variable"
+          title="Setting"
           hint="Readable configuration. Anyone who can use it can see it."
         />
         <ChoiceCard
           value="secret"
           icon={<LockKeyholeIcon />}
           title="Secret"
-          hint="Write-only. Stored encrypted; nobody can read it back."
+          hint="Never shown again. Stored encrypted; nobody can read it back."
         />
       </Choice>
       <NameField id={id} kind={kind} value={name} onChange={setName} />
@@ -213,7 +213,7 @@ function AddVaultForm({
       </Choice>
       {state && !state.ok && <ResultLine result={state} />}
       <div className="flex justify-end">
-        <SubmitButton>{kind === "secret" ? "Store secret" : "Save variable"}</SubmitButton>
+        <SubmitButton>{kind === "secret" ? "Store secret" : "Save setting"}</SubmitButton>
       </div>
     </form>
   );
@@ -376,7 +376,7 @@ export function VaultPanel({
     <div className="space-y-4" data-vault-panel={item.name} data-vault-kind={item.kind}>
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
         <dt className="text-muted-foreground">Kind</dt>
-        <dd>{item.kind === "secret" ? "Secret (write-only)" : "Variable (readable)"}</dd>
+        <dd>{item.kind === "secret" ? "Secret · never shown again" : "Setting · readable"}</dd>
         <dt className="text-muted-foreground">Status</dt>
         <dd data-vault-status={item.status}>{active ? "Active" : "Revoked"}</dd>
         <dt className="text-muted-foreground">Who can use it</dt>
@@ -410,7 +410,7 @@ export function VaultPanel({
           <div className="flex gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm" data-write-only>
             <LockKeyholeIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />
             <p>
-              <span className="font-medium">Write-only.</span>{" "}
+              <span className="font-medium">Never shown again.</span>{" "}
               <span className="text-muted-foreground">
                 The value is stored encrypted and is never shown, copied or exported, to you or to admins. To change it,
                 replace it.

@@ -11,20 +11,7 @@ import { listSelectedTemplates } from "@/lib/data/templates";
 import { SKILLS_PATH } from "@/lib/skillpack-key";
 
 const TITLE = "Skills";
-const DESCRIPTION = (
-  <>
-    Manage your private-skill access key here. Choose skills in supported launch dialogs or templates.{" "}
-    <a
-      className="font-medium text-foreground underline underline-offset-4"
-      href="https://skillpack.app"
-      target="_blank"
-      rel="noreferrer"
-    >
-      Browse Skillpack
-    </a>
-    .
-  </>
-);
+const DESCRIPTION = "Instruction packs an agent loads to do a kind of task well. They come from Skillpack.";
 
 /**
  * Build > Skills (#957): where the Skillpack key is added, replaced and removed. Harness is about model
@@ -107,8 +94,8 @@ export default async function SkillsContent() {
         list={templates}
         uses={(definition) => definition.skills.length > 0}
         title="Templates using skills"
-        empty="No visible templates include skill pins."
-        note="These templates include skill pins; this is not a count of Skillpack-key usage."
+        empty="No visible templates include skills."
+        note="You pick skills in a template or at launch, not here."
       />
     </>
   );
