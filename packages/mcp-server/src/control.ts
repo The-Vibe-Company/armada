@@ -16,6 +16,7 @@ import {
   type GoldenActor,
   type GoldenBuildJobs,
   GoldenError,
+  type GoldenRecord,
   isSandboxProvider,
   type LaunchOptions,
   type LaunchStores,
@@ -99,6 +100,8 @@ import { callSharedTool, ToolApiError } from "./tool-api.ts";
 export const CONTROL_PREFIX = "/api/v1/";
 
 export interface ControlOptions {
+  /** Optional read model combining fresh org resolution with visibility-filtered rows. */
+  listGoldenRecords?: (caller: Caller, ref: string | undefined) => Promise<GoldenRecord[]>;
   sandboxBillingAccount?: (
     caller: Caller,
     id: string,
@@ -954,7 +957,9 @@ async function dispatch(
       return { ok: true };
     }
     case "golden/list":
-      return listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
+      return options.listGoldenRecords
+        ? listGoldens(options, caller, optional(body, "org"))
+        : listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));
     case "golden/build/find": {
       if (!options.goldenBuilds || !options.data)
         throw new VaultError("unavailable", "Durable golden builds are not configured.");

@@ -39,6 +39,7 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createDockerSnapshots } from "./docker-snapshots.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
+import { createSqlGoldenList } from "./golden-list.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { idlePauseDelayMs } from "./idle-pause-policy.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
@@ -481,6 +482,7 @@ export async function startServer(
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     store,
+    listGoldenRecords: createSqlGoldenList(sql, store),
     encryptionKey: config.encryptionKey,
     data,
     connections: mcp.connections,
