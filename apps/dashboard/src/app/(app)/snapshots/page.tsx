@@ -22,13 +22,18 @@ import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
-import { DockerLaunchDialog } from "@/components/docker-launch";
 import { SnapshotBuildRefresh, SnapshotCreateChoice, SnapshotRebuildDialog } from "@/components/docker-snapshot-forms";
 import { EnvironmentTemplates } from "@/components/environment-templates";
 import { GoldenCreateDialog } from "@/components/golden-create-dialog";
 import { GoldenForm } from "@/components/golden-form";
-import { type LaunchConnections, LaunchDialog } from "@/components/launch-dialog";
-import { Empty } from "@/components/page-header";
+import {
+  type HostLaunchStart,
+  type LaunchConnections,
+  type LaunchProps,
+  LaunchStart,
+} from "@/components/launch-dialog";
+import { LaunchDialogContent } from "@/components/launch-surface";
+import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
 import { RemoveGolden } from "@/components/remove-golden";
 import { ResourceBrowser, type ResourceRow, SelectItem } from "@/components/resource-browser";
@@ -37,6 +42,7 @@ import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import { isUuid } from "@/lib/action";
 import {
   CAPABILITIES_TIMEOUT_MS,
@@ -59,7 +65,7 @@ import { displayUser, listMemberships, type Membership, memberDirectory, require
 import { dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
 import { hasDockerHost, snapshotLaunchEnabled, snapshotRebuildAvailable, snapshotState } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
-import { capacityParts, type EnvironmentState, environmentBlockers, environmentState } from "@/lib/environments";
+import { capacityParts, type EnvironmentState, environmentState } from "@/lib/environments";
 import {
   type CapacityState,
   editDefaults,
@@ -238,11 +244,6 @@ export default async function GoldensPage({ searchParams }: Props) {
       ),
     ),
   ]);
-  const providerPending = setupPending && !hasDocker && selected !== null;
-  const blockers = environmentBlockers({
-    providerPending,
-    rows: cloudRows.map((row) => ({ ...row, state: row.status })),
-  });
   // Without a confirmed provider the create form is shown only to follow a build this page already tracks.
   // A build the page tracks reopens the dialog, which follows it.
   const create =
@@ -309,45 +310,6 @@ export default async function GoldensPage({ searchParams }: Props) {
   const notices = (
     <>
       <SnapshotBuildRefresh building={snapshots.some((row) => row.status === "building")} />
-      {selected && hosts.length > 0 && dockerOption?.enabled && (
-        <section aria-label="Launch on a Docker host" className="space-y-3 rounded-lg border p-4">
-          <div>
-            <h2 className="text-sm font-medium">Launch on a host</h2>
-            <p className="text-sm text-muted-foreground">
-              Start from the official Armada environment without building a snapshot.
-            </p>
-          </div>
-          <ul className="space-y-3">
-            {hosts.map((host) => {
-              const name = host.name ?? "Unnamed machine";
-              const blocker = dockerLaunchBlocker(
-                dockerOption,
-                hostRead.state === "ready" && hostRead.list.placement,
-                host,
-              );
-              const agents = dockerHarnesses(dockerOption);
-              return (
-                <li key={host.id} className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-sm">{name}</span>
-                  {blocker ? (
-                    <p className="text-xs text-muted-foreground">{blocker}</p>
-                  ) : (
-                    <DockerLaunchDialog
-                      orgId={selected.org.id}
-                      hostId={host.id}
-                      hostName={name}
-                      accounts={accounts}
-                      unavailable={dockerUnavailable(dockerOption)}
-                      harnesses={agents.offered}
-                      initialHarness={agents.initial ?? "codex"}
-                    />
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      )}
       {snapshotsUnavailable && (
         <Alert variant="destructive">
           <TriangleAlertIcon />
@@ -406,68 +368,181 @@ export default async function GoldensPage({ searchParams }: Props) {
     </>
   );
 
-  return (
-    <ResourceBrowser
-      title="Snapshots"
-      description="A saved machine, with its repositories and setup already done, that your sandboxes start from."
-      meta={rows.length > 0 ? rows.length : undefined}
-      label="Snapshots"
-      rows={rows}
-      blockers={blockers}
-      notices={notices}
-      initial={initial}
-      {...(create ? { actions: create } : {})}
-      footer={
-        parts.length > 0 ? (
-          <p className="text-xs text-muted-foreground" data-capacity-summary>
-            {parts.map((part, index) => (
-              <Fragment key={part.provider}>
-                {index > 0 && <span aria-hidden> · </span>}
-                <span
-                  data-capacity={part.kind}
-                  data-capacity-provider={part.provider}
-                  data-capacity-removed={counts[part.provider].removed}
-                  className={cn(part.kind === "full" || part.kind === "legacy" ? "text-warning" : undefined)}
-                >
-                  <span data-capacity-line>{part.text}</span>
-                  {part.reason && (
-                    <>
-                      {" "}
-                      (<span data-capacity-reason>{part.reason}</span>)
-                    </>
-                  )}
-                </span>
-              </Fragment>
-            ))}
-          </p>
-        ) : null
-      }
-      empty={
-        selected && inventoryIncomplete ? (
-          <Empty title="Snapshots are not fully loaded" action={reload} icon={<LayersIcon />}>
-            We cannot confirm whether snapshots are available. Reload Snapshots, or ask an Armada administrator to check
-            access if this continues.
-          </Empty>
-        ) : selected ? (
-          <Empty title="No snapshots yet" icon={<LayersIcon />}>
-            {create
-              ? "Use New to build the first one: the repositories an agent starts with, saved as a snapshot."
-              : "Connect a sandbox provider to build the first one."}
-          </Empty>
-        ) : (
-          <Empty
-            title="No organization yet"
-            action={
-              <Button asChild>
-                <Link href="/orgs">Choose an organization</Link>
-              </Button>
-            }
-          >
-            Create or join an organization before building snapshots.
-          </Empty>
-        )
-      }
+  const footer =
+    parts.length > 0 ? (
+      <p className="text-xs text-muted-foreground" data-capacity-summary>
+        {parts.map((part, index) => (
+          <Fragment key={part.provider}>
+            {index > 0 && <span aria-hidden> · </span>}
+            <span
+              data-capacity={part.kind}
+              data-capacity-provider={part.provider}
+              data-capacity-removed={counts[part.provider].removed}
+              className={cn(part.kind === "full" || part.kind === "legacy" ? "text-warning" : undefined)}
+            >
+              <span data-capacity-line>{part.text}</span>
+              {part.reason && (
+                <>
+                  {" "}
+                  (<span data-capacity-reason>{part.reason}</span>)
+                </>
+              )}
+            </span>
+          </Fragment>
+        ))}
+      </p>
+    ) : null;
+  const empty =
+    selected && inventoryIncomplete ? (
+      <Empty title="Snapshots are not fully loaded" action={reload} icon={<LayersIcon />}>
+        We cannot confirm whether snapshots are available. Reload Snapshots, or ask an Armada administrator to check
+        access if this continues.
+      </Empty>
+    ) : selected ? (
+      <Empty title="No snapshots yet" icon={<LayersIcon />}>
+        {create
+          ? "Use New to build the first one: the repositories an agent starts with, saved as a snapshot."
+          : "Connect a sandbox provider to build the first one."}
+      </Empty>
+    ) : (
+      <Empty
+        title="No organization yet"
+        action={
+          <Button asChild>
+            <Link href="/orgs">Choose an organization</Link>
+          </Button>
+        }
+      >
+        Create or join an organization before building snapshots.
+      </Empty>
+    );
+  const groups: { key: string; label: string; rows: ResourceRow[] }[] = [
+    {
+      key: "needs",
+      label: "Needs something first",
+      rows: sortResources(cloudRows.filter((row) => row.bucket !== "ready")),
+    },
+    { key: "ready", label: "Ready", rows: sortResources(cloudRows.filter((row) => row.bucket === "ready")) },
+  ];
+  const hostIds = new Set([...hosts.map((host) => host.id), ...snapshots.map((snapshot) => snapshot.hostId)]);
+  for (const hostId of hostIds) {
+    const host = hosts.find((item) => item.id === hostId);
+    const saved = snapshots.filter((item) => item.hostId === hostId);
+    const name = host?.name ?? saved[0]?.hostName ?? "Your server";
+    const blocker = host
+      ? dockerLaunchBlocker(dockerOption, hostRead.state === "ready" && hostRead.list.placement, host)
+      : "This server is no longer connected. Register it again from Hosts.";
+    const agents = dockerHarnesses(dockerOption);
+    const action =
+      selected && host && !blocker ? (
+        <HostLaunchDialog
+          orgId={selected.org.id}
+          hostId={host.id}
+          hostName={name}
+          accounts={accounts}
+          unavailable={dockerOption ? dockerUnavailable(dockerOption) : []}
+          harnesses={agents.offered}
+          initialHarness={agents.initial ?? "codex"}
+        />
+      ) : null;
+    groups.push({
+      key: hostId,
+      label: `On your server ${name} · ${host?.state ?? "unavailable"}`,
+      rows: [
+        {
+          key: `empty:${hostId}`,
+          name: "Empty machine",
+          search: name,
+          meta: "No snapshot needed",
+          state: (
+            <p className="text-sm text-muted-foreground">{blocker ?? "No repository, nothing installed by you"}</p>
+          ),
+          action,
+          detail: (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                {blocker ?? "Start without a snapshot. No repository or setup commands have been added by you."}
+              </p>
+              {action}
+            </div>
+          ),
+        },
+        ...saved.map((snapshot) => rows.find((row) => row.key === snapshot.id)!).filter(Boolean),
+      ],
+    });
+  }
+  const readyCloud = shown.find((golden) =>
+    cloudRows.some((row) => row.key === golden.id && row.status.action === "launch"),
+  );
+  const readyHost = hosts.find(
+    (host) => !dockerLaunchBlocker(dockerOption, hostRead.state === "ready" && hostRead.list.placement, host),
+  );
+  const readySizing = readyCloud ? goldenSizing(readyCloud, goldenRepositoryDirs(readyCloud.config)) : null;
+  const launch = readyCloud ? (
+    <SnapshotLaunchDialog
+      primary
+      {...(readySizing?.kind === "ready" ? { sizing: { policy: readySizing.policy } } : {})}
+      golden={readyCloud.name}
+      templates={templates.filter((template) => template.definition.goldenId === readyCloud.id)}
+      provider={readyCloud.provider}
+      orgId={readyCloud.org_id}
+      catalog={MODEL_CATALOG}
+      repositories={goldenRepositoryDirs(readyCloud.config)}
+      connections={connections}
+      accounts={accounts}
+      boatOpenCodeAvailable={context.boatOpenCodeAvailable}
     />
+  ) : readyHost && selected ? (
+    <HostLaunchDialog
+      primary
+      orgId={selected.org.id}
+      hostId={readyHost.id}
+      hostName={readyHost.name ?? "Your server"}
+      accounts={accounts}
+      unavailable={dockerOption ? dockerUnavailable(dockerOption) : []}
+      harnesses={dockerHarnesses(dockerOption).offered}
+      initialHarness={dockerHarnesses(dockerOption).initial ?? "codex"}
+    />
+  ) : (
+    <Button disabled>Launch a sandbox</Button>
+  );
+  return (
+    <>
+      <PageHeader
+        title="Snapshots"
+        description="Saved machines, with your repositories already set up, that sandboxes start from."
+      >
+        {create && (
+          <span className="[&>button]:border [&>button]:border-input [&>button]:bg-background [&>button]:text-foreground [&>button:hover]:bg-accent">
+            {create}
+          </span>
+        )}
+        {launch}
+      </PageHeader>
+      {notices}
+      {rows.length === 0 && hosts.length === 0
+        ? empty
+        : groups
+            .filter((group) => group.rows.length > 0)
+            .map((group) => (
+              <section key={group.key} aria-label={group.label} className="space-y-3">
+                <h2 className="text-sm font-medium text-muted-foreground">{group.label}</h2>
+                {/* Each group keeps the existing detail/history controller; its duplicate page heading is not needed. */}
+                <div className="space-y-3 [&>div:first-child]:hidden">
+                  <ResourceBrowser
+                    title=""
+                    description=""
+                    label={group.label}
+                    rows={group.rows}
+                    blockers={[]}
+                    initial={initial}
+                    empty={null}
+                  />
+                </div>
+              </section>
+            ))}
+      {footer}
+    </>
   );
 }
 
@@ -654,7 +729,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
 
   const action =
     state.action === "launch" ? (
-      <LaunchDialog
+      <SnapshotLaunchDialog
         golden={golden.name}
         provider={golden.provider}
         boatOpenCodeAvailable={context.boatOpenCodeAvailable}
@@ -667,7 +742,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
         {...(sizing.kind === "ready" ? { sizing: { policy: sizing.policy } } : {})}
       />
     ) : state.action === "snapshot" ? (
-      <SelectItem item={golden.id} size="sm" aria-label={`Build ${twinLabel}`}>
+      <SelectItem item={golden.id} variant="outline" size="sm" aria-label={`Build ${twinLabel}`}>
         Build
       </SelectItem>
     ) : state.action === "connect" ? (
@@ -847,12 +922,20 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
     meta,
     subtitle: meta,
     state: (
-      <StateCell
-        tone={state.tone}
-        label={state.label}
-        detail={state.detail}
-        {...(readiness.kind === "ready" ? {} : { "data-launch-paused": readiness.kind })}
-      />
+      <div className="space-y-1">
+        <StateCell
+          tone={state.tone}
+          label={state.label}
+          {...(readiness.kind === "ready" ? {} : { "data-launch-paused": readiness.kind })}
+        />
+        <p className="text-xs text-muted-foreground">
+          {readiness.kind === "ready"
+            ? directories.join(", ") || "No repository"
+            : state.action === "snapshot"
+              ? "Build it once; launches then start from it."
+              : state.detail}
+        </p>
+      </div>
     ),
     fact:
       repos.length === 0 ? (
@@ -926,7 +1009,7 @@ function dockerSnapshotRow(
   );
   const action =
     state.bucket === "ready" ? (
-      <LaunchDialog
+      <SnapshotLaunchDialog
         golden={snapshot.name}
         snapshotId={snapshot.id}
         provider="docker"
@@ -1075,5 +1158,34 @@ function IdentifierDetails({ children }: { children: import("react").ReactNode }
       </div>
       <CollapsibleContent className="pt-3">{children}</CollapsibleContent>
     </Collapsible>
+  );
+}
+
+function SnapshotLaunchDialog({ primary = false, ...props }: LaunchProps & { primary?: boolean }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant={primary ? "default" : "outline"} size="sm">
+          {primary ? "Launch a sandbox" : "Launch"}
+        </Button>
+      </DialogTrigger>
+      <LaunchDialogContent>
+        <LaunchStart {...props} />
+      </LaunchDialogContent>
+    </Dialog>
+  );
+}
+function HostLaunchDialog({ primary = false, ...props }: HostLaunchStart & { primary?: boolean }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant={primary ? "default" : "outline"} size="sm">
+          {primary ? "Launch a sandbox" : "Launch"}
+        </Button>
+      </DialogTrigger>
+      <LaunchDialogContent>
+        <LaunchStart {...props} />
+      </LaunchDialogContent>
+    </Dialog>
   );
 }

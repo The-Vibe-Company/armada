@@ -44,8 +44,8 @@ export function environmentState({
     };
   if (readiness.kind === "no-snapshot")
     return buildBlocker === null
-      ? { bucket: "action", tone: "warning", label: "Needs a snapshot", detail: readiness.detail, action: "snapshot" }
-      : { bucket: "rest", tone: "neutral", label: "Needs a snapshot", detail: buildBlocker, action: null };
+      ? { bucket: "action", tone: "warning", label: "Not built yet", detail: readiness.detail, action: "snapshot" }
+      : { bucket: "rest", tone: "neutral", label: "Not built yet", detail: buildBlocker, action: null };
   return { bucket: "rest", tone: readiness.tone, label: readiness.label, detail: readiness.detail, action: null };
 }
 
@@ -87,7 +87,7 @@ export function environmentBlockers({
     const twin = snapshots.some((other) => other !== row && other.name === row.name);
     blockers.push({
       key: `snapshot-${row.key}`,
-      label: `Snapshot ${row.name}${twin ? ` on ${PROVIDER_LABELS[row.provider]}` : ""}`,
+      label: `Build ${row.name}${twin ? ` on ${PROVIDER_LABELS[row.provider]}` : ""}`,
       detail: "Build it once before launching from it.",
       target: { item: row.key },
     });
@@ -107,14 +107,21 @@ export function capacityParts(
 ): CapacityPart[] {
   return entries.map(({ provider, state, removed }) => {
     const label = PROVIDER_LABELS[provider];
-    if (state.kind === "unknown") return { provider, kind: state.kind, text: `${label}: no limit` };
+    if (state.kind === "unknown") return { provider, kind: state.kind, text: `${label} has no snapshot limit.` };
     if (state.kind === "unavailable")
-      return { provider, kind: state.kind, text: `${label}: capacity unavailable`, reason: state.reason };
-    const held = removed === 0 ? "" : `, ${removed} by removed ${removed === 1 ? "snapshot" : "snapshots"}`;
+      return {
+        provider,
+        kind: state.kind,
+        text: `${label} snapshot capacity could not be checked.`,
+        reason: state.reason,
+      };
+    const held =
+      removed === 0 ? "" : ` ${removed} ${removed === 1 ? "place is" : "places are"} still held by removed snapshots.`;
+    const full = state.used >= state.capacity;
     return {
       provider,
       kind: state.kind,
-      text: `${label}: ${state.used} of ${state.capacity} ${state.capacity === 1 ? "slot" : "slots"} used${held}`,
+      text: `${label} allows ${state.capacity} ${state.capacity === 1 ? "snapshot" : "snapshots"} here; ${state.used} ${state.used === 1 ? "is" : "are"} using that capacity.${held}${full ? " There is no room for another snapshot." : ""}`,
     };
   });
 }
