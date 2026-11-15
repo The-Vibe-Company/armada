@@ -284,3 +284,24 @@ test("Morph advertises its plan models without inferred token prices", async () 
     },
   ]);
 });
+
+test("an explicitly selected incompatible account names supported harnesses without claiming provider refusal", async () => {
+  const reader = {
+    credentials: async () => [{ id: "account", kind: "openai" as const, valueEnc: new Uint8Array() }],
+    orgBoatKey: async () => null,
+  };
+  try {
+    await resolveCredentials(reader, undefined, {
+      userId: "u",
+      orgId: "o",
+      harness: "opencode",
+      credentialId: "account",
+    });
+    throw Error("expected mismatch");
+  } catch (error) {
+    expect(error).toBeInstanceOf(VaultError);
+    expect(error).toMatchObject({ code: "invalid" });
+    expect((error as Error).message).toContain("This account works with Codex");
+    expect((error as Error).message).toContain("for OpenCode use opencode or morph");
+  }
+});
