@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.40.0](https://github.com/The-Vibe-Company/armada/compare/v2.39.1...v2.40.0) (2026-11-15)
+
+
+### Features
+
+* **smoke:** exercise dashboard and CLI follow-up request parity ([#2031](https://github.com/The-Vibe-Company/armada/issues/2031)) ([abd4e0d](https://github.com/The-Vibe-Company/armada/commit/abd4e0dcbc01b2dd02f9f30b0e9dcacb4ec962be))
+
+
+### Bug Fixes
+
+* **boat:** include reset hint for exhausted daily starts ([#2037](https://github.com/The-Vibe-Company/armada/issues/2037)) ([844c9a3](https://github.com/The-Vibe-Company/armada/commit/844c9a3acad15c122be8aa06724122419aa6ce54))
+* **cli:** clarify template deletion help ([#2045](https://github.com/The-Vibe-Company/armada/issues/2045)) ([8d0f402](https://github.com/The-Vibe-Company/armada/commit/8d0f4020a977631f8d879ae7e9212fc5cee2d713))
+* **cli:** focus Docker host navigation help ([#2042](https://github.com/The-Vibe-Company/armada/issues/2042)) ([0759e64](https://github.com/The-Vibe-Company/armada/commit/0759e645a75b7ec72806c0af6164faab382210da))
+* **cli:** focus launch help on provider options ([#2041](https://github.com/The-Vibe-Company/armada/issues/2041)) ([eae27c8](https://github.com/The-Vibe-Company/armada/commit/eae27c8deddc09ff74396103c5b09e31d0e1bcb0))
+* **cli:** focus template launch help on safe retries ([#2046](https://github.com/The-Vibe-Company/armada/issues/2046)) ([bd8a3f2](https://github.com/The-Vibe-Company/armada/commit/bd8a3f240411a76acab7a27b05474ec4584ab1eb))
+* **cli:** focus template reader help ([#2044](https://github.com/The-Vibe-Company/armada/issues/2044)) ([a035fb4](https://github.com/The-Vibe-Company/armada/commit/a035fb47f9cead6aec77bf1d08ed0c2d42bcbcbf))
+* **runtime:** bound journal sanitation retained bodies ([#2028](https://github.com/The-Vibe-Company/armada/issues/2028)) ([be5b15f](https://github.com/The-Vibe-Company/armada/commit/be5b15ff873bac48b2ac130ef03cf80c1b20cb8a))
+* **security:** mask complete connection URL credentials in logs ([#2038](https://github.com/The-Vibe-Company/armada/issues/2038)) ([ba578f3](https://github.com/The-Vibe-Company/armada/commit/ba578f32eaa1d612827a097130164e3d2048f7ef))
+
 ## [2.39.1](https://github.com/The-Vibe-Company/armada/compare/v2.39.0...v2.39.1) (2026-11-15)
 
 
