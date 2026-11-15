@@ -5,7 +5,7 @@ import { ControlError, createControlClient } from "@/lib/control";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
-import { parseSkillCatalogPage, parseSkillVersions, skillPinProblem } from "@/lib/skills";
+import { parseSkillCatalogPage, parseSkillVersions, skillCatalogFailure, skillPinProblem } from "@/lib/skills";
 
 type Failure = { ok: false; error: string; code?: string };
 
@@ -19,8 +19,12 @@ async function catalogClient(org: string) {
 
 function failure(error: unknown): Failure {
   if (!(error instanceof ControlError)) throw error;
-  // Known control errors are value-free. Never expose unexpected server-action exceptions.
-  return { ok: false, error: error.message, ...(error.code ? { code: error.code } : {}) };
+  // Preserve credential-recovery codes, but never forward arbitrary diagnostic text to the picker.
+  return {
+    ok: false,
+    error: skillCatalogFailure(error.status, error.code),
+    ...(error.code ? { code: error.code } : {}),
+  };
 }
 
 export async function listSkillCatalog(input: {

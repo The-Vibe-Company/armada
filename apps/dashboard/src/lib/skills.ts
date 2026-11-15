@@ -137,3 +137,15 @@ export function parseSkillVersions(value: unknown, source: SkillCatalogSource, r
   if (!catalogReference(reference, source) || !value || typeof value !== "object" || Array.isArray(value)) return null;
   return exactVersions((value as Record<string, unknown>).versions, reference);
 }
+
+/** Discovery errors are metadata failures, not permission to change pins or echo credential service diagnostics. */
+export function skillCatalogFailure(status: number | undefined, code?: string): string {
+  if (code === "missing_credential" || code === "credential_refused")
+    return "Connect a usable Skillpack key in Skills, then try again.";
+  if (status === 401) return "Your session ended. Sign in again before browsing skills.";
+  if (status === 403)
+    return "You cannot read these skills with the current access. Check organization access and your Skillpack key.";
+  if (status === 400)
+    return "That skill choice could not be read. Check its exact name and version before trying again.";
+  return "Skill discovery is unavailable. Check Skills setup, try again, or enter an exact pin.";
+}

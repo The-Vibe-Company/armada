@@ -59,7 +59,7 @@ type State = {
   launches: Row[];
   /** The route of each of `launches`, in order. */
   launchRoutes: string[];
-  skillCatalogUnavailable?: boolean;
+  skillCatalogUnavailable?: boolean | string;
   skillCatalogMalformed?: boolean;
   skillCatalogLongDescription?: boolean;
   /** Golden build and capability requests contain metadata only, never tokens. */
@@ -1167,7 +1167,14 @@ function skillCatalogRoute(route: string, body: Row, request: Request): Response
   const user = viewer(request);
   if (!user) return controlFail(401, "unauthorized", "Sign in again.");
   if (!isMember(body.org, user)) return controlFail(404, "not_found", "No such organization.");
-  if (state.skillCatalogUnavailable) return controlFail(503, "unavailable", "The Skillpack catalog is unavailable.");
+  if (state.skillCatalogUnavailable)
+    return controlFail(
+      503,
+      "unavailable",
+      typeof state.skillCatalogUnavailable === "string"
+        ? state.skillCatalogUnavailable
+        : "The Skillpack catalog is unavailable.",
+    );
   if (state.skillCatalogMalformed)
     return json(route === "skillpack/versions" ? { versions: "invalid" } : { items: [{}], nextOffset: null });
   if (route === "skillpack/versions")
@@ -3156,7 +3163,8 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   if (url.pathname === "/__test/skill-catalog-unavailable") {
-    state.skillCatalogUnavailable = body.unavailable === true;
+    state.skillCatalogUnavailable =
+      body.unavailable === true ? (typeof body.message === "string" ? body.message : true) : false;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/sandbox-lifecycle") {
