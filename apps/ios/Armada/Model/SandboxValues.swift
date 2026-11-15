@@ -71,6 +71,20 @@ struct SandboxTurnState: Hashable, Sendable {
     var observedModel: String? = nil
     var modelSelectionReason: String? = nil
     var modelSelectionMessage: String? = nil
+    var rateLimit: SandboxRateLimitState? = nil
+}
+
+/// Safe structured provider-wait status carried by the latest turn.
+struct SandboxRateLimitState: Hashable, Sendable {
+    let retryCount: Int
+    let totalWaitMs: Double
+    let waiting: Bool
+    let message: String
+
+    var summary: String {
+        let seconds = String(format: "%.0f", ceil(totalWaitMs / 1_000))
+        return "\(message) · Retries: \(retryCount) · Total wait: \(seconds) s"
+    }
 }
 
 /// The server's acceptance of a prompt: the turn it opened.

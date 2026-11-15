@@ -207,6 +207,10 @@ struct SandboxConversationView: View {
     private func banners(_ model: SandboxConversationModel) -> some View {
         VStack(spacing: 8) {
             if let turn = model.state?.turn {
+                if let rateLimit = turn.rateLimit {
+                    InlineBanner(text: rateLimit.summary, style: rateLimit.waiting ? .warning : .info)
+                        .accessibilityIdentifier("sandbox.modelRateLimit")
+                }
                 InlineBanner(text: "Requested: \(turn.requestedModel ?? "unknown") · Observed: \(turn.observedModel ?? "unknown")", style: .info)
                 if let reason = turn.modelSelectionReason {
                     let mismatch = reason == "model_selection_mismatch"
