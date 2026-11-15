@@ -9,6 +9,7 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { createSqlData } from "./data.ts";
+import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
@@ -37,9 +38,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
       !sandbox ||
       (!sandbox.boatRuntime && sandbox.runtimeTransport !== "dialout") ||
       !["boat", "modal"].includes(sandbox.provider) ||
-      (sandbox.harness !== "codex" &&
-        sandbox.harness !== "claude" &&
-        !(sandbox.provider === "modal" && sandbox.harness === "opencode")) ||
+      !runtimeHarnessSupported(sandbox.provider, sandbox.harness) ||
       sandbox.provider !== target.provider ||
       (typeof apiKey !== "string" && apiKey.id !== sandbox.provider) ||
       sandbox.visibility !== target.visibility ||

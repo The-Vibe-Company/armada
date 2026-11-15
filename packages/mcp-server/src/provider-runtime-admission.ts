@@ -1,4 +1,4 @@
-/** Native compatibility bridges only; Docker admission remains host/epoch-owned. */
+/** Shared runtime capabilities; callers retain placement, transport and authorization guards. */
 export function runtimeBridgeTarget(target: {
   provider: string;
   harness: string;
@@ -8,8 +8,10 @@ export function runtimeBridgeTarget(target: {
   return (
     ((target.provider === "boat" && Boolean(target.boatRuntime)) ||
       (target.provider === "modal" && target.runtimeTransport === "dialout")) &&
-    (target.harness === "codex" ||
-      target.harness === "claude" ||
-      (target.provider === "modal" && target.harness === "opencode"))
+    runtimeHarnessSupported(target.provider, target.harness)
   );
+}
+
+export function runtimeHarnessSupported(provider: string, harness: string): boolean {
+  return ["codex", "claude"].includes(harness) || (["modal", "docker"].includes(provider) && harness === "opencode");
 }
