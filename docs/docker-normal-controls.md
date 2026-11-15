@@ -1,9 +1,12 @@
 # Docker normal read and cleanup contract (#1165 / #1380)
 
-This increment connects existing Docker resources to the ordinary sandbox control
+This historical increment connected existing Docker resources to the ordinary sandbox control
 API **and MCP tools**, rather than another dashboard-only transport. The private
-preview remains compatible. No normal Docker launch, normal send, resume, golden,
-GitHub/MCP setup, new pricing quotes or visual dashboard changes are enabled here.
+preview remains compatible. At that slice, normal launch/send/resume, snapshot
+builds, GitHub/MCP setup, new pricing quotes and visual dashboard changes were
+not yet enabled. This is not the current product feature list: normal
+launch/send/resume and host-local snapshots are documented in the
+[host reference](docker-host-daemon.md) and [quickstart](own-machine-quickstart.md).
 Normal status exposes existing native token counts; missing cost remains unknown.
 
 ## Shared producer/client vocabulary

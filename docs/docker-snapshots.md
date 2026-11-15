@@ -23,7 +23,7 @@ daemon's environment is never mutated. Reopening `/dev/stdin` is not supported
 by every Docker buildx client/plugin transport, so it is not used as a secret
 source.
 
-Create `armada.golden.json` locally (use repositories your GitHub connection can
+Create `armada.snapshot.json` locally (use repositories your GitHub connection can
 access; setup runs as the unprivileged sandbox user):
 
 ```json
@@ -41,7 +41,7 @@ Docker host.
 ```sh
 armada snapshot create office --provider docker \
   --host 1bd0db41-6429-430b-99e2-06d60ddf1aa3 --org "$ARMADA_ORG" \
-  --config armada.golden.json --private
+  --config armada.snapshot.json --private
 armada snapshot list --provider docker --org "$ARMADA_ORG"
 armada snapshot get SNAPSHOT_UUID --provider docker --org "$ARMADA_ORG"
 armada launch "Work on this project" --provider docker --golden SNAPSHOT_UUID \
@@ -50,7 +50,8 @@ armada launch "Work on this project" --provider docker --golden SNAPSHOT_UUID \
 
 Creation returns a stable request/snapshot UUID while building. Reuse the printed
 `--request-id` and identical input after an unknown create outcome; do not start a
-second build. Launch selects the snapshot, not an image or host: server-side
+second build. The flag remains `--golden` even though the user-facing resource is a snapshot.
+Launch selects the snapshot, not an image or host: server-side
 resolution pins both and checks current authorization again at reservation.
 Ready snapshots launch the baked workspace without another checkout/init.
 In the dashboard, choose **Snapshots → New → Your host · Docker**, select the

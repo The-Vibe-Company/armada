@@ -62,6 +62,22 @@ examples. The examples use Codex; choose a usable personal default model account
 or explicitly pass `--credential-id ACCOUNT_UUID` when launching. Never put a
 credential value in an argument.
 
+Morph is also supported: one account can serve Claude Code, Codex and OpenCode.
+Use a compatible Morph model and explicitly select that account if it is not
+your default; see [Morph setup](morph.md). Model-account capacity applies to
+Docker just as to cloud launches: Morph defaults to 2 simultaneous agents per
+account, other kinds to unlimited. Stopped/idle-paused sandboxes do not count.
+A busy account refuses admission without silently choosing another one.
+Set `--max-agents N` or `--unlimited` when storing an account, or update it:
+
+```sh
+armada creds limits ACCOUNT_UUID --max-agents 2
+armada creds limits ACCOUNT_UUID --unlimited
+```
+
+These are model-account limits, distinct from the host's CPU/memory and
+simultaneous-sandbox capacity.
+
 ## 2. Register the Linux machine
 
 In **Providers → Self-hosted**, choose **Add a Docker host**, or run:
