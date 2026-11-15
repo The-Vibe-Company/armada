@@ -275,8 +275,8 @@ test("template failures use closed actionable diagnostics without echoing untrus
 });
 
 test("template help documents definition inputs, scope and safe retry semantics without authentication", async () => {
-  // Reader help is owned by the focused run-boundary onboarding-help test.
-  for (const action of ["", "create", "publish", "delete", "launch"]) {
+  // Reader and delete help are owned by the focused run-boundary onboarding-help test.
+  for (const action of ["", "create", "publish", "launch"]) {
     for (const help of ["--help", "-h"]) {
       const result = await invoke(["template", ...(action ? [action] : []), help]);
       expect(result.code).toBe(0);
