@@ -756,6 +756,10 @@ export function createArmadaServer(context: ToolContext, version: string, option
     recorded = false,
   ): Promise<StatusReport & ReturnType<typeof logicalExpiry>> => {
     const queued = await context.accountTurns?.status(caller, sandboxId, promptId);
+    // Route reads with the native ID, but keep the receipt identity stable for clients.
+    const publicPromptId = queued && "nativePromptId" in queued ? promptId : undefined;
+    const publicReport = (report: StatusReport): StatusReport =>
+      publicPromptId && report.prompt ? { ...report, prompt: { ...report.prompt, promptId: publicPromptId } } : report;
     if (queued && "nativePromptId" in queued) promptId = queued.nativePromptId;
     const waiting = queued && !("nativePromptId" in queued) ? queued : undefined;
     const routed = await context.dockerControls?.invoke(caller, "status", {
@@ -776,7 +780,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         }
       : {};
     if (routed?.handled) {
-      const report = routed.result as StatusReport;
+      const report = publicReport(routed.result as StatusReport);
       return { ...report, ...logicalExpiry(report.expiresAt, context.now()), providerExpiresAt: null, ...queuePatch };
     }
     const found = await measure("sandbox_read", () => visible(sandboxId));
@@ -803,7 +807,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         }),
       );
       return {
-        ...result,
+        ...publicReport(result),
         ...logicalExpiry(result.expiresAt, context.now()),
         statusMessage: idlePauseMessage(result, context.now()),
       };
