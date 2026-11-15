@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { bindableStatus, compatibleAccounts } from "../src/lib/account-recovery.ts";
+import { bindableStatus, bindFailure, compatibleAccounts } from "../src/lib/account-recovery.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
 const now = new Date("2026-11-10T12:00:00Z");
@@ -61,4 +61,14 @@ describe("legacy account recovery", () => {
     // Stop does not apply to a failed sandbox and the server refuses to bind one: never offer a doomed choice.
     expect(bindableStatus("failed")).toBe("failed");
   });
+});
+
+test("binding failures preserve owner/lifecycle recovery without arbitrary diagnostics", () => {
+  expect(bindFailure(undefined, 401)).toContain("Sign in again");
+  expect(bindFailure("forbidden")).toContain("Only the sandbox's owner");
+  expect(bindFailure("credential_binding_unsafe")).toContain("account was not changed");
+  expect(bindFailure("conflict", 409)).toContain("Reload and try again");
+  expect(bindFailure("credential_binding_unsupported")).not.toContain("#1579");
+  for (const status of [undefined, 502, 503])
+    expect(bindFailure("unavailable", status)).toContain("could not be confirmed");
 });

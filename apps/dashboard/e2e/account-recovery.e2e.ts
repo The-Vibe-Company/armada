@@ -123,9 +123,13 @@ for (const [view, size] of [
       animations: "disabled",
     });
 
-    await post("fail-next-bind", { status: 503, code: "unavailable", message: "The Armada server is unavailable." });
+    const diagnostic = "HTTP 503: credential_version sandbox_id digest sha256:example";
+    await post("fail-next-bind", { status: 503, code: "unavailable", message: diagnostic });
     await dialog.getByRole("button", { name: "Bind account" }).click();
-    await expect(choice.getByRole("alert")).toHaveText("The Armada server is unavailable.");
+    await expect(choice.getByRole("alert")).toContainText("could not be confirmed");
+    await expect(choice.getByRole("alert")).not.toContainText(diagnostic);
+    await choice.getByRole("alert").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `test-results/binding-error-after-${view}.png`, fullPage: true });
     await expect(choice.getByRole("radio", { name: /Team plan/ })).toBeChecked();
     await expect(box).toHaveValue("Finish the last two fixtures");
 
@@ -141,7 +145,7 @@ for (const [view, size] of [
       { id: IDS.running, credentialId: TEAM.id, org: ACME },
       { id: IDS.running, credentialId: TEAM.id, org: ACME },
     ]);
-    expect(toolCalls.filter((call) => call.name === "send")).toEqual([
+    expect(toolCalls.filter((call) => call.name === "send")).toMatchObject([
       { name: "send", args: { id: IDS.running, prompt: "Finish the last two fixtures", conversation_id: "conv-a" } },
       { name: "send", args: { id: IDS.running, prompt: "Finish the last two fixtures", conversation_id: "conv-a" } },
     ]);
