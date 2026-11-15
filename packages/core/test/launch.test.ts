@@ -484,58 +484,76 @@ describe("launch", () => {
     },
   );
 
-  test.each(["codex", "claude"] as const)("custom %s endpoints select private Boat runtime", async (harness) => {
-    const world = setup({ golden: golden("org") });
-    const env = {
-      [harness === "codex" ? "ARMADA_CODEX_ENDPOINT" : "ARMADA_CLAUDE_ENDPOINT"]: JSON.stringify({
-        version: 1,
-        baseUrl: "https://gateway.example.test",
-      }),
-    };
-    const credentials = {
-      env,
-      secrets: [],
-      codexAuthJson: false,
-      binding: { credentialId: OWNER, credentialVersion: 1 },
-    };
-    world.stores.credentials.resolve = async () => credentials;
-    let delivered: unknown;
-    const result = await launchSandbox(
-      world.provider,
-      world.stores,
-      owner,
-      {
-        golden: "web",
-        harness,
-        prompt: "hello",
-      },
-      {
-        boatEndpointRuntime: {
-          provider: async () => world.provider,
-          credentials: world.stores.credentials,
-          connections: { async validate() {}, async bind() {} },
-          policy: {
-            async start(input) {
-              delivered = input.credentials.env;
-              return {
-                epoch: "1",
-                async prepareWorkspace() {
-                  return { status: "not_connected" as const };
-                },
-                async prompt() {
-                  return { promptId: "runtime", conversationId: "runtime", status: "queued" as const };
-                },
-              };
+  test.each(["codex", "claude", "opencode"] as const)(
+    "%s selects private Boat runtime for custom endpoints or runtime-only harness",
+    async (harness) => {
+      const world = setup({ golden: golden("org") });
+      const env =
+        harness === "opencode"
+          ? {}
+          : {
+              [harness === "codex" ? "ARMADA_CODEX_ENDPOINT" : "ARMADA_CLAUDE_ENDPOINT"]: JSON.stringify({
+                version: 1,
+                baseUrl: "https://gateway.example.test",
+              }),
+            };
+      const credentials = {
+        env,
+        secrets: [],
+        codexAuthJson: false,
+        binding: { credentialId: OWNER, credentialVersion: 1 },
+      };
+      world.stores.credentials.resolve = async () => credentials;
+      let delivered: unknown;
+      const result = await launchSandbox(
+        world.provider,
+        world.stores,
+        owner,
+        {
+          golden: "web",
+          harness,
+          prompt: "hello",
+          ...(harness === "opencode" ? { model: "opencode/model" } : {}),
+        },
+        {
+          boatEndpointRuntime: {
+            provider: async () => world.provider,
+            credentials: world.stores.credentials,
+            connections: { async validate() {}, async bind() {} },
+            policy: {
+              async start(input) {
+                delivered = input.credentials.env;
+                return {
+                  epoch: "1",
+                  async prepareWorkspace() {
+                    return { status: "not_connected" as const };
+                  },
+                  async prompt() {
+                    return { promptId: "runtime", conversationId: "runtime", status: "queued" as const };
+                  },
+                };
+              },
             },
           },
         },
-      },
-    );
-    expect(delivered).toEqual(env);
-    expect(world.forks[0]?.env).toEqual({});
-    expect(world.prompts).toEqual([]);
-    expect(result.sandbox.boatRuntime).toBe(true);
-    expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
+      );
+      expect(delivered).toEqual(env);
+      expect(world.forks[0]?.env).toEqual({});
+      expect(world.prompts).toEqual([]);
+      expect(result.sandbox.boatRuntime).toBe(true);
+      expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
+    },
+  );
+  test("OpenCode without Boat runtime refuses before allocation with an actionable reason", async () => {
+    const world = setup({ golden: golden("org") });
+    await expect(
+      launchSandbox(world.provider, world.stores, owner, {
+        golden: "web",
+        harness: "opencode",
+        prompt: "hello",
+      }),
+    ).rejects.toThrow("OpenCode on Boat requires the Boat runtime artifacts");
+    expect(world.forks).toEqual([]);
   });
   test.each(["codex", "claude"] as const)("custom %s endpoints refuse Boat before allocation", async (harness) => {
     const world = setup({ golden: golden("org") });

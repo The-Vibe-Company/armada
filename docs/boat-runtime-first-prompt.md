@@ -732,3 +732,19 @@ disabled with its reason. A stale open form or forged availability field must no
 bypass the action's new discovery read; the server still enforces native refusal
 and never falls back. Boat remains outside staging and the release gate. No real
 launch, provider call or deployment was performed by this worker.
+
+## Automatic OpenCode admission (#2105)
+
+Ordinary CLI, dashboard and MCP OpenCode launches on Boat automatically select
+`boatEndpointRuntime` when its artifacts are installed, even with the native
+server default. Claude and Codex retain their existing defaults (including
+custom-endpoint runtime selection). There is no new flag or server-default flip.
+Without installed artifacts, OpenCode refuses before allocation with an explicit
+runtime requirement. Discovery advertises OpenCode on Boat when this automatic
+path is installed; `defaultPath` still describes the general Claude/Codex default.
+
+Coordinator-only production acceptance after normal release: plain-launch
+OpenCode on a Boat snapshot with a Morph account and then an OpenCode-compatible
+OpenAI account, require a reply and usage for each, and clean up both allocations.
+Do not pass runtime flags or change the server default. Boat remains excluded
+from staging/release gates. These are acceptance instructions, not live evidence.

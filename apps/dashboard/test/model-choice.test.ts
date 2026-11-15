@@ -42,13 +42,13 @@ describe("model choice from the dashboard forms", () => {
     expect(launchArgs({ ...form, harness: "opencode" })).toMatchObject({ ok: false });
     const advertised = {
       providers: [{ id: "boat", enabled: true, capabilities: { launch: true }, harnesses: ["opencode"] }],
-      boatRuntime: { enabled: true, defaultPath: "runtime", opencodeVersion: 1 },
+      boatRuntime: { enabled: true, defaultPath: "native", opencodeVersion: 1 },
     };
     expect(launchArgs({ ...form, harness: "opencode" }, advertised)).toMatchObject({
       ok: true,
       args: { provider: "boat", harness: "opencode", model: "armada/deepseek-flash", reasoning_effort: "default" },
     });
-    // Explicit-runtime availability alone is not ordinary launch support; old/malformed discovery fails closed.
+    // Native default is compatible with automatic OpenCode admission; malformed discovery fails closed.
     for (const discovery of [
       null,
       {},
@@ -56,7 +56,6 @@ describe("model choice from the dashboard forms", () => {
       { ...advertised, providers: [{ ...advertised.providers[0], harnesses: ["codex"] }] },
       { ...advertised, providers: [{ ...advertised.providers[0], enabled: false }] },
       { ...advertised, providers: [{ ...advertised.providers[0], capabilities: { launch: false } }] },
-      { ...advertised, boatRuntime: { ...advertised.boatRuntime, defaultPath: "native" } },
       { ...advertised, boatRuntime: { ...advertised.boatRuntime, enabled: false } },
       { ...advertised, boatRuntime: { ...advertised.boatRuntime, opencodeVersion: 0 } },
     ])

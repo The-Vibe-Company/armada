@@ -7,7 +7,6 @@ export function boatOpenCodeAvailable(value: unknown): boolean {
   };
   if (
     options.boatRuntime?.enabled !== true ||
-    options.boatRuntime.defaultPath !== "runtime" ||
     options.boatRuntime.opencodeVersion !== 1 ||
     !Array.isArray(options.providers)
   )
