@@ -12,6 +12,7 @@ import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser
 import { PanelSection, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -27,7 +28,7 @@ export const dynamic = "force-dynamic";
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
 const TITLE = "Hosts";
-const DESCRIPTION = "Machines you own that run sandboxes in Docker.";
+const DESCRIPTION = "Your own servers, connected to Armada to run sandboxes.";
 
 export default async function HostsPage({ searchParams }: Props) {
   const [selected, hosts, query] = await Promise.all([selectedOrganization(), readSelectedDockerHosts(), searchParams]);
@@ -86,7 +87,7 @@ export default async function HostsPage({ searchParams }: Props) {
       title={TITLE}
       description={DESCRIPTION}
       meta={rows.length > 0 ? rows.length : undefined}
-      label="Docker hosts"
+      label="Your own servers"
       rows={rows}
       blockers={[]}
       notices={
@@ -182,7 +183,7 @@ function row(
   const blocker = dockerLaunchBlocker(launch.option, launch.placement, host);
   const state = hostState(host, now);
   const added = relativeAge(host.createdAt, now);
-  const meta = `Docker${added ? ` · added ${added}` : ""}`;
+  const meta = `Your own server${added ? ` · added ${added}` : ""}`;
   const seen = host.lastSeenAt ? relativeAge(host.lastSeenAt, now) : null;
   return {
     key: host.id,
@@ -227,11 +228,6 @@ function row(
         </PanelSection>
         <PanelSection title="Facts">
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-            <dt className="text-muted-foreground">Host ID</dt>
-            <dd className="flex min-w-0 items-center gap-1">
-              <code className="truncate font-mono text-xs">{host.id}</code>
-              <CopyButton value={host.id} label="Copy host ID" />
-            </dd>
             <dt className="text-muted-foreground">Added</dt>
             <dd>
               <CreatedAt iso={host.createdAt} now={now} />
@@ -246,10 +242,30 @@ function row(
             <dd className="tabular-nums">{resources.usage}</dd>
             <dt className="text-muted-foreground">Retained sandboxes</dt>
             <dd>{sandboxCount(host.sandboxes)}</dd>
-            <dt className="text-muted-foreground">Daemon version</dt>
-            <dd>{host.version ?? "Unknown"}</dd>
           </dl>
         </PanelSection>
+        <Collapsible className="border-t pt-4">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-xs font-medium text-muted-foreground">Technical details</h3>
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm">
+                Show identifiers
+              </Button>
+            </CollapsibleTrigger>
+          </div>
+          <CollapsibleContent className="pt-3">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
+              {" "}
+              <dt className="text-muted-foreground">Host ID</dt>
+              <dd className="flex min-w-0 items-center gap-1">
+                <code className="truncate font-mono text-xs">{host.id}</code>
+                <CopyButton value={host.id} label="Copy host ID" />
+              </dd>
+              <dt className="text-muted-foreground">Daemon version</dt>
+              <dd>{host.version ?? "Unknown"}</dd>
+            </dl>
+          </CollapsibleContent>
+        </Collapsible>
       </div>
     ),
     attrs: { "data-host": host.id },
