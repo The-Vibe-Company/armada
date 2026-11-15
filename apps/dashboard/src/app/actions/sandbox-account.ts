@@ -23,8 +23,8 @@ export async function bindSandboxAccount(_previous: ActionResult | null, data: F
   const viewer = await requireViewer();
   const sandbox = await getSandbox(await createClient(), id);
   if (!sandbox) return fail("That sandbox does not exist, or it is not yours to see.");
-  if (sandbox.owner_id !== viewer.id) return fail(bindFailure("forbidden", ""));
-  if (bindableStatus(sandbox.status) !== "ready") return fail(bindFailure("credential_binding_unsafe", ""));
+  if (sandbox.owner_id !== viewer.id) return fail(bindFailure("forbidden"));
+  if (bindableStatus(sandbox.status) !== "ready") return fail(bindFailure("credential_binding_unsafe"));
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
   try {
@@ -34,7 +34,7 @@ export async function bindSandboxAccount(_previous: ActionResult | null, data: F
       org: sandbox.org_id,
     });
   } catch (error) {
-    if (error instanceof ControlError) return fail(bindFailure(error.code, error.message));
+    if (error instanceof ControlError) return fail(bindFailure(error.code, error.status));
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);

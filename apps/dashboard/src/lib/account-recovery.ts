@@ -43,10 +43,11 @@ export function compatibleAccounts(list: unknown, harness: Harness, orgId: strin
 }
 
 /** A refused bind, in plain words, by the typed failure the server answers with. */
-export function bindFailure(code: string | undefined, message: string): string {
+export function bindFailure(code: string | undefined, status?: number): string {
+  if (status === 401) return "Your session ended. Sign in again, then reload this sandbox.";
   switch (code) {
     case "credential_binding_unsupported":
-      return "This native Boat sandbox cannot refresh accounts safely yet. Launch a new sandbox with the chosen account; existing work is unchanged (tracked by #1579).";
+      return "This native Boat sandbox cannot refresh accounts safely yet. Launch a new sandbox with the chosen account; existing work is unchanged.";
     case "credential_binding_unsafe":
       return "Wait for the turn or lifecycle operation to finish and check retained-work warnings before retrying. The account was not changed.";
     case "conflict":
@@ -55,6 +56,6 @@ export function bindFailure(code: string | undefined, message: string): string {
     case "not_found":
       return "Only the sandbox's owner, still a member of its org, can choose its account.";
     default:
-      return message;
+      return "The account change could not be confirmed. Reload this sandbox and check its account before trying again.";
   }
 }
