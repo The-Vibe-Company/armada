@@ -77,12 +77,25 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Authenticate prior exact-SHA staging evidence
+        id: evidence
+        if: inputs.source_sha != '' && inputs.official_image != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -f scripts/release/staging-evidence.ts ]]; then
+            bun scripts/release/staging-evidence.ts
+          else
+            echo 'reused=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: inputs.official_image == true
+        if: steps.evidence.outputs.reused != 'true' && inputs.official_image == true
         with:
           name: official-sandbox-image
           path: packages/core/src
       - name: Validate configuration before any mutation
+        if: steps.evidence.outputs.reused != 'true'
         run: |
           for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID ARMADA_SERVER_URL ARMADA_URL ARMADA_TOKEN ARMADA_SMOKE_CASES; do
             [[ -n "${!key:-}" ]] || { echo "::error::Missing staging configuration: $key; production blocked."; exit 1; }
@@ -95,27 +108,31 @@ jobs:
       # Match production: deploy tooling comes from the executing workflow,
       # while git archive and all application sources stay on RELEASE_SHA.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.evidence.outputs.reused != 'true'
         with:
           ref: ${{ github.workflow_sha }}
           path: .release-tools
           persist-credentials: false
           sparse-checkout: scripts/release
       - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        if: steps.evidence.outputs.reused != 'true'
         with:
           version: 2.75.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.evidence.outputs.reused != 'true'
         with:
           node-version: 24
       - name: Install pinned deployment clients
+        if: steps.evidence.outputs.reused != 'true'
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
-      - uses: ./.github/actions/setup-bun
       - name: Migrate then deploy pinned server and dashboard
+        if: steps.evidence.outputs.reused != 'true'
         id: deployment
         run: bash .release-tools/scripts/release/deploy-production.sh
       - run: bun install --frozen-lockfile
-        if: steps.deployment.outputs.superseded != 'true'
+        if: steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true'
       - name: Restore staging smoke receipts across branches and tags
-        if: steps.deployment.outputs.superseded != 'true'
+        if: steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -141,7 +158,7 @@ jobs:
             unzip -p "$RUNNER_TEMP/smoke-journal.zip" sandboxes.json > .smoke/sandboxes.json
           fi
       - name: Smoke pinned staging
-        if: steps.deployment.outputs.superseded != 'true'
+        if: steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true'
         env:
           ARMADA_SMOKE: create_real_compute
           ARMADA_SMOKE_JOURNAL: .smoke/sandboxes.json
@@ -157,12 +174,12 @@ jobs:
           wait "$dashboard_pid" || status=1
           exit "$status"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always() && hashFiles('.smoke/sandboxes.json') != ''
+        if: steps.evidence.outputs.reused != 'true' && always() && hashFiles('.smoke/sandboxes.json') != ''
         with:
           name: armada-staging-smoke-journal
           path: .smoke/sandboxes.json
           include-hidden-files: true
           retention-days: 30
       - name: Report blocked production
-        if: failure()
+        if: steps.evidence.outputs.reused != 'true' && failure()
         run: echo "::error::Staging deployment or smoke failed; production migrations and deployments are blocked."
