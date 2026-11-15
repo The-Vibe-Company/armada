@@ -342,8 +342,8 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
             ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
           }),
       );
-    if (localArgs.length === 1 && ["snapshot", "golden"].includes(localArgs[0] ?? "")) {
-      io.out(onboardingHelp(["snapshot", "--help"]) ?? HELP);
+    if (localArgs.length === 1 && ["snapshot", "golden", "host"].includes(localArgs[0] ?? "")) {
+      io.out(onboardingHelp([localArgs[0] === "host" ? "host" : "snapshot", "--help"]) ?? HELP);
       return 2;
     }
     const focusedHelp = onboardingHelp(localArgs);

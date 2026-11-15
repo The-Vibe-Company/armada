@@ -159,11 +159,11 @@ describe("run", () => {
   });
 });
 
-test("bare snapshot aliases show family usage without profile, account or input I/O", async () => {
+test("bare host and snapshot aliases show family usage without profile, account or input I/O", async () => {
   const forbidden = () => {
     throw new Error("Usage attempted external I/O");
   };
-  for (const command of ["snapshot", "golden"]) {
+  for (const command of ["snapshot", "golden", "host"]) {
     const result = await capture(["--profile", "new-user", command], {
       env: {},
       fetch: Object.assign(forbidden, { preconnect: forbidden }),
@@ -174,8 +174,9 @@ test("bare snapshot aliases show family usage without profile, account or input 
     });
     expect(result.code).toBe(2);
     expect(result.err).toBe("");
-    expect(result.out).toContain("Usage: armada snapshot <command>");
-    expect(result.out).toContain("Example: armada snapshot");
+    const family = command === "golden" ? "snapshot" : command;
+    expect(result.out).toContain(`Usage: armada ${family} <command>`);
+    expect(result.out).toContain(`Example: armada ${family}`);
     expect(result.out).not.toContain("Quick start / common examples:");
   }
 });
