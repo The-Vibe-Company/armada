@@ -248,6 +248,23 @@ export function createModelAuthOwnership(
           });
         return saved?.secrets ?? [];
       };
+      const verifySource = (generation: string, retired: boolean) => async (tx: Sql) => {
+        const current = await tx.query<{ lifecycle_generation: number }>(
+          retired
+            ? "select lifecycle_generation from public.sandboxes where id=$1::uuid and deleted_at is null for update"
+            : "select lifecycle_generation from public.sandboxes where id=$1::uuid and deleted_at is null and credential_id=$2::uuid and credential_version=$3 for update",
+          retired ? [row.id] : [row.id, row.credential_id, row.credential_version],
+        );
+        if (
+          (!retired && !current.rows[0]) ||
+          current.rows[0]?.lifecycle_generation !== row.lifecycle_generation ||
+          (provider.id === "modal" && (await modalGeneration(tx, providerId, actor, true)) !== generation)
+        )
+          throw new VaultError(
+            "conflict",
+            retired ? "Retired native source changed." : "Native source incarnation changed.",
+          );
+      };
       // Explicit replacement/revocation invalidates publication, not the ability to stop old compute.
       if (
         row.current_status !== "active" ||
@@ -274,17 +291,7 @@ export function createModelAuthOwnership(
           sandboxId: row.id,
           authJson: raw,
           generation: `${provider.id}:${quiesced ? "quiesced:" : ""}${generation}`,
-          verifySource: async (tx) => {
-            const current = await tx.query<{ lifecycle_generation: number }>(
-              "select lifecycle_generation from public.sandboxes where id=$1::uuid and deleted_at is null for update",
-              [row.id],
-            );
-            if (
-              current.rows[0]?.lifecycle_generation !== row.lifecycle_generation ||
-              (provider.id === "modal" && (await modalGeneration(tx, providerId, actor, true)) !== generation)
-            )
-              throw new VaultError("conflict", "Retired native source changed.");
-          },
+          verifySource: verifySource(generation, true),
         });
       }
       const binding = await this.bootstrap(actor, row.credential_id, row.credential_version, row.id);
@@ -306,18 +313,7 @@ export function createModelAuthOwnership(
             generation: `${provider.id}:${quiesced ? "quiesced:" : ""}${generation}`,
             expectedRevision: saved?.revision ?? 0,
             authJson,
-            verifySource: async (tx) => {
-              const current = await tx.query<{ lifecycle_generation: number }>(
-                "select lifecycle_generation from public.sandboxes where id=$1::uuid and deleted_at is null and credential_id=$2::uuid and credential_version=$3 for update",
-                [row.id, row.credential_id, row.credential_version],
-              );
-              if (
-                !current.rows[0] ||
-                current.rows[0].lifecycle_generation !== row.lifecycle_generation ||
-                (provider.id === "modal" && (await modalGeneration(tx, providerId, actor, true)) !== generation)
-              )
-                throw new VaultError("conflict", "Native source incarnation changed.");
-            },
+            verifySource: verifySource(generation, false),
           });
           return (await state.read(actor, row.credential_id, row.credential_version, row.id))?.secrets ?? [];
         } catch (error) {
