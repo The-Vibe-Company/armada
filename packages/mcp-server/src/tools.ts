@@ -1862,16 +1862,9 @@ export function createArmadaServer(context: ToolContext, version: string, option
             role: membership.role,
           });
         const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
-        const nativeBefore =
-          (!enrolled &&
-            (await context.launchCredentials.nativeSecrets?.(
-              nativeActor,
-              found.id,
-              provider,
-              found.providerSandboxId,
-              "before",
-            ))) ||
-          [];
+        const readNativeSecrets = (phase: "before" | "after") =>
+          context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId, phase);
+        const nativeBefore = (!enrolled && (await readNativeSecrets("before"))) || [];
         const result = await provider
           .exec({
             sandboxId: found.providerSandboxId,
@@ -1887,16 +1880,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
             "The command started in the background. Check sandbox status before retrying.",
           );
         try {
-          const nativeAfter =
-            (!enrolled &&
-              (await context.launchCredentials.nativeSecrets?.(
-                nativeActor,
-                found.id,
-                provider,
-                found.providerSandboxId,
-                "after",
-              ))) ||
-            [];
+          const nativeAfter = (!enrolled && (await readNativeSecrets("after"))) || [];
           const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
           const clip = (text: string) => {
             const safe = redact(text, secrets);
