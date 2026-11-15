@@ -1,5 +1,24 @@
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
+  "template list": `Usage: armada template list [--org NAME|UUID] [--json]
+List visible launch-template metadata: IDs, names, scope, status and current revision.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Use a template ID from this list when names collide across scopes.
+--json emits the API response with an items array; human output is a compact table.
+Use armada template get ID --json to inspect a definition, not list.
+Example: armada template list --org ORG_UUID --json
+`,
+  "template get": `Usage: armada template get NAME|ID [--revision N] [--org NAME|UUID] [--json]
+Inspect a visible launch template; omitted --revision selects its current revision.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Names must match exactly and identify one active template; use an ID from template list
+when names collide across scopes. --revision is a positive integer.
+Human output shows metadata and the selected revision, not the definition.
+--json emits the API response including item and revision with its definition.
+Definitions contain references to variables and secrets, not raw secret values.
+This reads a template; it does not publish, launch or resolve a frozen launch manifest.
+Example: armada template get TEMPLATE_UUID --revision 1 --org ORG_UUID --json
+`,
   host: `Usage: armada host <command> [arguments]
 Manage Docker machines registered with Armada, not individual sandboxes.
 
