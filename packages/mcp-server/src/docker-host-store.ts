@@ -937,6 +937,29 @@ export function createDockerHostStore(sql: Sql, key: string) {
         return readJob(row);
       });
     },
+    cleaned(hostToken: string, installationId: string, result: { requestId: string }) {
+      return transaction(async (tx) => {
+        exact(result, ["requestId"]);
+        id(result.requestId);
+        const host = await authenticate(tx, hostToken, installationId);
+        const job =
+          (
+            await tx.query<StoredJob>("select * from public.docker_host_jobs where host_id=$1 and request_id=$2", [
+              host.id,
+              result.requestId,
+            ])
+          ).rows[0] ?? deny();
+        if (!job.bound_sandbox_id || job.bound_operation === "buildSnapshot") deny();
+        const logical = await boundMachine(tx, job, host, installationId);
+        // Physical cleanup is an authenticated machine fact, not owner delete intent.
+        await tx.query(
+          `update public.sandboxes set status='deleted',deleted_at=coalesce(deleted_at,now()),
+           stopped_at=coalesce(stopped_at,now()),lifecycle_generation=lifecycle_generation+case when status='deleted' then 0 else 1 end
+           where id=$1`,
+          [logical.id],
+        );
+      });
+    },
     expired(hostToken: string, installationId: string, result: { requestId: string }) {
       return transaction(async (tx) => {
         exact(result, ["requestId"]);

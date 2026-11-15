@@ -1036,3 +1036,140 @@ test.each(["stop", "delete", "expired", "resumed"] as const)(
     expect(f.swept).toEqual(kind === "resumed" ? [original.request.generation] : []);
   },
 );
+
+test("durable retention cleans only stopped allocations after the deadline while offline and retries reconciliation", async () => {
+  const f = fixture();
+  let now = 1000;
+  let stopped = false;
+  let deletes = 0;
+  let reports = 0;
+  const executor: Executor = {
+    create: async () => {},
+    stop: async () => {},
+    delete: async () => {},
+    stopIfExpired: async () => false,
+    isStopped: async () => stopped,
+    isRunning: async () => !stopped,
+    deleteStopped: async () => {
+      deletes++;
+    },
+  };
+  const api: Api = {
+    register: async () => {
+      throw Error("unused");
+    },
+    poll: async () => ({ job: f.job }),
+    result: async () => {},
+    cleaned: async () => {
+      reports++;
+      throw Error("offline");
+    },
+  };
+  await tick(f.store, api, executor, false, () => now);
+  stopped = true;
+  api.poll = async () => {
+    throw Error("offline");
+  };
+  await tick(f.store, api, executor, false, () => now).catch(() => {});
+  expect((await f.store.load()).retention?.[0]?.deadline).toBe(86401000);
+  now = 86400999;
+  await tick(f.store, api, executor, false, () => now).catch(() => {});
+  expect(deletes).toBe(0);
+  now++;
+  await tick(f.store, api, executor, false, () => now).catch(() => {});
+  expect(deletes).toBe(1);
+  expect(reports).toBe(1);
+  api.cleaned = async () => {
+    reports++;
+  };
+  stopped = false;
+  await tick(f.store, api, executor, false, () => now).catch(() => {});
+  expect(deletes).toBe(1);
+  expect(reports).toBe(2);
+  expect((await f.store.load()).retention).toEqual([]);
+});
+
+test("physical resume cancels retention even when its RPC outcome was uncertain", async () => {
+  const f = fixture();
+  let stopped = true;
+  let now = 10;
+  let deletes = 0;
+  const executor: Executor = {
+    create: async () => {},
+    stop: async () => {},
+    delete: async () => {},
+    stopIfExpired: async () => false,
+    isStopped: async () => stopped,
+    isRunning: async () => !stopped,
+    deleteStopped: async () => {
+      deletes++;
+    },
+  };
+  const api: Api = {
+    register: async () => {
+      throw Error("unused");
+    },
+    poll: async () => ({ job: f.job }),
+    result: async () => {},
+  };
+  await tick(f.store, api, executor, false, () => now);
+  await tick(f.store, api, executor, false, () => now);
+  expect((await f.store.load()).retention).toHaveLength(1);
+  stopped = false;
+  now += 86400000;
+  await tick(f.store, api, executor, false, () => now);
+  expect(deletes).toBe(0);
+  expect((await f.store.load()).retention).toEqual([]);
+});
+
+test("retention rotates failed deletions and runs local TTL before bounded offline reports", async () => {
+  const f = fixture();
+  const order: string[] = [];
+  const executor: Executor = {
+    create: async () => {},
+    stop: async () => {},
+    delete: async () => {},
+    stopIfExpired: async (request) => {
+      order.push(`ttl:${request.sandboxId}`);
+      return false;
+    },
+    deleteStopped: async (request) => {
+      order.push(`delete:${request.sandboxId}`);
+      if (request.sandboxId === firstId) throw Error("Docker refused");
+    },
+  };
+  const api: Api = {
+    register: async () => {
+      throw Error("unused");
+    },
+    poll: async () => ({ job: f.job }),
+    result: async () => {},
+    cleaned: async () => {
+      order.push("report");
+      throw Error("offline");
+    },
+  };
+  const firstId = f.job.request.sandboxId;
+  await tick(f.store, api, executor, false, () => 100);
+  f.job.requestId = crypto.randomUUID();
+  f.job.request = { ...f.job.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() };
+  const secondId = f.job.request.sandboxId;
+  await tick(f.store, api, executor, false, () => 100);
+  const state = await f.store.load();
+  state.retention = state.receipts.map((receipt) => ({
+    request: receipt.request,
+    requestId: receipt.requestId,
+    deadline: 100,
+  }));
+  await f.store.save(state);
+  api.poll = async () => {
+    throw Error("offline");
+  };
+  order.length = 0;
+  await tick(f.store, api, executor, false, () => 100).catch(() => {});
+  expect(order).toEqual([`delete:${firstId}`, `ttl:${firstId}`]);
+  order.length = 0;
+  await tick(f.store, api, executor, false, () => 100).catch(() => {});
+  expect(order).toEqual([`delete:${secondId}`, `ttl:${secondId}`, "report"]);
+  expect((await f.store.load()).retention?.[1]?.deleted).toBe(true);
+});
