@@ -1,5 +1,7 @@
 # Three-group navigation — owner confirmed
 
+> Historical implementation record for #1155. Later tickets intentionally changed the menu: Environments became Snapshots, Organizations left the sidebar, and Providers was added. The three-group diagram and captures below document that earlier slice, not today’s menu. See [the completion ledger](navigation-completion.md) for current source references.
+
 The owner confirmed this structure: **"Oui, fais-le"**, relayed by the coordinator on 2026-11-12. Refs #1038. The immediate removal of sidebar sub-text is the separate #1152; this PR builds on it.
 
 ## Confirmed structure
