@@ -27,7 +27,10 @@ export const LAUNCH_PATH = "/api/v1/sandbox/launch";
  * answers 404 before allocating anything, and the launch is never retried on the legacy route: a replica that ignores
  * `size` must not start a machine of another size.
  */
-export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs): Promise<{ id: string }> {
+export async function launchSandbox(
+  options: ArmadaApiOptions,
+  args: LaunchArgs & { ttlSeconds?: number },
+): Promise<{ id: string }> {
   if (args.armadaAccess && (args.harness !== "codex" || !isUuid(args.credentialId)))
     throw new ControlError("Armada access requires an explicit named Codex account.");
   const sized = args.size !== undefined || args.sizePolicy === true;
@@ -42,6 +45,7 @@ export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs)
       harness: args.harness,
       model: args.model,
       reasoningEffort: args.reasoning_effort,
+      ...(args.ttlSeconds === undefined ? {} : { ttlSeconds: args.ttlSeconds }),
       ...(args.skills?.length ? { skills: args.skills } : {}),
       ...(args.connections === undefined ? {} : { connections: args.connections }),
       ...(args.repo === undefined ? {} : { repo: args.repo }),

@@ -161,6 +161,7 @@ export type DockerLaunchArgs = {
   model: string;
   reasoningEffort: string;
   prompt?: string;
+  ttlSeconds?: number;
 };
 
 /** The `sandbox/launch` body for a Docker host: an agent in the official Armada environment, private, with no image override. */
@@ -177,6 +178,7 @@ export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
     model: args.model,
     reasoningEffort: args.reasoningEffort,
     visibility: "private",
+    ...(args.ttlSeconds === undefined ? {} : { ttlSeconds: args.ttlSeconds }),
     ...(args.prompt ? { prompt: args.prompt } : {}),
   };
 }

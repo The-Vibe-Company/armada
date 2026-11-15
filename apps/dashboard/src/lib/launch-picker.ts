@@ -49,3 +49,19 @@ export function initialLaunchSelection(accounts: LaunchAccounts, catalog: ModelC
       (account?.kind === "morph" ? COMPATIBLE_MODEL_PROVIDERS.morph.models[0]! : catalog[harness].defaultModel),
   };
 }
+
+/** A visible launch source. Refused entries stay in the picker with their recovery instruction. */
+export type LaunchStartTarget = {
+  id: string;
+  label: string;
+  group: string;
+  reason?: string;
+  golden: string;
+  provider: import("@armada/core").SandboxPlacementProviderId;
+  snapshotId?: string;
+  hostId?: string;
+  repositories: readonly string[];
+  sizing?: { policy: import("@armada/core").MachineSizePolicy | null };
+  harnesses?: import("@armada/core").Harness[];
+  initialHarness?: import("@armada/core").Harness;
+};

@@ -17,6 +17,7 @@ import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
 import { checkAccountChoice } from "@/lib/model-accounts";
 import { chosenConnection, modelChoice } from "@/lib/model-choice";
 import { snapshotActionFailure } from "@/lib/snapshot-action-errors";
+import { ttlChoice } from "@/lib/templates";
 export type SnapshotCreateResult = { ok: true; message: string; snapshotId: string } | { ok: false; error: string };
 const createFail = (error: string): SnapshotCreateResult => ({ ok: false, error });
 export async function buildDockerSnapshot(
@@ -88,6 +89,8 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
   if (!isUuid(snapshotId) || !isUuid(requestId) || !HARNESSES.includes(harness))
     return fail("That launch request is not valid.");
   if (formString(data, "armada_access")) return fail("Armada delegation is not supported for host snapshots yet.");
+  const ttl = ttlChoice(formString(data, "ttl"), "docker");
+  if (!ttl.ok) return fail(ttl.error);
   const choice = modelChoice(harness, {
     model: formString(data, "model"),
     otherModel: formString(data, "other_model"),
@@ -141,6 +144,7 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
           credentialId: account.id,
           model: choice.args.model,
           reasoningEffort: choice.args.reasoningEffort,
+          ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
           ...(formString(data, "prompt").trim() ? { prompt: formString(data, "prompt").trim() } : {}),
           ...(skills.length ? { skills } : {}),
           ...(connections === undefined ? {} : { connections }),
@@ -155,9 +159,11 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
         : error instanceof ControlError
           ? launchFailureMessage(error)
           : "Launch could not be confirmed.",
+      { href: "/sandboxes?owner=me&sort=newest", label: "See newest sandboxes" },
     );
   }
-  if (!id) return fail(UNKNOWN_DOCKER_LAUNCH);
+  if (!id)
+    return fail(UNKNOWN_DOCKER_LAUNCH, { href: "/sandboxes?owner=me&sort=newest", label: "See newest sandboxes" });
   revalidatePath("/sandboxes");
   redirect(`/sandboxes/${id}`);
 }

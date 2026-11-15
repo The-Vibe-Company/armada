@@ -93,14 +93,17 @@ test("the chosen model account is pinned on every launch route, sized or not, al
   const ok = { sandbox: { id: "s1" } };
   const credentialId = "00000000-0000-4000-8000-000000000041";
   const skills = ["review-code@2.0.0"];
-  await launchSandbox(answeringAt(routes, ok), { ...args, credentialId, skills, size: "large" });
-  await launchSandbox(answeringAt(routes, ok), { ...args, credentialId, skills, sizePolicy: true });
-  await launchSandbox(answeringAt(routes, ok), { ...args, credentialId, skills });
+  await launchSandbox(answeringAt(routes, ok), { ...args, ttlSeconds: 3600, credentialId, skills, size: "large" });
+  await launchSandbox(answeringAt(routes, ok), { ...args, ttlSeconds: 3600, credentialId, skills, sizePolicy: true });
+  await launchSandbox(answeringAt(routes, ok), { ...args, ttlSeconds: 3600, credentialId, skills });
   const sent = routes.map((route) => [route.split(" ")[0], JSON.parse(route.slice(route.indexOf(" ") + 1))]);
   expect(sent).toEqual([
-    [SIZED_LAUNCH_ROUTE_V1, expect.objectContaining({ credentialId, skills, size: "large", sizePolicyVersion: 1 })],
-    [SIZED_LAUNCH_ROUTE_V1, expect.objectContaining({ credentialId, skills, sizePolicyVersion: 1 })],
-    ["/api/v1/sandbox/launch", expect.objectContaining({ credentialId, skills })],
+    [
+      SIZED_LAUNCH_ROUTE_V1,
+      expect.objectContaining({ ttlSeconds: 3600, credentialId, skills, size: "large", sizePolicyVersion: 1 }),
+    ],
+    [SIZED_LAUNCH_ROUTE_V1, expect.objectContaining({ ttlSeconds: 3600, credentialId, skills, sizePolicyVersion: 1 })],
+    ["/api/v1/sandbox/launch", expect.objectContaining({ ttlSeconds: 3600, credentialId, skills })],
   ]);
 });
 

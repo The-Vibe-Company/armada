@@ -1,20 +1,22 @@
 "use client";
 
 import type { Harness, MachineSize, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
-import { SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
-import { CircleAlertIcon, FolderIcon, PlugIcon, RocketIcon, ServerIcon, WalletIcon } from "lucide-react";
+import { MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
+import { CircleAlertIcon, PlugIcon, RocketIcon, ServerIcon, WalletIcon } from "lucide-react";
 import Link from "next/link";
 import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
-import { launchFromGolden } from "@/app/actions/sandboxes";
+import { launchFromGolden, readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
-import { LaunchSentence } from "@/components/launch-sentence";
+import { DockerLaunchForm } from "@/components/docker-launch";
+import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
 import {
   LaunchAdvanced,
   LaunchDialogContent,
   LaunchDialogHeader,
   LaunchFields,
+  LaunchLocation,
   LaunchTaskField,
   useLaunchSurface,
 } from "@/components/launch-surface";
@@ -38,7 +40,7 @@ import {
 } from "@/lib/connections";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
-import { initialLaunchSelection } from "@/lib/launch-picker";
+import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
 import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import {
   accountProblem,
@@ -62,7 +64,7 @@ export type LaunchConnections = { connections: McpConnection[] } | { unavailable
  */
 export type LaunchSizing = { policy: MachineSizePolicy | null };
 
-type LaunchProps = {
+export type LaunchProps = {
   golden: string;
   provider: SandboxPlacementProviderId;
   snapshotId?: string;
@@ -77,6 +79,14 @@ type LaunchProps = {
   sizing?: LaunchSizing;
   /** The templates that start from this environment: choosing one preselects everything but the run (#949). */
   templates?: readonly TemplateLaunchTarget[];
+  starts?: readonly LaunchStartTarget[];
+  selectedStart?: string;
+  onStart?: (id: string) => void;
+  idleDelaySeconds?: number | undefined;
+  templateChooser?: ReactNode;
+  launchBlockedReason?: string | undefined;
+  task?: string;
+  onTask?: (value: string) => void;
 };
 
 /**
@@ -104,37 +114,160 @@ export function LaunchDialog(props: LaunchProps) {
  * With templates for this environment, the dialog starts with a choice: everything chosen here, or a template's
  * preset (its agent, model, tools and variables), where only the task and the run remain to choose.
  */
-function LaunchStart(props: LaunchProps) {
-  const id = useId();
-  const [start, setStart] = useState("");
-  const templates = props.templates ?? [];
-  const template = templates.find((item) => item.id === start);
+export type HostLaunchStart = {
+  orgId: string;
+  hostId: string;
+  hostName: string;
+  accounts: LaunchAccounts;
+  unavailable: { name: string; reason: string }[];
+  harnesses: Harness[];
+  initialHarness: Harness;
+};
+
+export function LaunchStart(props: LaunchProps | HostLaunchStart) {
+  const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
+  const [loadingError, setLoadingError] = useState("");
+  const host = "hostId" in props;
+  const fallback: LaunchStartTarget = host
+    ? {
+        id: `host:${props.hostId}`,
+        label: `Empty machine · ${props.hostName}`,
+        group: `${props.hostName} · your own server`,
+        golden: "",
+        provider: "docker",
+        hostId: props.hostId,
+        repositories: [],
+        harnesses: props.harnesses,
+        initialHarness: props.initialHarness,
+      }
+    : {
+        id: props.snapshotId ? `snapshot:${props.snapshotId}` : `${props.provider}:${props.golden}`,
+        label: `${props.golden} · ${props.provider === "boat" ? "Boat cloud" : props.provider === "modal" ? "Modal cloud" : "your own server"}`,
+        group: props.provider === "docker" ? "Your own server" : `${PROVIDER_LABELS[props.provider]} cloud`,
+        golden: props.golden,
+        provider: props.provider,
+        repositories: props.repositories,
+        ...(props.snapshotId ? { snapshotId: props.snapshotId } : {}),
+        ...(props.sizing ? { sizing: props.sizing } : {}),
+      };
+  const [selected, setSelected] = useState(fallback.id);
+  const [templateId, setTemplateId] = useState("");
+  const [task, setTask] = useState("");
+  useEffect(() => {
+    let active = true;
+    readLaunchDialogOptions()
+      .then((next) => {
+        if (!active) return;
+        if (next.orgId !== props.orgId) {
+          setLoadingError("Switch to this organization before launching.");
+          return;
+        }
+        const initial = next.targets.find((item) =>
+          host
+            ? item.hostId === props.hostId
+            : props.snapshotId
+              ? item.snapshotId === props.snapshotId
+              : item.provider === props.provider && item.golden === props.golden,
+        );
+        // Discovery enriches the initial source without remounting a form the person may already be editing.
+        const initialId = host
+          ? `host:${props.hostId}`
+          : props.snapshotId
+            ? `snapshot:${props.snapshotId}`
+            : `${props.provider}:${props.golden}`;
+        setOptions({
+          ...next,
+          targets: next.targets.map((item) => (item.id === initial?.id ? { ...item, id: initialId } : item)),
+        });
+      })
+      .catch(() => {
+        if (active) setLoadingError("Other snapshots and servers could not be loaded. Close and reopen to try again.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [props, host]);
+  const freshSelection = options?.targets.find((item) => item.id === selected);
+  const missing = {
+    ...fallback,
+    reason: "This starting point is no longer available. Pick another snapshot or server.",
+  };
+  const starts = options ? (freshSelection ? options.targets : [missing, ...options.targets]) : [fallback];
+  const target = starts.find((item) => item.id === selected) ?? (options ? missing : fallback);
+  const templates =
+    !host && target.provider === props.provider && target.golden === props.golden ? (props.templates ?? []) : [];
+  const template = templates.find((item) => item.id === templateId);
+  const chooser = templates.length > 0 && (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-launch-start>
+      <span>Or use a template (a saved launch setup)</span>
+      {templates.map((item) => (
+        <Button
+          key={item.id}
+          type="button"
+          variant={templateId === item.id ? "secondary" : "outline"}
+          size="xs"
+          onClick={() => setTemplateId(templateId === item.id ? "" : item.id)}
+        >
+          {item.name}
+          {templateId === item.id ? " ×" : ""}
+        </Button>
+      ))}
+    </div>
+  );
+  const common = {
+    starts,
+    selectedStart: target.id,
+    onStart: (id: string) => {
+      setSelected(id);
+      setTemplateId("");
+    },
+    idleDelaySeconds: options?.idleDelaySeconds,
+    launchBlockedReason: target.reason,
+    task,
+    onTask: setTask,
+  };
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <LaunchDialogHeader
-        title={`Launch from ${props.golden}`}
-        description={
-          <>
-            On {PROVIDER_LABELS[props.provider]}
-            {template ? `, with ${template.name} (revision ${template.revision})` : ""}
-          </>
-        }
-      />
-      {/* Rendered once above either form, so changing it keeps the focus on it. */}
-      {templates.length > 0 && (
-        <div className="space-y-2 px-6 pb-4" data-launch-start>
-          <Label htmlFor={`${id}-start`}>Start from</Label>
-          <NativeSelect id={`${id}-start`} value={start} onChange={(event) => setStart(event.target.value)}>
-            <option value="">No template: choose below</option>
-            {templates.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name} (revision {item.revision})
-              </option>
-            ))}
-          </NativeSelect>
-        </div>
+      <LaunchDialogHeader title="Launch a sandbox" description="Choose who works and where it starts." />
+      {loadingError && (
+        <p role="alert" className="px-6 pb-3 text-xs text-warning">
+          {loadingError}
+        </p>
       )}
-      {template ? <TemplateLaunchForm key={template.id} target={template} /> : <LaunchForm {...props} />}
+      {template ? (
+        <>
+          <div className="px-6 pb-3">{chooser}</div>
+          <TemplateLaunchForm key={template.id} target={template} />
+        </>
+      ) : target.hostId ? (
+        <DockerLaunchForm
+          key={target.id}
+          orgId={props.orgId}
+          hostId={target.hostId}
+          hostName={target.group.replace(/ · your own server.*$/, "")}
+          accounts={options?.accounts ?? props.accounts}
+          unavailable={host ? props.unavailable : []}
+          harnesses={target.harnesses ?? ["codex"]}
+          initialHarness={target.initialHarness ?? "codex"}
+          {...common}
+        />
+      ) : (
+        <LaunchForm
+          key={target.id}
+          golden={target.golden}
+          provider={target.provider}
+          orgId={props.orgId}
+          {...(target.snapshotId ? { snapshotId: target.snapshotId } : {})}
+          repositories={target.repositories}
+          {...(target.sizing ? { sizing: target.sizing } : {})}
+          accounts={options?.accounts ?? props.accounts}
+          catalog={options?.catalog ?? (!host ? props.catalog : MODEL_CATALOG)}
+          connections={options?.connections ?? (!host ? props.connections : { connections: [] })}
+          boatOpenCodeAvailable={options?.boatOpenCodeAvailable ?? (!host && props.boatOpenCodeAvailable === true)}
+          templateChooser={chooser}
+          {...common}
+        />
+      )}
     </div>
   );
 }
@@ -151,6 +284,14 @@ function LaunchForm({
   accounts,
   repositories,
   sizing,
+  starts,
+  selectedStart,
+  onStart,
+  idleDelaySeconds,
+  templateChooser,
+  task,
+  onTask,
+  launchBlockedReason,
 }: LaunchProps) {
   const id = useId();
   const [harness, setHarness] = useState<Harness>("claude");
@@ -163,7 +304,7 @@ function LaunchForm({
       (account) => account.id === value && accountProblem(account, accounts.now) === null,
     );
   const canDelegate = provider !== "docker" && harness === "codex" && usableCodexAccount(credential);
-  const access = useLaunchAccess(connections);
+  const access = useLaunchAccess(provider === "docker" ? { connections: [] } : connections);
   const root = useRef<HTMLDivElement>(null);
   const launchKey = useRef<LaunchKey | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -207,13 +348,11 @@ function LaunchForm({
   // The size that will be requested, null while the provider decides.
   const [size, setSize] = useState<MachineSize | null>(null);
   const summary: { key: string; icon: ReactNode; text: string }[] = [
-    // A single repository is chosen in Advanced, so its choice is summarized with the other overrides.
-    ...(repositories.length === 1
-      ? [{ key: "project", icon: <FolderIcon />, text: project || "Default directory" }]
-      : []),
     ...(sizing ? [{ key: "size", icon: <ServerIcon />, text: sizeFact(size) }] : []),
     { key: "mcp", icon: <PlugIcon />, text: mcpFact(access) },
-    ...(armadaAccess && canDelegate ? [{ key: "armada", icon: <RocketIcon />, text: "Armada access" }] : []),
+    ...(armadaAccess && canDelegate
+      ? [{ key: "armada", icon: <RocketIcon />, text: "Let this agent launch other sandboxes" }]
+      : []),
   ];
 
   return (
@@ -225,21 +364,44 @@ function LaunchForm({
         footerClassName="space-y-2 border-t px-6 py-4"
         footer={
           <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
-            {access.held && (
-              <p id={`${id}-held`} className="mr-auto text-xs text-warning">
-                Decide on the MCP default first.
+            {launchBlockedReason && (
+              <p id={`${id}-source-blocked`} role="alert" className="mr-auto text-xs text-warning">
+                {launchBlockedReason}{" "}
+                <Link className="underline" href="/snapshots">
+                  Open Snapshots
+                </Link>
               </p>
             )}
+            <LaunchAccountNotice
+              idPrefix={id}
+              harness={harness}
+              account={credential}
+              accounts={accounts}
+              onPick={() => root.current?.querySelector<HTMLButtonElement>("[data-launch-account-picker]")?.click()}
+            />
+            {access.alerts(() => {
+              focusLaunch.current = true;
+            }, id)}
             {/* Only set when blocked: preserve SubmitButton's own pending lock otherwise. */}
             <SubmitButton
-              className="w-full sm:w-auto"
-              {...(access.held || accountBlocked || accounts.state === "unavailable"
-                ? { disabled: true, "aria-describedby": access.held ? `${id}-held` : `${id}-account-unavailable` }
+              className="max-sm:ml-auto"
+              {...(access.held || accountBlocked || accounts.state === "unavailable" || launchBlockedReason
+                ? {
+                    disabled: true,
+                    "aria-describedby": launchBlockedReason
+                      ? `${id}-source-blocked`
+                      : access.held
+                        ? `${id}-held`
+                        : `${id}-account-unavailable`,
+                  }
                 : {})}
             >
               <RocketIcon /> Launch
               <SubmitShortcut />
             </SubmitButton>
+            <p className="basis-full text-right text-xs text-muted-foreground">
+              Opens the sandbox page and its conversation.
+            </p>
           </div>
         }
       >
@@ -250,6 +412,8 @@ function LaunchForm({
         {/* Untouched, or not listed: the launch names no connections and the server applies the defaults (#681). */}
         <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
         <LaunchFields>
+          <LaunchTaskField idPrefix={id} value={task} onChange={onTask} />
+          {templateChooser}
           <LaunchSentence
             idPrefix={id}
             onBlocked={setAccountBlocked}
@@ -267,16 +431,24 @@ function LaunchForm({
             catalog={catalog}
             boatOpenCodeDisabled={provider === "boat" && !boatOpenCodeAvailable}
           />
-          <p className="text-sm text-muted-foreground">
-            In a {PROVIDER_LABELS[provider]} sandbox, from snapshot {golden}
-          </p>
-          <LaunchTaskField idPrefix={id} />
-          {repositories.length > 1 && (
-            <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
-          )}
-          {access.alerts(() => {
-            focusLaunch.current = true;
-          })}
+          <LaunchLocation
+            provider={provider}
+            start={
+              selectedStart ??
+              `${golden} · ${provider === "boat" ? "Boat cloud" : provider === "modal" ? "Modal cloud" : "your own server"}`
+            }
+            starts={starts?.map((item) => ({
+              value: item.id,
+              label: item.label,
+              group: item.group,
+              reason: item.reason,
+            }))}
+            onStart={onStart}
+            idleDelaySeconds={idleDelaySeconds}
+            repositories={repositories}
+            project={project}
+            onProject={setProject}
+          />
           <LaunchAdvanced
             open={advancedOpen}
             onOpenChange={setAdvancedOpen}
@@ -302,10 +474,7 @@ function LaunchForm({
               </span>
             }
           >
-            <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
-            {repositories.length === 1 && (
-              <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
-            )}
+            {provider !== "docker" && <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />}
             {provider !== "docker" && sizing && (
               <MachineSizeField
                 idPrefix={id}
@@ -315,25 +484,27 @@ function LaunchForm({
                 onSize={setSize}
               />
             )}
-            {access.fields(id)}
-            <div className="space-y-1.5">
-              <Label htmlFor={`${id}-armada-access`} className="flex min-h-11 items-center gap-2">
-                <Checkbox
-                  id={`${id}-armada-access`}
-                  name="armada_access"
-                  checked={armadaAccess && canDelegate}
-                  onCheckedChange={(checked) => setArmadaAccess(checked === true)}
-                  disabled={!canDelegate}
-                  aria-describedby={`${id}-armada-access-hint`}
-                />
-                Armada access
-              </Label>
-              <p id={`${id}-armada-access-hint`} className="text-xs text-pretty text-muted-foreground">
-                {canDelegate
-                  ? "Let this private sandbox launch and manage up to 3 child sandboxes in this organization, using the selected snapshot and account."
-                  : "Choose Codex and an active account to enable Armada access."}
-              </p>
-            </div>
+            {provider !== "docker" && access.fields(id)}
+            {provider !== "docker" && (
+              <div className="space-y-1.5">
+                <Label htmlFor={`${id}-armada-access`} className="flex min-h-11 items-center gap-2">
+                  <Checkbox
+                    id={`${id}-armada-access`}
+                    name="armada_access"
+                    checked={armadaAccess && canDelegate}
+                    onCheckedChange={(checked) => setArmadaAccess(checked === true)}
+                    disabled={!canDelegate}
+                    aria-describedby={`${id}-armada-access-hint`}
+                  />
+                  Let this agent launch other sandboxes
+                </Label>
+                <p id={`${id}-armada-access-hint`} className="text-xs text-pretty text-muted-foreground">
+                  {canDelegate
+                    ? "Let this private sandbox launch and manage up to 3 child sandboxes in this organization, using the selected snapshot and account."
+                    : "Choose Codex and an active account to let this agent launch other sandboxes."}
+                </p>
+              </div>
+            )}
           </LaunchAdvanced>
         </LaunchFields>
       </ActionForm>
@@ -564,34 +735,31 @@ function useLaunchAccess(connections: LaunchConnections) {
     (connection) => chosen.includes(connection.id) && launchBlocker(connection) === null,
   ).length;
 
-  const alerts = (onContinue: () => void): ReactNode => (
+  const alerts = (onContinue: () => void, idPrefix: string): ReactNode => (
     <>
       {unready.length > 0 && (
-        <div
-          role="alert"
-          data-unready-defaults
-          className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs"
-        >
-          <CircleAlertIcon className="size-4 shrink-0 text-warning" />
-          <span className="min-w-48 flex-1">
+        <div data-unready-defaults className="contents">
+          <p id={`${idPrefix}-held`} role="alert" className="flex basis-full items-center gap-2 text-xs text-warning">
+            <CircleAlertIcon className="size-4 shrink-0" />
             {unready.map((connection) => connection.name).join(", ")}{" "}
-            {unready.length === 1 ? "is a default but is" : "are defaults but are"} not connected.{" "}
-            <Link href="/tools" className="underline">
-              Reconnect
-            </Link>{" "}
-            or continue without {unready.length === 1 ? "it" : "them"}.
-          </span>
+            {unready.length === 1
+              ? "is on by default but is not connected."
+              : "are on by default but are not connected."}
+          </p>
+          <Button asChild type="button" variant="outline" size="sm">
+            <Link href="/tools">Reconnect</Link>
+          </Button>
           <Button
             type="button"
-            variant="outline"
-            size="xs"
+            variant="ghost"
+            size="sm"
             onClick={() => {
               setWaived([...waived, ...unready.map((connection) => connection.id)]);
               setPicked(chosen);
               onContinue();
             }}
           >
-            Continue without {unready.length === 1 ? "it" : "them"}
+            Launch without {unready.length === 1 ? "it" : "them"}
           </Button>
         </div>
       )}
@@ -611,7 +779,7 @@ function useLaunchAccess(connections: LaunchConnections) {
       <>
         {"connections" in connections && (
           <fieldset className="min-w-0 space-y-2">
-            <legend className="text-sm leading-none font-medium">MCP connections</legend>
+            <legend className="text-sm leading-none font-medium">Tools the agent can call</legend>
             {list.length === 0 ? (
               <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
                 No connections.{" "}
@@ -724,10 +892,10 @@ function ConnectionOption({
   );
 }
 
-/** The MCP connections a launch gets, as one summary fact. */
+/** The Tools the agent can call a launch gets, as one summary fact. */
 function mcpFact(access: { unavailable: boolean; selected: number }): string {
-  if (access.unavailable) return "MCP unavailable";
-  return access.selected === 0 ? "No MCP" : `${access.selected} MCP`;
+  if (access.unavailable) return "Tools unavailable";
+  return access.selected === 0 ? "No tools" : `${access.selected} tools`;
 }
 
 /** The machine size a launch requests, as one summary fact named apart from effort; without one the provider decides. */
