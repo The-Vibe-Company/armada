@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.41.0](https://github.com/The-Vibe-Company/armada/compare/v2.40.0...v2.41.0) (2026-11-15)
+
+
+### Features
+
+* **dashboard:** discover Boat OpenCode runtime launch support ([#2072](https://github.com/The-Vibe-Company/armada/issues/2072)) ([f7d7821](https://github.com/The-Vibe-Company/armada/commit/f7d7821ddb38b0ea57a16c23eb902875ec8a15e9))
+* **runtime:** enable OpenCode on Boat shared runtime ([#2058](https://github.com/The-Vibe-Company/armada/issues/2058)) ([7531769](https://github.com/The-Vibe-Company/armada/commit/75317690ef3bc8117168593b1e009a8af8fe1f81))
+* **sandbox:** expose logical expiry warnings [trial] ([#2054](https://github.com/The-Vibe-Company/armada/issues/2054)) ([95e6816](https://github.com/The-Vibe-Company/armada/commit/95e681680edc01d865826410c2a7d55fc3bef4e0))
+* **smoke:** verify OpenCode MCP native proof on Docker ([#2068](https://github.com/The-Vibe-Company/armada/issues/2068)) ([0c9a973](https://github.com/The-Vibe-Company/armada/commit/0c9a9737ce0404c67c1daf4c4dbe6cd7d1842232))
+
+
+### Bug Fixes
+
+* **accounts:** support Morph accounts in OpenCode ([#2066](https://github.com/The-Vibe-Company/armada/issues/2066)) ([e779b16](https://github.com/The-Vibe-Company/armada/commit/e779b16da544ee2847dd045bac011c3f4491060e))
+* **cli:** clarify application secret lifecycle help ([#2070](https://github.com/The-Vibe-Company/armada/issues/2070)) ([3efcc76](https://github.com/The-Vibe-Company/armada/commit/3efcc76fe3bcf015a50da1cca3dd582ebc249d0f))
+* **cli:** clarify application vault set help ([#2067](https://github.com/The-Vibe-Company/armada/issues/2067)) ([5273dd2](https://github.com/The-Vibe-Company/armada/commit/5273dd2e13c97650d851df5e822a00208e7179f4))
+* **cli:** clarify routine configuration help ([#2059](https://github.com/The-Vibe-Company/armada/issues/2059)) ([7e28d7a](https://github.com/The-Vibe-Company/armada/commit/7e28d7a4cd088fd6f2ab72a9cbaf4a574ba31063))
+* **cli:** clarify routine state-change help ([#2050](https://github.com/The-Vibe-Company/armada/issues/2050)) ([f085c5e](https://github.com/The-Vibe-Company/armada/commit/f085c5eaf76ece24d8755765a998a07a20aac122))
+* **cli:** focus application vault reader help ([#2064](https://github.com/The-Vibe-Company/armada/issues/2064)) ([dd92f40](https://github.com/The-Vibe-Company/armada/commit/dd92f40ed97cdf4953ae331f5cfd91e6e4cf0e40))
+* **cli:** focus routine family navigation help ([#2062](https://github.com/The-Vibe-Company/armada/issues/2062)) ([972a177](https://github.com/The-Vibe-Company/armada/commit/972a177a1a399b0e1de67bbb51a4536325f66c48))
+* **cli:** focus scheduled routine reader help ([#2049](https://github.com/The-Vibe-Company/armada/issues/2049)) ([172a9f9](https://github.com/The-Vibe-Company/armada/commit/172a9f9bb185fbd5476e30dbc3cb7e77f3e25b6a))
+* **cli:** focus template definition help ([#2047](https://github.com/The-Vibe-Company/armada/issues/2047)) ([050d4f8](https://github.com/The-Vibe-Company/armada/commit/050d4f8e4fbfd565d43fbb48543b82cf03ee1dda))
+* **cli:** focus template family navigation help ([#2048](https://github.com/The-Vibe-Company/armada/issues/2048)) ([1318b59](https://github.com/The-Vibe-Company/armada/commit/1318b59ad981404455d552388977d14c5fb269c4))
+* **cli:** separate application vault navigation help ([#2073](https://github.com/The-Vibe-Company/armada/issues/2073)) ([dd3c4f0](https://github.com/The-Vibe-Company/armada/commit/dd3c4f0486612b8f3f28b5898dd4a398231d0e89))
+* **dashboard:** enable OpenCode for Docker snapshot launches ([#2063](https://github.com/The-Vibe-Company/armada/issues/2063)) ([05bcfc3](https://github.com/The-Vibe-Company/armada/commit/05bcfc3b537984293e93d6261def6a270541e8c8))
+* **ios:** explain idle steer refusal with normal-send guidance [trial] ([#2053](https://github.com/The-Vibe-Company/armada/issues/2053)) ([e01d19e](https://github.com/The-Vibe-Company/armada/commit/e01d19e5440b96ba1377a381dc9745a089e0581f))
+* **launch:** support custom model endpoints on Boat ([#2056](https://github.com/The-Vibe-Company/armada/issues/2056)) ([496e33e](https://github.com/The-Vibe-Company/armada/commit/496e33e8e6841f867db78765b0c23249737ee454))
+* **runtime:** recover Codex turns after model provider rate limits ([#2071](https://github.com/The-Vibe-Company/armada/issues/2071)) ([c01c986](https://github.com/The-Vibe-Company/armada/commit/c01c986da329f5d7dcadb3a280dba986b40cf100))
+
 ## [2.40.0](https://github.com/The-Vibe-Company/armada/compare/v2.39.1...v2.40.0) (2026-11-15)
 
 
