@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 type ModelUsage = Record<string, number>;
-export type ClaudeUsageBaseline = { modelUsage: Record<string, ModelUsage>; totalCostUSD: number };
+type ClaudeUsageBaseline = { modelUsage: Record<string, ModelUsage>; totalCostUSD: number };
 const tokens = ["inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"] as const;
 const optional = [
   "thinkingTokens",

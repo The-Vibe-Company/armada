@@ -141,7 +141,7 @@ export async function installUserGitHubTools(input: {
 }
 
 /** Code and socket address only. Credential bytes arrive exclusively on owner-private IPC. */
-export async function installGitHubTools(input: {
+async function installGitHubTools(input: {
   root: string;
   activation: string;
   socket: string;
@@ -263,7 +263,7 @@ export async function installGitHubTools(input: {
   await chmod(proxy, 0o755);
 }
 
-export const GITHUB_CLIENT = `import os,sys,json,socket,http.client,subprocess,re,threading,pwd,signal,time,errno,shlex
+const GITHUB_CLIENT = `import os,sys,json,socket,http.client,subprocess,re,threading,pwd,signal,time,errno,shlex
 def diagnostic(error,stage):
     # Never interpolate exception text, paths, request bodies or inherited values.
     reason='invalid_response'
