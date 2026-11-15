@@ -1111,6 +1111,25 @@ Example: armada routine ${action} ${creating ? "nightly --scope personal" : "ROU
 `;
 }
 
+function vaultSetHelp(resource: "vars" | "secrets"): string {
+  return `Usage: armada ${resource} set NAME [--file PATH] [--scope personal|org] [--org NAME|UUID] [--json]
+Create a new ${resource === "vars" ? "readable application variable" : "write-only application secret"}, not a model/provider credential.
+Set creates an entry, not an update; duplicate names conflict.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+--scope personal|org selects visibility. Explicit --org requires explicit --scope;
+without --org, scope defaults to personal in the selected organization.
+Only administrators can create organization-scoped entries.
+
+Values come only from piped stdin or --file PATH, never command arguments.
+Provide UTF-8 input; content is preserved without trimming and is not echoed or cached.
+Do not embed sensitive values in shell commands or shared logs. Protect local input files.
+${resource === "vars" ? "Variables are readable, not secrets: vars read can print their values and launch manifests\nmay contain them. Use secrets set for sensitive application values." : "Secret values are write-only: there is no read, reveal or export operation.\nUse secrets rotate with an ID and expected version to replace an existing active value."}
+Human output shows metadata only; --json emits {item: metadata}, never the submitted value.
+Use ${resource} list for IDs and versions. This command does not deliver values to a sandbox.
+Example: armada ${resource} set ${resource === "vars" ? "APP_REGION" : "APP_PASSWORD"} --file /private/input.txt --scope personal --org ORG_UUID --json
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -1145,6 +1164,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (command === "routine delete") return routineStateHelp("delete");
   if (command === "routine create") return routineDefinitionHelp("create");
   if (command === "routine update") return routineDefinitionHelp("update");
+  if (command === "vars set") return vaultSetHelp("vars");
+  if (command === "secrets set") return vaultSetHelp("secrets");
   if (command === "completion") return completionHelp();
   if (command === "completion bash") return completionHelp("bash");
   if (command === "completion zsh") return completionHelp("zsh");
