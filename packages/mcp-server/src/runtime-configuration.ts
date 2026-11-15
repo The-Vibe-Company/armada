@@ -13,6 +13,7 @@ import {
 } from "@armada/core";
 import { VaultError } from "@armada/core/server";
 import type { ModelAuthOwnership } from "./model-auth.ts";
+import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
 const claudeAllowed = new Set(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_ENDPOINT_ENV]);
 const opencodeAllowed = new Set(["OPENCODE_API_KEY", OPENCODE_ENDPOINT_ENV]);
@@ -66,9 +67,7 @@ export async function runtimeConfiguration(
     if (
       sandbox.provider !== expectedProvider ||
       (expectedProvider === "docker" && (sandbox.visibility !== "private" || sandbox.repositoryDir !== null)) ||
-      (sandbox.harness !== "codex" &&
-        sandbox.harness !== "claude" &&
-        !(expectedProvider !== "boat" && sandbox.harness === "opencode")) ||
+      !runtimeHarnessSupported(expectedProvider, sandbox.harness) ||
       sandbox.ownerId !== actor.userId ||
       sandbox.orgId !== actor.orgId ||
       !["starting", "ready", "running"].includes(sandbox.status) ||

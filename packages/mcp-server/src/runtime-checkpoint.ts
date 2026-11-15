@@ -2,6 +2,7 @@ import { decryptSecret, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 
@@ -61,9 +62,7 @@ export function createRuntimeCheckpoint(
         (row.provider === "docker" && options.docker) ||
         ((row.boatRuntime || row.runtimeTransport === "dialout") && ["boat", "modal"].includes(row.provider))
       ) ||
-      (row.harness !== "codex" &&
-        row.harness !== "claude" &&
-        !(["docker", "modal"].includes(row.provider) && row.harness === "opencode")) ||
+      !runtimeHarnessSupported(row.provider, row.harness) ||
       row.deletedAt
     )
       throw new VaultError("not_found", "No owned runtime checkpoint target.");
