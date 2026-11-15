@@ -24,6 +24,7 @@ import { dockerHostSupportsResume } from "./docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
+import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -434,29 +435,26 @@ export function createDockerSandboxControls(
       (args.conversation_id !== undefined && (typeof args.conversation_id !== "string" || !args.conversation_id))
     )
       throw invalid();
-    let cursor = args.since_cursor as string | undefined;
-    let olderCursor: string | undefined;
-    let hasMore = false;
+    const {
+      events: rawEvents,
+      cursor,
+      hasMore,
+      olderCursor,
+    } = await readEventPages(
+      (cursor) =>
+        history(caller, row.id, {
+          ...(cursor !== undefined ? { cursor } : {}),
+          ...(args.conversation_id !== undefined ? { conversationId: args.conversation_id as string } : {}),
+          ...(args.limit !== undefined ? { limit: args.limit as number } : {}),
+          ...(args.direction !== undefined ? { direction: args.direction as "forward" | "backward" } : {}),
+          ...(args.maxBytes !== undefined ? { maxBytes: args.maxBytes as number } : {}),
+          ...(args.coalesce !== undefined ? { coalesce: args.coalesce as boolean } : {}),
+        }),
+      args.since_cursor as string | undefined,
+      args.all === true,
+    );
     const events = new Map<string, AgentEvent>();
-    for (let count = 0; count < (args.all ? 100 : 1); count++) {
-      const page = await history(caller, row.id, {
-        ...(cursor !== undefined ? { cursor } : {}),
-        ...(args.conversation_id !== undefined ? { conversationId: args.conversation_id as string } : {}),
-        ...(args.limit !== undefined ? { limit: args.limit as number } : {}),
-        ...(args.direction !== undefined ? { direction: args.direction as "forward" | "backward" } : {}),
-        ...(args.maxBytes !== undefined ? { maxBytes: args.maxBytes as number } : {}),
-        ...(args.coalesce !== undefined ? { coalesce: args.coalesce as boolean } : {}),
-      });
-      for (const event of page.events) if (!isPrivateModelEvent(event)) events.set(event.id, event);
-      olderCursor = page.olderCursor;
-      hasMore = page.hasMore;
-      const next = page.cursor ?? cursor;
-      if (!hasMore || !next || next === cursor) {
-        cursor = next;
-        break;
-      }
-      cursor = next;
-    }
+    for (const event of rawEvents) if (!isPrivateModelEvent(event)) events.set(event.id, event);
     const summary = await status(caller, row);
     const queueOnly =
       summary.prompt &&
