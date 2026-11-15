@@ -100,6 +100,11 @@ only for already-existing Boat creates in recovery_required/builder with no
 builder, provider image, snapshot record or recorded reason. Later jobs default ineligible,
 even with identical metadata. Nothing is automatically released.
 
+This is a historical incident-repair procedure, not a staging/release probe.
+Boat is not part of the release gate. Only the coordinator may authorize
+on-demand Boat verification or incident repair; workers must not execute this
+procedure or apply its SQL.
+
 For staging incident **aa2f54f7**, after migrations/server rollout:
 
 1. Obtain the full UUID from the first create receipt (the prefix is not a UUID).
