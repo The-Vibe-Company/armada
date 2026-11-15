@@ -720,13 +720,16 @@ export function createSqlData(
           `with scope_member as (
              select 1 from public.members m join public.orgs o on o.id=m.org_id
              where m.user_id=$2::uuid and m.org_id=$9::uuid
-           ), matched as (
-             select ${SANDBOX_LIST_COLUMNS} from public.sandboxes s
+           ), matched as materialized (
+             select s.id,s.created_at from public.sandboxes s
              where ${SANDBOX_LIST_MATCH}
-           ) select p.*, totals.total, ($9::uuid is null or exists(select 1 from scope_member)) as scope_member
+           ), page as materialized (
+             select id from matched order by created_at desc,id limit $7 offset $8
+           ) select ${SANDBOX_LIST_COLUMNS}, totals.total,
+               ($9::uuid is null or exists(select 1 from scope_member)) as scope_member
              from (select count(*)::int as total from matched) totals
-             left join (select * from matched order by "createdAt" desc, id limit $7 offset $8) p on true
-             order by p."createdAt" desc, p.id`,
+             left join page p on true left join public.sandboxes s on s.id=p.id
+             order by s.created_at desc,s.id`,
           [
             ...scope,
             statuses,

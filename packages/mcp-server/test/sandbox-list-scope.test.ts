@@ -197,3 +197,19 @@ test("named and empty selections use one query with exact core normalization and
   const revoked = await call({ org: "ος" });
   expect([revoked.status, revoked.queries, revoked.body.error?.code]).toEqual([404, 1, "not_found"]);
 });
+
+test("counting and pagination do not decode usage metadata outside the returned page", async () => {
+  const { db, people, ids, call } = await fixture();
+  await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [people.org, people.member]);
+  // An older malformed usage record must not break an unrelated page, but it still counts.
+  await db.query("update sandboxes set usage_turns=$2::jsonb where id=$1", [
+    ids[0],
+    JSON.stringify({ turnCount: "unreadable_counter", turns: [] }),
+  ]);
+  const selected = await call({ org: people.org, limit: 1 });
+  expect([selected.status, selected.queries, selected.body.total]).toEqual([200, 1, 2]);
+  expect(selected.body.sandboxes.map((row) => row.id)).toEqual([ids[1]]);
+  const allOrgs = await call({ limit: 1 });
+  expect([allOrgs.status, allOrgs.queries, allOrgs.body.total]).toEqual([200, 1, 3]);
+  expect(allOrgs.body.sandboxes.map((row) => row.id)).toEqual([ids[2]]);
+});
