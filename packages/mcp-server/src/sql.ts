@@ -62,11 +62,14 @@ export function bunSql(url: string, max = 3, queryTimeoutMs?: number): Sql & { c
   } catch {
     throw new Error("Invalid database URL.");
   }
-  const transactionPooler = address.hostname.toLowerCase().endsWith(".pooler.supabase.com") && address.port === "6543";
-  // Supabase shared transaction pooling cannot retain named statements across backend leases.
+  const unnamedPooler =
+    address.hostname.toLowerCase().endsWith(".pooler.supabase.com") && ["", "5432", "6543"].includes(address.port);
+  // Use a single Parse/Bind/Execute exchange on both shared pooler modes, including cold statements.
+  // Session mode supports named statements, but preparing a cache miss adds a Describe exchange.
+  // Transaction mode additionally cannot retain named statements across backend leases.
   // Bun 1.4.2 unnamed binds need explicit Date/JSON encoding (fixed upstream in 1.4.4).
   const parameters = (params: never[]): never[] =>
-    transactionPooler
+    unnamedPooler
       ? (params.map((value: unknown) => {
           if (value instanceof Date) return value.toISOString();
           if (
@@ -79,7 +82,7 @@ export function bunSql(url: string, max = 3, queryTimeoutMs?: number): Sql & { c
         }) as never[])
       : params;
   const options = {
-    ...(transactionPooler ? { prepare: false } : {}),
+    ...(unnamedPooler ? { prepare: false } : {}),
     connectionTimeout: queryTimeoutMs ? 1 : 5,
     idleTimeout: 30,
     ...(queryTimeoutMs ? { connection: { statement_timeout: queryTimeoutMs } } : {}),
