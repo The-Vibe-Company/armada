@@ -23,6 +23,7 @@ for (const mode of [
   "missing",
   "opencode",
   "opencode_valid",
+  "opencode_docker_unadvertised",
   "opencode_inventory_missing",
   "opencode_collision",
   "opencode_inventory_changed",
@@ -112,7 +113,14 @@ for (const mode of [
           switch (route) {
             case "launch/options":
               result = {
-                ...(mode.startsWith("opencode_") ? { modalRuntime: { opencodeMcpProofVersion: 1 } } : {}),
+                ...(mode.startsWith("opencode_")
+                  ? {
+                      modalRuntime: { opencodeMcpProofVersion: 1 },
+                      ...(mode === "opencode_docker_unadvertised"
+                        ? {}
+                        : { dockerRuntime: { opencodeMcpProofVersion: 1 } }),
+                    }
+                  : {}),
                 providers: ["modal", "docker"].map((id) => ({
                   id,
                   harnesses: [harness],
@@ -383,7 +391,6 @@ for (const mode of [
       ["--feature", deep ? "mcp-resume" : "mcp"],
     );
     if (deep) {
-      const supported = harness !== "opencode";
       const noAllocation = mode === "resume_missing" || mode === "resume_no_stop";
       expect(passed).toBe(
         [
@@ -404,11 +411,10 @@ for (const mode of [
           }
         })
         .find((value) => value?.step === "provider_parity");
-      expect(report.starts).toBe(noAllocation ? 0 : supported ? 2 : 1);
+      expect(report.starts).toBe(noAllocation ? 0 : 2);
       for (const provider of ["modal", "docker"]) {
-        const deferred = harness === "opencode" && provider === "docker";
         expect(report.features["mcp-resume"][provider].status).toBe(
-          deferred || mode === "resume_missing" || mode === "resume_quota" || mode === "resume_stop_budget"
+          mode === "resume_missing" || mode === "resume_quota" || mode === "resume_stop_budget"
             ? "not-run"
             : mode === "resume_no_stop"
               ? "unsupported"
@@ -416,7 +422,7 @@ for (const mode of [
                 ? "pass"
                 : "fail",
         );
-        if (noAllocation || deferred) expect(calls).not.toContain(`${provider}:templates/launch`);
+        if (noAllocation) expect(calls).not.toContain(`${provider}:templates/launch`);
         else {
           expect(report.features["mcp-before-resume"][provider].status).toBe("pass");
           expect(report.features.cleanup[provider].status).toBe("pass");
@@ -433,7 +439,10 @@ for (const mode of [
           }
         }
       }
-      if (mode === "opencode_resume_valid") expect(inventoryReads.get("modal")).toBe(4);
+      if (mode === "opencode_resume_valid") {
+        expect(inventoryReads.get("modal")).toBe(4);
+        expect(inventoryReads.get("docker")).toBe(4);
+      }
       expect(lines.join("\n")).not.toContain(binding.expectedText);
       return;
     }
@@ -447,7 +456,15 @@ for (const mode of [
       "opencode_collision",
     ].includes(mode);
     expect(passed).toBe(
-      ["valid", "claude_valid", "missing", "opencode", "opencode_valid", "unsupported"].includes(mode),
+      [
+        "valid",
+        "claude_valid",
+        "missing",
+        "opencode",
+        "opencode_valid",
+        "opencode_docker_unadvertised",
+        "unsupported",
+      ].includes(mode),
     );
     const report = lines
       .map((line) => {
@@ -458,28 +475,29 @@ for (const mode of [
         }
       })
       .find((v) => v?.step === "provider_parity");
-    expect(report.starts).toBe(noAllocation ? 0 : harness === "opencode" ? 1 : 2);
+    expect(report.starts).toBe(noAllocation ? 0 : mode === "opencode_docker_unadvertised" ? 1 : 2);
     for (const provider of ["modal", "docker"]) {
       expect(report.features.mcp[provider].status).toBe(
-        ["valid", "claude_valid"].includes(mode) || (mode === "opencode_valid" && provider === "modal")
+        ["valid", "claude_valid", "opencode_valid"].includes(mode) ||
+          (mode === "opencode_docker_unadvertised" && provider === "modal")
           ? "pass"
           : mode === "unsupported"
             ? "unsupported"
             : "not-run",
       );
-      if (noAllocation || (harness === "opencode" && provider === "docker"))
+      if (noAllocation || (mode === "opencode_docker_unadvertised" && provider === "docker"))
         expect(calls).not.toContain(`${provider}:templates/launch`);
       else {
         expect(calls).toContain(`${provider}:sandbox/delete`);
         expect(report.features.cleanup[provider].status).toBe("pass");
       }
       expect(calls).not.toContain(`${provider}:sandbox/exec`);
-      if (harness === "opencode" && provider === "docker")
-        expect(calls.filter((path) => path.startsWith("docker:"))).toHaveLength(0);
+      if (mode === "opencode_docker_unadvertised" && provider === "docker")
+        expect(report.features.mcp.docker.reason).toBe("opencode_mcp_native_proof_not_advertised");
     }
     expect(lines.join("\n")).not.toContain(binding.expectedText);
     if (mode === "opencode_valid" || mode === "opencode_inventory_changed" || mode === "opencode_inventory_late")
-      expect(inventoryReads.get("modal")).toBe(2);
+      for (const provider of ["modal", "docker"]) expect(inventoryReads.get(provider)).toBe(2);
   });
 }
 
