@@ -11,6 +11,7 @@ import {
 import type { Caller } from "./caller.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { SNAPSHOT_COLUMNS, type SnapshotRow, snapshotRecord } from "./docker-snapshot-data.ts";
+import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const invalid = () => new VaultError("invalid", "Invalid snapshot request.");
@@ -221,8 +222,7 @@ export function createDockerSnapshots(
           VERSION,
         ],
       );
-      const local: Sql = { query: tx.query.bind(tx), transaction: (work) => work(tx) };
-      await createDockerHostStore(local, key).enqueueSnapshot(actor, hostId, {
+      await createDockerHostStore(scopedSql(tx), key).enqueueSnapshot(actor, hostId, {
         requestId: id,
         operation: "buildSnapshot",
         request: { sandboxId: id, generation, image: baseImage, ttlSeconds: 3600, expiresAt: end },
