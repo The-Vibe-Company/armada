@@ -64,6 +64,7 @@ type LaunchProps = {
   golden: string;
   provider: SandboxPlacementProviderId;
   snapshotId?: string;
+  boatOpenCodeAvailable?: boolean;
   orgId: string;
   catalog: ModelCatalog;
   connections: LaunchConnections;
@@ -141,6 +142,7 @@ function LaunchForm({
   golden,
   provider,
   snapshotId,
+  boatOpenCodeAvailable = false,
   orgId,
   catalog,
   connections,
@@ -265,7 +267,7 @@ function LaunchForm({
               options={(Object.keys(catalog) as Harness[]).map((value) => ({
                 value,
                 label: HARNESS_LABELS[value],
-                disabled: value === "opencode" && provider === "boat",
+                disabled: value === "opencode" && provider === "boat" && !boatOpenCodeAvailable,
               }))}
             />
             {repositories.length > 1 && (
@@ -273,8 +275,8 @@ function LaunchForm({
             )}
           </div>
           <p id={`${id}-availability`} className="text-xs text-muted-foreground" data-launch-availability>
-            {provider === "boat"
-              ? "Boat supports Claude Code and Codex here, including custom model connections through the Armada runtime. OpenCode is available through the Boat shared runtime launch API, not this form."
+            {provider === "boat" && !boatOpenCodeAvailable
+              ? "Boat OpenCode is disabled here because the server does not advertise its shared-runtime default. The explicit Boat runtime launch API remains available when installed; native Boat has no OpenCode fallback."
               : `${PROVIDER_LABELS[provider]} supports Claude Code, Codex and OpenCode, including custom model connections through the Armada runtime.`}
           </p>
           {/* Who is billed stays in view: it is never a collapsed default. */}

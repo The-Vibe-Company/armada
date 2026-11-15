@@ -49,6 +49,7 @@ import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/dock
 import { readSelectedDockerSnapshots } from "@/lib/data/docker-snapshots";
 import { getGitHubConnection } from "@/lib/data/github";
 import { findRemovedGolden, type GoldenRow, listGoldenHistory, listGoldens } from "@/lib/data/goldens";
+import { readLaunchOptions } from "@/lib/data/launch-options";
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -76,6 +77,7 @@ import {
   PROVIDER_LABELS,
   providerCapacity,
 } from "@/lib/golden-form";
+import { boatOpenCodeAvailable } from "@/lib/launch-options";
 import { goldenSizing, sizePolicyBlocker } from "@/lib/machine-size";
 import type { LaunchAccounts } from "@/lib/model-accounts";
 import { CLOUD_PROVIDERS_PATH, connectedProviders } from "@/lib/provider-setup";
@@ -128,6 +130,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     hostRead,
     snapshotRead,
     dockerOption,
+    launchOptions,
     goldens,
     history,
     memberships,
@@ -143,6 +146,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     readSelectedDockerHosts(),
     readSelectedDockerSnapshots(),
     readDockerLaunchOption(),
+    readLaunchOptions(),
     listGoldens(supabase),
     listGoldenHistory(supabase),
     pending,
@@ -207,6 +211,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     viewerId: viewer.id,
     all: goldens,
     serverReady,
+    boatOpenCodeAvailable: boatOpenCodeAvailable(launchOptions),
     connected,
     rebuildsTracked,
     connections,
@@ -574,6 +579,7 @@ type RowContext = {
   viewerId: string;
   all: Golden[];
   serverReady: boolean;
+  boatOpenCodeAvailable: boolean;
   /** The providers the org has connected; a golden launches and rebuilds only on its own. Null: status unavailable. */
   connected: SandboxProviderId[] | null;
   /** Goldens whose rebuild this page tracks in its URL: their form stays to follow the job, even without a provider. */
@@ -651,6 +657,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
       <LaunchDialog
         golden={golden.name}
         provider={golden.provider}
+        boatOpenCodeAvailable={context.boatOpenCodeAvailable}
         orgId={golden.org_id}
         catalog={MODEL_CATALOG}
         repositories={directories}

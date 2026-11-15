@@ -9,6 +9,7 @@ import {
   resolveModelChoice,
   type SandboxProviderId,
 } from "@armada/core";
+import { boatOpenCodeAvailable } from "./launch-options";
 import { decodeModelValue } from "./model-picker";
 
 /** The select value that means "a model id typed in the field next to it". */
@@ -65,6 +66,7 @@ export function launchArgs(
     size?: string;
     armadaAccess?: string;
   } & ModelFields,
+  trustedLaunchOptions?: unknown,
 ): Parsed<Omit<LaunchArgs, "connections">> {
   const harness = HARNESSES.find((candidate) => candidate === fields.harness);
   if (!harness)
@@ -76,8 +78,15 @@ export function launchArgs(
   if (fields.armadaAccess === "on" && harness !== "codex")
     return { ok: false, error: "Armada access is available for Codex only." };
   const provider = fields.provider;
-  if (provider === "boat" && HARNESS_CATALOG[harness].boatProvider === null)
-    return { ok: false, error: `${HARNESS_CATALOG[harness].label} on Boat requires the shared runtime launch API.` };
+  if (
+    provider === "boat" &&
+    HARNESS_CATALOG[harness].boatProvider === null &&
+    !boatOpenCodeAvailable(trustedLaunchOptions)
+  )
+    return {
+      ok: false,
+      error: `${HARNESS_CATALOG[harness].label} on Boat requires the server shared-runtime default. Use the explicit runtime API while that default is unavailable.`,
+    };
   const repo = fields.repo?.trim() ?? "";
   if (repo && !REPO.test(repo)) return { ok: false, error: "Choose a repository recorded in the snapshot." };
   const size = fields.size?.trim() ?? "";
