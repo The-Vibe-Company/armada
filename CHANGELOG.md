@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.39.0](https://github.com/The-Vibe-Company/armada/compare/v2.38.0...v2.39.0) (2026-11-15)
+
+
+### Features
+
+* **smoke:** prove native MCP tool execution after resume ([#1993](https://github.com/The-Vibe-Company/armada/issues/1993)) ([c931a79](https://github.com/The-Vibe-Company/armada/commit/c931a79109eabda2e30354aaa9bca040c4cca496))
+
+
+### Bug Fixes
+
+* **cli:** clarify sign-in and profile help ([#1991](https://github.com/The-Vibe-Company/armada/issues/1991)) ([9dffdb0](https://github.com/The-Vibe-Company/armada/commit/9dffdb001492f8cdeeafa1a439b8735f5fc4317b))
+* **cli:** focus credential family help on account choices ([#2000](https://github.com/The-Vibe-Company/armada/issues/2000)) ([8b80c0d](https://github.com/The-Vibe-Company/armada/commit/8b80c0defb3363d140c6b135807c10870ec54a75))
+* **cli:** focus MCP family navigation help ([#2009](https://github.com/The-Vibe-Company/armada/issues/2009)) ([2eb8d80](https://github.com/The-Vibe-Company/armada/commit/2eb8d80b8437d13af08cf26f8b16b4e99538b706))
+* **cli:** focus organization family navigation help ([#2005](https://github.com/The-Vibe-Company/armada/issues/2005)) ([d41fd44](https://github.com/The-Vibe-Company/armada/commit/d41fd4425941e7d9c7c4c7e54669d523693084e7))
+* **cli:** focus snapshot family help on provider commands ([#1997](https://github.com/The-Vibe-Company/armada/issues/1997)) ([f6fe79a](https://github.com/The-Vibe-Company/armada/commit/f6fe79ab8522d22541171a1c2b6121233a54c542))
+* **dashboard:** guide personal key storage setup and recovery ([#1998](https://github.com/The-Vibe-Company/armada/issues/1998)) ([2b5c7d7](https://github.com/The-Vibe-Company/armada/commit/2b5c7d773e61ea1982168e2ec10ada54548dd990))
+* **dashboard:** keep unreadable launch account data opaque ([#2006](https://github.com/The-Vibe-Company/armada/issues/2006)) ([8b75a53](https://github.com/The-Vibe-Company/armada/commit/8b75a5398b5b43a1f093558d945323d86cc5493a))
+* **dashboard:** recover unreadable sandbox account choices safely ([#2002](https://github.com/The-Vibe-Company/armada/issues/2002)) ([cf04620](https://github.com/The-Vibe-Company/armada/commit/cf04620e8f9b730c255e0b71667c8e81865e610c))
+
+
+### Performance Improvements
+
+* **dashboard:** refresh cached Variables content in place ([#1990](https://github.com/The-Vibe-Company/armada/issues/1990)) ([5956836](https://github.com/The-Vibe-Company/armada/commit/595683610a99d8815fbca48642471e004665beba))
+* **server:** avoid cold Describe round trips on session pooler ([#2007](https://github.com/The-Vibe-Company/armada/issues/2007)) ([4b931cd](https://github.com/The-Vibe-Company/armada/commit/4b931cdb68432b7662d1fc5d88ddc4e36d30b537))
+* **server:** list UUID-scoped sandboxes in one statement ([#1995](https://github.com/The-Vibe-Company/armada/issues/1995)) ([537a388](https://github.com/The-Vibe-Company/armada/commit/537a388e2ee3033f0a16218ea7c8f5c124bf113f))
+
 ## [2.38.0](https://github.com/The-Vibe-Company/armada/compare/v2.37.0...v2.38.0) (2026-11-15)
 
 
