@@ -1,4 +1,11 @@
-import { HOST_CAPABILITIES, isSandboxProvider, type Provider, ProviderError, type Sql } from "@armada/core/server";
+import {
+  HOST_CAPABILITIES,
+  isSandboxProvider,
+  type Provider,
+  ProviderError,
+  type Sql,
+  VaultError,
+} from "@armada/core/server";
 
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
@@ -244,7 +251,11 @@ export function createSandboxLifecycle(
         if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
           error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
-        if (!resolved && operatorStop && !signal?.aborted) {
+        const authorityLost =
+          (caught instanceof VaultError &&
+            ["missing_credential", "forbidden", "not_found", "credential_refused"].includes(caught.code)) ||
+          (caught instanceof ProviderError && ["unauthorized", "forbidden"].includes(caught.code));
+        if (authorityLost && operatorStop && !signal?.aborted) {
           await deferToOperator("original provider authority unavailable.");
           return true;
         }

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { Sql } from "@armada/core";
+import { type Sql, VaultError } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
@@ -733,7 +733,7 @@ for (const loss of ["membership", "credential", "credential_stale_generation"] a
       resolutions++;
       if (loss === "credential_stale_generation")
         await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
-      throw Error("original authority unavailable");
+      throw new VaultError("missing_credential", "original authority unavailable");
     });
     expect(await worker.reconcileOne()).toBe(true);
     const row = (
