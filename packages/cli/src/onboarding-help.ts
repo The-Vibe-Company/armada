@@ -1041,6 +1041,26 @@ Example: armada routine ${action} ROUTINE_UUID --expected-version 2 --org ORG_UU
 `;
 }
 
+function routineDefinitionHelp(action: "create" | "update"): string {
+  const creating = action === "create";
+  return `Usage: armada routine ${action} ${creating ? "NAME" : "NAME|ID --expected-version N"} [configuration] [--org NAME|UUID] [--json]
+${creating ? "Create a paused scheduled template launch; enable it separately to schedule its first occurrence." : "Update an existing routine, guarded by its current version. This is not a manual launch."}
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Organization-scoped writes require administrator permission.
+${creating ? "--scope personal|org selects visibility; required with explicit --org. Otherwise scope defaults\nto personal in the selected organization. NAME supplies the name, not the JSON file." : "Names must match exactly and identify one non-deleted routine; use an ID from routine list\nif names collide. --expected-version is a required positive integer up to 2147483647.\nCopy it from routine show/list. A conflict is not retried; inspect before deciding to update.\nThe target keeps its owner and scope."}
+
+Choose ONE configuration form (file and inline flags cannot be mixed):
+${creating ? "  --file config.json\n  --template UUID --revision N (--prompt TEXT | --prompt-file PATH)\n    --cron EXPRESSION --timezone IANA_ZONE [--ttl 1h] [--max-runs-per-day N]\nJSON requires templateId, templateRevision, prompt, cron and timezone. Optional ttlSeconds\nand maxRunsPerDay default to 3600 and 24. --prompt-file reads UTF-8 without trimming;\nuse --prompt-file - for stdin. Template revision must be a positive integer." : "  --file config.json                     Replace ALL mutable configuration.\n  --cron EXPRESSION --timezone IANA_ZONE  Change only the schedule.\nUpdate JSON requires name, templateId, templateRevision, prompt, cron, timezone,\nttlSeconds and maxRunsPerDay. Missing fields are not retained. Inline updates retain\ncurrent mutable fields and send a complete replacement guarded by --expected-version."}
+Neither JSON file accepts org, owner, scope or intervalHours.
+Quote the standard five-field cron expression and use an IANA zone such as UTC or Europe/Paris.
+Runs must stay at least ONE HOUR apart, including DST transitions. TTL is 5 minutes–24 hours;
+maxRunsPerDay is 1–24 admitted launches. Prompts are readable configuration, never secrets.
+${creating ? "Routines run as their owner, not whoever later inspects them." : "Updating an enabled routine selects its next matching occurrence; already admitted runs are not stopped."}
+Human output shows metadata and version; --json emits the API response with item.
+Example: armada routine ${action} ${creating ? "nightly --scope personal" : "ROUTINE_UUID --expected-version 2"} --file config.json --org ORG_UUID --json
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -1073,6 +1093,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (command === "routine enable") return routineStateHelp("enable");
   if (command === "routine pause") return routineStateHelp("pause");
   if (command === "routine delete") return routineStateHelp("delete");
+  if (command === "routine create") return routineDefinitionHelp("create");
+  if (command === "routine update") return routineDefinitionHelp("update");
   if (command === "completion") return completionHelp();
   if (command === "completion bash") return completionHelp("bash");
   if (command === "completion zsh") return completionHelp("zsh");
