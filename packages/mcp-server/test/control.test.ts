@@ -907,6 +907,7 @@ describe("control API", () => {
         capabilities: { launch: true },
       });
       expect(body.dockerRuntime?.opencodeMcpProofVersion).toBe(0);
+      expect(body.boatRuntime.opencodeMcpProofVersion).toBe(0);
       const hiddenDocker = body.providers.find((provider) => provider.id === "docker");
       expect(hiddenDocker).toMatchObject({
         enabled: false,

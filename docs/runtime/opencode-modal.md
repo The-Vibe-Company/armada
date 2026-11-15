@@ -313,3 +313,37 @@ claims, unrelated/prior events and configuration ACKs cannot pass. These command
 are acceptance procedures, not evidence they ran. No new runtime driver, migration,
 provider credential or CI job is needed; native Boat MCP probing stays deferred
 and Boat stays outside staging and the release gate.
+
+## Boat OpenCode MCP native proof (#2052)
+
+The normal Boat runtime-default template path uses the same enrolled MCP setup
+and OpenCode native-export proof as Modal and Docker. It advertises
+`boatRuntime.opencodeMcpProofVersion:1` only with the normal runtime default and
+installed template, Boat runtime launch/host, follow-up and MCP handlers. An
+explicit-runtime-only deployment is not ordinary-template readiness. Missing or
+older proof versions, native/default-off servers and missing checkpoint/resume
+support are reported without allocating for the corresponding probe.
+
+Coordinator-only production acceptance after a normal release, with an existing
+runtime-default server and authorized Boat OpenCode template/canary case:
+
+```sh
+ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --only boat --production-boat --feature mcp
+ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --only boat --production-boat --feature mcp-resume
+```
+
+Each invocation owns one allocation; the resume invocation additionally performs
+one same-machine wake. Preserve all request IDs after uncertainty; do not allocate
+a replacement. The resume probe validates the exact current-turn runtime epoch,
+checkpoint ID/request ID and a complete safe watermark equal to its archive ACK
+before requesting physical stop. Its normal send uses a stable UUID and wakes
+the persisted conversation, requiring a newer runtime epoch and exact native MCP
+evidence again. A checkpoint alone does not prove the host stopped. Both probes
+require current-prompt native tool/message/call provenance, exact tool arguments
+and result, stable tool inventories, and confirmed cleanup; assistant text or
+configuration ACKs are not proof.
+
+This enables no Boat-native MCP probe: the other Boat harness probes remain
+deferred. The production opt-in and CI/staging exclusion fences are unchanged.
+No deployment, migration, default flip, provider call or real acceptance run was
+performed by this worker.

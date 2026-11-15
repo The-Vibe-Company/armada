@@ -130,12 +130,17 @@ export async function prepareMcpProbe(
       if (harness === "opencode" && verified) await boundedInventory();
       if (!connected(await io.request("mcp/sandbox-connections", { id }))) fail("invalid_mcp_binding");
       const answer = `PARITY_MCP_DONE_${crypto.randomUUID()}`;
-      const turn = await io.request<{ promptId?: string }>("sandbox/send", {
-        id,
-        prompt: `Call the dedicated read-only MCP tool ${binding.tool} on server ${server} exactly once with empty JSON arguments {}. Do not substitute shell or other tools. After it succeeds, reply exactly ${answer}. Do not print credentials or change files.`,
-        ...(provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
-      });
+      const turn = await io.request<{ promptId?: string; runtime?: { kind?: string; epoch?: string } }>(
+        "sandbox/send",
+        {
+          id,
+          prompt: `Call the dedicated read-only MCP tool ${binding.tool} on server ${server} exactly once with empty JSON arguments {}. Do not substitute shell or other tools. After it succeeds, reply exactly ${answer}. Do not print credentials or change files.`,
+          ...(provider === "docker" || provider === "boat" ? { request_id: crypto.randomUUID() } : {}),
+        },
+      );
       if (typeof turn?.promptId !== "string" || !turn.promptId) fail("invalid_mcp_receipt");
+      if (provider === "boat" && (turn.runtime?.kind !== "armada" || !/^[1-9][0-9]*$/.test(turn.runtime.epoch ?? "")))
+        fail("invalid_mcp_receipt");
       let cursor: string | undefined,
         lastParent: string | undefined,
         finished = false;
@@ -236,6 +241,7 @@ export async function prepareMcpProbe(
       );
       if (harness === "opencode") await boundedInventory();
       verified = true;
+      return { runtimeEpoch: provider === "boat" ? turn.runtime?.epoch : undefined };
     },
   };
 }
