@@ -431,3 +431,12 @@ application vars/secrets. List returns metadata/IDs, not credential values;
 remove takes an account ID while legacy rm takes a credential kind.
 API keys use provider billing; native subscription accounts need eligible access.
 Keep inputs in stdin/hidden input or private files, never command arguments.
+
+### Organization command discovery
+
+`armada org --help` provides the organization command index.
+`armada org members -h` and `armada org invitations -h` show their existing
+subcommands; use leaf help for flags and authorization requirements.
+These explicit help requests do not read saved selections, start login or
+perform membership/invitation operations. Bare no-argument invocations retain
+their previous behavior.
