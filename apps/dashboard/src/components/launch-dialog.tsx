@@ -124,8 +124,14 @@ export type HostLaunchStart = {
   initialHarness: Harness;
 };
 
-export function LaunchStart(props: LaunchProps | HostLaunchStart) {
-  const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
+export function LaunchStart(
+  props: (LaunchProps | HostLaunchStart) & {
+    initialOptions?: Awaited<ReturnType<typeof readLaunchDialogOptions>>;
+  },
+) {
+  const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(
+    props.initialOptions ?? null,
+  );
   const [loadingError, setLoadingError] = useState("");
   const host = "hostId" in props;
   const fallback: LaunchStartTarget = host
@@ -154,6 +160,7 @@ export function LaunchStart(props: LaunchProps | HostLaunchStart) {
   const [templateId, setTemplateId] = useState("");
   const [task, setTask] = useState("");
   useEffect(() => {
+    if (props.initialOptions) return;
     let active = true;
     readLaunchDialogOptions()
       .then((next) => {

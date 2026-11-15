@@ -7,18 +7,16 @@ import {
   type SandboxListMetadata,
   type SandboxPlacementProviderId,
 } from "@armada/core";
-import { BoxesIcon, LockIcon, RocketIcon, SearchXIcon } from "lucide-react";
+import { BoxesIcon, LockIcon, SearchXIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
-import { readLaunchDialogOptions } from "@/app/actions/sandboxes";
-import { LaunchStart } from "@/components/launch-dialog";
-import { LaunchDialogContent } from "@/components/launch-surface";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
 import { RowCost } from "@/components/sandbox-cost";
+import { SandboxLaunchAction } from "@/components/sandbox-launch-action";
 import { SandboxListTabs } from "@/components/sandbox-list-tabs";
 import { SandboxRowMenu } from "@/components/sandbox-row-menu";
 import { SandboxState } from "@/components/sandbox-state";
@@ -26,9 +24,7 @@ import { SandboxToolbar } from "@/components/sandbox-toolbar";
 import LoadingSandboxes from "@/components/sandboxes-skeleton";
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
-import { findGoldenLabel } from "@/lib/data/goldens";
 import { readProviderSetup } from "@/lib/data/provider-setup";
 import { listSandboxCosts, listSandboxHostNames } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -70,10 +66,13 @@ export default function SandboxesPage(props: Props) {
 }
 
 async function SandboxesContent({ searchParams }: Props) {
-  const viewer = await requireViewer();
-  const filters = parseSandboxFilters(await searchParams);
-  const supabase = await createClient();
-  const selected = await selectedOrganization();
+  const [viewer, query, supabase, selected] = await Promise.all([
+    requireViewer(),
+    searchParams,
+    createClient(),
+    selectedOrganization(),
+  ]);
+  const filters = parseSandboxFilters(query);
   if (!selected)
     return (
       <>
@@ -98,7 +97,31 @@ async function SandboxesContent({ searchParams }: Props) {
   const namesRead = Promise.all([inventory, hosts]).then(([{ rows }, hostRead]) =>
     listSandboxHostNames(supabase, rows, hostRead.state === "ready" ? hostRead.list : null),
   );
-  const [{ rows, total, inventoryTotal, skipped, facets }, directory, setup, hostRead, costs, hostNames] =
+  const snapshotsRead = inventory.then(async ({ rows }) => {
+    // Interior fields are read only for rows the server authorizes this viewer to open.
+    const readableIds = rows.filter((row) => row.canOpen).map((row) => row.id);
+    const snapshots = new Map<string, string>();
+    if (readableIds.length) {
+      const { data, error } = await supabase.from("sandboxes").select("id,golden_id").in("id", readableIds);
+      if (error) throw new Error(error.message);
+      const goldenIds = [...new Set((data ?? []).flatMap((row) => (row.golden_id ? [row.golden_id] : [])))];
+      const labels = new Map<string, string>();
+      if (goldenIds.length) {
+        const { data: goldens, error } = await supabase
+          .from("goldens")
+          .select("id,name")
+          .eq("org_id", selected.org.id)
+          .in("id", goldenIds);
+        if (error) throw new Error(error.message);
+        for (const golden of goldens ?? []) labels.set(golden.id, golden.name);
+      }
+      for (const row of data ?? [])
+        if (row.golden_id && labels.get(row.golden_id)) snapshots.set(row.id, labels.get(row.golden_id) as string);
+    }
+
+    return snapshots;
+  });
+  const [{ rows, total, inventoryTotal, skipped, facets }, directory, setup, hostRead, costs, hostNames, snapshots] =
     await Promise.all([
       inventory,
       listMemberships(supabase, viewer.id)
@@ -113,20 +136,8 @@ async function SandboxesContent({ searchParams }: Props) {
       hosts,
       costsRead,
       namesRead,
+      snapshotsRead,
     ]);
-  // Interior fields are read only for rows the server authorizes this viewer to open.
-  const readableIds = rows.filter((row) => row.canOpen).map((row) => row.id);
-  const snapshots = new Map<string, string>();
-  if (readableIds.length) {
-    const { data, error } = await supabase.from("sandboxes").select("id,golden_id").in("id", readableIds);
-    if (error) throw new Error(error.message);
-    const goldenIds = [...new Set((data ?? []).flatMap((row) => (row.golden_id ? [row.golden_id] : [])))];
-    const labels = new Map(
-      await Promise.all(goldenIds.map(async (id) => [id, (await findGoldenLabel(supabase, id))?.name] as const)),
-    );
-    for (const row of data ?? [])
-      if (row.golden_id && labels.get(row.golden_id)) snapshots.set(row.id, labels.get(row.golden_id) as string);
-  }
 
   const now = new Date();
   const filtered = hasSandboxFilters(filters);
@@ -140,15 +151,7 @@ async function SandboxesContent({ searchParams }: Props) {
       <Link href={CLOUD_PROVIDERS_PATH}>Connect a provider</Link>
     </Button>
   ) : selected ? (
-    <Suspense
-      fallback={
-        <Button disabled>
-          <RocketIcon /> Launch a sandbox
-        </Button>
-      }
-    >
-      <SandboxLaunchAction />
-    </Suspense>
+    <SandboxLaunchAction />
   ) : null;
 
   return (
@@ -432,78 +435,6 @@ function ConversationHint({ sandbox, now }: { sandbox: SandboxListMetadata; now:
       ? "Only its owner and admins can open it"
       : null;
   return text ? <p className="mt-1 max-w-48 text-xs whitespace-normal text-muted-foreground">{text}</p> : null;
-}
-
-/** Reuse the unified dialog without routing the person through the snapshot inventory. */
-async function SandboxLaunchAction() {
-  const options = await readLaunchDialogOptions().catch(() => null);
-  const target = options?.targets.find((item) => !item.reason);
-  return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <Button>
-          <RocketIcon /> Launch a sandbox
-        </Button>
-      </DialogTrigger>
-      <LaunchDialogContent>
-        {options && target ? (
-          target.hostId ? (
-            <LaunchStart
-              orgId={options.orgId}
-              hostId={target.hostId}
-              hostName={target.label.replace(/^Empty machine · /, "")}
-              accounts={options.accounts}
-              unavailable={[]}
-              harnesses={target.harnesses ?? []}
-              initialHarness={target.initialHarness ?? "codex"}
-            />
-          ) : (
-            <LaunchStart
-              orgId={options.orgId}
-              golden={target.golden}
-              provider={target.provider}
-              {...(target.snapshotId ? { snapshotId: target.snapshotId } : {})}
-              repositories={target.repositories}
-              {...(target.sizing ? { sizing: target.sizing } : {})}
-              accounts={options.accounts}
-              catalog={options.catalog}
-              connections={options.connections}
-              boatOpenCodeAvailable={options.boatOpenCodeAvailable}
-            />
-          )
-        ) : (
-          <DialogHeader className="overflow-y-auto p-6 pr-12 text-left">
-            <DialogTitle>Launch a sandbox</DialogTitle>
-            <DialogDescription>
-              {options
-                ? options.targets.length > 0
-                  ? "Your starting points need attention before launching."
-                  : "No starting points yet. Build a snapshot or connect your server before launching."
-                : "Starting points could not be loaded. Reload Sandboxes to try again."}
-            </DialogDescription>
-            {options && options.targets.length > 0 && (
-              <ul className="space-y-3 text-sm">
-                {options.targets.map((item) => (
-                  <li key={item.id}>
-                    <p className="font-medium">{item.label}</p>
-                    <p className="text-muted-foreground">{item.reason}</p>
-                    <Link className="underline underline-offset-4" href={item.hostId ? "/hosts" : "/snapshots"}>
-                      {item.hostId ? "Open Hosts" : "Open Snapshots"}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <Button asChild variant="outline">
-              <Link href={options ? "/snapshots" : "/sandboxes"}>
-                {options ? "Open Snapshots" : "Reload Sandboxes"}
-              </Link>
-            </Button>
-          </DialogHeader>
-        )}
-      </LaunchDialogContent>
-    </Dialog>
-  );
 }
 
 /** Read the authorized metadata once; activity tabs must see the entire loaded inventory, not one page. */
