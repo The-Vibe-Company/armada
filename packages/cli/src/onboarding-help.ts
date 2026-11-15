@@ -938,6 +938,35 @@ Example: armada completion ${shell ?? "bash"} > armada-completion.${shell ?? "ba
 `;
 }
 
+function templateDefinitionHelp(action: "create" | "publish"): string {
+  const creating = action === "create";
+  return `Usage: armada template ${action} ${creating ? "NAME" : "NAME|ID --expected-revision N"} [definition input] [--org NAME|UUID] [--json]
+${creating ? "Create a launch template with its first immutable revision." : "Publish a new immutable revision of an existing launch template, not a partial patch."}
+Requires Armada login or ARMADA_TOKEN. Select an organization with --org or armada org use.
+${creating ? "--scope personal|org selects visibility; with explicit --org it is required.\nWithout explicit --org, scope defaults to personal in the selected organization." : "Names must match exactly and identify one active template; use an ID from template list\nif names collide. The target keeps its existing scope.\n--expected-revision is a required positive integer from template get/list.\nA stale revision is refused; inspect the current definition before deciding to republish."}
+Organization-scoped writes require administrator permission.
+
+Choose ONE complete definition input (file and definition flags cannot be mixed):
+  --file definition.json                 Definition object, not an API envelope.
+  --golden UUID --provider boat|modal --agent claude|codex|opencode
+  --host UUID --provider docker --agent claude|codex|opencode
+--golden is the existing snapshot selector. Docker --host requires a UUID, not a name;
+it selects the official environment, not a host-local snapshot. Boat supports Claude/Codex.
+
+Optional definition flags (not combined with --file):
+  --model ID --reasoning-effort LEVEL
+  --connection UUID                      Repeat for multiple MCP connections.
+  --variable KEY:UUID:VERSION            Repeat for readable variable references.
+  --secret KEY:UUID:VERSION              Repeat for secret references, never raw values.
+  --skill PIN                           Repeat for multiple skills.
+  --model-account UUID --model-account-version N   Pin an account and positive version.
+No local environment expansion. Frozen launch manifests are resolved at launch, not publication.
+Readable values can appear in launch manifests; do not use variables for secrets.
+Human output shows metadata and current revision; --json emits the API response.
+Example: armada template ${action} ${creating ? "nightly --scope personal" : "TEMPLATE_UUID --expected-revision 2"} --file definition.json --org ORG_UUID --json
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -965,6 +994,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
     parts[0] = "snapshot";
   if (parts.length === 1 && parts[0] === "golden") parts[0] = "snapshot";
   const command = parts.join(" ");
+  if (command === "template create") return templateDefinitionHelp("create");
+  if (command === "template publish") return templateDefinitionHelp("publish");
   if (command === "completion") return completionHelp();
   if (command === "completion bash") return completionHelp("bash");
   if (command === "completion zsh") return completionHelp("zsh");
