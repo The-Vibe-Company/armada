@@ -93,12 +93,24 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
         <p className="text-sm text-muted-foreground">Only its owner can choose the account.</p>
       ) : gate === "failed" ? (
         <p className="text-sm text-muted-foreground">
-          It failed, so no account can be bound to it. Launch a new sandbox from its golden instead.
+          It failed, so no account can be bound to it. Launch a new sandbox from its snapshot instead.
         </p>
       ) : choices?.state === "unavailable" ? (
-        <p role="alert" className="text-sm text-destructive">
-          The accounts could not be loaded: {choices.message}
-        </p>
+        <div className="space-y-2">
+          <p role="alert" className="text-sm text-destructive">
+            The accounts could not be loaded: {choices.message}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={pending}
+            onClick={() => startTransition(() => router.refresh())}
+          >
+            {pending && <Loader2Icon aria-hidden className="size-4 animate-spin motion-reduce:animate-none" />}
+            Reload account choices
+          </Button>
+        </div>
       ) : accounts.length === 0 ? (
         <p className="text-sm">
           No {harnessLabel} account you can use.{" "}
