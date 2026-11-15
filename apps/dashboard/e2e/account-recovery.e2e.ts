@@ -266,3 +266,34 @@ test("on a short phone the chooser stays inside the viewport, and once bound the
   expect(await page.evaluate(() => document.querySelector("main")?.scrollTop ?? 0)).toBe(0);
   await page.screenshot({ path: "test-results/account-choice-short-mobile-bound.png", animations: "disabled" });
 });
+
+test("unreadable account choices stay unknown and reload without discarding the draft", async ({ page }) => {
+  await legacy({ status: "stopped" });
+  await conversation();
+  const diagnostic = "HTTP 503: credential_id scope_owner_id digest sha256:example";
+  await post("accounts", { user: [WORK], listFailure: diagnostic });
+  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  const choice = section(page);
+  const draft = page.getByRole("textbox", { name: "Message", exact: true });
+  await draft.fill("Continue after account lookup");
+  await expect(choice.getByRole("alert")).not.toContainText(diagnostic);
+  await expect(choice.getByRole("radio")).toHaveCount(0);
+  await expect(choice.getByText(/No Claude Code account you can use/)).toHaveCount(0);
+  for (const [name, width] of [
+    ["desktop", 1280],
+    ["mobile", 390],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await choice.getByRole("alert").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `test-results/choice-read-after-${name}.png`, fullPage: true });
+  }
+  await post("accounts", { listFailure: null });
+  await choice.getByRole("button", { name: "Reload account choices", exact: true }).click();
+  await expect(choice.getByRole("radio", { name: /Work subscription/ })).toBeVisible();
+  await expect(choice.getByRole("alert")).toHaveCount(0);
+  await expect(choice.getByRole("button", { name: "Use this account", exact: true })).toBeDisabled();
+  await expect(draft).toHaveValue("Continue after account lookup");
+  const state = await mockState();
+  expect(state.bindCalls).toHaveLength(0);
+  expect(state.launches).toHaveLength(0);
+});

@@ -59,3 +59,11 @@ export function bindFailure(code: string | undefined, status?: number): string {
       return "The account change could not be confirmed. Reload this sandbox and check its account before trying again.";
   }
 }
+
+/** Missing account observation is not an empty choice list; never display read diagnostics. */
+export function accountChoiceReadFailure(status?: number): string {
+  if (status === 401) return "Your session ended. Sign in again, then reload this sandbox.";
+  if (status === 403)
+    return "Check organization access, then reload this sandbox. Ask an organization admin if this continues.";
+  return "Reload this sandbox to try again. If this continues, check Models setup or ask an organization admin for help.";
+}

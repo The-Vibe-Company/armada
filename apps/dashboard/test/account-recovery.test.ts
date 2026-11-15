@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { bindableStatus, bindFailure, compatibleAccounts } from "../src/lib/account-recovery.ts";
+import {
+  accountChoiceReadFailure,
+  bindableStatus,
+  bindFailure,
+  compatibleAccounts,
+} from "../src/lib/account-recovery.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
 const now = new Date("2026-11-10T12:00:00Z");
@@ -71,4 +76,10 @@ test("binding failures preserve owner/lifecycle recovery without arbitrary diagn
   expect(bindFailure("credential_binding_unsupported")).not.toContain("#1579");
   for (const status of [undefined, 502, 503])
     expect(bindFailure("unavailable", status)).toContain("could not be confirmed");
+});
+
+test("unavailable account observation has access/reload guidance rather than an empty choice promise", () => {
+  expect(accountChoiceReadFailure(401)).toContain("Sign in again");
+  expect(accountChoiceReadFailure(403)).toContain("organization access");
+  for (const status of [undefined, 404, 503]) expect(accountChoiceReadFailure(status)).toContain("check Models setup");
 });
