@@ -109,8 +109,7 @@ export async function runtimeConfiguration(
       !Number.isSafeInteger(manifest.runtime.bytes) ||
       (manifest.runtime.bytes as number) < 1 ||
       (manifest.runtime.bytes as number) > 512 * 1024 * 1024 ||
-      !record(manifest.harnesses) ||
-      (sandbox.harness !== "opencode" && !record(manifest.harnesses[sandbox.harness]))
+      !record(manifest.harnesses)
     )
       throw Error();
     const harnessArtifact = manifest.harnesses[sandbox.harness];
