@@ -65,7 +65,7 @@ describe("an environment's row", () => {
       providerMissing: false,
       buildBlocker: null,
     });
-    expect(own).toMatchObject({ bucket: "action", label: "Needs a snapshot", action: "snapshot" });
+    expect(own).toMatchObject({ bucket: "action", label: "Not built yet", action: "snapshot" });
     const other = environmentState({
       provider: "boat",
       readiness: unsnapshotted,
@@ -128,7 +128,7 @@ describe("what blocks launching an environment", () => {
     });
     expect(blockers.map((blocker) => [blocker.label, blocker.detail, blocker.target])).toEqual([
       ["Connect Modal", "2 snapshots wait for it.", { href: "/providers/cloud" }],
-      ["Snapshot alice-private", "Build it once before launching from it.", { item: "3" }],
+      ["Build alice-private", "Build it once before launching from it.", { item: "3" }],
     ]);
   });
 
@@ -139,8 +139,8 @@ describe("what blocks launching an environment", () => {
     });
     expect(blockers.map((blocker) => blocker.label)).toEqual([
       "Connect a sandbox provider",
-      "Snapshot web on Boat",
-      "Snapshot web on Modal",
+      "Build web on Boat",
+      "Build web on Modal",
     ]);
   });
 
@@ -156,10 +156,20 @@ describe("the capacity line", () => {
         { provider: "boat", state: { kind: "full", capacity: 1, used: 1 }, removed: 1 },
         { provider: "modal", state: { kind: "unknown" }, removed: 0 },
       ]).map((part) => part.text),
-    ).toEqual(["Boat: 1 of 1 slot used, 1 by removed snapshot", "Modal: no limit"]);
+    ).toEqual([
+      "Boat allows 1 snapshot here; 1 is using that capacity. 1 place is still held by removed snapshots. There is no room for another snapshot.",
+      "Modal has no snapshot limit.",
+    ]);
     expect(
       capacityParts([{ provider: "boat", state: { kind: "unavailable", reason: "No key." }, removed: 0 }]),
-    ).toEqual([{ provider: "boat", kind: "unavailable", text: "Boat: capacity unavailable", reason: "No key." }]);
+    ).toEqual([
+      {
+        provider: "boat",
+        kind: "unavailable",
+        text: "Boat snapshot capacity could not be checked.",
+        reason: "No key.",
+      },
+    ]);
   });
 
   test("Boat is full when every slot is used, or more than every slot by older environments", () => {
