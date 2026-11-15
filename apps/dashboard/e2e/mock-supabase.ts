@@ -1,6 +1,7 @@
 import {
   accountBindingAvailability,
   type Harness,
+  harnessesForCredential,
   harnessForCredential,
   type MachineSizePolicy,
   MODEL_CREDENTIAL_KINDS,
@@ -101,6 +102,7 @@ type State = {
   connections: Row[];
   /** Every `creds/list` and `creds/accounts/*` call. A pasted value is recorded as sent, never stored as text. */
   accountCalls: { route: string; body: Row }[];
+  agentDefaults: Record<string, Row[]>;
   /** When set, `creds/list` answers as a server older than named accounts: kinds and dates only. */
   legacyAccounts: boolean;
   /** `creds/accounts/usage` per account id: a report, or a failure. An account with none: the route is unknown. */
@@ -364,6 +366,7 @@ function seed(): State {
     failNextBind: null,
     launches: [],
     accountCalls: [],
+    agentDefaults: {},
     legacyAccounts: false,
     usage: {},
     // #604 v1 contract (root-native-auth-contract.json): an additive base map, no --name placeholder.
@@ -2623,6 +2626,9 @@ function accountDto(row: Row): Row {
     expiresAt: row.expires_at ?? null,
     updatedAt: row.updated_at ?? row.created_at,
     version: row.version ?? 1,
+    ...(row.rateLimited === true ? { rateLimited: true } : {}),
+    ...(typeof row.runningAgents === "number" ? { runningAgents: row.runningAgents } : {}),
+    ...(row.maxAgents === null || typeof row.maxAgents === "number" ? { maxAgents: row.maxAgents } : {}),
   };
 }
 
@@ -2693,9 +2699,35 @@ function accounts(route: string, body: Row, request: Request): Response {
         .filter((row) => row.scope === scope && row.owner_id === owner && listed(row) && row.status !== "deleted")
         .map((row) => (model(row) ? accountDto(row) : skillpackDto(row)));
     return json({
+      defaults: state.agentDefaults[userId] ?? [],
       user: rows("user", userId),
       orgs: org ? [{ id: org.id, name: org.name, credentials: rows("org", org.id) }] : [],
     });
+  }
+  if (route === "creds/defaults/set") {
+    if (!["claude", "codex", "opencode"].includes(String(body.harness)))
+      return controlFail(400, "invalid", "Unknown agent.");
+    if (body.credentialId !== null) {
+      const account = state.credentials.find(
+        (row) =>
+          row.id === body.credentialId &&
+          row.status !== "deleted" &&
+          ((row.scope === "user" && row.owner_id === userId) ||
+            (row.scope === "org" && row.owner_id === body.org && isMember(row.owner_id, userId))),
+      );
+      if (
+        !account ||
+        !harnessesForCredential(account.kind as Parameters<typeof harnessesForCredential>[0]).includes(
+          body.harness as Harness,
+        )
+      )
+        return controlFail(404, "not_found", "No compatible visible account.");
+    }
+    state.agentDefaults[userId] = [
+      ...(state.agentDefaults[userId] ?? []).filter((row) => row.harness !== body.harness),
+      { harness: body.harness, credentialId: body.credentialId, model: body.model },
+    ];
+    return json({ ok: true });
   }
   if (route === "creds/accounts/auth-capabilities") {
     return state.authCapabilities ? json(state.authCapabilities) : json({ error: { message: "Unknown route." } }, 404);
@@ -3468,6 +3500,7 @@ const server = Bun.serve({
         return orgProvider(route, body, request);
       if (
         route === "creds/list" ||
+        route === "creds/defaults/set" ||
         route === "creds/set" ||
         route === "creds/rm" ||
         route.startsWith("creds/accounts/")

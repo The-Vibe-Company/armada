@@ -1,4 +1,4 @@
-import { isModelConnectionTestResult, MODEL_ACCOUNT_WRITE_TIMEOUT_MS } from "@armada/core";
+import { type AgentDefault, isModelConnectionTestResult, MODEL_ACCOUNT_WRITE_TIMEOUT_MS } from "@armada/core";
 import { type ArmadaApiOptions, ControlError, controlPost } from "./control.ts";
 import {
   type AccountScope,
@@ -70,6 +70,7 @@ export function createAccountControl(options: ArmadaApiOptions) {
   }
 
   return {
+    setAgentDefault: (body: AgentDefault & { org: string }) => post("creds/defaults/set", body),
     async testConnection(body: { id: string; model: string; org: string }) {
       const payload = await controlPost(
         { ...options, timeoutMs: 45000 },
@@ -81,7 +82,7 @@ export function createAccountControl(options: ArmadaApiOptions) {
         throw new ControlError("The server returned an invalid connection-test receipt.");
       return payload.test;
     },
-    async list(org: string): Promise<{ accounts: ModelAccount[]; legacy: boolean }> {
+    async list(org: string): Promise<{ accounts: ModelAccount[]; legacy: boolean; defaults?: AgentDefault[] }> {
       const payload = await post(ACCOUNT_ROUTES.list, { org });
       if (!Array.isArray(payload.user)) throw new ControlError("The Armada server sent no credential list.");
       return accountsFromList(payload, org);

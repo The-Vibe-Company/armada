@@ -3,7 +3,7 @@
  * interfaces matching the published contract, so the dashboard compiles on its own; no DTO carries a token, a
  * refresh token or auth state, and the parsers keep only the named fields, so nothing else is ever rendered.
  */
-import type { ConnectionModelInfo, Harness } from "@armada/core";
+import type { AgentDefault, ConnectionModelInfo, Harness } from "@armada/core";
 import {
   HARNESS_CATALOG,
   HARNESSES,
@@ -26,6 +26,7 @@ export interface ModelAccount {
   maxAgents?: number | null;
   runningAgents?: number;
   waitingAgents?: number;
+  rateLimited?: boolean;
   id: string;
   scope: AccountScope;
   kind: AccountKind;
@@ -156,7 +157,8 @@ export function parseAccount(value: unknown): ModelAccount | null {
     version: value.version,
     maxAgents: typeof value.maxAgents === "number" ? value.maxAgents : null,
     runningAgents: typeof value.runningAgents === "number" ? value.runningAgents : 0,
-    waitingAgents: typeof value.waitingAgents === "number" ? value.waitingAgents : 0,
+    ...(typeof value.waitingAgents === "number" ? { waitingAgents: value.waitingAgents } : {}),
+    ...(typeof value.rateLimited === "boolean" ? { rateLimited: value.rateLimited } : {}),
   };
 }
 
@@ -165,7 +167,10 @@ export function parseAccount(value: unknown): ModelAccount | null {
  * viewer and of that one org. A row without the account fields (a hosting key, an older server) is not an account
  * and is left out; scope comes from where the row sits, never from the row itself.
  */
-export function accountsFromList(payload: unknown, org: string): { accounts: ModelAccount[]; legacy: boolean } {
+export function accountsFromList(
+  payload: unknown,
+  org: string,
+): { accounts: ModelAccount[]; legacy: boolean; defaults?: AgentDefault[] } {
   const record = isRow(payload) ? payload : {};
   let legacy = false;
   const rows = (items: unknown, scope: AccountScope) =>
@@ -181,7 +186,16 @@ export function accountsFromList(payload: unknown, org: string): { accounts: Mod
   const orgs = Array.isArray(record.orgs) ? record.orgs : [];
   const mine = orgs.find((item) => isRow(item) && item.id === org);
   const accounts = [...rows(record.user, "user"), ...rows(isRow(mine) ? mine.credentials : undefined, "org")];
-  return { accounts, legacy };
+  const defaults = Array.isArray(record.defaults)
+    ? record.defaults.filter(
+        (row): row is AgentDefault =>
+          isRow(row) &&
+          HARNESSES.includes(row.harness as Harness) &&
+          (row.credentialId === null || (typeof row.credentialId === "string" && UUID.test(row.credentialId))) &&
+          (row.model === null || (typeof row.model === "string" && row.model.length > 0 && row.model.length <= 256)),
+      )
+    : undefined;
+  return { accounts, legacy, ...(defaults ? { defaults } : {}) };
 }
 
 /** A value quoted for a POSIX shell: a name with spaces, quotes or `$` is passed as one literal argument. */
@@ -382,7 +396,13 @@ export function launchDefault(accounts: readonly ModelAccount[], harness: Harnes
  * its own resolution and no selection; a failed read blocks a launch rather than letting the server pick silently.
  */
 export type LaunchAccounts =
-  | { state: "ready"; accounts: ModelAccount[]; orgName: string /** When the list was read. */; now: number }
+  | {
+      state: "ready";
+      accounts: ModelAccount[];
+      orgName: string /** When the list was read. */;
+      now: number;
+      defaults?: AgentDefault[];
+    }
   | { state: "legacy" }
   | { state: "unavailable"; reason: string };
 
@@ -391,7 +411,7 @@ export type LaunchAccounts =
  * keys still launch, but they cannot be listed by name here. A failed read is an error, never an empty list.
  */
 export type AccountList =
-  | { state: "ready"; orgId: string; orgName: string; accounts: ModelAccount[] }
+  | { state: "ready"; orgId: string; orgName: string; accounts: ModelAccount[]; defaults?: AgentDefault[] }
   | { state: "legacy" }
   | { state: "no-org" }
   | { state: "not-configured" }
@@ -804,7 +824,14 @@ export function modelAccountFailure(status: number | undefined, code?: string): 
 
 /** Pure launch-observation mapping: failed reads never become a named/default account or diagnostic text. */
 export function launchAccounts(list: AccountList, now: number): LaunchAccounts {
-  if (list.state === "ready") return { state: "ready", accounts: list.accounts, orgName: list.orgName, now };
+  if (list.state === "ready")
+    return {
+      state: "ready",
+      accounts: list.accounts,
+      orgName: list.orgName,
+      now,
+      ...(list.defaults ? { defaults: list.defaults } : {}),
+    };
   if (list.state === "legacy") return { state: "legacy" };
   return {
     state: "unavailable",

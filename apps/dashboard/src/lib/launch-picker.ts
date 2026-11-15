@@ -1,6 +1,7 @@
 import { COMPATIBLE_MODEL_PROVIDERS, type Harness, harnessesForCredential } from "@armada/core";
 import type { ModelCatalog } from "@/components/model-fields";
-import { accountProblem, type ModelAccount } from "@/lib/model-accounts";
+import { accountProblem, type LaunchAccounts, type ModelAccount } from "@/lib/model-accounts";
+import { modelsPageDefault } from "@/lib/models-page";
 
 /** Keep unusable accounts in the picker: refusing selection must never hide the explanation. */
 export function launchPickerGroups(
@@ -30,4 +31,21 @@ export function launchPickerGroups(
         : entry.models.map((row) => ({ ...row, harness, isDefault: row.id === entry.defaultModel }));
     return { account, reason, options };
   });
+}
+
+/** Initial selection only: later explicit picker choices must never be overwritten. */
+export function initialLaunchSelection(accounts: LaunchAccounts, catalog: ModelCatalog, harness: Harness) {
+  const resolved =
+    accounts.state === "ready" ? modelsPageDefault(accounts.accounts, harness, accounts.now, accounts.defaults) : null;
+  const account = resolved?.state === "resolved" ? resolved.account : undefined;
+  const preference = accounts.state === "ready" ? accounts.defaults?.find((row) => row.harness === harness) : undefined;
+  const savedModel =
+    preference && (!preference.credentialId || preference.credentialId === account?.id) ? preference.model : null;
+  return {
+    credentialId: account?.id ?? "",
+    model:
+      savedModel ??
+      account?.models?.[0]?.model ??
+      (account?.kind === "morph" ? COMPATIBLE_MODEL_PROVIDERS.morph.models[0]! : catalog[harness].defaultModel),
+  };
 }
