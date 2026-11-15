@@ -1,4 +1,6 @@
 ## Navigation clarity — first slice
+
+> Historical proposal, rejected by the owner on 2026-11-12. The recommendation and screenshots below describe #1040, not the current menu. See [the completion ledger](navigation-completion.md) and [the approved replacement](navigation-structure.md). Do not restore descriptive sidebar sentences.
 Refs #1038. No closing keyword: cross-links and empty states remain follow-up slices.
 
 ### What connects
