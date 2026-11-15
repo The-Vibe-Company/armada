@@ -1,6 +1,7 @@
 import type { AgentEvent, Sql } from "@armada/core";
 import { HARNESS_KINDS, isRecord as object, PROMPT_STATUSES } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
+import { admitAccountCapacity } from "./account-capacity.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHealthMatches } from "./runtime-agent.ts";
@@ -66,6 +67,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       epoch: string,
     ) => Promise<T>,
     allowPending = false,
+    reserveTurn = false,
   ) {
     return transaction(async (tx) => {
       if (options.enabled !== true) deny();
@@ -80,10 +82,11 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       const credential = await tx.query(
         `select id from public.credentials where id=$1 and version=$2 and kind = any($5::public.credential_kind[])
          and status='active' and (expires_at is null or expires_at>now())
-         and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
+         and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) ${reserveTurn ? "for update" : "for share"}`,
         [snapshot.credentialId, snapshot.credentialVersion, actor.userId, actor.orgId, HARNESS_KINDS[snapshot.harness]],
       );
       if (!credential.rows.length) deny();
+      if (reserveTurn && snapshot.credentialId) await admitAccountCapacity(tx, snapshot.credentialId, sandboxId);
       if (allowPending) {
         const host = await tx.query(
           `select h.id from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id
@@ -182,172 +185,178 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       );
     },
     prompt(actor: Actor, sandboxId: string, input: { requestId: string; text: string; conversationId?: string }) {
-      return admitted(actor, sandboxId, async (tx, authority, sandbox, epoch) => {
-        if (
-          !object(input) ||
-          Object.keys(input).some((field) => !["requestId", "text", "conversationId"].includes(field)) ||
-          (Object.hasOwn(input, "conversationId") &&
-            (typeof input.conversationId !== "string" || !uuid.test(input.conversationId))) ||
-          !uuid.test(input.requestId) ||
-          typeof input.text !== "string" ||
-          !input.text.trim() ||
-          Buffer.byteLength(input.text) > 262144 ||
-          !["ready", "running"].includes(sandbox.status)
-        )
-          deny();
-        // The launch reserves a conversation before any native admission or queued receipt.
-        const launch = (
-          await tx.query<{ request_enc: Uint8Array<ArrayBuffer>; result_enc: Uint8Array<ArrayBuffer> | null }>(
-            "select request_enc,result_enc from public.docker_launch_requests where sandbox_id=$1",
-            [sandboxId],
-          )
-        ).rows[0];
-        let plannedConversation: string | undefined;
-        if (launch) {
-          const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
-          plannedConversation = manifest.conversationId ?? manifest.promptId;
+      return admitted(
+        actor,
+        sandboxId,
+        async (tx, authority, sandbox, epoch) => {
           if (
-            !launch.result_enc &&
-            (manifest.promptId !== input.requestId ||
-              manifest.request?.prompt !== input.text ||
-              (input.conversationId !== plannedConversation &&
-                !(manifest.conversationId === undefined && input.conversationId === undefined)))
+            !object(input) ||
+            Object.keys(input).some((field) => !["requestId", "text", "conversationId"].includes(field)) ||
+            (Object.hasOwn(input, "conversationId") &&
+              (typeof input.conversationId !== "string" || !uuid.test(input.conversationId))) ||
+            !uuid.test(input.requestId) ||
+            typeof input.text !== "string" ||
+            !input.text.trim() ||
+            Buffer.byteLength(input.text) > 262144 ||
+            !["ready", "running"].includes(sandbox.status)
           )
             deny();
-        }
-        const reserved = (
-          await tx.query<{
-            input_enc: Uint8Array<ArrayBuffer>;
-            conversation_id: string | null;
-            previous_command: boolean;
-            valid: boolean;
-          }>(
-            `select q.input_enc,q.conversation_id,
+          // The launch reserves a conversation before any native admission or queued receipt.
+          const launch = (
+            await tx.query<{ request_enc: Uint8Array<ArrayBuffer>; result_enc: Uint8Array<ArrayBuffer> | null }>(
+              "select request_enc,result_enc from public.docker_launch_requests where sandbox_id=$1",
+              [sandboxId],
+            )
+          ).rows[0];
+          let plannedConversation: string | undefined;
+          if (launch) {
+            const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
+            plannedConversation = manifest.conversationId ?? manifest.promptId;
+            if (
+              !launch.result_enc &&
+              (manifest.promptId !== input.requestId ||
+                manifest.request?.prompt !== input.text ||
+                (input.conversationId !== plannedConversation &&
+                  !(manifest.conversationId === undefined && input.conversationId === undefined)))
+            )
+              deny();
+          }
+          const reserved = (
+            await tx.query<{
+              input_enc: Uint8Array<ArrayBuffer>;
+              conversation_id: string | null;
+              previous_command: boolean;
+              valid: boolean;
+            }>(
+              `select q.input_enc,q.conversation_id,
              exists(select 1 from public.runtime_commands c where c.sandbox_id=q.sandbox_id and c.request_id='docker_prompt_'||q.request_id::text) as previous_command,(q.status='dispatching' and q.owner_id=s.owner_id and q.actor_epoch=e.epoch and q.lifecycle_generation=s.lifecycle_generation) as valid
           from public.docker_queued_prompts q join public.sandboxes s on s.id=q.sandbox_id
           join public.mcp_actor_epochs e on e.user_id=q.owner_id and e.org_id=s.org_id
           where q.sandbox_id=$1 and q.request_id=$2`,
-            [sandboxId, input.requestId],
-          )
-        ).rows[0];
-        if (reserved) {
-          const payload = JSON.parse(await decryptSecret(reserved.input_enc, key));
-          if (
-            !reserved.valid ||
-            payload.prompt !== input.text ||
-            (!reserved.previous_command &&
-              reserved.conversation_id !== null &&
-              reserved.conversation_id !== input.conversationId) ||
-            (payload.conversationId !== null && payload.conversationId !== input.conversationId)
-          )
-            deny();
-        }
-        const id = `docker_prompt_${input.requestId}`;
-        // Exact retries keep their original canonical payload, including the first
-        // request's absent conversationId, even after its receipt is reconciled.
-        const previous = await tx.query(
-          `select request_id from public.runtime_commands where sandbox_id=$1 and request_id=$2`,
-          [sandboxId, id],
-        );
-        const saved =
-          (
-            await tx.query<{ conversation_ids: string[] }>(
-              `select conversation_ids from public.sandboxes where id=$1 and org_id=$2 and owner_id=$3`,
-              [sandboxId, actor.orgId, actor.userId],
+              [sandboxId, input.requestId],
             )
-          ).rows[0]?.conversation_ids ?? deny();
-        if (!previous.rows.length) {
-          if (saved.length > 1 || saved.some((conversationId) => !uuid.test(conversationId))) deny();
-          if (
-            saved.length
-              ? input.conversationId !== saved[0]
-              : input.conversationId !== undefined && input.conversationId !== plannedConversation
-          )
-            deny();
-          const blocked = await tx.query(
-            `select 1 from public.runtime_commands where sandbox_id=$1
+          ).rows[0];
+          if (reserved) {
+            const payload = JSON.parse(await decryptSecret(reserved.input_enc, key));
+            if (
+              !reserved.valid ||
+              payload.prompt !== input.text ||
+              (!reserved.previous_command &&
+                reserved.conversation_id !== null &&
+                reserved.conversation_id !== input.conversationId) ||
+              (payload.conversationId !== null && payload.conversationId !== input.conversationId)
+            )
+              deny();
+          }
+          const id = `docker_prompt_${input.requestId}`;
+          // Exact retries keep their original canonical payload, including the first
+          // request's absent conversationId, even after its receipt is reconciled.
+          const previous = await tx.query(
+            `select request_id from public.runtime_commands where sandbox_id=$1 and request_id=$2`,
+            [sandboxId, id],
+          );
+          const saved =
+            (
+              await tx.query<{ conversation_ids: string[] }>(
+                `select conversation_ids from public.sandboxes where id=$1 and org_id=$2 and owner_id=$3`,
+                [sandboxId, actor.orgId, actor.userId],
+              )
+            ).rows[0]?.conversation_ids ?? deny();
+          if (!previous.rows.length) {
+            if (saved.length > 1 || saved.some((conversationId) => !uuid.test(conversationId))) deny();
+            if (
+              saved.length
+                ? input.conversationId !== saved[0]
+                : input.conversationId !== undefined && input.conversationId !== plannedConversation
+            )
+              deny();
+            const blocked = await tx.query(
+              `select 1 from public.runtime_commands where sandbox_id=$1
              and starts_with(request_id,'docker_prompt_')
              and ((epoch=$3::bigint and result_enc is null) or $2::boolean) limit 1`,
-            [sandboxId, saved.length === 0, epoch],
-          );
-          // An unresolved RPC has not established native admission yet. Once it
-          // replies, the runner alone owns busy/refusal; no journal scheduler here.
-          if (blocked.rows.length) deny();
-        }
-        if (!previous.rows.length)
-          await tx.query("update public.sandboxes set task_prompt_id=null where id=$1", [sandboxId]);
-        const commands = createRuntimeCommands(authority, key);
-        const queued = await commands.enqueue(actor.userId, {
-          version: 1,
-          requestId: id,
-          sandboxId,
-          op: "prompt",
-          input: {
+              [sandboxId, saved.length === 0, epoch],
+            );
+            // An unresolved RPC has not established native admission yet. Once it
+            // replies, the runner alone owns busy/refusal; no journal scheduler here.
+            if (blocked.rows.length) deny();
+          }
+          if (!previous.rows.length)
+            await tx.query("update public.sandboxes set task_prompt_id=null where id=$1", [sandboxId]);
+          const commands = createRuntimeCommands(authority, key);
+          const queued = await commands.enqueue(actor.userId, {
+            version: 1,
+            requestId: id,
             sandboxId,
-            harness: sandbox.harness,
-            text: input.text,
-            ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
-            model: sandbox.model,
-            reasoningEffort: sandbox.reasoningEffort,
-            cwd: "/home/user",
-          },
-        });
-        await tx.query(`update public.sandboxes set status='running' where id=$1 and status='ready'`, [sandboxId]);
-        const response = await commands.result(actor.userId, sandboxId, id, queued.epoch);
-        if (response.state === "pending") return { state: "pending" as const };
-        if (response.state !== "finished") deny();
-        const receipt = result(response.reply, queued.epoch, id);
-        if (
-          typeof receipt.promptId !== "string" ||
-          !uuid.test(receipt.promptId) ||
-          typeof receipt.conversationId !== "string" ||
-          !uuid.test(receipt.conversationId) ||
-          !PROMPT_STATUSES.some((status) => status === receipt.status) ||
-          (input.conversationId !== undefined && receipt.conversationId !== input.conversationId) ||
-          saved.length > 1 ||
-          (saved.length === 1 && receipt.conversationId !== saved[0])
-        )
-          deny();
-        const pricing = (
-          await tx.query<{ context: unknown; captured: boolean }>(
-            "select pricing_context as context,pricing_context is not null as captured from public.runtime_enrolments where sandbox_id=$1 and epoch=$2",
-            [sandboxId, queued.epoch],
+            op: "prompt",
+            input: {
+              sandboxId,
+              harness: sandbox.harness,
+              text: input.text,
+              ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
+              model: sandbox.model,
+              reasoningEffort: sandbox.reasoningEffort,
+              cwd: "/home/user",
+            },
+          });
+          await tx.query(`update public.sandboxes set status='running' where id=$1 and status='ready'`, [sandboxId]);
+          const response = await commands.result(actor.userId, sandboxId, id, queued.epoch);
+          if (response.state === "pending") return { state: "pending" as const };
+          if (response.state !== "finished") deny();
+          const receipt = result(response.reply, queued.epoch, id);
+          if (
+            typeof receipt.promptId !== "string" ||
+            !uuid.test(receipt.promptId) ||
+            typeof receipt.conversationId !== "string" ||
+            !uuid.test(receipt.conversationId) ||
+            !PROMPT_STATUSES.some((status) => status === receipt.status) ||
+            (input.conversationId !== undefined && receipt.conversationId !== input.conversationId) ||
+            saved.length > 1 ||
+            (saved.length === 1 && receipt.conversationId !== saved[0])
           )
-        ).rows[0];
-        await createSqlData(tx)({
-          userId: actor.userId,
-          orgs: [{ orgId: actor.orgId, role: "member" }],
-          via: "service",
-        }).sandboxes.recordTurnModel!(
-          sandboxId,
-          receipt.promptId,
-          sandbox.model,
-          pricing?.captured ? pricing.context : null,
-        );
-        await tx.query(
-          `update public.sandboxes s set task_prompt_id=$2 where s.id=$1 and exists (
+            deny();
+          const pricing = (
+            await tx.query<{ context: unknown; captured: boolean }>(
+              "select pricing_context as context,pricing_context is not null as captured from public.runtime_enrolments where sandbox_id=$1 and epoch=$2",
+              [sandboxId, queued.epoch],
+            )
+          ).rows[0];
+          await createSqlData(tx)({
+            userId: actor.userId,
+            orgs: [{ orgId: actor.orgId, role: "member" }],
+            via: "service",
+          }).sandboxes.recordTurnModel!(
+            sandboxId,
+            receipt.promptId,
+            sandbox.model,
+            pricing?.captured ? pricing.context : null,
+          );
+          await tx.query(
+            `update public.sandboxes s set task_prompt_id=$2 where s.id=$1 and exists (
            select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id=$3 and c.epoch=$4
            and not exists(select 1 from public.runtime_commands newer where newer.sandbox_id=c.sandbox_id
              and newer.epoch=c.epoch and newer.sequence>c.sequence and starts_with(newer.request_id,'docker_prompt_')))`,
-          [sandboxId, receipt.promptId, id, queued.epoch],
-        );
-        if (!saved.length) {
-          // This service-owned projection must not advance lifecycle_generation.
-          await tx.query(`update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1`, [
-            sandboxId,
-            receipt.conversationId,
-          ]);
-        }
-        return {
-          state: "admitted" as const,
-          epoch: queued.epoch,
-          receipt: {
-            promptId: receipt.promptId,
-            conversationId: receipt.conversationId,
-            status: receipt.status as (typeof PROMPT_STATUSES)[number],
-          },
-        };
-      });
+            [sandboxId, receipt.promptId, id, queued.epoch],
+          );
+          if (!saved.length) {
+            // This service-owned projection must not advance lifecycle_generation.
+            await tx.query(`update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1`, [
+              sandboxId,
+              receipt.conversationId,
+            ]);
+          }
+          return {
+            state: "admitted" as const,
+            epoch: queued.epoch,
+            receipt: {
+              promptId: receipt.promptId,
+              conversationId: receipt.conversationId,
+              status: receipt.status as (typeof PROMPT_STATUSES)[number],
+            },
+          };
+        },
+        false,
+        true,
+      );
     },
     journal(actor: Actor, sandboxId: string, input: { cursor?: string; limit?: number } = {}) {
       return transaction(async (tx) => {

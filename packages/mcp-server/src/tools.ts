@@ -82,6 +82,7 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   sandboxBillingAccount?: (id: string) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeGitHub?: RuntimeGitHub;
@@ -739,6 +740,21 @@ export function createArmadaServer(context: ToolContext, version: string, option
     allowRecordedFallback = false,
   ): Promise<StatusReport & ReturnType<typeof logicalExpiry>> => {
     const found = await measure("sandbox_read", () => visible(sandboxId));
+    const queued = await context.accountTurns?.status(caller, sandboxId, promptId);
+    if (queued && "nativePromptId" in queued) promptId = queued.nativePromptId;
+    else if (queued)
+      return {
+        ...recordedStatus(found),
+        ...logicalExpiry(found.expiresAt, context.now()),
+        statusMessage: queued.message,
+        settled: queued.failed ?? false,
+        prompt: {
+          promptId: queued.requestId!,
+          conversationId: queued.conversationId!,
+          state: queued.failed ? "failed" : "running",
+          reason: queued.message,
+        },
+      };
     try {
       const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
       const provider =
@@ -1593,6 +1609,14 @@ export function createArmadaServer(context: ToolContext, version: string, option
   );
 
   async function sendSandbox(args: import("./runtime-followup.ts").RuntimeFollowupInput) {
+    if (context.accountTurns) {
+      const queued = await context.accountTurns.accept(caller, args);
+      if (queued) return queued;
+    }
+    return dispatchSandbox(args);
+  }
+
+  async function dispatchSandbox(args: import("./runtime-followup.ts").RuntimeFollowupInput) {
     const routed = await context.dockerControls?.invoke(caller, "send", { ...args });
     if (routed?.handled) return routed.result as import("@armada/core").PromptReceipt & { id: string };
     const selected = await visible(args.id);
@@ -1745,6 +1769,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         promptId: z.string(),
         conversationId: z.string(),
         status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
+        statusMessage: z.string().optional(),
       },
     },
     sendSandbox,

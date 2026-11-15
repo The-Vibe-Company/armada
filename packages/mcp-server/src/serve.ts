@@ -15,12 +15,13 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
+import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
 import { readBoatRuntimeManifest } from "./boat-runtime-manifest.ts";
 import { boatRuntimeResume } from "./boat-runtime-resume.ts";
 import { authenticateCaller } from "./caller.ts";
 import { configFromEnv } from "./config.ts";
-import { type ConfiguredControlOptions, handleControlRequest } from "./control.ts";
+import { type ConfiguredControlOptions, dispatchControlCommand, handleControlRequest } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
 import { createScopedSandboxData, createSqlData } from "./data.ts";
@@ -408,6 +409,7 @@ export async function startServer(
     runtimeMcp.prepare,
     runtimeGitHub?.prepareLaunch,
   );
+  const accountTurns = createAccountTurnQueue(sql, config.encryptionKey);
   const runtimeSend = createRuntimeFollowup(
     sql,
     config.encryptionKey,
@@ -455,6 +457,7 @@ export async function startServer(
       normalResume: dockerLaunchEnabled,
     },
     runtimeSend,
+    accountTurns,
     runtimeCheckpoint,
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
@@ -550,6 +553,7 @@ export async function startServer(
   const handler = createHandler({
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
+    accountTurns,
     runtimeCheckpoint,
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
@@ -664,6 +668,10 @@ export async function startServer(
   // Only authenticated normal Docker launches opt out; their service deadline
   // remains bounded, and other providers/routes keep their existing timeouts.
   control.configureDockerLaunchRequest = (request) => server.timeout(request, 0);
+  const { accountTurns: _queue, ...unqueuedControl } = control;
+  accountTurns.setDispatch((caller, input) =>
+    dispatchControlCommand("sandbox/send", caller, { ...input }, unqueuedControl),
+  );
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers), {
     delayMs: idleDelayMs,
   });
@@ -675,6 +683,7 @@ export async function startServer(
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
     [
       delegatedAccess.childWorker,
+      accountTurns,
       createRuntimeIdle(sql, config.encryptionKey, runtimeCheckpoint, {
         delayMs: idleDelayMs,
         ...(dockerBootstrap

@@ -1,4 +1,4 @@
-import { type Sql, VaultError } from "@armada/core/server";
+import { ACCOUNT_WORKING_PREDICATE, accountWorkingCountSql, type Sql, VaultError } from "@armada/core/server";
 
 /** Caller holds the account row lock. Pending allocations count until their outcome is known. */
 export async function admitAccountCapacity(tx: Sql, accountId: string, sandboxId: string): Promise<void> {
@@ -10,25 +10,24 @@ export async function admitAccountCapacity(tx: Sql, accountId: string, sandboxId
   ).rows[0];
   if (!account || account.max_agents == null) return;
   const current = await tx.query(
-    "select id from public.sandboxes where id=$1 and credential_id=$2 and deleted_at is null and stopped_at is null and status in ('starting','ready','running')",
+    `select s.id from public.sandboxes s where s.id=$1 and s.credential_id=$2 and ${ACCOUNT_WORKING_PREDICATE}
+     union select r.sandbox_id from public.account_agent_reservations r where r.sandbox_id=$1 and r.account_id=$2
+       and not exists(select 1 from public.sandboxes ended where ended.id=r.sandbox_id
+         and (ended.deleted_at is not null or ended.stopped_at is not null)
+          and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=ended.id
+            and q.state='dispatching' and q.dispatch_generation=ended.lifecycle_generation))`,
     [sandboxId, accountId],
   );
-  if (current.rows.length) return; // Existing agents keep running after a limit is lowered.
+  if (current.rows.length) return; // Replays of accepted work keep their slot after a limit is lowered.
   const result = await tx.query<{ running: string | number }>(
-    `select count(*) as running from (
-      select id from public.sandboxes where credential_id=$1 and id<>$2
-        and deleted_at is null and stopped_at is null and status in ('starting','ready','running')
-      union select r.sandbox_id from public.account_agent_reservations r
-        where r.account_id=$1 and r.sandbox_id<>$2
-        and not exists(select 1 from public.sandboxes s where s.id=r.sandbox_id and s.deleted_at is null and s.stopped_at is null and s.status in ('starting','ready','running'))
-    ) active`,
+    `select ${accountWorkingCountSql("$1", "$2")} as running`,
     [accountId, sandboxId],
   );
   const running = Number(result.rows[0]?.running ?? 0);
   if (running >= account.max_agents)
     throw new VaultError(
       "conflict",
-      `Account ${account.name} is at its limit: ${running}/${account.max_agents} agents running; stop one, raise the limit, or pick another account.`,
+      `Account ${account.name} is at its limit: ${running}/${account.max_agents} agents working; wait for a turn to finish, raise the limit, or pick another account.`,
     );
   await tx.query(
     "insert into public.account_agent_reservations(sandbox_id,account_id) values($1,$2) on conflict(sandbox_id) do nothing",

@@ -24,6 +24,7 @@ export interface CredentialInfo {
   isDefault?: boolean;
   maxAgents?: number | null;
   runningAgents?: number;
+  waitingAgents?: number;
   status?: string;
   expiresAt?: string | null;
   updatedAt?: string;

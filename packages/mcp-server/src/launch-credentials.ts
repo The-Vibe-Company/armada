@@ -233,7 +233,7 @@ export function launchCredentials(
     async assertTurn(actor, sandboxId, resuming) {
       if (ownership) {
         await ownership.assertSandbox(actor, sandboxId, resuming);
-        if (resuming) await ownership.admitSandboxCapacity(sandboxId);
+        await ownership.admitSandboxCapacity(sandboxId);
       }
     },
     async resolve(

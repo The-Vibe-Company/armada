@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { accountWorkingCountSql } from "./account-work-sql.ts";
 import { HARNESS_KINDS } from "./credentials.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore, GitHubUser, StoredGitHubConnection } from "./github.ts";
@@ -283,6 +284,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         name: string;
         max_agents: number | null;
         running_agents: string;
+        waiting_agents: string;
         is_default: boolean;
         status: string;
         expires_at: string | null;
@@ -291,7 +293,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         kind: string;
         created_at: string | Date;
       }>(
-        `select id,name,max_agents,(select count(*) from public.sandboxes s where s.credential_id=credentials.id and s.deleted_at is null and s.stopped_at is null and s.status in ('starting','ready','running')) as running_agents,is_default,status,expires_at,updated_at,version,kind::text as kind, created_at from public.credentials
+        `select id,name,max_agents,${accountWorkingCountSql("credentials.id")} as running_agents,(select count(*) from public.account_turn_queue q where q.account_id=credentials.id and q.state='queued') as waiting_agents,is_default,status,expires_at,updated_at,version,kind::text as kind, created_at from public.credentials
          where scope = $1::public.credential_scope and owner_id = $2
          order by kind`,
         [scope, ownerId],
@@ -301,6 +303,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         name: row.name,
         maxAgents: row.max_agents,
         runningAgents: Number(row.running_agents ?? 0),
+        waitingAgents: Number(row.waiting_agents ?? 0),
         isDefault: row.is_default,
         status: row.status,
         expiresAt: row.expires_at ? instant(row.expires_at) : null,

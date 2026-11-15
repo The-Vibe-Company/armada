@@ -32,6 +32,82 @@ export type Database = {
           },
         ];
       };
+      account_turn_queue: {
+        Row: {
+          sandbox_id: string;
+          request_id: string;
+          account_id: string;
+          owner_id: string;
+          org_id: string;
+          actor_epoch: number;
+          credential_version: number;
+          input_hash: string;
+          input_enc: string;
+          conversation_id: string;
+          sequence: number;
+          state: string;
+          dispatch_generation: number | null;
+          result_enc: string | null;
+          failure_reason: string | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          request_id: string;
+          account_id: string;
+          owner_id: string;
+          org_id: string;
+          actor_epoch: number;
+          credential_version: number;
+          input_hash: string;
+          input_enc: string;
+          conversation_id: string;
+          sequence: number;
+          state?: string;
+          dispatch_generation?: number | null;
+          result_enc?: string | null;
+          failure_reason?: string | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          request_id?: string;
+          account_id?: string;
+          owner_id?: string;
+          org_id?: string;
+          actor_epoch?: number;
+          credential_version?: number;
+          input_hash?: string;
+          input_enc?: string;
+          conversation_id?: string;
+          sequence?: number;
+          state?: string;
+          dispatch_generation?: number | null;
+          result_enc?: string | null;
+          failure_reason?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "account_turn_queue_account_id_fkey";
+            columns: ["account_id"];
+            isOneToOne: false;
+            referencedRelation: "credentials";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "account_turn_queue_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "account_turn_queue_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       application_secret_uploads: {
         Row: {
           hash: string;
@@ -4341,6 +4417,7 @@ export type Database = {
 };
 
 export type AccountAgentReservationRow = Database["public"]["Tables"]["account_agent_reservations"]["Row"];
+export type AccountTurnQueueRow = Database["public"]["Tables"]["account_turn_queue"]["Row"];
 export type ApplicationSecretUploadRow = Database["public"]["Tables"]["application_secret_uploads"]["Row"];
 export type ApplicationSecretRow = Database["public"]["Tables"]["application_secrets"]["Row"];
 export type ApplicationVaultAuditRow = Database["public"]["Tables"]["application_vault_audit"]["Row"];

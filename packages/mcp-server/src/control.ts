@@ -130,6 +130,7 @@ export interface ControlOptions {
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
+  accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   modalRuntimeHostFor?: (target: import("@armada/core").ProviderTarget, caller: Caller) => Promise<Provider>;
   modalRuntimeLaunch?: NonNullable<LaunchOptions["runtime"]>;
   boatRuntimeLaunch?: NonNullable<LaunchOptions["boatRuntime"]>;
@@ -292,7 +293,9 @@ async function timedControlRequest(
             : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
     } else
       result = await timing.measure("dispatch", () =>
-        withRequestTiming(timing, () => dispatch(deletion ? "sandbox/delete" : route, caller, body, options)),
+        withRequestTiming(timing, () =>
+          dispatchControlCommand(deletion ? "sandbox/delete" : route, caller, body, options),
+        ),
       );
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
@@ -310,7 +313,7 @@ async function timedControlRequest(
   }
 }
 
-async function dispatch(
+export async function dispatchControlCommand(
   route: string,
   caller: Caller,
   body: Record<string, unknown>,
@@ -606,6 +609,7 @@ async function dispatch(
           : {}),
         ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
+        ...(options.accountTurns ? { accountTurns: options.accountTurns } : {}),
         ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
         ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
@@ -809,7 +813,7 @@ async function dispatch(
           ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
         },
         async (id, sandboxOrg) => {
-          const stopped = await dispatch(
+          const stopped = await dispatchControlCommand(
             "sandbox/stop",
             caller,
             { id, org: sandboxOrg, only_if_idle: true, request_id: crypto.randomUUID() },

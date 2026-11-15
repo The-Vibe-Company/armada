@@ -1,4 +1,11 @@
-import { type CredentialInfo, listCredentials, type OrgSummary, type Sql, type VaultStore } from "@armada/core/server";
+import {
+  accountWorkingCountSql,
+  type CredentialInfo,
+  listCredentials,
+  type OrgSummary,
+  type Sql,
+  type VaultStore,
+} from "@armada/core/server";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type Row = {
@@ -11,6 +18,7 @@ type Row = {
   name: string;
   max_agents: number | null;
   running_agents: string;
+  waiting_agents: string;
   is_default: boolean;
   status: string;
   expires_at: string | Date | null;
@@ -34,11 +42,11 @@ export function createSqlCredentialList(sql: Sql, store: VaultStore) {
        ), entries as (
          select 'user'::text as result_scope, null::uuid as org_id, null::text as org_name,
            null::text as org_role, null::boolean as boat_present,
-           c.id,c.name,c.max_agents,(select count(*) from public.sandboxes s where s.credential_id=c.id and s.deleted_at is null and s.stopped_at is null and s.status in ('starting','ready','running')) as running_agents,c.is_default,c.status,c.expires_at,c.updated_at,c.version,c.kind::text as kind,c.created_at
+           c.id,c.name,c.max_agents,${accountWorkingCountSql("c.id")} as running_agents,(select count(*) from public.account_turn_queue q where q.account_id=c.id and q.state='queued') as waiting_agents,c.is_default,c.status,c.expires_at,c.updated_at,c.version,c.kind::text as kind,c.created_at
          from public.credentials c where c.scope='user' and c.owner_id=$1::uuid and c.status is distinct from 'deleted'
          union all
          select 'org'::text, m.org_id,m.org_name,m.org_role,m.boat_present,
-           c.id,c.name,c.max_agents,(select count(*) from public.sandboxes s where s.credential_id=c.id and s.deleted_at is null and s.stopped_at is null and s.status in ('starting','ready','running')) as running_agents,c.is_default,c.status,c.expires_at,c.updated_at,c.version,c.kind::text,c.created_at
+           c.id,c.name,c.max_agents,${accountWorkingCountSql("c.id")} as running_agents,(select count(*) from public.account_turn_queue q where q.account_id=c.id and q.state='queued') as waiting_agents,c.is_default,c.status,c.expires_at,c.updated_at,c.version,c.kind::text,c.created_at
          from memberships m left join public.credentials c
            on c.scope='org' and c.owner_id=m.org_id and c.status is distinct from 'deleted'
        ) select * from entries order by lower(org_name), org_id, kind`,
@@ -72,6 +80,7 @@ export function createSqlCredentialList(sql: Sql, store: VaultStore) {
               name: row.name,
               maxAgents: row.max_agents,
               runningAgents: Number(row.running_agents ?? 0),
+              waitingAgents: Number(row.waiting_agents ?? 0),
               isDefault: row.is_default,
               status: row.status,
               expiresAt: row.expires_at ? instant(row.expires_at) : null,
