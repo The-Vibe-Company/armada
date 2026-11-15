@@ -1,10 +1,9 @@
-import { dedupeEvents } from "@armada/core";
 import { type Provider, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { optional } from "./control-input.ts";
 import { readEventPages } from "./event-pagination.ts";
-import { isPrivateModelEvent } from "./model-usage.ts";
+import { publicLogEvents } from "./model-usage.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 
 type LogControlOptions = Pick<ControlOptions, "dockerControls" | "logs" | "timing">;
@@ -83,8 +82,8 @@ export async function readLogs(
     ...(source ? { source } : {}),
     ...(runtimeFailure ? { runtimeFailure } : {}),
     ...(olderCursor ? { olderCursor } : {}),
-    events: dedupeEvents(events).filter((event) => !isPrivateModelEvent(event)),
-    cursor: cursor ?? null,
+    events: publicLogEvents(events),
+    cursor,
     hasMore,
     settled:
       !follow ||

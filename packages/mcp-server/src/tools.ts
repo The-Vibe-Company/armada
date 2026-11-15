@@ -1,5 +1,4 @@
 import {
-  dedupeEvents,
   GitHubHydrationError,
   goldenForSettings,
   goldenResponse,
@@ -60,7 +59,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
 import { redactForLog } from "./log.ts";
-import { isPrivateModelEvent } from "./model-usage.ts";
+import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
@@ -2221,8 +2220,8 @@ async function readLogs(
   );
   return {
     ...(olderCursor ? { olderCursor } : {}),
-    events: dedupeEvents(events).filter((event) => !isPrivateModelEvent(event)),
-    cursor: cursor ?? null,
+    events: publicLogEvents(events),
+    cursor,
     hasMore,
   };
 }
