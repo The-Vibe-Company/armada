@@ -9,7 +9,7 @@ container held each connection. No production logs/settings were accessed in
 this change; confirm live settings and connection counts with the operator.
 
 Code audit: startServer constructs one bunSql shared by auth, control, MCP,
-golden jobs and invitation/lifecycle workers. Previously the main
+snapshot build jobs and invitation/lifecycle workers. Previously the main
 Bun.SQL used its default maximum (10), plus a separate autonomous pool of 2:
 up to 12 per process, 24 for two overlapping deployments, already over 15.
 Construction is lazy; first boot SQL is MCP invalidation draining. Concurrent
@@ -47,8 +47,11 @@ messages. Exhaustion closes the pools and exits for platform restart.
 
 ## Railway rollout prerequisites (operator, no changes applied here)
 
-railway.json already had /healthz, but only a 30s readiness window and ten
-failure restarts. It now allows 180s for boot and uses ALWAYS restart. Specifically, Railway's **restartPolicyType: ALWAYS** needs a
+The original incident fix replaced a 30-second readiness window and ten
+failure restarts with 180 seconds and ALWAYS restart. Current settings are owned
+by [.railway/railway.ts](../.railway/railway.ts), not the removed railway.json.
+Complete the owner-only [IaC cutover](../.railway/README.md) in staging first;
+`railway up` uploads source but does not apply those settings. Specifically, Railway's **restartPolicyType: ALWAYS** needs a
 paid plan; Free/trial supports ON_FAILURE only, capped at ten restarts. On that
 plan this ALWAYS configuration is unsupported and must not be assumed to take
 effect: the operator must upgrade or explicitly choose ON_FAILURE (then another
@@ -59,10 +62,10 @@ listening port, no attached volume forces serialized teardown, and no UI/env
 override shortens readiness. Do not delete the last healthy deployment manually.
 
 Railway only switches traffic after a successful health check; it does not
-continuously monitor that endpoint. No overlap/draining override is added: the
-existing default removes the old instance after promotion, avoiding prolonged
-connection overlap. Audit RAILWAY_DEPLOYMENT_OVERLAP_SECONDS and
-RAILWAY_DEPLOYMENT_DRAINING_SECONDS in the live service. Config alone cannot
+continuously monitor that endpoint. Current IaC declares 180-second overlap and 30-second draining. Include that
+overlap in the connection budget above; do not assume promotion immediately
+removes the old process. Verify the effective live overlap/draining settings and
+any overrides in the intended environment. Config alone cannot
 prove the historical teardown cause; sanitized deployment logs are needed.
 
 References: [Railway readiness](https://docs.railway.com/deployments/healthchecks),
@@ -72,14 +75,16 @@ References: [Railway readiness](https://docs.railway.com/deployments/healthcheck
 
 ## Independent production smoke and alert
 
-The old Post-deploy smoke is explicitly staging-only. It filters success events
-for staging, and missing staging credentials produce a successful no-op. Thus
-a green workflow never established production availability. Keep this compute
-smoke separate; it is not an uptime signal.
+Post-deploy compute smoke belongs to the serialized pinned staging workflow,
+not deployment-status events. Missing required staging configuration fails closed;
+there is no successful no-op or production gate bypass. See the current
+[deployment policy](releasing.md#deployment-policy-1547) and
+[smoke reference](post-deploy-smoke.md). A staging smoke pass is not an independent
+production uptime signal; keep the public health monitor separate.
 
 Production health now probes the public production API /healthz on all matching
 production deployment statuses, manual dispatch, and every five minutes. It
-requires a successful status and Armada JSON readiness, rejects redirects, has
+requires a successful HTTP response and Armada JSON readiness, rejects redirects, has
 a 10s timeout, and requires no token or billable compute. It defaults to the
 production API origin documented in dave-onboarding.md. Repository variables
 ARMADA_PRODUCTION_ORIGIN and ARMADA_PRODUCTION_DEPLOYMENT_ENVIRONMENT may
@@ -109,14 +114,15 @@ reconnect under dashboard Settings to recover a permanently uncertain refresh.
 Uncertain refresh is never replayed. See [GitHub reconnect safety](github-app.md#reconnect-cache-deployment-585)
 for the full ordering and validation mechanism.
 Database queries/short publication transactions still queue behind DB work.
-Golden workers share the main pool; locks/transactions may hold
+Snapshot build workers share the main pool; locks/transactions may hold
 sessions while awaiting other database locks. No throughput or saturated-live-
 pooler validation is claimed here.
 
 ## Coordinator post-merge checklist (not performed by this PR)
 
 1. In live Railway settings confirm effective /healthz, timeout 180 seconds,
-   and restartPolicyType ALWAYS; verify paid-plan support, PORT and overrides.
+   and restartPolicyType ALWAYS; verify paid-plan support, PORT, overlap 180,
+   draining 30 and overrides after the reviewed IaC cutover.
 2. Dispatch Production health manually once and confirm it passes.
 3. Confirm Railway's deployment_status environment is exactly armada / production
    (or set ARMADA_PRODUCTION_DEPLOYMENT_ENVIRONMENT to its actual value).
