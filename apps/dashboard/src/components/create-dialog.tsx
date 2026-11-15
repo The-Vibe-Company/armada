@@ -34,8 +34,10 @@ export function CreateDialog({
   triggerAttrs,
   onCloseAutoFocus,
   dismissible = true,
+  triggerVariant = "default",
 }: {
   /** The header button's text, beside a plus. */
+  triggerVariant?: "default" | "outline";
   label: string;
   /** The dialog's accessible name. */
   title: string;
@@ -55,7 +57,7 @@ export function CreateDialog({
   return (
     <Dialog {...(open === undefined ? {} : { open })} {...(onOpenChange ? { onOpenChange } : {})}>
       <DialogTrigger asChild>
-        <Button {...triggerAttrs}>
+        <Button variant={triggerVariant} {...triggerAttrs}>
           <PlusIcon /> {label}
         </Button>
       </DialogTrigger>
@@ -69,7 +71,7 @@ export function CreateDialog({
               onInteractOutside: (event: Event) => event.preventDefault(),
             })}
       >
-        <DialogHeader>
+        <DialogHeader className="text-left">
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
