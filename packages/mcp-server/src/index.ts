@@ -1,12 +1,10 @@
 import {
-  type AuthResult,
   type AuthStore,
   authenticate,
   handleOAuthRequest,
   type OAuthServerOptions,
   oauthChallenge,
   oauthOptionsFromEnv,
-  type Principal,
 } from "@armada/auth";
 import { VERSION } from "@armada/core";
 
@@ -48,12 +46,10 @@ export const serverInfo = {
  * `handleControlRequest` beside it for the CLI's `/api/v1/` routes.
  */
 export {
-  type AuthResult,
   type AuthStore,
   authenticate,
   handleOAuthRequest,
   type OAuthServerOptions,
   oauthChallenge,
   oauthOptionsFromEnv,
-  type Principal,
 };

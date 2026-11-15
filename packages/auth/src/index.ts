@@ -21,4 +21,4 @@ export {
   verifyEmailCode,
 } from "./supabase-auth.ts";
 export type { AuthFetch, AuthStore, ListedToken, Membership, TokenRecord } from "./types.ts";
-export { type AuthResult, authenticate, oauthChallenge, type Principal } from "./verify.ts";
+export { authenticate, oauthChallenge } from "./verify.ts";
