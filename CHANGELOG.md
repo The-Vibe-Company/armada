@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.43.0](https://github.com/The-Vibe-Company/armada/compare/v2.42.0...v2.43.0) (2026-11-15)
+
+
+### Features
+
+* **accounts:** limit concurrent agents per model account ([#2085](https://github.com/The-Vibe-Company/armada/issues/2085)) ([9fc9165](https://github.com/The-Vibe-Company/armada/commit/9fc9165f751a15d38fc0c0403337c456a55cb933))
+* **dashboard:** launch directly on hosts beside snapshots ([#2091](https://github.com/The-Vibe-Company/armada/issues/2091)) ([969dce6](https://github.com/The-Vibe-Company/armada/commit/969dce631d1cdedf3eb802be160fbbaa98ee57cc))
+* **ios:** display model provider retry status ([#2089](https://github.com/The-Vibe-Company/armada/issues/2089)) ([833bec6](https://github.com/The-Vibe-Company/armada/commit/833bec6ec7de3ad6d9bf79ab1bf08726a4b8be18))
+* **runtime:** survive model throttling and expose retry waits ([#2086](https://github.com/The-Vibe-Company/armada/issues/2086)) ([3dc7ece](https://github.com/The-Vibe-Company/armada/commit/3dc7ece24a06b25ab377d09a961d960881cbbfd0))
+
+
+### Bug Fixes
+
+* **cli:** show bare snapshot usage before account setup ([#2088](https://github.com/The-Vibe-Company/armada/issues/2088)) ([5eb45dd](https://github.com/The-Vibe-Company/armada/commit/5eb45dd2a67a7d0ab83b1bfed070a2300eb9f6db))
+
 ## [2.42.0](https://github.com/The-Vibe-Company/armada/compare/v2.41.0...v2.42.0) (2026-11-15)
 
 
