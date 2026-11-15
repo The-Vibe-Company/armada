@@ -248,6 +248,7 @@ export function createModelAuthOwnership(
           });
         return saved?.secrets ?? [];
       };
+      const nativeSource = { actor, accountId: row.credential_id, version: row.credential_version, sandboxId: row.id };
       const verifySource = (generation: string, retired: boolean) => async (tx: Sql) => {
         const current = await tx.query<{ lifecycle_generation: number }>(
           retired
@@ -285,10 +286,7 @@ export function createModelAuthOwnership(
           provider.id === "modal" ? await modalGeneration(sql, providerId, actor) : String(row.lifecycle_generation);
         const raw = await captureNative(provider, providerId, {}, quiesced);
         return state.retire({
-          actor,
-          accountId: row.credential_id,
-          version: row.credential_version,
-          sandboxId: row.id,
+          ...nativeSource,
           authJson: raw,
           generation: `${provider.id}:${quiesced ? "quiesced:" : ""}${generation}`,
           verifySource: verifySource(generation, true),
@@ -306,10 +304,7 @@ export function createModelAuthOwnership(
         const authJson = await captureNative(provider, providerId, {}, quiesced);
         try {
           await state.publish({
-            actor,
-            accountId: row.credential_id,
-            version: row.credential_version,
-            sandboxId: row.id,
+            ...nativeSource,
             generation: `${provider.id}:${quiesced ? "quiesced:" : ""}${generation}`,
             expectedRevision: saved?.revision ?? 0,
             authJson,
