@@ -4,6 +4,7 @@ import type { LaunchProviderOption } from "../packages/core/src/index.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
+import { ClientSendError, probeClientSend } from "./provider-parity-client-send.ts";
 import { isMcpProbeBinding, type McpProbeBinding, McpProbeError, prepareMcpProbe } from "./provider-parity-mcp.ts";
 import {
   isReadableVariableBinding,
@@ -70,6 +71,15 @@ const localCodes = new Set([
 ]);
 function diagnostic(error: unknown): Diagnostic {
   if (error instanceof ParityError) return error.diagnostic;
+  if (error instanceof ClientSendError)
+    return {
+      code: error.code,
+      message: `The ${error.client} client send failed (${error.code}).`,
+      ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
+      quota:
+        error.httpStatus === 429 || ["quota_exceeded", "rate_limited", "start_limit_exceeded"].includes(error.code),
+      ...(error.code === "client_send_conversation_unavailable" ? { notRun: true } : {}),
+    };
   if (error instanceof McpProbeError) return { code: error.code, message: error.code.replaceAll("_", " ") };
   if (error instanceof SecretProbeError)
     return {
@@ -106,6 +116,7 @@ const steps = {
 const harnessFeatures = { codex: "codex", "claude-code": "claude", opencode: "opencode" } as const;
 const features = [
   ...Object.keys(steps),
+  "client-send",
   "launch-default",
   "launch-snapshot",
   "resume-recall",
@@ -143,6 +154,7 @@ const accountMatrix = {
 } as const;
 
 interface Case {
+  clientSend?: boolean;
   mcpResume?: boolean;
   skillsResume?: boolean;
   subscriptionAccount?: boolean;
@@ -257,6 +269,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         !(productionBoat ? c.provider === "boat" : ["modal", "docker"].includes(c.provider)) ||
         !isHarness(c.harness) ||
         (c.subscriptionAccount !== undefined && typeof c.subscriptionAccount !== "boolean") ||
+        (c.clientSend !== undefined && typeof c.clientSend !== "boolean") ||
         (c.mcpResume !== undefined && typeof c.mcpResume !== "boolean") ||
         (c.mcp !== undefined && !isMcpProbeBinding(c.mcp)) ||
         (c.applicationSecret !== undefined && !isSecretProbeBinding(c.applicationSecret)) ||
@@ -340,7 +353,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     until = Math.min(deadline, io.now() + OBSERVATION_MS),
     observed?: (elapsedMs: number, polls: number) => void,
   ) {
-    if (feature === "subscription-account" || feature === "skills-resume" || feature === "mcp-resume")
+    if (
+      feature === "subscription-account" ||
+      feature === "skills-resume" ||
+      feature === "mcp-resume" ||
+      feature === "client-send"
+    )
       until = Math.min(until, requestDeadline ?? Number.POSITIVE_INFINITY);
     const started = io.now();
     const previousRequestDeadline = requestDeadline;
@@ -417,6 +435,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         if (!feature || feature === name) record(name, c.provider, "not-run", idleUnavailable);
       if (idleFeature) continue;
     }
+    if (!feature && c.clientSend !== true)
+      record("client-send", c.provider, "not-run", "client_send_probe_not_enabled");
+    if (feature === "client-send" || (!feature && c.clientSend === true)) {
+      for (const client of ["dashboard", "cli"])
+        record(`client-send-${client}`, c.provider, "not-run", "client_not_observed");
+    }
     const harnessFeature = c.harness === "claude" ? "claude-code" : c.harness;
     const requestedHarness = feature && Object.hasOwn(harnessFeatures, feature);
     for (const name of Object.keys(harnessFeatures))
@@ -476,6 +500,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       feature &&
       !Object.hasOwn(steps, feature) &&
       ![
+        "client-send",
         "resume-recall",
         "subscription-account",
         "usage",
@@ -527,6 +552,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
     };
     const discoveryApi = [
+      "client-send",
       "readable-variables",
       "skills",
       "skills-resume",
@@ -537,6 +563,47 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     ].includes(feature ?? "")
       ? readableApi
       : api;
+    async function verifyClientSend() {
+      if (!id) throw Error("launch_not_available");
+      const until = feature === "client-send" ? readableUntil : Math.min(deadline, io.now() + 110_000);
+      const previous = requestDeadline;
+      requestDeadline = until;
+      try {
+        const detail = await api<{ id: string; conversationIds?: string[] }>("sandbox/detail", { id });
+        if (io.now() > until) throw new ClientSendError("dashboard", "client_send_timeout");
+        const conversations = detail?.conversationIds;
+        if (
+          detail?.id !== id ||
+          !Array.isArray(conversations) ||
+          conversations.length !== 1 ||
+          typeof conversations[0] !== "string" ||
+          !conversations[0] ||
+          conversations[0].length > 512
+        )
+          throw new ClientSendError("dashboard", "client_send_conversation_unavailable");
+        await probeClientSend(
+          { id, org: c.org, origin, token: env.ARMADA_TOKEN!, conversationId: conversations[0] },
+          {
+            fetch: io.fetch,
+            now: io.now,
+            sleep: io.sleep,
+            until,
+            verified: (client) => record(`client-send-${client}`, c.provider, "pass"),
+          },
+        );
+        record("client-send", c.provider, "pass");
+      } catch (error) {
+        if (error instanceof ClientSendError) {
+          const detail = diagnostic(error),
+            status = detail.quota || detail.notRun ? "not-run" : "fail";
+          record(`client-send-${error.client}`, c.provider, status, detail.quota ? "quota" : detail.code, detail);
+          record("client-send", c.provider, status, detail.quota ? "quota" : detail.code, detail);
+        }
+        throw error;
+      } finally {
+        requestDeadline = previous;
+      }
+    }
     async function verifySkills() {
       const probe = skills;
       if (!probe || !id) throw Error("invalid_skills_binding");
@@ -1158,6 +1225,18 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
+      if (feature === "client-send") {
+        const missing = (["followupPrompts", "logs"] as const).find((name) => option!.capabilities[name] !== true);
+        if (missing) {
+          record(
+            "client-send",
+            c.provider,
+            option.capabilities[missing] === false ? "unsupported" : "not-run",
+            option.unsupportedReasons[missing] ?? `${missing}_required_for_client_send_proof`,
+          );
+          continue;
+        }
+      }
       if (feature === "mcp" || feature === "mcp-resume") {
         if (feature === "mcp-resume") {
           const missing = (["stop", "resume", "followupPrompts", "logs"] as const).find(
@@ -1332,7 +1411,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         step === "launch" ||
         (step === "stop" && !["steer", "interrupt"].includes(feature ?? "")) ||
         step === "delete" ||
-        ((feature === "github" ||
+        ((feature === "client-send" ||
+          feature === "github" ||
           feature === "launch-snapshot" ||
           feature === "templates" ||
           feature === "readable-variables" ||
@@ -1396,6 +1476,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       const operationStarted = io.now();
       try {
         if (
+          feature === "client-send" ||
           feature === "skills" ||
           feature === "skills-resume" ||
           feature === "application-secrets" ||
@@ -1662,7 +1743,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         } else {
           if (!id) throw new Error("launch_not_available");
           if (step === "send") {
-            if (feature === "mcp" || feature === "mcp-resume") {
+            if (feature === "client-send") {
+              await runTurn();
+              await verifyClientSend();
+            } else if (feature === "mcp" || feature === "mcp-resume") {
               await verifyMcp();
               if (feature === "mcp-resume") {
                 record("mcp-before-resume", c.provider, "pass");
@@ -1691,6 +1775,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             } else {
               await runTurn();
               if (io.accountProbe) await runTurn(true);
+              if (!feature && c.clientSend === true) await verifyClientSend();
               if (!feature || requestedHarness) record(harnessFeature, c.provider, "pass");
               if ((!feature || feature === "launch-snapshot") && snapshotSourceVerified)
                 record("launch-snapshot", c.provider, "pass");
@@ -1920,7 +2005,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     }
     // These probes already share the provider's lifecycle sandbox. If a
     // prerequisite prevents observation, report that cause, not implementation debt.
-    for (const name of ["resume-recall", "usage", "exact-cost", "subscription-account"]) {
+    for (const name of ["resume-recall", "usage", "exact-cost", "subscription-account", "client-send"]) {
       if (feature && feature !== name) continue;
       const cell = report[name]?.[c.provider];
       if (cell?.status !== "not-run" || !["probe_not_implemented", "resume_not_observed"].includes(cell.reason ?? ""))
@@ -1941,6 +2026,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     // Probe failures never replace cleanup. A failed journal write or lost
     // resume acknowledgement still leaves a known allocation to reconcile.
     if (
+      feature === "client-send" ||
       feature === "skills" ||
       feature === "skills-resume" ||
       feature === "application-secrets" ||
