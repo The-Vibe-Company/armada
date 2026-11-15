@@ -1130,6 +1130,29 @@ Example: armada ${resource} set ${resource === "vars" ? "APP_REGION" : "APP_PASS
 `;
 }
 
+function secretLifecycleHelp(action: "rotate" | "revoke" | "delete"): string {
+  const effect = {
+    rotate:
+      "Replace the stored value of an active application secret, not a model/provider credential.\nProvide replacement UTF-8 content only through piped stdin or --file PATH, never argv.\nInput is preserved without trimming, not echoed or cached. Protect local input files.",
+    revoke:
+      "Revoke an application secret and clear its stored value. Revocation is terminal;\na revoked secret cannot be rotated back to active. Delete it before reusing its name.",
+    delete:
+      "Mark an application secret deleted and clear its stored value, allowing name reuse.\nThis is not sandbox deletion or upstream credential revocation.",
+  }[action];
+  return `Usage: armada secrets ${action} ID --expected-version N ${action === "rotate" ? "[--file PATH] " : ""}[--org NAME|UUID] [--json]
+${effect}
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Use an ID and current version from secrets list, not a secret name.
+--expected-version is required and must be a positive safe integer. A stale version is
+refused, not retried automatically; inspect metadata before deciding to try again.
+Only administrators can mutate organization-scoped secrets; the ID determines scope.
+Human output shows metadata only; --json emits {item: metadata}, never secret values.
+Secrets have no read, reveal or export operation. No sandbox delivery or upstream
+credential rotation is performed by this command.
+Example: armada secrets ${action} SECRET_UUID --expected-version 2 ${action === "rotate" ? "--file /private/replacement.txt " : ""}--org ORG_UUID --json
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -1166,6 +1189,9 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (command === "routine update") return routineDefinitionHelp("update");
   if (command === "vars set") return vaultSetHelp("vars");
   if (command === "secrets set") return vaultSetHelp("secrets");
+  if (command === "secrets rotate") return secretLifecycleHelp("rotate");
+  if (command === "secrets revoke") return secretLifecycleHelp("revoke");
+  if (command === "secrets delete") return secretLifecycleHelp("delete");
   if (command === "completion") return completionHelp();
   if (command === "completion bash") return completionHelp("bash");
   if (command === "completion zsh") return completionHelp("zsh");
