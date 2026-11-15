@@ -129,8 +129,8 @@ export function runDescription(run: RoutineRun): string {
     (run.state === "succeeded"
       ? "Sandbox launched. Agent outcome is shown separately."
       : run.state === "admitted"
-        ? "Launch admitted; waiting for its receipt."
-        : "The launch outcome is not yet confirmed.")
+        ? "The sandbox is starting."
+        : "Armada is checking whether it started.")
   );
 }
 export type RoutineInput = {

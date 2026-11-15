@@ -3,9 +3,9 @@ import { Clock3Icon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Empty, PageHeader } from "@/components/page-header";
-import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
-import { CreateRoutineDialog, RoutineHistory, RoutineMark, RoutineToggle } from "@/components/routines";
-import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
+import { ResourceBrowser, type ResourceRow, SelectItem } from "@/components/resource-browser";
+import { CreateRoutineDialog, DeleteRoutine, RoutineHistory, RoutineToggle } from "@/components/routines";
+import { PanelSection } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { listSelectedRoutines } from "@/lib/data/routines";
@@ -16,7 +16,7 @@ import type { TemplateHeader } from "@/lib/templates";
 
 export const metadata: Metadata = { title: "Routines" };
 export const dynamic = "force-dynamic";
-const DESCRIPTION = "Scheduled template launches for your agents.";
+const DESCRIPTION = "Templates launched by themselves, on a schedule.";
 export default async function RoutinesPage({
   searchParams,
 }: {
@@ -88,34 +88,44 @@ export default async function RoutinesPage({
       key: item.id,
       name: item.name,
       search: `${item.name} ${template?.name ?? ""} ${item.scope} ${item.status}`,
-      mark: <RoutineMark />,
-      tags: <RowTag>{item.scope === "org" ? "Organization" : "Personal"}</RowTag>,
-      meta: (
-        <>
-          <div className="truncate">
-            {template?.name ?? "Unavailable template"} · revision {item.templateRevision}
-          </div>
-          <div className="mt-0.5 truncate @3xl:hidden">
-            {scheduleLabel(item)} · {dueLabel(item)}
-          </div>
-        </>
-      ),
+      meta: <span>{item.scope === "org" ? selected.org.name : "Only you"}</span>,
       state: (
-        <StateCell
-          tone={item.status === "enabled" ? "success" : item.pauseReason ? "warning" : "neutral"}
-          label={item.status === "enabled" ? "Enabled" : item.pauseReason ? "Paused after failures" : "Paused"}
-        />
-      ),
-      fact: (
-        <div className="space-y-0.5">
-          <p>{scheduleLabel(item)}</p>
-          <p className="text-xs text-muted-foreground">
-            {item.nextDueAt ? "Next " : ""}
-            {dueLabel(item)}
-          </p>
+        <div className="space-y-1 text-sm">
+          {item.pauseReason ? (
+            <>
+              <p className="text-destructive">
+                {item.pauseReason === "repeated_launch_failures"
+                  ? "Paused after 3 failed launches"
+                  : routineReasonHelp(item.pauseReason)}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Open its runs to see what failed, fix it, then turn it back on.
+              </p>
+            </>
+          ) : (
+            <>
+              <p>
+                {scheduleLabel(item)}, launches {template?.name ?? "an unavailable template"}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {item.nextDueAt ? `Next run ${dueLabel(item)}` : "Switched off"}
+              </p>
+            </>
+          )}
         </div>
       ),
-      action: manage ? <RoutineToggle item={item} orgId={orgId} /> : undefined,
+      action: (
+        <div className="flex flex-wrap items-center justify-end gap-1">
+          {manage ? (
+            <RoutineToggle item={item} orgId={orgId} />
+          ) : (
+            <span className="text-xs">{item.status === "enabled" ? "On" : "Off"}</span>
+          )}
+          <SelectItem item={item.id} variant="ghost" size="sm">
+            See runs
+          </SelectItem>
+        </div>
+      ),
       attrs: { "data-routine": item.name },
       panelAttrs: { "data-routine-panel": item.name },
       subtitle: `${scheduleLabel(item)} · ${item.scope === "org" ? "Organization" : "Personal"}`,
@@ -123,7 +133,11 @@ export default async function RoutinesPage({
         <div className="space-y-5">
           {item.pauseReason && (
             <Alert>
-              <AlertDescription>{routineReasonHelp(item.pauseReason)}</AlertDescription>
+              <AlertDescription>
+                {item.pauseReason === "repeated_launch_failures"
+                  ? "Paused after 3 failed launches. Open its runs to see what failed, fix it, then turn it back on."
+                  : routineReasonHelp(item.pauseReason)}
+              </AlertDescription>
             </Alert>
           )}
           <PanelSection title="Schedule">
@@ -147,14 +161,15 @@ export default async function RoutinesPage({
               </dd>
             </dl>
           </PanelSection>
-          <PanelSection title="Prompt">
+          <PanelSection title="Task">
             <p className="whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 text-sm">{item.prompt}</p>
           </PanelSection>
           <RoutineHistory id={item.id} orgId={orgId} version={item.version} />
           <p className="text-xs text-muted-foreground">
-            Pausing stops new admissions, not already admitted runs. A live or uncertain previous sandbox is skipped;
-            missed intervals never queue up.
+            Switching off stops new launches, not runs already starting. A run missed while the routine was off is not
+            caught up.
           </p>
+          {manage && <DeleteRoutine item={item} orgId={orgId} />}
           {!manage && (
             <p className="text-xs text-muted-foreground">Only an organization admin can change this routine.</p>
           )}
@@ -200,13 +215,13 @@ export default async function RoutinesPage({
             ? "Reload Routines to check templates before creating a schedule."
             : templates.length === 0
               ? "Create a template first, then return here to schedule it. New routines stay paused until you enable them."
-              : "Choose New to schedule a template with a prompt. New routines stay paused until you enable them."}
+              : "Choose New routine to schedule a template with a task. New routines stay paused until you enable them."}
         </Empty>
       }
       footer={
         <p className="text-xs text-muted-foreground">
           Personal routines are yours alone; organization routines are managed by admins. New routines start paused so
-          you can check them before enabling. Templates stay pinned to their selected revision.
+          you can check them before enabling. Later template changes do not apply.
         </p>
       }
     />
