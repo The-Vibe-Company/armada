@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultSessionPath, productionAuthIo } from "../src/auth-commands.ts";
+import { productionAuthIo } from "../src/auth-commands.ts";
+import { profileDirectory } from "../src/profiles.ts";
 import { run } from "../src/run.ts";
 
 test("named profiles isolate sessions, logout and preferences while retaining the legacy default", async () => {
@@ -116,7 +117,7 @@ test("a malformed profile session can be cleared or replaced through explicit-se
     const io = { out: () => {}, err: () => {} };
     const auth = productionAuthIo(io, { XDG_CONFIG_HOME: root, ARMADA_PROFILE: "staging" });
     await auth.session.write({ accessToken: "fixture", refreshToken: "fixture", expiresAt: "2099-01-01" });
-    await writeFile(defaultSessionPath(auth.env), "invalid-json");
+    await writeFile(join(profileDirectory(auth.env), "session.json"), "invalid-json");
     const calls: string[] = [];
     auth.fetch = async (url) => {
       calls.push(String(url));

@@ -482,23 +482,6 @@ function Row({
   );
 }
 
-/** A link elsewhere on the page (a summary, a footer) that opens an item's panel, like selecting its row. */
-export function ResourceSelectLink({ item, ...props }: { item: string } & Omit<ComponentProps<"a">, "href">) {
-  const { select, panelId, selectionQuery } = useBrowser();
-  return (
-    <a
-      {...props}
-      href={`?${selectionQuery ? `${selectionQuery}&` : ""}${ITEM_PARAM}=${encodeURIComponent(item)}`}
-      aria-controls={panelId}
-      onClick={(event) => {
-        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-        event.preventDefault();
-        select(item);
-      }}
-    />
-  );
-}
-
 /** What blocks launching, each a link to its fix. The page leaves it out when nothing blocks. */
 function ReadinessStrip({ blockers }: { blockers: Blocker[] }) {
   const { select } = useBrowser();

@@ -438,7 +438,6 @@ export function checkAccountChoice(
 export const USAGE_STATUSES = ["fresh", "stale", "unavailable", "error"] as const;
 /** A report the server sent but this dashboard cannot read (a newer shape): never a server status. */
 export type UsageReadStatus = (typeof USAGE_STATUSES)[number] | "unreadable";
-export type UsageStatus = (typeof USAGE_STATUSES)[number];
 /**
  * One allowance window, from #624's `Window {id, label, kind, usedPercent, resetsAt, sourceId?, observedAt?,
  * windowDurationMins?, ...}`. `id` is unique within a report; `usedPercent` null is a reading the provider reported

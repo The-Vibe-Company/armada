@@ -258,8 +258,6 @@ export type ArmadaApiOptions = {
   timeoutMs?: number;
 };
 
-export type McpControl = ReturnType<typeof createMcpControl>;
-
 /**
  * One authenticated POST to the Armada API: JSON in, a JSON object out, its `{error: {message}}` turned into a
  * {@link ControlError}. `feature` names what an older server does not offer yet.
