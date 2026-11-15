@@ -1,6 +1,6 @@
 # API error-code catalogue
 
-Audit baseline: 2026-11-10 (#829). Scope: Armada control API
+Audit baseline: 2026-11-15 (#833); original audit #829. Scope: Armada control API
 `/api/v1/` and its shared MCP tools, not OAuth protocol errors, dashboard
 PostgREST errors or provider-native exceptions. Sources:
 `packages/core/src/api-failure.ts`, `launch-error.ts`, `provider.ts`;
@@ -41,7 +41,7 @@ A LaunchError with a recorded legacy code retains that code (no message guessing
 | setup_failed, snapshot_failed, build_failed | 502 | Golden build/setup failed. |
 | provider_not_configured | 503 | Provider adapter/account unavailable. |
 | provider_mismatch | 503 direct control; 400 via shared tool | Persisted routing disagrees; do not switch providers. |
-| payment_required, rate_limited | 400 via shared tool; 503 for direct ProviderError | Resolve billing/quota or back off; surface-dependent legacy status. |
+| payment_required, rate_limited | 400 via shared tool; 402/429 respectively for direct ProviderError | Resolve billing/quota or back off; surface-dependent legacy status. |
 | unavailable | 503 via legacy shared tool | Legacy unavailable marker; typed paths use the shared categories above. |
 | unknown | 502 via shared tool | Legacy unknown marker; typed provider unknown is provider_unavailable. |
 | internal | 500 control fallback; 503 via shared tool | Server failure; never infer non-dispatch from this alone. |
@@ -96,5 +96,28 @@ Direct ProviderError mapping and shared-tool mapping differ for not_found
 internal as listed above. Do not silently change these in a refactor. The audit
 follow-up [#833](https://github.com/The-Vibe-Company/armada/issues/833) calls for
 table-driven route-contract tests before normalization, including auth email-start
-rate_limited 429 versus provider/tool 503/400, exchange/refresh VaultError 400
+rate_limited 429 versus provider/tool 429/400, exchange/refresh VaultError 400
 versus the main handler, and the auth fallback 401 versus control fallback 500.
+
+## Proposed normalization (not implemented by this baseline PR)
+
+Preserve the shared typed-category precedence, especially outcome_unknown receipts,
+and keep OAuth protocol responses out of scope. In a subsequent focused change,
+use 404 for provider not_found, 409 for sandbox_not_ready/no_running_turn, 402/429
+for billing/quota, 404 for missing_credential, 503 for provider_mismatch and 500
+for unclassified internal errors across direct and shared-tool HTTP projections.
+
+For early auth routes, retain explicit validation (400), method (405), body limit
+(413) and genuine login refusal (401), but classify typed dependency failures as
+503 dependency_unavailable and use the main Vault/Launch projections. Replace
+message-based quota detection with typed information before changing email-start.
+Do not send unknown exceptions through a generic 500 catch until actual auth
+refusals can be distinguished from operational failures.
+
+Compatibility: these are observable HTTP changes even where codes stay stable.
+Clients branching on status may change retry/backoff or login behavior; quota
+400 -> 429 and internal 503 -> 500 are especially significant. Audit CLI/iOS and
+external consumers before implementation, publish the changed matrix, and retain
+code-based client handling. Never automatically replay an ambiguous mutation.
+The table-driven baseline lives in mcp-server/test/error-contract.test.ts;
+this PR changes no production responses.
