@@ -1,3 +1,4 @@
+import { AuthError } from "@armada/auth";
 import {
   configFromFlags,
   type DockerLaunchRequest,
@@ -11,7 +12,7 @@ import {
   validateSkillPins,
 } from "@armada/core";
 import { type Args, flag, single, values } from "./args.ts";
-import { createArmadaApiClient } from "./armada-api.ts";
+import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { resolveHost } from "./host-commands.ts";
 import { parseTtl } from "./operations.ts";
@@ -111,7 +112,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   const selected = connections?.split(",").map((id) => id.trim());
   if (selected && (selected.length > 32 || selected.some((id) => !uuid.test(id))))
     throw new GoldenError("invalid_config", "Connections require 1–32 comma-separated UUIDs.");
-  const client = await createArmadaApiClient(auth);
+  const client = await createArmadaApiClient(auth, { preserveServerErrors: true });
   const hostId = selector ? await resolveHost(client, org, selector) : undefined;
   const body: DockerLaunchRequest = {
     ...(secretBindings.length ? { secrets: secretBindings } : {}),
@@ -167,9 +168,15 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       );
     return 0;
   } catch (error) {
-    io.err(
-      `Docker launch request ${requestId}. Inspect this sandbox or retry with --request-id ${requestId} and the same body; do not create a replacement while outcome is unknown.\n`,
-    );
+    // A structured refusal is definitive; transport failures, malformed receipts and
+    // server/gateway failures still need the stable request identity for recovery.
+    if (
+      !(error instanceof ArmadaApiError && error.status < 500 && error.serverCode !== "outcome_unknown") &&
+      !(error instanceof AuthError && error.code === "unauthorized")
+    )
+      io.err(
+        `Docker launch request ${requestId}. Inspect this sandbox or retry with --request-id ${requestId} and the same body; do not create a replacement while outcome is unknown.\n`,
+      );
     throw error;
   }
 }
