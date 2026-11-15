@@ -61,11 +61,11 @@ import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
 import { installNativeCwdWrapper, type NATIVE_HARNESS_PATHS } from "./native-cwd.ts";
 import { admitNativeUsage, bindNativeUsage, collectNativeUsage } from "./native-usage.ts";
 
-export const DEFAULT_BASE_URL = "https://boat.dev/api/v1";
+const DEFAULT_BASE_URL = "https://boat.dev/api/v1";
 /** boat's own default, sent explicitly so a launch never depends on it. */
-export const DEFAULT_TTL_SECONDS = 3600;
+const DEFAULT_TTL_SECONDS = 3600;
 /** The longest TTL boat accepts: 30 days. */
-export const MAX_TTL_SECONDS = 2_592_000;
+const MAX_TTL_SECONDS = 2_592_000;
 
 /** Native Boat and the runtime currently expose the same harness capabilities. */
 export const BOAT_CAPABILITIES = Object.fromEntries(
@@ -176,7 +176,7 @@ function page<T>(items: T[], pageInfo: { nextCursor: string | null; hasMore: boo
 }
 
 /** Compute-only activation port; intentionally not required by legacy managed adapters. */
-export interface BoatRuntimeHost {
+interface BoatRuntimeHost {
   resumeRuntime(sandboxId: string, ttlSeconds: number, signal?: AbortSignal): Promise<void>;
 }
 
