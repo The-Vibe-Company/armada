@@ -23,7 +23,8 @@ export function modelRateLimit(
     if (!event || event.kind !== "other" || event.type !== "armada/modelRateLimit") continue;
     const data = event.data;
     if (!data || typeof data !== "object") continue;
-    const { retryCount, delayMs, totalWaitMs } = data as Record<string, unknown>;
+    const { retryCount, delayMs, totalWaitMs, reason } = data as Record<string, unknown>;
+    const genericRetry = reason === "model_provider_retry";
     if (
       ![retryCount, delayMs, totalWaitMs].every(
         (value) => typeof value === "number" && Number.isFinite(value) && value >= 0,
@@ -44,8 +45,12 @@ export function modelRateLimit(
       retryAt,
       waiting,
       message: waiting
-        ? `Rate limited by the model provider, retrying in ${Math.ceil((retryAt - now) / 1000)} s`
-        : "Model provider rate-limit wait completed",
+        ? genericRetry
+          ? `Model provider request retrying in ${Math.ceil((retryAt - now) / 1000)} s`
+          : `Rate limited by the model provider, retrying in ${Math.ceil((retryAt - now) / 1000)} s`
+        : genericRetry
+          ? "Model provider retry wait completed"
+          : "Model provider rate-limit wait completed",
     };
   }
   return null;
