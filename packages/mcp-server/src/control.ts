@@ -463,7 +463,7 @@ async function dispatch(
     if (found.ownerId !== caller.userId)
       throw new VaultError("forbidden", "Only the sandbox owner may test its model connection.");
     if (
-      found.provider !== "modal" ||
+      !(found.provider === "modal" || (found.provider === "boat" && found.boatRuntime)) ||
       !["ready", "running"].includes(found.status) ||
       found.stopRequestedAt ||
       !found.credentialId ||
@@ -471,7 +471,7 @@ async function dispatch(
     )
       throw new VaultError(
         "conflict",
-        "Connection checks require a running, bound Modal sandbox; no resume is performed.",
+        "Connection checks require a running, bound Modal or Boat shared-runtime sandbox; no resume is performed.",
       );
     const harness = found.harness;
     if (harness !== "claude" && harness !== "codex" && harness !== "opencode")
@@ -494,6 +494,18 @@ async function dispatch(
     const provider = await options.providers.resolve(found, scoped);
     if (!provider.testModelConnection)
       throw new VaultError("unavailable", "Runtime connection checks are unavailable.");
+    if (found.provider === "boat" && found.boatRuntime) {
+      // Enqueued commands already fence idle checkpoint/stop under the owner/current epoch.
+      // Generic activity generation handoffs would revoke this non-prompt runtime session.
+      const test = await provider.testModelConnection({
+        sandboxId: found.providerSandboxId,
+        harness,
+        model,
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!isModelConnectionTestResult(test)) throw new VaultError("unavailable", "Invalid connection-test receipt.");
+      return { id: found.id, test };
+    }
     const machine = await provider.get(found.providerSandboxId);
     if (!["ready", "running"].includes(machine.state))
       throw new VaultError("conflict", "Sandbox must already be running.");

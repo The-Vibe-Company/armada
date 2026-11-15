@@ -122,6 +122,23 @@ for (const { placement, harness } of [
         await expect(serving.steer({ sandboxId: "physical", text: "unauthorized restart" })).rejects.toMatchObject({
           code: "forbidden",
         });
+        if (placement === "boat") {
+          const before = (await f.db.query("select lifecycle_generation from sandboxes where id=$1", [f.row.id]))
+            .rows[0];
+          const queued = (
+            await f.db.query("select count(*) as n from runtime_commands where sandbox_id=$1", [f.row.id])
+          ).rows[0];
+          expect(serving.testModelConnection).toBeDefined();
+          await expect(
+            serving.testModelConnection!({ sandboxId: "physical", harness, model: "deployment" }),
+          ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+          expect(
+            (await f.db.query("select lifecycle_generation from sandboxes where id=$1", [f.row.id])).rows[0],
+          ).toEqual(before);
+          expect(
+            (await f.db.query("select count(*) as n from runtime_commands where sandbox_id=$1", [f.row.id])).rows[0],
+          ).toEqual(queued);
+        }
         await expect(agent.exec({ sandboxId: "other", command: "true" })).rejects.toMatchObject({
           code: "invalid_request",
         });

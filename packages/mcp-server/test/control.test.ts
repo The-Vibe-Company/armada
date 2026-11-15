@@ -2396,6 +2396,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
       resolutions = 0;
     let receipt: unknown = { ok: false, status: 401, error: "provider_rejected", code: "invalid_api_key" };
     let expectedHarness: "codex" | "opencode" = "codex";
+    let expectedProvider: "modal" | "boat" = "modal";
     let expectedSandboxId = "modal_probe";
     let expectedModel = "deployment";
     options.providers = {
@@ -2403,17 +2404,22 @@ test("CLI/API connection checks require the owner and current bound revision, ex
         resolutions++;
         return {
           ...fakeBoat().provider,
-          id: "modal" as const,
-          get: async () => ({
-            id: expectedSandboxId,
-            name: "probe",
-            state: "ready" as const,
-            providerState: "ready",
-            labels: {},
-          }),
+          id: expectedProvider,
+          get: async () => {
+            if (expectedProvider === "boat") throw Error("Boat checks must never read the native host");
+            return {
+              id: expectedSandboxId,
+              name: "probe",
+              state: "ready" as const,
+              providerState: "ready",
+              labels: {},
+            };
+          },
           testModelConnection: async (request) => {
             calls++;
-            expect(request).toEqual({ sandboxId: expectedSandboxId, harness: expectedHarness, model: expectedModel });
+            const { signal, ...wire } = request;
+            expect(wire).toEqual({ sandboxId: expectedSandboxId, harness: expectedHarness, model: expectedModel });
+            expect(signal instanceof AbortSignal).toBe(expectedProvider === "boat");
             return receipt as import("@armada/core").ModelConnectionTestResult;
           },
         };
@@ -2521,6 +2527,47 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     receipt = { ok: true, status: 200, error: null, code: null };
     expect((await owner.run(["creds", "test", openCodeSandbox, "--model", expectedModel, "--json"])).code).toBe(0);
     expect(calls).toBe(beforeOpenCode + 1);
+    const boatGolden = (
+      await db.query<{ id: string }>(
+        "insert into goldens(org_id,owner_id,name,visibility,provider,provider_snapshot_id,config) values($1,$2,'boat-probe','private','boat','saved-probe',$3::jsonb) returning id",
+        [org.id, STAN, JSON.stringify({ repos: [], init: [] })],
+      )
+    ).rows[0]!.id;
+    const boatId = crypto.randomUUID();
+    await db.query(
+      "insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,credential_id,credential_version,boat_runtime,model,reasoning_effort) values($1,'boat','boat_probe',$2,$3,$4,'codex','ready',$5,3,true,'gpt-6.1-sol','medium')",
+      [boatId, boatGolden, org.id, STAN, account],
+    );
+    expectedProvider = "boat";
+    expectedSandboxId = "boat_probe";
+    expectedHarness = "codex";
+    expectedModel = "deployment";
+    const boatArgs = ["creds", "test", boatId, "--model", expectedModel, "--json"];
+    const generation = (
+      await db.query<{ lifecycle_generation: number }>("select lifecycle_generation from sandboxes where id=$1", [
+        boatId,
+      ])
+    ).rows[0]!.lifecycle_generation;
+    expect((await owner.run(boatArgs)).code).toBe(0);
+    expect((await other.run(boatArgs)).code).not.toBe(0);
+    expect(
+      (
+        await db.query<{ lifecycle_generation: number }>("select lifecycle_generation from sandboxes where id=$1", [
+          boatId,
+        ])
+      ).rows[0]?.lifecycle_generation,
+    ).toBe(generation);
+    const afterBoat = calls;
+    const nativeId = crypto.randomUUID();
+    await db.query(
+      "insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,credential_id,credential_version) values($1,'boat','native_probe',$2,$3,$4,'codex','ready',$5,3)",
+      [nativeId, boatGolden, org.id, STAN, account],
+    );
+    expect((await owner.run(["creds", "test", nativeId, "--model", expectedModel, "--json"])).code).not.toBe(0);
+    expect(calls).toBe(afterBoat);
+    await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [boatId]);
+    expect((await owner.run(boatArgs)).code).not.toBe(0);
+    expect(calls).toBe(afterBoat);
   });
 });
 

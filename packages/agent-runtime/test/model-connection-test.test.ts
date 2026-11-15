@@ -189,9 +189,13 @@ test("private test RPC is grant protected, refuses request destinations/builders
   };
   const grant = { token, sandboxId: "sandbox", generation: "1", expiresAt: Date.now() + 60000 };
   let calls = 0;
+  let pending: Promise<void> | undefined;
+  let entered: (() => void) | undefined;
   const execution = {
     testModelConnection: async () => {
       calls++;
+      entered?.();
+      if (pending) await pending;
       return { ok: true, status: 200, error: null, code: null };
     },
   };
@@ -236,6 +240,22 @@ test("private test RPC is grant protected, refuses request destinations/builders
     });
     expect((await builder.handle(request())).status).toBe(409);
     expect(calls).toBe(2);
+    let release!: () => void;
+    pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const checking = runner.handle(request());
+    await started;
+    expect((await runner.handle(request())).status).toBe(409);
+    release();
+    expect((await checking).status).toBe(200);
+    journal.bindIdentity(grant);
+    journal.checkpointFence(grant, "preparing");
+    expect((await runner.handle(request())).status).toBe(409);
+    expect(calls).toBe(3);
   } finally {
     journal.close();
     rmSync(root, { recursive: true, force: true });

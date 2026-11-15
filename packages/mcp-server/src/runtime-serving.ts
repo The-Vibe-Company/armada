@@ -50,7 +50,8 @@ export function createRuntimeServing(sql: Sql, key: string) {
     const agent = runtimeAgentFor(
       {
         async call(ownerId, request, options) {
-          if (request.op === "steer") {
+          // This serving adapter uses private health only for connection checks.
+          if (request.op === "steer" || request.op === "testModelConnection" || request.op === "health") {
             if (!sql.transaction) throw new VaultError("unavailable", "Transactional runtime control unavailable.");
             await sql.transaction(async (tx) => {
               const member = (
@@ -82,12 +83,36 @@ export function createRuntimeServing(sql: Sql, key: string) {
                   message: "Pinned runtime account is no longer authorized.",
                   retryable: false,
                 });
+              if (request.op === "testModelConnection" || request.op === "health") {
+                const bound = await tx.query(
+                  `select id from public.sandboxes where id=$1 and owner_id=$2 and org_id=$3
+                   and provider='boat' and boat_runtime and harness=$4
+                   and credential_id=$5 and credential_version=$6 and provider_sandbox_id=$7
+                   and status in ('ready','running') and stop_requested_at is null
+                   and deleted_at is null and expires_at>now() for update`,
+                  [
+                    sandbox.id,
+                    actor.userId,
+                    sandbox.orgId,
+                    sandbox.harness,
+                    sandbox.credentialId,
+                    sandbox.credentialVersion,
+                    sandbox.providerSandboxId,
+                  ],
+                );
+                if (!bound.rows.length)
+                  throw new VaultError("conflict", "Runtime connection binding is no longer current.");
+              }
               const local = {
                 ...tx,
                 query: tx.query.bind(tx),
                 transaction: async <T>(work: (tx: Sql) => Promise<T>) => work(tx),
               };
-              await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(ownerId, request);
+              await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
+                ownerId,
+                request,
+                options?.expectedEpoch,
+              );
             });
           }
           return commands.call(ownerId, request, options);
@@ -186,6 +211,14 @@ export function createRuntimeServing(sql: Sql, key: string) {
       },
       sandbox.boatRuntime || sandbox.runtimeTransport === "dialout"
         ? {
+            ...(sandbox.provider === "boat" && sandbox.boatRuntime
+              ? {
+                  testModelConnection(request: Parameters<NonNullable<Provider["testModelConnection"]>>[0]) {
+                    authorize();
+                    return agent.testModelConnection(request);
+                  },
+                }
+              : {}),
             interrupt(request) {
               authorize();
               return agent.interrupt(request);
