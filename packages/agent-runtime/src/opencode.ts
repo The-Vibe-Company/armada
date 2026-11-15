@@ -27,6 +27,7 @@ export class OpenCodeDriver implements Driver {
       cwd: string;
       env: Record<string, string>;
       redact(text: string): string;
+      createRetryObserver?: typeof createOpenCodeRetryObserver;
     },
   ) {
     this.acp = new AcpDriver({ ...options, args: ["acp"] });
@@ -137,7 +138,7 @@ export class OpenCodeDriver implements Driver {
     const steers: string[] = [];
     const rateLimitWait = new ModelRateLimitWait();
     const startNative = async (context: DriverContext): Promise<Turn> => {
-      const observer = await createOpenCodeRetryObserver(
+      const observer = await (this.options.createRetryObserver ?? createOpenCodeRetryObserver)(
         { ...context, request: { ...context.request, cwd: context.request.cwd ?? this.options.cwd } },
         rateLimitWait,
       );

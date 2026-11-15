@@ -1,4 +1,4 @@
-import { expect, mock, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,18 +8,17 @@ import { configureOpenCodeEndpoint } from "../src/opencode-endpoint.ts";
 
 // The local stdio/export fixture does not implement OpenCode's separate HTTP event server.
 // Observer wire/auth/filter behavior has its own fake-stream boundary test (no network).
-mock.module("../src/opencode-retry-events.ts", () => ({
-  createOpenCodeRetryObserver: async () => ({
-    args: ["acp"],
-    env: {},
-    observation: { ready: async () => {}, failed: new Promise<never>(() => {}), close: async () => {} },
-  }),
-}));
+const createRetryObserver = async () => ({
+  args: ["acp"],
+  env: {},
+  observation: { ready: async () => {}, failed: new Promise<never>(() => {}), close: async () => {} },
+});
 
 // Native exported session state is the checkpoint boundary: credentials/cache/SQLite must not be persisted.
 test("OpenCode exports sanitized history and imports it before no-text resume and follow-up", async () => {
   const root = await mkdtemp(join(tmpdir(), "opencode-state-"));
   const driver = new OpenCodeDriver({
+    createRetryObserver,
     executable: `${import.meta.dir}/fixtures/opencode.ts`,
     root: join(root, "opencode"),
     cwd: root,
@@ -162,6 +161,7 @@ test("OpenCode refuses stale history and checkpoint after an unacknowledged expo
   const root = await mkdtemp(join(tmpdir(), "opencode-export-failure-"));
   const env: Record<string, string> = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
   const driver = new OpenCodeDriver({
+    createRetryObserver,
     executable: `${import.meta.dir}/fixtures/opencode.ts`,
     root: join(root, "opencode"),
     cwd: root,
@@ -195,6 +195,7 @@ test("OpenCode meters every new native assistant step once, excludes loaded hist
   const root = await mkdtemp(join(tmpdir(), "opencode-turn-tokens-"));
   const env = { EXPORT_STAGE: "1", PATH: process.env.PATH ?? "/usr/bin:/bin" };
   const driver = new OpenCodeDriver({
+    createRetryObserver,
     executable: `${import.meta.dir}/fixtures/opencode.ts`,
     root,
     cwd: root,
@@ -252,6 +253,7 @@ test.each([
   const root = await mkdtemp(join(tmpdir(), "opencode-shell-proof-"));
   const env = { EXPORT_STAGE: "1", EXPORT_TOOLS: mode, PATH: process.env.PATH ?? "/usr/bin:/bin" };
   const driver = new OpenCodeDriver({
+    createRetryObserver,
     executable: `${import.meta.dir}/fixtures/opencode.ts`,
     root,
     cwd: root,
@@ -319,6 +321,7 @@ test.each([
   const root = await mkdtemp(join(tmpdir(), "opencode-mcp-proof-"));
   const env = { EXPORT_STAGE: "1", EXPORT_MCP: mode, PATH: process.env.PATH ?? "/usr/bin:/bin" };
   const driver = new OpenCodeDriver({
+    createRetryObserver,
     executable: `${import.meta.dir}/fixtures/opencode.ts`,
     root,
     cwd: root,

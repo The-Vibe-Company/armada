@@ -1,4 +1,4 @@
-import { expect, jest, mock, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,13 +8,11 @@ import type { DriverEvent } from "../src/protocol.ts";
 
 // The local stdio/export fixture does not implement OpenCode's separate HTTP event server.
 // Observer wire/auth/filter behavior has its own fake-stream boundary test (no network).
-mock.module("../src/opencode-retry-events.ts", () => ({
-  createOpenCodeRetryObserver: async () => ({
-    args: ["acp"],
-    env: {},
-    observation: { ready: async () => {}, failed: new Promise<never>(() => {}), close: async () => {} },
-  }),
-}));
+const createRetryObserver = async () => ({
+  args: ["acp"],
+  env: {},
+  observation: { ready: async () => {}, failed: new Promise<never>(() => {}), close: async () => {} },
+});
 
 for (const kind of ["claude", "opencode"] as const)
   for (const status of [429, 529]) {
@@ -31,6 +29,7 @@ for (const kind of ["claude", "opencode"] as const)
               },
             })
           : new OpenCodeDriver({
+              createRetryObserver,
               executable: `${import.meta.dir}/fixtures/opencode.ts`,
               root: join(root, "native"),
               cwd: root,
@@ -93,6 +92,7 @@ test("Claude native API retries are reported without starting an Armada backoff"
 test("OpenCode does not reuse a preceding throttle when the resumed process fails before new output", async () => {
   const root = await mkdtemp(join(tmpdir(), "model-retry-stale-"));
   const driver = new OpenCodeDriver({
+    createRetryObserver,
     executable: `${import.meta.dir}/fixtures/opencode.ts`,
     root: join(root, "native"),
     cwd: root,

@@ -98,7 +98,7 @@ async function readOpenCodeRetryEvents(
   }
 }
 
-async function loopbackPort(): Promise<number> {
+async function loopbackPort(createServer: typeof import("node:net").createServer): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
     server.once("error", reject);
@@ -118,19 +118,20 @@ async function loopbackPort(): Promise<number> {
 export async function createOpenCodeRetryObserver(
   c: DriverContext,
   waits: ModelRateLimitWait,
+  transport = { Agent, createConnection, createServer, request: httpRequest },
 ): Promise<{
   args: string[];
   env: Record<string, string>;
   observation: AcpObservation;
 }> {
-  const port = await loopbackPort();
+  const port = await loopbackPort(transport.createServer);
   c.signal.throwIfAborted();
   const password = crypto.randomUUID();
   const controller = new AbortController();
   // Never use fetch/globalAgent here: readable account configuration may set HTTP_PROXY.
   // The private agent dials only this process's loopback server, irrespective of proxy environment.
-  const agent = new Agent({ keepAlive: false });
-  agent.createConnection = () => createConnection({ host: "127.0.0.1", port });
+  const agent = new transport.Agent({ keepAlive: false });
+  agent.createConnection = () => transport.createConnection({ host: "127.0.0.1", port });
   let request: ClientRequest | undefined;
   let incoming: IncomingMessage | undefined;
   let rejectFailure!: (error: Error) => void;
@@ -145,11 +146,12 @@ export async function createOpenCodeRetryObserver(
     failed,
     ready: async (sessionId) => {
       const timer = setTimeout(abort, 5000);
+      timer.unref?.();
       try {
         const url = new URL(`http://127.0.0.1:${port}/event`);
         url.searchParams.set("directory", c.request.cwd ?? "");
         const response = await new Promise<import("node:http").IncomingMessage>((resolve, reject) => {
-          request = httpRequest(
+          request = transport.request(
             {
               hostname: "127.0.0.1",
               port,
