@@ -1,13 +1,14 @@
-import { afterEach, expect, jest, mock, setSystemTime, test } from "bun:test";
+import { afterEach, expect, jest, setSystemTime, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { IncomingMessage, RequestOptions } from "node:http";
 import type { Server } from "node:net";
 import { PassThrough } from "node:stream";
 import { ModelRateLimitWait } from "../src/model-rate-limit.ts";
+import { createOpenCodeRetryObserver } from "../src/opencode-retry-observer.ts";
 import type { DriverContext, DriverEvent } from "../src/protocol.ts";
 
 // Port reservation is OS wiring, not this protocol test's contract. No network is opened.
-mock.module("node:net", () => ({
+const net = {
   createConnection: (options: unknown) => {
     dialled = options;
     return {};
@@ -25,10 +26,11 @@ mock.module("node:net", () => ({
         closed?.();
       },
     }) as unknown as Server,
-}));
+};
 let dialled: unknown;
 let options: RequestOptions | undefined;
 let requests = 0;
+const responses = new Set<IncomingMessage>();
 let activeRequest: EventEmitter & { destroyed: boolean; end(): void; destroy(): void };
 let handler: (reply: (response: IncomingMessage) => void) => void;
 class PrivateAgent {
@@ -38,7 +40,7 @@ class PrivateAgent {
     this.destroyed = true;
   }
 }
-mock.module("node:http", () => ({
+const http = {
   Agent: PrivateAgent,
   request: (input: RequestOptions, reply: (response: IncomingMessage) => void) => {
     options = input;
@@ -62,11 +64,17 @@ mock.module("node:http", () => ({
     activeRequest = ownedRequest;
     return ownedRequest;
   },
-}));
-const response = (statusCode = 200, headers: Record<string, string> = { "content-type": "text/event-stream" }) =>
-  Object.assign(new PassThrough(), { statusCode, headers }) as unknown as IncomingMessage;
-const { createOpenCodeRetryObserver } = await import("../src/opencode-retry-observer.ts");
+};
+const response = (statusCode = 200, headers: Record<string, string> = { "content-type": "text/event-stream" }) => {
+  const stream = Object.assign(new PassThrough(), { statusCode, headers }) as unknown as IncomingMessage;
+  responses.add(stream);
+  return stream;
+};
+const transport = { ...net, ...http } as unknown as NonNullable<Parameters<typeof createOpenCodeRetryObserver>[2]>;
 afterEach(() => {
+  for (const stream of responses) stream.destroy();
+  responses.clear();
+  activeRequest?.destroy();
   setSystemTime();
   options = undefined;
   requests = 0;
@@ -89,7 +97,7 @@ test("OpenCode native SSE waits are authenticated, session scoped, deduplicated 
   handler = (reply) => {
     reply(incoming);
   };
-  const observer = await createOpenCodeRetryObserver(context, new ModelRateLimitWait());
+  const observer = await createOpenCodeRetryObserver(context, new ModelRateLimitWait(), transport);
   try {
     await observer.observation.ready("main");
     expect(options?.hostname).toBe("127.0.0.1");
@@ -187,7 +195,7 @@ test("OpenCode native event-stream loss is explicit instead of silently hiding l
     reply(incoming);
     incoming.push(null);
   };
-  const observer = await createOpenCodeRetryObserver(context, new ModelRateLimitWait());
+  const observer = await createOpenCodeRetryObserver(context, new ModelRateLimitWait(), transport);
   try {
     await observer.observation.ready("main");
     await expect(observer.observation.failed).rejects.toMatchObject({ code: "harness_process_lost" });
@@ -206,7 +214,7 @@ test("OpenCode observer setup failures do not expose local transport details", a
   handler = () => {
     activeRequest.emit("error", new Error("private_transport_detail"));
   };
-  const observer = await createOpenCodeRetryObserver(context, new ModelRateLimitWait());
+  const observer = await createOpenCodeRetryObserver(context, new ModelRateLimitWait(), transport);
   try {
     await expect(observer.observation.ready("main")).rejects.toMatchObject({
       code: "harness_process_lost",
@@ -232,7 +240,7 @@ test("OpenCode event credentials are not forwarded to an HTTP redirect destinati
     } as Record<string, string>);
     reply(incoming);
   };
-  const observer = await createOpenCodeRetryObserver(context, new ModelRateLimitWait());
+  const observer = await createOpenCodeRetryObserver(context, new ModelRateLimitWait(), transport);
   try {
     await expect(observer.observation.ready("main")).rejects.toMatchObject({ code: "harness_process_lost" });
     expect(requests).toBe(1);
@@ -251,7 +259,7 @@ test("OpenCode event setup deadline aborts a stalled direct connection with a fa
     emit: () => {},
   };
   handler = () => {};
-  const observer = await createOpenCodeRetryObserver(context, new ModelRateLimitWait());
+  const observer = await createOpenCodeRetryObserver(context, new ModelRateLimitWait(), transport);
   try {
     const pending = observer.observation.ready("main");
     jest.advanceTimersByTime(5000);
