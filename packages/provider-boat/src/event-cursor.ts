@@ -1,6 +1,6 @@
 import { ProviderError } from "@armada/core";
 
-export interface PendingEvent {
+interface PendingEvent {
   id: string;
   before?: string | undefined;
   fingerprint: string;

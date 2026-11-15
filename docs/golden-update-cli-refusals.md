@@ -9,6 +9,16 @@ which binary the owner ran.
 Command examples below use the current `snapshot` command. Older CLI versions, including 2.29.0,
 use `golden` instead (snapshot was called golden in older versions).
 Historical diagnostic families in the table retain their original wording.
+Current clients additionally require `--replace` with `--repo` or `--config`;
+the 2.29.0 behavior below is historical, not an accepted current command form.
+For an intentional full replacement, supply the complete desired config:
+
+```sh
+armada snapshot update NAME --replace --config snapshot.json --provider modal --org ORG_UUID
+```
+
+Do not use replacement to bypass an uncertain earlier build; recover its saved
+request key/job first.
 
 **--repo replaces the entire list.** It does not append. With five stored
 repositories, update NAME --repo https://github.com/owner/new.git requests a
@@ -25,7 +35,7 @@ client-side list/read/overwrite fallback:
 
 Repeat --add-repo for multiple additions. Do not combine it with --repo, --config,
 --init or --setup. To change an existing branch, directory or init command, use a
-complete --config intentionally. Re-adding the same canonical repository and
+complete --config with --replace intentionally. Re-adding the same canonical repository and
 branch is a no-op in the merged config, enabling idempotent receipt recovery.
 Conflicting branches/directories or exceeding the 16-repository total refuse
 before admission rather than discarding old entries.
