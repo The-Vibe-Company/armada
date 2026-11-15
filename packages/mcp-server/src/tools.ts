@@ -729,6 +729,13 @@ export function createArmadaServer(context: ToolContext, version: string, option
       provider: await context.provider(found),
     };
   };
+  const turnCredentials = (found: SandboxView) =>
+    context.launchCredentials.resolve(
+      { userId: caller.userId, orgId: found.orgId, role: "member" },
+      found.harness,
+      found.credentialId ?? undefined,
+      found.credentialVersion ?? undefined,
+    );
   const prepareConnections = (provider: Provider, found: SandboxView, role: MemberRole) =>
     context.connections?.prepare?.(provider, found, { userId: caller.userId, orgId: found.orgId, role });
   const liveControl = async (args: { id: string; request_id?: unknown }) => {
@@ -1657,17 +1664,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
     if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
     let pricingContext: unknown;
     if (found.credentialId)
-      pricingContext =
-        (
-          await measure("send_credentials", () =>
-            context.launchCredentials.resolve(
-              { userId: caller.userId, orgId: found.orgId, role: "member" },
-              found.harness,
-              found.credentialId ?? undefined,
-              found.credentialVersion ?? undefined,
-            ),
-          )
-        ).usagePricing ?? null;
+      pricingContext = (await measure("send_credentials", () => turnCredentials(found))).usagePricing ?? null;
     if (data.sandboxes.captureUsagePricingContext)
       pricingContext = await data.sandboxes.captureUsagePricingContext(found.id);
     const stored =
@@ -1822,13 +1819,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       const { sandbox: found, provider, enrolled } = await liveControl(args);
       const delivery = provider.capabilities[found.harness]?.steer ?? "none";
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
-      if (!enrolled && delivery === "restart" && found.credentialId)
-        await context.launchCredentials.resolve(
-          { userId: caller.userId, orgId: found.orgId, role: "member" },
-          found.harness,
-          found.credentialId,
-          found.credentialVersion ?? undefined,
-        );
+      if (!enrolled && delivery === "restart" && found.credentialId) await turnCredentials(found);
       const dispatchSteer = () =>
         provider
           .steer({
