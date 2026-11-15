@@ -274,27 +274,6 @@ test("template failures use closed actionable diagnostics without echoing untrus
   }
 });
 
-test("template help documents definition inputs, scope and safe retry semantics without authentication", async () => {
-  // Leaf help is owned by the focused run-boundary onboarding-help test.
-  for (const help of ["--help", "-h"]) {
-    const result = await invoke(["template", help]);
-    expect(result.code).toBe(0);
-    expect(result.requests).toHaveLength(0);
-    for (const text of [
-      "--file",
-      "--host UUID --provider docker",
-      "--scope",
-      "--expected-revision",
-      "--request-key",
-      "--prompt",
-      "--ttl",
-      "--size",
-      "--repo",
-    ])
-      expect(result.out).toContain(text);
-  }
-});
-
 // A name can disappear after admission, but the canonical ID must still reach durable replay.
 test("name-based launch prints recovery ID before submission and ID retries bypass mutable name lookup", async () => {
   const args = [

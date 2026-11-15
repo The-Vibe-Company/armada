@@ -1,5 +1,27 @@
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
+  template: `Usage: armada template <command> [arguments]
+Manage reusable launch definitions and their immutable revisions.
+
+  create   Create a template from a JSON definition file or definition flags.
+  list     List visible IDs, names, scopes, status and current revisions.
+  get      Inspect metadata or a selected revision's definition with --json.
+  publish  Publish a complete new revision, guarded by --expected-revision.
+  delete   Mark a template deleted, guarded by --expected-revision.
+  launch   Launch a revision using a saved --request-key for safe retries.
+
+Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
+NAME|UUID or armada org use. Templates may be personal or organization-scoped;
+organization-scoped writes require administrator permission.
+Use IDs from template list when exact names collide across scopes.
+Definitions store variable/secret references; do not put raw secret values in them.
+References resolve into frozen manifests at launch, not publication.
+After an unknown launch outcome, keep the same request key and body; do not start
+a new attempt. See template launch --help for resolved-ID recovery.
+Inspect a command's full options with armada template <command> --help.
+Example: armada template list --org ORG_UUID --json
+Example: armada template get TEMPLATE_UUID --revision 1 --org ORG_UUID --json
+`,
   "template launch": `Usage: armada template launch NAME|ID --request-key KEY [--revision N] [options]
 Launch an existing template, resolving its references into a frozen launch manifest.
 Requires Armada login or ARMADA_TOKEN; select an organization with --org NAME|UUID

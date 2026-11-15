@@ -6,6 +6,7 @@ test("nested onboarding help is focused and performs no authenticated or secret 
   for (const command of [
     "launch",
     "host",
+    "template",
     "template list",
     "template get",
     "template delete",
@@ -201,6 +202,7 @@ test("help detection leaves malformed operations and literal payloads to their p
     ["template", "delete", "--", "--help"],
     ["template", "get", "--revision", "-h"],
     ["template", "list", "--", "--help"],
+    ["template", "--", "--help"],
     ["org", "setup", "--", "--help"],
     ["snapshot", "size-policy", "starter", "--help"],
     ["snapshot", "size-policy", "--file", "-h"],
