@@ -672,6 +672,8 @@ export function createArmadaServer(context: ToolContext, version: string, option
       provider: await context.provider(found),
     };
   };
+  const prepareConnections = (provider: Provider, found: SandboxView, role: MemberRole) =>
+    context.connections?.prepare?.(provider, found, { userId: caller.userId, orgId: found.orgId, role });
   const liveControl = async (args: { id: string; request_id?: unknown }) => {
     if (args.request_id !== undefined)
       throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
@@ -1731,12 +1733,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         found,
         { clearTaskOutcome: true },
         async () => {
-          if (!enrolled)
-            await context.connections?.prepare?.(provider, found, {
-              userId: caller.userId,
-              orgId: found.orgId,
-              role: member.role,
-            });
+          await prepareConnections(provider, found, member.role);
 
           const receipt = await dispatchSteer();
           acknowledged = true;
@@ -1855,12 +1852,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       const execute = async () => {
         const membership = caller.orgs.find((member) => member.orgId === found.orgId);
         if (!membership) throw new ToolError("forbidden", "No current organization membership.");
-        if (!enrolled)
-          await context.connections?.prepare?.(provider, found, {
-            userId: caller.userId,
-            orgId: found.orgId,
-            role: membership.role,
-          });
+        if (!enrolled) await prepareConnections(provider, found, membership.role);
         const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
         const readNativeSecrets = (phase: "before" | "after") =>
           context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId, phase);
