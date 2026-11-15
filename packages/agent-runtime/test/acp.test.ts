@@ -98,3 +98,46 @@ test("ACP refuses another protocol before dispatching a prompt", async () => {
     await driver.close();
   }
 });
+
+// A failed native telemetry channel cannot silently leave the active prompt running without wait visibility.
+test("ACP observes native events before prompt and releases the observer when its stream fails", async () => {
+  let rejectFailure!: (error: Error) => void;
+  const failed = new Promise<never>((_, reject) => {
+    rejectFailure = reject;
+  });
+  let ready = false;
+  let closed = false;
+  const driver = new AcpDriver({
+    executable: process.execPath,
+    args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
+    cwd: "/tmp",
+    env: {},
+    observation: {
+      ready: async (sessionId) => {
+        expect(sessionId).toBe("session-1");
+        ready = true;
+      },
+      failed,
+      close: async () => {
+        closed = true;
+      },
+    },
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "opencode", text: "hold" },
+      signal: new AbortController().signal,
+      session: () => {},
+      emit: (event) => {
+        if (event.kind === "message") {
+          expect(ready).toBe(true);
+          rejectFailure(new Error("observer_lost"));
+        }
+      },
+    });
+    await expect(turn.done).rejects.toThrow("observer_lost");
+    expect(closed).toBe(true);
+  } finally {
+    await driver.close();
+  }
+});

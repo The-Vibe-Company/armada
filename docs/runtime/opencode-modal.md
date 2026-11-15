@@ -7,6 +7,27 @@ harness catalog drives validators and generated iOS choices. Codex and Claude
 retain their native drivers; OpenCode uses one ACP v1 transport, not a parallel
 V2 server/SDK integration. Modal retains its existing authenticated tunnel.
 
+## Model-provider retry visibility
+
+OpenCode owns retries while a model request is in flight. Its pinned ACP adapter
+omits retry-status notifications, so each runtime-owned ACP process also starts
+an authenticated, loopback-only HTTP listener. Armada subscribes to that process's
+`/event` stream before sending the prompt and projects the selected session's
+retry waits into `armada/modelRateLimit`. Native retry events omit HTTP status;
+recognized rate-limit/overload messages use rate-limit wording, while every other
+retry remains visible as a generic model-provider request retry. It never starts another
+request or sleeps on behalf of an in-flight native retry. CLI status/logs and the
+sandbox page display the existing wait/count/total fields.
+
+The listener uses a fresh per-process password delivered only in the child
+environment; neither its credentials nor raw provider error text enter the
+journal. The observer closes with the turn. An unavailable or lost observer is
+an explicit harness failure rather than silently losing retry visibility.
+Terminal retries still use native export evidence and the shared bounded backoff.
+This local transport does not establish provider lifecycle acceptance: on staging,
+induce a provider 429/529 and verify visible waits, same-turn continuation, and
+interrupt/steer behavior without doubled requests.
+
 ## Connections and launch
 
 A named `opencode` credential is sealed by the existing vault encryption. A

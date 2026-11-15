@@ -1,10 +1,20 @@
-import { expect, jest, test } from "bun:test";
+import { expect, jest, mock, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeDriver } from "../src/claude.ts";
 import { OpenCodeDriver } from "../src/opencode.ts";
 import type { DriverEvent } from "../src/protocol.ts";
+
+// The local stdio/export fixture does not implement OpenCode's separate HTTP event server.
+// Observer wire/auth/filter behavior has its own fake-stream boundary test (no network).
+mock.module("../src/opencode-retry-events.ts", () => ({
+  createOpenCodeRetryObserver: async () => ({
+    args: ["acp"],
+    env: {},
+    observation: { ready: async () => {}, failed: new Promise<never>(() => {}), close: async () => {} },
+  }),
+}));
 
 for (const kind of ["claude", "opencode"] as const)
   for (const status of [429, 529]) {

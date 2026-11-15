@@ -8,10 +8,24 @@ import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protoco
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): value is ObjectValue =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+export interface AcpObservation {
+  ready(sessionId: string): Promise<void>;
+  failed: Promise<never>;
+  close(): Promise<void>;
+}
+
 /** ACP v1 over stdio. One process per turn; session/load preserves the native conversation on subsequent turns. */
 export class AcpDriver implements Driver {
   private children = new ChildOwner();
-  constructor(private options: { executable: string; cwd: string; env: Record<string, string>; args?: string[] }) {}
+  constructor(
+    private options: {
+      executable: string;
+      cwd: string;
+      env: Record<string, string>;
+      args?: string[];
+      observation?: AcpObservation;
+    },
+  ) {}
   configureReadableVariables(variables: Record<string, string>): void {
     Object.assign(this.options.env, variables);
   }
@@ -255,6 +269,7 @@ export class AcpDriver implements Driver {
       }
       c.session(sessionId);
       if (!resumeOnly && c.request.model) await rpc("session/set_model", { sessionId, modelId: c.request.model });
+      if (!resumeOnly) await this.options.observation?.ready(sessionId);
       replay = false;
     })();
     const done = (async (): Promise<"finished" | "interrupted"> => {
@@ -264,7 +279,9 @@ export class AcpDriver implements Driver {
         current = begin(c.request.text);
         for (;;) {
           const active: Promise<ObjectValue> = current;
-          const response = await active;
+          const response = await (this.options.observation
+            ? Promise.race([active, this.options.observation.failed])
+            : active);
           // A restart replaces the running native turn but remains the same Armada prompt.
           if (current !== active) continue;
           usage(response);
@@ -293,7 +310,11 @@ export class AcpDriver implements Driver {
         stopped = true;
         failure();
         c.signal.removeEventListener("abort", abort);
-        await this.children.release(child);
+        try {
+          await this.options.observation?.close();
+        } finally {
+          await this.children.release(child);
+        }
       }
     })();
     return {
@@ -337,6 +358,10 @@ export class AcpDriver implements Driver {
     };
   }
   async close() {
-    await this.children.close();
+    try {
+      await this.options.observation?.close();
+    } finally {
+      await this.children.close();
+    }
   }
 }

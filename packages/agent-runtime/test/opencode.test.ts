@@ -1,10 +1,20 @@
-import { expect, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "@armada/core";
 import { createRedactor, OpenCodeDriver } from "../src/index.ts";
 import { configureOpenCodeEndpoint } from "../src/opencode-endpoint.ts";
+
+// The local stdio/export fixture does not implement OpenCode's separate HTTP event server.
+// Observer wire/auth/filter behavior has its own fake-stream boundary test (no network).
+mock.module("../src/opencode-retry-events.ts", () => ({
+  createOpenCodeRetryObserver: async () => ({
+    args: ["acp"],
+    env: {},
+    observation: { ready: async () => {}, failed: new Promise<never>(() => {}), close: async () => {} },
+  }),
+}));
 
 // Native exported session state is the checkpoint boundary: credentials/cache/SQLite must not be persisted.
 test("OpenCode exports sanitized history and imports it before no-text resume and follow-up", async () => {

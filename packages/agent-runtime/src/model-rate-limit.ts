@@ -29,7 +29,7 @@ export class ModelRateLimitWait {
     this.observe(c, delayMs);
     await sleep(delayMs, undefined, { signal: AbortSignal.any([c.signal, this.controller.signal]) });
   }
-  observe(c: DriverContext, delayMs: number): void {
+  observe(c: DriverContext, delayMs: number, reason?: "model_provider_retry"): void {
     this.count++;
     this.total += delayMs;
     c.emit({
@@ -39,7 +39,11 @@ export class ModelRateLimitWait {
         retryCount: this.count,
         delayMs,
         totalWaitMs: this.total,
-        message: `Rate limited by the model provider, retrying in ${Math.ceil(delayMs / 1000)} s`,
+        ...(reason ? { reason } : {}),
+        message:
+          reason === "model_provider_retry"
+            ? `Model provider request retrying in ${Math.ceil(delayMs / 1000)} s`
+            : `Rate limited by the model provider, retrying in ${Math.ceil(delayMs / 1000)} s`,
       },
     });
   }

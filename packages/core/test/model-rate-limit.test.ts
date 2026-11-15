@@ -54,3 +54,22 @@ test("malformed backoff telemetry cannot become a visible wait", () => {
   };
   expect(modelRateLimit([event], "turn", 2000)).toBeNull();
 });
+
+test("an ambiguous native model retry stays visible without claiming a provider rate limit", () => {
+  const event: AgentEvent = {
+    id: "retry",
+    at: 1000,
+    promptId: "turn",
+    kind: "other",
+    type: "armada/modelRateLimit",
+    data: { retryCount: 1, delayMs: 20000, totalWaitMs: 20000, reason: "model_provider_retry" },
+  };
+  expect(modelRateLimit([event], "turn", 2000)).toMatchObject({
+    waiting: true,
+    message: "Model provider request retrying in 19 s",
+  });
+  expect(modelRateLimit([event], "turn", 21000)).toMatchObject({
+    waiting: false,
+    message: "Model provider retry wait completed",
+  });
+});

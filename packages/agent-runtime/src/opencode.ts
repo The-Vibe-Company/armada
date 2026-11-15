@@ -12,12 +12,14 @@ import {
   exportedTurnUsage,
   isOpenCodeRecord as record,
 } from "./opencode-export-observations.ts";
+import { createOpenCodeRetryObserver } from "./opencode-retry-events.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 
 /** Preserve native sessions as sanitized vendor JSON exports, never the SQLite database/auth/cache. */
 export class OpenCodeDriver implements Driver {
   private acp: AcpDriver;
   private children = new ChildOwner();
+  private nativeDrivers = new Set<AcpDriver>();
   constructor(
     private options: {
       executable: string;
@@ -134,12 +136,49 @@ export class OpenCodeDriver implements Driver {
     let waiting = false;
     const steers: string[] = [];
     const rateLimitWait = new ModelRateLimitWait();
+    const startNative = async (context: DriverContext): Promise<Turn> => {
+      const observer = await createOpenCodeRetryObserver(
+        { ...context, request: { ...context.request, cwd: context.request.cwd ?? this.options.cwd } },
+        rateLimitWait,
+      );
+      const driver = new AcpDriver({
+        ...this.options,
+        args: observer.args,
+        env: { ...this.options.env, ...observer.env },
+        observation: observer.observation,
+      });
+      this.nativeDrivers.add(driver);
+      try {
+        const turn = driver.start(context);
+        return {
+          ...turn,
+          done: turn.done.finally(async () => {
+            try {
+              await driver.close();
+            } finally {
+              this.nativeDrivers.delete(driver);
+            }
+          }),
+        };
+      } catch (error) {
+        try {
+          await observer.observation.close();
+        } finally {
+          try {
+            await driver.close();
+          } finally {
+            this.nativeDrivers.delete(driver);
+          }
+        }
+        throw error;
+      }
+    };
     const ready = (async () => {
       const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
       const baseline = sessionId ? await this.restore(sessionId, cwd) : new Set<string>();
       c.signal.throwIfAborted();
       await mkdir(join(this.options.root, "sessions"), { recursive: true, mode: 0o700 });
-      native = this.acp.start({
+      native = await startNative({
         ...c,
         emit: (event) => {
           if (event.kind !== "other" || event.type !== "armada/turnUsage") c.emit(event);
@@ -196,7 +235,7 @@ export class OpenCodeDriver implements Driver {
             }
             if (interrupted || c.signal.aborted) return "interrupted" as const;
             // The export has cleared the pending marker; ACP loads the same native conversation.
-            native = this.acp.start({
+            native = await startNative({
               ...c,
               sessionId,
               request: {
@@ -240,6 +279,7 @@ export class OpenCodeDriver implements Driver {
   }
   async close() {
     await this.acp.close();
+    await Promise.all([...this.nativeDrivers].map((driver) => driver.close()));
     await this.children.close();
   }
 }
