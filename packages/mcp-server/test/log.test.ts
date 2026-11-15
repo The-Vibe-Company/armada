@@ -5,6 +5,7 @@ test.each([
   ["Authorization: BeArEr opaque-value", "Authorization: BeArEr ***"],
   ["jwt eyJhbGciOiJIUzI1NiJ9.payload.signature rejected", "jwt *** rejected"],
   ["postgres://user:password@db:5432/name failed", "postgres://***@db:5432/name failed"],
+  ["postgres://user:pass@private_suffix@db:5432/name failed", "postgres://***@db:5432/name failed"],
   ["armada_access_abcdefgh sk-abcdefgh sb_abcdefgh", "*** *** ***"],
 ])("preserves log-specific masking: %s", (input, expected) => {
   expect(redactForLog(input)).toBe(expected);

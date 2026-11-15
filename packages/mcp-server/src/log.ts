@@ -10,7 +10,7 @@ const LIMIT = 600;
 export function redactForLog(text: string): string {
   const masked = redactKnownTokens(text)
     .replace(/\b(bearer\s+)\S+/gi, "$1***")
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]*@/gi, (match) => `${match.slice(0, match.indexOf("://") + 3)}***@`)
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/]*@/gi, (match) => `${match.slice(0, match.indexOf("://") + 3)}***@`)
     .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, "***")
     .replace(/\barmada_[a-z]+_[\w-]{8,}/gi, "***")
     .replace(/\b(?:sk|sb)[-_][\w-]{8,}/gi, "***");
