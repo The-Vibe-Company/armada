@@ -172,7 +172,6 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     let (client, transport) = try await signedIn([
         .init(status: 200, body: #"{"events":[],"cursor":"frontier","olderCursor":"o9","hasMore":true,"settled":true}"#),
         .init(status: 200, body: #"{"events":[],"cursor":"o9-next","olderCursor":"o1","hasMore":false,"settled":true}"#),
-        .init(status: 400, body: #"{"error":{"code":"invalid_request","message":"An event exceeds maxBytes; increase the event page budget."}}"#),
         .init(status: 200, body: #"{"events":[],"cursor":"frontier","hasMore":false,"settled":true}"#)
     ])
     let latest = try await client.sandboxEvents(id: sandboxID, backward: true)
@@ -184,13 +183,23 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     let requests = Array(await transport.requests.dropFirst(2))
     #expect(try body(requests[0]) == ["id": sandboxID, "org": "org-a", "direction": "backward"])
     #expect(try body(requests[1]) == ["id": sandboxID, "org": "org-a", "cursor": "o9", "direction": "backward"])
-    // A page refused because one event exceeds the default budget is read again with the largest.
     let next = try await client.sandboxEvents(id: sandboxID, cursor: "frontier")
     #expect(next.cursor == "frontier")
-    let retried = Array(await transport.requests.suffix(2))
-    #expect(try body(retried[0]) == ["id": sandboxID, "org": "org-a", "cursor": "frontier"])
-    let raised = try JSONSerialization.jsonObject(with: retried[1].httpBody ?? Data()) as? NSDictionary
-    #expect(raised == ["id": sandboxID, "org": "org-a", "cursor": "frontier", "maxBytes": 1_048_576])
+    let allReads = Array(await transport.requests.dropFirst(2))
+    #expect(allReads.count == 3)
+    #expect(try body(allReads[2]) == ["id": sandboxID, "org": "org-a", "cursor": "frontier"])
+}
+
+@Test func anInvalidHistoryReadIsNotRetriedWithAnotherBudget() async throws {
+    let (client, transport) = try await signedIn([
+        .init(status: 400, body: #"{"error":{"code":"invalid_request","message":"Invalid cursor."}}"#)
+    ])
+    await #expect(throws: ArmadaServerFailure(cause: .http(400), explanation: "Invalid cursor.")) {
+        _ = try await client.sandboxEvents(id: sandboxID, cursor: "invalid")
+    }
+    let reads = Array(await transport.requests.dropFirst(2))
+    #expect(reads.count == 1)
+    #expect(try body(reads[0]) == ["id": sandboxID, "org": "org-a", "cursor": "invalid"])
 }
 
 @Test func closedInterruptionReasonsOfferManualResendWithoutBlockingAdmission() throws {
