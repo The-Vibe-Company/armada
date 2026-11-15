@@ -1691,3 +1691,35 @@ This does not prove OAuth renewal itself or denied cross-owner access. Existing
 server-side status/refresh policy applies. Keep remaining older coordinator
 checks until they have replacement rows; live Modal/Docker evidence is still
 coordinator-owned. Boat never enters the release gate.
+
+### Follow-up request parity: dashboard and CLI
+
+`--parity --feature client-send`, optionally `--only modal|docker`, launches one
+normal private smoke sandbox, primes one conversation, and sends one follow-up
+through each **production client path**: dashboard `createGateway` +
+`sandboxGateway.send` over MCP JSON-RPC, then CLI `operation("send", ...)` over the
+control API. It does not reconstruct either request body in the runner.
+
+Both no-override sends select the single recorded conversation and carry fresh
+stable request UUIDs as those clients serialize them. Each must return its own
+prompt identity and produce an exact finished final parent acknowledgement;
+tool echoes, prior prompt replies and later-page supersession cannot pass.
+Multiple/missing recorded conversations are explicit not-run, not an arbitrary
+thread choice. The caller's `ARMADA_TOKEN` must be authorized for both transports.
+
+Dashboard/CLI rows are separate, including partial success if the second client
+fails. Failures retain the client, safe server code and available HTTP status,
+never raw CLI output/MCP error text. Authentication uses only the explicitly
+provided environment token: no saved-session read/write, login or file input.
+The adapter limits clients to the configured origin's MCP/send/log-read endpoints,
+adds the shared deadline and rejects redirects; actual paths, payloads and
+client response decoders remain those of the production clients.
+
+Proof requests share 110 seconds; cleanup of the one allocated sandbox remains
+independent. Full runs opt in with `clientSend: true`, reusing the ordinary
+sandbox after its initial turn and adding two follow-up turns, not allocations.
+Existing usage/cost/recall checks still observe the resulting session. This slice
+covers no-override sends in an existing single conversation, not browser
+rendering/CORS, other conversation choices or launch/stop/resume/delete client
+request parity. Those and live provider acceptance remain owed. Boat remains
+coordinator-only via `--only boat --production-boat`, never the release gate.

@@ -10,6 +10,7 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 // route/receipt regressions without provider compute, credentials, or sleeps.
 for (const mode of [
   "online",
+  "client_send_full",
   "readable_valid",
   "readable_missing",
   "readable_full",
@@ -187,6 +188,22 @@ for (const mode of [
           : undefined;
     const lines: string[] = [];
     const calls: string[] = [];
+    let dashboardProvider = "modal";
+    const clientAnswers = new Map<string, string>();
+    function acceptClient(provider: string, args: Record<string, unknown>) {
+      expect(args.id).toBe(provider);
+      expect(args.conversation_id).toBe("client_conversation");
+      expect(args.request_id).toMatch(/^[a-f0-9-]{36}$/);
+      const marker = String(args.prompt).match(/PARITY_CLIENT_(?:DASHBOARD|CLI)_[a-f0-9-]{36}/)![0];
+      const client = marker.includes("DASHBOARD") ? "dashboard" : "cli";
+      const promptId = `client_${client}_${provider}`;
+      clientAnswers.set(promptId, marker);
+      const history = turns.get(provider) ?? [];
+      history.push(promptId);
+      turns.set(provider, history);
+      return { promptId };
+    }
+
     const deletes = new Map<string, number>();
     const detailReads = new Map<string, number>();
     const turns = new Map<string, string[]>();
@@ -204,6 +221,7 @@ for (const mode of [
             (mode.startsWith("accounts") ? ["codex-openai", "codex-azure"] : [undefined]).map((account) => ({
               ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
               provider,
+              ...(mode === "client_send_full" ? { clientSend: true } : {}),
               ...(mode.startsWith("subscription_probe") && mode !== "subscription_probe_missing"
                 ? { subscriptionAccount: true }
                 : {}),
@@ -312,6 +330,34 @@ for (const mode of [
           if (mode === "journal_failure") throw new Error("journal_unwritable");
         },
         fetch: async (url, init) => {
+          if (new URL(url).pathname === "/mcp") {
+            expect(mode).toBe("client_send_full");
+            const rpc = JSON.parse(String(init.body));
+            calls.push(`${dashboardProvider}:mcp:${rpc.method}`);
+            if (rpc.method === "initialize")
+              return Response.json({
+                jsonrpc: "2.0",
+                id: rpc.id,
+                result: {
+                  protocolVersion: rpc.params.protocolVersion,
+                  capabilities: {},
+                  serverInfo: { name: "fixture", version: "1" },
+                },
+              });
+            if (rpc.method === "notifications/initialized") return new Response(null, { status: 202 });
+            expect(rpc.method).toBe("tools/call");
+            expect(rpc.params.name).toBe("send");
+            return Response.json({
+              jsonrpc: "2.0",
+              id: rpc.id,
+              result: {
+                content: [
+                  { type: "text", text: JSON.stringify(acceptClient(dashboardProvider, rpc.params.arguments)) },
+                ],
+              },
+            });
+          }
+
           if (url.endsWith("/healthz"))
             return Response.json(
               mode.startsWith("idle_") ? { idlePauseDelayMs: mode === "idle_budget" ? 35 * 60_000 : 1000 } : {},
@@ -541,6 +587,7 @@ for (const mode of [
               break;
             }
             case "sandbox/launch":
+              dashboardProvider = p;
               if (mode.startsWith("snapshot_")) expect(body.golden).toBe("fake-golden");
               if (mode.startsWith("h_")) {
                 expect(body.harness).toBe(configuredHarness);
@@ -615,6 +662,10 @@ for (const mode of [
               result = { connections: [{ id: mcpConnection, status: "connected" }] };
               break;
             case "sandbox/send": {
+              if (mode === "client_send_full" && String(body.prompt).includes("PARITY_CLIENT_CLI_")) {
+                result = acceptClient(p, body);
+                break;
+              }
               if (mode === "mcp_resume_full" && String(body.prompt).includes("dedicated read-only MCP tool")) {
                 expect(body.id).toBe(`${p}-template-2`);
                 expect(body.prompt).not.toContain(mcpExpected);
@@ -657,6 +708,23 @@ for (const mode of [
               break;
             }
             case "logs/read":
+              if (mode === "client_send_full" && clientAnswers.has(turns.get(p)?.at(-1) ?? "")) {
+                const promptId = turns.get(p)!.at(-1)!;
+                result = {
+                  events: [
+                    { kind: "prompt", promptId, status: "finished" },
+                    {
+                      id: "client_answer",
+                      kind: "message",
+                      promptId,
+                      text: clientAnswers.get(promptId),
+                      partial: false,
+                      responseKind: "assistant",
+                    },
+                  ],
+                };
+                break;
+              }
               if (mode === "mcp_resume_full" && mcpAnswers.has(body.id)) {
                 const promptId = `mcp_${p}_${mcpTurns.get(p)}`;
                 result = {
@@ -888,6 +956,7 @@ for (const mode of [
               result = {
                 id: mode === "template_identity" || mode.startsWith("routine_") || deepFull ? body.id : p,
                 status: states.get(p),
+                ...(mode === "client_send_full" ? { conversationIds: ["client_conversation"] } : {}),
                 ...(mode === "skills_resume_full" ? { skills: [skillReceipt] } : {}),
                 usage: {
                   turnCount: turns.get(p)?.length ?? 0,
@@ -1355,6 +1424,26 @@ for (const mode of [
           `${kind}-resume-cleanup`,
         ])
           expect(report.features[name][provider].status).toBe("pass");
+      }
+      return;
+    }
+    if (mode === "client_send_full") {
+      expect(passed).toBe(true);
+      expect(report.starts).toBe(2);
+      for (const provider of ["modal", "docker"]) {
+        for (const feature of [
+          "send",
+          "client-send",
+          "client-send-dashboard",
+          "client-send-cli",
+          "resume-recall",
+          "usage",
+          "exact-cost",
+          "cleanup",
+        ])
+          expect(report.features[feature][provider].status).toBe("pass");
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(turns.get(provider)).toHaveLength(4);
       }
       return;
     }
