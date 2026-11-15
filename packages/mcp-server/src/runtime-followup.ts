@@ -41,13 +41,11 @@ export function createRuntimeFollowup(
     const found = await store.get(input.id);
     if (!found || found.ownerId !== caller.userId || !runtimeBridgeTarget(found))
       throw new VaultError("not_found", "No owned runtime sandbox.");
-    // Boat callers may repeat the admitted settings, but cannot switch them.
-    // Normalize these redundant fields away before durable command/resume identity.
-    // Keep the existing Modal admission contract unchanged.
+    // Only Boat may repeat pinned settings; redundant fields stay out of durable command/resume identity.
+    const repeatPinned = found.provider === "boat";
     if (
-      (input.model !== undefined && (found.provider !== "boat" || input.model !== found.model)) ||
-      (input.reasoning_effort !== undefined &&
-        (found.provider !== "boat" || input.reasoning_effort !== found.reasoningEffort))
+      (input.model !== undefined && (!repeatPinned || input.model !== found.model)) ||
+      (input.reasoning_effort !== undefined && (!repeatPinned || input.reasoning_effort !== found.reasoningEffort))
     )
       throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
     // Route replays by durable operation identity, not today's machine state.
