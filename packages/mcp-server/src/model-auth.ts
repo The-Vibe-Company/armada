@@ -410,6 +410,7 @@ export function createModelAuthOwnership(
         throw new VaultError("not_found", "No native publication binding.");
       const row = result.rows[0],
         actor: GoldenActor = { userId: scope.userId, orgId: scope.orgId, role: "member" };
+      const source = { accountId: row.credential_id, version: row.credential_version, authJson, sandboxId: row.id };
       if (
         row.current_version !== row.credential_version ||
         row.current_status !== "active" ||
@@ -417,10 +418,7 @@ export function createModelAuthOwnership(
           new Date(row.expires_at instanceof Date ? row.expires_at.getTime() : row.expires_at).getTime() <= now())
       ) {
         await state.observeRedaction({
-          accountId: row.credential_id,
-          version: row.credential_version,
-          authJson,
-          sandboxId: row.id,
+          ...source,
           authorize: async (tx) => {
             const member = await tx.query(`select 1 from public.members where org_id=$1 and user_id=$2 for share`, [
               scope.orgId,
@@ -447,13 +445,10 @@ export function createModelAuthOwnership(
       }
       try {
         const revision = await state.publish({
+          ...source,
           actor,
-          accountId: row.credential_id,
-          version: row.credential_version,
-          sandboxId: row.id,
           generation: `modal:${claims.generation}`,
           expectedRevision,
-          authJson,
           verifySource: async (tx) => {
             const pinned = await tx.query(
               "select id from public.sandboxes where id=$1::uuid and credential_id=$2::uuid and credential_version=$3 and deleted_at is null for update",
