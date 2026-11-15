@@ -7,8 +7,8 @@ import {
   type SandboxRecord,
   type Sql,
 } from "@armada/core";
-import { boatRuntimeConfiguration } from "../src/boat-runtime-configuration.ts";
 import { runtimeConfiguration } from "../src/runtime-configuration.ts";
+import { runtimeConfigurationWithVariables } from "../src/runtime-readable-variables.ts";
 
 function fixture() {
   const actor: GoldenActor = { userId: crypto.randomUUID(), orgId: crypto.randomUUID(), role: "member" as const };
@@ -198,7 +198,7 @@ test.each([
             }),
           };
   }
-  const input: Parameters<typeof boatRuntimeConfiguration>[0] = { ...f };
+  const input: Parameters<typeof runtimeConfigurationWithVariables>[1] = { ...f };
   if (reason === "server-unenrolled" || reason === "source-error" || reason === "shared-unconfigured")
     input.modelAuth = {
       state: {
@@ -215,7 +215,9 @@ test.each([
         },
       },
     };
-  await expect(boatRuntimeConfiguration(input, {} as Sql)).rejects.toMatchObject({
+  await expect(
+    runtimeConfigurationWithVariables({} as Sql, input, "boat", "boat_runtime_empty_v1"),
+  ).rejects.toMatchObject({
     code: "unavailable",
     message: "Boat runtime configuration is unavailable.",
   });
