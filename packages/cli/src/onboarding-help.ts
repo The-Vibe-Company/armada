@@ -1,5 +1,49 @@
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
+  launch: `Usage: armada launch <snapshot> --agent claude|codex|opencode ["prompt"] [options]
+Fork a visible snapshot; a prompt starts the agent, otherwise wait for the first send.
+Sign in with armada login or set ARMADA_TOKEN for scripts.
+Find snapshots with armada snapshot list; select an organization with --org or armada org use.
+
+Boat/Modal options:
+  --provider boat|modal                  Select the snapshot provider.
+  --model <id> --reasoning-effort <level> Model settings also apply to later turns.
+  --credential-id UUID                   Model account; otherwise personal/org default.
+  --repo <configured-dir|owner/repo>      Initial repository cwd, not confinement.
+  --size small|medium|large|xlarge        Override server size policy.
+  --sized                               Resolve server sizing defaults.
+  --ttl <duration>                       Sandbox lifetime, for example 4h.
+  --skill org/slug@version|slug@version   Repeat for multiple skills.
+  --connections <id,...>                 Explicit MCP connections.
+  --no-connections                       Opt out; omission uses server defaults.
+  --armada-access                        Enable scoped Armada child access.
+  --max-active-children <1..100>          Requires --armada-access.
+  --org <org> --json                     Organization selector and machine output.
+
+Sizing resolves as explicit size > repository default > snapshot default > legacy.
+--repo, --size and --sized require sizing support; unsupported servers are not retried
+with legacy launch. Size labels do not imply equal performance or billing.
+
+Docker form:
+  armada launch [prompt] --provider docker --agent claude|codex|opencode --org UUID
+    [--host UUID|NAME | --golden snapshot-UUID] [--credential-id UUID]
+    [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...]
+    [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--ttl <duration>] [--json]
+    [--model <id>] [--reasoning-effort <level>] [--credential-version <version>]
+    [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections]
+Uses the official Armada environment or an existing host-local snapshot.
+Docker defaults to codex. A snapshot cannot be combined with --repo.
+Boat supports Claude/Codex; OpenCode is supported on Modal and Docker.
+--golden is the existing Docker snapshot selector, not a new snapshot command.
+Reuse a saved --request-id with identical input after an uncertain Docker outcome.
+
+In an interactive terminal, bare armada launch opens the launcher.
+Use explicit arguments in scripts; bare noninteractive launch is not supported.
+--json emits the launch response on stdout without human launch advice.
+After an uncertain launch, inspect armada list before retrying.
+Example: armada launch starter --provider modal --agent codex "Inspect the repository" --json
+Example: armada launch "Inspect the repository" --provider docker --host workstation --agent codex --org ORG_UUID
+`,
   org: `Usage: armada org <command> [arguments]
 Manage organization selection, provider setup and membership.
 Use a leaf command with --help or -h for flags and authorization requirements.
