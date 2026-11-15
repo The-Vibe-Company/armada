@@ -109,6 +109,19 @@ Never put the token in command arguments. --org is not accepted by this command.
 The server validates the invitation and signed-in identity; the token is not printed.
 Example: armada org invitations accept --file /private/invitation-token
 `,
+  token: `Usage: armada token <command> [arguments]
+Manage Armada service tokens for authenticated scripts, not model/provider keys.
+Use leaf --help/-h for exact flags and server authorization requirements.
+  create  Create a token; stdout contains the secret even with --json.
+  list    List metadata, IDs and revocation state, never secret values.
+  revoke  Revoke using the token ID from list, not the secret value.
+Store new tokens securely when printed; Armada stores only their hashes.
+Never commit tokens or send creation output to public logs.
+Supply ARMADA_TOKEN through a secure environment, never command arguments.
+Help does not create, list or revoke tokens.
+Example: armada token list --json
+Example: armada token create --help
+`,
   "token create": `Usage: armada token create [--org <name>] [--label <label>] [--json]
 Create a service token with authenticated access and server authorization.
 An explicit --org overrides a saved organization selection.

@@ -449,3 +449,12 @@ secure-input instructions. Connection IDs select registry entries;
 sandbox-connections takes a sandbox UUID. Launch-default selection is separate
 from authorization; reconnect revokes first. Family help makes no MCP/API
 request and leaves bare no-argument invocation unchanged.
+
+### Service-token command discovery
+
+`armada token --help` (or `-h`) provides the focused service-token index.
+Use leaf help for flags. Create prints the new secret even in JSON mode; keep
+output out of public logs and store it securely. List shows metadata/IDs, and
+revoke takes an ID, not a secret value. Armada service tokens authenticate
+scripts via ARMADA_TOKEN; they are not model/provider API credentials.
+Family help makes no API request or token mutation.
