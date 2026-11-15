@@ -70,8 +70,9 @@ against the #812 paging contract (`logs/read` with `direction: backward`):
 
 Reads are not coalesced: #812 coalesces a page's fragments into a snapshot of
 that page's text only, which would replace the earlier part of a message that
-spans pages. A page whose single event exceeds the default 256 KiB budget is
-refused (400); the app reads it again once with `largestEventPageBytes`. A
+spans pages. An indivisible event above the soft page budget is returned alone; events above
+1 MiB are represented by an explicit `event_truncated` gap. Reads never retry
+with a larger budget. A
 `logs/read` server without backward reads answers with its first page and no
 `olderCursor`; it is then followed forward at once. The clock is injected; tests
 use a recording one.

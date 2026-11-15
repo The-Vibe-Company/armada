@@ -154,24 +154,14 @@ extension ArmadaClient {
     /// One page of events in chronological order. Forward (the default) reads after `cursor`, from
     /// the start when nil. Backward reads the latest page when `cursor` is nil, otherwise the page
     /// before it (`olderCursor` of an earlier backward read); its `hasMore` means older events exist
-    /// and its `cursor` is the forward frontier to follow from (#812). A page whose single event
-    /// exceeds the default byte budget (256 KiB) is refused (400), never skipped: it is read once
-    /// more with `largestEventPageBytes`.
+    /// and its `cursor` is the forward frontier to follow from (#812). An indivisible event
+    /// above the soft page budget is returned alone, or as an explicit event_truncated gap.
     public func sandboxEvents(id: String, cursor: String? = nil, backward: Bool = false) async throws -> SandboxEventPage {
-        struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String?; let direction: String?; let maxBytes: Int? }
+        struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String?; let direction: String? }
         if let cursor, cursor.isEmpty { throw ArmadaError.invalidResponse }
         let id = try sandboxID(id), org = try sandboxOrganization()
-        do {
-            return try await post("logs/read", Read(id: id, org: org, cursor: cursor, direction: backward ? "backward" : nil, maxBytes: nil))
-        } catch {
-            guard ArmadaServerFailure.underlying(error) == .http(400) else { throw error }
-            return try await post("logs/read", Read(id: id, org: org, cursor: cursor, direction: backward ? "backward" : nil,
-                                                    maxBytes: Self.largestEventPageBytes))
-        }
+        return try await post("logs/read", Read(id: id, org: org, cursor: cursor, direction: backward ? "backward" : nil))
     }
-
-    /// The largest byte budget an event page may ask for (#812): one event larger than this cannot be read.
-    public static let largestEventPageBytes = 1_048_576
 
     /// Sends one prompt as a new turn. Sent once: a failure is classified with
     /// `SandboxMutationFailure.classify` and never resent by this client.
