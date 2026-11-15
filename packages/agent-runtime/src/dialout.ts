@@ -11,7 +11,7 @@ export interface RuntimeSession {
   epoch: string;
   runtimeToken: string;
 }
-export interface RuntimeEnrolment extends RuntimeSession {
+interface RuntimeEnrolment extends RuntimeSession {
   configuration: Record<string, unknown>;
 }
 interface Socket extends EventTarget {
@@ -405,7 +405,7 @@ export class RuntimeDialout implements IngestClient {
   }
 }
 
-export interface RuntimeModelAccess {
+interface RuntimeModelAccess {
   accessToken: string;
   chatgptAccountId: string;
   chatgptPlanType: string | null;
