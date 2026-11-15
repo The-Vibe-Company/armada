@@ -469,6 +469,8 @@ export type ProviderErrorCode =
   /** A steer when no turn runs. */
   | "no_running_turn"
   | "sandbox_not_ready"
+  /** Current disk/checkpoint is gone; retrying cannot resume this sandbox. */
+  | "sandbox_not_restorable"
   /** The selected Docker host has no free sandbox slots. */
   | "host_full"
   /** Any other refusal because of the state of a resource. */

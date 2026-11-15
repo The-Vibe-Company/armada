@@ -103,3 +103,23 @@ Deploy the additive constraint migration before the new server. Existing parent
 epochs do not acquire `worker:extend`; stop/resume a parent to install a fresh
 scoped grant. An application rollback can leave the expanded constraints in
 place (no data rewrite or destructive rollback is needed).
+
+## Recovery closure (#854)
+
+Native send returns `sandbox_not_restorable` (HTTP 409) when the provider confirms
+that the current disk/checkpoint is unavailable. This includes an absent Boat
+sandbox, a Modal physical exit without a current verified checkpoint, and a
+stopped Modal machine whose checkpoint was not retained. Provider outages and
+uncertain dispatch remain distinct errors. An existing `work_recovery` reference
+from the preservation receipt is included in the error; the archive remains
+subject to the existing authorization and application-secret restrictions.
+
+Retained stopped machines continue with the selected native conversation (the
+last recorded conversation by default) and a fresh bounded logical lifetime.
+Modal must never restore an older checkpoint after a physical exit as if it
+contained the latest writes.
+
+The live provider/harness recall matrix above is still operational evidence,
+not a result established by unit tests. Boat is not part of the release gate;
+any Boat production verification is coordinator-only and on demand under the
+repository policy. This change does not deploy or claim that live matrix passed.
