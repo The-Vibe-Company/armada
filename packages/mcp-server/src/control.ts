@@ -366,6 +366,19 @@ async function dispatch(
         opencodeMcpProofVersion: options.modalRuntimeLaunch && options.runtimeMcp ? 1 : 0,
         variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
       },
+      dockerRuntime: {
+        opencodeMcpProofVersion:
+          options.docker?.hosts &&
+          options.docker.placement &&
+          options.docker.normalApi &&
+          options.docker.normalLaunch &&
+          options.docker.normalSend &&
+          options.dockerLaunch &&
+          options.dockerControls &&
+          options.runtimeMcp
+            ? 1
+            : 0,
+      },
       boatRuntime: {
         defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
         version: 1,

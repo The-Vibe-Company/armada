@@ -1,6 +1,6 @@
-# OpenCode on Modal
+# OpenCode on Modal and Docker
 
-**OpenCode is enabled on Modal and the Boat shared runtime**; native Boat still
+**OpenCode is enabled on Modal, Docker hosts and the Boat shared runtime**; native Boat still
 refuses before fork. See [Boat runtime launch](../boat-runtime-first-prompt.md#opencode-on-the-shared-boat-runtime-2052)
 for the versioned API and deployment prerequisites. The shared
 harness catalog drives validators and generated iOS choices. Codex and Claude
@@ -56,7 +56,7 @@ in the bound connection's declared list. This proves connectivity, not a full
 agent turn, tool use or streaming.
 
 OpenCode plan-key checks remain unavailable: the native CLI owns its plan
-routing/session headers. OpenCode still runs only on Modal. No sandbox is
+routing/session headers. OpenCode runs on Modal and Docker; connection checks currently use Modal. No sandbox is
 started or resumed for a check. Coordinator staging: launch an idle Modal
 sandbox with a saved DeepSeek custom connection, then send a tiny check from
 Models with its declared model. Expect safe success/authentication/model-error
@@ -261,3 +261,55 @@ for Modal and the owned Docker host and run the existing
 `--parity --accounts` command above. Verify answer, follow-up, stop/resume recall,
 tokens, honest cost classification and cleanup. Deterministic tests prove sealed
 configuration/CLI routing, not a successful live OpenAI lifecycle.
+
+
+## Docker launch availability (#2052)
+
+The Docker host and Docker snapshot launch forms both offer OpenCode. Select an
+OpenCode account and its declared model (or a plan-key model) as on Modal. The
+existing Docker normal-launch service admits the selected account and seals its
+`opencodeEnv` into the shared runtime configuration; the same ACP driver handles
+prompts and retained conversations. There is no Docker-specific OpenCode driver
+or new server setting, migration, image dependency, or credential type.
+
+Coordinator-only staging acceptance after normal deployment: launch OpenCode from
+an existing ready Docker snapshot in the dashboard with a usable OpenCode account.
+Require an answer, a same-conversation follow-up, and normal stop/resume behavior.
+The existing plain-image Docker host launch should continue to work. With existing
+staging origin/token and a configured owned-Docker OpenCode case, run:
+
+```sh
+ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --only docker --feature opencode
+```
+
+The existing harness parity probe requires the advertised OpenCode harness and
+actual launch/turn evidence; this slice does not enable the separate OpenCode MCP
+probe. Boat is never included in staging or the release gate. No live provider
+check or deployment was performed by this worker.
+
+## Docker OpenCode MCP native proof (#2052)
+
+Docker OpenCode uses the same enrolled runtime `configureMcp` command and ACP
+native-export observations as Modal. `launch/options` advertises
+`dockerRuntime.opencodeMcpProofVersion:1` only when the normal Docker placement,
+launch, send, control and runtime MCP handlers are installed. Older or unwired
+servers omit the version or return zero; the parity probe then allocates nothing
+for this cell, even when Modal advertises its own proof support.
+
+Coordinator-only staging acceptance after normal deployment: configure an existing
+owned-Docker OpenCode case with a template binding exactly one connected remote
+MCP connection and the existing dedicated read-only zero-argument canary tool.
+Supply its expected output only in the smoke case, never in a prompt. Run:
+
+```sh
+ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --only docker --feature mcp
+ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --only docker --feature mcp-resume
+```
+
+Require current-prompt native message/call IDs, exact server/tool/arguments/result,
+a nonempty configuration revision and stable collision-free tool inventories.
+The resume probe requires the same proof before and after stop/resume. Assistant
+claims, unrelated/prior events and configuration ACKs cannot pass. These commands
+are acceptance procedures, not evidence they ran. No new runtime driver, migration,
+provider credential or CI job is needed; native Boat MCP probing stays deferred
+and Boat stays outside staging and the release gate.

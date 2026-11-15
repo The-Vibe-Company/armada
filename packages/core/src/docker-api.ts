@@ -121,6 +121,9 @@ export interface LaunchOptionsResponse {
     opencodeShellProofVersion?: number;
     opencodeMcpProofVersion?: number;
   };
+  dockerRuntime?: {
+    opencodeMcpProofVersion?: number;
+  };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
     version: number;

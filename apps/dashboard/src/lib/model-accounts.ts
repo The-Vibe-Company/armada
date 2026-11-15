@@ -79,7 +79,7 @@ const KIND_PRESENTATION: Record<AccountKind, Omit<KindInfo, "harness" | "harness
     label: "OpenCode API key",
     billing: "api",
     valueLabel: "API key",
-    hint: "An OpenCode plan key from opencode.ai, or a DeepSeek, OpenRouter or other OpenAI-compatible connection. Modal or Boat shared runtime API.",
+    hint: "An OpenCode plan key from opencode.ai, or a DeepSeek, OpenRouter or other OpenAI-compatible connection. Modal, Docker hosts or Boat shared runtime API.",
   },
 };
 
