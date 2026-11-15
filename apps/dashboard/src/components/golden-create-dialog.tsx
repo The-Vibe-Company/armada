@@ -31,14 +31,14 @@ export function GoldenCreateDialog({
       {!open && <BuildFollower key={param} param={param} />}
       <CreateDialog
         label="New"
-        title="Create a snapshot"
-        description="Repositories, branches and init commands, built once and saved as a snapshot."
+        title="New snapshot"
+        description="A saved machine with your repositories already set up."
         open={open}
         onOpenChange={(next) => {
           if (next) itemAtOpen.current = currentItem();
           setOpen(next);
         }}
-        className="sm:max-w-3xl"
+        className="sm:max-w-xl"
         onCloseAutoFocus={(event) => {
           // Closed by choosing an environment to rebuild instead: the focus stays on its panel, not on New.
           const title = visibleResourcePanelTitle();
@@ -72,14 +72,13 @@ function BuildFollower({ param }: { param: string }) {
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = Date.now() + 120_000;
+
     const read = async () => {
       const params = new URLSearchParams(window.location.search);
       const jobId = params.get(param);
       if (!jobId) {
         // Closed while the admission was in flight: its job id lands in the URL when the answer comes back.
-        if (params.has(`build-key.${param.slice("build.".length)}`) && Date.now() < deadline)
-          timer = setTimeout(read, 2000);
+        if (params.has(`build-key.${param.slice("build.".length)}`)) timer = setTimeout(read, 2000);
         return;
       }
       try {
@@ -87,8 +86,7 @@ function BuildFollower({ param }: { param: string }) {
         if (!active) return;
         setStatus(next);
         if (!ACTIVE.includes(next.state)) return;
-        if (Date.now() < deadline) timer = setTimeout(read, 2000);
-        else setStopped(true);
+        timer = setTimeout(read, 2000);
       } catch {
         if (active) setStopped(true);
       }
@@ -127,5 +125,8 @@ function followed(status: GoldenBuildStatus, stopped: boolean): { icon: ReactNod
     };
   if (stopped)
     return { icon: <CircleAlertIcon aria-hidden className="size-4" />, text: "Still building: open New to check" };
-  return { icon: <Loader2Icon aria-hidden className="size-4 animate-spin" />, text: `Building (${status.phase})` };
+  return {
+    icon: <Loader2Icon aria-hidden className="size-4 animate-spin" />,
+    text: status.state === "queued" ? "Waiting for a builder" : "Downloading repositories, running commands",
+  };
 }
