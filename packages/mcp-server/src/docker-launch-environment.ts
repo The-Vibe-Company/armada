@@ -2,7 +2,7 @@ import { type Harness, validateReadableVariables } from "@armada/core";
 import { decryptSecret, resolveLaunchSecrets, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
 /** Delivery of frozen readable values and current version-pinned secrets through the existing runtime RPC.
  * Never re-resolve readable sources; secret references revalidate on each new turn.
@@ -28,7 +28,7 @@ export function createDockerLaunchEnvironment(
     if (!Object.keys(manifest.variables ?? {}).length && !manifest.request.secrets?.length) return;
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime environment delivery is unavailable.");
     const prepared = await sql.transaction(async (tx) => {
-      const local: Sql = { query: tx.query.bind(tx), transaction: (work) => work(tx) };
+      const local = scopedRuntimeSql(tx);
       const locked = createRuntimeEnrolments(local, key);
       // Source members -> secret references -> host/sandbox/runtime. No runtime I/O under these locks.
       await locked.lockSourceMembers(tx, id, caller.userId);

@@ -24,7 +24,7 @@ import {
 } from "./docker-capacity.ts";
 
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
 type Job = DockerHostJob;
@@ -745,8 +745,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           if (ticket?.sandbox_id !== sandboxId) deny();
           // All source members, host and sandbox are exclusively prelocked. Reuse the
           // existing capability validator in this very transaction, never a nested one.
-          const scoped: Sql = { query: tx.query.bind(tx), transaction: (work) => work(tx) };
-          return createRuntimeEnrolments(scoped, key).withBootstrap(
+          return createRuntimeEnrolments(scopedRuntimeSql(tx), key).withBootstrap(
             selection.bootstrapDescriptor.enrolmentToken,
             async (_tx, scope) => {
               if (scope.sandboxId !== sandboxId) deny();

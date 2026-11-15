@@ -28,7 +28,7 @@ import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
@@ -523,7 +523,7 @@ export function createDockerSandboxControls(
       )
         throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
       const id = requestId ?? pending?.request_id ?? randomUUID();
-      const scoped: Sql = { query: tx.query.bind(tx), transaction: (work) => work(tx) };
+      const scoped = scopedRuntimeSql(tx);
       if (operation === "delete") await assertDelete(caller, row.id, scoped);
       await createDockerHostStore(scoped, key).enqueueSandbox({ userId: caller.userId, orgId: row.org_id }, row.id, {
         requestId: id,
@@ -624,8 +624,7 @@ export function createDockerSandboxControls(
       withOwner: ((id, owner, work, generation) => {
         if (!sql.transaction) throw failure("unavailable", "Docker runtime authorization is unavailable.");
         return sql.transaction(async (tx) => {
-          const local: Sql = { query: tx.query.bind(tx), transaction: (work) => work(tx) };
-          const current = createRuntimeEnrolments(local, key);
+          const current = createRuntimeEnrolments(scopedRuntimeSql(tx), key);
           await current.lockSourceMembers(tx, id, owner);
           const allowed = await tx.query(
             `select s.id from public.sandboxes s join public.credentials c on c.id=s.credential_id and c.version=s.credential_version
