@@ -303,6 +303,17 @@ const sandboxListMetadata = z.object({
 });
 
 const prompt = z.object({
+  rateLimit: z
+    .object({
+      retryCount: z.number(),
+      delayMs: z.number(),
+      totalWaitMs: z.number(),
+      retryAt: z.number(),
+      waiting: z.boolean(),
+      message: z.string(),
+    })
+    .nullable()
+    .optional(),
   promptId: z.string(),
   conversationId: z.string().nullable(),
   state: z.enum(["running", "finished", "interrupted", "failed"]),
@@ -1724,7 +1735,9 @@ export function createArmadaServer(context: ToolContext, version: string, option
             : undefined,
         failurePatchRequired: true,
       },
-    ).catch((error) => publicationFailure(error, acknowledged));
+    )
+      .catch((error) => publicationFailure(error, acknowledged))
+      .finally(() => context.launchCredentials.releaseAdmission?.(found.id));
   }
 
   tool(

@@ -270,8 +270,9 @@ leave a remote deployment running: owner inspects/drains before recovery.
 Recover via **Release → Run workflow**, ref main, exact existing latest stable
 tag and publish=true. Already recorded migrations/published versions are skipped.
 The production job rejects superseded stable tags; cut a forward hotfix instead.
-Older tags can fail staging due to newer migration history; never repair history
-to force them through. A failed smoke has no variable-based emergency bypass.
+Older tags can still fail staging on unknown or non-forward migration history;
+never repair history to force them through. Known forward main history is handled
+by the staging-only check described below. A failed smoke has no variable-based emergency bypass.
 Owner incident rollback requires schema-compatible known-good host deployments
 and recorded approval; prefer a new reviewed forward fix/revert release.
 Production history/confirmed repair and dry-run remain explicit manual operator
@@ -347,3 +348,27 @@ complete the [staging-first cutover checklist](../.railway/README.md) for both
 environments. `railway up` uploads source but does not apply IaC. Actions order,
 CLI pin and disabled Git autodeploy remain unchanged. Code and unit CI do not
 establish that the live environments have been migrated.
+
+## Staging ahead of an exact release (#2093)
+
+The staging deployment accepts a database ahead of the pinned release only when
+all release migration versions are already recorded and every remote-only version
+is strictly newer than the release maximum and exists in fetched `origin/main`.
+It then skips SQL apply, deploys the exact release source and runs the full staging
+smoke against that newer schema. This forward-only exception avoids changing the
+FIFO staging lock or starving ordinary main runs. Migration versions are compared,
+not SQL equivalence; applied migrations must remain immutable and backward compatible.
+
+Unknown versions, older remote-only versions, missing release migrations in an
+otherwise ahead history, malformed history or failed main resolution block deployment.
+An ordinary non-ahead history still uses the CLI dry-run and apply checks. No history
+repair, rollback, newer SQL application or moving-main application checkout is used.
+Production never enables this staging-only exception: its migration apply remains
+exactly the validated release commit's set and still fails on remote-only history.
+
+Coordinator acceptance (not performed by agents): under the staging lock, verify
+an exact-release staging deployment against a known newer main migration skips
+SQL but completes pinned-source smoke; confirm unknown history blocks before any
+provider upload. Inspect the authorized release's production migration inventory
+against its tag; do not inject production drift or repair history to test this.
+No new configuration secrets, CI jobs or required checks are needed.

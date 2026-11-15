@@ -190,6 +190,7 @@ export async function startServer(
       afterPrompt: async (provider, id) => {
         if (caller) await modelAuth.capture(provider, id, caller);
       },
+      resumeRefused: (provider, id) => modelAuth.releaseProviderCapacity(provider, id),
       beforeResume: async (provider, id) => {
         if (!caller) throw Error("Native resume requires trusted Armada caller scope.");
         await modelAuth.beforeResume(provider, id, caller);
@@ -220,6 +221,7 @@ export async function startServer(
     providerFor: (apiKey) => createBoatProvider({ apiKey }),
   });
   const modal = await createModalIntegration({
+    resumeRefused: (provider, id) => modelAuth.releaseProviderCapacity(provider, id),
     beforeResume: (provider, id, caller) => modelAuth.beforeResume(provider, id, caller),
     sql,
     vault: store,

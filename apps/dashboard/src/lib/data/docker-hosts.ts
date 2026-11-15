@@ -9,8 +9,9 @@ import {
   parseDockerHostList,
   parseHostRegistration,
 } from "@/lib/docker-hosts";
-import { type DockerLaunchOption, dockerLaunchOption, LAUNCH_OPTIONS_ROUTE } from "@/lib/docker-launch";
+import { type DockerLaunchOption, dockerLaunchOption } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
+import { readLaunchOptions } from "./launch-options";
 import { selectedOrganization } from "./selected-org";
 import { requireViewer } from "./viewer";
 
@@ -131,16 +132,6 @@ export async function hostListForPage(): Promise<DockerHostList | null> {
  * The Docker entry of the server's launch options, once per request, or null when it cannot be read or has none
  * (an older server, Docker not enabled): the launch then stays unavailable, never a dead button.
  */
-export const readDockerLaunchOption = cache(async (): Promise<DockerLaunchOption | null> => {
-  const viewer = await requireViewer();
-  const serverUrl = mcpUrl();
-  if (!serverUrl || !viewer.token) return null;
-  try {
-    return dockerLaunchOption(
-      await controlPost({ serverUrl, token: viewer.token }, `/api/v1/${LAUNCH_OPTIONS_ROUTE}`, {}, "launch options"),
-    );
-  } catch (error) {
-    if (error instanceof ControlError) return null;
-    throw error;
-  }
-});
+export const readDockerLaunchOption = cache(
+  async (): Promise<DockerLaunchOption | null> => dockerLaunchOption(await readLaunchOptions()),
+);

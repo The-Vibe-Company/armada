@@ -47,6 +47,7 @@ export function launchProviderOptions(
     normalSend?: boolean;
     normalResume?: boolean;
   } = {},
+  boatRuntime = false,
 ): LaunchProviderOption[] {
   const supported: LaunchProviderCapabilities = {
     launch: true,
@@ -126,7 +127,7 @@ export function launchProviderOptions(
       id: "boat",
       enabled: true,
       launchSources: ["golden"],
-      harnesses: ["claude", "codex"],
+      harnesses: boatRuntime ? [...HARNESSES] : ["claude", "codex"],
       capabilities: { ...supported },
       unsupportedReasons: {},
     },

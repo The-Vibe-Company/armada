@@ -13,5 +13,7 @@ export function runtimeBridgeTarget(target: {
 }
 
 export function runtimeHarnessSupported(provider: string, harness: string): boolean {
-  return ["codex", "claude"].includes(harness) || (["modal", "docker"].includes(provider) && harness === "opencode");
+  return (
+    ["codex", "claude"].includes(harness) || (["boat", "modal", "docker"].includes(provider) && harness === "opencode")
+  );
 }

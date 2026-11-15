@@ -74,9 +74,18 @@ export interface Deps {
 
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
 
-Global: --profile NAME (or ARMADA_PROFILE) isolates login and preferences; login --url sets its server.
+Global: --profile NAME (or ARMADA_PROFILE) isolates saved login and preferences; login --url sets its server.
+--profile overrides ARMADA_PROFILE. Omit both for the existing default profile.
+Names: 1–64 letters/digits/underscores/hyphens, starting with a letter or digit.
+ARMADA_TOKEN is not isolated by profiles: it still overrides every saved login.
+Use a matching ARMADA_URL for token-authenticated scripts; never put tokens in arguments.
+Example: armada --profile staging login --url https://staging.example.com --provider github
 
 Exit codes: 0 success; 1 authentication/server/operation failure; 2 invalid usage or missing configuration.
+Scripts: check exit status before consuming stdout; failed operations may have partial output.
+Common typed errors with --json use {error:{code,message}} on stderr, not stdout.
+Progress/warnings can also use stderr; do not assume the entire stream is one JSON document.
+See command --help for supported JSON output; keep captured values/tokens out of shared logs.
 
 Quick start / common examples:
   armada login --email you@example.com
@@ -105,7 +114,7 @@ Usage:
   armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
   armada completion bash|zsh|fish           Print a shell completion script
   armada --version                         Print the version
-  armada --help                            Show this help
+  armada --help                            Show this help (also -h or help); no login required
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
                                            Public GitHub Armada tool-knowledge skill; no login. See skill --help.
   armada snapshot create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
@@ -236,6 +245,8 @@ Usage:
                                            Keep this terminal open; Ctrl-C/shell exit cancels.
   armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
+  armada creds limits <account-id> --max-agents N | --unlimited [--org <name>]
+                                           Set the maximum simultaneous running agents for a model account
   armada creds presets [--json]             List the same model connection providers as the dashboard
   armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
                                            Provider key from hidden input, stdin/file; custom providers take --models and --base-url
@@ -243,6 +254,7 @@ Usage:
                                            with a tiny billable request per deployment. A failed check saves nothing.
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; hidden input in a terminal, or stdin/file
+                                           Model accounts: --max-agents N or --unlimited (Morph defaults to 2; others unlimited)
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
                                            Codex: --base-url URL --models deployment,model [--api-version VERSION]
                                            Key from hidden input, stdin/file; Azure requires actual deployment names, not model catalog IDs
@@ -330,6 +342,10 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
             ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
           }),
       );
+    if (localArgs.length === 1 && ["snapshot", "golden", "host"].includes(localArgs[0] ?? "")) {
+      io.out(onboardingHelp([localArgs[0] === "host" ? "host" : "snapshot", "--help"]) ?? HELP);
+      return 2;
+    }
     const focusedHelp = onboardingHelp(localArgs);
     if (focusedHelp) {
       io.out(focusedHelp);
@@ -342,7 +358,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       const stores = profileStores(selected.env);
       const env: NodeJS.ProcessEnv = { ...selected.env };
       const discovery =
-        (argv.length === 1 && ["--help", "-h", "--version", "-v"].includes(argv[0] ?? "")) ||
+        (argv.length === 1 && ["--help", "-h", "help", "--version", "-v"].includes(argv[0] ?? "")) ||
         (argv.length === 2 && ["--help", "-h"].includes(argv[1] ?? "")) ||
         argv[0] === "completion";
       if (!env.ARMADA_TOKEN && !discovery && argv[0] !== "logout") {
@@ -611,8 +627,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "token":
       return tokenCommand(parseAuth(rest), authOf(io, deps));
     default:
-      io.err(`armada: unknown command '${command}'. Run 'armada --help'.\n`);
-      return 2;
+      throw new AuthError(`unknown command '${command}'. Run 'armada --help'.`, "usage");
   }
 }
 
@@ -852,8 +867,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     case "list":
       return list(args, io, deps);
     default:
-      io.err(`armada: unknown command 'snapshot ${subcommand}'. Run 'armada --help'.\n`);
-      return 2;
+      throw new AuthError(`unknown command 'snapshot ${subcommand}'. Run 'armada --help'.`, "usage");
   }
 }
 
@@ -1371,6 +1385,16 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
 
 function eventText(event: Awaited<ReturnType<Provider["events"]>>["events"][number]): string {
   if (event.kind === "message" || event.kind === "prompt" || event.kind === "steer") return event.text;
+  if (
+    event.kind === "other" &&
+    event.type === "armada/modelRateLimit" &&
+    event.data &&
+    typeof event.data === "object"
+  ) {
+    const data = event.data as Record<string, unknown>;
+    if (typeof data.message === "string")
+      return `${data.message} (retry ${data.retryCount}, total wait ${Number(data.totalWaitMs) / 1000} s)`;
+  }
   return JSON.stringify(event);
 }
 

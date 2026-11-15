@@ -171,17 +171,23 @@ async function members(argv: readonly string[], io: VaultIo): Promise<number> {
 export async function credsCommand(argv: readonly string[], io: VaultIo): Promise<number> {
   const [sub, ...rest] = argv;
   const priceOptions = ["--price-model", "--price-input", "--price-cached-input", "--price-output"];
-  const args = parseArgs(rest, [
-    "--id",
-    "--expected-version",
-    "--base-url",
-    "--models",
-    "--api-version",
-    "--endpoint-auth",
-    ...priceOptions,
-  ]);
+  const args = parseArgs(
+    rest,
+    [
+      "--max-agents",
+      "--id",
+      "--expected-version",
+      "--base-url",
+      "--models",
+      "--api-version",
+      "--endpoint-auth",
+      ...priceOptions,
+    ],
+    ["--unlimited"],
+  );
   const org = single(args, "--org");
   const scope = org === undefined ? "user" : "org";
+  const maxAgents = agentLimit(args);
   if (
     sub !== "set" &&
     sub !== "connect" &&
@@ -212,7 +218,17 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       const id = one(args.positionals, "armada creds connect <preset> --name NAME [--file PATH] [--org NAME]");
       const preset = connectionPreset(id);
       if (!preset) throw usage("Choose a provider from armada creds presets.");
-      const allowed = ["--name", "--org", "--file", "--json", "--models", "--base-url", "--api-version"];
+      const allowed = [
+        "--name",
+        "--org",
+        "--file",
+        "--json",
+        "--models",
+        "--base-url",
+        "--api-version",
+        "--max-agents",
+        "--unlimited",
+      ];
       if ([...args.options.keys()].some((key) => !allowed.includes(key)))
         throw usage("Connect accepts a provider preset, name, key file, org, models and address options only.");
       const name = single(args, "--name");
@@ -242,7 +258,14 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
         io.auth.err(
           "Official Azure addresses are tested with a tiny billable request per deployment before saving. A failed check saves nothing.\n",
         );
-      await control(io.auth, "creds/accounts/set", { scope, org, kind: credentialName(preset.kind), name, value });
+      await control(io.auth, "creds/accounts/set", {
+        scope,
+        org,
+        kind: credentialName(preset.kind),
+        name,
+        value,
+        ...(maxAgents !== undefined ? { maxAgents } : {}),
+      });
       io.auth.out(
         flag(args, "--json")
           ? `${JSON.stringify({ ok: true })}\n`
@@ -305,6 +328,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
         name,
         value,
         ...(id ? { id, expectedVersion: Number(revision) } : {}),
+        ...(maxAgents !== undefined ? { maxAgents } : {}),
       });
       io.auth.out("Imported native credential account, encrypted. Allowance may be unavailable.\n");
       return 0;
@@ -448,6 +472,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
             single(args, "--expected-version") === undefined ? undefined : Number(single(args, "--expected-version")),
           id: single(args, "--id"),
           name: single(args, "--name"),
+          ...(maxAgents !== undefined ? { maxAgents } : {}),
         },
       );
       if (flag(args, "--json")) {
@@ -479,6 +504,13 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       io.auth.out(`${out.join("\n")}\n`);
       return 0;
     }
+    case "limits": {
+      const id = one(args.positionals, "armada creds limits <account-id> --max-agents N | --unlimited");
+      if (maxAgents === undefined) throw usage("Choose --max-agents N or --unlimited.");
+      const result = await control(io.auth, "creds/accounts/limits", { scope, org, id, maxAgents });
+      io.auth.out(`${JSON.stringify(result)}\n`);
+      return 0;
+    }
     case "rename":
     case "default":
     case "remove": {
@@ -503,7 +535,9 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       return 0;
     }
     default:
-      throw usage("Run armada creds presets, connect, login, import, set, list, rename, default, remove or rm.");
+      throw usage(
+        "Run armada creds presets, connect, login, import, set, list, limits, rename, default, remove or rm.",
+      );
   }
 }
 
@@ -528,7 +562,7 @@ function section(title: string, rows: CredentialInfo[]): string {
   if (rows.length === 0) return `${title}: none`;
   const lines = rows.map(
     (row) =>
-      `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`,
+      `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.id ? `  ${row.runningAgents ?? 0}/${row.maxAgents ?? "unlimited"} running` : ""}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`,
   );
   return `${title}:\n${lines.join("\n")}`;
 }
@@ -545,4 +579,17 @@ function expect(positionals: string[], count: number, form: string): string[] {
 
 function usage(message: string): VaultError {
   return new VaultError("invalid", message);
+}
+
+function agentLimit(args: ReturnType<typeof parseArgs>): number | null | undefined {
+  const raw = single(args, "--max-agents");
+  if (flag(args, "--unlimited")) {
+    if (raw !== undefined) throw usage("Choose --max-agents or --unlimited, not both.");
+    return null;
+  }
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(value))
+    throw usage("--max-agents must be a positive integer.");
+  return value;
 }

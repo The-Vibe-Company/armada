@@ -23,6 +23,11 @@ if [[ "${STAGING_LATEST_ONLY:-}" == true ]]; then
     exit 0
   fi
 fi
+# This exception is explicit staging-only; production never reads main's schema.
+history_tool="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/staging-migration-history.ts"
+if [[ "${STAGING_FORWARD_HISTORY:-}" == true ]]; then
+  git fetch --no-tags origin main
+fi
 # No provider API receives the orchestration/tooling checkout or local caches.
 source_dir=$(mktemp -d)
 trap 'rm -rf "$source_dir"' EXIT
@@ -38,9 +43,27 @@ fi
 cd "$source_dir"
 
 supabase link --project-ref "$SUPABASE_PROJECT_ID"
-supabase migration list --linked
-supabase db push --linked --dry-run
-supabase db push --linked --yes
+if [[ "${STAGING_FORWARD_HISTORY:-}" == true ]]; then
+  history_file=$(mktemp)
+  main_file=$(mktemp)
+  # Keep the archive pinned: only version names, never newer SQL, enter this check.
+  git -C "$OLDPWD" ls-tree -r --name-only FETCH_HEAD -- supabase/migrations > "$main_file"
+  supabase migration list --linked > "$history_file"
+  cat "$history_file"
+  decision=$(bun "$history_tool" "$history_file" "$main_file")
+  rm -f "$history_file" "$main_file"
+else
+  decision=apply
+  supabase migration list --linked
+fi
+if [[ "$decision" == apply ]]; then
+  supabase db push --linked --dry-run
+  supabase db push --linked --yes
+elif [[ "$decision" == skip ]]; then
+  echo '::notice::Staging has only known forward migrations from main; skipping SQL apply, continuing exact-release deployment and smoke.'
+else
+  fail 'Invalid staging migration decision.'
+fi
 supabase migration list --linked
 # Discard CLI link metadata before either provider uploads the source tree.
 rm -rf supabase/.temp

@@ -100,6 +100,8 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
       : secret(kind as AccountKind, data.get("value")));
   if (!value.ok) return fail(value.error);
 
+  const maxAgents = formAgentLimit(data);
+  if (maxAgents === undefined) return fail("Maximum agents must be a positive integer, or empty for unlimited.");
   let saved: Awaited<ReturnType<AccountControl["set"]>>;
   try {
     saved = await context.control.set({
@@ -108,6 +110,7 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
       kind,
       name: name.value,
       value: value.value,
+      maxAgents,
     });
   } catch (error) {
     return explain(error);
@@ -253,5 +256,27 @@ export async function testAccountConnection(_previous: ActionResult | null, data
     if (error instanceof ControlError)
       return fail("The check could not be completed. Check the sandbox and your connection before trying again.");
     throw error;
+  }
+}
+
+function formAgentLimit(data: FormData): number | null | undefined {
+  const raw = formString(data, "maxAgents").trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  return /^[1-9][0-9]*$/.test(raw) && Number.isSafeInteger(value) ? value : undefined;
+}
+
+export async function updateAccountLimits(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const context = await scoped(data);
+  if (!isScoped(context)) return context;
+  const id = formString(data, "id");
+  const maxAgents = formAgentLimit(data);
+  if (!isUuid(id) || maxAgents === undefined) return fail("Enter a positive integer, or leave empty for unlimited.");
+  try {
+    const saved = await context.control.limits({ ...target(context, id), maxAgents });
+    refresh();
+    return done(`${saved.name} limit updated.`);
+  } catch (error) {
+    return explain(error);
   }
 }

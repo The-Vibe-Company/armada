@@ -48,6 +48,34 @@ test("bounded cleanup only removes receipted IDs and retains unconfirmed deletes
   }
 });
 
+test.each(["stop", "status", "delete"])(
+  "cleanup settles an absent sandbox at %s without retaining its receipt",
+  async (missingAt) => {
+    const calls: string[] = [];
+    const output: Record<string, unknown>[] = [];
+    const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, "token", [row], {
+      out: (line) => output.push(JSON.parse(line)),
+      fetch: async (url, init) => {
+        const action = init.method === "DELETE" ? "delete" : url.split("/").at(-1)!;
+        calls.push(action);
+        if (action === missingAt) return Response.json({ error: { code: "not_found" } }, { status: 404 });
+        return Response.json({ id: row.id, status: missingAt === "status" ? "stopping" : "stopped" });
+      },
+    });
+    expect(remaining).toEqual([]);
+    expect(calls.at(-1)).toBe(missingAt);
+    expect(output.at(-1)).toMatchObject({ step: "delete_smoke_sandbox", pass: true, id: row.id });
+  },
+);
+
+test.each(["unknown_route", "forbidden"])("cleanup retains a 404 that is not sandbox not_found: %s", async (code) => {
+  const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, "token", [row], {
+    out: () => {},
+    fetch: async () => Response.json({ error: { code } }, { status: 404 }),
+  });
+  expect(remaining).toEqual([row]);
+});
+
 test("cleanup refuses production and malformed/non-smoke manifests without network access", async () => {
   let calls = 0;
   await expect(
@@ -611,6 +639,68 @@ test("journal cleanup still gets its full reserve after the work window is consu
       remainingRows: 0,
     });
     expect(await readSmokeJournal(path)).toEqual([]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a staging run persists absent historical receipts as settled and never sweeps them again", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "smoke-missing-history-"));
+  const path = join(directory, "journal.json");
+  const historical = [
+    { ...row, provider: "modal" as const },
+    { ...row, id: "33333333-3333-3333-3333-333333333333", provider: "modal" as const },
+  ];
+  const deferred = { ...row, id: "44444444-4444-4444-4444-444444444444", provider: "boat" as const };
+  const stopped: string[] = [];
+  try {
+    await saveSmokeJournal(path, [...historical, deferred]);
+    for (let run = 0; run < 2; run++) {
+      const output: Record<string, unknown>[] = [];
+      const passed = await postDeploySmoke(
+        {
+          ARMADA_URL: STAGING_ORIGIN,
+          ARMADA_TOKEN: "token",
+          ARMADA_SMOKE: "create_real_compute",
+          ARMADA_SMOKE_JOURNAL: path,
+          ARMADA_SMOKE_CASES: JSON.stringify([
+            {
+              provider: "modal",
+              harness: "codex",
+              org: row.org,
+              golden: "smoke",
+              model: "model",
+              modelAccountId: "account",
+              repo: "/repo",
+            },
+          ]),
+        },
+        [],
+        {
+          now: () => 0,
+          sleep: async () => {},
+          out: (line) => {
+            if (line.startsWith("{")) output.push(JSON.parse(line));
+          },
+          fetch: async (url, init) => {
+            if (url.endsWith("/stop")) {
+              stopped.push(JSON.parse(String(init.body)).id);
+              return Response.json({ error: { code: "not_found" } }, { status: 404 });
+            }
+            expect(url.endsWith("/launch")).toBe(true);
+            return Response.json({ error: { code: "unavailable" } }, { status: 503 });
+          },
+        },
+      );
+      expect(passed).toBe(false); // A functional failure must not be hidden by successful cleanup.
+      expect(await readSmokeJournal(path)).toEqual([deferred]);
+      expect(output.find((item) => item.step === "smoke_cleanup_summary")).toMatchObject({
+        pass: true,
+        remainingRows: 0,
+        deferredRows: 1,
+      });
+      expect(stopped.toSorted()).toEqual(historical.map((item) => item.id).toSorted());
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

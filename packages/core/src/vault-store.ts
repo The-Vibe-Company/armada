@@ -71,6 +71,14 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
             );
             id = created.rows[0]?.id;
           }
+        }
+        if (input.maxAgents !== undefined || (input.action === "set" && !input.id))
+          await tx.query("update public.credentials set max_agents=$2 where id=$1", [
+            id,
+            input.maxAgents === undefined ? (kind === "morph" ? 2 : null) : input.maxAgents,
+          ]);
+        if (input.action === "limits" || input.action === "set") {
+          // Limits do not rotate secrets or change defaults.
         } else if (input.action === "rename") {
           if (!input.name) throw new VaultError("invalid", "Name is required.");
           await tx.query("update public.credentials set name=$2 where id=$1", [id, input.name.trim()]);
@@ -273,6 +281,8 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
       const result = await sql.query<{
         id: string;
         name: string;
+        max_agents: number | null;
+        running_agents: string;
         is_default: boolean;
         status: string;
         expires_at: string | null;
@@ -281,7 +291,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         kind: string;
         created_at: string | Date;
       }>(
-        `select id,name,is_default,status,expires_at,updated_at,version,kind::text as kind, created_at from public.credentials
+        `select id,name,max_agents,(select count(*) from public.sandboxes s where s.credential_id=credentials.id and s.deleted_at is null and s.stopped_at is null and s.status in ('starting','ready','running')) as running_agents,is_default,status,expires_at,updated_at,version,kind::text as kind, created_at from public.credentials
          where scope = $1::public.credential_scope and owner_id = $2
          order by kind`,
         [scope, ownerId],
@@ -289,6 +299,8 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
       return result.rows.map((row) => ({
         id: row.id,
         name: row.name,
+        maxAgents: row.max_agents,
+        runningAgents: Number(row.running_agents ?? 0),
         isDefault: row.is_default,
         status: row.status,
         expiresAt: row.expires_at ? instant(row.expires_at) : null,

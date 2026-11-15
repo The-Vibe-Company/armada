@@ -32,6 +32,16 @@ for (const mode of [
   "snapshot_missing",
   "snapshot_wrong_provider",
   "snapshot_answer_missing",
+  "snapshot_unconfigured",
+  "snapshot_not_ready",
+  "snapshot_unsupported",
+  "snapshot_wrong_host",
+  "snapshot_wrong_org",
+  "snapshot_wrong_owner",
+  "snapshot_wrong_receipt",
+  "snapshot_org_visibility",
+  "snapshot_host_unavailable",
+  "snapshot_invalid_id",
   "routine_valid",
   "routine_missing",
   "routine_window",
@@ -212,6 +222,9 @@ for (const mode of [
     const prompts = new Map<string, string>();
     const states = new Map<string, string>();
     const providers = ["modal", "docker"];
+    const snapshotId = "10000000-0000-4000-8000-000000000009";
+    const snapshotOwner = "10000000-0000-4000-8000-000000000008";
+    const snapshotImage = `sha256:${"a".repeat(64)}`;
     const passed = await postDeploySmoke(
       {
         ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
@@ -272,6 +285,9 @@ for (const mode of [
               modelAccountId: "fake-account",
               golden: "fake-golden",
               hostId: "owned-host",
+              ...(mode.startsWith("snapshot_") && mode !== "snapshot_unconfigured" && provider === "docker"
+                ? { snapshotId: mode === "snapshot_invalid_id" ? "not_a_uuid" : snapshotId }
+                : {}),
               ...(mode.startsWith("github") && mode !== "github_unconfigured"
                 ? { githubRepository: mode === "github_invalid" ? "owner/repo'; echo unsafe" : "owner/private-fixture" }
                 : {}),
@@ -382,16 +398,41 @@ for (const mode of [
                 ],
               };
               break;
+            case "docker/snapshots/list":
+              result = {
+                snapshots:
+                  mode === "snapshot_missing"
+                    ? []
+                    : [
+                        {
+                          id: snapshotId,
+                          provider: mode === "snapshot_wrong_provider" ? "modal" : "docker",
+                          orgId: mode === "snapshot_wrong_org" ? "other-org" : p,
+                          hostId: mode === "snapshot_wrong_host" ? "other-host" : "owned-host",
+                          ownerId: mode === "snapshot_wrong_owner" ? "other-owner" : snapshotOwner,
+                          visibility: mode === "snapshot_org_visibility" ? "org" : "private",
+                          status: mode === "snapshot_not_ready" ? "building" : "ready",
+                          hostAvailable: mode !== "snapshot_host_unavailable",
+                          image: snapshotImage,
+                        },
+                      ],
+              };
+              break;
+            case "account/status":
+              result = { userId: snapshotOwner };
+              break;
             case "launch/options":
               result = {
                 providers: providers.map((id) => ({
                   id,
                   harnesses: [configuredHarness],
+                  launchSources: id === "docker" && mode === "snapshot_unsupported" ? ["image"] : ["golden", "image"],
                   capabilities: {
                     steer: mode.startsWith("control_") && mode !== "control_unsupported",
                     interrupt: mode.startsWith("control_") && mode !== "control_unsupported",
                     variables: mode !== "readable_unsupported",
                     launch: true,
+                    goldens: mode !== "snapshot_unsupported",
                     mcp: mode === "mcp_resume_full",
                     exec: mode !== "readable_no_exec",
                     github: mode !== "github_unsupported",
@@ -590,7 +631,14 @@ for (const mode of [
             }
             case "sandbox/launch":
               dashboardProvider = p;
-              if (mode.startsWith("snapshot_")) expect(body.golden).toBe("fake-golden");
+              if (mode.startsWith("snapshot_")) {
+                if (p === "docker") {
+                  expect(body.snapshotId).toBe(snapshotId);
+                  expect(body).not.toHaveProperty("golden");
+                  expect(body).not.toHaveProperty("repos");
+                  expect(body).not.toHaveProperty("image");
+                } else expect(body.golden).toBe("fake-golden");
+              }
               if (mode.startsWith("h_")) {
                 expect(body.harness).toBe(configuredHarness);
                 expect(body.credentialId).toBe("fake-account");
@@ -623,7 +671,22 @@ for (const mode of [
                 );
               if (mode === "client_send_full_slow") clock += 110_001;
               states.set(p, "ready");
-              result = { sandbox: { id: p, provider: p } };
+              result = {
+                sandbox: {
+                  id: p,
+                  provider: p,
+                  ...(p === "docker" && mode.startsWith("snapshot_")
+                    ? {
+                        snapshotId: mode === "snapshot_wrong_receipt" ? "other-snapshot" : snapshotId,
+                        hostId: "owned-host",
+                        image: snapshotImage,
+                        orgId: p,
+                        ownerId: snapshotOwner,
+                        visibility: "private",
+                      }
+                    : {}),
+                },
+              };
               break;
             case "sandbox/wait": {
               const n = (controlActiveReads.get(p) ?? 0) + 1;
@@ -1162,6 +1225,12 @@ for (const mode of [
       expect(lines.some((line) => line.includes("invalid_parity_filter"))).toBe(true);
       return;
     }
+    if (mode === "snapshot_invalid_id") {
+      expect(passed).toBe(false);
+      expect(calls).toEqual([]);
+      expect(lines.join("\n")).toContain("invalid_configuration");
+      return;
+    }
     const report = JSON.parse(lines.find((line) => line.startsWith('{"step":"provider_parity"'))!);
     for (const cells of Object.values(report.features) as Record<string, unknown>[])
       expect(cells.boat).toEqual(boatNotRun);
@@ -1395,18 +1464,31 @@ for (const mode of [
       return;
     }
     if (mode.startsWith("snapshot_")) {
-      expect(passed).toBe(mode === "snapshot_valid");
-      expect(report.features["launch-snapshot"].docker.status).toBe("unsupported");
-      expect(calls).not.toContain("docker:sandbox/launch");
-      if (mode === "snapshot_valid" || mode === "snapshot_answer_missing") {
-        expect(report.starts).toBe(1);
-        expect(turns.get("modal")).toHaveLength(1);
-        expect(report.features["launch-snapshot"].modal.status).toBe(mode === "snapshot_valid" ? "pass" : "not-run");
-        expect(report.features.cleanup.modal.status).toBe("pass");
-      } else {
-        expect(report.starts).toBe(0);
-        expect(report.features["launch-snapshot"].modal.diagnostic.code).toBe("invalid_snapshot_source");
+      const modalAllocated = mode !== "snapshot_missing" && mode !== "snapshot_wrong_provider";
+      const dockerAllocated = ["snapshot_valid", "snapshot_answer_missing", "snapshot_wrong_receipt"].includes(mode);
+      const pass = [
+        "snapshot_valid",
+        "snapshot_unconfigured",
+        "snapshot_not_ready",
+        "snapshot_host_unavailable",
+        "snapshot_unsupported",
+      ].includes(mode);
+      expect(passed).toBe(pass);
+      expect(report.starts).toBe(Number(modalAllocated) + Number(dockerAllocated));
+      expect(report.features["launch-snapshot"].docker.status).toBe(
+        mode === "snapshot_valid" ? "pass" : mode === "snapshot_unsupported" ? "unsupported" : "not-run",
+      );
+      for (const provider of providers) {
+        const allocated = provider === "modal" ? modalAllocated : dockerAllocated;
+        expect(calls.includes(`${provider}:sandbox/launch`)).toBe(allocated);
+        if (allocated) {
+          expect(report.features.cleanup[provider].status).toBe("pass");
+          if (mode !== "snapshot_wrong_receipt" || provider !== "docker") expect(turns.get(provider)).toHaveLength(1);
+        }
       }
+      if (mode === "snapshot_unconfigured") expect(calls).not.toContain("docker:docker/snapshots/list");
+      if (!modalAllocated)
+        expect(report.features["launch-snapshot"].modal.diagnostic.code).toBe("invalid_snapshot_source");
       return;
     }
     if (deepFull) {
@@ -2172,6 +2254,7 @@ test("accounts appends both human-readable tables to the Actions summary without
     expect(summary).toContain("| codex-subscription | docker | all | not-run: no account on staging |");
     expect(summary).toContain("| claude-morph | modal | not-run: no account configured |");
     expect(summary).toContain("| codex-morph | docker | not-run: no account configured |");
+    expect(summary).toContain("| opencode-morph | modal | not-run: no account configured |");
     expect(summary).not.toContain("USD 0");
     expect(lines.some((line) => line.startsWith("## Accounts parity"))).toBe(false);
   } finally {

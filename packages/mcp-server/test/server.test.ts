@@ -877,7 +877,7 @@ describe("tools", () => {
     });
   });
 
-  test("running status reads no history; transient terminal gaps retry and long history does not hide the turn", async () => {
+  test("running status stays unsettled; transient terminal gaps retry and long history does not hide the turn", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", {
@@ -887,14 +887,12 @@ describe("tools", () => {
       prompt: "work",
     });
     const original = boat.provider.events;
-    let reads = 0;
-    boat.provider.events = async (request) => {
-      reads++;
-      return original(request);
-    };
-    await call(mcp, "status", { id: launched.data.id });
-    await call(mcp, "status", { id: launched.data.id });
-    expect(reads).toBe(0);
+    const running = await call(mcp, "status", { id: launched.data.id });
+    expect(running.data).toMatchObject({
+      status: "running",
+      settled: false,
+      prompt: { state: "running", rateLimit: null },
+    });
     const state = boat.sandbox("bx_1");
     state.events.unshift(
       ...Array.from({ length: 10200 }, (_, i) => ({

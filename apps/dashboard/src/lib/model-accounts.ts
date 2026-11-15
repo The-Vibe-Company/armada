@@ -23,6 +23,8 @@ export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
 export type AccountScope = (typeof ACCOUNT_SCOPES)[number];
 
 export interface ModelAccount {
+  maxAgents?: number | null;
+  runningAgents?: number;
   id: string;
   scope: AccountScope;
   kind: AccountKind;
@@ -56,7 +58,12 @@ const KIND_PRESENTATION: Record<AccountKind, Omit<KindInfo, "harness" | "harness
     valueLabel: "OAuth token",
     hint: "Run claude setup-token on your machine, sign in, and paste the token it prints.",
   },
-  morph: { label: "Morph", billing: "api", valueLabel: "API key", hint: "One Morph key for Claude Code and Codex." },
+  morph: {
+    label: "Morph",
+    billing: "api",
+    valueLabel: "API key",
+    hint: "One Morph key for Claude Code, Codex and OpenCode.",
+  },
   anthropic: {
     label: "Anthropic API key",
     billing: "api",
@@ -79,7 +86,7 @@ const KIND_PRESENTATION: Record<AccountKind, Omit<KindInfo, "harness" | "harness
     label: "OpenCode API key",
     billing: "api",
     valueLabel: "API key",
-    hint: "An OpenCode plan key from opencode.ai, or a DeepSeek, OpenRouter or other OpenAI-compatible connection. Modal only.",
+    hint: "An OpenCode plan key from opencode.ai, or a DeepSeek, OpenRouter or other OpenAI-compatible connection. Modal, Docker hosts or Boat shared runtime API.",
   },
 };
 
@@ -146,6 +153,8 @@ export function parseAccount(value: unknown): ModelAccount | null {
     expiresAt,
     updatedAt,
     version: value.version,
+    maxAgents: typeof value.maxAgents === "number" ? value.maxAgents : null,
+    runningAgents: typeof value.runningAgents === "number" ? value.runningAgents : 0,
   };
 }
 

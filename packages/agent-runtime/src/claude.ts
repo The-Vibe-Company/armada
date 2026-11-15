@@ -7,6 +7,7 @@ import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { HarnessError, type HarnessErrorCode } from "./errors.ts";
 import { PrivateMcpFile } from "./mcp-file.ts";
+import { ModelRateLimitWait } from "./model-rate-limit.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 /** Each query owns its process and input stream; no global interrupt. */
 export class ClaudeDriver implements Driver {
@@ -92,6 +93,7 @@ export class ClaudeDriver implements Driver {
     let nativeSession: string | undefined;
     const privateInputs = new Set<string>();
     let terminalError: HarnessErrorCode | undefined;
+    const rateLimitWait = new ModelRateLimitWait();
     const messages = new ClaudeMessages((event) => c.emit(event));
     const inputs: SDKUserMessage[] = [];
     const push = (text: string) => {
@@ -173,6 +175,7 @@ export class ClaudeDriver implements Driver {
     this.queries.add(q);
     const interrupt = async () => {
       interrupted = true;
+      rateLimitWait.cancel();
       try {
         await bounded(q.interrupt(), 5000);
       } finally {
@@ -196,7 +199,10 @@ export class ClaudeDriver implements Driver {
             nativeSession = event.session_id;
             c.session(event.session_id);
           }
-          if (event.type === "stream_event") {
+          if (event.type === "system" && event.subtype === "api_retry") {
+            if (event.error_status === 429 || event.error_status === 529)
+              rateLimitWait.observe(c, event.retry_delay_ms);
+          } else if (event.type === "stream_event") {
             if (privateUsage) continue;
             messages.stream(event);
           } else if (event.type === "assistant") {
@@ -207,13 +213,13 @@ export class ClaudeDriver implements Driver {
               // Rendered /usage text is equally account-private.
               continue;
             }
-            if (event.error)
-              terminalError =
-                event.error === "authentication_failed" || event.error === "cloud_credential_error"
-                  ? "authentication_failed"
-                  : event.error === "rate_limit"
-                    ? "rate_limited"
-                    : "harness_failed";
+            terminalError = event.error
+              ? event.error === "authentication_failed" || event.error === "cloud_credential_error"
+                ? "authentication_failed"
+                : event.error === "rate_limit" || event.error === "overloaded"
+                  ? "rate_limited"
+                  : "harness_failed"
+              : undefined;
             if (privateUsage) continue;
             messages.complete(event);
           } else if (event.type === "user") {
@@ -237,6 +243,7 @@ export class ClaudeDriver implements Driver {
                     ],
                   });
           } else if (event.type === "result") {
+            if (event.subtype === "success" && !event.is_error) terminalError = undefined;
             const consumed = event.user_message_uuids ?? (event.user_message_uuid ? [event.user_message_uuid] : []);
             const intermediate = !interrupted && !consumed.includes(latest) && (steered || consumed.length > 0);
             const measured =
@@ -292,6 +299,15 @@ export class ClaudeDriver implements Driver {
             privateUsage = privateInputs.size > 0;
             if (!interrupted && steered && !consumed.length) throw new HarnessError("invalid_harness_protocol");
             if (!interrupted && consumed.length && !consumed.includes(latest)) continue;
+            if (terminalError === "rate_limited" && !interrupted) {
+              // An assistant error alone is not terminal: the native CLI may still retry it.
+              // Only resume after its result, retaining the same session and queued steering.
+              await rateLimitWait.wait(c);
+              if (interrupted) return "interrupted" as const;
+              terminalError = undefined;
+              push("Continue from where the model provider request was rate limited. Do not repeat completed work.");
+              continue;
+            }
             if (terminalError) throw new HarnessError(terminalError);
             if (interrupted) return "interrupted" as const;
             if (event.subtype !== "success" || event.is_error) throw new HarnessError("harness_failed");
@@ -300,6 +316,9 @@ export class ClaudeDriver implements Driver {
         }
         if (interrupted) return "interrupted" as const;
         throw Error("claude_stream_closed_without_result");
+      } catch (error) {
+        if (interrupted || c.signal.aborted) return "interrupted" as const;
+        throw error;
       } finally {
         closed = true;
         wake?.();

@@ -422,6 +422,29 @@ A saved personal login does not unset ARMADA_TOKEN: remove that variable from
 a command's environment when you intend to use the saved personal session.
 Never place tokens in command arguments. Help itself starts no sign-in flow.
 
+Profile selection accepts `--profile NAME` or `--profile=NAME`, or the
+`ARMADA_PROFILE` environment variable. The explicit flag wins; omit both to
+use the existing default profile. Names are 1–64 ASCII letters, digits,
+underscores or hyphens and must start with a letter or digit. The `--` option
+terminator protects remote command/prompt arguments from global flag parsing.
+
+Profiles isolate saved sessions and preferences, not environment variables.
+`ARMADA_TOKEN` still overrides a saved login in every profile. For token-based
+scripts, explicitly select the matching `ARMADA_URL`; do not assume changing
+profile switches the token or makes a token belong to a different server.
+A named profile without a token needs its own server/login configuration;
+root help and focused command help are available before configuration.
+
+```sh
+armada --profile staging --help
+armada --profile staging org list
+```
+
+After the staging login above, inspect organization membership and select the
+organization in that profile with `armada --profile staging org use NAME`.
+Do not paste session files or tokens into diagnostics or shared logs.
+
+
 ### Credential command discovery
 
 `armada creds --help` (or `-h`) shows a focused index of native subscription
@@ -475,3 +498,44 @@ choices without making requests or signing out. Remote account logout requires
 a personal session; local `armada logout` only clears saved login. Use leaf
 help for details, including ARMADA_TOKEN precedence. Bare no-argument account
 invocation retains its existing behavior.
+
+### Script output, errors and exit codes
+
+Check a command's exit status before using its stdout. Exit `0` means the
+command succeeded; `1` covers authentication/server/operation failures and `2`
+covers usage or missing configuration. For example, an intentionally unknown
+command exits `2`, including when `--json` is requested. A pipeline's final
+parser status alone does not prove that Armada succeeded.
+
+Commands that support `--json` describe their response in leaf help. Common
+typed failures emit `{"error":{"code":"...","message":"..."}}` on **stderr**,
+not stdout; some API errors may additionally include `legacyCode`. Successful
+output and human diagnostics are separate streams. Warnings/progress can also
+appear on stderr, so do not assume the whole diagnostics stream is a single
+JSON document. A failed multi-page/long operation may have already produced
+partial stdout: do not treat that partial data as a complete successful result.
+
+Capture streams separately in a private temporary directory, check the command
+status first, and only then parse its successful JSON. This metadata-only list
+example uses POSIX shell syntax and requires `jq`:
+
+```sh
+umask 077
+work=$(mktemp -d) || exit 1
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+if armada list --json >"$work/result.json" 2>"$work/diagnostics.log"; then
+  jq -r '.sandboxes[].id' "$work/result.json"
+else
+  status=$?
+  printf 'Armada failed (exit %s); no result parsed.\n' "$status" >&2
+  # For local diagnosis, retain protected files here before exit; never publish them blindly.
+  exit "$status"
+fi
+```
+
+The trap removes captured files when the shell exits. For a failure you need to
+investigate later, retain the files only in a protected location before exiting.
+Do not adapt this into logging raw values: `vars read`, token creation and
+installer output can be sensitive. Never put credential values in arguments.
+For an uncertain launch outcome, inspect existing sandbox/receipt state before
+retrying; template launches must preserve their original request key and body.

@@ -60,7 +60,7 @@ export const HARNESS_CATALOG = {
   opencode: {
     label: "OpenCode",
     skillpackTool: "opencode",
-    credentialKinds: ["opencode"],
+    credentialKinds: ["opencode", "morph"],
     boatProvider: null,
     capabilities: { ...COMMON_CAPABILITIES, steer: "restart", fast: false },
     defaultModel: "armada/deepseek-flash",

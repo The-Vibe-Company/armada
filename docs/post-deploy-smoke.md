@@ -1343,8 +1343,16 @@ golden and requires a finished, answered turn. Full runs reuse their ordinary
 golden launch rather than allocating another sandbox. This proves launch from
 an existing saved golden snapshot, not creation of a new checkpoint or mutation
 of an operator's golden. A missing snapshot or wrong-provider source cannot pass.
-Docker's image launch is not a golden snapshot: its row remains explicit
-unsupported debt (#1532), with no allocation for this filtered feature.
+For Docker, add an explicit `snapshotId` UUID to the owned-host case and run
+`--parity --only docker --feature launch-snapshot`. The probe verifies the
+existing ready, owned-private snapshot's host, organization and digest before
+launch, then matches the returned snapshot/host/image/owner and requires an
+answered turn and cleanup. This is a deliberate private smoke fixture, not a
+restriction on product support for shared snapshots. Missing/unready fixtures
+allocate nothing. The probe never builds or mutates the source snapshot.
+Unfiltered Docker runs keep their plain-image source and report this row
+`not-run` with a dedicated-probe requirement rather than claiming snapshot proof.
+See [Docker snapshot acceptance](docker-host-daemon.md) for setup.
 ### Configured template-revision parity
 
 Add `template: {"id":"<template UUID>","revision":2}` to a provider case and run
@@ -1723,3 +1731,37 @@ covers no-override sends in an existing single conversation, not browser
 rendering/CORS, other conversation choices or launch/stop/resume/delete client
 request parity. Those and live provider acceptance remain owed. Boat remains
 coordinator-only via `--only boat --production-boat`, never the release gate.
+
+### Absent launch handles (#2080)
+
+A journal entry is a cleanup handle, not proof that a sandbox row was registered.
+In particular, `template-service.ts` reserves `template_launch_requests.sandbox_id`
+before allocation. Its failed/reconciling response and replay include that ID
+even when allocation was refused before registration. The smoke wrapper records
+the response ID before validating success, deliberately retaining any possible
+allocation. The template helper also adopts that ID for cleanup. Thus a receipt
+can legitimately refer to a sandbox that never existed; cancellation is not
+required. This is a code-supported path, not attribution of the two historical
+IDs to a particular launch failure without their original response evidence.
+
+Keep this conservative recording: discarding every failed or reconciling launch
+handle could hide an uncertain provider allocation. Instead, the cleanup boundary
+resolves an explicit API HTTP 404 `not_found` at stop, status or delete. Other
+404 codes (including `unknown_route`), permission refusals and transport failures
+remain unresolved. A failed functional probe still fails the smoke even when
+cleanup succeeds. A 404 is not a provider-allocation reconciliation proof;
+unknown launch outcomes retain their existing failure/reconciliation handling.
+
+On the first main staging smoke carrying #2081, the startup sweep reads the
+restored journal, resolves the two Modal handles that answer 404, and saves the
+reduced journal before new probes. The workflow uploads that file even if later
+probes fail; the next run restores it without those handles. Provider-unverified
+and Boat entries remain deferred, not silently deleted. No database repair,
+migration or production mutation is needed.
+
+Coordinator acceptance: confirm both historical IDs have successful
+`delete_smoke_sandbox` entries, `smoke_cleanup_summary.remainingRows` is zero,
+and the uploaded journal omits both IDs. Then confirm the next main staging
+smoke does not sweep them again and the exact-commit release smoke passes.
+The unit recovery test exercises two invocations against the same journal while
+keeping an unrelated deferred receipt and a functional launch failure.

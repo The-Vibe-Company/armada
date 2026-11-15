@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
+import { Console } from "node:console";
 import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Writable } from "node:stream";
+import { runInNewContext } from "node:vm";
 import {
   type McpBootstrap,
   nativeMcpInstallScript,
@@ -9,24 +13,35 @@ import {
   normalizeNativeMcpBootstrap,
 } from "../src/mcp-native.ts";
 
+// Execute the exact Node payload shipped over SSH, without Bash/Node startup or
+// ambient credentials. Keep real temporary files to exercise atomic writes and permissions.
+const require = createRequire(import.meta.url);
+function installNativeMcp(home: string, config: McpBootstrap) {
+  const payload = nativeMcpInstallScript.split("node <<'ARMADA_NATIVE_MCP'\n")[1]?.split("\nARMADA_NATIVE_MCP")[0];
+  if (!payload) throw new Error("Missing native MCP installer payload");
+  const output: string[] = [];
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      output.push(chunk.toString());
+      callback();
+    },
+  });
+  runInNewContext(payload, {
+    console: new Console(stream, stream),
+    require: (name: string) => (name === "node:os" ? { homedir: () => home } : require(name)),
+    process: { env: { ARMADA_GIT_TOKEN: JSON.stringify(config) }, pid: process.pid },
+  });
+  return output.join("");
+}
+
 test("native bootstrap preserves user settings, rotates both harnesses, and scrubs snapshot credentials", async () => {
   const home = await mkdtemp(join(tmpdir(), "armada-mcp-native-"));
   const token = crypto.randomUUID();
+  const rotated = crypto.randomUUID();
   const install = async (config: McpBootstrap) => {
-    const child = Bun.spawn(["bash"], {
-      stdin: new Blob([nativeMcpInstallScript]),
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, HOME: home, ARMADA_GIT_TOKEN: JSON.stringify(config) },
-    });
-    const [code, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    expect(code).toBe(0);
-    expect(stdout).not.toContain(token);
-    expect(stderr).not.toContain(token);
+    const output = installNativeMcp(home, config);
+    expect(output).not.toContain(token);
+    expect(output).not.toContain(rotated);
   };
   try {
     await writeFile(
@@ -56,7 +71,6 @@ test("native bootstrap preserves user settings, rotates both harnesses, and scru
     expect(claude.mcpServers.armada_remote.headers.Authorization).toBe(`Bearer ${token}`);
     expect((await stat(join(home, ".claude.json"))).mode & 0o777).toBe(0o600);
     expect((await stat(join(home, ".codex/config.toml"))).mode & 0o777).toBe(0o600);
-    const rotated = crypto.randomUUID();
     await install({
       revision: "two",
       servers: {
@@ -95,13 +109,7 @@ test("native bootstrap refuses a symlink instead of writing credentials through 
     const target = join(home, "repo-file");
     await writeFile(target, "untouched");
     await symlink(target, join(home, ".claude.json"));
-    const child = Bun.spawn(["bash"], {
-      stdin: new Blob([nativeMcpInstallScript]),
-      stdout: "ignore",
-      stderr: "ignore",
-      env: { ...process.env, HOME: home, ARMADA_GIT_TOKEN: JSON.stringify({ revision: "one", servers: {} }) },
-    });
-    expect(await child.exited).not.toBe(0);
+    expect(() => installNativeMcp(home, { revision: "one", servers: {} })).toThrow("Unsafe config path");
     expect(await readFile(target, "utf8")).toBe("untouched");
   } finally {
     await rm(home, { recursive: true, force: true });

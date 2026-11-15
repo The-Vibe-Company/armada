@@ -15,6 +15,25 @@ describe("run", () => {
     expect(await capture(["--version"])).toEqual({ code: 0, out: `${VERSION}\n`, err: "" });
   });
 
+  test("root help aliases need no configured profile or external I/O", async () => {
+    const forbidden = () => {
+      throw new Error("Help attempted external I/O");
+    };
+    for (const alias of ["help", "--help", "-h"]) {
+      for (const explicit of [true, false]) {
+        const result = await capture(explicit ? ["--profile", "new-user", alias] : [alias], {
+          env: explicit ? {} : { ARMADA_PROFILE: "new-user" },
+          fetch: Object.assign(forbidden, { preconnect: forbidden }),
+          readStdin: forbidden,
+        });
+        expect(result.code).toBe(0);
+        expect(result.err).toBe("");
+        expect(result.out).toContain("Quick start / common examples:");
+        expect(result.out).toContain("armada login");
+      }
+    }
+  });
+
   test("no command prints the help", async () => {
     const { code, out } = await capture([], {
       auth: {
@@ -34,6 +53,8 @@ describe("run", () => {
     expect(out).toContain("armada launch <snapshot> --agent claude|codex");
     expect(out).toContain("armada login");
     expect(out).toContain("armada token create");
+    expect(out).toContain("--profile overrides ARMADA_PROFILE");
+    expect(out).toContain("ARMADA_TOKEN is not isolated by profiles");
   });
 
   test.each([
@@ -107,12 +128,57 @@ describe("run", () => {
     expect(out).not.toContain("armada snapshot create");
   });
 
-  test("an unknown command fails with a usage error", async () => {
-    const { code, out, err } = await capture(["frobnicate"]);
-    expect(code).toBe(2);
-    expect(out).toBe("");
-    expect(err).toContain("unknown command 'frobnicate'");
+  test("unknown root or snapshot commands use the human or JSON usage error contract", async () => {
+    const forbidden = () => {
+      throw new Error("Unknown command attempted I/O");
+    };
+    for (const family of [undefined, "snapshot", "golden"]) {
+      for (const json of [false, true]) {
+        const args = family ? [family, "frobnicate", "--org", "org_placeholder"] : ["frobnicate"];
+        const diagnostic = `unknown command '${family ? "snapshot " : ""}frobnicate'`;
+        const { code, out, err } = await capture([...args, ...(json ? ["--json"] : [])], {
+          env: {},
+          fetch: Object.assign(forbidden, { preconnect: forbidden }),
+          readStdin: forbidden,
+        });
+        expect(code).toBe(2);
+        expect(out).toBe("");
+        if (json) {
+          expect(JSON.parse(err)).toEqual({
+            error: {
+              code: "usage",
+              message: `${diagnostic}. Run 'armada --help'.`,
+            },
+          });
+        } else {
+          expect(err).toContain(diagnostic);
+          expect(err).toContain("armada --help");
+        }
+      }
+    }
   });
+});
+
+test("bare host and snapshot aliases show family usage without profile, account or input I/O", async () => {
+  const forbidden = () => {
+    throw new Error("Usage attempted external I/O");
+  };
+  for (const command of ["snapshot", "golden", "host"]) {
+    const result = await capture(["--profile", "new-user", command], {
+      env: {},
+      fetch: Object.assign(forbidden, { preconnect: forbidden }),
+      readStdin: forbidden,
+      get auth(): never {
+        return forbidden();
+      },
+    });
+    expect(result.code).toBe(2);
+    expect(result.err).toBe("");
+    const family = command === "golden" ? "snapshot" : command;
+    expect(result.out).toContain(`Usage: armada ${family} <command>`);
+    expect(result.out).toContain(`Example: armada ${family}`);
+    expect(result.out).not.toContain("Quick start / common examples:");
+  }
 });
 
 test.each(["snapshot", "golden"])("%s help works before login and documents snapshots", async (command) => {

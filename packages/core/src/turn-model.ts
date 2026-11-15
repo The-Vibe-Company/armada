@@ -30,7 +30,29 @@ export function turnModelEvidence(
       !event.retracted,
   );
   const models = new Set(responses.flatMap((event) => (event.kind === "message" && event.model ? [event.model] : [])));
-  const observedModel = models.size === 1 ? ([...models][0] ?? null) : null;
+  // Native usage metadata may identify compatible-provider models even when
+  // the harness omits model IDs on message events. It is display evidence only:
+  // a configured/aliased usage model does not prove exact response selection.
+  const usageModels = new Set(
+    dedupeEvents(events).flatMap((event) => {
+      if (
+        event.promptId !== request.promptId ||
+        event.kind !== "other" ||
+        event.type !== "armada/turnUsage" ||
+        !event.data ||
+        typeof event.data !== "object"
+      )
+        return [];
+      const model = (event.data as Record<string, unknown>).model;
+      return typeof model === "string" && model.trim() ? [model] : [];
+    }),
+  );
+  const observedModel =
+    models.size === 1
+      ? ([...models][0] ?? null)
+      : models.size === 0 && usageModels.size === 1
+        ? ([...usageModels][0] ?? null)
+        : null;
   const truncated = events.some(
     (event) =>
       event.kind === "other" &&
@@ -47,6 +69,7 @@ export function turnModelEvidence(
     !truncated &&
     request.requestedModel !== null &&
     observedModel !== null &&
+    responses.length > 0 &&
     responses.every((event) => event.kind === "message" && event.model !== undefined);
   // A concrete response ID cannot disprove a native alias selection without an authoritative alias map.
   const nativeAlias =

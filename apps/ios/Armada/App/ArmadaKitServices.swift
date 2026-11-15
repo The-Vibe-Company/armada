@@ -192,7 +192,9 @@ struct ArmadaKitServices: SandboxService {
         return SandboxState(
             status: SandboxStatus(rawValue: value.status),
             statusReason: value.statusReason,
-            turn: value.prompt.map { SandboxTurnState(promptID: $0.promptId, status: PromptStatus(rawValue: $0.state), reason: $0.reason, requestedModel: $0.requestedModel, observedModel: $0.observedModel, modelSelectionReason: $0.modelSelectionReason, modelSelectionMessage: $0.modelSelectionMessage) },
+            turn: value.prompt.map { SandboxTurnState(promptID: $0.promptId, status: PromptStatus(rawValue: $0.state), reason: $0.reason, requestedModel: $0.requestedModel, observedModel: $0.observedModel, modelSelectionReason: $0.modelSelectionReason, modelSelectionMessage: $0.modelSelectionMessage, rateLimit: $0.rateLimit.map {
+                SandboxRateLimitState(retryCount: $0.retryCount, totalWaitMs: $0.totalWaitMs, waiting: $0.waiting, message: $0.message)
+            }) },
             admission: admission,
             canStop: value.canStop,
             isWorking: value.isWorking

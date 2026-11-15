@@ -23,6 +23,7 @@ import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
+import { DockerLaunchDialog } from "@/components/docker-launch";
 import { SnapshotBuildRefresh, SnapshotCreateChoice, SnapshotRebuildDialog } from "@/components/docker-snapshot-forms";
 import { EnvironmentTemplates } from "@/components/environment-templates";
 import { GoldenCreateDialog } from "@/components/golden-create-dialog";
@@ -49,12 +50,14 @@ import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/dock
 import { readSelectedDockerSnapshots } from "@/lib/data/docker-snapshots";
 import { getGitHubConnection } from "@/lib/data/github";
 import { findRemovedGolden, type GoldenRow, listGoldenHistory, listGoldens } from "@/lib/data/goldens";
+import { readLaunchOptions } from "@/lib/data/launch-options";
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listSelectedTemplates, lookupsFrom, type TemplateList } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
+import { dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
 import { hasDockerHost, snapshotLaunchEnabled, snapshotRebuildAvailable, snapshotState } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import {
@@ -76,6 +79,7 @@ import {
   PROVIDER_LABELS,
   providerCapacity,
 } from "@/lib/golden-form";
+import { boatOpenCodeAvailable } from "@/lib/launch-options";
 import { goldenSizing, sizePolicyBlocker } from "@/lib/machine-size";
 import type { LaunchAccounts } from "@/lib/model-accounts";
 import { CLOUD_PROVIDERS_PATH, connectedProviders } from "@/lib/provider-setup";
@@ -128,6 +132,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     hostRead,
     snapshotRead,
     dockerOption,
+    launchOptions,
     goldens,
     history,
     memberships,
@@ -143,6 +148,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     readSelectedDockerHosts(),
     readSelectedDockerSnapshots(),
     readDockerLaunchOption(),
+    readLaunchOptions(),
     listGoldens(supabase),
     listGoldenHistory(supabase),
     pending,
@@ -207,6 +213,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     viewerId: viewer.id,
     all: goldens,
     serverReady,
+    boatOpenCodeAvailable: boatOpenCodeAvailable(launchOptions),
     connected,
     rebuildsTracked,
     connections,
@@ -303,6 +310,45 @@ export default async function GoldensPage({ searchParams }: Props) {
   const notices = (
     <>
       <SnapshotBuildRefresh building={snapshots.some((row) => row.status === "building")} />
+      {selected && hosts.length > 0 && dockerOption?.enabled && (
+        <section aria-label="Launch on a Docker host" className="space-y-3 rounded-lg border p-4">
+          <div>
+            <h2 className="text-sm font-medium">Launch on a host</h2>
+            <p className="text-sm text-muted-foreground">
+              Start from the official Armada environment without building a snapshot.
+            </p>
+          </div>
+          <ul className="space-y-3">
+            {hosts.map((host) => {
+              const name = host.name ?? "Unnamed machine";
+              const blocker = dockerLaunchBlocker(
+                dockerOption,
+                hostRead.state === "ready" && hostRead.list.placement,
+                host,
+              );
+              const agents = dockerHarnesses(dockerOption);
+              return (
+                <li key={host.id} className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm">{name}</span>
+                  {blocker ? (
+                    <p className="text-xs text-muted-foreground">{blocker}</p>
+                  ) : (
+                    <DockerLaunchDialog
+                      orgId={selected.org.id}
+                      hostId={host.id}
+                      hostName={name}
+                      accounts={accounts}
+                      unavailable={dockerUnavailable(dockerOption)}
+                      harnesses={agents.offered}
+                      initialHarness={agents.initial ?? "codex"}
+                    />
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
       {snapshotsUnavailable && (
         <Alert variant="destructive">
           <TriangleAlertIcon />
@@ -574,6 +620,7 @@ type RowContext = {
   viewerId: string;
   all: Golden[];
   serverReady: boolean;
+  boatOpenCodeAvailable: boolean;
   /** The providers the org has connected; a golden launches and rebuilds only on its own. Null: status unavailable. */
   connected: SandboxProviderId[] | null;
   /** Goldens whose rebuild this page tracks in its URL: their form stays to follow the job, even without a provider. */
@@ -651,6 +698,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
       <LaunchDialog
         golden={golden.name}
         provider={golden.provider}
+        boatOpenCodeAvailable={context.boatOpenCodeAvailable}
         orgId={golden.org_id}
         catalog={MODEL_CATALOG}
         repositories={directories}

@@ -4,7 +4,7 @@ import { providerParitySmoke } from "./provider-parity-smoke.ts";
 
 // Native MCP observations, not assistant prose, own the proof. Transport fixtures
 // model Codex's combined call/result and Claude's separate cross-page tool-use ID join.
-for (const mode of [
+for (const scenario of [
   "valid",
   "resume_valid",
   "resume_claude",
@@ -23,6 +23,7 @@ for (const mode of [
   "missing",
   "opencode",
   "opencode_valid",
+  "opencode_docker_unadvertised",
   "opencode_inventory_missing",
   "opencode_collision",
   "opencode_inventory_changed",
@@ -53,8 +54,23 @@ for (const mode of [
   "child",
   "retracted",
   "later_page",
+  { mode: "opencode_valid", boat: true },
+  { mode: "opencode_resume_valid", boat: true },
+  { mode: "opencode_wrong_server", boat: true },
+  { mode: "opencode_no_native", boat: true },
+  { mode: "opencode", boat: true },
+  { mode: "opencode_valid", boat: true, nativeDefault: true },
+  { mode: "opencode_resume_valid", boat: true, missingCheckpointVersion: true },
+  { mode: "opencode_resume_valid", boat: true, invalidCheckpoint: "ack" },
+  { mode: "opencode_resume_valid", boat: true, invalidCheckpoint: "epoch" },
 ] as const) {
-  test(`MCP canary parity: ${mode}`, async () => {
+  const boat = typeof scenario === "object";
+  const mode = boat ? scenario.mode : scenario;
+  const nativeDefault = boat && "nativeDefault" in scenario;
+  const missingCheckpointVersion = boat && "missingCheckpointVersion" in scenario;
+  const invalidCheckpoint = boat && "invalidCheckpoint" in scenario ? scenario.invalidCheckpoint : undefined;
+  const providers = boat ? ["boat"] : ["modal", "docker"];
+  test(`MCP canary parity: ${boat ? "production Boat " : ""}${mode}${nativeDefault ? " native default" : ""}${missingCheckpointVersion ? " missing checkpoint version" : ""}${invalidCheckpoint ? ` invalid checkpoint ${invalidCheckpoint}` : ""}`, async () => {
     const binding = {
       connectionId: "10000000-0000-4000-8000-000000000002",
       tool: "parity_probe",
@@ -79,11 +95,11 @@ for (const mode of [
     let now = 0;
     const passed = await providerParitySmoke(
       {
-        ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
+        ARMADA_URL: boat ? "https://production-fixture.invalid" : "https://armada-mcp-staging.up.railway.app",
         ARMADA_TOKEN: "placeholder",
         ARMADA_SMOKE: "create_real_compute",
         ARMADA_SMOKE_CASES: JSON.stringify(
-          ["modal", "docker"].map((provider) => ({
+          providers.map((provider) => ({
             provider,
             org: provider,
             harness,
@@ -112,8 +128,23 @@ for (const mode of [
           switch (route) {
             case "launch/options":
               result = {
-                ...(mode.startsWith("opencode_") ? { modalRuntime: { opencodeMcpProofVersion: 1 } } : {}),
-                providers: ["modal", "docker"].map((id) => ({
+                ...(mode.startsWith("opencode_")
+                  ? {
+                      modalRuntime: { opencodeMcpProofVersion: 1 },
+                      ...(mode === "opencode_docker_unadvertised"
+                        ? {}
+                        : { dockerRuntime: { opencodeMcpProofVersion: 1 } }),
+                    }
+                  : {}),
+                boatRuntime: {
+                  enabled: true,
+                  defaultPath: nativeDefault ? "native" : "runtime",
+                  opencodeVersion: 1,
+                  ...(mode.startsWith("opencode_") ? { opencodeMcpProofVersion: 1 } : {}),
+                  checkpointVersion: missingCheckpointVersion ? 0 : 1,
+                  resumeVersion: 1,
+                },
+                providers: providers.map((id) => ({
                   id,
                   harnesses: [harness],
                   capabilities: {
@@ -211,11 +242,14 @@ for (const mode of [
               turns.set(id, (turns.get(id) ?? 0) + 1);
               reads.set(id, 0);
               states.set(id, "ready");
-              expect(Boolean(body.request_id)).toBe(id === "docker");
+              expect(Boolean(body.request_id)).toBe(id === "docker" || id === "boat");
               expect(body.prompt).toContain(binding.tool);
               expect(body.prompt).toContain("empty JSON arguments {}");
               answers.set(id, String(body.prompt).match(/PARITY_MCP_DONE_[a-f0-9-]{36}/)![0]);
-              result = { promptId: `turn_${id}_${turns.get(id)}` };
+              result = {
+                promptId: `turn_${id}_${turns.get(id)}`,
+                ...(boat ? { runtime: { kind: "armada", epoch: String(turns.get(id)) } } : {}),
+              };
               break;
             case "logs/read": {
               const n = (reads.get(id) ?? 0) + 1;
@@ -365,6 +399,22 @@ for (const mode of [
             case "sandbox/status":
               result = { id: body.id, status: states.get(id) };
               break;
+            case "sandbox/checkpoint-runtime-v1":
+              expect(boat && deep).toBe(true);
+              expect(body.runtimeVersion).toBe(1);
+              expect(body.request_id).toMatch(/^[a-f0-9-]{36}$/);
+              expect(states.get(id)).toBe("ready");
+              result = {
+                id,
+                requestId: body.request_id,
+                runtime: { kind: "armada", epoch: invalidCheckpoint === "epoch" ? "99" : String(turns.get(id)) },
+                checkpoint: {
+                  state: "complete",
+                  watermark: 10,
+                  acknowledgedSequence: invalidCheckpoint === "ack" ? 9 : 10,
+                },
+              };
+              break;
             case "sandbox/stop":
               states.set(id, "stopped");
               if (mode === "resume_stop_budget") now += 110_001;
@@ -380,10 +430,32 @@ for (const mode of [
           return Response.json(result);
         },
       },
-      ["--feature", deep ? "mcp-resume" : "mcp"],
+      [...(boat ? ["--production-boat", "--only", "boat"] : []), "--feature", deep ? "mcp-resume" : "mcp"],
     );
+    if (nativeDefault || missingCheckpointVersion || invalidCheckpoint) {
+      const report = lines
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .find((value) => value?.step === "provider_parity");
+      expect(report.starts).toBe(invalidCheckpoint ? 1 : 0);
+      if (invalidCheckpoint) {
+        expect(passed).toBe(false);
+        expect(report.features["prerequisite:stop"].boat.status).toBe("fail");
+        expect(calls.filter((call) => call === "boat:sandbox/send")).toHaveLength(1);
+        expect(report.features.cleanup.boat.status).toBe("pass");
+      } else {
+        expect(passed).toBe(true);
+        expect(report.features[deep ? "mcp-resume" : "mcp"].boat.status).toBe("not-run");
+        expect(calls).not.toContain("boat:templates/launch");
+      }
+      return;
+    }
     if (deep) {
-      const supported = harness !== "opencode";
       const noAllocation = mode === "resume_missing" || mode === "resume_no_stop";
       expect(passed).toBe(
         [
@@ -404,11 +476,10 @@ for (const mode of [
           }
         })
         .find((value) => value?.step === "provider_parity");
-      expect(report.starts).toBe(noAllocation ? 0 : supported ? 2 : 1);
-      for (const provider of ["modal", "docker"]) {
-        const deferred = harness === "opencode" && provider === "docker";
+      expect(report.starts).toBe(noAllocation ? 0 : providers.length);
+      for (const provider of providers) {
         expect(report.features["mcp-resume"][provider].status).toBe(
-          deferred || mode === "resume_missing" || mode === "resume_quota" || mode === "resume_stop_budget"
+          mode === "resume_missing" || mode === "resume_quota" || mode === "resume_stop_budget"
             ? "not-run"
             : mode === "resume_no_stop"
               ? "unsupported"
@@ -416,7 +487,7 @@ for (const mode of [
                 ? "pass"
                 : "fail",
         );
-        if (noAllocation || deferred) expect(calls).not.toContain(`${provider}:templates/launch`);
+        if (noAllocation) expect(calls).not.toContain(`${provider}:templates/launch`);
         else {
           expect(report.features["mcp-before-resume"][provider].status).toBe("pass");
           expect(report.features.cleanup[provider].status).toBe("pass");
@@ -433,7 +504,9 @@ for (const mode of [
           }
         }
       }
-      if (mode === "opencode_resume_valid") expect(inventoryReads.get("modal")).toBe(4);
+      if (mode === "opencode_resume_valid") {
+        for (const provider of providers) expect(inventoryReads.get(provider)).toBe(4);
+      }
       expect(lines.join("\n")).not.toContain(binding.expectedText);
       return;
     }
@@ -447,7 +520,15 @@ for (const mode of [
       "opencode_collision",
     ].includes(mode);
     expect(passed).toBe(
-      ["valid", "claude_valid", "missing", "opencode", "opencode_valid", "unsupported"].includes(mode),
+      [
+        "valid",
+        "claude_valid",
+        "missing",
+        "opencode",
+        "opencode_valid",
+        "opencode_docker_unadvertised",
+        "unsupported",
+      ].includes(mode),
     );
     const report = lines
       .map((line) => {
@@ -458,28 +539,29 @@ for (const mode of [
         }
       })
       .find((v) => v?.step === "provider_parity");
-    expect(report.starts).toBe(noAllocation ? 0 : harness === "opencode" ? 1 : 2);
-    for (const provider of ["modal", "docker"]) {
+    expect(report.starts).toBe(noAllocation ? 0 : mode === "opencode_docker_unadvertised" ? 1 : providers.length);
+    for (const provider of providers) {
       expect(report.features.mcp[provider].status).toBe(
-        ["valid", "claude_valid"].includes(mode) || (mode === "opencode_valid" && provider === "modal")
+        ["valid", "claude_valid", "opencode_valid"].includes(mode) ||
+          (mode === "opencode_docker_unadvertised" && provider === "modal")
           ? "pass"
           : mode === "unsupported"
             ? "unsupported"
             : "not-run",
       );
-      if (noAllocation || (harness === "opencode" && provider === "docker"))
+      if (noAllocation || (mode === "opencode_docker_unadvertised" && provider === "docker"))
         expect(calls).not.toContain(`${provider}:templates/launch`);
       else {
         expect(calls).toContain(`${provider}:sandbox/delete`);
         expect(report.features.cleanup[provider].status).toBe("pass");
       }
       expect(calls).not.toContain(`${provider}:sandbox/exec`);
-      if (harness === "opencode" && provider === "docker")
-        expect(calls.filter((path) => path.startsWith("docker:"))).toHaveLength(0);
+      if (mode === "opencode_docker_unadvertised" && provider === "docker")
+        expect(report.features.mcp.docker.reason).toBe("opencode_mcp_native_proof_not_advertised");
     }
     expect(lines.join("\n")).not.toContain(binding.expectedText);
     if (mode === "opencode_valid" || mode === "opencode_inventory_changed" || mode === "opencode_inventory_late")
-      expect(inventoryReads.get("modal")).toBe(2);
+      for (const provider of providers) expect(inventoryReads.get(provider)).toBe(2);
   });
 }
 

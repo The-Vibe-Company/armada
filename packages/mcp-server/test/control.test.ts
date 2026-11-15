@@ -906,6 +906,8 @@ describe("control API", () => {
         harnesses: ["claude", "codex"],
         capabilities: { launch: true },
       });
+      expect(body.dockerRuntime?.opencodeMcpProofVersion).toBe(0);
+      expect(body.boatRuntime.opencodeMcpProofVersion).toBe(0);
       const hiddenDocker = body.providers.find((provider) => provider.id === "docker");
       expect(hiddenDocker).toMatchObject({
         enabled: false,
@@ -931,6 +933,17 @@ describe("control API", () => {
       for (const [capability, supported] of Object.entries(docker?.capabilities ?? {})) {
         if (!supported) expect(docker?.unsupportedReasons[capability as keyof typeof docker.capabilities]).toBeTruthy();
       }
+      // Even trusted placement flags cannot claim native proof without installed launch/MCP handlers.
+      options.docker = {
+        hosts: true,
+        placement: true,
+        normalApi: true,
+        normalLaunch: true,
+        normalSend: true,
+      };
+      const unwired = await call({ method: "POST", headers, body: "{}" });
+      const unwiredOptions = (await unwired?.json()) as LaunchOptionsResponse;
+      expect(unwiredOptions.dockerRuntime?.opencodeMcpProofVersion).toBe(0);
       expect(body.harnesses.map((harness: { id: string }) => harness.id)).toEqual([...HARNESSES]);
       for (const harness of body.harnesses) {
         const catalog = MODEL_CATALOG[harness.id as keyof typeof MODEL_CATALOG];
@@ -1805,9 +1818,9 @@ test.each(["claude", "codex"] as const)(
       expect((await post(STAN, chosen)).status).toBe(404); // Org admins cannot adopt another owner's workspace.
       const incompatible = await post(ADA, wrong);
       expect(await incompatible.json()).toMatchObject({
-        error: { code: "credential_refused", message: expect.stringContaining("incompatible") },
+        error: { code: "invalid", message: expect.stringContaining("This account cannot drive") },
       });
-      expect(incompatible.status).toBe(422);
+      expect(incompatible.status).toBe(400);
       await options.store.removeMember(org.id, ADA);
       expect((await post(ADA, chosen)).status).toBe(404); // The named org is resolved against fresh memberships.
       // Without --org, the bearer's org list may be stale: the transaction checks membership again.
@@ -2998,7 +3011,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     for (const bad of [
       { ...body, runtimeVersion: 0 },
       { ...body, boatRuntime: false },
-      { ...body, harness: "opencode" },
+      { ...body, harness: "unknown_harness" },
       { ...body, provider: "modal" },
       { ...body, connections: "invalid" },
       { ...body, skills: ["not-a-pin"] },

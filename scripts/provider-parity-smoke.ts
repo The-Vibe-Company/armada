@@ -140,6 +140,7 @@ const features = [
 const accountMatrix = {
   "claude-morph": "claude",
   "codex-morph": "codex",
+  "opencode-morph": "opencode",
   "codex-openai": "codex",
   "codex-subscription": "codex",
   "codex-azure": "codex",
@@ -175,6 +176,7 @@ interface Case {
   golden?: string;
   hostId?: string;
   image?: string;
+  snapshotId?: string;
 }
 interface Io {
   deadline?: number;
@@ -268,6 +270,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       if (
         !(productionBoat ? c.provider === "boat" : ["modal", "docker"].includes(c.provider)) ||
         !isHarness(c.harness) ||
+        (c.snapshotId !== undefined &&
+          (c.provider !== "docker" ||
+            typeof c.snapshotId !== "string" ||
+            !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(c.snapshotId))) ||
         (c.subscriptionAccount !== undefined && typeof c.subscriptionAccount !== "boolean") ||
         (c.clientSend !== undefined && typeof c.clientSend !== "boolean") ||
         (c.mcpResume !== undefined && typeof c.mcpResume !== "boolean") ||
@@ -448,8 +454,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         record(name, c.provider, "not-run", "harness_account_not_configured");
     if (requestedHarness && feature !== harnessFeature) continue;
     if ((!feature || feature === "launch-snapshot") && c.provider === "docker") {
-      record("launch-snapshot", c.provider, "unsupported", "Docker has no golden snapshot launch source (#1532).");
-      if (feature === "launch-snapshot") continue;
+      if (!feature || !c.snapshotId) {
+        record(
+          "launch-snapshot",
+          c.provider,
+          "not-run",
+          c.snapshotId ? "dedicated_snapshot_probe_required" : "snapshot_probe_not_configured",
+        );
+        if (feature === "launch-snapshot") continue;
+      }
     }
     if ((!feature || feature === "subscription-account") && c.subscriptionAccount !== true) {
       record("subscription-account", c.provider, "not-run", "subscription_account_probe_not_configured");
@@ -462,12 +475,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         record("mcp-resume", c.provider, "not-run", "mcp_probe_not_configured");
       if (feature === "mcp" || feature === "mcp-resume") continue;
     }
-    if ((feature === "mcp" || feature === "mcp-resume") && c.provider === "boat") {
+    if ((feature === "mcp" || feature === "mcp-resume") && c.provider === "boat" && c.harness !== "opencode") {
       record(feature, c.provider, "not-run", "native_boat_mcp_evidence_probe_not_implemented");
-      continue;
-    }
-    if ((feature === "mcp" || feature === "mcp-resume") && c.harness === "opencode" && c.provider !== "modal") {
-      record(feature, c.provider, "not-run", "opencode_mcp_probe_modal_only");
       continue;
     }
     if ((!feature || feature === "application-secrets") && (!c.applicationSecret || !c.template)) {
@@ -523,6 +532,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       continue;
     }
     let snapshotSourceVerified = false;
+    let dockerSnapshot: { id: string; hostId: string; orgId: string; ownerId: string; image: string } | undefined;
     let option: LaunchProviderOption | undefined;
     let id: string | undefined;
     const templateClaims = new Set<string>();
@@ -539,6 +549,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     const api = <T>(path: string, body: object = {}) => request<T>(path, { org: c.org, ...body });
     const readableUntil = Math.min(deadline, io.now() + 110_000);
     let mcp: Awaited<ReturnType<typeof prepareMcpProbe>> | undefined;
+    let mcpRuntimeEpoch: string | undefined;
     let secret: Awaited<ReturnType<typeof prepareSecretProbe>> | undefined;
     let skills: Awaited<ReturnType<typeof prepareSkillsProbe>> | undefined;
     let readable: Awaited<ReturnType<typeof prepareReadableProbe>> | undefined;
@@ -624,7 +635,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       const sandboxId = id;
       await poll(
         async () => {
-          await probe.verify(sandboxId, c.provider);
+          const evidence = await probe.verify(sandboxId, c.provider);
+          if (c.provider === "boat") {
+            const epoch = evidence.runtimeEpoch;
+            if (!epoch || (afterResume && mcpRuntimeEpoch && BigInt(epoch) <= BigInt(mcpRuntimeEpoch)))
+              throw new McpProbeError("invalid_mcp_receipt");
+            mcpRuntimeEpoch = epoch;
+          }
           return true;
         },
         (value) => value,
@@ -1221,10 +1238,37 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       const options = await discoveryApi<{
         providers: LaunchProviderOption[];
         modalRuntime?: { opencodeMcpProofVersion?: number };
+        boatRuntime?: {
+          opencodeVersion?: number;
+          defaultPath?: string;
+          enabled?: boolean;
+          opencodeMcpProofVersion?: number;
+          checkpointVersion?: number;
+          resumeVersion?: number;
+        };
+        dockerRuntime?: { opencodeMcpProofVersion?: number };
       }>("launch/options");
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
+      if (
+        c.provider === "boat" &&
+        c.harness === "opencode" &&
+        (feature === "mcp" || feature === "mcp-resume") &&
+        (!option.harnesses.includes("opencode") ||
+          options.boatRuntime?.enabled !== true ||
+          options.boatRuntime.defaultPath !== "runtime" ||
+          options.boatRuntime.opencodeVersion !== 1)
+      ) {
+        record(feature, c.provider, "not-run", "boat_opencode_runtime_not_advertised");
+        continue;
+      }
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
+      if (
+        c.provider === "boat" &&
+        c.harness === "opencode" &&
+        (options.boatRuntime?.opencodeVersion !== 1 || options.boatRuntime.defaultPath !== "runtime")
+      )
+        throw new Error("boat_opencode_runtime_not_advertised");
       if (feature === "client-send") {
         const missing = (["followupPrompts", "logs"] as const).find((name) => option!.capabilities[name] !== true);
         if (missing) {
@@ -1239,6 +1283,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
       if (feature === "mcp" || feature === "mcp-resume") {
         if (feature === "mcp-resume") {
+          if (
+            c.provider === "boat" &&
+            (options.boatRuntime?.checkpointVersion !== 1 || options.boatRuntime.resumeVersion !== 1)
+          ) {
+            record(feature, c.provider, "not-run", "boat_runtime_checkpoint_resume_not_advertised");
+            continue;
+          }
           const missing = (["stop", "resume", "followupPrompts", "logs"] as const).find(
             (name) => option!.capabilities[name] !== true,
           );
@@ -1252,7 +1303,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             continue;
           }
         }
-        if (c.harness === "opencode" && options.modalRuntime?.opencodeMcpProofVersion !== 1) {
+        if (
+          c.harness === "opencode" &&
+          (c.provider === "boat"
+            ? options.boatRuntime
+            : c.provider === "docker"
+              ? options.dockerRuntime
+              : options.modalRuntime
+          )?.opencodeMcpProofVersion !== 1
+        ) {
           record(feature, c.provider, "not-run", "opencode_mcp_native_proof_not_advertised");
           continue;
         }
@@ -1342,6 +1401,57 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           poll,
           until: readableUntil,
         });
+      }
+      if (feature === "launch-snapshot" && c.provider === "docker") {
+        if (option.capabilities.goldens !== true || !option.launchSources?.includes("golden")) {
+          record(
+            feature,
+            c.provider,
+            "unsupported",
+            option.unsupportedReasons.goldens ?? "snapshot_launch_not_advertised",
+          );
+          continue;
+        }
+        const listed = await discoveryApi<{
+          snapshots: Array<{
+            id: string;
+            provider: string;
+            hostId: string;
+            orgId: string;
+            ownerId: string;
+            visibility: string;
+            status: string;
+            hostAvailable: boolean;
+            image: string;
+          }>;
+        }>("docker/snapshots/list");
+        if (!Array.isArray(listed.snapshots)) throw new Error("invalid_snapshot_source");
+        const matches = listed.snapshots.filter((snapshot) => snapshot?.id === c.snapshotId);
+        if (!matches.length) {
+          record(feature, c.provider, "not-run", "snapshot_not_visible_or_unavailable");
+          continue;
+        }
+        const actor = await discoveryApi<{ userId: string }>("account/status");
+        const snapshot = matches[0]!;
+        if (
+          matches.length !== 1 ||
+          snapshot.provider !== "docker" ||
+          snapshot.orgId !== c.org ||
+          snapshot.hostId !== c.hostId ||
+          snapshot.visibility !== "private" ||
+          typeof actor.userId !== "string" ||
+          !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(actor.userId) ||
+          snapshot.ownerId !== actor.userId
+        )
+          throw new Error("invalid_snapshot_source");
+        if (snapshot.status !== "ready" || snapshot.hostAvailable !== true) {
+          record(feature, c.provider, "not-run", "snapshot_not_ready_on_host");
+          continue;
+        }
+        if (typeof snapshot.image !== "string" || !/^sha256:[a-f0-9]{64}$/.test(snapshot.image))
+          throw new Error("invalid_snapshot_source");
+        dockerSnapshot = snapshot;
+        snapshotSourceVerified = true;
       }
       if ((!feature || feature === "launch-snapshot") && c.provider !== "docker") {
         const listed = await discoveryApi<{
@@ -1700,7 +1810,18 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     mcp?.verifyManifest(manifest);
                     return { sandbox: { id, provider: receipt.provider } };
                   })()
-                : await api<{ sandbox: { id: string; provider: string } }>("sandbox/launch", {
+                : await api<{
+                    sandbox: {
+                      id: string;
+                      provider: string;
+                      snapshotId?: string;
+                      hostId?: string;
+                      image?: string;
+                      orgId?: string;
+                      ownerId?: string;
+                      visibility?: string;
+                    };
+                  }>("sandbox/launch", {
                     provider: c.provider,
                     harness: c.harness,
                     model: c.model,
@@ -1711,6 +1832,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       ? {
                           hostId: c.hostId,
                           requestId: crypto.randomUUID(),
+                          ...(dockerSnapshot ? { snapshotId: dockerSnapshot.id } : {}),
                           ...(c.githubRepository && (!feature || feature === "github")
                             ? {
                                 repos: [
@@ -1740,6 +1862,25 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             feature !== "mcp-resume"
           )
             await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`, c.provider);
+          if (dockerSnapshot) {
+            const receipt = result.sandbox as {
+              snapshotId?: string;
+              hostId?: string;
+              image?: string;
+              orgId?: string;
+              ownerId?: string;
+              visibility?: string;
+            };
+            if (
+              receipt.snapshotId !== dockerSnapshot.id ||
+              receipt.hostId !== dockerSnapshot.hostId ||
+              receipt.image !== dockerSnapshot.image ||
+              receipt.orgId !== dockerSnapshot.orgId ||
+              receipt.ownerId !== dockerSnapshot.ownerId ||
+              receipt.visibility !== "private"
+            )
+              throw new Error("invalid_snapshot_source");
+          }
         } else {
           if (!id) throw new Error("launch_not_available");
           if (step === "send") {
@@ -1864,6 +2005,27 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               stopped = false;
               stopRequested = false;
             }
+            if (step === "stop" && feature === "mcp-resume" && c.provider === "boat" && c.harness === "opencode") {
+              const requestId = crypto.randomUUID();
+              const checkpoint = await api<{
+                id: string;
+                requestId: string;
+                runtime: { kind: string; epoch: string };
+                checkpoint: { state: string; watermark: number; acknowledgedSequence: number };
+              }>("sandbox/checkpoint-runtime-v1", { id, request_id: requestId, runtimeVersion: 1 });
+              const proof = checkpoint.checkpoint;
+              if (
+                checkpoint.id !== id ||
+                checkpoint.requestId !== requestId ||
+                checkpoint.runtime?.kind !== "armada" ||
+                checkpoint.runtime.epoch !== mcpRuntimeEpoch ||
+                proof?.state !== "complete" ||
+                !Number.isSafeInteger(proof.watermark) ||
+                proof.watermark < 0 ||
+                proof.acknowledgedSequence !== proof.watermark
+              )
+                throw new Error("invalid_runtime_checkpoint_receipt");
+            }
             if (step === "stop") stopRequested = true;
             const requestId = crypto.randomUUID();
             const invoke = () => api<{ status: string }>(`sandbox/${step}`, { id, request_id: requestId });
@@ -1947,7 +2109,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     }
     if (
       (!feature || feature === "launch-snapshot") &&
-      c.provider !== "docker" &&
+      (c.provider !== "docker" || snapshotSourceVerified) &&
       report["launch-snapshot"]?.[c.provider]?.status !== "pass"
     ) {
       const source = ["launch", "send"]

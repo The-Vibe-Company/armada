@@ -168,9 +168,17 @@ export function launchCredentials(
       if (!repaired) throw new VaultError("unavailable", "GitHub is not connected for the sandbox owner.");
       return repaired;
     },
-    async admit(actor, credentials) {
+    async enrollAccount(actor, credentials) {
       if (credentials.codexAuthJson && ownership?.broker && credentials.binding)
         await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
+    },
+    async admit(actor, credentials, sandboxId) {
+      if (credentials.binding) await ownership?.admitCapacity(credentials.binding.credentialId, sandboxId);
+      if (credentials.codexAuthJson && ownership?.broker && credentials.binding)
+        await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
+    },
+    async releaseAdmission(sandboxId) {
+      await ownership?.releaseCapacity(sandboxId);
     },
     async hydrateNative(actor, credentials, sandboxId, provider, providerSandboxId) {
       const binding =
@@ -223,7 +231,10 @@ export function launchCredentials(
       return ownership ? ownership.managed(sandboxId) : false;
     },
     async assertTurn(actor, sandboxId, resuming) {
-      if (ownership) await ownership.assertSandbox(actor, sandboxId, resuming);
+      if (ownership) {
+        await ownership.assertSandbox(actor, sandboxId, resuming);
+        if (resuming) await ownership.admitSandboxCapacity(sandboxId);
+      }
     },
     async resolve(
       actor: GoldenActor,

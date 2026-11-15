@@ -348,3 +348,20 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
         #expect(await transport.requests.filter { $0.url?.path == "/api/v1/sandbox/send" }.count == 1)
     }
 }
+
+@Test func sandboxTurnsDecodeStructuredModelWaitsAndRemainCompatibleWithOlderServers() throws {
+    let waiting = #"{"retryCount":2,"delayMs":20000,"totalWaitMs":30000,"retryAt":1762646420000,"waiting":true,"message":"Rate limited by the model provider, retrying in 20 s"}"#
+    let completed = #"{"retryCount":2,"delayMs":20000,"totalWaitMs":30000,"retryAt":1762646420000,"waiting":false,"message":"Model provider rate-limit wait completed"}"#
+    for (field, expectedWaiting) in [("", nil), (",\"rateLimit\":null", nil), (",\"rateLimit\":\(waiting)", true), (",\"rateLimit\":\(completed)", false)] as [(String, Bool?)] {
+        let data = Data("{\"promptId\":\"pr_1\",\"state\":\"running\"\(field)}".utf8)
+        let turn = try JSONDecoder().decode(SandboxTurn.self, from: data)
+        #expect(turn.rateLimit?.waiting == expectedWaiting)
+        if let rateLimit = turn.rateLimit {
+            #expect(rateLimit.retryCount == 2)
+            #expect(rateLimit.delayMs == 20000)
+            #expect(rateLimit.totalWaitMs == 30000)
+            #expect(rateLimit.retryAt == 1762646420000)
+            #expect(rateLimit.message == (expectedWaiting == true ? "Rate limited by the model provider, retrying in 20 s" : "Model provider rate-limit wait completed"))
+        }
+    }
+}

@@ -103,6 +103,38 @@ function machine() {
   };
 }
 
+test("local host leaf help is focused and avoids all native or account I/O", async () => {
+  const forbidden = () => {
+    throw new Error("Help attempted native or account I/O");
+  };
+  for (const command of ["install", "status", "uninstall"]) {
+    for (const option of ["--help", "-h"]) {
+      let out = "";
+      let err = "";
+      const code = await run(
+        ["--profile", "new-user", "host", command, option],
+        {
+          out: (text) => {
+            out += text;
+          },
+          err: (text) => {
+            err += text;
+          },
+        },
+        {
+          localHost: new Proxy({} as LocalHostIo, { get: forbidden }),
+          get auth(): never {
+            return forbidden();
+          },
+        },
+      );
+      expect({ code, err }).toEqual({ code: 0, err: "" });
+      expect(out).toContain(`Usage: armada host ${command}`);
+      expect(out).toContain(`Example: armada host ${command}`);
+    }
+  }
+});
+
 test("host install is login-free, verifies and atomically installs before execution, with token only on stdin", async () => {
   const m = machine();
   const result = await m.capture();
