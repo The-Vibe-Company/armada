@@ -461,7 +461,7 @@ export function createDockerSandboxControls(
       (await queuedPrompts(row.id)).some((q) => q.prompt_id === summary.prompt?.promptId && !q.native_prompt_id);
     return {
       events: [...events.values()],
-      cursor: cursor ?? null,
+      cursor,
       ...(olderCursor ? { olderCursor } : {}),
       hasMore,
       source: "armada-runtime",

@@ -1,11 +1,11 @@
-import { dedupeEvents } from "@armada/core";
 import { type Provider, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { optional } from "./control-input.ts";
 import { readEventPages } from "./event-pagination.ts";
-import { isPrivateModelEvent } from "./model-usage.ts";
+import { publicLogEvents } from "./model-usage.ts";
 import { measureRequestPhase } from "./request-timing.ts";
+import { latestPromptEvent } from "./turns.ts";
 
 type LogControlOptions = Pick<ControlOptions, "dockerControls" | "logs" | "timing">;
 
@@ -71,7 +71,7 @@ export async function readLogs(
     follow && !runtimeFailure
       ? await measureRequestPhase(options.timing, "state", () => target.provider.get(target.providerSandboxId))
       : null;
-  const latest = latestPrompt(events);
+  const latest = latestPromptEvent(events)?.promptId ?? null;
   // A live sandbox with no turn is idle, so following has nothing to wait for.
   const prompt =
     follow && !runtimeFailure && latest && info?.state !== "stopped" && info?.state !== "failed"
@@ -83,8 +83,8 @@ export async function readLogs(
     ...(source ? { source } : {}),
     ...(runtimeFailure ? { runtimeFailure } : {}),
     ...(olderCursor ? { olderCursor } : {}),
-    events: dedupeEvents(events).filter((event) => !isPrivateModelEvent(event)),
-    cursor: cursor ?? null,
+    events: publicLogEvents(events),
+    cursor,
     hasMore,
     settled:
       !follow ||
@@ -93,13 +93,4 @@ export async function readLogs(
       info?.state === "failed" ||
       (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true),
   };
-}
-
-function latestPrompt(events: Awaited<ReturnType<Provider["events"]>>["events"]): string | null {
-  let latest: (typeof events)[number] | undefined;
-  for (const event of events) {
-    if (event.kind !== "prompt" || !event.promptId) continue;
-    if (!latest || event.at >= latest.at) latest = event;
-  }
-  return latest?.promptId ?? null;
 }

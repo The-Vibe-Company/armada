@@ -486,3 +486,32 @@ test("template picker publishes exact pins and keeps earlier revisions immutable
     [],
   ]);
 });
+
+for (const state of ["failed", "reconciling"] as const) {
+  test(`template skill recovery hides internal diagnostics for ${state} outcomes`, async ({ page }) => {
+    await signIn(page, "alice@example.com", "/templates");
+    await row(page, "Backend with docs").getByRole("button", { name: "Launch from Backend with docs" }).click();
+    const dialog = page.getByRole("dialog", { name: "Launch Backend with docs" });
+    await outcome({ state, reason: "skillpack_cli_unavailable" });
+    await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+    const alert = dialog.getByRole("alert");
+    await expect(alert).toBeVisible();
+    for (const [device, width] of [
+      ["desktop", 1280],
+      ["mobile", 390],
+    ] as const) {
+      await page.setViewportSize({ width, height: 900 });
+      await alert.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `test-results/template-skill-${state}-${device}.png`, fullPage: true });
+    }
+    await expect(alert).toContainText("rebuild the snapshot");
+    await expect(alert).not.toContainText("skillpack_cli_unavailable");
+    await expect(alert).not.toContainText("armada snapshot update");
+    if (state === "reconciling") {
+      await expect(alert).toContainText("could not confirm whether the sandbox started");
+      await expect(alert.getByRole("link", { name: "Open Sandboxes", exact: true })).toBeVisible();
+    } else {
+      await expect(alert.getByRole("link", { name: "Open Sandboxes", exact: true })).toHaveCount(0);
+    }
+  });
+}

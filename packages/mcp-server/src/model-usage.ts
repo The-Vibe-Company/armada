@@ -1,5 +1,4 @@
-import type { AgentEvent, Provider, Sql } from "@armada/core";
-import { VaultError } from "@armada/core";
+import { type AgentEvent, dedupeEvents, type Provider, type Sql, VaultError } from "@armada/core";
 import type { Caller } from "./caller.ts";
 import { codexReading } from "./model-usage-codex.ts";
 
@@ -19,6 +18,8 @@ export function isPrivateModelEvent(event: AgentEvent): boolean {
     ].includes(event.type)
   );
 }
+
+export const publicLogEvents = (events: AgentEvent[]) => dedupeEvents(events).filter((e) => !isPrivateModelEvent(e));
 
 export interface Window {
   sourceId?: string | null;

@@ -4,6 +4,7 @@ import { launchTarget } from "../src/lib/template-launch.ts";
 import {
   agentSummary,
   canManageTemplate,
+  launchReason,
   parseLaunchOutcome,
   parseRevision,
   parseTemplate,
@@ -460,4 +461,15 @@ test("template control failures suppress arbitrary diagnostics and retain accoun
   expect(templateFailure(404, diagnostic, "missing_credential")).toContain("Add one in Account > Models");
   expect(templateFailure(404, diagnostic, "credential_refused")).toContain("Reconnect it in Account > Models");
   expect(templateFailure(409, diagnostic, "credential_busy")).toContain("account is busy");
+});
+
+test("template skill refusals give GUI recovery without internal codes or CLI instructions", () => {
+  for (const reason of ["skillpack_cli_unavailable", "skillpack_download_unavailable", "skillpack_install_nonzero"]) {
+    const message = launchReason(reason);
+    expect(message).not.toContain("skillpack_");
+    expect(message).not.toContain("armada ");
+    expect(message).not.toContain("docs/");
+  }
+  expect(launchReason("skillpack_credential_missing")).toContain("key in Skills");
+  expect(launchReason("skillpack_cli_unavailable")).toContain("rebuild the snapshot");
 });
