@@ -79,7 +79,7 @@ export function createSandboxLifecycle(
       // Only an already-requested stop may enter operator custody. This is not
       // provider authority: the worker never substitutes credentials or allocates.
       const operatorStop = row.status === "stopping" && row.stop_requested_at !== null;
-      async function deferToOperator(reason: string) {
+      const deferToOperator = async (reason: string) => {
         await sql.query(
           `update public.sandboxes set lifecycle_error=$4,
             reconcile_after='infinity'::timestamptz,reconcile_lease=null,reconcile_lease_until=null
@@ -94,7 +94,7 @@ export function createSandboxLifecycle(
             `Operator cleanup required: ${reason} Physical outcome unknown; retained identity unchanged. Follow docs/stopping-authority-loss.md.`,
           ],
         );
-      }
+      };
       if (!row.owner_is_member) {
         if (operatorStop) {
           await deferToOperator("owner membership removed.");

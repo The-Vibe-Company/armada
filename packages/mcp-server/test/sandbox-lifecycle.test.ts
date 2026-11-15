@@ -737,7 +737,17 @@ for (const loss of ["membership", "credential", "credential_stale_generation"] a
     });
     expect(await worker.reconcileOne()).toBe(true);
     const row = (
-      await db.query(
+      await db.query<{
+        status: string;
+        stopped_at: Date | null;
+        last_observed_at: Date | null;
+        stop_requested_at: Date | null;
+        provider_sandbox_id: string;
+        lifecycle_generation: number;
+        reconcile_lease: string | null;
+        lifecycle_error: string | null;
+        held: boolean;
+      }>(
         `select status,stopped_at,last_observed_at,stop_requested_at,provider_sandbox_id,
        lifecycle_generation,reconcile_lease,lifecycle_error,reconcile_after='infinity'::timestamptz as held
        from sandboxes where id=$1`,
