@@ -8,7 +8,7 @@ import { createDockerHostStore } from "./docker-host-store.ts";
 import { dockerRuntimeConfiguration } from "./docker-runtime-configuration.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
 type Stored = {
@@ -34,7 +34,6 @@ function deny(): never {
   throw new DockerBootstrapDenied();
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const scopedSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
 
 /** Private opt-in composition, not a placement provider or a public launch route. */
 export function createDockerBootstrapService(sql: Sql, key: string, options: Options) {
@@ -184,7 +183,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         );
         if (!host.rows.length) deny();
         await tx.query(`select id from public.sandboxes where id=$1 for update`, [sandboxId]);
-        const scoped = scopedSql(tx);
+        const scoped = scopedRuntimeSql(tx);
         const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
         if (JSON.stringify(current) !== JSON.stringify(snapshot)) deny();
         const original = await tx.query(

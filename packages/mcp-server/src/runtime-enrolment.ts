@@ -24,6 +24,9 @@ export const runtimeTransaction = (tx: Sql): Sql => ({
   transaction: async (work) => work(tx),
 });
 
+/** Query-only reentry: preserve synchronous forwarding and pass the original owner-held transaction. */
+export const scopedRuntimeSql = (tx: Sql): Sql => ({ query: tx.query.bind(tx), transaction: (work) => work(tx) });
+
 /** Internal launcher authority, never a user-facing configuration/credential API. */
 export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options: { allowDockerIssue?: boolean } = {}) {
   const token = (kind: "enrol" | "runtime") => `armada_${kind}_${randomBytes(32).toString("hex")}`;
