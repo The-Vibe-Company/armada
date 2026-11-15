@@ -10,6 +10,7 @@ import {
   checkDefaultChoice,
   KIND_INFO,
   kindFor,
+  launchAccounts,
   launchDefault,
   type ModelAccount,
   modelAccountFailure,
@@ -473,4 +474,18 @@ test("account action errors retain conflict/access recovery without upstream dia
   expect(modelAccountFailure(403)).toContain("permission");
   expect(modelAccountFailure(404)).toContain("Reload Models");
   for (const status of [undefined, 502, 503]) expect(modelAccountFailure(status)).toContain("could not be confirmed");
+});
+
+test("launch account observation keeps unknown distinct from ready and legacy without echoing diagnostics", () => {
+  const result = launchAccounts(
+    { state: "error", message: "HTTP 503: credential_version account_id digest sha256:example" },
+    0,
+  );
+  expect(result).toMatchObject({ state: "unavailable", reason: expect.stringContaining("Reload Models") });
+  expect(JSON.stringify(result)).not.toMatch(/HTTP|credential_version|account_id|sha256/);
+  expect(launchAccounts({ state: "legacy" }, 0)).toEqual({ state: "legacy" });
+  expect(launchAccounts({ state: "no-org" }, 0)).toMatchObject({
+    state: "unavailable",
+    reason: expect.stringContaining("join an organization"),
+  });
 });
