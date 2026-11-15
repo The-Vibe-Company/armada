@@ -27,18 +27,30 @@ public protocol ArmadaTransport: Sendable {
 
 /// Ephemeral session: no cookies, credential cache or response cache. Never follows redirects
 /// with an Armada bearer (including redirects back to the same host).
-public final class URLSessionTransport: NSObject, ArmadaTransport, URLSessionTaskDelegate, Sendable {
-    public override init() { super.init() }
-    public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+public final class URLSessionTransport: ArmadaTransport, Sendable {
+    private let session: URLSession
+
+    public init() {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
         configuration.urlCache = nil
-        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
+        session = URLSession(configuration: configuration, delegate: RedirectDenyingDelegate(), delegateQueue: nil)
+    }
+
+    deinit { session.invalidateAndCancel() }
+
+    public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ArmadaError.invalidResponse }
         return (data, http)
     }
+}
+
+// URLSession retains its delegate until invalidation. Keep it independent of the transport
+// so releasing the transport can invalidate the session, even after cancelled requests.
+private final class RedirectDenyingDelegate: NSObject, URLSessionTaskDelegate, Sendable {
     public func urlSession(_ session: URLSession, task: URLSessionTask,
                            willPerformHTTPRedirection response: HTTPURLResponse,
                            newRequest request: URLRequest,
