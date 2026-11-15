@@ -128,28 +128,32 @@ describe("run", () => {
     expect(out).not.toContain("armada snapshot create");
   });
 
-  test("an unknown command fails with a usage error in human or JSON form", async () => {
+  test("unknown root or snapshot commands use the human or JSON usage error contract", async () => {
     const forbidden = () => {
       throw new Error("Unknown command attempted I/O");
     };
-    for (const json of [false, true]) {
-      const { code, out, err } = await capture(["frobnicate", ...(json ? ["--json"] : [])], {
-        env: {},
-        fetch: Object.assign(forbidden, { preconnect: forbidden }),
-        readStdin: forbidden,
-      });
-      expect(code).toBe(2);
-      expect(out).toBe("");
-      if (json) {
-        expect(JSON.parse(err)).toEqual({
-          error: {
-            code: "usage",
-            message: "unknown command 'frobnicate'. Run 'armada --help'.",
-          },
+    for (const family of [undefined, "snapshot", "golden"]) {
+      for (const json of [false, true]) {
+        const args = family ? [family, "frobnicate", "--org", "org_placeholder"] : ["frobnicate"];
+        const diagnostic = `unknown command '${family ? "snapshot " : ""}frobnicate'`;
+        const { code, out, err } = await capture([...args, ...(json ? ["--json"] : [])], {
+          env: {},
+          fetch: Object.assign(forbidden, { preconnect: forbidden }),
+          readStdin: forbidden,
         });
-      } else {
-        expect(err).toContain("unknown command 'frobnicate'");
-        expect(err).toContain("armada --help");
+        expect(code).toBe(2);
+        expect(out).toBe("");
+        if (json) {
+          expect(JSON.parse(err)).toEqual({
+            error: {
+              code: "usage",
+              message: `${diagnostic}. Run 'armada --help'.`,
+            },
+          });
+        } else {
+          expect(err).toContain(diagnostic);
+          expect(err).toContain("armada --help");
+        }
       }
     }
   });
