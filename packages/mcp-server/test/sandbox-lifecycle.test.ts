@@ -715,3 +715,50 @@ test("expired Modal dial-out reaches compute stop without tunnel quiescence or p
   });
   await worker.drain();
 });
+
+for (const loss of ["membership", "credential", "credential_stale_generation"] as const) {
+  test(`stop-requested sandbox enters operator custody after ${loss} loss without fabricating exit`, async () => {
+    const { db, people } = await sharedDatabase();
+    const id = crypto.randomUUID();
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+    await db.query(
+      `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,stop_requested_at)
+       values($1,'boat','bx_23456789',$2,$3,$4,'claude','stopping',now())`,
+      [id, golden.id, people.org, people.owner],
+    );
+    if (loss === "membership")
+      await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
+    let resolutions = 0;
+    const worker = createSandboxLifecycle(bunLikeSql(db), async () => {
+      resolutions++;
+      if (loss === "credential_stale_generation")
+        await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+      throw Error("original authority unavailable");
+    });
+    expect(await worker.reconcileOne()).toBe(true);
+    const row = (
+      await db.query(
+        `select status,stopped_at,last_observed_at,stop_requested_at,provider_sandbox_id,
+       lifecycle_generation,reconcile_lease,lifecycle_error,reconcile_after='infinity'::timestamptz as held
+       from sandboxes where id=$1`,
+        [id],
+      )
+    ).rows[0]!;
+    expect(resolutions).toBe(loss === "membership" ? 0 : 1);
+    expect(row.status).toBe("stopping");
+    expect(row.stopped_at).toBeNull();
+    expect(row.last_observed_at).toBeNull();
+    expect(row.stop_requested_at).not.toBeNull();
+    expect(row.provider_sandbox_id).toBe("bx_23456789");
+    if (loss === "credential_stale_generation") {
+      expect(row.reconcile_lease).not.toBeNull();
+      expect(row.lifecycle_error).toBeNull();
+      expect(row.held).toBe(false);
+    } else {
+      expect(row.reconcile_lease).toBeNull();
+      expect(row.lifecycle_error).toContain("Operator cleanup required:");
+      expect(row.held).toBe(true);
+    }
+    expect(await worker.reconcileOne()).toBe(false);
+  });
+}
