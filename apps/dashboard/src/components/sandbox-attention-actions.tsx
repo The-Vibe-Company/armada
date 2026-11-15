@@ -1,12 +1,10 @@
 "use client";
 
 import type { SandboxStatus } from "@armada/core";
-import { CheckIcon, PlayIcon, RotateCcwIcon, Undo2Icon } from "lucide-react";
+import { PlayIcon, RotateCcwIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useActionState, useEffect, useTransition } from "react";
-import { useFormStatus } from "react-dom";
-import { acknowledgeAttention, restoreAttention } from "@/app/actions/sandbox-attention";
-import { sendToSandbox } from "@/app/actions/sandboxes";
+import { useActionState, useEffect, useState, useTransition } from "react";
+import { extendSandbox, sendToSandbox, steerSandbox } from "@/app/actions/sandboxes";
 import { Button } from "@/components/ui/button";
 import { type Attention, CONTINUE_PROMPT } from "@/lib/sandbox-attention";
 
@@ -19,8 +17,6 @@ export function SandboxAttentionActions({
   busy,
   attention,
   resend,
-  ackKey,
-  dismissed,
 }: {
   sandboxId: string;
   name: string;
@@ -33,6 +29,7 @@ export function SandboxAttentionActions({
   dismissed: boolean;
 }) {
   const [state, action, pending] = useActionState(sendToSandbox, null);
+  const [requestId] = useState(() => crypto.randomUUID());
   const canSend = configured && !busy && ["ready", "running", "stopped"].includes(status);
   const prompt = attention === "interrupted" ? resend?.text : attention === "unconcluded" ? CONTINUE_PROMPT : null;
   return (
@@ -48,6 +45,7 @@ export function SandboxAttentionActions({
       <div className="flex flex-wrap items-center gap-2">
         {canSend && prompt && (
           <form action={action}>
+            <input type="hidden" name="send_key" value={requestId} />
             <input type="hidden" name="sandbox" value={sandboxId} />
             <input type="hidden" name="prompt" value={prompt} />
             {attention === "interrupted" && resend?.conversationId && (
@@ -61,32 +59,85 @@ export function SandboxAttentionActions({
             >
               {attention === "interrupted" ? (
                 <>
-                  <RotateCcwIcon /> Resend
+                  <RotateCcwIcon /> Send it again
                 </>
               ) : (
                 <>
-                  <PlayIcon /> Continue
+                  <PlayIcon /> Ask it to continue
                 </>
               )}
             </Button>
           </form>
         )}
-        <form action={dismissed ? restoreAttention : acknowledgeAttention}>
-          <input type="hidden" name="key" value={ackKey} />
-          <AcknowledgeButton dismissed={dismissed} />
-        </form>
       </div>
     </div>
   );
 }
 
-function AcknowledgeButton({ dismissed }: { dismissed: boolean }) {
-  const { pending } = useFormStatus();
+export function CopyRecoveryCommand({ command }: { command: string }) {
+  const [result, setResult] = useState<string | null>(null);
   return (
-    <Button type="submit" variant="ghost" size="sm" disabled={pending}>
-      {dismissed ? <Undo2Icon /> : <CheckIcon />}
-      {dismissed ? "Restore attention" : "Acknowledge"}
-    </Button>
+    <div className="space-y-1">
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(command);
+            setResult("Copied");
+          } catch {
+            setResult("Copy failed. Allow clipboard access and try again.");
+          }
+        }}
+      >
+        Copy the command
+      </Button>
+      {result && (
+        <p role="status" className="text-xs">
+          {result}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function PushSandboxWork({ sandboxId, restarts }: { sandboxId: string; restarts: boolean }) {
+  const [state, action, pending] = useActionState(steerSandbox, null);
+  return (
+    <form action={action} className="space-y-1">
+      <input type="hidden" name="sandbox" value={sandboxId} />
+      <input
+        type="hidden"
+        name="prompt"
+        value="Push your current work now so it is safely preserved before the sandbox deadline."
+      />
+      <Button size="sm" variant="outline" disabled={pending}>
+        Tell it to push now
+      </Button>
+      {restarts && <p className="text-xs text-muted-foreground">This restarts the current turn.</p>}
+      {state && (
+        <p role={state.ok ? "status" : "alert"} className="text-xs">
+          {state.ok ? state.message : state.error}
+        </p>
+      )}
+    </form>
+  );
+}
+
+export function AddSandboxTime({ sandboxId }: { sandboxId: string }) {
+  const [state, action, pending] = useActionState(extendSandbox, null);
+  return (
+    <form action={action} className="space-y-2">
+      <input type="hidden" name="sandbox" value={sandboxId} />
+      <Button size="sm" variant="outline" disabled={pending}>
+        {pending ? "Adding time…" : "Add time"}
+      </Button>
+      {state && (
+        <p role={state.ok ? "status" : "alert"} className="text-xs">
+          {state.ok ? state.message : state.error}
+        </p>
+      )}
+    </form>
   );
 }
 

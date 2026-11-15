@@ -6,22 +6,22 @@ import {
   type Sandbox,
   type SandboxListMetadata,
 } from "@armada/core";
-import { ArrowLeftIcon, ClockAlertIcon, ContainerIcon, LockIcon } from "lucide-react";
+import { ArrowLeftIcon, ContainerIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
-import { CopyButton } from "@/components/copy-button";
 import { InstalledSkills } from "@/components/installed-skills";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions } from "@/components/sandbox-actions";
 import { SandboxAttention } from "@/components/sandbox-attention";
+import { AddSandboxTime } from "@/components/sandbox-attention-actions";
 import { SandboxChat } from "@/components/sandbox-chat";
 import { RowCost, SandboxCostCard } from "@/components/sandbox-cost";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
-import { StatusBadge } from "@/components/status-badge";
-import { OutcomeBadge, OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
+import { SandboxState } from "@/components/sandbox-state";
+import { OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -34,7 +34,7 @@ import { hostListForPage, readDockerLaunchOption } from "@/lib/data/docker-hosts
 import { findGoldenLabel } from "@/lib/data/goldens";
 import { credentialMetadata, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
+import { displayUser, listMemberships, memberDirectory, requireViewer, type Viewer } from "@/lib/data/viewer";
 import { sandboxHostLabel } from "@/lib/docker-hosts";
 import { type DockerSandboxControls, dockerImageLabel, dockerSandboxControls } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
@@ -45,7 +45,7 @@ import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
 import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
-import { machineSizeLabel, sandboxName } from "@/lib/sandbox-access";
+import { machineSizeLabel } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import { createClient } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";
@@ -124,6 +124,7 @@ export default async function SandboxPage({ params }: Props) {
     const [option, accounts, hosts, choices] = docker;
     return (
       <DockerSandbox
+        viewer={viewer}
         sandbox={sandbox}
         controls={dockerSandboxControls(option)}
         org={memberships.find((item) => item.org.id === sandbox.org_id)?.org.name ?? "Unknown"}
@@ -140,7 +141,7 @@ export default async function SandboxPage({ params }: Props) {
   const org = memberships.find((item) => item.org.id === sandbox.org_id);
   const configured = mcpUrl() !== null;
   if (!cloud) notFound();
-  const { bindingAvailability, recovery, owner, golden, applied, accounts, choices } = cloud;
+  const { recovery, owner, golden, applied, accounts, choices } = cloud;
   const account = billingAccount(sandbox.credential_id, accounts);
   const cost = costOfRow(sandbox, accounts.get(sandbox.credential_id ?? "")?.kind ?? null);
   const repositoryDir = sandboxRepositoryDir(sandbox);
@@ -148,8 +149,6 @@ export default async function SandboxPage({ params }: Props) {
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
   const machineSize = describeEvidence(sandbox.provider, sandbox);
   // The interior row is returned only to a viewer who may open the sandbox, so the recovery command is theirs to run.
-  const outcome = settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome));
-  const preservation = preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true);
 
   const facts: [string, string][] = [
     ["Sandbox ID", sandbox.id],
@@ -195,53 +194,41 @@ export default async function SandboxPage({ params }: Props) {
         {/* One row on every width: a long name wraps inside its heading, the machine's action stays on the right. */}
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
-              {golden?.name ?? "Sandbox"} / {HARNESS_LABELS[sandbox.harness] ?? "Agent"}
+            <h1 className="w-full min-w-0 text-xl font-semibold tracking-tight break-words">
+              {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {golden?.name ?? "snapshot"}
             </h1>
-            <StatusBadge
+            <SandboxState
               status={sandbox.status}
-              readyLabel="Waiting for you"
+              statusMessage={sandbox.status_reason}
+              readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
               idlePaused={sandbox.status_reason === "idle_paused"}
               expiresAt={sandbox.expires_at}
             />
-            {outcome && <OutcomeBadge outcome={outcome} />}
+            {sandbox.status === "running" && sandbox.status_reason && sandbox.status_reason !== "idle_paused" && (
+              <span className="text-sm text-muted-foreground">{sandbox.status_reason}</span>
+            )}
+            {life.remaining && <span className="text-sm text-muted-foreground">{life.remaining}</span>}
             <span className="text-xs text-muted-foreground">
-              Cost: <RowCost cost={cost} />
+              <RowCost cost={cost} />
             </span>
           </div>
           {configured && <SandboxActions sandboxId={sandbox.id} status={sandbox.status} />}
         </div>
-        <BillingAccountSummary account={account} />
-        {outcome && <OutcomeDetail outcome={outcome} />}
-        {preservation && <PreservationNotice preservation={preservation} className="max-w-2xl" />}
       </div>
 
       {life.notice && (
-        <Alert data-lifecycle-notice={life.notice.kind} className="border-warning/40">
-          <ClockAlertIcon className="text-warning" />
-          <AlertTitle>{life.notice.title}</AlertTitle>
-          <AlertDescription>{life.notice.text}</AlertDescription>
-        </Alert>
+        <p className="text-sm text-muted-foreground">
+          {life.notice.title} · {life.notice.text}
+        </p>
       )}
+      <SandboxAttention sandbox={sandbox} viewer={viewer} />
 
       <div data-fit="body" className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
-          {owner && !bindingAvailability.available && (
-            <p className="text-sm text-muted-foreground">{bindingAvailability.reason}</p>
-          )}
-          {recovery && (
-            <SandboxAccountChoice
-              sandboxId={sandbox.id}
-              status={sandbox.status}
-              alreadyBound={sandbox.credential_id !== null}
-              owner={owner}
-              {...(choices ? { choices } : {})}
-              harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
-            />
-          )}
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
+            outcomeBlocked={parseTaskOutcome(sandbox.task_outcome)?.state === "blocked"}
             pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
             initialIdlePaused={sandbox.status_reason === "idle_paused"}
             expiresAt={sandbox.expires_at}
@@ -255,31 +242,72 @@ export default async function SandboxPage({ params }: Props) {
           />
         </div>
         <SandboxDetailsPanel>
-          <SandboxAttention sandbox={sandbox} viewer={viewer} />
-          <Card className="gap-3 py-5">
-            <CardHeader className="px-5">
-              <CardTitle className="flex items-center justify-between text-sm">
-                Details
-                <CopyButton value={sandbox.id} label="Copy sandbox ID" />
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-5">
+          <section className="space-y-4 text-sm" aria-label="About">
+            <h2 className="font-medium">About</h2>
+            <BillingAccountSummary account={account} />
+            {configured &&
+              (sandbox.status === "ready" || sandbox.status === "running") &&
+              (owner || org?.role === "admin") &&
+              sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} />}
+            <Facts
+              facts={[
+                ["Started", formatDate(sandbox.created_at)],
+                ["Ends", lifecycle.expiresAt ? formatDate(lifecycle.expiresAt) : "Not recorded"],
+                ["Who can open it", "Owner and organization admins"],
+              ]}
+            />
+            {recovery && owner && (sandbox.status === "ready" || sandbox.status === "stopped") && (
+              <details>
+                <summary className="cursor-pointer text-muted-foreground">Change account</summary>
+                {
+                  <SandboxAccountChoice
+                    sandboxId={sandbox.id}
+                    status={sandbox.status}
+                    alreadyBound={sandbox.credential_id !== null}
+                    owner={owner}
+                    {...(choices ? { choices } : {})}
+                    harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
+                  />
+                }
+              </details>
+            )}
+          </section>
+          <details className="text-sm">
+            <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
+            <div className="pt-4">
               <Facts facts={facts} />
-            </CardContent>
-          </Card>
+              {settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome)) && (
+                <OutcomeDetail outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+              )}
+              {preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true) && (
+                <PreservationNotice
+                  preservation={preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true)!}
+                />
+              )}
+            </div>
+          </details>
+          <details className="text-sm">
+            <summary className="cursor-pointer text-muted-foreground">
+              Usage · <RowCost cost={cost} />
+            </summary>
+            <div className="pt-3">
+              <SandboxCostCard cost={cost} />
+            </div>
+          </details>
 
-          <SandboxCostCard cost={cost} />
+          <details className="text-sm">
+            <summary className="cursor-pointer text-muted-foreground">Skills</summary>
+            <div className="pt-3">
+              <InstalledSkills receipts={sandbox.skills} />
+            </div>
+          </details>
 
-          <InstalledSkills receipts={sandbox.skills} />
-
-          <Card className="gap-3 py-5">
-            <CardHeader className="px-5">
-              <CardTitle className="text-sm">MCP connections</CardTitle>
-            </CardHeader>
-            <CardContent className="px-5">
+          <details className="text-sm">
+            <summary className="cursor-pointer text-muted-foreground">Tools</summary>
+            <div className="pt-3">
               <AppliedConnections applied={applied} />
-            </CardContent>
-          </Card>
+            </div>
+          </details>
         </SandboxDetailsPanel>
       </div>
     </div>
@@ -288,6 +316,7 @@ export default async function SandboxPage({ params }: Props) {
 
 /** A Docker sandbox's page: its conversation and the controls the server supports on Docker, with reasons for the rest. */
 function DockerSandbox({
+  viewer,
   sandbox,
   controls,
   org,
@@ -299,6 +328,7 @@ function DockerSandbox({
   host,
 }: {
   sandbox: Sandbox;
+  viewer: Viewer;
   controls: DockerSandboxControls;
   org: string;
   owner: string;
@@ -352,18 +382,19 @@ function DockerSandbox({
         </Button>
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
-              {HARNESS_LABELS[sandbox.harness] ?? "Agent"} workspace
+            <h1 className="w-full min-w-0 text-xl font-semibold tracking-tight break-words">
+              {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {host}
             </h1>
-            <StatusBadge
+            <SandboxState
               status={sandbox.status}
-              readyLabel="Waiting for you"
+              statusMessage={sandbox.status_reason}
+              readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
               idlePaused={sandbox.status_reason === "idle_paused"}
               expiresAt={sandbox.expires_at}
             />
           </div>
           <span className="text-xs text-muted-foreground">
-            Cost: <RowCost cost={cost} />
+            <RowCost cost={cost} />
           </span>
           {configured && (
             <SandboxActions
@@ -377,19 +408,19 @@ function DockerSandbox({
         </div>
       </div>
 
-      <BillingAccountSummary account={billing} />
-
       {life.notice && (
-        <Alert data-lifecycle-notice={life.notice.kind} className="border-warning/40">
-          <ClockAlertIcon className="text-warning" />
-          <AlertTitle>{life.notice.title}</AlertTitle>
-          <AlertDescription>{life.notice.text}</AlertDescription>
-        </Alert>
+        <p className="text-sm text-muted-foreground">
+          {life.notice.title} · {life.notice.text}
+        </p>
       )}
+      <SandboxAttention sandbox={sandbox} viewer={viewer} />
 
+      <p className="text-sm text-muted-foreground">
+        {life.remaining} · The time limit cannot be extended on your own server.
+      </p>
       <div data-fit="body" className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
-          {ownerCanChange && (
+          {ownerCanChange && (sandbox.status === "ready" || sandbox.status === "stopped") && (
             <SandboxAccountChoice
               sandboxId={sandbox.id}
               status={sandbox.status}
@@ -409,6 +440,7 @@ function DockerSandbox({
             <SandboxChat
               sandboxId={sandbox.id}
               initialStatus={sandbox.status}
+              outcomeBlocked={parseTaskOutcome(sandbox.task_outcome)?.state === "blocked"}
               initialIdlePaused={sandbox.status_reason === "idle_paused"}
               expiresAt={sandbox.expires_at}
               initialUsageRevision={usageRevision(sandbox.usage_turns)}
@@ -424,18 +456,40 @@ function DockerSandbox({
           )}
         </div>
         <SandboxDetailsPanel>
-          <Card className="gap-3 py-5">
-            <CardHeader className="px-5">
-              <CardTitle className="flex items-center justify-between text-sm">
-                Details
-                <CopyButton value={sandbox.id} label="Copy sandbox ID" />
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-5">
+          <section className="space-y-3 text-sm">
+            <h2 className="font-medium">About</h2>
+            <BillingAccountSummary account={billing} />
+            <Facts
+              facts={[
+                ["Started", formatDate(sandbox.created_at)],
+                ["Ends", lifecycle.expiresAt ? formatDate(lifecycle.expiresAt) : "Not recorded"],
+                ["Who can open it", "Owner and organization admins"],
+              ]}
+            />
+            <p className="text-muted-foreground">Sandboxes on your own server do not get tools yet.</p>
+          </section>
+          <details className="text-sm">
+            <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
+            <div className="pt-4">
               <Facts facts={facts} />
-            </CardContent>
-          </Card>
-          <SandboxCostCard cost={cost} />
+              {settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome)) && (
+                <OutcomeDetail outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+              )}
+              {preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true) && (
+                <PreservationNotice
+                  preservation={preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true)!}
+                />
+              )}
+            </div>
+          </details>
+          <details className="text-sm">
+            <summary className="cursor-pointer text-muted-foreground">
+              Usage · <RowCost cost={cost} />
+            </summary>
+            <div className="pt-3">
+              <SandboxCostCard cost={cost} />
+            </div>
+          </details>
           {controls.unavailable.length > 0 && (
             <Card className="gap-3 py-5" data-docker-unavailable>
               <CardHeader className="px-5">
@@ -499,12 +553,13 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
           </Link>
         </Button>
         <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">{sandboxName(sandbox)}</h1>
-          <StatusBadge
+          <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">
+            {HARNESS_LABELS[sandbox.harness] ?? "Agent"} sandbox
+          </h1>
+          <SandboxState
             status={sandbox.status}
             idlePaused={sandbox.idlePaused === true}
-            canMessage={false}
-            readyLabel="Waiting"
+            readyLabel="Waiting for you"
             expiresAt={sandbox.expiresAt}
           />
         </div>
@@ -560,7 +615,7 @@ function AppliedConnections({ applied }: { applied: SandboxConnections }) {
     );
   }
   if (applied.connections.length === 0) {
-    return <p className="text-sm text-muted-foreground">Launched without MCP connections you can see.</p>;
+    return <p className="text-sm text-muted-foreground">Launched without Tools you can see.</p>;
   }
   return (
     <ul className="divide-y rounded-md border" aria-label="Applied connections">

@@ -30,7 +30,7 @@ import { requireViewer } from "@/lib/data/viewer";
 import { dockerHarnesses, dockerLaunchBlocker } from "@/lib/docker-launch";
 import { snapshotLaunchEnabled } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
-import { GatewayError } from "@/lib/gateway";
+import { createGateway, GatewayError } from "@/lib/gateway";
 import { goldenLaunchReadiness, PROVIDER_LABELS } from "@/lib/golden-form";
 import {
   decodeLaunchAttempt,
@@ -70,6 +70,30 @@ async function gatewayFor(id: string) {
  */
 function drivingFailure(error: GatewayError, owner: boolean, keyedSend = false): ActionResult {
   return fail(drivingFailureMessage(error, owner, keyedSend));
+}
+
+/** Set a later deadline through the existing owner/admin-authorized server action. */
+export async function extendSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const id = formString(data, "sandbox");
+  if (!isUuid(id)) return fail("That request is not valid.");
+  const target = await gatewayFor(id);
+  if (target.error) return target.error;
+  if (target.sandbox.provider === "docker") return fail("The time limit cannot be extended on your own server.");
+  const expires = Date.parse(target.sandbox.expires_at ?? "");
+  if (!Number.isFinite(expires)) return fail("This sandbox has no recorded deadline to extend.");
+  const viewer = await requireViewer();
+  const url = mcpUrl();
+  if (!url || !viewer.token) return fail("The Armada server is not configured.");
+  const ttl = Math.ceil((Math.max(Date.now(), expires) - Date.now()) / 1000) + 3600;
+  try {
+    await createGateway({ url, token: viewer.token }).call("extend", { id, ttl_seconds: ttl });
+  } catch (error) {
+    if (error instanceof GatewayError) return fail(error.message);
+    throw error;
+  }
+  revalidatePath(`/sandboxes/${id}`);
+  revalidatePath("/sandboxes");
+  return done("Added one hour to the deadline.");
 }
 
 export async function stopSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {

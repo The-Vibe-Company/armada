@@ -1,7 +1,8 @@
 "use client";
 
 import { ChevronDownIcon } from "lucide-react";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
@@ -13,6 +14,14 @@ import { cn } from "@/lib/utils";
 export function SandboxDetailsPanel({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const section = useRef<HTMLElement>(null);
+  const [mobileTarget, setMobileTarget] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 63.99rem)");
+    const update = () => setMobileTarget(media.matches ? document.getElementById("sandbox-mobile-about") : null);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
 
   function toggle(next: boolean) {
     setOpen(next);
@@ -25,23 +34,24 @@ export function SandboxDetailsPanel({ children }: { children: ReactNode }) {
     }
   }
 
-  return (
+  const panel = (
     <Collapsible open={open} onOpenChange={toggle} asChild>
-      <section ref={section} aria-label="Details" data-fit="side" className="min-w-0">
+      <section ref={section} aria-label="About" data-fit="side" className="min-w-0">
         <CollapsibleTrigger asChild>
           <Button type="button" variant="outline" size="sm" className="w-full justify-between lg:hidden">
-            Details
+            About, usage, tools
             <ChevronDownIcon className={cn("transition-transform", open && "rotate-180")} aria-hidden="true" />
           </Button>
         </CollapsibleTrigger>
         <CollapsibleContent
           forceMount
           data-fit="side-content"
-          className="space-y-6 max-lg:mt-3 data-[state=closed]:hidden lg:data-[state=closed]:block"
+          className="space-y-6 max-lg:max-h-[35dvh] max-lg:overflow-y-auto max-lg:mt-3 data-[state=closed]:hidden lg:data-[state=closed]:block"
         >
           {children}
         </CollapsibleContent>
       </section>
     </Collapsible>
   );
+  return mobileTarget ? createPortal(panel, mobileTarget) : panel;
 }

@@ -14,10 +14,10 @@ export type StatusLook = {
 };
 
 const LOOKS: Record<SandboxStatus, StatusLook> = {
-  starting: { tone: "warning", pulse: true, label: "Starting" },
-  ready: { tone: "success", pulse: false, label: "Ready" },
-  running: { tone: "info", pulse: true, label: "Running" },
-  stopping: { tone: "warning", pulse: true, label: "Stopping" },
+  starting: { tone: "neutral", pulse: true, label: "Starting" },
+  ready: { tone: "warning", pulse: false, label: "Waiting for you" },
+  running: { tone: "success", pulse: true, label: "Working" },
+  stopping: { tone: "neutral", pulse: true, label: "Stopping" },
   stopped: { tone: "neutral", pulse: false, label: "Stopped" },
   failed: { tone: "destructive", pulse: false, label: "Failed" },
   deleted: { tone: "neutral", pulse: false, label: "Deleted" },

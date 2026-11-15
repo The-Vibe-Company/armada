@@ -1,24 +1,22 @@
 import type { Sandbox } from "@armada/core";
-import { cookies } from "next/headers";
 import Link from "next/link";
-import { SandboxAttentionActions, SandboxAttentionRefresh } from "@/components/sandbox-attention-actions";
-import { Badge } from "@/components/ui/badge";
+import {
+  AddSandboxTime,
+  CopyRecoveryCommand,
+  PushSandboxWork,
+  SandboxAttentionActions,
+  SandboxAttentionRefresh,
+} from "@/components/sandbox-attention-actions";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { viewerGateway } from "@/lib/data/gateway";
-import type { Viewer } from "@/lib/data/viewer";
+import { listMemberships, type Viewer } from "@/lib/data/viewer";
 import { parseEventPage } from "@/lib/events";
 import { GatewayError } from "@/lib/gateway";
-import {
-  ACK_COOKIE,
-  attentionLabel,
-  readAcks,
-  sandboxAttention,
-  summarizeEvents,
-  type TurnSummary,
-} from "@/lib/sandbox-attention";
+import { preservationView } from "@/lib/outcome";
+import { sandboxAttention, summarizeEvents, type TurnSummary } from "@/lib/sandbox-attention";
+import { createClient } from "@/lib/supabase/server";
 
-/** Called only after getSandbox authorized the interior. One bounded event read, never an org-wide board scan. */
+/** One bounded, authorized event read; the highest-priority recovery owns the single banner. */
 export async function SandboxAttention({ sandbox, viewer }: { sandbox: Sandbox; viewer: Viewer }) {
   const gateway = viewerGateway(viewer);
   let turn: TurnSummary | null = null;
@@ -31,53 +29,99 @@ export async function SandboxAttention({ sandbox, viewer }: { sandbox: Sandbox; 
     }
   }
   const view = sandboxAttention(sandbox, turn, new Date());
-  if (!view.attention) return <SandboxAttentionRefresh />;
-  const dismissed = readAcks((await cookies()).get(ACK_COOKIE)?.value, viewer.id).includes(view.ackKey);
+  const preserved = preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true);
+  let title: string | null = null;
+  let detail: string | null = null;
+  let action: React.ReactNode = null;
+  if (sandbox.status === "failed") {
+    title = view.state.failure?.title ?? "This sandbox failed.";
+    detail = "It takes no new messages. Launch a new sandbox to continue.";
+    action = (
+      <Button asChild size="sm">
+        <Link href="/sandboxes">Launch a new one</Link>
+      </Button>
+    );
+  } else if (view.state.failure) {
+    title = view.state.failure.title;
+    detail = view.state.failure.hint;
+    if (view.state.failure.fix)
+      action = (
+        <Button asChild size="sm">
+          <Link href={view.state.failure.fix.href}>
+            {view.state.failure.fix.label === "Reconnect the account"
+              ? "Reconnect in Models"
+              : view.state.failure.fix.label}
+          </Link>
+        </Button>
+      );
+  } else if (preserved?.kind === "preserved") {
+    title = "Work that was not pushed has been saved.";
+    detail = "Get it back with one command in your terminal.";
+    if (preserved.command) action = <CopyRecoveryCommand command={preserved.command} />;
+  } else if (view.attention === "interrupted" || view.attention === "unconcluded") {
+    title =
+      view.attention === "interrupted"
+        ? "Your message was interrupted before the agent answered."
+        : "The agent stopped without saying what it did.";
+    action = (
+      <SandboxAttentionActions
+        sandboxId={sandbox.id}
+        name="this sandbox"
+        status={sandbox.status}
+        configured={gateway !== null}
+        busy={false}
+        attention={view.attention}
+        resend={view.resend}
+        ackKey={view.ackKey}
+        dismissed={false}
+      />
+    );
+  } else if (view.attention === "expiring") {
+    title = `${view.expiry?.text ?? "Little time left"} and the agent is still working.`;
+    detail =
+      sandbox.provider === "docker"
+        ? "The time limit cannot be extended on your own server."
+        : "When time is up Armada tries to save work that was not pushed.";
+    const memberships = await listMemberships(await createClient(), viewer.id);
+    if (
+      sandbox.provider !== "docker" &&
+      (sandbox.owner_id === viewer.id ||
+        memberships.some((item) => item.org.id === sandbox.org_id && item.role === "admin"))
+    )
+      action = (
+        <div className="flex flex-wrap items-start gap-2">
+          <AddSandboxTime sandboxId={sandbox.id} />
+          <PushSandboxWork sandboxId={sandbox.id} restarts={sandbox.harness !== "claude"} />
+        </div>
+      );
+  } else if (view.state.outcome?.kind === "ready" && view.state.outcome.pr?.href) {
+    title = "Ready to merge.";
+    action = (
+      <Button asChild size="sm">
+        <Link href={view.state.outcome.pr.href} target="_blank" rel="noopener noreferrer">
+          Open the pull request
+        </Link>
+      </Button>
+    );
+  } else if (view.state.outcome?.kind === "blocked") {
+    title = "The agent needs your help.";
+    detail = view.state.outcome.reason;
+  }
   return (
     <>
       <SandboxAttentionRefresh />
-      <Card data-sandbox-attention={view.attention} className="gap-3 py-5">
-        <CardHeader className="px-5">
-          <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-            {attentionLabel(view.attention, sandbox.status)}
-            {dismissed && <Badge variant="secondary">Acknowledged</Badge>}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 px-5 text-sm">
-          {view.state.failure && (
-            <div className="space-y-2" data-failure>
-              <p className="font-medium text-destructive">{view.state.failure.title}</p>
-              {view.state.failure.hint && <p className="text-muted-foreground">{view.state.failure.hint}</p>}
-              {view.state.failure.fix && (
-                <Button asChild variant="outline" size="sm">
-                  <Link href={view.state.failure.fix.href}>{view.state.failure.fix.label}</Link>
-                </Button>
-              )}
-            </div>
-          )}
-          {view.state.interruption && (
-            <p className="text-muted-foreground" data-interruption>
-              {view.state.interruption}
-            </p>
-          )}
-          {view.attention === "expiring" && (
-            <p className="text-warning" data-expiry="urgent">
-              {view.expiry?.text}
-            </p>
-          )}
-          <SandboxAttentionActions
-            sandboxId={sandbox.id}
-            name={sandbox.provider_sandbox_id ?? sandbox.id}
-            status={sandbox.status}
-            configured={gateway !== null}
-            busy={view.state.kind === "working"}
-            attention={view.attention}
-            resend={view.resend}
-            ackKey={view.ackKey}
-            dismissed={dismissed}
-          />
-        </CardContent>
-      </Card>
+      {title && (
+        <section
+          data-sandbox-attention={view.attention ?? "failed"}
+          className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 text-sm ${sandbox.status === "failed" ? "border-destructive/30 bg-destructive/5" : "border-border bg-muted/40"}`}
+        >
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">{title}</p>
+            {detail && <p className="mt-1 text-xs text-muted-foreground">{detail}</p>}
+          </div>
+          {action}
+        </section>
+      )}
     </>
   );
 }
