@@ -1656,3 +1656,38 @@ This proves installed content persistence, not skill invocation by the model or
 default pin precedence. Keep those older coordinator checks until they have
 replacement rows. Boat remains coordinator-only via
 `--only boat --production-boat`, never the release gate.
+
+### Native MCP execution after resume
+
+Use `--parity --feature mcp-resume`, optionally `--only modal|docker`, with the
+existing dedicated read-only zero-argument MCP canary and template configuration.
+The initial-only `--feature mcp` remains available. The deeper probe additionally
+requires advertised stop/resume/follow-up/logs support before allocating.
+
+The same template sandbox performs two native MCP turns: one before
+stop and one after resume. Native providers wake through the resumed MCP send;
+Docker explicitly resumes before that send. Each turn must independently prove
+the selected server/tool, empty arguments, successful known canary output and a
+fresh finished final parent acknowledgement. The second phase cannot borrow the
+first turn's native proof. Current sandbox binding/authorization checks remain in
+force; no create/update/connect/disconnect/revoke endpoint is called.
+
+Modal OpenCode rechecks the complete authorized inventory **before** a repeated
+native send as well as after it. A new normalized-name collision while stopped
+therefore blocks the resumed tool effect, rather than merely failing a later
+receipt. Its normal fresh native configuration identity is allowed across
+runtime epochs; ACP display messages still cannot substitute for native proof.
+Native Boat and Docker OpenCode retain their existing no-allocation deferrals.
+
+Only both `mcp-before-resume` and `mcp-after-resume` observations pass
+`mcp-resume`. A refused/unobserved resume never passes; lost binding, stale tool
+proof or failed resumed tool execution fails. Proof requests, including the
+required stop, share 110 seconds; cleanup has an independent window. To include
+this depth in a full run set `mcpResume: true`. It replaces the existing configured
+MCP child, not its allocation count; other ordinary/template allocations stay
+counted, and initial/deep/stage/cleanup receipts share the final table.
+
+This does not prove OAuth renewal itself or denied cross-owner access. Existing
+server-side status/refresh policy applies. Keep remaining older coordinator
+checks until they have replacement rows; live Modal/Docker evidence is still
+coordinator-owned. Boat never enters the release gate.

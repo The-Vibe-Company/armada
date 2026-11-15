@@ -6,6 +6,18 @@ import { providerParitySmoke } from "./provider-parity-smoke.ts";
 // model Codex's combined call/result and Claude's separate cross-page tool-use ID join.
 for (const mode of [
   "valid",
+  "resume_valid",
+  "resume_claude",
+  "opencode_resume_valid",
+  "resume_stale_prompt",
+  "resume_tool_error",
+  "resume_disconnected",
+  "resume_quota",
+  "resume_no_stop",
+  "resume_budget",
+  "resume_stop_budget",
+  "resume_missing",
+  "opencode_resume_collision",
   "claude_valid",
   "claude_wrong_id",
   "missing",
@@ -49,12 +61,19 @@ for (const mode of [
       expectedText: `parity_mcp_${crypto.randomUUID()}`,
       readOnly: true,
     };
-    const harness = mode.startsWith("claude_") ? "claude" : mode.startsWith("opencode") ? "opencode" : "codex";
+    const deep = mode.startsWith("resume_") || mode.startsWith("opencode_resume_");
+    const harness =
+      mode.startsWith("claude_") || mode === "resume_claude"
+        ? "claude"
+        : mode.startsWith("opencode")
+          ? "opencode"
+          : "codex";
     const server = `armada_${binding.connectionId.replaceAll("-", "_")}`;
     const states = new Map<string, string>(),
       answers = new Map<string, string>(),
       reads = new Map<string, number>();
     const inventoryReads = new Map<string, number>();
+    const turns = new Map<string, number>();
     const calls: string[] = [],
       lines: string[] = [];
     let now = 0;
@@ -73,7 +92,7 @@ for (const mode of [
             golden: "golden",
             hostId: "host",
             template: { id: "10000000-0000-4000-8000-000000000001", revision: 1 },
-            ...(mode === "missing" ? {} : { mcp: binding }),
+            ...(mode === "missing" || mode === "resume_missing" ? {} : { mcp: binding }),
           })),
         ),
       },
@@ -101,7 +120,9 @@ for (const mode of [
                     launch: true,
                     mcp: mode !== "unsupported",
                     followupPrompts: true,
-                    stop: true,
+                    stop: mode !== "resume_no_stop",
+                    resume: true,
+                    logs: true,
                     delete: true,
                   },
                   unsupportedReasons: {},
@@ -130,6 +151,7 @@ for (const mode of [
                             binding.tool,
                             ...(mode === "opencode_collision" ? ["parity.probe"] : []),
                             ...(mode === "opencode_inventory_changed" && n > 1 ? ["new_tool"] : []),
+                            ...(mode === "opencode_resume_collision" && n >= 3 ? ["parity.probe"] : []),
                           ],
                         },
                       ],
@@ -175,22 +197,40 @@ for (const mode of [
               };
               break;
             case "mcp/sandbox-connections":
-              result = { connections: mode === "unbound" ? [] : [{ id: binding.connectionId, status: "connected" }] };
+              result = {
+                connections:
+                  mode === "unbound" || (mode === "resume_disconnected" && (turns.get(id) ?? 0) > 0)
+                    ? []
+                    : [{ id: binding.connectionId, status: "connected" }],
+              };
               break;
             case "sandbox/send":
+              if (deep && (turns.get(id) ?? 0) > 0 && mode === "resume_quota")
+                return Response.json({ error: { code: "rate_limited", message: "fixture quota" } }, { status: 429 });
+              if (deep && (turns.get(id) ?? 0) > 0) expect(states.get(id)).toBe(id === "docker" ? "ready" : "stopped");
+              turns.set(id, (turns.get(id) ?? 0) + 1);
+              reads.set(id, 0);
+              states.set(id, "ready");
               expect(Boolean(body.request_id)).toBe(id === "docker");
               expect(body.prompt).toContain(binding.tool);
               expect(body.prompt).toContain("empty JSON arguments {}");
               answers.set(id, String(body.prompt).match(/PARITY_MCP_DONE_[a-f0-9-]{36}/)![0]);
-              result = { promptId: `turn_${id}` };
+              result = { promptId: `turn_${id}_${turns.get(id)}` };
               break;
             case "logs/read": {
               const n = (reads.get(id) ?? 0) + 1;
               reads.set(id, n);
-              const promptId = mode === "wrong_prompt" ? "other" : `turn_${id}`;
+              const actualPrompt = `turn_${id}_${turns.get(id)}`;
+              const promptId =
+                mode === "wrong_prompt"
+                  ? "other"
+                  : mode === "resume_stale_prompt" && (turns.get(id) ?? 0) > 1
+                    ? `turn_${id}_1`
+                    : actualPrompt;
+              if (mode === "resume_budget" && (turns.get(id) ?? 0) > 1) now += 110_001;
               const toolResult = {
                 output: { content: [{ type: "text", text: mode === "wrong_output" ? "wrong" : binding.expectedText }] },
-                isError: mode === "tool_error",
+                isError: mode === "tool_error" || (mode === "resume_tool_error" && (turns.get(id) ?? 0) > 1),
               };
               const tool = {
                 id: "call",
@@ -292,7 +332,7 @@ for (const mode of [
                   {
                     id: "answer",
                     kind: "message",
-                    promptId: `turn_${id}`,
+                    promptId: actualPrompt,
                     partial: false,
                     responseKind: "assistant",
                     text: answers.get(id),
@@ -303,7 +343,7 @@ for (const mode of [
                         {
                           id: "later",
                           kind: "message",
-                          promptId: `turn_${id}`,
+                          promptId: actualPrompt,
                           partial: false,
                           responseKind: "assistant",
                           text: "different final answer",
@@ -311,16 +351,23 @@ for (const mode of [
                         },
                       ]
                     : []),
-                  { id: "finished", kind: "prompt", promptId: `turn_${id}`, status: "finished" },
+                  { id: "finished", kind: "prompt", promptId: actualPrompt, status: "finished" },
                 ],
               };
               break;
             }
+            case "sandbox/resume":
+              expect(id).toBe("docker");
+              expect(states.get(id)).toBe("stopped");
+              states.set(id, "ready");
+              result = { status: "ready" };
+              break;
             case "sandbox/status":
               result = { id: body.id, status: states.get(id) };
               break;
             case "sandbox/stop":
               states.set(id, "stopped");
+              if (mode === "resume_stop_budget") now += 110_001;
               result = { id: body.id, status: "stopped" };
               break;
             case "sandbox/delete":
@@ -333,8 +380,63 @@ for (const mode of [
           return Response.json(result);
         },
       },
-      ["--feature", "mcp"],
+      ["--feature", deep ? "mcp-resume" : "mcp"],
     );
+    if (deep) {
+      const supported = harness !== "opencode";
+      const noAllocation = mode === "resume_missing" || mode === "resume_no_stop";
+      expect(passed).toBe(
+        [
+          "resume_valid",
+          "resume_claude",
+          "opencode_resume_valid",
+          "resume_missing",
+          "resume_no_stop",
+          "resume_quota",
+        ].includes(mode),
+      );
+      const report = lines
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .find((value) => value?.step === "provider_parity");
+      expect(report.starts).toBe(noAllocation ? 0 : supported ? 2 : 1);
+      for (const provider of ["modal", "docker"]) {
+        const deferred = harness === "opencode" && provider === "docker";
+        expect(report.features["mcp-resume"][provider].status).toBe(
+          deferred || mode === "resume_missing" || mode === "resume_quota" || mode === "resume_stop_budget"
+            ? "not-run"
+            : mode === "resume_no_stop"
+              ? "unsupported"
+              : ["resume_valid", "resume_claude", "opencode_resume_valid"].includes(mode)
+                ? "pass"
+                : "fail",
+        );
+        if (noAllocation || deferred) expect(calls).not.toContain(`${provider}:templates/launch`);
+        else {
+          expect(report.features["mcp-before-resume"][provider].status).toBe("pass");
+          expect(report.features.cleanup[provider].status).toBe("pass");
+          expect(calls.filter((path) => path === `${provider}:templates/launch`)).toHaveLength(1);
+          if (["resume_valid", "resume_claude", "opencode_resume_valid"].includes(mode)) {
+            expect(turns.get(provider)).toBe(2);
+            expect(report.features["mcp-after-resume"][provider].status).toBe("pass");
+          }
+          if (mode === "opencode_resume_collision") expect(turns.get(provider)).toBe(1);
+          if (mode === "resume_stop_budget") {
+            expect(report.features["prerequisite:stop"][provider].status).toBe("fail");
+            expect(turns.get(provider)).toBe(1);
+            expect(calls).not.toContain(`${provider}:sandbox/resume`);
+          }
+        }
+      }
+      if (mode === "opencode_resume_valid") expect(inventoryReads.get("modal")).toBe(4);
+      expect(lines.join("\n")).not.toContain(binding.expectedText);
+      return;
+    }
     const noAllocation = [
       "missing",
       "opencode",

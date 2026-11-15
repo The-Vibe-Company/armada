@@ -53,6 +53,7 @@ for (const mode of [
   "template_no_answer",
   "template_full",
   "skills_resume_full",
+  "mcp_resume_full",
   "h_codex",
   "h_claude",
   "h_opencode",
@@ -137,6 +138,11 @@ for (const mode of [
   "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
+    const deepFull = mode === "skills_resume_full" || mode === "mcp_resume_full";
+    const mcpConnection = "10000000-0000-4000-8000-000000000003";
+    const mcpExpected = `parity_mcp_${crypto.randomUUID()}`;
+    const mcpAnswers = new Map<string, string>(),
+      mcpTurns = new Map<string, number>();
     const subscription =
       (mode.startsWith("subscription") && mode !== "subscription_probe_api_account") ||
       mode === "accounts_subscription";
@@ -202,6 +208,17 @@ for (const mode of [
                 ? { subscriptionAccount: true }
                 : {}),
               ...(mode === "routine_full" ? { routine: true } : {}),
+              ...(mode === "mcp_resume_full"
+                ? {
+                    mcpResume: true,
+                    mcp: {
+                      connectionId: mcpConnection,
+                      tool: "parity_probe",
+                      expectedText: mcpExpected,
+                      readOnly: true,
+                    },
+                  }
+                : {}),
               ...(mode === "skills_resume_full"
                 ? {
                     skillsResume: true,
@@ -212,7 +229,7 @@ for (const mode of [
                     },
                   }
                 : {}),
-              ...(mode === "skills_resume_full" ||
+              ...(deepFull ||
               (mode.startsWith("template_") && mode !== "template_missing") ||
               (mode.startsWith("routine_") && mode !== "routine_missing") ||
               (mode.startsWith("readable_") && mode !== "readable_missing")
@@ -327,6 +344,7 @@ for (const mode of [
                     interrupt: mode.startsWith("control_") && mode !== "control_unsupported",
                     variables: mode !== "readable_unsupported",
                     launch: true,
+                    mcp: mode === "mcp_resume_full",
                     exec: mode !== "readable_no_exec",
                     github: mode !== "github_unsupported",
                     followupPrompts: true,
@@ -380,6 +398,7 @@ for (const mode of [
                   revision: 2,
                   definition: {
                     ...(mode === "skills_resume_full" ? { skills: [skillReceipt.reference] } : {}),
+                    ...(mode === "mcp_resume_full" ? { connections: [mcpConnection] } : {}),
                     variables: [
                       { key: "PARITY_READABLE_CANARY", variableId: "70000000-0000-4000-8000-000000000001", version: 1 },
                     ],
@@ -442,7 +461,7 @@ for (const mode of [
             case "templates/launch": {
               const n = (templateCalls.get(p) ?? 0) + 1;
               templateCalls.set(p, n);
-              if (n === 1 || mode === "skills_resume_full") {
+              if (n === 1 || deepFull) {
                 if (n > 1)
                   expect(body.requestKey).not.toBe((templateRequests.get(p) as { requestKey?: string })?.requestKey);
                 templateRequests.set(p, body);
@@ -469,14 +488,13 @@ for (const mode of [
               states.set(p, "ready");
               turns.set(p, []);
               result = {
-                id:
-                  mode === "skills_resume_full"
-                    ? `${p}-template-${n}`
-                    : (mode === "template_final_missing" || mode === "template_lost_identity") && n > 1
-                      ? undefined
-                      : mode === "template_identity" && n > 1
-                        ? `${p}-other`
-                        : p,
+                id: deepFull
+                  ? `${p}-template-${n}`
+                  : (mode === "template_final_missing" || mode === "template_lost_identity") && n > 1
+                    ? undefined
+                    : mode === "template_identity" && n > 1
+                      ? `${p}-other`
+                      : p,
                 ...(mode === "template_unknown" ||
                 (["template_pending", "template_identity", "template_final_missing"].includes(mode) && n === 1)
                   ? {}
@@ -491,6 +509,9 @@ for (const mode of [
                 reason: "environment_unavailable",
                 manifest: {
                   ...(mode === "skills_resume_full" ? { skillReceipts: [skillReceipt] } : {}),
+                  ...(mode === "mcp_resume_full"
+                    ? { connections: [{ id: mcpConnection, version: 1, generation: 1 }] }
+                    : {}),
                   variableProvenance: [
                     {
                       key: "PARITY_READABLE_CANARY",
@@ -508,6 +529,7 @@ for (const mode of [
                   },
                   definition: {
                     ...(mode === "skills_resume_full" ? { skills: [skillReceipt.reference] } : {}),
+                    ...(mode === "mcp_resume_full" ? { connections: [mcpConnection] } : {}),
                     provider: p,
                     harness: "codex",
                     model: "fake-model",
@@ -588,7 +610,22 @@ for (const mode of [
               controlled.add(p);
               result = { id: p, interrupted: true };
               break;
+            case "mcp/list":
+            case "mcp/sandbox-connections":
+              result = { connections: [{ id: mcpConnection, status: "connected" }] };
+              break;
             case "sandbox/send": {
+              if (mode === "mcp_resume_full" && String(body.prompt).includes("dedicated read-only MCP tool")) {
+                expect(body.id).toBe(`${p}-template-2`);
+                expect(body.prompt).not.toContain(mcpExpected);
+                const n = (mcpTurns.get(p) ?? 0) + 1;
+                mcpTurns.set(p, n);
+                mcpAnswers.set(body.id, String(body.prompt).match(/PARITY_MCP_DONE_[a-f0-9-]{36}/)![0]);
+                states.set(p, "ready");
+                result = { promptId: `mcp_${p}_${n}` };
+                break;
+              }
+
               if (mode.startsWith("readable_") && String(body.prompt).includes("SHA-256 digest")) {
                 const nonce = String(body.prompt).match(/'([a-f0-9-]{36})'/)?.[1];
                 expect(nonce).toBeDefined();
@@ -620,6 +657,41 @@ for (const mode of [
               break;
             }
             case "logs/read":
+              if (mode === "mcp_resume_full" && mcpAnswers.has(body.id)) {
+                const promptId = `mcp_${p}_${mcpTurns.get(p)}`;
+                result = {
+                  events: [
+                    {
+                      id: "native_tool",
+                      kind: "message",
+                      promptId,
+                      text: "",
+                      partial: false,
+                      tools: [
+                        {
+                          id: "call",
+                          server: `armada_${mcpConnection.replaceAll("-", "_")}`,
+                          name: "parity_probe",
+                          input: {},
+                          result: { output: { content: [{ type: "text", text: mcpExpected }] }, isError: false },
+                        },
+                      ],
+                    },
+                    {
+                      id: "native_answer",
+                      kind: "message",
+                      promptId,
+                      text: mcpAnswers.get(body.id),
+                      partial: false,
+                      responseKind: "assistant",
+                      tools: [],
+                    },
+                    { kind: "prompt", promptId, status: "finished" },
+                  ],
+                };
+                break;
+              }
+
               if (readableDigests.has(p)) {
                 result = {
                   events: [
@@ -814,10 +886,7 @@ for (const mode of [
                 );
               if (mode === "subscription_probe_budget") clock += 110_001;
               result = {
-                id:
-                  mode === "template_identity" || mode.startsWith("routine_") || mode === "skills_resume_full"
-                    ? body.id
-                    : p,
+                id: mode === "template_identity" || mode.startsWith("routine_") || deepFull ? body.id : p,
                 status: states.get(p),
                 ...(mode === "skills_resume_full" ? { skills: [skillReceipt] } : {}),
                 usage: {
@@ -930,7 +999,7 @@ for (const mode of [
                 id:
                   mode === "wrong_delete_id"
                     ? "another-sandbox"
-                    : mode === "template_identity" || mode.startsWith("routine_") || mode === "skills_resume_full"
+                    : mode === "template_identity" || mode.startsWith("routine_") || deepFull
                       ? body.id
                       : p,
                 status: mode === "delete_failure" && p === "docker" ? "pending" : "deleted",
@@ -1268,7 +1337,7 @@ for (const mode of [
       }
       return;
     }
-    if (mode === "skills_resume_full") {
+    if (deepFull) {
       expect(passed).toBe(true);
       expect(report.starts).toBe(6);
       expect(new Set(journalClaims)).toEqual(
@@ -1276,13 +1345,14 @@ for (const mode of [
       );
       for (const provider of ["modal", "docker"]) {
         expect(templateCalls.get(provider)).toBe(2);
-        expect(skillExecutions.get(provider)).toBe(2);
+        const kind = mode === "skills_resume_full" ? "skills" : "mcp";
+        expect(kind === "skills" ? skillExecutions.get(provider) : mcpTurns.get(provider)).toBe(2);
         for (const name of [
-          "skills",
-          "skills-resume",
-          "skills-before-resume",
-          "skills-after-resume",
-          "skills-resume-cleanup",
+          kind,
+          `${kind}-resume`,
+          `${kind}-before-resume`,
+          `${kind}-after-resume`,
+          `${kind}-resume-cleanup`,
         ])
           expect(report.features[name][provider].status).toBe("pass");
       }
