@@ -159,11 +159,11 @@ describe("run", () => {
   });
 });
 
-test("bare host and snapshot aliases show family usage without profile, account or input I/O", async () => {
+test("bare discovery families retain exit codes without profile, account or input I/O", async () => {
   const forbidden = () => {
     throw new Error("Usage attempted external I/O");
   };
-  for (const command of ["snapshot", "golden", "host"]) {
+  for (const command of ["snapshot", "golden", "host", "template", "routine", "vars", "secrets"]) {
     const result = await capture(["--profile", "new-user", command], {
       env: {},
       fetch: Object.assign(forbidden, { preconnect: forbidden }),
@@ -172,7 +172,7 @@ test("bare host and snapshot aliases show family usage without profile, account 
         return forbidden();
       },
     });
-    expect(result.code).toBe(2);
+    expect(result.code).toBe(["snapshot", "golden", "host"].includes(command) ? 2 : 0);
     expect(result.err).toBe("");
     const family = command === "golden" ? "snapshot" : command;
     expect(result.out).toContain(`Usage: armada ${family} <command>`);
