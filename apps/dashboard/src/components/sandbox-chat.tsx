@@ -30,7 +30,8 @@ import { interruptSandbox, sendToSandbox, steerSandbox } from "@/app/actions/san
 import { Markdown } from "@/components/markdown";
 import { SubmitShortcut } from "@/components/mod-key";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
-import { StatusBadge, StatusDot } from "@/components/status-badge";
+import { SandboxState } from "@/components/sandbox-state";
+import { StatusDot } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -83,6 +84,7 @@ const CLOSED_COMPOSER: Record<Exclude<SandboxStatus, (typeof CAN_SEND)[number]>,
 type Props = {
   sandboxId: string;
   initialStatus: SandboxStatus;
+  outcomeBlocked?: boolean;
   initialIdlePaused?: boolean;
   expiresAt?: string | null;
   initialUsageRevision: string;
@@ -175,6 +177,7 @@ export function SandboxChat(props: Props) {
   const router = useRouter();
   const [events, setEvents] = useState<ChatEvent[]>([]);
   const [status, setStatus] = useState(initialStatus);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [idlePaused, setIdlePaused] = useState(props.initialIdlePaused === true);
   const [poll, setPoll] = useState<Poll>({
     error: null,
@@ -212,6 +215,7 @@ export function SandboxChat(props: Props) {
     (session: PollSession, body: Record<string, unknown>) => {
       if (!isCurrent(session)) return null;
       if (isRecord(body.prompt)) setTurnModel(body.prompt);
+      setStatusMessage(typeof body.statusMessage === "string" ? body.statusMessage : null);
       setIdlePaused(body.statusMessage === "Paused — wakes on your next message");
       const next = isSandboxStatus(body.status) ? body.status : known.current;
       const statusChanged = next !== known.current;
@@ -433,15 +437,24 @@ export function SandboxChat(props: Props) {
                 <StatusDot tone="success" pulse /> Live
               </span>
             )}
-            <StatusBadge
+            <SandboxState
               status={status}
               idlePaused={idlePaused}
               expiresAt={props.expiresAt ?? null}
-              readyLabel="Waiting for you"
+              statusMessage={statusMessage}
+              readyLabel={
+                !props.outcomeBlocked &&
+                [...chat.items].reverse().find((item) => item.kind === "user")?.status === "finished"
+                  ? "Finished"
+                  : "Waiting for you"
+              }
             />
           </div>
         </div>
 
+        {status === "running" && statusMessage && (
+          <p className="px-4 py-2 text-xs text-muted-foreground sm:px-6">{statusMessage}</p>
+        )}
         {pauseMessage && (
           <p className="border-b px-4 py-2 text-xs text-muted-foreground sm:px-6" role="status">
             {pauseMessage}
@@ -485,6 +498,7 @@ export function SandboxChat(props: Props) {
           onMore={() => void tick()}
         />
 
+        <div id="sandbox-mobile-about" className="px-4 lg:hidden" />
         {props.configured &&
           (props.composerUnavailable ? (
             <p className="border-t px-4 py-3 text-sm text-muted-foreground sm:px-6" data-composer-unavailable>
@@ -533,7 +547,7 @@ function ConversationPicker({
       >
         {conversations.map((conversation, index) => (
           <option key={conversation} value={conversation}>
-            {`Conversation ${index + 1} (${conversation.slice(0, 8)})`}
+            {`Conversation ${index + 1}`}
           </option>
         ))}
       </NativeSelect>
@@ -717,7 +731,7 @@ export function Transcript({
             )}
             {running && !streaming && (
               <li className="flex items-center gap-2.5 text-sm text-muted-foreground" data-testid="agent-working">
-                <StatusDot tone="info" pulse className="mx-1" />
+                <StatusDot tone="success" pulse className="mx-1" />
                 Working
               </li>
             )}
@@ -1248,7 +1262,7 @@ function TechnicalEvents({ events }: { events: ChatEvent[] }) {
           className="h-auto w-full justify-start rounded-lg px-4 py-2 sm:px-6 sm:py-3"
         >
           <ChevronRightIcon aria-hidden className={cn("size-3.5 transition-transform", open && "rotate-90")} />
-          Technical events ({events.length})
+          Technical details · events ({events.length})
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent>

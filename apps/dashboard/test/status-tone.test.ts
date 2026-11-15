@@ -9,10 +9,10 @@ test("each sandbox status has one meaning: in flight, live, in transition, faile
     statusLook(status).label,
   ]);
   expect(looks).toEqual([
-    ["starting", "warning", true, "Starting"],
-    ["ready", "success", false, "Ready"],
-    ["running", "info", true, "Running"],
-    ["stopping", "warning", true, "Stopping"],
+    ["starting", "neutral", true, "Starting"],
+    ["ready", "warning", false, "Waiting for you"],
+    ["running", "success", true, "Working"],
+    ["stopping", "neutral", true, "Stopping"],
     ["stopped", "neutral", false, "Stopped"],
     ["failed", "destructive", false, "Failed"],
     ["deleted", "neutral", false, "Deleted"],

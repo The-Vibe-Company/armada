@@ -1,7 +1,7 @@
 "use client";
 
 import type { SandboxStatus } from "@armada/core";
-import { Loader2Icon, SquareIcon, Trash2Icon } from "lucide-react";
+import { Loader2Icon, MoreHorizontalIcon, SquareIcon, Trash2Icon } from "lucide-react";
 import { useActionState, useCallback } from "react";
 import { deleteSandbox, stopSandbox } from "@/app/actions/sandboxes";
 import {
@@ -16,6 +16,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
 import { toastFromResult } from "@/lib/toast";
@@ -39,7 +40,21 @@ export function SandboxActions({
   stopDescription?: string;
 }) {
   if (canStop && CAN_STOP.includes(status))
-    return <StopButton sandboxId={sandboxId} compact {...(stopDescription ? { description: stopDescription } : {})} />;
+    return (
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button size="icon" variant="ghost" aria-label="Sandbox actions">
+            <MoreHorizontalIcon />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-64 space-y-2">
+          <StopButton sandboxId={sandboxId} size="sm" {...(stopDescription ? { description: stopDescription } : {})} />
+          <p className="text-xs text-muted-foreground">
+            {stopDescription ?? "The machine is removed; disk and conversation are kept. A message starts it again."}
+          </p>
+        </PopoverContent>
+      </Popover>
+    );
   if (canDelete && CAN_DELETE.includes(status)) return <DeleteButton sandboxId={sandboxId} />;
   return null;
 }
