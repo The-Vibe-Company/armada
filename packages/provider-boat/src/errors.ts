@@ -78,6 +78,7 @@ function classify(status: number, providerCode: string | undefined, envelope: En
     case 404:
       return { code: "not_found", retryable: false };
     case 409:
+      if (providerCode === "snapshot_data_expired") return { code: "sandbox_not_restorable", retryable: false };
       if (providerCode === "provider_not_configured") return { code: "provider_not_configured", retryable: false };
       if (providerCode === "no_running_turn") return { code: "no_running_turn", retryable: false };
       if (providerCode && NOT_READY_RETRYABLE.has(providerCode)) return { code: "sandbox_not_ready", retryable: true };

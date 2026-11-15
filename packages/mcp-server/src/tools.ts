@@ -1629,6 +1629,15 @@ export function createArmadaServer(context: ToolContext, version: string, option
         : resolveModelChoice(found.harness, { model: args.model, reasoningEffort: args.reasoning_effort }, stored);
     const conversation = args.conversation_id ?? found.conversationIds.at(-1);
     const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
+    if (machine.nonRestorable) {
+      await closeNonRestorable(data.sandboxes, found, context.now(), machine.stoppedAt);
+      throw new ProviderError({
+        provider: found.provider,
+        code: "sandbox_not_restorable",
+        message: nonRestorableMessage(found.preservationNote),
+        retryable: false,
+      });
+    }
     if (machine.state === "stopped" && found.stoppedAt === null) {
       await data.sandboxes.update(found.id, {
         status: "stopped",
@@ -1654,18 +1663,28 @@ export function createArmadaServer(context: ToolContext, version: string, option
         ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
       },
       async (signal) => {
-        const receipt = await measure("send_submit", () =>
-          provider
-            .prompt({
-              sandboxId: found.providerSandboxId,
-              harness: found.harness,
-              text: args.prompt,
-              signal,
-              ...(conversation ? { conversationId: conversation } : {}),
-              ...(choice ?? {}),
-            })
-            .catch(unknownMutationOutcome),
-        );
+        const dispatch = () =>
+          provider.prompt({
+            sandboxId: found.providerSandboxId,
+            harness: found.harness,
+            text: args.prompt,
+            signal,
+            ...(conversation ? { conversationId: conversation } : {}),
+            ...(choice ?? {}),
+          });
+        let receipt: Awaited<ReturnType<Provider["prompt"]>>;
+        try {
+          receipt = await measure("send_submit", dispatch);
+        } catch (error) {
+          if (error instanceof ProviderError && error.code === "sandbox_not_restorable")
+            throw new ProviderError({
+              provider: found.provider,
+              code: error.code,
+              message: nonRestorableMessage(found.preservationNote),
+              retryable: false,
+            });
+          throw unknownMutationOutcome(error);
+        }
         acknowledged = true;
         try {
           await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null, pricingContext);
@@ -1697,6 +1716,13 @@ export function createArmadaServer(context: ToolContext, version: string, option
             status: receipt.status,
           },
         };
+      },
+      {
+        failurePatch: (error) =>
+          error instanceof ProviderError && error.code === "sandbox_not_restorable"
+            ? nonRestorablePatch(found, context.now())
+            : undefined,
+        failurePatchRequired: true,
       },
     ).catch((error) => publicationFailure(error, acknowledged));
   }
@@ -2271,6 +2297,9 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
           },
         }
       : {}),
+    ...(error instanceof ProviderError && error.code === "sandbox_not_restorable"
+      ? { structuredContent: { error: { code, message } } }
+      : {}),
     ...(error instanceof GitHubHydrationError ? { _meta: { error: { code, message, details: error.details } } } : {}),
     content: [
       { type: "text", text: message },
@@ -2280,6 +2309,29 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
         : []),
     ],
   };
+}
+
+const NON_RESTORABLE_REASON = "Expired sandbox storage is no longer restorable.";
+function nonRestorableMessage(preservationNote: string | null | undefined): string {
+  return `${NON_RESTORABLE_REASON}${preservationNote ? ` ${preservationNote}` : ""}`;
+}
+function nonRestorablePatch(found: SandboxView, stoppedAt: Date, observedStoppedAt?: Date) {
+  const timestamp = observedStoppedAt ?? (found.stoppedAt === null ? stoppedAt : new Date(found.stoppedAt));
+  return {
+    status: "failed" as const,
+    statusReason: NON_RESTORABLE_REASON,
+    stoppedAt: timestamp.toISOString(),
+    stopRequested: false,
+    ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
+  };
+}
+async function closeNonRestorable(
+  store: import("./data.ts").ServerSandboxStore,
+  found: SandboxView,
+  stoppedAt: Date,
+  observedStoppedAt?: Date,
+): Promise<void> {
+  await store.update(found.id, nonRestorablePatch(found, stoppedAt, observedStoppedAt));
 }
 
 function describe(error: unknown): { code: string; message: string } {

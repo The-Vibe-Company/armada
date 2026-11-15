@@ -257,6 +257,26 @@ describe("sandboxes", () => {
     ]);
   });
 
+  test("only stopped disk expiry is definite non-restorable evidence", async () => {
+    for (const state of ["archived", "running", "idle"]) {
+      const expired = fakeBoat({
+        body: {
+          ok: true,
+          type: "sandbox.info",
+          sandbox: sandbox({ state, dataExpiredAt: "2026-11-10T10:00:00Z", stoppedAt: "2026-11-10T09:00:00Z" }),
+        },
+      });
+      const observed = await expired.provider.get(ID);
+      expect(observed).toMatchObject({
+        state: state === "archived" ? "stopped" : state === "idle" ? "ready" : "running",
+        ...(state === "archived" ? { nonRestorable: "disk_expired" } : {}),
+      });
+      if (state !== "archived") expect(observed.nonRestorable).toBeUndefined();
+    }
+    const retained = fakeBoat({ body: { ok: true, type: "sandbox.info", sandbox: sandbox({ state: "archived" }) } });
+    expect((await retained.provider.get(ID)).nonRestorable).toBeUndefined();
+  });
+
   test("get rejects mismatched or missing sandbox identities before accepting a fresh observation", async () => {
     const boat = fakeBoat(
       { body: { ok: true, type: "sandbox.info", sandbox: sandbox({ id: "bx_98765432", state: "archived" }) } },

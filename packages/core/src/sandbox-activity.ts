@@ -7,7 +7,13 @@ export async function sandboxActivity<T>(
   sandbox: SandboxRecord,
   admission: SandboxPatch,
   work: (signal: AbortSignal) => Promise<{ result: T; patch: SandboxPatch }>,
-  options: { initialLeaseId?: string; failurePatch?: (error: unknown) => SandboxPatch; deadlineMs?: number } = {},
+  options: {
+    initialLeaseId?: string;
+    failurePatch?: (error: unknown) => SandboxPatch | undefined;
+    /** Definite terminal evidence must be published before its error is exposed. */
+    failurePatchRequired?: boolean;
+    deadlineMs?: number;
+  } = {},
 ): Promise<T> {
   const token = options.initialLeaseId ?? crypto.randomUUID();
   const generation = sandbox.lifecycleGeneration;
@@ -50,10 +56,17 @@ export async function sandboxActivity<T>(
     await store.update(sandbox.id, { ...patch, finishActivity: true, activityToken: token, ...expected });
     return result;
   } catch (error) {
-    if (options.failurePatch)
-      await store
-        .update(sandbox.id, { ...options.failurePatch(error), finishActivity: true, activityToken: token, ...expected })
-        .catch(() => {});
+    if (options.failurePatch) {
+      const patch = options.failurePatch(error);
+      if (patch) {
+        const persist = () =>
+          store.update(sandbox.id, { ...patch, finishActivity: true, activityToken: token, ...expected });
+        // Existing best-effort releases keep their behavior. A terminal provider verdict
+        // is different: returning it after a failed/stale write would falsely report closure.
+        if (options.failurePatchRequired) await persist();
+        else await persist().catch(() => {});
+      }
+    }
     throw error;
   } finally {
     clearTimeout(deadline);

@@ -161,7 +161,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   function sandboxInfo(row: Machine): SandboxInfo {
     const { physicalGeneration: _ignored, ...info } = row.info;
-    return { ...info, ...(row.physicalId ? { physicalGeneration: String(row.generation) } : {}) };
+    return {
+      ...info,
+      ...(row.physicalId ? { physicalGeneration: String(row.generation) } : {}),
+      ...(row.phase === "stopped" && !row.golden && !row.commonRuntime && !row.recoveryImageId
+        ? { nonRestorable: "checkpoint_missing" as const }
+        : {}),
+    };
   }
   async function resourceReceipt(observed: Machine): Promise<ModalResourceReceipt> {
     const durable = await store.get(observed.info.id).catch(() => undefined);
@@ -475,7 +481,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     if (row.phase === "stopped") {
       if (row.commonRuntime) throw refusal("invalid_request", "Enrolled Modal resume is not enabled.");
       await options.beforeResume?.(provider, row.info.id);
-      if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
+      if (!row.recoveryImageId)
+        throw refusal("sandbox_not_restorable", "Stopped sandbox has no durable recovery image.");
       row.generation++;
       row.quiesced = false;
       delete row.ordinaryStopAttempted;
