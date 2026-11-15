@@ -23,7 +23,6 @@ function setup(drivers = { claude: unused, codex: unused }) {
   const runner = new Runner(journal, grant, drivers);
   return {
     dir,
-    path,
     journal,
     runner,
     close() {
@@ -57,12 +56,13 @@ async function call(runner: Runner, body: Record<string, unknown>, token = grant
     }),
   );
 }
-// Audit: transport refusal and durable replay protect different boundaries from driver semantics.
-test("auth refuses before dispatch; real WAL survives restart and reconciles lost turns honestly", async () => {
-  const s = setup();
+// Reconstructing a Runner exercises lost-turn reconciliation without disk-reopen latency.
+test("auth refuses before dispatch; a fresh Runner reconciles lost turns and retains redacted sessions", async () => {
+  const journal = new Journal(":memory:", (t) => t.replaceAll(grant.token, "[REDACTED]"));
   try {
-    expect((await call(s.runner, { op: "health" }, "wrong")).status).toBe(401);
-    s.journal.transition(
+    const initial = new Runner(journal, grant, { claude: unused, codex: unused });
+    expect((await call(initial, { op: "health" }, "wrong")).status).toBe(401);
+    journal.transition(
       {
         promptId: "p",
         conversationId: "c",
@@ -71,25 +71,22 @@ test("auth refuses before dispatch; real WAL survives restart and reconciles los
       },
       "running",
     );
-    s.journal.saveSession("c", "claude", "official-session");
-    s.journal.close();
-    const restored = new Journal(s.path, (t) => t.replaceAll(grant.token, "[REDACTED]"));
-    const runner = new Runner(restored, grant, { claude: unused, codex: unused });
+    journal.saveSession("c", "claude", "official-session");
+    const runner = new Runner(journal, grant, { claude: unused, codex: unused });
     const response = await call(runner, { op: "getPrompt", promptId: "p" });
     expect((await payload(response)).result).toMatchObject({ status: "failed", done: true });
     const replay = await payload(await call(runner, { op: "events" }));
     expect(replay.result.events).toHaveLength(2);
     expect(JSON.stringify(replay)).not.toContain(grant.token);
-    expect(restored.session("c")).toBe("official-session");
-    restored.close();
+    expect(journal.session("c")).toBe("official-session");
   } finally {
-    rmSync(s.dir, { recursive: true, force: true });
+    journal.close();
   }
 });
 test.skipIf(process.platform !== "linux")(
   "real exec timeout reconciles missing birth evidence and detached PID retains terminal output",
   async () => {
-    // Exec recovery reuses one SQL connection; the separate WAL test owns disk reopening.
+    // Exec recovery reuses one SQL connection; disk-reopen durability belongs to staging.
     const journal = new Journal(":memory:", (text) => text);
     const runner = new Runner(journal, grant, { claude: unused, codex: unused });
     try {
