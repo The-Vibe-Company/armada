@@ -1,0 +1,38 @@
+import { expect, test } from "bun:test";
+import { HARNESS_CATALOG } from "@armada/core";
+import { launchPickerGroups } from "./launch-picker";
+import type { ModelAccount } from "./model-accounts";
+
+const account: ModelAccount = {
+  id: "account_one",
+  name: "Claude Max",
+  kind: "claude_oauth",
+  scope: "user",
+  status: "active",
+  expiresAt: null,
+  updatedAt: "",
+  version: 1,
+  isDefault: true,
+};
+test("launch picker retains expired and full accounts with refusal reasons and cross-agent choices", () => {
+  const groups = launchPickerGroups(
+    [
+      { ...account, expiresAt: "2020-01-01T00:00:00Z" },
+      {
+        ...account,
+        id: "account_two",
+        kind: "morph",
+        maxAgents: 2,
+        runningAgents: 2,
+        models: [{ model: "morph-custom", input: null, output: null }],
+      },
+    ],
+    HARNESS_CATALOG,
+    "codex",
+    Date.parse("2026-01-01"),
+  );
+  expect(groups[0]!.reason).toBe("Sign-in expired. Reconnect Claude Max first.");
+  expect(groups[0]!.options[0]!.harness).toBe("claude");
+  expect(groups[1]!.reason).toContain("2 of 2 agents running. Stop one");
+  expect(groups[1]!.options.map((row) => [row.id, row.harness])).toEqual([["morph-custom", "codex"]]);
+});
