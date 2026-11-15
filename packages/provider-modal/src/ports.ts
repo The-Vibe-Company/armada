@@ -150,11 +150,6 @@ export interface ModalStore {
   /** Latest ingested transition of a turn, without replaying its transcript. */
   latestPrompt(sandboxId: string, promptId: string): Promise<Extract<AgentEvent, { kind: "prompt" }> | null>;
 }
-export interface RunnerGrant {
-  token: string;
-  expiresAt: number;
-  ingestUrl: string;
-}
 export interface RunnerTransport {
   /** Must validate version/requestId and translate structured runtime errors to ProviderError. */
   call<T>(machine: Machine, op: string, input: object): Promise<T>;
