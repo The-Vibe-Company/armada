@@ -1,10 +1,14 @@
 import type { AuthStore } from "@armada/auth";
 import {
+  CLAUDE_ENDPOINT_ENV,
+  CODEX_ENDPOINT_ENV,
   goldenForSettings,
+  HARNESSES,
   isModelConnectionTestResult,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   OPENCODE_ENDPOINT_ENV,
   parseMachineSizePolicy,
+  resolveCredentials,
   VERSION,
 } from "@armada/core";
 import {
@@ -408,6 +412,62 @@ async function dispatch(
       if (!sandbox || sandbox.orgId !== org) throw new VaultError("not_found", "No such sandbox.");
     }
     return dispatchMcp(route.slice(4), caller.userId, { ...body, org }, options);
+  }
+  if (route === "sandbox/capabilities") {
+    const scoped = await selectedCaller(options, caller, optional(body, "org"));
+    if (scoped.orgs.length !== 1) throw new VaultError("invalid", "Select one org.");
+    const orgId = scoped.orgs[0]!.orgId;
+    const backend = optional(body, "provider");
+    if (!backend || !isSandboxProvider(backend)) throw new VaultError("invalid", "Select boat or modal.");
+    const credentialId = optional(body, "credentialId");
+    if (credentialId !== undefined && !UUID.test(credentialId))
+      throw new VaultError("invalid", "Invalid credential ID.");
+    const runtimeDefault =
+      backend === "boat" ? options.launch?.boatRuntimeDefault : options.launch?.modalRuntimeDefault;
+    let provider: Provider | undefined;
+    try {
+      if (options.providers && options.data) {
+        const target = selectGolden(
+          await options.data(scoped).goldens.findByName(orgId, required(body, "golden")),
+          body,
+        );
+        if (target)
+          provider = runtimeDefault
+            ? await runtimeDefault.provider({ userId: scoped.userId, orgId, role: scoped.orgs[0]!.role }, target)
+            : await options.providers.resolve(target, scoped);
+      }
+    } catch {
+      // Provider errors may contain private configuration; return a closed reason.
+    }
+    const pairs = [];
+    for (const harness of HARNESSES) {
+      let reason: "provider_unavailable" | "harness_unavailable" | "account_unavailable" | null = !provider
+        ? "provider_unavailable"
+        : !provider.harnesses.includes(harness)
+          ? "harness_unavailable"
+          : null;
+      if (!reason) {
+        try {
+          const credentials = await resolveCredentials(options.store, options.encryptionKey, {
+            userId: scoped.userId,
+            orgId,
+            harness,
+            ...(credentialId ? { credentialId } : {}),
+          });
+          if (
+            (runtimeDefault && !credentials.binding) ||
+            (backend !== "modal" &&
+              !runtimeDefault &&
+              (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]))
+          )
+            reason = "account_unavailable";
+        } catch {
+          reason = "account_unavailable";
+        }
+      }
+      pairs.push({ provider: backend, harness, enabled: reason === null, reason });
+    }
+    return { pairs };
   }
   if (route === "golden/capabilities") {
     const selected = scopedOrg(caller, optional(body, "org"));

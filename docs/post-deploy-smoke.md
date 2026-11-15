@@ -1723,3 +1723,23 @@ covers no-override sends in an existing single conversation, not browser
 rendering/CORS, other conversation choices or launch/stop/resume/delete client
 request parity. Those and live provider acceptance remain owed. Boat remains
 coordinator-only via `--only boat --production-boat`, never the release gate.
+
+### Ordinary capability preflight
+
+Before any feature setup or compute mutation, smoke calls authenticated
+`POST /api/v1/sandbox/capabilities` for every configured ordinary case with
+`org`, `provider`, `golden` (the existing golden name), and `credentialId`.
+The route reads the caller-visible golden, resolves its registered provider,
+and reports explicit `{provider, harness, enabled, reason}` entries in `pairs`.
+Reasons are closed: `provider_unavailable`, `harness_unavailable`, or
+`account_unavailable`; enabled entries have a null reason. Account validation
+uses launch's user-then-org visibility, compatibility, status, expiry and
+credential decoding rules. No credentials or upstream diagnostics are returned.
+Missing or disabled pairs abort the entire smoke run before allocation.
+
+This is a read-only configuration check, not a reservation or a live model
+connection test. It never creates a golden binding, refreshes GitHub credentials,
+or allocates compute. Launch still revalidates authority and current state.
+`launch/options` describes catalog choices; `golden/capabilities` describes
+golden operations and does not prove model account or harness availability.
+Owner-facing orchestrator preflight is retired and is not reused here.

@@ -69,6 +69,15 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
         return override;
       }
       switch (call.path) {
+        case "sandbox/capabilities":
+          return json({
+            pairs: ["claude", "codex", "opencode"].map((harness) => ({
+              provider: call.body.provider,
+              harness,
+              enabled: true,
+              reason: null,
+            })),
+          });
         case "sandbox/launch":
           return json({ sandbox: { id: "sandbox-id", provider: call.body.provider } });
         case "sandbox/send":
@@ -989,7 +998,7 @@ describe("preservation checks", () => {
         }
         if (defaults) {
           expect(fake.calls.filter((call) => call.path === "skills/defaults/get")).toHaveLength(3);
-          expect(fake.calls.findIndex((call) => call.path === "sandbox/launch")).toBe(3);
+          expect(fake.calls.findIndex((call) => call.path === "sandbox/launch")).toBe(4);
           if (success)
             for (const step of ["default_skills_receipts", "default_skills_opt_out_receipts"])
               expect(fake.receipts()).toContainEqual({ case: 0, step, pass: true });
@@ -1217,8 +1226,8 @@ test("a merged default policy overflow has a closed failure line before allocati
       },
     ),
   ).toBe(false);
-  expect(fake.calls).toHaveLength(3);
-  expect(fake.calls.every((call) => call.path === "skills/defaults/get")).toBe(true);
+  expect(fake.calls).toHaveLength(4);
+  expect(fake.calls.every((call) => ["sandbox/capabilities", "skills/defaults/get"].includes(call.path))).toBe(true);
   expect(fake.receipts()).toContainEqual({
     case: 0,
     step: "default_skills_policy",
@@ -1315,7 +1324,9 @@ test("vault transport catches canary echoes in error envelopes, cleans metadata 
     ),
   ).toBe(false);
   expect(fake.receipts()).toContainEqual({ case: 0, step: "vault_secret_set", pass: false, code: "secret_exposed" });
-  expect(fake.calls.some((call) => call.path.startsWith("sandbox/"))).toBe(false);
+  expect(fake.calls.some((call) => call.path.startsWith("sandbox/") && call.path !== "sandbox/capabilities")).toBe(
+    false,
+  );
   expect(fake.calls.filter((call) => call.path === "variables/delete")).toHaveLength(1);
   expect(fake.lines.join("")).not.toContain(canary);
   expect(fake.receipts()).toContainEqual({
@@ -1363,7 +1374,10 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
       if (fault === "lost_launch") throw new Error("secret launch outcome");
       return json({ sandbox: { id, provider } });
     }
-    if (call.path.startsWith("sandbox/") && !["sandbox/list", "sandbox/launch"].includes(call.path))
+    if (
+      call.path.startsWith("sandbox/") &&
+      !["sandbox/list", "sandbox/launch", "sandbox/capabilities"].includes(call.path)
+    )
       expect(call.body.id).toBe(id);
     if (call.path === "sandbox/status")
       return json({
@@ -1639,7 +1653,7 @@ test("the advertised smoke workflow invocation admits ordinary staging checks", 
       ),
     ).toBe(false);
     // A deliberate auth refusal after admission, not a configuration failure or compute allocation.
-    expect(fake.calls.map((call) => call.path)).toEqual(["skills/defaults/get"]);
+    expect(fake.calls.map((call) => call.path)).toEqual(["sandbox/capabilities", "skills/defaults/get"]);
     expect(fake.receipts()).toContainEqual({
       case: 0,
       step: "default_skills_golden",
@@ -1804,3 +1818,34 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
     );
   },
 );
+
+test("a disabled later ordinary pair prevents every compute mutation", async () => {
+  const fake = fixture((call) =>
+    call.path === "sandbox/capabilities"
+      ? json({
+          pairs: [
+            {
+              provider: "modal",
+              harness: call.body.credentialId === "account" ? "codex" : "claude",
+              enabled: call.body.credentialId === "account",
+              reason: "account_unavailable",
+            },
+          ],
+        })
+      : undefined,
+  );
+  expect(
+    await postDeploySmoke(
+      {
+        ...env,
+        ARMADA_SMOKE_CASES: JSON.stringify([
+          selected,
+          { ...selected, harness: "claude", modelAccountId: "other_account" },
+        ]),
+      },
+      [],
+      fake.io,
+    ),
+  ).toBe(false);
+  expect(fake.calls.map((call) => call.path)).toEqual(["sandbox/capabilities", "sandbox/capabilities"]);
+});
