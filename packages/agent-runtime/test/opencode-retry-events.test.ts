@@ -43,7 +43,7 @@ mock.module("node:http", () => ({
   request: (input: RequestOptions, reply: (response: IncomingMessage) => void) => {
     options = input;
     requests++;
-    activeRequest = Object.assign(new EventEmitter(), {
+    const ownedRequest = Object.assign(new EventEmitter(), {
       destroyed: false,
       end() {
         handler(reply);
@@ -55,16 +55,17 @@ mock.module("node:http", () => ({
     input.signal?.addEventListener(
       "abort",
       () => {
-        if (activeRequest.listenerCount("error")) activeRequest.emit("error", new Error("aborted"));
+        if (ownedRequest.listenerCount("error")) ownedRequest.emit("error", new Error("aborted"));
       },
       { once: true },
     );
-    return activeRequest;
+    activeRequest = ownedRequest;
+    return ownedRequest;
   },
 }));
 const response = (statusCode = 200, headers: Record<string, string> = { "content-type": "text/event-stream" }) =>
   Object.assign(new PassThrough(), { statusCode, headers }) as unknown as IncomingMessage;
-const { createOpenCodeRetryObserver } = await import("../src/opencode-retry-events.ts");
+const { createOpenCodeRetryObserver } = await import("../src/opencode-retry-observer.ts");
 afterEach(() => {
   setSystemTime();
   options = undefined;
@@ -127,7 +128,9 @@ test("OpenCode native SSE waits are authenticated, session scoped, deduplicated 
     // Exercise chunk/CRLF boundaries, not just complete in-memory JSON objects.
     incoming.push(Buffer.from(wire.slice(0, 31)));
     incoming.push(Buffer.from(wire.slice(31)));
-    for (let i = 0; i < 8; i++) await Promise.resolve();
+    incoming.push(null);
+    // EOF is an explicit pump completion barrier, not a guessed number of microtasks.
+    await expect(observer.observation.failed).rejects.toMatchObject({ code: "harness_process_lost" });
     expect(events).toHaveLength(6);
     expect(events).toMatchObject([
       {
