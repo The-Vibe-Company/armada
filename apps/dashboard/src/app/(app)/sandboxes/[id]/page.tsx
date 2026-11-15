@@ -137,7 +137,7 @@ export default async function SandboxPage({ params }: Props) {
   const facts: [string, string][] = [
     ["Sandbox ID", sandbox.id],
     ["Machine ID", sandbox.provider_sandbox_id ?? "Not assigned"],
-    ["Golden", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
+    ["Snapshot", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
     ["Org", org?.org.name ?? "Unknown"],
     ["Provider", PROVIDER_LABELS[sandbox.provider] ?? sandbox.provider],
     ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],

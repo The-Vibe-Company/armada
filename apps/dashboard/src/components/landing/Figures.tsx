@@ -49,7 +49,7 @@ export function GoldenFigure() {
   return (
     <Figure
       view="0 0 640 540"
-      label="Three repositories feed two separate builds: a golden built and saved on Boat, and another built and saved on Modal. Each build clones as you, runs the setup, scans for GitHub tokens and saves its own snapshot."
+      label="Three repositories feed two separate builds: a snapshot built and saved on Boat, and another built and saved on Modal. Each build clones as you, runs the setup, scans for GitHub tokens and saves its own snapshot."
     >
       {REPOS.map((r, k) => {
         const y = 24 + k * 132;
@@ -101,7 +101,7 @@ export function FleetFigure() {
   return (
     <Figure
       view="0 0 640 540"
-      label="One golden forks into four sandboxes, each with its own agent, model and reasoning effort: two Claude Code, two Codex."
+      label="One snapshot forks into four sandboxes, each with its own agent, model and reasoning effort: two Claude Code, two Codex."
     >
       <rect className="lp-fig-card is-lime" x={8} y={200} width={170} height={140} rx={24} />
       <Ship x={93} y={248} size={34} className="is-ink" />
@@ -109,7 +109,7 @@ export function FleetFigure() {
         widgets
       </text>
       <text className="lp-fig-s" x={93} y={326} textAnchor="middle">
-        golden
+        snapshot
       </text>
       {SANDBOXES.map((s, k) => {
         const y = 12 + k * 132;
@@ -310,7 +310,7 @@ export function KeysFigure() {
   return (
     <Figure
       view="0 0 640 540"
-      label={`The vault seals each key with ${CIPHER}. Of the stored keys, a sandbox receives only its agent's, plus a GitHub token valid for ${GITHUB_TOKEN_HOURS} hours; a golden receives no key.`}
+      label={`The vault seals each key with ${CIPHER}. Of the stored keys, a sandbox receives only its agent's, plus a GitHub token valid for ${GITHUB_TOKEN_HOURS} hours; a snapshot receives no key.`}
     >
       <rect className="lp-fig-card is-lime" x={8} y={170} width={236} height={200} rx={26} />
       <rect className="lp-fig-ink" x={96} y={204} width={60} height={50} rx={10} />
@@ -338,7 +338,7 @@ export function KeysFigure() {
       </text>
       <rect className="lp-fig-card is-night" x={344} y={348} width={288} height={176} rx={24} />
       <text className="lp-fig-t is-on-ink" x={372} y={400}>
-        golden
+        snapshot
       </text>
       <text className="lp-fig-s is-on-ink" x={372} y={436}>
         no keys, ever

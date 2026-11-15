@@ -180,3 +180,12 @@ test("with reduced motion the landing holds still; with motion the same probe se
   expect(await moves(browser, "reduce")).toEqual({ skyMoved: false, terminalReplayed: false });
   expect(await moves(browser, "no-preference")).toEqual({ skyMoved: true, terminalReplayed: true });
 });
+
+test("the public story uses the same snapshot terminology as the dashboard", async ({ page }) => {
+  await page.goto("/landing");
+  await expect(page.locator("#method")).toContainText("A snapshot contains your repositories");
+  await expect(page.locator("main")).not.toContainText(/\bgolden\b/i);
+  for (const figure of await page.getByRole("img").all()) {
+    await expect(figure).not.toHaveAccessibleName(/\bgolden\b/i);
+  }
+});
