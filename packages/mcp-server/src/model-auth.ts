@@ -34,6 +34,16 @@ export function createModelAuthOwnership(
   const broker = subscription
     ? createSubscriptionBroker(sql, encryptionKey, subscription.origin, subscription.fetch, subscription.prepareAccount)
     : undefined;
+  async function serverBackedSource(provider: Provider, providerId: string): Promise<boolean> {
+    return (
+      (
+        await sql.query(
+          `select 1 from public.sandboxes s join public.model_auth_state a on a.account_id=s.credential_id and a.account_version=s.credential_version where s.provider=$1 and s.provider_sandbox_id=$2 and a.source_generation like 'server:%'`,
+          [provider.id, providerId],
+        )
+      ).rows.length > 0
+    );
+  }
   async function modalGeneration(tx: Sql, providerId: string, actor: GoldenActor, lock = false): Promise<string> {
     const result = await tx.query<{ generation: string }>(
       `select record->>'generation' as generation from public.modal_machines where id=$1 and org_id=$2::uuid and owner_id=$3::uuid${lock ? " for update" : ""}`,
@@ -379,16 +389,7 @@ export function createModelAuthOwnership(
         throw error;
       }
       if (provider.id !== "boat" || secrets.length === 0) return;
-      if (
-        broker &&
-        (
-          await sql.query(
-            `select 1 from public.sandboxes s join public.model_auth_state a on a.account_id=s.credential_id and a.account_version=s.credential_version where s.provider=$1 and s.provider_sandbox_id=$2 and a.source_generation like 'server:%'`,
-            [provider.id, providerId],
-          )
-        ).rows.length
-      )
-        return;
+      if (broker && (await serverBackedSource(provider, providerId))) return;
       await sshNativeAuthAdmission(provider, providerId, false);
       await this.capture(provider, providerId, caller, true);
     },
@@ -396,19 +397,7 @@ export function createModelAuthOwnership(
       await this.beforeResume(provider, providerId, caller);
       await subscription?.prepareTurn?.(provider, providerId, caller);
       const secrets = await this.capture(provider, providerId, caller);
-      if (
-        provider.id === "boat" &&
-        secrets.length > 0 &&
-        !(
-          broker &&
-          (
-            await sql.query(
-              `select 1 from public.sandboxes s join public.model_auth_state a on a.account_id=s.credential_id and a.account_version=s.credential_version where s.provider=$1 and s.provider_sandbox_id=$2 and a.source_generation like 'server:%'`,
-              [provider.id, providerId],
-            )
-          ).rows.length
-        )
-      )
+      if (provider.id === "boat" && secrets.length > 0 && !(broker && (await serverBackedSource(provider, providerId))))
         await sshNativeAuthAdmission(provider, providerId, true);
     },
     async publishFromModal(scope: Scope, claims: IngestGrantClaims, authJson: string, expectedRevision: number) {
