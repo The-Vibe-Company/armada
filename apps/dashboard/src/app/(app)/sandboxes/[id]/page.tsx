@@ -64,8 +64,41 @@ export default async function SandboxPage({ params }: Props) {
   const pending = listMemberships(supabase, viewer.id).then((items) =>
     items.filter((item) => item.org.id === selected?.org.id),
   );
-  const [sandbox, memberships, directory] = await Promise.all([
-    getSandbox(supabase, id),
+  const sandboxRead = getSandbox(supabase, id);
+  // Provider reads depend on the authorized interior row, not the unrelated member directory.
+  // Attach both branches to the same read so directory and provider latency overlap.
+  const dockerRead = sandboxRead.then((sandbox) =>
+    sandbox?.provider === "docker"
+      ? Promise.all([
+          readDockerLaunchOption(),
+          credentialMetadata(supabase, [sandbox.credential_id]),
+          hostListForPage(),
+          sandbox.owner_id === viewer.id && sandbox.status !== "deleted"
+            ? readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
+            : undefined,
+        ])
+      : null,
+  );
+  const cloudRead = sandboxRead.then(async (sandbox) => {
+    if (!sandbox || !isSandboxProvider(sandbox.provider) || sandbox.golden_id === null) return null;
+    const bindingAvailability = accountBindingAvailability({
+      provider: sandbox.provider,
+      boatRuntime: sandbox.boat_runtime,
+    });
+    const recovery = sandbox.status !== "deleted" && bindingAvailability.available;
+    const owner = sandbox.owner_id === viewer.id;
+    const [golden, applied, accounts, choices] = await Promise.all([
+      findGoldenLabel(supabase, sandbox.golden_id),
+      listSandboxConnections(sandbox),
+      credentialMetadata(supabase, [sandbox.credential_id]),
+      recovery && owner && bindableStatus(sandbox.status) !== "failed"
+        ? readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
+        : undefined,
+    ]);
+    return { bindingAvailability, recovery, owner, golden, applied, accounts, choices };
+  });
+  const [sandbox, memberships, directory, docker, cloud] = await Promise.all([
+    sandboxRead,
     pending,
     pending.then((items) =>
       memberDirectory(
@@ -73,6 +106,8 @@ export default async function SandboxPage({ params }: Props) {
         items.map((item) => item.org.id),
       ),
     ),
+    dockerRead,
+    cloudRead,
   ]);
   if (!sandbox) {
     // The interior read is refused to a member who is neither the owner nor an admin (#680). Only then is the safe
@@ -85,14 +120,8 @@ export default async function SandboxPage({ params }: Props) {
   if (sandbox.provider === "docker") {
     // A sandbox on an owned Docker host (#1165): the same page, with what the server supports on Docker. A control the
     // server marks unsupported is listed with its reason, never offered as a button it would refuse.
-    const [option, accounts, hosts, choices] = await Promise.all([
-      readDockerLaunchOption(),
-      credentialMetadata(supabase, [sandbox.credential_id]),
-      hostListForPage(),
-      sandbox.owner_id === viewer.id && sandbox.status !== "deleted"
-        ? readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
-        : undefined,
-    ]);
+    if (!docker) notFound();
+    const [option, accounts, hosts, choices] = docker;
     return (
       <DockerSandbox
         sandbox={sandbox}
@@ -110,20 +139,8 @@ export default async function SandboxPage({ params }: Props) {
   if (!isSandboxProvider(sandbox.provider) || sandbox.golden_id === null) notFound();
   const org = memberships.find((item) => item.org.id === sandbox.org_id);
   const configured = mcpUrl() !== null;
-  const bindingAvailability = accountBindingAvailability({
-    provider: sandbox.provider,
-    boatRuntime: sandbox.boat_runtime,
-  });
-  const recovery = sandbox.status !== "deleted" && bindingAvailability.available;
-  const owner = sandbox.owner_id === viewer.id;
-  const [golden, applied, accounts, choices] = await Promise.all([
-    findGoldenLabel(supabase, sandbox.golden_id),
-    listSandboxConnections(sandbox),
-    credentialMetadata(supabase, [sandbox.credential_id]),
-    recovery && owner && bindableStatus(sandbox.status) !== "failed"
-      ? readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
-      : undefined,
-  ]);
+  if (!cloud) notFound();
+  const { bindingAvailability, recovery, owner, golden, applied, accounts, choices } = cloud;
   const account = billingAccount(sandbox.credential_id, accounts);
   const cost = costOfRow(sandbox, accounts.get(sandbox.credential_id ?? "")?.kind ?? null);
   const repositoryDir = sandboxRepositoryDir(sandbox);
