@@ -275,7 +275,7 @@ function LaunchForm({
           <p id={`${id}-availability`} className="text-xs text-muted-foreground" data-launch-availability>
             {provider === "modal"
               ? "Modal supports Claude Code, Codex and OpenCode, including custom model connections."
-              : `${PROVIDER_LABELS[provider]} supports standard Claude Code and Codex accounts. OpenCode and custom model connections require Modal; choose a Modal snapshot to use them.`}
+              : `${PROVIDER_LABELS[provider]} supports Claude Code and Codex, including custom model connections through the Armada runtime. OpenCode requires Modal.`}
           </p>
           {/* Who is billed stays in view: it is never a collapsed default. */}
           <AccountField

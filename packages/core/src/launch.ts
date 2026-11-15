@@ -183,6 +183,8 @@ export interface LaunchOptions extends GoldenLimits {
     credentials: LaunchCredentialResolver;
     connections: NonNullable<LaunchStores["connections"]>;
   };
+  /** Custom endpoints require private runtime configuration even when ordinary Boat launches stay native. */
+  boatEndpointRuntime?: NonNullable<LaunchOptions["boatRuntimeDefault"]>;
   /** Coordinator-owned Modal cutover default; never selected by request JSON. */
   modalRuntimeDefault?: NonNullable<LaunchOptions["boatRuntimeDefault"]>;
   /** Frozen template account version, not a public launch override. */
@@ -382,15 +384,34 @@ export async function launchSandbox(
     if (!models.includes(choice.model))
       throw new LaunchError("invalid_request", "Choose a Morph plan model for this account.");
   }
+  if (
+    provider.id === "boat" &&
+    !runtime &&
+    (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) &&
+    options.boatEndpointRuntime
+  ) {
+    // Re-enter through the shared runtime selection before allocating compute.
+    // Its resolver excludes native GitHub/model environment delivery.
+    return launchSandbox(provider, stores, actor, request, {
+      ...options,
+      boatRuntimeDefault: options.boatEndpointRuntime,
+    });
+  }
   if (defaultRuntime && !credentials.binding)
     throw new LaunchError(
       "invalid_request",
       `${golden.provider === "boat" ? "Boat" : "Modal"} runtime default requires a bound model account; no native fallback.`,
     );
   if (credentials.env[CLAUDE_ENDPOINT_ENV] && provider.id !== "modal" && !runtime)
-    throw new LaunchError("invalid_request", "Custom Claude gateways currently require Modal.");
+    throw new LaunchError(
+      "invalid_request",
+      "Custom Claude gateways require the Boat runtime artifacts; use --provider modal or a Docker host.",
+    );
   if (credentials.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal" && !runtime)
-    throw new LaunchError("invalid_request", "Custom Codex endpoints currently require Modal.");
+    throw new LaunchError(
+      "invalid_request",
+      "Custom Codex endpoints require the Boat runtime artifacts; use --provider modal or a Docker host.",
+    );
   if (harness === "opencode") {
     if (provider.id !== "modal") throw new LaunchError("invalid_request", "OpenCode currently requires Modal.");
     const configured = credentials.env[OPENCODE_ENDPOINT_ENV];
