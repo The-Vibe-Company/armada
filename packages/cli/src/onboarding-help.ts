@@ -377,6 +377,32 @@ does not unset that environment variable. Keep tokens in a secure environment, n
 Example: armada login --email you@example.com
 Example: armada --profile staging login --url https://staging.example.com --provider github
 `,
+  snapshot: `Usage: armada snapshot <command> [arguments]
+Manage provider-scoped snapshots. Use a leaf command with --help or -h for syntax.
+Boat/Modal:
+  create       Build a snapshot from repositories/config.
+  update       Append repositories or explicitly replace the complete config.
+  build-find   Find an active build by name.
+  build-status Inspect a job or recover admission using its saved key.
+  build-cancel Cancel your queued, never-started build.
+  connect      Prepare the canonical master for maintenance.
+  snapshot     Scan and freeze the maintained master.
+  capabilities Read server-authoritative capacity.
+  size-policy  Inspect or replace future-launch size defaults.
+  remove       Remove from launch selection, retaining children/provider artifacts.
+  visibility   Change visibility using the snapshot record ID.
+  retirement dry-run|reconcile  Review history and reconcile reviewed receipts.
+Docker:
+  create       Build a host-local snapshot (--provider docker, host/org required).
+  get          Read saved build state.
+  rebuild      Build a new snapshot on the original host, keeping the old one.
+Shared:
+  list         List visible snapshots; Docker requires an organization UUID.
+Operations require Armada login and server authorization; help does not.
+The legacy golden spelling is accepted; guidance uses snapshot.
+Example: armada snapshot list --provider modal --json
+Example: armada snapshot create --help
+`,
   "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.
 Use --org to override a saved selection. This reports configuration, not a live lifecycle test.
@@ -686,6 +712,7 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
     ].includes(parts[1] ?? "")
   )
     parts[0] = "snapshot";
+  if (parts.length === 1 && parts[0] === "golden") parts[0] = "snapshot";
   const command = parts.join(" ");
   if (command === "completion") return completionHelp();
   if (command === "completion bash") return completionHelp("bash");
