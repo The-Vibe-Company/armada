@@ -23,7 +23,7 @@ beforeAll(async () => {
     create table members(org_id uuid,user_id uuid,role text);
     create table mcp_actor_epochs(org_id uuid,user_id uuid,epoch bigint);
     create table sandboxes(id uuid primary key,harness text default 'codex',provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
-      conversation_ids text[],status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
+      conversation_ids text[],visibility text default 'private',status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
       activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 0,reconcile_lease_until timestamptz);
     create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid);
@@ -128,11 +128,28 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
   expect(await queue.status(caller, ids[2]!, requests[1])).toEqual({ nativePromptId: "actual_next" });
 });
 
-test("Docker status and wait resolve the account queue alias before Docker prompt routing", async () => {
+test("queued public receipts remain usable across server reads, evidence, outcome and conversation controls", async () => {
   const { callSharedTool } = await import("./tool-api.ts");
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "queued Docker instruction" };
-  await queue.accept(caller, input);
   const routedPrompts: unknown[] = [];
+  const events = () => [
+    {
+      id: "positive_tool",
+      at: 1,
+      kind: "message",
+      promptId: "actual_docker_prompt",
+      tools: [{ id: "call", name: "launch", input: {} }],
+    },
+    {
+      id: "negative_tool",
+      at: 2,
+      kind: "message",
+      promptId: "second_native",
+      tools: [{ id: "refusal", name: "launch", input: {}, result: { error: "no_option" } }],
+    },
+    { id: "unrelated", at: 0, kind: "prompt", promptId: "unmapped_native", status: "finished" },
+  ];
+  const outcome = { state: "ready" };
   const context = {
     caller,
     accountTurns: queue,
@@ -145,6 +162,22 @@ test("Docker status and wait resolve the account queue alias before Docker promp
     },
     dockerControls: {
       invoke: async (_caller: Caller, name: string, args: Record<string, unknown>) => {
+        if (name === "logs")
+          return { handled: true, result: { events: events(), cursor: null, hasMore: false, settled: true } };
+        if (name === "report") {
+          expect(args.prompt_id).toBe("actual_docker_prompt");
+          return { handled: true, result: { id: input.id, taskOutcome: args.outcome } };
+        }
+        if (name === "interrupt" || name === "steer") {
+          expect(args.conversation_id).toBe("history");
+          return {
+            handled: true,
+            result:
+              name === "interrupt"
+                ? { id: input.id, interrupted: true }
+                : { id: input.id, promptId: "steer_native", conversationId: "history", delivery: "native", mode: null },
+          };
+        }
         expect(name).toBe("status");
         routedPrompts.push(args.prompt_id);
         if (args.prompt_id !== undefined && args.prompt_id !== "actual_docker_prompt") throw Error("unknown prompt");
@@ -162,6 +195,17 @@ test("Docker status and wait resolve the account queue alias before Docker promp
             statusReason: null,
             providerState: null,
             conversationIds: ["history"],
+            usage: {
+              computeSeconds: 0,
+              turnCount: 3,
+              turns: ["actual_docker_prompt", "second_native", "unmapped_native"].map((promptId) => ({
+                promptId,
+                model: "model",
+                inputTokens: 3,
+                outputTokens: 1,
+                cachedTokens: 0,
+              })),
+            },
             status: "ready",
             settled: true,
             expiresAt: null,
@@ -175,6 +219,7 @@ test("Docker status and wait resolve the account queue alias before Docker promp
       throw Error("No real waits");
     },
   } as unknown as import("./tools.ts").ToolContext;
+  expect(await callSharedTool(context, "send", input)).toMatchObject({ promptId: input.request_id, status: "queued" });
   const waiting = await callSharedTool(context, "status", {
     id: input.id,
     prompt_id: input.request_id,
@@ -198,6 +243,61 @@ test("Docker status and wait resolve the account queue alias before Docker promp
     await callSharedTool(context, "wait", { id: input.id, prompt_id: input.request_id, timeout_seconds: 0 }),
   ).toMatchObject({ settled: true, timedOut: false, prompt: { promptId: input.request_id, state: "finished" } });
   expect(routedPrompts).toEqual([undefined, undefined, "actual_docker_prompt", "actual_docker_prompt"]);
+  // A second queued turn proves history is not projected using only the latest alias.
+  await callSharedTool(context, "send", { ...input, request_id: requests[1], prompt: "second queued instruction" });
+  queue.setDispatch(async () => ({ promptId: "second_native", conversationId: "history", status: "finished" }));
+  await queue.reconcileOne(new AbortController().signal);
+  await queue.drain();
+  const expectedIds = [requests[0]!, requests[1]!, "unmapped_native"];
+  const logs = (await callSharedTool(context, "logs", { id: input.id })) as {
+    events: { promptId: string; tools?: unknown[] }[];
+  };
+  expect(logs.events.map((event) => event.promptId)).toEqual(expectedIds);
+  expect(logs.events.filter((event) => event.promptId === input.request_id)[0]?.tools).toHaveLength(1);
+  const { readLogs } = await import("./control-logs.ts");
+  const httpLogs = await readLogs(
+    { dockerControls: context.dockerControls!, accountTurns: queue },
+    caller,
+    input.id,
+    {},
+  );
+  expect(httpLogs.events.map((event) => event.promptId)).toEqual(expectedIds);
+  const provider = {
+    events: async () => ({ events: events(), cursor: null, hasMore: false }),
+  } as unknown as import("@armada/core").Provider;
+  const nativeContext = {
+    ...context,
+    dockerControls: undefined,
+    provider: async () => provider,
+    data: {
+      sandboxes: {
+        get: async () => ({ id: input.id, provider: "modal", providerSandboxId: "provider_sandbox", status: "ready" }),
+      },
+    },
+  } as unknown as import("./tools.ts").ToolContext;
+  const nativeLogs = (await callSharedTool(nativeContext, "logs", { id: input.id })) as {
+    events: { promptId: string }[];
+  };
+  expect(nativeLogs.events.map((event) => event.promptId)).toEqual(expectedIds);
+  const nativeHttpLogs = await readLogs(
+    { accountTurns: queue, logs: async () => ({ provider, providerSandboxId: "provider_sandbox" }) },
+    caller,
+    input.id,
+    {},
+  );
+  expect(nativeHttpLogs.events.map((event) => event.promptId)).toEqual(expectedIds);
+
+  const status = (await callSharedTool(context, "status", { id: input.id, prompt_id: input.request_id })) as {
+    usage: { turns: { promptId: string }[] };
+  };
+  expect(status.usage.turns.map((turn) => turn.promptId)).toEqual(expectedIds);
+  await callSharedTool(context, "report", { id: input.id, prompt_id: input.request_id, outcome });
+  expect(await callSharedTool(context, "interrupt", { id: input.id, conversation_id: "history" })).toMatchObject({
+    interrupted: true,
+  });
+  expect(
+    await callSharedTool(context, "steer", { id: input.id, conversation_id: "history", text: "Continue" }),
+  ).toMatchObject({ promptId: "steer_native" });
 });
 
 test("bounded queue scans advance past full accounts without starving another account", async () => {

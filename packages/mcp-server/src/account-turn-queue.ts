@@ -191,12 +191,33 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         [sandboxId, caller.userId, caller.orgs.map((org) => org.orgId)],
       );
     },
+    // Keep provider journals and accounting native; translate only at the public boundary.
+    async publicPromptIds(caller: Caller, sandboxId: string, nativeIds: string[]) {
+      const ids = new Map<string, string>();
+      if (!nativeIds.length) return ids;
+      const rows = (
+        await sql.query<Entry>(
+          `select q.* from public.account_turn_queue q
+         join public.members m on m.org_id=q.org_id and m.user_id=$2
+         join public.sandboxes s on s.id=q.sandbox_id
+         where q.sandbox_id=$1 and (s.visibility='org' or s.owner_id=$2) and q.org_id=any($3::uuid[])
+         and q.result_enc is not null order by q.sequence`,
+          [sandboxId, caller.userId, caller.orgs.map((org) => org.orgId)],
+        )
+      ).rows;
+      for (const row of rows) {
+        const receipt = JSON.parse(await decryptSecret(row.result_enc!, key));
+        if (nativeIds.includes(receipt.promptId)) ids.set(receipt.promptId, row.request_id);
+      }
+      return ids;
+    },
     async status(caller: Caller, sandboxId: string, promptId?: string) {
       promptId = promptId?.toLowerCase();
       const row = (
         await sql.query<Entry>(
           `select q.* from public.account_turn_queue q join public.members m on m.org_id=q.org_id and m.user_id=$2
-         where q.sandbox_id=$1 and q.owner_id=$2 and ($3::uuid is null or q.request_id=$3::uuid)
+         join public.sandboxes s on s.id=q.sandbox_id
+         where q.sandbox_id=$1 and (s.visibility='org' or s.owner_id=$2) and ($3::uuid is null or q.request_id=$3::uuid)
          order by q.sequence desc limit 1`,
           [
             sandboxId,

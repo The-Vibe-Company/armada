@@ -7,7 +7,7 @@ import { publicLogEvents } from "./model-usage.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { latestPromptEvent } from "./turns.ts";
 
-type LogControlOptions = Pick<ControlOptions, "dockerControls" | "logs" | "timing">;
+type LogControlOptions = Pick<ControlOptions, "dockerControls" | "logs" | "timing" | "accountTurns">;
 
 export async function readLogs(
   options: LogControlOptions,
@@ -23,6 +23,15 @@ export async function readLogs(
   runtimeFailure?: { status: "failed"; reason: string };
   olderCursor?: string;
 }> {
+  async function project(events: { promptId?: string }[]) {
+    const ids = await options.accountTurns?.publicPromptIds(
+      caller,
+      id,
+      events.flatMap((e) => (e.promptId ? [e.promptId] : [])),
+    );
+    for (const event of events)
+      if (event.promptId && ids?.has(event.promptId)) event.promptId = ids.get(event.promptId)!;
+  }
   if (options.dockerControls) {
     const routed = await options.dockerControls.invoke(caller, "logs", {
       id,
@@ -34,7 +43,11 @@ export async function readLogs(
           .map((key) => [key, body[key]]),
       ),
     });
-    if (routed.handled) return routed.result as Awaited<ReturnType<typeof readLogs>>;
+    if (routed.handled) {
+      const result = routed.result as Awaited<ReturnType<typeof readLogs>>;
+      await project(result.events);
+      return result;
+    }
   }
   if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
   const target = await measureRequestPhase(options.timing, "logs_target", () => options.logs!(caller, id));
@@ -79,11 +92,13 @@ export async function readLogs(
           target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest }),
         )
       : null;
+  const publicEvents = publicLogEvents(events);
+  await project(publicEvents);
   return {
     ...(source ? { source } : {}),
     ...(runtimeFailure ? { runtimeFailure } : {}),
     ...(olderCursor ? { olderCursor } : {}),
-    events: publicLogEvents(events),
+    events: publicEvents,
     cursor,
     hasMore,
     settled:
