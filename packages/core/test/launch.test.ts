@@ -266,7 +266,7 @@ describe("launch", () => {
       expect(world.forks).toHaveLength(failure === "startup" ? 1 : 0);
     },
   );
-  test.each(["key", "auth"] as const)(
+  test.each(["key", "auth", "opencode"] as const)(
     "experimental %s launch hands off after persisted selection, never native setup/prompt",
     async (kind) => {
       const world = setup({
@@ -286,6 +286,21 @@ describe("launch", () => {
             env: { ...value.env, ARMADA_CODEX_ENDPOINT: '{"version":1,"baseUrl":"https://model.example"}' },
           };
         };
+      }
+      if (kind === "opencode") {
+        world.stores.credentials.resolve = async () => ({
+          env: { OPENCODE_API_KEY: "opencode_key" },
+          secrets: ["opencode_key"],
+          codexAuthJson: false,
+        });
+        await expect(
+          launchSandbox(world.provider, world.stores, owner, {
+            golden: "web",
+            harness: "opencode",
+            model: "opencode/model",
+          }),
+        ).rejects.toMatchObject({ code: "invalid_request" });
+        expect(world.forks).toHaveLength(0);
       }
       const pins = ["catalog/public-skill@1.2.3", "private-skill@2.3.4"];
       const skillKey = `cmp_pat_${"a".repeat(48)}`;
@@ -328,11 +343,11 @@ describe("launch", () => {
         owner,
         {
           golden: "web",
-          harness: "codex",
+          harness: kind === "opencode" ? "opencode" : "codex",
           repo: "web",
           prompt: "runtime answer",
-          model: "gpt-5.4",
-          reasoningEffort: "high",
+          model: kind === "opencode" ? "opencode/model" : "gpt-5.4",
+          reasoningEffort: kind === "opencode" ? "default" : "high",
           ...(kind === "auth" ? { connections: [ORG] } : {}),
         },
         {
@@ -378,7 +393,13 @@ describe("launch", () => {
       expect(world.preparations).toEqual([]);
       expect(world.prompts).toEqual([]);
       expect(calls).toMatchObject([
-        { sandboxId: "bx_1", harness: "codex", text: "runtime answer", model: "gpt-5.4", reasoningEffort: "high" },
+        {
+          sandboxId: "bx_1",
+          harness: kind === "opencode" ? "opencode" : "codex",
+          text: "runtime answer",
+          model: kind === "opencode" ? "opencode/model" : "gpt-5.4",
+          reasoningEffort: kind === "opencode" ? "default" : "high",
+        },
       ]);
       expect(result).toMatchObject({
         runtime: { kind: "armada", epoch: "3" },
@@ -390,93 +411,78 @@ describe("launch", () => {
     },
   );
 
-  test.each([
-    "harness",
-    "mcp",
-    "mcp-prepare",
-    "skills",
-    "parent",
-    "selection",
-    "startup",
-    "invalid-epoch",
-    "prompt",
-  ] as const)("experimental launch refuses %s without a native fallback", async (failure) => {
-    const world = setup({ golden: golden("org") });
-    world.stores.sandboxes.recordSkills = async () => {};
-    world.stores.connections = {
-      async validate() {
-        if (failure === "mcp") throw new LaunchError("invalid_request", "MCP validation refused");
-      },
-      async bind() {},
-      async prepare() {
-        if (failure === "mcp-prepare") throw Error("MCP I/O refused");
-      },
-    };
-    if (failure === "selection") {
-      const insert = world.stores.sandboxes.insert.bind(world.stores.sandboxes);
-      world.stores.sandboxes.insert = async (input) => {
-        const { boatRuntime: ignored, ...legacy } = await insert(input);
-        void ignored;
-        return legacy;
-      };
-    }
-    let starts = 0;
-    await expect(
-      launchSandbox(
-        failure === "harness"
-          ? { ...world.provider, harnesses: [...world.provider.harnesses, "opencode"] }
-          : world.provider,
-        world.stores,
-        owner,
-        {
-          golden: "web",
-          harness: failure === "harness" ? "opencode" : "codex",
-          prompt: "answer",
-          ...(["mcp", "mcp-prepare"].includes(failure) ? { connections: [ORG] } : {}),
-          ...(failure === "skills" ? { skills: ["not-a-pin"] } : {}),
+  test.each(["mcp", "mcp-prepare", "skills", "parent", "selection", "startup", "invalid-epoch", "prompt"] as const)(
+    "experimental launch refuses %s without a native fallback",
+    async (failure) => {
+      const world = setup({ golden: golden("org") });
+      world.stores.sandboxes.recordSkills = async () => {};
+      world.stores.connections = {
+        async validate() {
+          if (failure === "mcp") throw new LaunchError("invalid_request", "MCP validation refused");
         },
-        {
-          ...(failure === "parent" ? { privateParent: true as const } : {}),
-          boatRuntime: {
-            async start() {
-              starts++;
-              if (failure === "startup") throw Error(OPENAI_KEY);
-              return {
-                epoch: failure === "invalid-epoch" ? "0" : "1",
-                async prepareWorkspace() {
-                  return { status: "not_connected" as const };
-                },
-                async prompt() {
-                  throw Error(OPENAI_KEY);
-                },
-              };
+        async bind() {},
+        async prepare() {
+          if (failure === "mcp-prepare") throw Error("MCP I/O refused");
+        },
+      };
+      if (failure === "selection") {
+        const insert = world.stores.sandboxes.insert.bind(world.stores.sandboxes);
+        world.stores.sandboxes.insert = async (input) => {
+          const { boatRuntime: ignored, ...legacy } = await insert(input);
+          void ignored;
+          return legacy;
+        };
+      }
+      let starts = 0;
+      await expect(
+        launchSandbox(
+          world.provider,
+          world.stores,
+          owner,
+          {
+            golden: "web",
+            harness: "codex",
+            prompt: "answer",
+            ...(["mcp", "mcp-prepare"].includes(failure) ? { connections: [ORG] } : {}),
+            ...(failure === "skills" ? { skills: ["not-a-pin"] } : {}),
+          },
+          {
+            ...(failure === "parent" ? { privateParent: true as const } : {}),
+            boatRuntime: {
+              async start() {
+                starts++;
+                if (failure === "startup") throw Error(OPENAI_KEY);
+                return {
+                  epoch: failure === "invalid-epoch" ? "0" : "1",
+                  async prepareWorkspace() {
+                    return { status: "not_connected" as const };
+                  },
+                  async prompt() {
+                    throw Error(OPENAI_KEY);
+                  },
+                };
+              },
             },
           },
-        },
-      ),
-    ).rejects.toMatchObject({
-      ...(failure === "harness"
-        ? {
-            message:
-              "The experimental runtime supports ordinary Boat Codex/Claude or Modal Codex/Claude/OpenCode workers only.",
-          }
-        : {}),
-      code: ["harness", "mcp", "skills", "parent"].includes(failure)
-        ? "invalid_request"
-        : failure === "prompt"
-          ? "prompt_failed"
-          : "start_failed",
-    });
-    expect(world.prompts).toEqual([]);
-    expect(world.execs).toEqual([]);
-    if (["harness", "mcp", "skills", "parent"].includes(failure)) expect(world.forks).toEqual([]);
-    else {
-      expect(world.stopped).toEqual(["bx_1"]);
-      expect([...world.rows.values()][0]?.status).toBe("failed");
-      expect([...world.rows.values()][0]?.statusReason).not.toContain(OPENAI_KEY);
-    }
-    expect(starts).toBe(["startup", "invalid-epoch", "prompt", "mcp-prepare"].includes(failure) ? 1 : 0);
-  });
+        ),
+      ).rejects.toMatchObject({
+        code: ["mcp", "skills", "parent"].includes(failure)
+          ? "invalid_request"
+          : failure === "prompt"
+            ? "prompt_failed"
+            : "start_failed",
+      });
+      expect(world.prompts).toEqual([]);
+      expect(world.execs).toEqual([]);
+      if (["mcp", "skills", "parent"].includes(failure)) expect(world.forks).toEqual([]);
+      else {
+        expect(world.stopped).toEqual(["bx_1"]);
+        expect([...world.rows.values()][0]?.status).toBe("failed");
+        expect([...world.rows.values()][0]?.statusReason).not.toContain(OPENAI_KEY);
+      }
+      expect(starts).toBe(["startup", "invalid-epoch", "prompt", "mcp-prepare"].includes(failure) ? 1 : 0);
+    },
+  );
 
   test.each(["codex", "claude"] as const)("custom %s endpoints select private Boat runtime", async (harness) => {
     const world = setup({ golden: golden("org") });

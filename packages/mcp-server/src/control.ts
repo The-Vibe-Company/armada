@@ -346,7 +346,7 @@ async function dispatch(
   if (route === "launch/options")
     return {
       ...launchOptions,
-      providers: launchProviderOptions(options.docker),
+      providers: launchProviderOptions(options.docker, Boolean(options.launch?.boatRuntimeDefault)),
       modalRuntime: {
         defaultPath: options.launch?.modalRuntimeDefault ? "runtime" : "native",
         version: 1,
@@ -391,6 +391,7 @@ async function dispatch(
         skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
         workspaceVersion: options.boatRuntimeLaunch ? 1 : 0,
         controlsVersion: options.runtimeHostFor ? 1 : 0,
+        opencodeVersion: options.boatRuntimeLaunch && options.runtimeHostFor ? 1 : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     } satisfies import("@armada/core").LaunchOptionsResponse;
@@ -927,13 +928,13 @@ async function dispatch(
       if (
         body.runtimeVersion !== 1 ||
         body.boatRuntime !== true ||
-        (body.harness !== "codex" && body.harness !== "claude") ||
+        (body.harness !== "codex" && body.harness !== "claude" && body.harness !== "opencode") ||
         (body.provider !== undefined && body.provider !== "boat") ||
         body.armadaAccess ||
         (body.helperCapabilities !== undefined &&
           (!Array.isArray(body.helperCapabilities) || body.helperCapabilities.length))
       )
-        throw new VaultError("invalid", "Runtime v1 requires explicit Boat Codex or Claude snapshot launch.");
+        throw new VaultError("invalid", "Runtime v1 requires explicit Boat Codex, Claude or OpenCode snapshot launch.");
       if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
         throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
       return launchRoute(options, caller, body, true);

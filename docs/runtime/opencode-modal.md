@@ -1,6 +1,8 @@
 # OpenCode on Modal and Docker
 
-**OpenCode is enabled on Modal and Docker hosts**; native Boat refuses before fork. The shared
+**OpenCode is enabled on Modal, Docker hosts and the Boat shared runtime**; native Boat still
+refuses before fork. See [Boat runtime launch](../boat-runtime-first-prompt.md#opencode-on-the-shared-boat-runtime-2052)
+for the versioned API and deployment prerequisites. The shared
 harness catalog drives validators and generated iOS choices. Codex and Claude
 retain their native drivers; OpenCode uses one ACP v1 transport, not a parallel
 V2 server/SDK integration. Modal retains its existing authenticated tunnel.

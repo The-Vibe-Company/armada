@@ -274,7 +274,7 @@ function LaunchForm({
           </div>
           <p id={`${id}-availability`} className="text-xs text-muted-foreground" data-launch-availability>
             {provider === "boat"
-              ? "Boat supports Claude Code and Codex, including custom model connections through the Armada runtime. Choose Modal or Docker for OpenCode."
+              ? "Boat supports Claude Code and Codex here, including custom model connections through the Armada runtime. OpenCode is available through the Boat shared runtime launch API, not this form."
               : `${PROVIDER_LABELS[provider]} supports Claude Code, Codex and OpenCode, including custom model connections through the Armada runtime.`}
           </p>
           {/* Who is billed stays in view: it is never a collapsed default. */}
