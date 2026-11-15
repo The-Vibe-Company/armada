@@ -7,9 +7,9 @@ import {
   sshPrivateAuthState,
   VaultError,
 } from "@armada/core/server";
-
 import type { IngestGrantClaims, Scope } from "@armada/provider-modal";
 import { scopeKey } from "@armada/provider-modal";
+import { admitAccountCapacity } from "./account-capacity.ts";
 import { exposedSecrets } from "./launch-credentials.ts";
 import { createNativeStateStore } from "./model-auth-state.ts";
 import { createSubscriptionBroker } from "./subscription-broker.ts";
@@ -59,6 +59,22 @@ export function createModelAuthOwnership(
   return {
     state,
     broker,
+    async admitCapacity(accountId: string, sandboxId: string) {
+      await sql.transaction!((tx) => admitAccountCapacity(tx, accountId, sandboxId));
+    },
+    async admitSandboxCapacity(sandboxId: string) {
+      await sql.transaction!(async (tx) => {
+        const row = (
+          await tx.query<{ credential_id: string | null }>("select credential_id from public.sandboxes where id=$1", [
+            sandboxId,
+          ])
+        ).rows[0];
+        if (row?.credential_id) await admitAccountCapacity(tx, row.credential_id, sandboxId);
+      });
+    },
+    async releaseCapacity(sandboxId: string) {
+      await sql.query("delete from public.account_agent_reservations where sandbox_id=$1", [sandboxId]);
+    },
     async shared(sandboxId: string): Promise<boolean> {
       return (
         !!broker &&
@@ -541,6 +557,7 @@ export function createModelAuthOwnership(
           });
         try {
           await this.assertSandbox({ userId: row.owner_id, orgId: row.org_id, role: "member" }, row.id, true);
+          await this.admitSandboxCapacity(row.id);
         } catch (error) {
           if (error instanceof VaultError)
             throw new ProviderError({

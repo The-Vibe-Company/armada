@@ -68,6 +68,7 @@ const PRIVATE_POST_PATHS = new Set([
   "creds/rm",
   "creds/accounts/set",
   "creds/accounts/rename",
+  "creds/accounts/limits",
   "creds/accounts/default",
   "creds/accounts/remove",
   "creds/accounts/usage",

@@ -241,6 +241,8 @@ Usage:
                                            Keep this terminal open; Ctrl-C/shell exit cancels.
   armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
+  armada creds limits <account-id> --max-agents N | --unlimited [--org <name>]
+                                           Set the maximum simultaneous running agents for a model account
   armada creds presets [--json]             List the same model connection providers as the dashboard
   armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
                                            Provider key from hidden input, stdin/file; custom providers take --models and --base-url
@@ -248,6 +250,7 @@ Usage:
                                            with a tiny billable request per deployment. A failed check saves nothing.
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; hidden input in a terminal, or stdin/file
+                                           Model accounts: --max-agents N or --unlimited (Morph defaults to 2; others unlimited)
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
                                            Codex: --base-url URL --models deployment,model [--api-version VERSION]
                                            Key from hidden input, stdin/file; Azure requires actual deployment names, not model catalog IDs

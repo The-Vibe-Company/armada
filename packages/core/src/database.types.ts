@@ -6,6 +6,32 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 export type Database = {
   public: {
     Tables: {
+      account_agent_reservations: {
+        Row: {
+          sandbox_id: string;
+          account_id: string;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          account_id: string;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          account_id?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "account_agent_reservations_account_id_fkey";
+            columns: ["account_id"];
+            isOneToOne: false;
+            referencedRelation: "credentials";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       application_secret_uploads: {
         Row: {
           hash: string;
@@ -265,6 +291,7 @@ export type Database = {
           expires_at: string | null;
           updated_at: string;
           version: number;
+          max_agents: number | null;
         };
         Insert: {
           id?: string;
@@ -279,6 +306,7 @@ export type Database = {
           expires_at?: string | null;
           updated_at?: string;
           version?: number;
+          max_agents?: number | null;
         };
         Update: {
           id?: string;
@@ -293,6 +321,7 @@ export type Database = {
           expires_at?: string | null;
           updated_at?: string;
           version?: number;
+          max_agents?: number | null;
         };
         Relationships: [];
       };
@@ -4311,6 +4340,7 @@ export type Database = {
   };
 };
 
+export type AccountAgentReservationRow = Database["public"]["Tables"]["account_agent_reservations"]["Row"];
 export type ApplicationSecretUploadRow = Database["public"]["Tables"]["application_secret_uploads"]["Row"];
 export type ApplicationSecretRow = Database["public"]["Tables"]["application_secrets"]["Row"];
 export type ApplicationVaultAuditRow = Database["public"]["Tables"]["application_vault_audit"]["Row"];
