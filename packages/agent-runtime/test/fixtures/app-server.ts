@@ -257,7 +257,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
       return;
     }
-    if (params.input[0]?.type === "text" && params.input[0].text === "redirect") {
+    if (
+      params.input[0]?.type === "text" &&
+      [
+        "redirect",
+        "Continue from where the model provider request was rate limited. Do not repeat completed work.",
+      ].includes(params.input[0].text)
+    ) {
       if (process.env.ARMADA_MCP_INSPECTION)
         notify("item/completed", {
           threadId: thread,
