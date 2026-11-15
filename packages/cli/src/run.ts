@@ -105,7 +105,7 @@ Usage:
   armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
   armada completion bash|zsh|fish           Print a shell completion script
   armada --version                         Print the version
-  armada --help                            Show this help
+  armada --help                            Show this help (also -h or help); no login required
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
                                            Public GitHub Armada tool-knowledge skill; no login. See skill --help.
   armada snapshot create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
@@ -342,7 +342,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       const stores = profileStores(selected.env);
       const env: NodeJS.ProcessEnv = { ...selected.env };
       const discovery =
-        (argv.length === 1 && ["--help", "-h", "--version", "-v"].includes(argv[0] ?? "")) ||
+        (argv.length === 1 && ["--help", "-h", "help", "--version", "-v"].includes(argv[0] ?? "")) ||
         (argv.length === 2 && ["--help", "-h"].includes(argv[1] ?? "")) ||
         argv[0] === "completion";
       if (!env.ARMADA_TOKEN && !discovery && argv[0] !== "logout") {

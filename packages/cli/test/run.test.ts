@@ -15,6 +15,25 @@ describe("run", () => {
     expect(await capture(["--version"])).toEqual({ code: 0, out: `${VERSION}\n`, err: "" });
   });
 
+  test("root help aliases need no configured profile or external I/O", async () => {
+    const forbidden = () => {
+      throw new Error("Help attempted external I/O");
+    };
+    for (const alias of ["help", "--help", "-h"]) {
+      for (const explicit of [true, false]) {
+        const result = await capture(explicit ? ["--profile", "new-user", alias] : [alias], {
+          env: explicit ? {} : { ARMADA_PROFILE: "new-user" },
+          fetch: Object.assign(forbidden, { preconnect: forbidden }),
+          readStdin: forbidden,
+        });
+        expect(result.code).toBe(0);
+        expect(result.err).toBe("");
+        expect(result.out).toContain("Quick start / common examples:");
+        expect(result.out).toContain("armada login");
+      }
+    }
+  });
+
   test("no command prints the help", async () => {
     const { code, out } = await capture([], {
       auth: {
