@@ -44,6 +44,7 @@ import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
+import * as placement from "./sandbox-provider.ts";
 import { assertProviderOf, HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
 import { installSkill, skillExclusionCommand, validateSkillPins } from "./skillpack.ts";
@@ -275,8 +276,8 @@ export async function launchSandbox(
   };
   const defaultRuntime = !options.runtime && !options.boatRuntime ? runtimeDefaults[golden.provider] : undefined;
   if (defaultRuntime) {
-    const providerName = golden.provider === "boat" ? "Boat" : "Modal";
-    const rollback = golden.provider === "boat" ? "ARMADA_BOAT_AGENT_PATH" : "ARMADA_MODAL_AGENT_PATH";
+    const providerName = placement.SANDBOX_PLACEMENT_LABELS[golden.provider];
+    const rollback = `ARMADA_${golden.provider.toUpperCase()}_AGENT_PATH`;
     const refuse = (feature: string): never => {
       throw new LaunchError(
         "invalid_request",
@@ -391,7 +392,7 @@ export async function launchSandbox(
       throw new LaunchError("invalid_request", "Choose a Morph plan model for this account.");
   }
   if (
-    provider.id === "boat" &&
+    placement.launchInfrastructure(provider.id).nativeCli &&
     !runtime &&
     (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) &&
     options.boatEndpointRuntime
@@ -406,20 +407,18 @@ export async function launchSandbox(
   if (defaultRuntime && !credentials.binding)
     throw new LaunchError(
       "invalid_request",
-      `${golden.provider === "boat" ? "Boat" : "Modal"} runtime default requires a bound model account; no native fallback.`,
+      `${placement.SANDBOX_PLACEMENT_LABELS[golden.provider]} runtime default requires a bound model account; no native fallback.`,
     );
-  if (credentials.env[CLAUDE_ENDPOINT_ENV] && provider.id !== "modal" && !runtime)
+  const customEndpoint =
+    (credentials.env[CLAUDE_ENDPOINT_ENV] && "Claude gateways") ||
+    (credentials.env[CODEX_ENDPOINT_ENV] && "Codex endpoints");
+  if (customEndpoint && !placement.launchInfrastructure(provider.id).nativeRuntime && !runtime)
     throw new LaunchError(
       "invalid_request",
-      "Custom Claude gateways require the Boat runtime artifacts; use --provider modal or a Docker host.",
-    );
-  if (credentials.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal" && !runtime)
-    throw new LaunchError(
-      "invalid_request",
-      "Custom Codex endpoints require the Boat runtime artifacts; use --provider modal or a Docker host.",
+      `Custom ${customEndpoint} require the Boat runtime artifacts; use --provider modal or a Docker host.`,
     );
   if (harness === "opencode") {
-    if (provider.id !== "modal" && !runtime)
+    if (!placement.launchInfrastructure(provider.id).nativeRuntime && !runtime)
       throw new LaunchError("invalid_request", "OpenCode on Boat requires the shared runtime.");
     const configured = credentials.env[OPENCODE_ENDPOINT_ENV];
     if (configured) {
@@ -505,7 +504,7 @@ export async function launchSandbox(
     try {
       record = await stores.sandboxes.insert({
         ...(runtime
-          ? provider.id === "boat"
+          ? placement.launchInfrastructure(provider.id).nativeCli
             ? { boatRuntime: true as const }
             : { runtimeTransport: "dialout" as const }
           : {}),
@@ -574,7 +573,7 @@ export async function launchSandbox(
           { safeReason: "visibility_not_persisted" },
         );
       }
-      if ((golden.provider === "modal" || runtime) && credentials.usagePricing)
+      if ((placement.launchInfrastructure(golden.provider).nativeRuntime || runtime) && credentials.usagePricing)
         await stores.sandboxes.recordUsagePricingContext?.(record.id, credentials.usagePricing);
       progress("initialization_bind");
       await stores.connections?.bind(record.id, connectionIds);
@@ -696,7 +695,7 @@ export async function launchSandbox(
       // executable cannot even boot; probe the installed wrapper (including its
       // harness-only readable environment) without creating a session or model turn.
       // Modal validates its separately distributed native runtime at installation.
-      if (provider.id === "boat" && !runtime) {
+      if (placement.launchInfrastructure(provider.id).nativeCli && !runtime) {
         try {
           const health = await provider.exec({
             sandboxId: ready.id,
@@ -1108,7 +1107,7 @@ function messageOf(error: unknown): string {
 }
 
 function checkHarness(provider: Provider, harness: string, runtime = false): Harness {
-  if (provider.id === "boat" && harness === "opencode" && !runtime)
+  if (placement.launchInfrastructure(provider.id).nativeCli && harness === "opencode" && !runtime)
     throw new LaunchError(
       "invalid_request",
       "OpenCode on Boat requires the Boat runtime artifacts to be installed on the server.",
@@ -1116,7 +1115,7 @@ function checkHarness(provider: Provider, harness: string, runtime = false): Har
   if (
     !(HARNESSES as readonly string[]).includes(harness) ||
     (!(provider.harnesses as readonly string[]).includes(harness) &&
-      !(runtime && provider.id === "boat" && harness === "opencode"))
+      !(runtime && placement.launchInfrastructure(provider.id).nativeCli && harness === "opencode"))
   ) {
     throw new LaunchError(
       "invalid_request",

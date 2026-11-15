@@ -7,6 +7,7 @@ import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GoldenError } from "./golden-config.ts";
 import { type PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
+import { launchInfrastructure } from "./sandbox-provider.ts";
 import { shellQuote } from "./shell-quote.ts";
 
 export { PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
@@ -38,12 +39,7 @@ export async function sshHydrateAuthState(
   authJson: string,
   deps: SshExecDeps = {},
 ): Promise<void> {
-  const path =
-    provider.id === "boat"
-      ? "/home/user/.codex/auth.json"
-      : provider.id === "modal"
-        ? "/home/user/.armada-runtime/codex/auth.json"
-        : undefined;
+  const path = launchInfrastructure(provider.id).authPath;
   if (!path || Buffer.byteLength(authJson) > 65536) throw Error("Private native hydration is unavailable.");
   try {
     const value = JSON.parse(authJson);
@@ -168,12 +164,7 @@ export async function sshPrivateAuthState(
   quiesced = false,
   expectedSharedCapability?: string,
 ): Promise<string> {
-  const path =
-    provider.id === "boat"
-      ? "/home/user/.codex/auth.json"
-      : provider.id === "modal"
-        ? "/home/user/.armada-runtime/codex/auth.json"
-        : undefined;
+  const path = launchInfrastructure(provider.id).authPath;
   if (!path) throw Error("Private native auth transport is unavailable.");
   const script = `set +x
 umask 077
