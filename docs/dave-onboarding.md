@@ -440,3 +440,12 @@ subcommands; use leaf help for flags and authorization requirements.
 These explicit help requests do not read saved selections, start login or
 perform membership/invitation operations. Bare no-argument invocations retain
 their previous behavior.
+
+### MCP command discovery
+
+`armada mcp --help` (or `-h`) shows a focused index of registry,
+authorization and sandbox-binding commands. Use leaf help for flags and
+secure-input instructions. Connection IDs select registry entries;
+sandbox-connections takes a sandbox UUID. Launch-default selection is separate
+from authorization; reconnect revokes first. Family help makes no MCP/API
+request and leaves bare no-argument invocation unchanged.

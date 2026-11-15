@@ -167,6 +167,32 @@ This does not revoke service tokens or remove ARMADA_TOKEN from your environment
 To sign out a personal session remotely first, use armada account logout.
 Example: armada logout
 `,
+  mcp: `Usage: armada mcp <command> [arguments]
+Manage MCP registry connections and inspect sandbox bindings.
+Use leaf --help/-h for exact flags. Operations require Armada login, server
+authorization and organization selection with org use or --org UUID.
+Registry:
+  catalog  Read service metadata.
+  list     List visible connections and IDs.
+  add      Create by service, public URL or JSON definition.
+  update   Update from a JSON definition; scope cannot change.
+  rename   Rename a connection by ID.
+  default  Set launch-default selection with positional on|off.
+  enable   Enable the registry entry; check status for authorization state.
+  disable  Disable without deleting the registry entry.
+  delete   Delete the registry entry.
+Authorization:
+  status     Read a connection's status.
+  connect    Authorize an existing connection.
+  reconnect  Revoke first, then start authorization again.
+  revoke     Revoke authorization, not registry deletion.
+Sandbox:
+  sandbox-connections  Read actual bound metadata using a sandbox UUID.
+Registry IDs and sandbox UUIDs are different selectors. Help does not call MCP.
+Keep authentication values in private files/stdin, never command arguments.
+Example: armada mcp list --org ORG_UUID --json
+Example: armada mcp add --help
+`,
   "mcp list": `Usage: armada mcp list [--org UUID] [--json]
 List visible MCP registry connections after Armada login and server authorization.
 Select an organization with armada org use or --org UUID.
