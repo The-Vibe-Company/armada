@@ -5,6 +5,8 @@ import { run } from "../src/run.ts";
 test("nested onboarding help is focused and performs no authenticated or secret I/O", async () => {
   for (const command of [
     "org setup",
+    "snapshot",
+    "golden",
     "login",
     "snapshot retirement dry-run",
     "snapshot retirement reconcile",
@@ -156,7 +158,7 @@ test("nested onboarding help is focused and performs no authenticated or secret 
       );
       expect({ code, err }).toEqual({ code: 0, err: "" });
       expect(out).toContain(
-        `Usage: armada ${command.replace(/^golden (retirement dry-run|retirement reconcile|get|rebuild|create|update|size-policy|build-find|build-status|build-cancel|list|capabilities|connect|snapshot|remove|visibility)$/, "snapshot $1")}`,
+        `Usage: armada ${command.replace(/^golden$/, "snapshot").replace(/^golden (retirement dry-run|retirement reconcile|get|rebuild|create|update|size-policy|build-find|build-status|build-cancel|list|capabilities|connect|snapshot|remove|visibility)$/, "snapshot $1")}`,
       );
       expect(out).toContain("Example: armada");
     }
