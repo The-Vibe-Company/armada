@@ -5,7 +5,11 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { createMcpSecretBox } from "../src/mcp-integration.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { rowOnlyConnection } from "./row-only-database.ts";
+
+// Cases mutate rows only. Each exchange owns fresh transports, cancellation and secrets;
+// the serial connection is reset before the next case, after all upstream work drains.
+const publicationDatabase = rowOnlyConnection();
 
 function deferred() {
   let finish = () => {};
@@ -30,7 +34,7 @@ const cases = [
 // Current-role-only checks cannot pass remove/readd: publication must carry the durable epoch.
 for (const change of cases)
   test(`OAuth callback publication fences ${change} while token exchange is in flight`, async () => {
-    const db = await migratedDatabase();
+    const db = await publicationDatabase();
     const started = deferred(),
       release = deferred(),
       refreshStarted = deferred(),
@@ -338,6 +342,5 @@ for (const change of cases)
       await inFlight?.catch(() => {});
       await integration?.close();
       await Promise.all(servers.map((s) => s.close()));
-      await db.close();
     }
   });
