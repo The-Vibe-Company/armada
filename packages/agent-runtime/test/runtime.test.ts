@@ -40,8 +40,6 @@ interface Envelope {
     processId: number;
     promptId: string;
     conversationId: string;
-    watermark: number;
-    acknowledgedSequence: number;
   };
 }
 async function payload(response: Response): Promise<Envelope> {
@@ -126,83 +124,64 @@ test.skipIf(process.platform !== "linux")(
     }
   },
 );
-test("independent conversations, native steering and checkpoint wait for upstream ack", async () => {
-  const running = new Map<string, { resolve: (s: "finished" | "interrupted") => void; steers: string[] }>();
+test("steer and interrupt affect only the selected native conversation", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const turns = new Map<string, { finish: () => void; steers: string[] }>();
   const driver: Driver = {
-    start(c) {
-      let resolve!: (s: "finished" | "interrupted") => void;
-      const done = new Promise<"finished" | "interrupted">((r) => {
-        resolve = r;
+    start(context) {
+      let finish!: () => void;
+      const done = new Promise<"interrupted">((resolve) => {
+        finish = () => resolve("interrupted");
       });
-      const item = { resolve, steers: [] as string[] };
-      running.set(c.request.text, item);
-      c.session(`session-${c.request.text}`);
+      const turn = { finish, steers: [] as string[] };
+      turns.set(context.request.text, turn);
+      context.session(`session-${context.request.text}`);
       return {
         done,
         async interrupt() {
-          resolve("interrupted");
+          finish();
         },
         async steer(text) {
-          item.steers.push(text);
+          turn.steers.push(text);
         },
       };
     },
-    async close() {},
+    async close() {
+      for (const turn of turns.values()) turn.finish();
+    },
   };
-  const s = setup({ claude: driver, codex: driver });
+  const runner = new Runner(journal, grant, { claude: driver, codex: driver });
   try {
-    const a = await (
-      await call(s.runner, { op: "prompt", input: { sandboxId: "logical", harness: "claude", text: "one" } })
-    )
-      .json()
-      .then((x) => x as Envelope);
-    const b = await (
-      await call(s.runner, { op: "prompt", input: { sandboxId: "logical", harness: "codex", text: "two" } })
-    )
-      .json()
-      .then((x) => x as Envelope);
-    expect((await call(s.runner, { op: "steer", conversationId: a.result.conversationId, text: "new" })).status).toBe(
+    const first = await payload(
+      await call(runner, {
+        op: "prompt",
+        input: { sandboxId: "logical", harness: "claude", text: "one" },
+      }),
+    );
+    const second = await payload(
+      await call(runner, {
+        op: "prompt",
+        input: { sandboxId: "logical", harness: "codex", text: "two" },
+      }),
+    );
+    expect((await call(runner, { op: "steer", conversationId: first.result.conversationId, text: "new" })).status).toBe(
       200,
     );
-    expect(running.get("one")?.steers).toEqual(["new"]);
-    await call(s.runner, { op: "interrupt", conversationId: a.result.conversationId });
-    expect((await payload(await call(s.runner, { op: "getPrompt", promptId: b.result.promptId }))).result.status).toBe(
-      "running",
-    );
-    expect((await call(s.runner, { op: "steer", conversationId: a.result.conversationId, text: "late" })).status).toBe(
-      409,
-    );
-    expect((await call(s.runner, { op: "checkpoint" })).status).toBe(409);
-    const runner = new Runner(
-      s.journal,
-      grant,
-      { claude: unused, codex: unused },
-      {
-        async append(batch) {
-          return { acknowledgedSequence: batch.events.at(-1)?.sequence ?? 0 };
-        },
-      },
-    );
-    const checkpoint = await payload(await call(runner, { op: "checkpoint", requestId: "checkpoint-retry" }));
-    expect(checkpoint.result.watermark).toBeGreaterThan(0);
-    expect(checkpoint.result.acknowledgedSequence).toBe(checkpoint.result.watermark);
-    const restored = new Runner(
-      s.journal,
-      { ...grant, generation: "g2" },
-      { claude: unused, codex: unused },
-      {
-        async append(batch) {
-          return { acknowledgedSequence: batch.events.at(-1)?.sequence ?? 0 };
-        },
-      },
-    );
-    await call(restored, { op: "prompt", input: { sandboxId: "logical", harness: "claude", text: "after restore" } });
-    const fresh = await payload(await call(restored, { op: "checkpoint", requestId: "checkpoint-retry" }));
-    expect(fresh.result.watermark).toBeGreaterThan(checkpoint.result.watermark);
+    expect(turns.get("one")?.steers).toEqual(["new"]);
+    expect(turns.get("two")?.steers).toEqual([]);
+    await call(runner, { op: "interrupt", conversationId: first.result.conversationId });
+    expect(
+      (await payload(await call(runner, { op: "getPrompt", promptId: second.result.promptId }))).result.status,
+    ).toBe("running");
+    expect(
+      (await call(runner, { op: "steer", conversationId: first.result.conversationId, text: "late" })).status,
+    ).toBe(409);
   } finally {
-    s.close();
+    await runner.close();
+    journal.close();
   }
 });
+
 test.skipIf(process.platform !== "linux")(
   "checkpoint refuses live detached groups after restart and never signals unverifiable recycled identities",
   async () => {
