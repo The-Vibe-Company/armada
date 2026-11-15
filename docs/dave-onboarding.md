@@ -422,6 +422,29 @@ A saved personal login does not unset ARMADA_TOKEN: remove that variable from
 a command's environment when you intend to use the saved personal session.
 Never place tokens in command arguments. Help itself starts no sign-in flow.
 
+Profile selection accepts `--profile NAME` or `--profile=NAME`, or the
+`ARMADA_PROFILE` environment variable. The explicit flag wins; omit both to
+use the existing default profile. Names are 1–64 ASCII letters, digits,
+underscores or hyphens and must start with a letter or digit. The `--` option
+terminator protects remote command/prompt arguments from global flag parsing.
+
+Profiles isolate saved sessions and preferences, not environment variables.
+`ARMADA_TOKEN` still overrides a saved login in every profile. For token-based
+scripts, explicitly select the matching `ARMADA_URL`; do not assume changing
+profile switches the token or makes a token belong to a different server.
+A named profile without a token needs its own server/login configuration;
+root help and focused command help are available before configuration.
+
+```sh
+armada --profile staging --help
+armada --profile staging org list
+```
+
+After the staging login above, inspect organization membership and select the
+organization in that profile with `armada --profile staging org use NAME`.
+Do not paste session files or tokens into diagnostics or shared logs.
+
+
 ### Credential command discovery
 
 `armada creds --help` (or `-h`) shows a focused index of native subscription

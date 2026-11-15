@@ -74,7 +74,12 @@ export interface Deps {
 
 const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
 
-Global: --profile NAME (or ARMADA_PROFILE) isolates login and preferences; login --url sets its server.
+Global: --profile NAME (or ARMADA_PROFILE) isolates saved login and preferences; login --url sets its server.
+--profile overrides ARMADA_PROFILE. Omit both for the existing default profile.
+Names: 1–64 letters/digits/underscores/hyphens, starting with a letter or digit.
+ARMADA_TOKEN is not isolated by profiles: it still overrides every saved login.
+Use a matching ARMADA_URL for token-authenticated scripts; never put tokens in arguments.
+Example: armada --profile staging login --url https://staging.example.com --provider github
 
 Exit codes: 0 success; 1 authentication/server/operation failure; 2 invalid usage or missing configuration.
 
