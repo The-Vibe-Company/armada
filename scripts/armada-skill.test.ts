@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { run } from "../packages/cli/src/run.ts";
 
 const root = join(import.meta.dir, "..");
 const skill = join(root, ".agents/skills/armada");
@@ -79,20 +80,39 @@ async function markdownFiles(directory: string): Promise<string[]> {
 
 test("published Armada skill commands and flags match the live CLI usage contract", async () => {
   const contract: Command[] = [];
-  for (const prefix of [[], ["template"], ["routine"], ["vars"], ["secrets"], ["skill"]]) {
-    const child = Bun.spawn([process.execPath, "packages/cli/src/main.ts", ...prefix, "--help"], {
-      cwd: root,
-      env: { ...process.env, ARMADA_TOKEN: "", ARMADA_URL: "http://127.0.0.1:1" },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [out, err, status] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
+  for (const prefix of [
+    [],
+    ["template"],
+    ...["create", "list", "get", "publish", "delete", "launch"].map((action) => ["template", action]),
+    ["routine"],
+    ["vars"],
+    ["secrets"],
+    ["skill"],
+  ]) {
+    let out = "";
+    let err = "";
+    const forbidden = () => {
+      throw new Error("Help attempted external I/O");
+    };
+    const status = await run(
+      [...prefix, "--help"],
+      {
+        out: (text) => {
+          out += text;
+        },
+        err: (text) => {
+          err += text;
+        },
+      },
+      {
+        env: { ARMADA_TOKEN: "", ARMADA_URL: "https://help.invalid" },
+        fetch: Object.assign(forbidden, { preconnect: forbidden }),
+        readStdin: forbidden,
+      },
+    );
     expect(status, err).toBe(0);
-    contract.push(...commands(out));
+    // Focused leaf pages use a Usage heading; legacy family pages use rows.
+    contract.push(...commands(prefix.length === 2 ? out.replace(/^Usage: armada /gm, "  armada ") : out));
   }
   const errors: string[] = [];
   let count = 0;
@@ -110,6 +130,8 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   expect(validate("armada nonexistent-command", contract)).toContain("Unknown command");
   expect(validate("armada unknown-command", contract)).toContain("Unknown command");
   expect(validate("armada golden nonexistent-subcommand", contract)).toContain("Unknown command");
+  expect(validate("armada template nonexistent-subcommand", contract)).toContain("Unknown command");
+  expect(validate("armada template list --request-key accidental", contract)).toContain("Unknown flag");
   expect(validate("armada launch example --nonexistent-flag", contract)).toContain("Unknown flag");
   expect(validate("armada stop sandbox --skill team/example@1.0.0", contract)).toContain("Unknown flag");
   expect(validate("armada routine enable routine --revision 1", contract)).toContain("Unknown flag");

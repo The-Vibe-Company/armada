@@ -34,3 +34,12 @@ After deployment inspect both root help spellings in a pipe and unconfigured
 named profile. Confirm the command map leads to focused leaf options and no login
 is requested. No actual template write, launch or production check required.
 Migration files: none. Deployment prerequisites: none.
+
+## CI contract follow-up
+
+The first CI run exposed a skill-document contract test that discovered template
+commands solely from family usage rows. It now reads focused template leaf help
+at the run boundary, without child processes. Only leaf Usage headings become
+command contracts: generic family navigation cannot authorize unknown subcommands.
+Negative controls retain unknown-command and command-specific flag rejection.
+Replay: `bun test scripts/armada-skill.test.ts`.
