@@ -1153,6 +1153,27 @@ Example: armada secrets ${action} SECRET_UUID --expected-version 2 ${action === 
 `;
 }
 
+function vaultFamilyHelp(resource: "vars" | "secrets"): string {
+  return `Usage: armada ${resource} <command> [arguments]
+Manage ${resource === "vars" ? "readable application variables" : "write-only application secrets"}, not model/provider credentials.
+
+${resource === "vars" ? "  set   Create a new variable from stdin or file, not an update.\n  list  Inspect visible metadata and IDs without values.\n  read  Print a value by ID, exactly without adding a newline; --json includes value." : "  set     Create a new secret from stdin or file, not an update.\n  list    Inspect visible metadata, IDs and versions, never values.\n  rotate  Replace an active secret value, guarded by --expected-version.\n  revoke  Terminally revoke and clear the stored value; no reactivation.\n  delete  Mark deleted and clear the value, allowing name reuse."}
+
+Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
+NAME|UUID or armada org use. Explicit --org on set requires --scope personal|org;
+otherwise set defaults to personal in the selected organization.
+Lists include your personal entries and visible organization entries.
+Only administrators can mutate organization-scoped entries; IDs determine scope.
+Values come from piped stdin or --file, never arguments; protect local input files.
+${resource === "vars" ? "Variables are readable, not secrets, and values may appear in launch manifests.\nUse secrets for sensitive application values." : "Secrets have no read, reveal or export operation. Guarded changes use IDs and current\nversions from secrets list. On version conflicts inspect before deciding to retry."}
+Lists and writes emit metadata only, including with --json.
+These management commands do not deliver values to sandboxes or rotate upstream credentials.
+Inspect a command's options with armada ${resource} <command> --help.
+Example: armada ${resource} list --org ORG_UUID --json
+Example: armada ${resource} set ${resource === "vars" ? "APP_REGION" : "APP_PASSWORD"} --file /private/input.txt --scope personal --org ORG_UUID --json
+`;
+}
+
 export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
@@ -1192,6 +1213,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
   if (command === "secrets rotate") return secretLifecycleHelp("rotate");
   if (command === "secrets revoke") return secretLifecycleHelp("revoke");
   if (command === "secrets delete") return secretLifecycleHelp("delete");
+  if (command === "vars") return vaultFamilyHelp("vars");
+  if (command === "secrets") return vaultFamilyHelp("secrets");
   if (command === "completion") return completionHelp();
   if (command === "completion bash") return completionHelp("bash");
   if (command === "completion zsh") return completionHelp("zsh");
