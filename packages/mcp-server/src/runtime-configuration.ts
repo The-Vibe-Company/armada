@@ -13,7 +13,7 @@ import {
 } from "@armada/core";
 import { VaultError } from "@armada/core/server";
 import type { ModelAuthOwnership } from "./model-auth.ts";
-import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
+import { runtimeConfigurationFailure, runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
 const allowedCredentials = {
   claude: new Set(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_ENDPOINT_ENV]),
@@ -181,13 +181,6 @@ export async function runtimeConfiguration(
     };
   } catch {
     // Native-state/endpoint parsing errors must not expose decrypted credentials.
-    throw new VaultError(
-      "unavailable",
-      expectedProvider === "boat"
-        ? "Boat runtime configuration is unavailable."
-        : expectedProvider === "docker"
-          ? "Docker runtime configuration is unavailable."
-          : "Runtime configuration is unavailable.",
-    );
+    throw new VaultError("unavailable", runtimeConfigurationFailure(expectedProvider));
   }
 }
