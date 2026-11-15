@@ -459,12 +459,12 @@ test("every subscription pasted by hand names the exact local command to run", (
   expect(ACCOUNT_KINDS.filter((kind) => PASTE_SIGN_IN[kind] && !subscriptions.includes(kind))).toEqual([]);
 });
 
-test("a shared Morph account is selectable for both supported harnesses, not OpenCode", () => {
+test("a shared Morph account is selectable for all three supported harnesses", () => {
   const morph = account(1, { kind: "morph" });
   expect(accountsFor([morph], "claude")).toEqual([morph]);
   expect(accountsFor([morph], "codex")).toEqual([morph]);
-  expect(accountsFor([morph], "opencode")).toEqual([]);
-  expect(KIND_INFO.morph.harnessLabel).toBe("Claude Code and Codex");
+  expect(accountsFor([morph], "opencode")).toEqual([morph]);
+  expect(KIND_INFO.morph.harnessLabel).toBe("Claude Code and Codex and OpenCode");
 });
 
 test("account action errors retain conflict/access recovery without upstream diagnostics", () => {
