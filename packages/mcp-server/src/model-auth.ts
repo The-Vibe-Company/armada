@@ -267,12 +267,12 @@ export function createModelAuthOwnership(
           );
       };
       // Explicit replacement/revocation invalidates publication, not the ability to stop old compute.
-      if (
+      const retired =
         row.current_status !== "active" ||
         row.current_version !== row.credential_version ||
         (row.expires_at !== null &&
-          new Date(row.expires_at instanceof Date ? row.expires_at.getTime() : row.expires_at).getTime() <= now())
-      ) {
+          new Date(row.expires_at instanceof Date ? row.expires_at.getTime() : row.expires_at).getTime() <= now());
+      if (retired) {
         const retained = await state.redactionState(actor, row.credential_id, row.credential_version, row.id);
         if (!retained)
           throw new VaultError(
@@ -281,35 +281,27 @@ export function createModelAuthOwnership(
           );
         const info = await provider.get(providerId);
         if (info.state === "stopped") return stoppedSecrets(retained);
-
-        const generation =
-          provider.id === "modal" ? await modalGeneration(sql, providerId, actor) : String(row.lifecycle_generation);
-        const raw = await captureNative(provider, providerId, {}, quiesced);
-        return state.retire({
-          ...nativeSource,
-          authJson: raw,
-          generation: `${provider.id}:${quiesced ? "quiesced:" : ""}${generation}`,
-          verifySource: verifySource(generation, true),
-        });
+      } else {
+        const binding = await this.bootstrap(actor, row.credential_id, row.credential_version, row.id);
+        if (!binding) return []; // Unmanaged legacy workspaces retain their existing behavior.
+        const info = await provider.get(providerId);
+        if (info.state === "stopped")
+          return stoppedSecrets(await state.read(actor, row.credential_id, row.credential_version, row.id));
       }
-      const binding = await this.bootstrap(actor, row.credential_id, row.credential_version, row.id);
-      if (!binding) return []; // Unmanaged legacy workspaces retain their existing behavior.
-      const info = await provider.get(providerId);
-      if (info.state === "stopped")
-        return stoppedSecrets(await state.read(actor, row.credential_id, row.credential_version, row.id));
       for (let attempt = 0; attempt < 3; attempt++) {
-        const saved = await state.read(actor, row.credential_id, row.credential_version, row.id);
+        const saved = retired ? undefined : await state.read(actor, row.credential_id, row.credential_version, row.id);
         const generation =
           provider.id === "modal" ? await modalGeneration(sql, providerId, actor) : String(row.lifecycle_generation);
         const authJson = await captureNative(provider, providerId, {}, quiesced);
+        const observation = {
+          ...nativeSource,
+          authJson,
+          generation: `${provider.id}:${quiesced ? "quiesced:" : ""}${generation}`,
+          verifySource: verifySource(generation, retired),
+        };
+        if (retired) return state.retire(observation);
         try {
-          await state.publish({
-            ...nativeSource,
-            generation: `${provider.id}:${quiesced ? "quiesced:" : ""}${generation}`,
-            expectedRevision: saved?.revision ?? 0,
-            authJson,
-            verifySource: verifySource(generation, false),
-          });
+          await state.publish({ ...observation, expectedRevision: saved?.revision ?? 0 });
           return (await state.read(actor, row.credential_id, row.credential_version, row.id))?.secrets ?? [];
         } catch (error) {
           if (!(error instanceof VaultError) || error.code !== "conflict" || attempt === 2) throw error;

@@ -50,7 +50,8 @@ test("migration preserves historical harness kind preference and account identit
       ids.set(kind, row.rows[0]?.id ?? "");
     }
     await db.exec(await Bun.file(`${migrationsDir}/${migration}`).text());
-    const reader = createSqlVaultStore(db);
+    // This fixture stops at the named-account migration, before personal agent defaults exist.
+    const { agentDefaults: _agentDefaults, ...reader } = createSqlVaultStore(db);
     for (const [harness, preferred, env] of [
       ["claude", "claude_oauth", "CLAUDE_CODE_OAUTH_TOKEN"],
       ["codex", "openai", "OPENAI_API_KEY"],

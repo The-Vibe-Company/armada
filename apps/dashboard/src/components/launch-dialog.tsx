@@ -9,6 +9,7 @@ import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { launchFromGolden } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
+import { LaunchSentence } from "@/components/launch-sentence";
 import {
   LaunchAdvanced,
   LaunchDialogContent,
@@ -19,7 +20,7 @@ import {
 } from "@/components/launch-surface";
 import { MachineSizeField } from "@/components/machine-size-field";
 import { SubmitShortcut } from "@/components/mod-key";
-import { type ModelCatalog, ModelFields } from "@/components/model-fields";
+import type { ModelCatalog } from "@/components/model-fields";
 import { SkillPicker } from "@/components/skill-picker";
 import { TemplateLaunchForm } from "@/components/templates";
 import { Button } from "@/components/ui/button";
@@ -47,7 +48,7 @@ import {
   launchDefault,
   type ModelAccount,
 } from "@/lib/model-accounts";
-import type { ConnectionChoices } from "@/lib/model-picker";
+
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import { cn } from "@/lib/utils";
 
@@ -158,6 +159,7 @@ function LaunchForm({
     return resolved.state === "resolved" ? resolved.account.id : "";
   };
   const [credential, setCredential] = useState(() => initialAccount("claude"));
+  const [accountBlocked, setAccountBlocked] = useState(false);
   const [armadaAccess, setArmadaAccess] = useState(false);
   const usableCodexAccount = (value: string) =>
     accounts.state === "ready" &&
@@ -235,7 +237,7 @@ function LaunchForm({
             {/* Only set when blocked: preserve SubmitButton's own pending lock otherwise. */}
             <SubmitButton
               className="w-full sm:w-auto"
-              {...(access.held || accounts.state === "unavailable"
+              {...(access.held || accountBlocked || accounts.state === "unavailable"
                 ? { disabled: true, "aria-describedby": access.held ? `${id}-held` : `${id}-account-unavailable` }
                 : {})}
             >
@@ -252,60 +254,33 @@ function LaunchForm({
         {/* Untouched, or not listed: the launch names no connections and the server applies the defaults (#681). */}
         <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
         <LaunchFields>
-          <LaunchTaskField idPrefix={id} />
-          <div className={cn("grid gap-4", repositories.length > 1 && "sm:grid-cols-2")}>
-            <Segmented
-              legend="Agent"
-              describedBy={`${id}-availability`}
-              name="harness"
-              value={harness}
-              onChange={(next) => {
-                setHarness(next);
-                setCredential(initialAccount(next));
-                setArmadaAccess(false);
-              }}
-              options={(Object.keys(catalog) as Harness[]).map((value) => ({
-                value,
-                label: HARNESS_LABELS[value],
-                disabled: value === "opencode" && provider === "boat" && !boatOpenCodeAvailable,
-              }))}
-            />
-            {repositories.length > 1 && (
-              <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
-            )}
-          </div>
-          <p id={`${id}-availability`} className="text-xs text-muted-foreground" data-launch-availability>
-            {provider === "boat" && !boatOpenCodeAvailable
-              ? "Boat OpenCode is disabled here because the server does not advertise its shared-runtime default. The explicit Boat runtime launch API remains available when installed; native Boat has no OpenCode fallback."
-              : `${PROVIDER_LABELS[provider]} supports Claude Code, Codex and OpenCode, including custom model connections through the Armada runtime.`}
-          </p>
-          {/* Who is billed stays in view: it is never a collapsed default. */}
-          <AccountField
-            key={harness}
+          <LaunchSentence
             idPrefix={id}
+            onBlocked={setAccountBlocked}
             harness={harness}
-            accounts={accounts}
-            value={credential}
-            onChange={(next) => {
+            onHarness={(next) => {
+              setHarness(next);
+              setArmadaAccess(false);
+            }}
+            account={credential}
+            onAccount={(next) => {
               setCredential(next);
               setArmadaAccess(false);
             }}
+            accounts={accounts}
+            catalog={catalog}
+            boatOpenCodeDisabled={provider === "boat" && !boatOpenCodeAvailable}
           />
+          <p className="text-sm text-muted-foreground">
+            In a {PROVIDER_LABELS[provider]} sandbox, from snapshot {golden}
+          </p>
+          <LaunchTaskField idPrefix={id} />
+          {repositories.length > 1 && (
+            <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
+          )}
           {access.alerts(() => {
             focusLaunch.current = true;
           })}
-          <ModelFields
-            key={`model-${harness}`}
-            idPrefix={id}
-            harness={harness}
-            catalog={catalog}
-            connections={connectionChoices(accounts, harness)}
-            account={credential}
-            onConnection={(next) => {
-              setCredential(next);
-              setArmadaAccess(false);
-            }}
-          />
           <LaunchAdvanced
             open={advancedOpen}
             onOpenChange={setAdvancedOpen}
@@ -486,18 +461,6 @@ function optionLabel(account: ModelAccount, now: number, orgName: string): strin
     Boolean,
   );
   return notes.length ? `${account.name} (${notes.join(", ")})` : account.name;
-}
-
-/** The usable accounts of this agent that declare models, as the model picker's connection groups. */
-function connectionChoices(accounts: LaunchAccounts, harness: Harness): ConnectionChoices[] {
-  if (accounts.state !== "ready") return [];
-  return accountsFor(accounts.accounts, harness)
-    .filter((account) => account.models?.length && accountProblem(account, accounts.now) === null)
-    .map((account) => ({
-      accountId: account.id,
-      label: account.scope === "org" ? `${account.name} (${accounts.orgName})` : account.name,
-      models: account.models ?? [],
-    }));
 }
 
 /** A compact radio group: every option visible, one choice, arrow keys move between them. */

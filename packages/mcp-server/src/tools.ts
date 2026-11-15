@@ -82,6 +82,7 @@ import { recordStopDispatch } from "./work-preservation.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   sandboxBillingAccount?: (id: string) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeGitHub?: RuntimeGitHub;
@@ -431,7 +432,15 @@ export function createArmadaServer(context: ToolContext, version: string, option
       // The SDK's callback type is generic over every schema flavour; the input is the parsed `In`.
       (async (args: z.infer<z.ZodObject<In>>): Promise<CallToolResult> => {
         try {
-          const routed = name === "send" ? undefined : await context.dockerControls?.invoke(caller, name, args);
+          if (
+            name === "stop" &&
+            !(args as Record<string, unknown>).only_if_idle &&
+            typeof (args as Record<string, unknown>).id === "string"
+          )
+            await context.accountTurns?.cancelQueued(caller, (args as Record<string, unknown>).id as string);
+          const routed = ["send", "status", "wait"].includes(name)
+            ? undefined
+            : await context.dockerControls?.invoke(caller, name, args);
           const raw = routed?.handled ? routed.result : await run(args);
           const value =
             routed?.handled && (name === "status" || name === "wait")
@@ -737,8 +746,40 @@ export function createArmadaServer(context: ToolContext, version: string, option
     promptId: string | undefined,
     stored = false,
     allowRecordedFallback = false,
+    recorded = false,
   ): Promise<StatusReport & ReturnType<typeof logicalExpiry>> => {
+    const queued = await context.accountTurns?.status(caller, sandboxId, promptId);
+    if (queued && "nativePromptId" in queued) promptId = queued.nativePromptId;
+    const waiting = queued && !("nativePromptId" in queued) ? queued : undefined;
+    const routed = await context.dockerControls?.invoke(caller, "status", {
+      id: sandboxId,
+      ...(promptId && !waiting ? { prompt_id: promptId } : {}),
+      ...(recorded ? { recorded: true } : {}),
+    });
+    const queuePatch = waiting
+      ? {
+          statusMessage: waiting.message,
+          settled: waiting.failed ?? false,
+          prompt: {
+            promptId: waiting.requestId!,
+            conversationId: waiting.conversationId!,
+            state: waiting.failed ? ("failed" as const) : ("running" as const),
+            reason: waiting.message,
+          },
+        }
+      : {};
+    if (routed?.handled) {
+      const report = routed.result as StatusReport;
+      return { ...report, ...logicalExpiry(report.expiresAt, context.now()), providerExpiresAt: null, ...queuePatch };
+    }
     const found = await measure("sandbox_read", () => visible(sandboxId));
+    if (waiting) return { ...recordedStatus(found), ...logicalExpiry(found.expiresAt, context.now()), ...queuePatch };
+    if (recorded)
+      return {
+        ...recordedStatus(found),
+        ...logicalExpiry(found.expiresAt, context.now()),
+        statusMessage: `Recorded state only; use armada status ${sandboxId} --live for provider and prompt details.`,
+      };
     try {
       const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
       const provider =
@@ -1376,15 +1417,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       output: status,
       readOnly: true,
     },
-    async (args) => {
-      if (!args.recorded) return statusOf(args.id, args.prompt_id, args.recorded === undefined, true);
-      const found = await visible(args.id);
-      return {
-        ...recordedStatus(found),
-        ...logicalExpiry(found.expiresAt, context.now()),
-        statusMessage: `Recorded state only; use armada status ${args.id} --live for provider and prompt details.`,
-      };
-    },
+    (args) => statusOf(args.id, args.prompt_id, args.recorded === undefined, true, args.recorded === true),
   );
 
   tool(
@@ -1593,6 +1626,14 @@ export function createArmadaServer(context: ToolContext, version: string, option
   );
 
   async function sendSandbox(args: import("./runtime-followup.ts").RuntimeFollowupInput) {
+    if (context.accountTurns) {
+      const queued = await context.accountTurns.accept(caller, args);
+      if (queued) return queued;
+    }
+    return dispatchSandbox(args);
+  }
+
+  async function dispatchSandbox(args: import("./runtime-followup.ts").RuntimeFollowupInput) {
     const routed = await context.dockerControls?.invoke(caller, "send", { ...args });
     if (routed?.handled) return routed.result as import("@armada/core").PromptReceipt & { id: string };
     const selected = await visible(args.id);
@@ -1745,6 +1786,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         promptId: z.string(),
         conversationId: z.string(),
         status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
+        statusMessage: z.string().optional(),
       },
     },
     sendSandbox,

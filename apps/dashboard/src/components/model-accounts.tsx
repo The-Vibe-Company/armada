@@ -538,7 +538,8 @@ export function AccountRow({
           <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
             <span>{kindNote(account) ?? info.label}</span>
             <span>
-              {account.runningAgents ?? 0}/{account.maxAgents ?? "unlimited"} agents running
+              {account.runningAgents ?? 0} working / {account.waitingAgents ?? 0} waiting-for-slot /{" "}
+              {account.maxAgents ?? "unlimited"} max
             </span>
             {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
             <span>

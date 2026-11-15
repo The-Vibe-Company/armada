@@ -26,6 +26,7 @@ export interface CredentialInfo {
   runningAgents?: number;
   /** A live turn is currently waiting for a structured provider rate-limit retry. */
   rateLimited?: boolean;
+  waitingAgents?: number;
   status?: string;
   expiresAt?: string | null;
   updatedAt?: string;

@@ -28,6 +28,7 @@ type Schema = {
 
 const ROW_ALIASES: Record<string, string> = {
   agent_defaults: "AgentDefaultsRow",
+  account_turn_queue: "AccountTurnQueueRow",
   account_agent_reservations: "AccountAgentReservationRow",
   ordinary_launch_receipts: "OrdinaryLaunchReceiptRow",
   sandbox_account_usage_pricing: "SandboxAccountUsagePricingRow",
