@@ -1,4 +1,4 @@
-import { GoldenError } from "@armada/core";
+import { GoldenError, isSandboxProvider, SANDBOX_PROVIDERS, type SandboxProviderId } from "@armada/core";
 
 const BOOLEAN = new Set(["--private", "--json", "--all", "--follow", "--no-browser", "--no-connections"]);
 const VALUE = new Set([
@@ -92,4 +92,12 @@ export function single(args: Args, name: string): string | undefined {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function uuid(value: string | undefined, flag: string): void {
   if (!value || !UUID.test(value)) throw new GoldenError("invalid_config", `${flag} must be a UUID.`);
+}
+
+export function providerFlag(args: Args): SandboxProviderId | undefined {
+  const value = single(args, "--provider");
+  if (value === undefined) return undefined;
+  if (!isSandboxProvider(value))
+    throw new GoldenError("invalid_config", `--provider is ${SANDBOX_PROVIDERS.join(" or ")}.`);
+  return value;
 }

@@ -20,7 +20,6 @@ import {
   parseGoldenConfig,
   parseMachineSize,
   resolveModelChoice,
-  SANDBOX_PROVIDERS,
   type SandboxProviderId,
   SIZED_LAUNCH_ROUTE_V1,
   VaultError,
@@ -28,7 +27,7 @@ import {
 } from "@armada/core";
 import { accountCommand } from "./account-commands.ts";
 import { applicationVaultCommand } from "./application-vault-commands.ts";
-import { flag, parseArgs, single, values } from "./args.ts";
+import { flag, parseArgs, providerFlag, single, values } from "./args.ts";
 import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
 import {
   type AuthIo,
@@ -1599,11 +1598,4 @@ function modelDefaults(): string {
   return Object.entries(MODEL_CATALOG)
     .map(([h, e]) => `${h} ${e.defaultModel} ${e.defaultReasoningEffort}`)
     .join(", ");
-}
-function providerFlag(args: ReturnType<typeof parseArgs>): SandboxProviderId | undefined {
-  const value = single(args, "--provider");
-  if (value === undefined) return undefined;
-  if (!isSandboxProvider(value))
-    throw new GoldenError("invalid_config", `--provider is ${SANDBOX_PROVIDERS.join(" or ")}.`);
-  return value;
 }

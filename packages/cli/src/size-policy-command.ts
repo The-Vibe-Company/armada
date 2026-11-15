@@ -1,5 +1,5 @@
 import { GoldenError, type MachineSizePolicyResult } from "@armada/core";
-import { flag, parseArgs, single } from "./args.ts";
+import { flag, parseArgs, providerFlag, single } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 
@@ -15,9 +15,7 @@ export async function sizePolicyCommand(
     if (!allowed.has(key)) throw new GoldenError("invalid_config", `Unsupported size-policy option '${key}'.`);
   const [golden, ...extra] = args.positionals;
   if (!golden || extra.length) throw new GoldenError("invalid_config", "Give exactly one snapshot name.");
-  const provider = single(args, "--provider");
-  if (provider !== undefined && provider !== "boat" && provider !== "modal")
-    throw new GoldenError("invalid_config", "--provider is boat or modal.");
+  const provider = providerFlag(args);
   const file = single(args, "--file");
   let policy: unknown;
   if (file !== undefined) {
