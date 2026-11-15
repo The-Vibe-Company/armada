@@ -1374,6 +1374,16 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
 
 function eventText(event: Awaited<ReturnType<Provider["events"]>>["events"][number]): string {
   if (event.kind === "message" || event.kind === "prompt" || event.kind === "steer") return event.text;
+  if (
+    event.kind === "other" &&
+    event.type === "armada/modelRateLimit" &&
+    event.data &&
+    typeof event.data === "object"
+  ) {
+    const data = event.data as Record<string, unknown>;
+    if (typeof data.message === "string")
+      return `${data.message} (retry ${data.retryCount}, total wait ${Number(data.totalWaitMs) / 1000} s)`;
+  }
   return JSON.stringify(event);
 }
 

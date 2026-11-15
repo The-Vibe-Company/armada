@@ -184,6 +184,7 @@ export function SandboxChat(props: Props) {
   });
   const [hasMore, setHasMore] = useState(false);
   const [turnModel, setTurnModel] = useState<{
+    rateLimit?: { waiting: boolean; message: string; retryCount: number; totalWaitMs: number } | null;
     promptId?: string;
     conversationId?: string | null;
     requestedModel?: string | null;
@@ -447,6 +448,17 @@ export function SandboxChat(props: Props) {
           </p>
         )}
 
+        {turnModel?.rateLimit && (
+          <Alert role="status">
+            <AlertTitle>{turnModel.rateLimit.message}</AlertTitle>
+            <AlertDescription>
+              Retry {turnModel.rateLimit.retryCount} · Total wait {Math.ceil(turnModel.rateLimit.totalWaitMs / 1000)} s
+            </AlertDescription>
+          </Alert>
+        )}
+        {turnModel?.observedModel && !turnModel.modelSelectionReason && (
+          <p className="text-xs text-muted-foreground">Reported model: {turnModel.observedModel}</p>
+        )}
         {turnModel?.modelSelectionReason && (
           <details className="border-b px-4 py-2 text-sm sm:px-6">
             <summary className="cursor-pointer text-muted-foreground">

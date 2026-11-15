@@ -90,6 +90,58 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       writeFileSync(path, JSON.stringify(prior));
     }
 
+    if (process.env.ARMADA_THROTTLE_CASE) {
+      const nativeRetry = process.env.ARMADA_THROTTLE_CASE === "native-retry";
+      const first = !initial && !nativeRetry;
+      initial ??= m.uuid;
+      if (nativeRetry)
+        send({
+          type: "system",
+          subtype: "api_retry",
+          error_status: 429,
+          error: "rate_limit",
+          attempt: 1,
+          max_retries: 10,
+          retry_delay_ms: 20000,
+          session_id: "fixture-session",
+          uuid: crypto.randomUUID(),
+        });
+      if (first)
+        send({
+          type: "assistant",
+          session_id: "fixture-session",
+          uuid: crypto.randomUUID(),
+          parent_tool_use_id: null,
+          error: process.env.ARMADA_THROTTLE_CASE,
+          message: {
+            id: "throttle",
+            type: "message",
+            role: "assistant",
+            model: "test-model",
+            content: [{ type: "text", text: "throttled" }],
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        });
+      send({
+        type: "result",
+        subtype: first ? "error_during_execution" : "success",
+        is_error: first,
+        session_id: "fixture-session",
+        uuid: crypto.randomUUID(),
+        duration_ms: 1,
+        duration_api_ms: 1,
+        num_turns: 1,
+        total_cost_usd: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        modelUsage: {},
+        permission_denials: [],
+        user_message_uuid: m.uuid,
+        user_message_uuids: [m.uuid],
+        result: first ? undefined : "continued",
+        errors: first ? ["throttled"] : undefined,
+      });
+      return;
+    }
     if (["usage-fresh", "usage-resumed", "usage-after-reset", "usage-recorded"].includes(m.message.content)) {
       const result = (sessionId: string, consumed: string[], model = "claude-native") =>
         send({

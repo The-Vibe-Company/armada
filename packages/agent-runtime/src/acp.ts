@@ -3,7 +3,14 @@ import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { HarnessError } from "./errors.ts";
+import { ModelRateLimitWait, modelThrottle } from "./model-rate-limit.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
+
+class ModelThrottleError extends HarnessError {
+  constructor(readonly retryAfter?: string) {
+    super("rate_limited");
+  }
+}
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): value is ObjectValue =>
@@ -111,8 +118,10 @@ export class AcpDriver implements Driver {
             if (!entry) continue;
             clearTimeout(entry.timer);
             pending.delete(m.id);
-            if (m.error !== undefined || !object(m.result)) entry.reject(new HarnessError("harness_failed"));
-            else entry.resolve(m.result);
+            if (m.error !== undefined || !object(m.result)) {
+              const throttle = modelThrottle(m.error);
+              entry.reject(throttle ? new ModelThrottleError(throttle.retryAfter) : new HarnessError("harness_failed"));
+            } else entry.resolve(m.result);
           } else if (m.id !== undefined && typeof m.method === "string") {
             // ACP tools execute inside the admitted sandbox. Choose only an explicit one-shot allow option.
             const params = object(m.params) ? m.params : {};
@@ -182,11 +191,13 @@ export class AcpDriver implements Driver {
         }
       }
     });
+    const rateLimitWait = new ModelRateLimitWait();
     const cancel = async () => {
       if (sessionId && !stopped) send({ method: "session/cancel", params: { sessionId } });
     };
     const abort = () => {
       interrupted = true;
+      rateLimitWait.cancel();
       void cancel();
       child.kill("SIGKILL");
     };
@@ -264,7 +275,21 @@ export class AcpDriver implements Driver {
         current = begin(c.request.text);
         for (;;) {
           const active: Promise<ObjectValue> = current;
-          const response = await active;
+          let response: ObjectValue;
+          try {
+            response = await active;
+          } catch (error) {
+            if (active !== current) continue;
+            if (!(error instanceof ModelThrottleError) || interrupted) throw error;
+            // ACP owns in-flight retries; only a terminal JSON-RPC error reaches here.
+            await rateLimitWait.wait(c, error.retryAfter);
+            if (interrupted) return "interrupted";
+            if (active !== current) continue;
+            current = begin(
+              "Continue from where the model provider request was rate limited. Do not repeat completed work.",
+            );
+            continue;
+          }
           // A restart replaces the running native turn but remains the same Armada prompt.
           if (current !== active) continue;
           usage(response);
@@ -300,6 +325,7 @@ export class AcpDriver implements Driver {
       done,
       interrupt: async () => {
         interrupted = true;
+        rateLimitWait.cancel();
         await ready;
         await cancel();
         try {

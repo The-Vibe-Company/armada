@@ -2,6 +2,8 @@ import type { MachineSizeEvidence, PlanLimit } from "@armada/core";
 import {
   type AgentEvent,
   dedupeEvents,
+  type ModelRateLimit,
+  modelRateLimit,
   type PromptOutcome,
   type Provider,
   promptOutcome,
@@ -43,6 +45,7 @@ const EVENT_PAGES = 50;
 export const WAIT_POLL_MS = 1000;
 
 export interface PromptReport {
+  rateLimit?: ModelRateLimit | null;
   requestedModel?: string | null;
   observedModel?: string | null;
   modelSelectionReason?: TurnModelEvidence["modelSelectionReason"];
@@ -134,6 +137,7 @@ export async function readStatus(
       promptId: target.promptId,
       ...(target.conversationId ? { conversationId: target.conversationId } : {}),
     };
+    let rateLimit: ModelRateLimit | null = null;
     let outcome: PromptOutcome;
     let evidence: TurnModelEvidence;
     // Terminal observations survive provider history retention. Never substitute the sandbox default.
@@ -149,12 +153,21 @@ export async function readStatus(
       const state = await provider.getPrompt(request);
       if (state.status === "running" || state.status === "queued") {
         outcome = { state: "running" };
-        evidence = {
+        let events: AgentEvent[] = [];
+        try {
+          events = (await readPromptEvents(provider, request)).events;
+        } catch {
+          /* Status remains available when history is unavailable. */
+        }
+        rateLimit = modelRateLimit(events, target.promptId, options.now.getTime());
+        evidence = turnModelEvidence(events, {
+          promptId: target.promptId,
           requestedModel: recorded?.requestedModel ?? null,
-          observedModel: null,
-          modelSelectionReason: null,
-          modelSelectionMessage: null,
-        };
+          complete: false,
+        });
+        // A running turn is not a model-selection failure.
+        evidence.modelSelectionReason = null;
+        evidence.modelSelectionMessage = null;
       } else {
         let events: AgentEvent[] = [];
         let complete = false;
@@ -169,6 +182,7 @@ export async function readStatus(
         } catch {
           /* Missing history cannot prove exact-model execution. */
         }
+        rateLimit = modelRateLimit(events, target.promptId, options.now.getTime(), false);
         outcome = await promptOutcome(provider, request, { state, events });
         evidence = turnModelEvidence(events, {
           promptId: target.promptId,
@@ -194,6 +208,7 @@ export async function readStatus(
       evidence.modelSelectionReason === "model_selection_mismatch";
     prompt = {
       ...evidence,
+      rateLimit,
       ...(!selectionFailed && outcome.state === "failed" && outcome.limit ? { limit: outcome.limit } : {}),
       promptId: target.promptId,
       conversationId: target.conversationId,

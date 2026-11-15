@@ -185,7 +185,18 @@ export async function operation(
     if (flag(args, "--json") || flag(args, "--page-info"))
       auth.out(`${JSON.stringify(flag(args, "--page-info") ? result : { sandboxes: page.sandboxes }, null, 2)}\n`);
     else auth.out(sandboxListText(page.sandboxes, auth.now()));
-  } else auth.out(`${JSON.stringify(result, null, 2)}\n`);
+  } else {
+    if (command === "status" && !flag(args, "--json") && result && typeof result === "object" && "prompt" in result) {
+      const prompt = result.prompt as {
+        rateLimit?: { message: string; retryCount: number; totalWaitMs: number } | null;
+      } | null;
+      if (prompt?.rateLimit)
+        auth.out(
+          `${prompt.rateLimit.message} (retry ${prompt.rateLimit.retryCount}, total wait ${Math.ceil(prompt.rateLimit.totalWaitMs / 1000)} s)\n`,
+        );
+    }
+    auth.out(`${JSON.stringify(result, null, 2)}\n`);
+  }
   return 0;
 }
 

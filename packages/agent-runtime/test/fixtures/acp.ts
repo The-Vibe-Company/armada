@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline";
 
+let throttled = false;
 let active: number | undefined;
 const send = (value: object) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...value })}\n`);
 const lines = createInterface({ input: process.stdin });
@@ -29,6 +30,19 @@ for await (const line of lines) {
     case "session/prompt": {
       if (m.params.sessionId !== "session-1") throw Error("wrong_session");
       const text = m.params.prompt[0].text;
+      if (process.env.ACP_THROTTLE && !throttled) {
+        throttled = true;
+        send({
+          id: m.id,
+          error: {
+            code: -32603,
+            message: "Request failed",
+            data: { statusCode: Number(process.env.ACP_THROTTLE), responseHeaders: { "retry-after": "20" } },
+          },
+        });
+        break;
+      }
+
       send({
         method: "session/update",
         params: {
