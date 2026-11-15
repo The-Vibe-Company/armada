@@ -1,5 +1,41 @@
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
+  org: `Usage: armada org <command> [arguments]
+Manage organization selection, provider setup and membership.
+Use a leaf command with --help or -h for flags and authorization requirements.
+  list         List your organizations, roles and IDs.
+  use          Save a local default by name/UUID, or clear it with none.
+  current      Read the saved selection; not a current-membership check.
+  create       Create an organization and become its admin.
+  setup        Inspect provider configuration, not lifecycle readiness.
+  connect      Connect Boat/Modal as an organization admin.
+  members      List/add/change roles/remove members.
+  invitations  Create/list/resend/revoke/accept invitations.
+Explicit --org overrides a saved default on commands that consume it.
+Help does not sign in, change selection, read credentials or call the server.
+Example: armada org list --json
+Example: armada org invitations --help
+`,
+  "org members": `Usage: armada org members <command> [arguments]
+  list    List members and roles.
+  add     Add by email; --role defaults to member.
+  role    Change role using positional email and admin|member.
+  remove  Remove by email.
+Membership changes require an organization admin; server authorization still applies.
+Use leaf --help/-h for organization selection and exact flags.
+Example: armada org members list --org my-team --json
+`,
+  "org invitations": `Usage: armada org invitations <command> [arguments]
+  create  Invite by email with optional role (default member).
+  list    Read invitation metadata and IDs, never acceptance tokens.
+  resend  Resend by invitation ID.
+  revoke  Revoke by invitation ID.
+  accept  Read a token from stdin/private file, never command arguments.
+Management requires an organization admin and selected organization.
+Accept uses the signed-in identity, not --org. See leaf --help/-h for flags.
+Sent means email-provider acceptance, not confirmed inbox delivery.
+Example: armada org invitations list --org my-team --json
+`,
   "org list": `Usage: armada org list [--json]
 List your organizations after Armada login, including their IDs and your roles.
 Use an exact organization name or UUID with armada org use.
