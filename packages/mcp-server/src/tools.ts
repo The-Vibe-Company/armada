@@ -672,6 +672,15 @@ export function createArmadaServer(context: ToolContext, version: string, option
       provider: await context.provider(found),
     };
   };
+  const liveControl = async (args: { id: string; request_id?: unknown }) => {
+    if (args.request_id !== undefined)
+      throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
+    const target = await live(args.id, false, undefined, true);
+    const enrolled = Boolean(target.sandbox.boatRuntime || target.sandbox.runtimeTransport === "dialout");
+    if (enrolled && target.sandbox.ownerId !== caller.userId)
+      throw new ToolError("forbidden", "Only the runtime owner may control this sandbox.");
+    return { ...target, enrolled };
+  };
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
   const statusOf = async (sandboxId: string, promptId: string | undefined, stored = false): Promise<StatusReport> => {
     const found = await measure("sandbox_read", () => visible(sandboxId));
@@ -1692,12 +1701,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       },
     },
     async (args) => {
-      if (args.request_id !== undefined)
-        throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
-      const { sandbox: found, provider } = await live(args.id, false, undefined, true);
-      const enrolled = Boolean(found.boatRuntime || found.runtimeTransport === "dialout");
-      if (enrolled && found.ownerId !== caller.userId)
-        throw new ToolError("forbidden", "Only the runtime owner may control this sandbox.");
+      const { sandbox: found, provider, enrolled } = await liveControl(args);
       const delivery = provider.capabilities[found.harness]?.steer ?? "none";
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
       if (!enrolled && delivery === "restart" && found.credentialId)
@@ -1799,12 +1803,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       output: { id: z.string(), interrupted: z.boolean() },
     },
     async (args) => {
-      if (args.request_id !== undefined)
-        throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
-      const { sandbox: found, provider } = await live(args.id, false, undefined, true);
-      const enrolled = Boolean(found.boatRuntime || found.runtimeTransport === "dialout");
-      if (enrolled && found.ownerId !== caller.userId)
-        throw new ToolError("forbidden", "Only the runtime owner may control this sandbox.");
+      const { sandbox: found, provider } = await liveControl(args);
       if (!provider.capabilities[found.harness]?.interrupt) {
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
       }
@@ -1846,12 +1845,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       },
     },
     async (args) => {
-      if (args.request_id !== undefined)
-        throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
-      const { sandbox: found, provider } = await live(args.id, false, undefined, true);
-      const enrolled = Boolean(found.boatRuntime || found.runtimeTransport === "dialout");
-      if (enrolled && found.ownerId !== caller.userId)
-        throw new ToolError("forbidden", "Only the runtime owner may control this sandbox.");
+      const { sandbox: found, provider, enrolled } = await liveControl(args);
       // Applies to managed and ordinary exec before any native preparation or
       // provider command can implicitly resume a retained disk.
       await data.sandboxes.assertExecAllowed?.(found.id);
