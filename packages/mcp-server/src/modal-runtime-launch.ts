@@ -1,12 +1,13 @@
 import type { LaunchOptions } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
-import { modalRuntimeConfiguration } from "./modal-runtime-variables.ts";
+import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
 import { createRuntimeLaunch, type RuntimeLaunchOptions } from "./runtime-launch.ts";
+import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
 
 /** First-answer slice: same enrolled startup and journal, Modal supplies only compute. */
 export function modalRuntimeLaunch(
   options: RuntimeLaunchOptions & {
-    modelAuth?: NonNullable<Parameters<typeof modalRuntimeConfiguration>[1]["modelAuth"]>;
+    modelAuth?: NonNullable<RuntimeConfigurationInput["modelAuth"]>;
   },
 ): NonNullable<LaunchOptions["runtime"]> {
   const startRuntime = createRuntimeLaunch(options);
@@ -16,7 +17,13 @@ export function modalRuntimeLaunch(
       if (host.id !== "modal" || sandbox.runtimeTransport !== "dialout") throw Error("runtime_selection_required");
       return startRuntime({
         input,
-        configure: () => modalRuntimeConfiguration(options.sql, { ...options, actor, sandbox, credentials }),
+        configure: () =>
+          runtimeConfigurationWithVariables(
+            options.sql,
+            { ...options, actor, sandbox, credentials },
+            "modal",
+            "modal_runtime_empty_v1",
+          ),
         bootstrap: () => {
           const start = (host as Partial<ModalProvider>).startRuntime;
           if (!start) throw Error("modal_runtime_host_required");

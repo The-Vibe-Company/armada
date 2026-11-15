@@ -1,14 +1,15 @@
 import type { LaunchOptions } from "@armada/core/server";
 import { startBoatRuntime } from "@armada/provider-boat";
-import { boatRuntimeConfiguration } from "./boat-runtime-configuration.ts";
+import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
 import { createRuntimeLaunch, type RuntimeLaunchOptions } from "./runtime-launch.ts";
+import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
 
 /** Build policy once; choose it explicitly for a launch, never as a native fallback.
  * Manifest/origin are trusted server deployment inputs, not client parameters.
  */
 export function boatRuntimeLaunch(
   options: RuntimeLaunchOptions & {
-    modelAuth?: Parameters<typeof boatRuntimeConfiguration>[0]["modelAuth"];
+    modelAuth?: RuntimeConfigurationInput["modelAuth"];
   },
 ): NonNullable<LaunchOptions["boatRuntime"]> {
   const startRuntime = createRuntimeLaunch(options);
@@ -21,7 +22,8 @@ export function boatRuntimeLaunch(
       return startRuntime({
         input,
         configure: () =>
-          boatRuntimeConfiguration(
+          runtimeConfigurationWithVariables(
+            options.sql,
             {
               actor,
               sandbox,
@@ -30,7 +32,8 @@ export function boatRuntimeLaunch(
               architecture,
               ...(modelAuth ? { modelAuth } : {}),
             },
-            options.sql,
+            "boat",
+            "boat_runtime_empty_v1",
           ),
         bootstrap: () => (request) => startBoatRuntime(host, request),
       });

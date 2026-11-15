@@ -9,15 +9,13 @@ import {
   resolveModelChoice,
   type Sql,
 } from "@armada/core/server";
-import { boatRuntimeConfiguration } from "../src/boat-runtime-configuration.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { modalRuntimeConfiguration, readModalRuntimeVariables } from "../src/modal-runtime-variables.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
-import { readRuntimeVariables } from "../src/runtime-readable-variables.ts";
+import { readRuntimeVariables, runtimeConfigurationWithVariables } from "../src/runtime-readable-variables.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -124,10 +122,8 @@ async function fixture(
       start: async ({ sandbox, actor, credentials }) => {
         // A trusted descriptor fixture, not a CLI-install fixture; this owner
         // projects private credentials and readables into the selected environment.
-        const project =
-          provider === "boat"
-            ? (input: Parameters<typeof boatRuntimeConfiguration>[0]) => boatRuntimeConfiguration(input, sql)
-            : (input: Parameters<typeof modalRuntimeConfiguration>[1]) => modalRuntimeConfiguration(sql, input);
+        const project = (input: Parameters<typeof runtimeConfigurationWithVariables>[1]) =>
+          runtimeConfigurationWithVariables(sql, input, provider, `${provider}_runtime_empty_v1`);
         const plan = await project({
           sandbox,
           actor,
@@ -293,7 +289,7 @@ for (const entry of ["explicit", "default"] as const)
     expect(f.prompts()).toBe(1);
     // Resume reads the admitted manifest, not the mutable current variable source.
     expect(
-      await readModalRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id),
+      await readRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, "modal"),
     ).toEqual({
       APP_REGION: "original\n$(not-a-command)",
     });
@@ -455,9 +451,9 @@ test("promptless Modal template freezes its manifest and replays the empty launc
   expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
   expect(f.prompts()).toBe(0);
   expect(f.physical.forks).toHaveLength(1);
-  expect(await readModalRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id)).toEqual(
-    launched.manifest.variables,
-  );
+  expect(
+    await readRuntimeVariables(f.sql, { userId: f.people.owner, orgId: f.people.org }, launched.id, "modal"),
+  ).toEqual(launched.manifest.variables);
 });
 
 for (const harness of ["codex", "claude"] as const)
