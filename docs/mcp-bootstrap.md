@@ -200,12 +200,14 @@ control-server package execution or a user-supplied shell command.
 
 Native npx argv is `--yes -- package@X.Y.Z ...`. Native uvx argv uses the documented
 `--from package==X.Y.Z package ...` form. Both native config consumers use the
-same canonicalization and reject unresolved/unpinned launchers. The real registry
-SQL -> binding -> fixed-path probe -> native JSON/TOML regression covers both
-launchers, rejects unpinned definitions and asserts configured readiness only.
-Its independent VM filesystem/private configuration fixture is not a claim that
-live cloud package health or Claude/Codex tool/resource/prompt parity was tested.
-Root-owned managed-provider probes remain the cloud/harness conformance gate.
+same canonicalization and reject unresolved/unpinned launchers. Unit policy checks
+cover pinned syntax and normalization, not the full registry SQL -> binding ->
+fixed-path probe -> native JSON/TOML path. That integration requires coordinator
+acceptance on an owner-enabled Modal staging sandbox, including both launchers
+and persisted configured readiness. Neither the unit checks nor this procedure
+are evidence that live package health or Claude/Codex tool/resource/prompt parity
+has passed. Root-owned managed-provider probes remain the cloud/harness
+conformance gate.
 
 Primary CLI references: [npm npx](https://docs.npmjs.com/cli/v11/commands/npx/)
 and [uv tools](https://docs.astral.sh/uv/guides/tools/#requesting-specific-versions).
