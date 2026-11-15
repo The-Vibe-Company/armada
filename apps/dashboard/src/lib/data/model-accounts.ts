@@ -7,7 +7,6 @@ import {
   type AccountUsage,
   type AuthCapabilities,
   KIND_INFO,
-  type LaunchAccounts,
   type ModelAccount,
 } from "@/lib/model-accounts";
 import type { ConnectionTestChoices } from "@/lib/model-connection-check";
@@ -24,6 +23,7 @@ export async function viewerAccountControl(): Promise<AccountControl | null> {
 }
 
 export type { AccountList } from "@/lib/model-accounts";
+export { launchAccounts } from "@/lib/model-accounts";
 
 export const listSelectedAccounts = cache(async (): Promise<AccountList> => {
   const selected = await selectedOrganization();
@@ -46,20 +46,6 @@ export const listSelectedAccounts = cache(async (): Promise<AccountList> => {
     throw error;
   }
 });
-
-export function launchAccounts(list: AccountList, now: number): LaunchAccounts {
-  if (list.state === "ready") return { state: "ready", accounts: list.accounts, orgName: list.orgName, now };
-  if (list.state === "legacy") return { state: "legacy" };
-  return {
-    state: "unavailable",
-    reason:
-      list.state === "error"
-        ? list.message
-        : list.state === "no-org"
-          ? "Create an organization first."
-          : "The Armada server is not configured.",
-  };
-}
 
 /** How accounts can be connected on this deployment, or null (paste only) when the server does not say. */
 export async function readAuthCapabilities(org: string): Promise<AuthCapabilities | null> {

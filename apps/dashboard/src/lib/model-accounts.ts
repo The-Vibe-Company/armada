@@ -791,3 +791,18 @@ export function modelAccountFailure(status: number | undefined, code?: string): 
   if (status === 404) return "This account is no longer available. Reload Models to check its current state.";
   return "The account change could not be confirmed. Reload Models to check its current state before trying again.";
 }
+
+/** Pure launch-observation mapping: failed reads never become a named/default account or diagnostic text. */
+export function launchAccounts(list: AccountList, now: number): LaunchAccounts {
+  if (list.state === "ready") return { state: "ready", accounts: list.accounts, orgName: list.orgName, now };
+  if (list.state === "legacy") return { state: "legacy" };
+  return {
+    state: "unavailable",
+    reason:
+      list.state === "error"
+        ? "Model accounts could not be checked. Reload Models and try again."
+        : list.state === "no-org"
+          ? "Create or join an organization first."
+          : "Account setup is not ready here. Ask an Armada administrator to finish setup, then reload Models.",
+  };
+}
