@@ -463,7 +463,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         record("mcp-resume", c.provider, "not-run", "mcp_probe_not_configured");
       if (feature === "mcp" || feature === "mcp-resume") continue;
     }
-    if ((feature === "mcp" || feature === "mcp-resume") && c.provider === "boat") {
+    if ((feature === "mcp" || feature === "mcp-resume") && c.provider === "boat" && c.harness !== "opencode") {
       record(feature, c.provider, "not-run", "native_boat_mcp_evidence_probe_not_implemented");
       continue;
     }
@@ -536,6 +536,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     const api = <T>(path: string, body: object = {}) => request<T>(path, { org: c.org, ...body });
     const readableUntil = Math.min(deadline, io.now() + 110_000);
     let mcp: Awaited<ReturnType<typeof prepareMcpProbe>> | undefined;
+    let mcpRuntimeEpoch: string | undefined;
     let secret: Awaited<ReturnType<typeof prepareSecretProbe>> | undefined;
     let skills: Awaited<ReturnType<typeof prepareSkillsProbe>> | undefined;
     let readable: Awaited<ReturnType<typeof prepareReadableProbe>> | undefined;
@@ -621,7 +622,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       const sandboxId = id;
       await poll(
         async () => {
-          await probe.verify(sandboxId, c.provider);
+          const evidence = await probe.verify(sandboxId, c.provider);
+          if (c.provider === "boat") {
+            const epoch = evidence.runtimeEpoch;
+            if (!epoch || (afterResume && mcpRuntimeEpoch && BigInt(epoch) <= BigInt(mcpRuntimeEpoch)))
+              throw new McpProbeError("invalid_mcp_receipt");
+            mcpRuntimeEpoch = epoch;
+          }
           return true;
         },
         (value) => value,
@@ -1218,11 +1225,30 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       const options = await discoveryApi<{
         providers: LaunchProviderOption[];
         modalRuntime?: { opencodeMcpProofVersion?: number };
-        boatRuntime?: { opencodeVersion?: number; defaultPath?: string };
+        boatRuntime?: {
+          opencodeVersion?: number;
+          defaultPath?: string;
+          enabled?: boolean;
+          opencodeMcpProofVersion?: number;
+          checkpointVersion?: number;
+          resumeVersion?: number;
+        };
         dockerRuntime?: { opencodeMcpProofVersion?: number };
       }>("launch/options");
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
+      if (
+        c.provider === "boat" &&
+        c.harness === "opencode" &&
+        (feature === "mcp" || feature === "mcp-resume") &&
+        (!option.harnesses.includes("opencode") ||
+          options.boatRuntime?.enabled !== true ||
+          options.boatRuntime.defaultPath !== "runtime" ||
+          options.boatRuntime.opencodeVersion !== 1)
+      ) {
+        record(feature, c.provider, "not-run", "boat_opencode_runtime_not_advertised");
+        continue;
+      }
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
       if (
         c.provider === "boat" &&
@@ -1244,6 +1270,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
       if (feature === "mcp" || feature === "mcp-resume") {
         if (feature === "mcp-resume") {
+          if (
+            c.provider === "boat" &&
+            (options.boatRuntime?.checkpointVersion !== 1 || options.boatRuntime.resumeVersion !== 1)
+          ) {
+            record(feature, c.provider, "not-run", "boat_runtime_checkpoint_resume_not_advertised");
+            continue;
+          }
           const missing = (["stop", "resume", "followupPrompts", "logs"] as const).find(
             (name) => option!.capabilities[name] !== true,
           );
@@ -1259,7 +1292,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         }
         if (
           c.harness === "opencode" &&
-          (c.provider === "docker" ? options.dockerRuntime : options.modalRuntime)?.opencodeMcpProofVersion !== 1
+          (c.provider === "boat"
+            ? options.boatRuntime
+            : c.provider === "docker"
+              ? options.dockerRuntime
+              : options.modalRuntime
+          )?.opencodeMcpProofVersion !== 1
         ) {
           record(feature, c.provider, "not-run", "opencode_mcp_native_proof_not_advertised");
           continue;
@@ -1871,6 +1909,27 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               afterResume = true;
               stopped = false;
               stopRequested = false;
+            }
+            if (step === "stop" && feature === "mcp-resume" && c.provider === "boat" && c.harness === "opencode") {
+              const requestId = crypto.randomUUID();
+              const checkpoint = await api<{
+                id: string;
+                requestId: string;
+                runtime: { kind: string; epoch: string };
+                checkpoint: { state: string; watermark: number; acknowledgedSequence: number };
+              }>("sandbox/checkpoint-runtime-v1", { id, request_id: requestId, runtimeVersion: 1 });
+              const proof = checkpoint.checkpoint;
+              if (
+                checkpoint.id !== id ||
+                checkpoint.requestId !== requestId ||
+                checkpoint.runtime?.kind !== "armada" ||
+                checkpoint.runtime.epoch !== mcpRuntimeEpoch ||
+                proof?.state !== "complete" ||
+                !Number.isSafeInteger(proof.watermark) ||
+                proof.watermark < 0 ||
+                proof.acknowledgedSequence !== proof.watermark
+              )
+                throw new Error("invalid_runtime_checkpoint_receipt");
             }
             if (step === "stop") stopRequested = true;
             const requestId = crypto.randomUUID();

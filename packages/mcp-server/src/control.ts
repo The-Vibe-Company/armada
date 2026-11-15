@@ -392,6 +392,15 @@ async function dispatch(
         workspaceVersion: options.boatRuntimeLaunch ? 1 : 0,
         controlsVersion: options.runtimeHostFor ? 1 : 0,
         opencodeVersion: options.boatRuntimeLaunch && options.runtimeHostFor ? 1 : 0,
+        opencodeMcpProofVersion:
+          options.templates &&
+          options.launch?.boatRuntimeDefault &&
+          options.boatRuntimeLaunch &&
+          options.runtimeHostFor &&
+          options.runtimeMcp &&
+          options.runtimeSend
+            ? 1
+            : 0,
         enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
       },
     } satisfies import("@armada/core").LaunchOptionsResponse;

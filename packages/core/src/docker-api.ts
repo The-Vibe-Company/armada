@@ -137,6 +137,7 @@ export interface LaunchOptionsResponse {
     workspaceVersion?: number;
     controlsVersion?: number;
     opencodeVersion?: number;
+    opencodeMcpProofVersion?: number;
     enabled: boolean;
   };
 }
