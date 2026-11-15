@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.42.0](https://github.com/The-Vibe-Company/armada/compare/v2.41.0...v2.42.0) (2026-11-15)
+
+
+### Features
+
+* **smoke:** prove Boat runtime OpenCode MCP lifecycle ([#2077](https://github.com/The-Vibe-Company/armada/issues/2077)) ([c77d677](https://github.com/The-Vibe-Company/armada/commit/c77d677d82e7d3a64367f09a22e93cd8c482c1c3))
+* **smoke:** verify host-bound Docker snapshot launches ([#2079](https://github.com/The-Vibe-Company/armada/issues/2079)) ([09dcad2](https://github.com/The-Vibe-Company/armada/commit/09dcad292cc7ca75a813ca106035bf7c86f6c1f3))
+
+
+### Bug Fixes
+
+* **cli:** allow root help alias before profile login ([#2074](https://github.com/The-Vibe-Company/armada/issues/2074)) ([12bcb3c](https://github.com/The-Vibe-Company/armada/commit/12bcb3c5e8954e6d60d24e8ee1d2bd889db9f7d2))
+* **cli:** focus local Docker host command help ([#2076](https://github.com/The-Vibe-Company/armada/issues/2076)) ([ecbd135](https://github.com/The-Vibe-Company/armada/commit/ecbd1359dcf08cfc2c52922f2367d3b5f382b861))
+* **cli:** format unknown command errors for JSON callers ([#2082](https://github.com/The-Vibe-Company/armada/issues/2082)) ([282c572](https://github.com/The-Vibe-Company/armada/commit/282c572c95f4c934d7811477361a0cfdfc55d9b7))
+* **cli:** format unknown snapshot commands for JSON callers ([#2084](https://github.com/The-Vibe-Company/armada/issues/2084)) ([1e4db71](https://github.com/The-Vibe-Company/armada/commit/1e4db712593f99f605c953b64b13b44498324362))
+* **smoke:** settle cleanup receipts for absent sandboxes ([#2081](https://github.com/The-Vibe-Company/armada/issues/2081)) ([4c9eb50](https://github.com/The-Vibe-Company/armada/commit/4c9eb504adf304992e5c8afa9b19b679f159c418))
+
 ## [2.41.0](https://github.com/The-Vibe-Company/armada/compare/v2.40.0...v2.41.0) (2026-11-15)
 
 
