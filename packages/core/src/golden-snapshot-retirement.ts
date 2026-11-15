@@ -4,6 +4,7 @@ import type { GoldenActor, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
 import { assertSqlGoldenMutation, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
+import { goldenRowProviderTarget } from "./provider-golden-target.ts";
 import { HOST_CAPABILITIES, PROVIDER_LIMITS, type ProviderTarget, type SandboxProviderId } from "./sandbox-provider.ts";
 
 interface Target extends ProviderTarget {
@@ -412,20 +413,7 @@ export class GoldenSnapshotRetirements {
         modal_app_id: string | null;
       }>("select * from public.goldens where id=$1", [c.golden_id])
     ).rows[0];
-    if (
-      !g ||
-      !targetMatches(proof.target, {
-        provider: g.provider,
-        orgId: g.org_id,
-        ownerId: g.owner_id,
-        visibility: g.visibility,
-        modal:
-          g.provider === "modal"
-            ? { workspace: g.modal_workspace!, environment: g.modal_environment!, appId: g.modal_app_id! }
-            : null,
-      })
-    )
-      return "target_changed";
+    if (!g || !targetMatches(proof.target, goldenRowProviderTarget(g))) return "target_changed";
     const read = async <T>(work: () => Promise<T>): Promise<T> => {
       signal.throwIfAborted();
       const value = await work();
@@ -615,20 +603,7 @@ export class GoldenSnapshotRetirements {
         if (
           !current ||
           current.provider_snapshot_id !== checked.currentSnapshot ||
-          !targetMatches(proof.target, {
-            provider: current.provider as SandboxProviderId,
-            orgId: current.org_id,
-            ownerId: current.owner_id,
-            visibility: current.visibility as "org" | "private",
-            modal:
-              current.provider === "modal"
-                ? {
-                    workspace: current.modal_workspace!,
-                    environment: current.modal_environment!,
-                    appId: current.modal_app_id!,
-                  }
-                : null,
-          })
+          !targetMatches(proof.target, goldenRowProviderTarget(current))
         )
           return { rows: [] };
         const member = (
