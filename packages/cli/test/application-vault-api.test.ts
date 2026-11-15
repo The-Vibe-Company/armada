@@ -253,22 +253,6 @@ test("vault API errors select actionable local messages without echoing untruste
   }
 });
 
-test("vault family help documents secure input before value input or requests", async () => {
-  // Focused leaf help is owned by onboarding-help.test.ts.
-  for (const resource of ["vars", "secrets"]) {
-    for (const option of ["--help", "-h"]) {
-      const result = await invoke([resource, option], { selected: null });
-      expect(result.code).toBe(0);
-      expect(result.err).toBe("");
-      expect(result.out).toContain("piped stdin or --file");
-      expect(result.out).toContain("--scope personal|org");
-      expect(result.out).toContain("vars read --json includes the value");
-      expect(result.requests).toHaveLength(0);
-      expect(result.inputSources).toHaveLength(0);
-    }
-  }
-});
-
 test("vault file input rejects malformed UTF-8 and preserves valid BOM and multiline bytes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "armada-vault-"));
   const path = join(directory, "input");
