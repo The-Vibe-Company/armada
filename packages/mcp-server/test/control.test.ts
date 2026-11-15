@@ -906,6 +906,7 @@ describe("control API", () => {
         harnesses: ["claude", "codex"],
         capabilities: { launch: true },
       });
+      expect(body.dockerRuntime?.opencodeMcpProofVersion).toBe(0);
       const hiddenDocker = body.providers.find((provider) => provider.id === "docker");
       expect(hiddenDocker).toMatchObject({
         enabled: false,
@@ -931,6 +932,17 @@ describe("control API", () => {
       for (const [capability, supported] of Object.entries(docker?.capabilities ?? {})) {
         if (!supported) expect(docker?.unsupportedReasons[capability as keyof typeof docker.capabilities]).toBeTruthy();
       }
+      // Even trusted placement flags cannot claim native proof without installed launch/MCP handlers.
+      options.docker = {
+        hosts: true,
+        placement: true,
+        normalApi: true,
+        normalLaunch: true,
+        normalSend: true,
+      };
+      const unwired = await call({ method: "POST", headers, body: "{}" });
+      const unwiredOptions = (await unwired?.json()) as LaunchOptionsResponse;
+      expect(unwiredOptions.dockerRuntime?.opencodeMcpProofVersion).toBe(0);
       expect(body.harnesses.map((harness: { id: string }) => harness.id)).toEqual([...HARNESSES]);
       for (const harness of body.harnesses) {
         const catalog = MODEL_CATALOG[harness.id as keyof typeof MODEL_CATALOG];

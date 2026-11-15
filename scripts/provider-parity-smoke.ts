@@ -466,10 +466,6 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       record(feature, c.provider, "not-run", "native_boat_mcp_evidence_probe_not_implemented");
       continue;
     }
-    if ((feature === "mcp" || feature === "mcp-resume") && c.harness === "opencode" && c.provider !== "modal") {
-      record(feature, c.provider, "not-run", "opencode_mcp_probe_modal_only");
-      continue;
-    }
     if ((!feature || feature === "application-secrets") && (!c.applicationSecret || !c.template)) {
       record("application-secrets", c.provider, "not-run", "secret_probe_not_configured");
       if (feature === "application-secrets") continue;
@@ -1221,6 +1217,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       const options = await discoveryApi<{
         providers: LaunchProviderOption[];
         modalRuntime?: { opencodeMcpProofVersion?: number };
+        dockerRuntime?: { opencodeMcpProofVersion?: number };
       }>("launch/options");
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
@@ -1252,7 +1249,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             continue;
           }
         }
-        if (c.harness === "opencode" && options.modalRuntime?.opencodeMcpProofVersion !== 1) {
+        if (
+          c.harness === "opencode" &&
+          (c.provider === "docker" ? options.dockerRuntime : options.modalRuntime)?.opencodeMcpProofVersion !== 1
+        ) {
           record(feature, c.provider, "not-run", "opencode_mcp_native_proof_not_advertised");
           continue;
         }

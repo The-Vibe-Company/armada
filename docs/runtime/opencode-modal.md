@@ -284,3 +284,30 @@ The existing harness parity probe requires the advertised OpenCode harness and
 actual launch/turn evidence; this slice does not enable the separate OpenCode MCP
 probe. Boat is never included in staging or the release gate. No live provider
 check or deployment was performed by this worker.
+
+## Docker OpenCode MCP native proof (#2052)
+
+Docker OpenCode uses the same enrolled runtime `configureMcp` command and ACP
+native-export observations as Modal. `launch/options` advertises
+`dockerRuntime.opencodeMcpProofVersion:1` only when the normal Docker placement,
+launch, send, control and runtime MCP handlers are installed. Older or unwired
+servers omit the version or return zero; the parity probe then allocates nothing
+for this cell, even when Modal advertises its own proof support.
+
+Coordinator-only staging acceptance after normal deployment: configure an existing
+owned-Docker OpenCode case with a template binding exactly one connected remote
+MCP connection and the existing dedicated read-only zero-argument canary tool.
+Supply its expected output only in the smoke case, never in a prompt. Run:
+
+```sh
+ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --only docker --feature mcp
+ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --only docker --feature mcp-resume
+```
+
+Require current-prompt native message/call IDs, exact server/tool/arguments/result,
+a nonempty configuration revision and stable collision-free tool inventories.
+The resume probe requires the same proof before and after stop/resume. Assistant
+claims, unrelated/prior events and configuration ACKs cannot pass. These commands
+are acceptance procedures, not evidence they ran. No new runtime driver, migration,
+provider credential or CI job is needed; native Boat MCP probing stays deferred
+and Boat stays outside staging and the release gate.
