@@ -230,10 +230,12 @@ function LaunchForm({
                 Decide on the MCP default first.
               </p>
             )}
-            {/* Only set when held: SubmitButton's own pending lock must not be overridden by `disabled={false}`. */}
+            {/* Only set when blocked: preserve SubmitButton's own pending lock otherwise. */}
             <SubmitButton
               className="w-full sm:w-auto"
-              {...(access.held ? { disabled: true, "aria-describedby": `${id}-held` } : {})}
+              {...(access.held || accounts.state === "unavailable"
+                ? { disabled: true, "aria-describedby": access.held ? `${id}-held` : `${id}-account-unavailable` }
+                : {})}
             >
               <RocketIcon /> Launch
               <SubmitShortcut />
@@ -390,8 +392,12 @@ export function AccountField({
   if (accounts.state === "legacy") return null;
   if (accounts.state === "unavailable")
     return (
-      <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
-        Model accounts could not be loaded: {accounts.reason} Reload to launch with a chosen account.
+      <p
+        id={`${idPrefix}-account-unavailable`}
+        role="alert"
+        className="rounded-md border border-destructive/40 p-3 text-sm text-destructive"
+      >
+        {accounts.reason}
       </p>
     );
   const compatible = accountsFor(accounts.accounts, harness);

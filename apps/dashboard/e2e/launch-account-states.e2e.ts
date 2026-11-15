@@ -20,8 +20,10 @@ test("unreadable launch accounts hide diagnostics and never fall back to server 
     await dialog.getByText("Model accounts could not be checked", { exact: false }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: `test-results/launch-account-after-${name}.png`, fullPage: true });
   }
-  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
-  await expect(dialog.getByRole("alert")).toContainText("Model accounts could not be loaded");
+  await expect(dialog.getByRole("button", { name: "Launch", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Launch", exact: true })).toHaveAccessibleDescription(
+    /Model accounts could not be checked/,
+  );
   const state = await (await fetch(`${MOCK}/__test/state`)).json();
   expect(state.launches).toHaveLength(0);
 });
