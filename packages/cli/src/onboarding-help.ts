@@ -1,5 +1,34 @@
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
+  "routine list": `Usage: armada routine list [--org NAME|UUID] [--json]
+List visible scheduled template launches: IDs, names, scopes, status and versions.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Human output includes the schedule and next due time; paused routines have no next run.
+--json emits the API response with an items array. Use IDs when exact names are ambiguous.
+Use routine show for configuration and routine runs for admission/task outcomes.
+Example: armada routine list --org ORG_UUID --json
+`,
+  "routine show": `Usage: armada routine show NAME|ID [--org NAME|UUID] [--json]
+Inspect a scheduled template launch, including its version, schedule and prompt.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Names must match exactly and identify one non-deleted routine; use an ID from routine list
+if names collide. Copy the current version before guarded updates or status changes.
+Human output includes template revision, TTL, daily cap, failures, pause reason and prompt.
+Prompts are readable configuration, not a place for secrets; take care when sharing output.
+--json emits the API response with item. This reads configuration, not run history.
+Example: armada routine show ROUTINE_UUID --org ORG_UUID --json
+`,
+  "routine runs": `Usage: armada routine runs NAME|ID [--org NAME|UUID] [--json]
+Read the latest 100 routine decisions and original-prompt outcomes.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Names must match exactly and identify one non-deleted routine. Use a routine ID from
+routine list if names collide; use the ID to inspect history after deletion.
+Human output includes scheduled time, admission state, task outcome, readable skip/failure
+reasons and a sandbox ID when available. Launch success is not task success;
+unknown or not observed is not success. --json emits the API response with an items array.
+This does not trigger a scheduled run, wait for completion or stream sandbox logs.
+Example: armada routine runs ROUTINE_UUID --org ORG_UUID --json
+`,
   "template launch": `Usage: armada template launch NAME|ID --request-key KEY [--revision N] [options]
 Launch an existing template, resolving its references into a frozen launch manifest.
 Requires Armada login or ARMADA_TOKEN; select an organization with --org NAME|UUID
