@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { migratedDatabase } from "./support/database.ts";
+
+const database = migratedDatabase();
+
 import {
   configFromFlags,
   createSqlGoldenStore,
@@ -17,118 +20,110 @@ const API = "https://github.com/example/api.git";
 
 describe("golden database", () => {
   test("a private golden is invisible to other members, and an org golden is not", async () => {
-    const db = await openMigratedDatabase();
-    try {
-      const people = await fixture(db);
-      const store = { ...createSqlGoldenStore(db), ...serviceGoldenOperations(db) };
-      const boat = readyProvider();
+    const db = database();
+    const people = await fixture(db);
+    const store = { ...createSqlGoldenStore(db), ...serviceGoldenOperations(db) };
+    const boat = readyProvider();
 
-      await asUser(db, people.admin, async () => {
-        const golden = await store.insert({
-          orgId: people.org,
-          ownerId: people.admin,
-          provider: "boat",
-          modal: null,
-          name: "shared",
-          visibility: "org",
-          config: configFromFlags([WEB], ["pnpm i"]),
-        });
-        await store.setSandbox(golden.id, "bx_admin");
+    await asUser(db, people.admin, async () => {
+      const golden = await store.insert({
+        orgId: people.org,
+        ownerId: people.admin,
+        provider: "boat",
+        modal: null,
+        name: "shared",
+        visibility: "org",
+        config: configFromFlags([WEB], ["pnpm i"]),
       });
-      await asUser(db, people.admin, () =>
-        snapshotGolden(boat, store, actor(people, "admin"), "shared", { sleep: async () => {}, snapshotPolls: 2 }),
-      );
-      const launched = await asUser(db, people.member, () => goldenForLaunch(store, actor(people, "member"), "shared"));
-      expect(launched.visibility).toBe("org");
-      expect(launched.providerSnapshotId).toHaveLength(63);
+      await store.setSandbox(golden.id, "bx_admin");
+    });
+    await asUser(db, people.admin, () =>
+      snapshotGolden(boat, store, actor(people, "admin"), "shared", { sleep: async () => {}, snapshotPolls: 2 }),
+    );
+    const launched = await asUser(db, people.member, () => goldenForLaunch(store, actor(people, "member"), "shared"));
+    expect(launched.visibility).toBe("org");
+    expect(launched.providerSnapshotId).toHaveLength(63);
 
-      await asUser(db, people.owner, async () => {
-        const golden = await store.insert({
-          orgId: people.org,
-          ownerId: people.owner,
-          provider: "boat",
-          modal: null,
-          name: "kept",
-          visibility: "private",
-          config: configFromFlags([WEB, API], ["pnpm i"]),
-        });
-        await store.setSandbox(golden.id, "bx_owner");
+    await asUser(db, people.owner, async () => {
+      const golden = await store.insert({
+        orgId: people.org,
+        ownerId: people.owner,
+        provider: "boat",
+        modal: null,
+        name: "kept",
+        visibility: "private",
+        config: configFromFlags([WEB, API], ["pnpm i"]),
       });
-      await asUser(db, people.owner, () =>
-        snapshotGolden(boat, store, actor(people, "owner"), "kept", { sleep: async () => {}, snapshotPolls: 2 }),
-      );
-      const owned = await asUser(db, people.owner, () => goldenForLaunch(store, actor(people, "owner"), "kept"));
-      expect(owned.name).toBe("kept");
+      await store.setSandbox(golden.id, "bx_owner");
+    });
+    await asUser(db, people.owner, () =>
+      snapshotGolden(boat, store, actor(people, "owner"), "kept", { sleep: async () => {}, snapshotPolls: 2 }),
+    );
+    const owned = await asUser(db, people.owner, () => goldenForLaunch(store, actor(people, "owner"), "kept"));
+    expect(owned.name).toBe("kept");
 
-      expect(await asUser(db, people.member, () => store.list(people.org))).toEqual([
-        expect.objectContaining({ name: "shared", visibility: "org" }),
-      ]);
-      expect(await asUser(db, people.admin, () => store.findByName(people.org, "kept"))).toEqual([]);
-      await expect(
-        asUser(db, people.member, () => goldenForLaunch(store, actor(people, "member"), "kept")),
-      ).rejects.toThrow(/No golden named 'kept'/);
-      await expect(asUser(db, people.admin, () => store.setSnapshot(owned.id, "bbbbbbbbbb"))).rejects.toThrow(
-        /could not be updated|cannot change this golden/,
-      );
-      expect((await asUser(db, people.owner, () => store.findByName(people.org, "kept")))[0]?.providerSnapshotId).toBe(
-        owned.providerSnapshotId,
-      );
-    } finally {
-      await db.close();
-    }
+    expect(await asUser(db, people.member, () => store.list(people.org))).toEqual([
+      expect.objectContaining({ name: "shared", visibility: "org" }),
+    ]);
+    expect(await asUser(db, people.admin, () => store.findByName(people.org, "kept"))).toEqual([]);
+    await expect(
+      asUser(db, people.member, () => goldenForLaunch(store, actor(people, "member"), "kept")),
+    ).rejects.toThrow(/No golden named 'kept'/);
+    await expect(asUser(db, people.admin, () => store.setSnapshot(owned.id, "bbbbbbbbbb"))).rejects.toThrow(
+      /could not be updated|cannot change this golden/,
+    );
+    expect((await asUser(db, people.owner, () => store.findByName(people.org, "kept")))[0]?.providerSnapshotId).toBe(
+      owned.providerSnapshotId,
+    );
   });
 
   test("a member cannot insert an org golden, and the database still refuses a secret config", async () => {
-    const db = await openMigratedDatabase();
-    try {
-      const people = await fixture(db);
-      const store = createSqlGoldenStore(db);
-      await asUser(db, people.admin, () =>
+    const db = database();
+    const people = await fixture(db);
+    const store = createSqlGoldenStore(db);
+    await asUser(db, people.admin, () =>
+      store.insert({
+        orgId: people.org,
+        name: "shared",
+        visibility: "org",
+        ownerId: people.admin,
+        provider: "boat",
+        modal: null,
+        config: configFromFlags([WEB], []),
+      }),
+    );
+    // Even an authorized admin cannot forge server-owned installation evidence.
+    await expect(
+      asUser(db, people.admin, () => db.query("update public.goldens set helper_receipt=null where name='shared'")),
+    ).rejects.toThrow(/permission denied/);
+    await expect(
+      asUser(db, people.admin, () =>
+        db.query(
+          "insert into public.goldens(org_id,name,visibility,owner_id,provider,config,helper_receipt) values($1,'forged','org',$2,'boat',$3::jsonb,null)",
+          [people.org, people.admin, JSON.stringify(configFromFlags([WEB], []))],
+        ),
+      ),
+    ).rejects.toThrow(/permission denied/);
+    await expect(
+      asUser(db, people.member, () =>
         store.insert({
           orgId: people.org,
-          name: "shared",
+          name: "nope",
           visibility: "org",
-          ownerId: people.admin,
+          ownerId: people.member,
           provider: "boat",
           modal: null,
           config: configFromFlags([WEB], []),
         }),
-      );
-      // Even an authorized admin cannot forge server-owned installation evidence.
-      await expect(
-        asUser(db, people.admin, () => db.query("update public.goldens set helper_receipt=null where name='shared'")),
-      ).rejects.toThrow(/permission denied/);
-      await expect(
-        asUser(db, people.admin, () =>
-          db.query(
-            "insert into public.goldens(org_id,name,visibility,owner_id,provider,config,helper_receipt) values($1,'forged','org',$2,'boat',$3::jsonb,null)",
-            [people.org, people.admin, JSON.stringify(configFromFlags([WEB], []))],
-          ),
-        ),
-      ).rejects.toThrow(/permission denied/);
-      await expect(
-        asUser(db, people.member, () =>
-          store.insert({
-            orgId: people.org,
-            name: "nope",
-            visibility: "org",
-            ownerId: people.member,
-            provider: "boat",
-            modal: null,
-            config: configFromFlags([WEB], []),
-          }),
-        ),
-      ).rejects.toThrow(/cannot change this golden|row-level security/);
-      await expect(
-        db.query(
-          `insert into goldens (org_id, name, visibility, owner_id, config)
-           values ($1, 'leaky', 'private', $2, '{"password":"nope"}'::jsonb)`,
-          [people.org, people.owner],
-        ),
-      ).rejects.toThrow(/must not contain secrets/);
-    } finally {
-      await db.close();
-    }
+      ),
+    ).rejects.toThrow(/cannot change this golden|row-level security/);
+    await expect(
+      db.query(
+        `insert into goldens (org_id, name, visibility, owner_id, config)
+         values ($1, 'leaky', 'private', $2, '{"password":"nope"}'::jsonb)`,
+        [people.org, people.owner],
+      ),
+    ).rejects.toThrow(/must not contain secrets/);
   });
 });
 
@@ -225,26 +220,22 @@ async function asUser<T>(db: PGlite, userId: string, run: () => Promise<T>): Pro
 
 // Outcome metadata is public to readers but cannot be fabricated by a user JWT.
 test("golden build warnings are server-owned on insert and update", async () => {
-  const db = await openMigratedDatabase();
-  try {
-    const people = await fixture(db);
-    const insert = (warning: boolean) =>
-      db.query<{ id: string }>(
-        `insert into goldens(org_id,owner_id,name,visibility,config${warning ? ",build_warnings" : ""}) values($1,$2,'warning-check','private','{}'${warning ? ",array['skillpack_download_unavailable']" : ""}) returning id`,
-        [people.org, people.owner],
-      );
-    await expect(asUser(db, people.owner, () => insert(true))).rejects.toMatchObject({ code: "42501" });
-    const created = await asUser(db, people.owner, () => insert(false));
-    const id = created.rows[0]!.id;
-    await db.query("update goldens set build_warnings=array['skillpack_download_unavailable'] where id=$1", [id]);
-    const visible = await asUser(db, people.owner, () =>
-      db.query<{ build_warnings: string[] }>("select build_warnings from goldens where id=$1", [id]),
+  const db = database();
+  const people = await fixture(db);
+  const insert = (warning: boolean) =>
+    db.query<{ id: string }>(
+      `insert into goldens(org_id,owner_id,name,visibility,config${warning ? ",build_warnings" : ""}) values($1,$2,'warning-check','private','{}'${warning ? ",array['skillpack_download_unavailable']" : ""}) returning id`,
+      [people.org, people.owner],
     );
-    expect(visible.rows[0]?.build_warnings).toEqual(["skillpack_download_unavailable"]);
-    await expect(
-      asUser(db, people.owner, () => db.query("update goldens set build_warnings='{}' where id=$1", [id])),
-    ).rejects.toMatchObject({ code: "42501" });
-  } finally {
-    await db.close();
-  }
+  await expect(asUser(db, people.owner, () => insert(true))).rejects.toMatchObject({ code: "42501" });
+  const created = await asUser(db, people.owner, () => insert(false));
+  const id = created.rows[0]!.id;
+  await db.query("update goldens set build_warnings=array['skillpack_download_unavailable'] where id=$1", [id]);
+  const visible = await asUser(db, people.owner, () =>
+    db.query<{ build_warnings: string[] }>("select build_warnings from goldens where id=$1", [id]),
+  );
+  expect(visible.rows[0]?.build_warnings).toEqual(["skillpack_download_unavailable"]);
+  await expect(
+    asUser(db, people.owner, () => db.query("update goldens set build_warnings='{}' where id=$1", [id])),
+  ).rejects.toMatchObject({ code: "42501" });
 });
