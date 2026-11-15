@@ -11,7 +11,13 @@ export function stagingMigrationDecision(local: string[], remote: string[], main
   const extras = remote.filter((v) => !local.includes(v));
   if (!extras.length) return "apply";
   const newest = [...local].sort().at(-1);
-  if (!newest || local.some((v) => !remote.includes(v)) || extras.some((v) => v <= newest || !main.includes(v)))
+  const remoteNewest = [...remote].sort().at(-1)!;
+  if (
+    !newest ||
+    local.some((v) => !remote.includes(v)) ||
+    extras.some((v) => v <= newest || !main.includes(v)) ||
+    main.some((v) => v > newest && v <= remoteNewest && !remote.includes(v))
+  )
     throw new Error("Staging migration history is not a known forward-only extension of this release");
   return "skip";
 }
