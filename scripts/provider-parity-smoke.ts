@@ -176,6 +176,7 @@ interface Case {
   golden?: string;
   hostId?: string;
   image?: string;
+  snapshotId?: string;
 }
 interface Io {
   deadline?: number;
@@ -269,6 +270,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       if (
         !(productionBoat ? c.provider === "boat" : ["modal", "docker"].includes(c.provider)) ||
         !isHarness(c.harness) ||
+        (c.snapshotId !== undefined &&
+          (c.provider !== "docker" ||
+            typeof c.snapshotId !== "string" ||
+            !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(c.snapshotId))) ||
         (c.subscriptionAccount !== undefined && typeof c.subscriptionAccount !== "boolean") ||
         (c.clientSend !== undefined && typeof c.clientSend !== "boolean") ||
         (c.mcpResume !== undefined && typeof c.mcpResume !== "boolean") ||
@@ -449,8 +454,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         record(name, c.provider, "not-run", "harness_account_not_configured");
     if (requestedHarness && feature !== harnessFeature) continue;
     if ((!feature || feature === "launch-snapshot") && c.provider === "docker") {
-      record("launch-snapshot", c.provider, "unsupported", "Docker has no golden snapshot launch source (#1532).");
-      if (feature === "launch-snapshot") continue;
+      if (!feature || !c.snapshotId) {
+        record(
+          "launch-snapshot",
+          c.provider,
+          "not-run",
+          c.snapshotId ? "dedicated_snapshot_probe_required" : "snapshot_probe_not_configured",
+        );
+        if (feature === "launch-snapshot") continue;
+      }
     }
     if ((!feature || feature === "subscription-account") && c.subscriptionAccount !== true) {
       record("subscription-account", c.provider, "not-run", "subscription_account_probe_not_configured");
@@ -520,6 +532,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       continue;
     }
     let snapshotSourceVerified = false;
+    let dockerSnapshot: { id: string; hostId: string; orgId: string; ownerId: string; image: string } | undefined;
     let option: LaunchProviderOption | undefined;
     let id: string | undefined;
     const templateClaims = new Set<string>();
@@ -1389,6 +1402,57 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           until: readableUntil,
         });
       }
+      if (feature === "launch-snapshot" && c.provider === "docker") {
+        if (option.capabilities.goldens !== true || !option.launchSources?.includes("golden")) {
+          record(
+            feature,
+            c.provider,
+            "unsupported",
+            option.unsupportedReasons.goldens ?? "snapshot_launch_not_advertised",
+          );
+          continue;
+        }
+        const listed = await discoveryApi<{
+          snapshots: Array<{
+            id: string;
+            provider: string;
+            hostId: string;
+            orgId: string;
+            ownerId: string;
+            visibility: string;
+            status: string;
+            hostAvailable: boolean;
+            image: string;
+          }>;
+        }>("docker/snapshots/list");
+        if (!Array.isArray(listed.snapshots)) throw new Error("invalid_snapshot_source");
+        const matches = listed.snapshots.filter((snapshot) => snapshot?.id === c.snapshotId);
+        if (!matches.length) {
+          record(feature, c.provider, "not-run", "snapshot_not_visible_or_unavailable");
+          continue;
+        }
+        const actor = await discoveryApi<{ userId: string }>("account/status");
+        const snapshot = matches[0]!;
+        if (
+          matches.length !== 1 ||
+          snapshot.provider !== "docker" ||
+          snapshot.orgId !== c.org ||
+          snapshot.hostId !== c.hostId ||
+          snapshot.visibility !== "private" ||
+          typeof actor.userId !== "string" ||
+          !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(actor.userId) ||
+          snapshot.ownerId !== actor.userId
+        )
+          throw new Error("invalid_snapshot_source");
+        if (snapshot.status !== "ready" || snapshot.hostAvailable !== true) {
+          record(feature, c.provider, "not-run", "snapshot_not_ready_on_host");
+          continue;
+        }
+        if (typeof snapshot.image !== "string" || !/^sha256:[a-f0-9]{64}$/.test(snapshot.image))
+          throw new Error("invalid_snapshot_source");
+        dockerSnapshot = snapshot;
+        snapshotSourceVerified = true;
+      }
       if ((!feature || feature === "launch-snapshot") && c.provider !== "docker") {
         const listed = await discoveryApi<{
           goldens: Array<{ id: string; name: string; provider: string; providerSnapshotId: string | null }>;
@@ -1746,7 +1810,18 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     mcp?.verifyManifest(manifest);
                     return { sandbox: { id, provider: receipt.provider } };
                   })()
-                : await api<{ sandbox: { id: string; provider: string } }>("sandbox/launch", {
+                : await api<{
+                    sandbox: {
+                      id: string;
+                      provider: string;
+                      snapshotId?: string;
+                      hostId?: string;
+                      image?: string;
+                      orgId?: string;
+                      ownerId?: string;
+                      visibility?: string;
+                    };
+                  }>("sandbox/launch", {
                     provider: c.provider,
                     harness: c.harness,
                     model: c.model,
@@ -1757,6 +1832,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       ? {
                           hostId: c.hostId,
                           requestId: crypto.randomUUID(),
+                          ...(dockerSnapshot ? { snapshotId: dockerSnapshot.id } : {}),
                           ...(c.githubRepository && (!feature || feature === "github")
                             ? {
                                 repos: [
@@ -1786,6 +1862,25 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             feature !== "mcp-resume"
           )
             await io.recordSandbox?.(c.org, id, `post-deploy-smoke:${crypto.randomUUID()}`, c.provider);
+          if (dockerSnapshot) {
+            const receipt = result.sandbox as {
+              snapshotId?: string;
+              hostId?: string;
+              image?: string;
+              orgId?: string;
+              ownerId?: string;
+              visibility?: string;
+            };
+            if (
+              receipt.snapshotId !== dockerSnapshot.id ||
+              receipt.hostId !== dockerSnapshot.hostId ||
+              receipt.image !== dockerSnapshot.image ||
+              receipt.orgId !== dockerSnapshot.orgId ||
+              receipt.ownerId !== dockerSnapshot.ownerId ||
+              receipt.visibility !== "private"
+            )
+              throw new Error("invalid_snapshot_source");
+          }
         } else {
           if (!id) throw new Error("launch_not_available");
           if (step === "send") {
@@ -2014,7 +2109,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     }
     if (
       (!feature || feature === "launch-snapshot") &&
-      c.provider !== "docker" &&
+      (c.provider !== "docker" || snapshotSourceVerified) &&
       report["launch-snapshot"]?.[c.provider]?.status !== "pass"
     ) {
       const source = ["launch", "send"]

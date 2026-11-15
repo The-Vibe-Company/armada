@@ -1343,8 +1343,16 @@ golden and requires a finished, answered turn. Full runs reuse their ordinary
 golden launch rather than allocating another sandbox. This proves launch from
 an existing saved golden snapshot, not creation of a new checkpoint or mutation
 of an operator's golden. A missing snapshot or wrong-provider source cannot pass.
-Docker's image launch is not a golden snapshot: its row remains explicit
-unsupported debt (#1532), with no allocation for this filtered feature.
+For Docker, add an explicit `snapshotId` UUID to the owned-host case and run
+`--parity --only docker --feature launch-snapshot`. The probe verifies the
+existing ready, owned-private snapshot's host, organization and digest before
+launch, then matches the returned snapshot/host/image/owner and requires an
+answered turn and cleanup. This is a deliberate private smoke fixture, not a
+restriction on product support for shared snapshots. Missing/unready fixtures
+allocate nothing. The probe never builds or mutates the source snapshot.
+Unfiltered Docker runs keep their plain-image source and report this row
+`not-run` with a dedicated-probe requirement rather than claiming snapshot proof.
+See [Docker snapshot acceptance](docker-host-daemon.md) for setup.
 ### Configured template-revision parity
 
 Add `template: {"id":"<template UUID>","revision":2}` to a provider case and run
