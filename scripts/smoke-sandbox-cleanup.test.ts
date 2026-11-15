@@ -48,6 +48,34 @@ test("bounded cleanup only removes receipted IDs and retains unconfirmed deletes
   }
 });
 
+test.each(["stop", "status", "delete"])(
+  "cleanup settles an absent sandbox at %s without retaining its receipt",
+  async (missingAt) => {
+    const calls: string[] = [];
+    const output: Record<string, unknown>[] = [];
+    const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, "token", [row], {
+      out: (line) => output.push(JSON.parse(line)),
+      fetch: async (url, init) => {
+        const action = init.method === "DELETE" ? "delete" : url.split("/").at(-1)!;
+        calls.push(action);
+        if (action === missingAt) return Response.json({ error: { code: "not_found" } }, { status: 404 });
+        return Response.json({ id: row.id, status: missingAt === "status" ? "stopping" : "stopped" });
+      },
+    });
+    expect(remaining).toEqual([]);
+    expect(calls.at(-1)).toBe(missingAt);
+    expect(output.at(-1)).toMatchObject({ step: "delete_smoke_sandbox", pass: true, id: row.id });
+  },
+);
+
+test.each(["unknown_route", "forbidden"])("cleanup retains a 404 that is not sandbox not_found: %s", async (code) => {
+  const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, "token", [row], {
+    out: () => {},
+    fetch: async () => Response.json({ error: { code } }, { status: 404 }),
+  });
+  expect(remaining).toEqual([row]);
+});
+
 test("cleanup refuses production and malformed/non-smoke manifests without network access", async () => {
   let calls = 0;
   await expect(

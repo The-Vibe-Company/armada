@@ -162,6 +162,10 @@ export async function deleteSmokeReceipts(
       async function dispatchStop() {
         try {
           const stopped = await request("stop");
+          if (!stopped.ok && httpStatus === 404 && code === "not_found") {
+            alreadyDeleted = true;
+            return;
+          }
           if (!stopped.ok && !RETRY_CODES.has(code)) throw Error(code);
           // Only an explicit busy response permits retry. Lost acknowledgement is read-only reconciliation.
           retryStopAdmission =
@@ -184,6 +188,10 @@ export async function deleteSmokeReceipts(
           if (code !== "request_failed") throw error;
           await pause();
           continue;
+        }
+        if (!status.ok && httpStatus === 404 && code === "not_found") {
+          alreadyDeleted = true;
+          break;
         }
         if (!status.ok) {
           if (!RETRY_CODES.has(code)) throw Error(code);
@@ -213,6 +221,7 @@ export async function deleteSmokeReceipts(
             await pause();
             continue;
           }
+          if (!deleted.ok && httpStatus === 404 && code === "not_found") break;
           if (deleted.ok && deleted.body?.id === row.id && deleted.body.status === "deleted") break;
           if (!RETRY_CODES.has(code) && !(deleted.ok && deleted.body?.id === row.id)) throw Error(code);
           // A pending delete retains a two-minute activity lease. Do not refresh
