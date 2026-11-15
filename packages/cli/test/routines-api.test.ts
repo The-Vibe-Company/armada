@@ -336,17 +336,6 @@ test("routine version conflicts are not retried; ambiguous names never select a 
   expect(ambiguous.err).toContain("ambiguous");
 });
 
-test("routine help is available without authentication or requests", async () => {
-  // Leaf help is owned by onboarding-help.test.ts.
-  for (const help of ["--help", "-h"]) {
-    const response = await invoke([help], { token: "" });
-    expect(response.code).toBe(0);
-    expect(response.requests).toHaveLength(0);
-    expect(response.out).toContain("at least ONE HOUR apart");
-    expect(response.out).toContain("--expected-version");
-  }
-});
-
 test("inline schedule updates send a complete owner-neutral replacement with the caller version, without retrying conflicts", async () => {
   const args = ["update", id, "--expected-version", "2", "--cron", "0 10 * * *", "--timezone", "UTC", "--json"];
   const getReply = { item: { ...routine, version: 3, ownerId: "another-owner", scope: "org" } };

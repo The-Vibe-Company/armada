@@ -85,6 +85,7 @@ test("published Armada skill commands and flags match the live CLI usage contrac
     ["template"],
     ...["create", "list", "get", "publish", "delete", "launch"].map((action) => ["template", action]),
     ["routine"],
+    ...["create", "list", "show", "update", "enable", "pause", "delete", "runs"].map((action) => ["routine", action]),
     ["vars"],
     ["secrets"],
     ["skill"],
@@ -134,6 +135,7 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   expect(validate("armada template list --request-key accidental", contract)).toContain("Unknown flag");
   expect(validate("armada launch example --nonexistent-flag", contract)).toContain("Unknown flag");
   expect(validate("armada stop sandbox --skill team/example@1.0.0", contract)).toContain("Unknown flag");
+  expect(validate("armada routine nonexistent-command", contract)).toContain("Unknown command");
   expect(validate("armada routine enable routine --revision 1", contract)).toContain("Unknown flag");
   expect(
     validate("armada routine create nightly --cron '0 9 * * MON-FRI' --timezone Europe/Paris", contract),
