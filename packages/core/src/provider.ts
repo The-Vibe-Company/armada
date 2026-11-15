@@ -133,6 +133,7 @@ export interface Provider {
     sandboxId: string;
     harness: "claude" | "codex" | "opencode";
     model: string;
+    signal?: AbortSignal;
   }): Promise<ModelConnectionTestResult>;
   /** Trusted final-harness-only bootstrap. Never applied to exec, golden build or init. */
   configureReadableVariables?(request: {

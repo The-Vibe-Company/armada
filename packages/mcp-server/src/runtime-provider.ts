@@ -9,7 +9,7 @@ export function createRuntimeProvider(
   host: Provider,
   providerSandboxId: string,
   reads: Pick<Provider, "getPrompt" | "events">,
-  operations?: Pick<Provider, "interrupt" | "steer" | "exec">,
+  operations?: Pick<Provider, "interrupt" | "steer" | "exec" | "testModelConnection">,
 ): Provider {
   if (host.id !== "boat" && host.id !== "modal") throw Error("boat_runtime_host_required");
   const unsupported = async (): Promise<never> => {
@@ -64,6 +64,14 @@ export function createRuntimeProvider(
       target(request.sandboxId);
       return host.delete(request);
     },
+    ...(operations?.testModelConnection
+      ? {
+          async testModelConnection(request: Parameters<NonNullable<Provider["testModelConnection"]>>[0]) {
+            target(request.sandboxId);
+            return operations.testModelConnection!(request);
+          },
+        }
+      : {}),
     // No quiescence/checkpoint/work-preservation/resume guarantee in this lane.
     quiesce: unsupported,
     prompt: unsupported,

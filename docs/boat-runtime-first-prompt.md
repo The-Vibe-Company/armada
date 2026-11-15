@@ -748,3 +748,32 @@ OpenCode on a Boat snapshot with a Morph account and then an OpenCode-compatible
 OpenAI account, require a reply and usage for each, and clean up both allocations.
 Do not pass runtime flags or change the server default. Boat remains excluded
 from staging/release gates. These are acceptance instructions, not live evidence.
+
+### API-key model connection checks on running Boat runtimes (#2052)
+
+The existing `sandbox/test-model-connection` API and `armada creds test ID --model MODEL`
+now support an already-running, owner-controlled Boat shared-runtime sandbox. No
+start, resume, native Boat model API or SSH/exec fallback is used. Native Modal
+checks retain their existing path. Dashboard candidate selection and Docker
+connection checks remain separate follow-up work; this slice does not enable them.
+
+Checks accept only sandbox ID, model and optional org: no key, endpoint, headers
+or arbitrary prompt. The sandbox's pinned current account/version must remain
+active and authorized. Only API-key accounts are accepted; OpenCode requires a
+custom connection and one of its declared models, not a plan key. Subscription
+credentials remain refused. Enrolled runtime health and the model-test command
+are owner/account/binding fenced; the command pins the exact health epoch at its
+first durable enqueue. Busy, checkpointing, stopped, revoked or superseded targets
+fail closed. Pending commands fence idle checkpoint/stop, and guest execution is
+exclusive. A check does not mutate lifecycle generation, create a conversation or
+require the prompt-only generation handoff. Diagnostics use the existing closed
+non-secret result schema, not upstream response bodies or private RPC errors.
+
+Coordinator-only production acceptance, on an existing authorized running Boat
+runtime after normal release: invoke the existing CLI check with its selected
+API-key account and model; require a safe success or closed authentication/model
+failure and unchanged sandbox conversation/generation. A stopped or native Boat
+sandbox, another member, a rotated pinned account and subscription/OpenCode-plan
+accounts must refuse without starting or resuming compute. The UI remains
+unchanged. No provider calls, deployment, default flip or migration application
+were performed by this worker; these steps are not evidence of acceptance.

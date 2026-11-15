@@ -138,6 +138,20 @@ test("replacement epoch refuses old replies and never silently adopts unfinished
   expect(
     (await f.request("results", current.runtimeToken, current.epoch, { ...reply, epoch: current.epoch })).status,
   ).toBe(409);
+  const healthPinnedCheck: RunnerRequest = {
+    version: 1,
+    sandboxId: f.id,
+    requestId: "old-health-check",
+    op: "testModelConnection",
+    harness: "codex",
+    model: "deployment",
+  };
+  await expect(f.bridge().enqueue(f.people.owner, healthPinnedCheck, old.epoch)).rejects.toThrow(
+    "runtime_command_conflict",
+  );
+  expect(
+    (await f.db.query("select request_id from runtime_commands where request_id='old-health-check'")).rows,
+  ).toHaveLength(0);
   const fresh = f.command("after-resume");
   await f.bridge().enqueue(f.people.owner, fresh);
   expect(await f.bridge().next(current.runtimeToken, current.epoch)).toEqual({
@@ -726,4 +740,67 @@ test("only private launch workspace commands admit the native ten-minute step bu
     epoch: active.epoch,
     body: { result: { exitCode: 0 } },
   });
+});
+
+test("bound model check uses enrolled health and exact epoch, never destinations or native fallback", async () => {
+  const { createRuntimeAgent } = await import("../src/runtime-agent.ts");
+  const calls: RunnerRequest[] = [];
+  let result: unknown = { ok: true, status: 200, error: null, code: null };
+  const controller = new AbortController();
+  const agent = createRuntimeAgent(
+    {
+      async call(owner, command, options) {
+        expect(owner).toBe("owner");
+        expect(options?.signal).toBe(controller.signal);
+        expect(options?.expectedEpoch).toBe(command.op === "health" ? undefined : "7");
+        calls.push(command);
+        return {
+          status: 200,
+          epoch: "7",
+          requestId: command.requestId,
+          body: {
+            version: 1,
+            requestId: command.requestId,
+            result: command.op === "health" ? { ready: true, generation: "7" } : result,
+          },
+        };
+      },
+    },
+    {
+      provider: "boat",
+      harness: "codex",
+      ownerId: "owner",
+      sandboxId: "logical",
+      providerSandboxId: "physical",
+      cwd: "/home/user",
+      defaults: { model: "gpt-6.1-sol", reasoningEffort: "medium" },
+    },
+  );
+  const input = { sandboxId: "physical", harness: "codex" as const, model: "deployment", signal: controller.signal };
+  await expect(agent.testModelConnection({ ...input, sandboxId: "other" })).rejects.toMatchObject({
+    code: "invalid_request",
+  });
+  await expect(agent.testModelConnection({ ...input, harness: "claude" })).rejects.toMatchObject({
+    code: "invalid_request",
+  });
+  expect(calls).toHaveLength(0);
+  expect(await agent.testModelConnection(input)).toEqual({ ok: true, status: 200, error: null, code: null });
+  expect(calls.map((command) => command.op)).toEqual(["health", "testModelConnection"]);
+  expect(calls[1]).toEqual({
+    version: 1,
+    sandboxId: "logical",
+    requestId: expect.any(String),
+    op: "testModelConnection",
+    harness: "codex",
+    model: "deployment",
+  });
+  result = { ok: false, status: 401, error: "provider_rejected", code: "private_key_echo" };
+  let failure: unknown;
+  try {
+    await agent.testModelConnection(input);
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toMatchObject({ provider: "boat", code: "unavailable" });
+  expect(String(failure)).not.toContain("private_key_echo");
 });

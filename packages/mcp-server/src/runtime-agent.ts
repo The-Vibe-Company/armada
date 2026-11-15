@@ -8,6 +8,7 @@ import {
   type GitHubRuntimeConfiguration,
   type Harness,
   type InterruptRequest,
+  isModelConnectionTestResult,
   type ModelChoice,
   type PromptReceipt,
   type PromptRequest,
@@ -163,6 +164,22 @@ export function createRuntimeAgent(
       )
         throw refusal("sandbox_not_ready");
       return { runtime: "armada", epoch: reply.epoch };
+    },
+    async testModelConnection(
+      request: Parameters<NonNullable<import("@armada/core").Provider["testModelConnection"]>>[0],
+    ) {
+      target(request.sandboxId);
+      if (request.harness !== binding.harness) throw refusal("invalid_request");
+      resolveModelChoice(request.harness, { model: request.model });
+      const { epoch } = await this.health(request.signal);
+      const result = await invoke<unknown>(
+        { ...identity(), op: "testModelConnection", harness: request.harness, model: request.model },
+        request.signal,
+        epoch,
+        30000,
+      );
+      if (!isModelConnectionTestResult(result)) throw refusal("unavailable");
+      return result;
     },
     async workspaceHealth(epoch: string, signal?: AbortSignal) {
       const health = await invoke<{ ready?: unknown; generation?: unknown; workspaceVersion?: unknown }>(
