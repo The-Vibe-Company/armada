@@ -1,4 +1,4 @@
-import { HARNESS_CAPABILITIES, type Provider, ProviderError } from "@armada/core";
+import { mapHarnesses, type Provider, ProviderError } from "@armada/core";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
 /** Sandbox-bound adapter. Caller supplies authorized persisted binding and a
@@ -29,18 +29,13 @@ export function createRuntimeProvider(
         retryable: false,
       });
   };
-  const capabilities = Object.fromEntries(
-    Object.entries(HARNESS_CAPABILITIES).map(([harness, capability]) => [
-      harness,
-      {
-        ...capability,
-        steer: operations ? capability.steer : ("none" as const),
-        interrupt: Boolean(operations),
-        resume: false,
-        parallelConversations: false,
-      },
-    ]),
-  );
+  const capabilities = mapHarnesses(({ capabilities: capability }) => ({
+    ...capability,
+    steer: operations ? capability.steer : ("none" as const),
+    interrupt: Boolean(operations),
+    resume: false,
+    parallelConversations: false,
+  }));
   return {
     id: host.id,
     harnesses: (["codex", "claude", "opencode"] as const).filter((harness) =>
