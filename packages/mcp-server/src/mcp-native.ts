@@ -9,6 +9,22 @@ export type NativeMcpServer =
   | { type: "http"; url: string; headers?: Record<string, string> }
   | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
 
+/** Shared native delivery port; snapshot scrubbing deliberately prefers Boat's SSH transport. */
+export async function configureNativeMcp(provider: Provider, sandboxId: string, config: McpBootstrap, scrub = false) {
+  if (provider.id === "boat" && (scrub || !provider.configureMcp)) return bootstrapBoatMcp(provider, sandboxId, config);
+  if (!provider.configureMcp)
+    throw Error(
+      `Provider ${scrub ? "cannot scrub transient MCP configuration before snapshot." : "must support authenticated configureMcp before starting a connected sandbox."}`,
+    );
+  try {
+    await provider.configureMcp({ sandboxId, configuration: config });
+  } catch {
+    throw Error(
+      `Native MCP ${scrub ? "snapshot scrub I/O failed." : "configuration I/O failed; no turn was started."}`,
+    );
+  }
+}
+
 /**
  * Installs both user-scope native configurations before the first prompt. No exec endpoint ever
  * sees the payload. SSH registers an ephemeral key and pins the provider-returned host key.
