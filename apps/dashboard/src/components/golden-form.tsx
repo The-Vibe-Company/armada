@@ -1,8 +1,10 @@
 "use client";
 
-import type { GoldenBuildStatus, SandboxProviderId } from "@armada/core";
+import { type GoldenBuildStatus, parseGoldenConfig, type SandboxProviderId } from "@armada/core";
 import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { useRouter } from "next/navigation";
 import {
+  type ComponentProps,
   type FormEvent,
   startTransition,
   useActionState,
@@ -19,12 +21,12 @@ import {
   goldenBuildStatus,
   recoverGoldenBuild,
 } from "@/app/actions/goldens";
+import { LaunchDialog } from "@/components/launch-dialog";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
@@ -42,6 +44,9 @@ import { cn } from "@/lib/utils";
 
 type Props = {
   mode: "create" | "update";
+  launch?: Omit<ComponentProps<typeof LaunchDialog>, "golden" | "provider" | "repositories">;
+  githubConnected?: boolean;
+  replacements?: { id: string; name: string; visibility: "org" | "private" }[];
   orgId: string;
   orgName: string;
   /** Org admins create org goldens; everyone else creates private ones. A hint: the server checks again. */
@@ -93,6 +98,9 @@ export function GoldenForm(props: Props) {
 
 function ScopedGoldenForm({
   mode,
+  launch,
+  githubConnected = true,
+  replacements = [],
   orgId,
   orgName,
   isAdmin,
@@ -106,6 +114,12 @@ function ScopedGoldenForm({
   canStart = true,
 }: Props) {
   const id = useId();
+  const router = useRouter();
+  useEffect(() => {
+    const refresh = () => router.refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [router]);
   // Each form tracks its own build in the page URL: this org's create form, or the rebuild of this one golden.
   // Another org's form or another golden's never reads, polls or resubmits it.
   const scope = buildScope({ mode, orgId, goldenId });
@@ -179,12 +193,11 @@ function ScopedGoldenForm({
   useEffect(() => {
     if (!jobId || !jobState || !["queued", "running"].includes(jobState)) return;
     let active = true;
-    // A bounded local wait: the job keeps running on the server after it, and "Check build status" reads it again.
-    const deadline = Date.now() + 120_000;
+    // Follow the build until it finishes; closing the form does not stop the server build.
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       if (cancelInFlight.current) {
-        if (Date.now() < deadline) timer = setTimeout(poll, 2000);
+        if (active) timer = setTimeout(poll, 2000);
         return;
       }
       const epoch = statusReadEpoch.current;
@@ -193,8 +206,8 @@ function ScopedGoldenForm({
         if (active && epoch === statusReadEpoch.current) {
           setObserved(next);
           setPollError("");
-          if (Date.now() < deadline && ["queued", "running"].includes(next.state)) timer = setTimeout(poll, 2000);
-        } else if (active && Date.now() < deadline) timer = setTimeout(poll, 2000);
+          if (["queued", "running"].includes(next.state)) timer = setTimeout(poll, 2000);
+        } else if (active) timer = setTimeout(poll, 2000);
       } catch {
         if (active && epoch === statusReadEpoch.current)
           setPollError("Polling paused. Check this job again; do not resubmit.");
@@ -209,6 +222,11 @@ function ScopedGoldenForm({
 
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
     let result: ActionResult;
+    const replacement = data.get("replacement");
+    if (typeof replacement === "string" && replacements.some((item) => item.id === replacement)) {
+      data.set("mode", "update");
+      data.set("golden", replacement);
+    }
     // The key is saved in the URL before the request, so an answer lost in transit is recovered, not resubmitted.
     const submitted = data.get("provider");
     const admissionUrl = new URL(window.location.href);
@@ -242,23 +260,13 @@ function ScopedGoldenForm({
   const formRef = usePreservedActionForm();
   const [goldenName, setGoldenName] = useState("");
   const [init, setInit] = useState(defaults?.init ?? "");
-  const [setup, setSetup] = useState("");
-
-  useEffect(() => {
-    if (mode === "create" && observed?.state === "succeeded") {
-      setGoldenName("");
-      setRows([keyed({ url: "", branch: "", dir: "" })]);
-      setInit("");
-      setSetup("");
-    }
-  }, [observed?.state, mode, keyed]);
 
   const update = (key: number, field: keyof RepoRow, value: string) =>
     setRows((current) => current.map((row) => (row.key === key ? { ...row, [field]: value } : row)));
 
   function guard(event: FormEvent<HTMLFormElement>) {
     // The fieldset is disabled while pending; this also stops an Enter press racing the re-render.
-    if (pending || finding || findInFlight.current || !canStart) event.preventDefault();
+    if (pending || finding || findInFlight.current || !canStart || !githubConnected) event.preventDefault();
   }
 
   const verb = mode === "create" ? "Build snapshot" : "Rebuild snapshot";
@@ -274,6 +282,26 @@ function ScopedGoldenForm({
       capacities={capacities}
     />
   );
+  if (observed?.state === "succeeded" && observed.result) {
+    return (
+      <div className="space-y-4" role="status">
+        <p className="font-medium">{observed.result.name} is ready</p>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <Button variant="ghost" asChild>
+            <a href="/snapshots">View snapshots</a>
+          </Button>
+          {launch && (
+            <LaunchDialog
+              {...launch}
+              golden={observed.result.name}
+              provider={admittedProvider ?? chosenProvider ?? "boat"}
+              repositories={readyRepositories(rows)}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
   return (
     <form
       ref={formRef}
@@ -288,18 +316,13 @@ function ScopedGoldenForm({
       <input type="hidden" name="mode" value={mode} />
       <input type="hidden" name="org" value={orgId} />
       <fieldset disabled={pending || jobActive} className="space-y-4 disabled:opacity-70">
-        {mode === "create" && chosenProvider && providers.length > 1 && providerChoice}
         {mode === "create" ? (
-          <div
-            className={cn(
-              "grid gap-4 sm:grid-cols-2",
-              providers.length === 1 && "lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:gap-x-6",
-            )}
-          >
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-name`}>Name</Label>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-lg leading-relaxed">
+              <span>Build</span>
               <Input
                 id={`${id}-name`}
+                aria-label="Snapshot name"
                 name="name"
                 value={goldenName}
                 onChange={(event) => setGoldenName(event.target.value)}
@@ -307,36 +330,34 @@ function ScopedGoldenForm({
                 maxLength={120}
                 placeholder="web-app"
                 autoComplete="off"
+                className="h-8 w-36 rounded-none border-0 border-b border-dashed px-1 text-lg shadow-none"
               />
-            </div>
-            <fieldset className="space-y-2">
-              <legend className="text-sm font-medium">Who sees it</legend>
-              <RadioGroup
+              <span>on</span>
+              {providerChoice}
+              <span>, visible to</span>
+              <NativeSelect
                 name="visibility"
                 value={chosenVisibility}
-                onValueChange={(value) => setChosenVisibility(value as "org" | "private")}
-                aria-label="Visibility"
-                className="flex flex-wrap gap-4 pt-1 text-sm"
+                aria-label="Who sees it"
+                onChange={(event) => setChosenVisibility(event.target.value as "org" | "private")}
+                className="w-auto max-w-full"
               >
-                <Label htmlFor={`${id}-visibility-org`} className="flex items-center gap-2 font-normal">
-                  <RadioGroupItem
-                    id={`${id}-visibility-org`}
-                    value="org"
-                    disabled={!isAdmin}
-                    aria-describedby={`${id}-visibility-hint`}
-                  />
-                  Everyone in {orgName}
-                </Label>
-                <Label htmlFor={`${id}-visibility-private`} className="flex items-center gap-2 font-normal">
-                  <RadioGroupItem id={`${id}-visibility-private`} value="private" />
-                  Only me
-                </Label>
-              </RadioGroup>
-              <p id={`${id}-visibility-hint`} className="max-w-64 text-xs text-muted-foreground">
-                {isAdmin ? VISIBILITY_HINT[chosenVisibility] : "Only an org admin creates org snapshots."}
+                <option value="org" disabled={!isAdmin}>
+                  everyone in {orgName}
+                </option>
+                <option value="private">only you</option>
+              </NativeSelect>
+              <span>.</span>
+            </div>
+            <p className="flex items-start gap-1.5 text-xs">
+              <LockIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
+              Where it is built is permanent. Its owner can make it private later.
+            </p>
+            {!isAdmin && (
+              <p className="text-xs text-muted-foreground">
+                Only an organization admin can create a snapshot for everyone.
               </p>
-            </fieldset>
-            {providers.length === 1 && providerChoice}
+            )}
           </div>
         ) : (
           <>
@@ -351,18 +372,17 @@ function ScopedGoldenForm({
         )}
 
         <fieldset className="relative space-y-3">
-          <legend className="text-sm font-medium">Repositories</legend>
-          <p className={cn("-mt-2 text-xs text-muted-foreground", mode === "create" && "sm:pr-40")}>
-            owner/repo or a github.com URL. Defaults: branch main, directory /home/user/&lt;repo&gt;.
-          </p>
+          <legend className="text-sm font-medium">Repositories to put on the machine</legend>
           <ol className="space-y-3">
             {rows.map((row, index) => (
               <li
                 key={row.key}
-                className="grid gap-2 rounded-md border p-3 sm:grid-cols-[2fr_1fr_1fr_auto] sm:items-end"
+                className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 border-b py-2"
               >
-                <div className="space-y-1">
-                  <Label htmlFor={`${id}-url-${row.key}`}>Repository {index + 1}</Label>
+                <div className="min-w-0 space-y-1">
+                  <Label className="sr-only" htmlFor={`${id}-url-${row.key}`}>
+                    Repository {index + 1}
+                  </Label>
                   <Input
                     id={`${id}-url-${row.key}`}
                     name="repo_url"
@@ -374,53 +394,62 @@ function ScopedGoldenForm({
                     required={index === 0}
                   />
                 </div>
-                <div className="space-y-1">
-                  <Label htmlFor={`${id}-branch-${row.key}`}>Branch</Label>
-                  <Input
-                    id={`${id}-branch-${row.key}`}
-                    name="repo_branch"
-                    value={row.branch}
-                    onChange={(event) => update(row.key, "branch", event.target.value)}
-                    placeholder="main"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor={`${id}-dir-${row.key}`}>Directory</Label>
-                  <Input
-                    id={`${id}-dir-${row.key}`}
-                    name="repo_dir"
-                    value={row.dir}
-                    onChange={(event) => update(row.key, "dir", event.target.value)}
-                    placeholder="repo name"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </div>
-                <div className="space-y-1 sm:col-span-3 sm:row-start-2">
-                  <Label htmlFor={`${id}-history-${row.key}`}>History</Label>
-                  <NativeSelect
-                    id={`${id}-history-${row.key}`}
-                    name="repo_history"
-                    value={row.history ?? ""}
-                    onChange={(event) => update(row.key, "history", event.target.value)}
-                    aria-describedby={`${id}-history-hint-${row.key}`}
-                  >
-                    <option value="">Full history (default)</option>
-                    <option value="full">Full history</option>
-                    <option value="shallow">Latest commit only</option>
-                  </NativeSelect>
-                  <p id={`${id}-history-hint-${row.key}`} className="text-xs text-muted-foreground">
-                    Latest commit only omits older log, blame and build history. Fetching deeper later brings older
-                    objects back; the secret scan still fails closed.
-                  </p>
-                </div>
+                <span className="text-xs text-muted-foreground">{row.branch || "main"}</span>
+                <details className="contents">
+                  <summary className="col-start-3 row-start-1 cursor-pointer py-2 text-sm">Details</summary>
+                  <div className="col-span-full row-start-2 grid gap-3 py-2 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label htmlFor={`${id}-branch-${row.key}`}>Branch</Label>
+                      <Input
+                        id={`${id}-branch-${row.key}`}
+                        name="repo_branch"
+                        value={row.branch}
+                        onChange={(event) => update(row.key, "branch", event.target.value)}
+                        placeholder="main"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor={`${id}-dir-${row.key}`}>Folder on the machine</Label>
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs text-muted-foreground">/home/user/</span>
+                        <Input
+                          id={`${id}-dir-${row.key}`}
+                          name="repo_dir"
+                          value={row.dir}
+                          onChange={(event) => update(row.key, "dir", event.target.value)}
+                          pattern="[^/\\\\]+"
+                          placeholder={
+                            row.url
+                              .replace(/\.git$/, "")
+                              .split("/")
+                              .pop() || "repo"
+                          }
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1 sm:col-span-2">
+                      <Label htmlFor={`${id}-history-${row.key}`}>History to download</Label>
+                      <NativeSelect
+                        id={`${id}-history-${row.key}`}
+                        name="repo_history"
+                        value={row.history || "full"}
+                        onChange={(event) => update(row.key, "history", event.target.value)}
+                      >
+                        <option value="full">Everything</option>
+                        <option value="shallow">Latest commit only</option>
+                      </NativeSelect>
+                      <p className="text-xs text-muted-foreground">
+                        Armada checks what it downloads for leaked GitHub, Skillpack and Armada tokens before saving.
+                        Latest commit only is faster on large repositories.
+                      </p>
+                    </div>
+                  </div>
+                </details>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="sm:col-start-4 sm:row-start-1"
+                  className="col-start-4 row-start-1"
                   aria-label={`Remove repository ${index + 1}`}
                   disabled={rows.length === 1}
                   onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}
@@ -444,50 +473,106 @@ function ScopedGoldenForm({
           </Button>
         </fieldset>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-init`}>Init commands</Label>
-            <Textarea
-              id={`${id}-init`}
-              name="init"
-              rows={4}
-              value={init}
-              onChange={(event) => setInit(event.target.value)}
-              placeholder={"bun install\nmake deps"}
-              spellCheck={false}
-              aria-describedby={`${id}-init-hint`}
-              className="font-mono text-xs"
-            />
-            <p id={`${id}-init-hint`} className="text-xs text-muted-foreground">
-              One per line, recorded in the snapshot. Never put a secret here.
-            </p>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-setup`}>Setup script</Label>
-            <Textarea
-              id={`${id}-setup`}
-              name="setup"
-              value={setup}
-              onChange={(event) => setSetup(event.target.value)}
-              rows={4}
-              placeholder="Optional shell script, run once after cloning"
-              spellCheck={false}
-              aria-describedby={`${id}-setup-hint`}
-              className="font-mono text-xs"
-            />
-            <p id={`${id}-setup-hint`} className="text-xs text-muted-foreground">
-              Runs after the init commands.
-            </p>
-          </div>
+        <div className="space-y-2">
+          <Label htmlFor={`${id}-init`}>
+            Commands to run once, while building <span className="font-normal text-muted-foreground">optional</span>
+          </Label>
+          <Textarea
+            id={`${id}-init`}
+            name="init"
+            rows={4}
+            value={init}
+            onChange={(event) => setInit(event.target.value)}
+            placeholder={"(cd web && bun install)\n(cd api && bun install)"}
+            spellCheck={false}
+            aria-describedby={`${id}-init-hint`}
+            className="font-mono text-xs"
+          />
+          <p id={`${id}-init-hint`} className="text-xs text-muted-foreground">
+            One per line, each starting from the home folder (up to 32 lines). Never put a password or a key here; an
+            agent that needs one gets it as a secret in a template.
+          </p>
         </div>
       </fieldset>
 
+      {!githubConnected && (
+        <p role="alert" className="text-sm">
+          GitHub is not connected, so Armada cannot download your repositories.{" "}
+          <a href="/github/connect" target="_blank" rel="noreferrer" className="underline">
+            Connect GitHub
+          </a>
+          . Opens in a new tab. This form keeps what you typed.
+        </p>
+      )}
+      {mode === "create" && chosenProvider === "boat" && ["full", "legacy"].includes(capacities?.boat?.kind ?? "") && (
+        <div role="status" className="space-y-2 rounded-md border p-3 text-sm">
+          <p>
+            Boat allows{" "}
+            {capacities?.boat && "capacity" in capacities.boat ? capacities.boat.capacity : "a limited number of"}{" "}
+            snapshots here and it is used.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {replacements.map((item) => (
+              <Button
+                key={item.id}
+                type="submit"
+                name="replacement"
+                value={item.id}
+                variant="outline"
+                disabled={pending || jobActive || !githubConnected}
+              >
+                Replace {item.name}
+              </Button>
+            ))}
+            {providers.includes("modal") && (
+              <Button type="button" variant="ghost" onClick={() => setChosenProvider("modal")}>
+                Build on Modal cloud
+              </Button>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Replacing keeps the existing name and who sees it, and puts these repositories in it. Templates using it
+            start from the new build. Owner or admin only.
+          </p>
+        </div>
+      )}
       <div className="space-y-2">
         <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-          <Button type="submit" disabled={!admissionKey || pending || finding || jobActive || !canStart}>
+          <Button
+            type="submit"
+            disabled={
+              !admissionKey ||
+              pending ||
+              finding ||
+              jobActive ||
+              !canStart ||
+              !githubConnected ||
+              (mode === "create" &&
+                chosenProvider === "boat" &&
+                ["full", "legacy"].includes(capacities?.boat?.kind ?? ""))
+            }
+          >
             {pending && <Loader2Icon className="animate-spin" />}
             {pending ? (mode === "create" ? "Building…" : "Rebuilding…") : verb}
           </Button>
+          {observed && ["queued", "running", "succeeded"].includes(observed.state) && (
+            <ol aria-label="Build progress" className="space-y-2 text-sm">
+              <li className="flex items-start gap-2">
+                <span aria-hidden>✓</span>
+                <span>Request accepted</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span aria-hidden>{observed.state === "succeeded" ? "✓" : "○"}</span>
+                <span>
+                  {observed.state === "queued" ? "Waiting for a builder" : "Downloading repositories, running commands"}
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span aria-hidden>{observed.state === "succeeded" ? "✓" : "○"}</span>
+                <span>Saved</span>
+              </li>
+            </ol>
+          )}
           <BuildStatus
             pending={pending}
             active={observed?.state === "queued" || observed?.state === "running"}
@@ -591,7 +676,7 @@ function ScopedGoldenForm({
                 replaceResourceUrl(url);
               }}
             >
-              New build request
+              Try again
             </Button>
           )}
         </div>
@@ -599,7 +684,7 @@ function ScopedGoldenForm({
         <Collapsible>
           <CollapsibleTrigger asChild>
             <Button type="button" variant="ghost" size="sm" className="text-xs">
-              Build details
+              Technical details
             </Button>
           </CollapsibleTrigger>
           <CollapsibleContent className="space-y-1 px-3 py-2 text-xs text-muted-foreground">
@@ -647,27 +732,7 @@ function ScopedGoldenForm({
   );
 }
 
-/** What the chosen visibility means for an admin, who may change it later from the golden's panel. */
-const VISIBILITY_HINT: Record<"org" | "private", string> = {
-  org: "Visible to every member. You can make it private later.",
-  private: "Only you see it. You can share it with the org later.",
-};
-
-const CAPACITY_HINT: Record<CapacityState["kind"], (state: CapacityState) => string> = {
-  available: (state) =>
-    state.kind === "available" ? `${state.used} of ${state.capacity} snapshots visible to you.` : "",
-  full: () => "At its snapshot limit: rebuild the existing snapshot instead.",
-  legacy: () => "Over its snapshot limit: rebuild an existing snapshot instead.",
-  unknown: () => "No snapshot limit reported.",
-  unavailable: (state) => (state.kind === "unavailable" ? `Unavailable: ${state.reason}` : ""),
-};
-
-/**
- * Where a new golden is built. Each option shows that provider's capacity as the server read it for this org;
- * an unavailable one (for example not configured for the org) says so. Nothing falls back to the other provider.
- */
 function ProviderChoice({
-  idPrefix,
   value,
   onChange,
   providers,
@@ -679,82 +744,24 @@ function ProviderChoice({
   providers: readonly SandboxProviderId[];
   capacities: Props["capacities"];
 }) {
-  if (providers.length === 1) {
-    const capacity = capacities?.[value];
-    const hint = capacity ? CAPACITY_HINT[capacity.kind](capacity) : "";
-    const warn = capacity?.kind === "unavailable" || capacity?.kind === "full" || capacity?.kind === "legacy";
-    return (
-      <div className="space-y-2" data-provider-fixed={value}>
-        <input type="hidden" name="provider" value={value} />
-        <p className="text-sm font-medium">Provider</p>
-        <p className="flex flex-wrap items-center gap-2 pt-1 text-sm">
-          {PROVIDER_LABELS[value]}
-          <Permanent />
-        </p>
-        {hint && <p className={cn("max-w-56 text-xs", warn ? "text-warning" : "text-muted-foreground")}>{hint}</p>}
-      </div>
-    );
-  }
   return (
-    <fieldset className="space-y-2">
-      <legend className="flex flex-wrap items-center gap-2 text-sm font-medium">
-        Provider <Permanent />
-      </legend>
-      <input type="hidden" name="provider" value={value} />
-      <RadioGroup
-        name={`${idPrefix}-provider`}
+    <span className="inline-flex max-w-full flex-wrap items-center gap-2">
+      <NativeSelect
+        name="provider"
+        aria-label="Where to build"
         value={value}
-        onValueChange={(next) => onChange(next as SandboxProviderId)}
-        aria-label="Provider"
-        className="sm:grid-cols-2"
+        onChange={(event) => onChange(event.target.value as SandboxProviderId)}
+        className="w-auto"
       >
-        {providers.map((option) => {
-          const capacity = capacities?.[option];
-          const hint = capacity ? CAPACITY_HINT[capacity.kind](capacity) : "";
-          const warn = capacity?.kind === "unavailable" || capacity?.kind === "full" || capacity?.kind === "legacy";
-          return (
-            <Label
-              key={option}
-              htmlFor={`${idPrefix}-provider-choice-${option}`}
-              className={cn(
-                "relative flex cursor-pointer gap-3 rounded-md border p-3 text-sm transition-colors has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50",
-                value === option ? "border-primary bg-accent" : "hover:bg-accent/50",
-              )}
-              data-provider-choice={option}
-            >
-              <RadioGroupItem
-                id={`${idPrefix}-provider-choice-${option}`}
-                value={option}
-                aria-describedby={`${idPrefix}-provider-${option}`}
-                className="mt-0.5"
-              />
-              <span className="min-w-0">
-                <span className="block font-medium">{PROVIDER_LABELS[option]}</span>
-                <span
-                  id={`${idPrefix}-provider-${option}`}
-                  className={cn("block text-xs", warn ? "text-warning" : "text-muted-foreground")}
-                >
-                  {hint}
-                </span>
-              </span>
-            </Label>
-          );
-        })}
-      </RadioGroup>
-      <p className="text-xs text-muted-foreground">The same name may exist once on each provider.</p>
-    </fieldset>
-  );
-}
-
-/** Marks the one choice of the create form that no later action changes: where the golden is built. */
-function Permanent() {
-  return (
-    <span
-      className="inline-flex items-center gap-1 rounded-md border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-xs font-medium text-warning"
-      data-permanent
-    >
-      <LockIcon aria-hidden className="size-3" />
-      Cannot be changed later
+        {providers.map((option) => (
+          <option key={option} value={option}>
+            {PROVIDER_LABELS[option]}
+          </option>
+        ))}
+      </NativeSelect>
+      {capacities?.[value]?.kind === "full" && (
+        <span className="text-xs text-warning">This provider is at its snapshot limit.</span>
+      )}
     </span>
   );
 }
@@ -800,4 +807,20 @@ function BuildStatus({
       {state.error}
     </p>
   );
+}
+
+function readyRepositories(rows: RepoRow[]): string[] {
+  try {
+    return parseGoldenConfig({
+      repos: rows
+        .filter((row) => row.url.trim())
+        .map((row) => ({
+          url: /^[\w.-]+\/[\w.-]+$/.test(row.url.trim()) ? `https://github.com/${row.url.trim()}.git` : row.url.trim(),
+          ...(row.dir.trim() ? { dir: row.dir.trim() } : {}),
+        })),
+      init: [],
+    }).repos.map((repo) => repo.dir ?? "");
+  } catch {
+    return [];
+  }
 }

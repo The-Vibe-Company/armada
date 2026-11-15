@@ -10,7 +10,6 @@ import {
   FolderGit2Icon,
   GitBranchIcon,
   GlobeIcon,
-  InfoIcon,
   LayersIcon,
   LockIcon,
   TriangleAlertIcon,
@@ -37,7 +36,6 @@ import { SizeDefaults } from "@/components/size-defaults";
 import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { DialogClose } from "@/components/ui/dialog";
 import { isUuid } from "@/lib/action";
 import {
   CAPABILITIES_TIMEOUT_MS,
@@ -60,13 +58,7 @@ import { displayUser, listMemberships, type Membership, memberDirectory, require
 import { dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
 import { hasDockerHost, snapshotLaunchEnabled, snapshotRebuildAvailable, snapshotState } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
-import {
-  boatFull,
-  capacityParts,
-  type EnvironmentState,
-  environmentBlockers,
-  environmentState,
-} from "@/lib/environments";
+import { capacityParts, type EnvironmentState, environmentBlockers, environmentState } from "@/lib/environments";
 import {
   type CapacityState,
   editDefaults,
@@ -256,6 +248,9 @@ export default async function GoldensPage({ searchParams }: Props) {
     selected && capacities && (canStart || createTracked) ? (
       <GoldenCreateDialog orgId={selected.org.id} initialOpen={createTracked}>
         <SnapshotCreateChoice
+          githubConnected={githubConnected}
+          snapshots={snapshots}
+          launch={{ orgId: selected.org.id, catalog: MODEL_CATALOG, connections, accounts }}
           orgId={selected.org.id}
           isAdmin={selected.role === "admin"}
           hosts={hosts}
@@ -270,12 +265,15 @@ export default async function GoldensPage({ searchParams }: Props) {
               <CreatePanel
                 key={provider}
                 org={selected}
-                providers={[provider]}
+                providers={connected ?? []}
                 capacities={capacities}
                 boatLive={counts.boat.live}
                 serverReady={serverReady}
                 githubConnected={githubConnected}
-                rebuildable={cloudRows.filter((row) => row.provider === "boat" && row.rebuildable)}
+                rebuildable={goldens.filter((golden) =>
+                  cloudRows.some((row) => row.key === golden.id && row.provider === "boat" && row.rebuildable),
+                )}
+                launch={{ orgId: selected.org.id, catalog: MODEL_CATALOG, connections, accounts }}
               />,
             ]),
           )}
@@ -537,6 +535,7 @@ function CreatePanel({
   githubConnected,
   providers,
   rebuildable,
+  launch,
 }: {
   org: Membership;
   /** The providers the org has connected, where a new golden may be built; none: the form only follows a tracked build. */
@@ -547,70 +546,23 @@ function CreatePanel({
   serverReady: boolean;
   githubConnected: boolean;
   /** The Boat environments this viewer may rebuild, offered instead of a new one when Boat is full. */
-  rebuildable: EnvironmentRow[];
+  rebuildable: Golden[];
+  launch: React.ComponentProps<typeof GoldenForm>["launch"];
 }) {
-  const discouraged = providers.includes("boat") && boatFull(capacities);
-  const modalOpen = capacities.modal !== undefined && capacities.modal.kind !== "unavailable";
-  if (!serverReady)
-    return (
-      <p className="text-sm text-muted-foreground">
-        The Armada server is not configured: snapshots cannot be built here.
-      </p>
-    );
+  void boatLive;
   return (
-    <div className="space-y-3" data-create-golden={discouraged ? "discouraged" : "open"}>
-      {discouraged && (
-        <Alert className="border-warning/40" data-boat-full>
-          <LayersIcon className="text-warning" />
-          <AlertTitle>Boat is full</AlertTitle>
-          <AlertDescription className="space-y-2">
-            <p>
-              {boatLive > 0
-                ? `Every Boat slot is used. Rebuild an existing snapshot with new repositories instead${modalOpen ? ", or build on Modal" : ""}.`
-                : `A removed Boat snapshot holds the slot${modalOpen ? ": build on Modal" : ""}.`}
-            </p>
-            {boatLive > 0 && rebuildable.length > 0 && (
-              <ul className="flex flex-wrap gap-2">
-                {rebuildable.map((row) => (
-                  <li key={row.key}>
-                    {/* Closes the dialog and opens the environment's panel, where it is rebuilt. */}
-                    <DialogClose asChild>
-                      <span>
-                        <SelectItem item={row.key} variant="outline" size="sm" className="h-7">
-                          Rebuild {row.name}
-                        </SelectItem>
-                      </span>
-                    </DialogClose>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </AlertDescription>
-        </Alert>
-      )}
-      {!githubConnected && (
-        <Alert className="py-2">
-          <InfoIcon />
-          <AlertTitle className="flex flex-wrap gap-x-2">
-            GitHub is not connected
-            <Link className="font-normal underline underline-offset-4" href="/settings">
-              Connect GitHub in Settings
-            </Link>
-          </AlertTitle>
-        </Alert>
-      )}
-      <Disclosure summary="Show the create form" defaultOpen={!discouraged} quiet={!discouraged}>
-        <GoldenForm
-          mode="create"
-          orgId={org.org.id}
-          orgName={org.org.name}
-          isAdmin={org.role === "admin"}
-          capacities={capacities}
-          providers={providers}
-          canStart={providers.length > 0}
-        />
-      </Disclosure>
-    </div>
+    <GoldenForm
+      mode="create"
+      orgId={org.org.id}
+      orgName={org.org.name}
+      isAdmin={org.role === "admin"}
+      capacities={capacities}
+      providers={providers}
+      canStart={serverReady && providers.length > 0}
+      githubConnected={githubConnected}
+      {...(launch ? { launch } : {})}
+      replacements={rebuildable.map((row) => ({ id: row.id, name: row.name, visibility: row.visibility }))}
+    />
   );
 }
 
