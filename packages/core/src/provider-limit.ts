@@ -38,7 +38,9 @@ export function providerRateLimitMessage(value: unknown): string {
   const timing = detail.nextStartAt
     ? ` ${name === "Boat" ? "Boat" : "The provider"} says the next start is available at ${detail.nextStartAt}.`
     : detail.retryAfterSeconds === undefined
-      ? ""
+      ? detail.window === "day"
+        ? " Try again after the daily start allowance resets."
+        : ""
       : ` Wait at least ${detail.retryAfterSeconds} seconds before another start.`;
   return `The ${name} ${limit} has been reached.${timing} Check the selected provider account's plan and limits before another start.`;
 }
