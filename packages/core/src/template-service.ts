@@ -675,6 +675,17 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         ]);
         allocating = true;
       };
+      const launchRequest = () => ({
+        credentialId: m.account.id,
+        harness: def.harness,
+        model: def.model,
+        reasoningEffort: def.reasoningEffort,
+        connections: def.connections,
+        skills: m.resolvedSkills ?? def.skills,
+        skipSkillDefaults: true as const,
+        ...(input.prompt === undefined ? {} : { prompt: input.prompt as string }),
+        ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
+      });
       const result =
         def.provider === "docker"
           ? await (async () => {
@@ -682,23 +693,15 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                 unavailable("environment_admission_unavailable");
               return runtime.launchDocker(
                 {
+                  ...launchRequest(),
                   org,
                   provider: "docker",
                   hostId: def.hostId,
                   ...(def.snapshotId === undefined ? {} : { snapshotId: def.snapshotId }),
-                  harness: def.harness,
-                  credentialId: m.account.id,
                   credentialVersion: m.account.version,
                   requestId: request.sandbox_id,
-                  model: def.model,
-                  reasoningEffort: def.reasoningEffort,
                   variables: def.variables,
                   secrets: def.secrets ?? [],
-                  connections: def.connections,
-                  skills: m.resolvedSkills ?? def.skills,
-                  skipSkillDefaults: true,
-                  ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
-                  ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds }),
                 },
                 {
                   beforeReserve,
@@ -745,17 +748,9 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                 },
                 selection.a,
                 {
-                  credentialId: m.account.id,
+                  ...launchRequest(),
                   golden: g.name,
                   provider: g.provider,
-                  harness: def.harness,
-                  model: def.model,
-                  reasoningEffort: def.reasoningEffort,
-                  connections: def.connections,
-                  skills: m.resolvedSkills ?? def.skills,
-                  skipSkillDefaults: true,
-                  ...(input.prompt === undefined ? {} : { prompt: input.prompt as string }),
-                  ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
                   ...(size === undefined ? {} : { size }),
                   ...(input.repo === undefined ? {} : { repo: input.repo as string }),
                 },
