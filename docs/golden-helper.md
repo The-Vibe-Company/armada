@@ -1,15 +1,23 @@
-# Inert golden helper (slice 0)
+# Inert snapshot helper (slice 0)
 
-Scope: new and rebuilt Boat and Modal goldens only. No daemon, runtime identity,
+Scope: new and rebuilt Boat and Modal snapshots only. No daemon, runtime identity,
 GitHub refresh, usage collection, secret delivery, socket or spool is installed.
-Existing goldens and workers are not silently upgraded.
+Existing snapshots and workers are not silently upgraded.
 
 ## Coordinator staging check
 
-After this revision is available in **staging**, preserve a golden's persisted
-repository, branch, directory and init config and rebuild it with
-`armada golden update`. Do this for both Boat and Modal (including `smoke-modal`).
-Use disposable staging workers, never production resources.
+After this revision is available in **staging**, preserve a Modal snapshot's
+complete persisted repository, branch, directory and init config in a local
+non-secret definition, then intentionally replace it:
+
+```sh
+armada snapshot update smoke-modal --replace --config snapshot.json --provider modal --org ORG_UUID
+```
+
+Use disposable staging workers, never production resources. Boat remains a
+supported product provider but is not part of the release gate; print
+`boat: not part of the release gate`. Any on-demand Boat verification is
+coordinator-only and outside this staging procedure.
 
 - Verify the installed helper's SHA-256 against the pinned distribution manifest
   and its persisted golden version/digest/protocol receipt.
@@ -17,8 +25,8 @@ Use disposable staging workers, never production resources.
 - Check that an invalid digest refuses installation before execution.
 - Run the pre-snapshot scan; confirm no helper runtime grants, tokens, sockets,
   brokers or private spools are captured. Scan uncertainty must refuse publication.
-- Launch from the rebuilt golden and verify protocol negotiation.
-- Launch from an old golden: ordinary launches must retain their existing behavior;
+- Launch from the rebuilt snapshot and verify protocol negotiation.
+- Launch from an old snapshot: ordinary launches must retain their existing behavior;
   a requested helper-only feature must return closed `unsupported` and a golden
   rebuild action, not fail halfway through a turn.
 
@@ -45,8 +53,8 @@ compatibility window is protocol 1 only; future protocols need explicit admissio
 
 `launch` accepts optional `helperCapabilities: ["diagnose"]` through the control
 API and MCP. Any unsupported requirement fails before provider allocation with
-`unsupported` and an `armada golden update` rebuild action. With no requirement,
-legacy goldens retain their existing behavior. The shared launch result carries
+`unsupported` and a snapshot rebuild action (use `armada snapshot update NAME --replace --config snapshot.json`). With no requirement,
+legacy snapshots retain their existing behavior. The shared launch result carries
 the negotiated helper status; no helper job, GitHub or usage grant is issued.
 
 Apply `20261111090000_golden_helper_receipt.sql` before deploying this server.

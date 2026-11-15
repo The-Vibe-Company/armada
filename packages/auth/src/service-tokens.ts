@@ -3,7 +3,7 @@ import { AuthError } from "./errors.ts";
 import { assertLabel } from "./labels.ts";
 import type { AuthStore, ListedToken, Membership } from "./types.ts";
 
-export interface CreatedServiceToken {
+interface CreatedServiceToken {
   id: string;
   label: string;
   orgName: string;
