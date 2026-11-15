@@ -112,3 +112,18 @@ test("bridge falls back to legacy text when structured code/message is invalid",
     wire.mockRestore();
   }
 });
+
+test("start failures log missing-relation causes without changing the public error", async () => {
+  const logs: string[] = [];
+  const error = new LaunchError("start_failed", "The sandbox could not be started.", {
+    cause: new Error('relation "public.skill_defaults" does not exist'),
+  });
+  const ctx = context(error);
+  ctx.logError = (line) => logs.push(line);
+  await expect(callSharedTool(ctx, "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+    code: "start_failed",
+    message: error.message,
+  });
+  expect(logs).toHaveLength(1);
+  expect(logs[0]).toContain('relation "public.skill_defaults" does not exist');
+});

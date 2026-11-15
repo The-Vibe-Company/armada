@@ -39,10 +39,9 @@ Before opening a PR, and again against current main before merge:
 
 - Fresh/disposable SQL tests establish that SQL applies in filename order;
   they do **not** verify remote migration history or remote deployability.
-  [PR #1039](https://github.com/The-Vibe-Company/armada/pull/1039) proposes a
+  [PR #1039](https://github.com/The-Vibe-Company/armada/pull/1039) added a
   CI check for filename format, duplicate versions and new versions strictly
-  greater than the current base's maximum. Until it lands, do not assume that
-  check is present. Even a passing check is not merge serialization, enforced
+  greater than the current base's maximum. Even a passing check is not merge serialization, enforced
   branch protection or a deployment gate; recheck the current base before merge.
 - Correct a collision by renaming only a **confirmed-unapplied** migration,
   after checking relevant migration histories with an authorized operator.
@@ -99,6 +98,25 @@ deployment: the operator must keep that release held. Review Actions errors, ass
 partial effects (do not assume a multi-statement file is atomic), and submit a new
 forward migration or reviewed correction for an unapplied migration. Never edit
 an applied migration or reset production.
+
+## Failed migration recovery checklist
+
+1. Hold the failed commit's release. Inspect the migration step before retrying
+   server or dashboard uploads; a healthy old server is not proof the new schema
+   applied. Confirm independent Railway/Vercel Git writers are disabled (see
+   [owner cutover](releasing.md#owner-cutover-prerequisites-no-agent-performs-these-operations)).
+2. An authorized operator compares the failed file, actual schema and migration
+   history in the affected environment. Assume partial effects until checked;
+   do not reset the database, blindly replay SQL or mark a version applied.
+3. Correct a confirmed-unapplied file through review, or add a new forward
+   migration for already-applied changes. For historical discrepancies use the
+   [operator-only reconciliation procedure](#reconcile-hand-applied-history-operator-only).
+   Never rename or edit an applied migration.
+4. Re-run the exact-SHA staging deployment and enabled Modal/Docker smoke first.
+   Production retries use only the validated tagged Release recovery path.
+   Verify the deployed commit, schema-aware health and launch logs after recovery;
+   missing-relation failures include their cause in redacted server tool logs.
+   Record the workflow/deployment IDs and operator schema evidence on the incident.
 
 ## Preview, retries and PR checks
 
