@@ -2,12 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { isActiveLink, NAV_GROUPS, showsOrganizations } from "../src/lib/navigation.ts";
 
 describe("sidebar navigation", () => {
-  test("lists the owner's groups and destinations in order, without Organizations", () => {
+  test("lists the owner's groups and destinations in order", () => {
     expect(NAV_GROUPS.map((group) => [group.label, group.links.map((link) => link.label)])).toEqual([
-      ["Run", ["Sandboxes", "Routines", "Templates"]],
-      ["Library", ["Snapshots", "Skills", "Tools", "Variables"]],
-      ["Providers", ["Overview", "Self-hosted"]],
-      ["Account", ["Models", "Settings"]],
+      ["Running", ["Sandboxes", "Routines"]],
+      ["Launch from", ["Templates", "Snapshots"]],
+      ["What agents have", ["Models", "Tools", "Skills", "Variables"]],
+      ["Setup", ["Machines", "Organization", "Your connections"]],
     ]);
   });
 
@@ -17,10 +17,10 @@ describe("sidebar navigation", () => {
     expect(isActiveLink("/routinesx", "/routines")).toBe(false);
   });
 
-  test("hides Self-hosted behind the Docker hosts opt-in, but never Overview", () => {
-    const providers = NAV_GROUPS.find((group) => group.label === "Providers");
-    expect(providers?.links.find((link) => link.label === "Self-hosted")?.optIn).toBe("dockerHosts");
-    expect(providers?.links.find((link) => link.label === "Overview")?.optIn).toBeUndefined();
+  test("always offers Machines so cloud accounts remain accessible without Docker hosts", () => {
+    const machines = NAV_GROUPS.flatMap((group) => group.links).find((link) => link.label === "Machines");
+    expect(machines?.href).toBe("/providers/cloud");
+    expect(machines?.optIn).toBeUndefined();
   });
 
   test("shows organizations only to a member of several, or to someone with none", () => {

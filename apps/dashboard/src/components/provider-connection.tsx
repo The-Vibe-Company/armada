@@ -77,9 +77,21 @@ export function ProviderConnection({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0 space-y-0.5">
           <p className="flex items-center gap-2 text-sm font-medium">
-            <ProviderName provider={provider} />
-            <ConnectionBadge state={state} />
+            <ProviderName provider={provider} /> cloud
           </p>
+          <p className="text-xs text-muted-foreground">
+            {connected
+              ? `${orgName}’s account`
+              : state === "not-connected"
+                ? "No account yet"
+                : "Account status unavailable"}
+          </p>
+          <ConnectionBadge state={state} />
+          {state === "not-connected" && (
+            <p className="text-xs text-muted-foreground">
+              {provider === "modal" ? "Needs a Modal token (two values)." : "Needs a Boat API key."}
+            </p>
+          )}
         </div>
         {manageable && !open && (
           <div className="flex flex-wrap items-center gap-2">
@@ -92,7 +104,7 @@ export function ProviderConnection({
                 setOpen(true);
               }}
             >
-              {connected ? `Replace ${info.credentialNoun}` : `Connect ${info.label}`}
+              {connected ? `Replace ${info.credentialNoun}` : "Connect"}
             </Button>
             {connected && (
               <DisconnectProvider

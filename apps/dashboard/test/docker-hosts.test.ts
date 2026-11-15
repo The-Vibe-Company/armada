@@ -85,15 +85,9 @@ test("the expiry counts down as m:ss and reads expired once it passes", () => {
   expect(expiryCountdown(expiresAt, NOW + 600_000)).toBeNull();
 });
 
-test("a row's fact names its sandboxes and daemon version, unknown when the host has not reported one", () => {
+test("old servers ask for an update instead of inventing running counts", () => {
   expect(hostFact({ sandboxes: 2, version: "1.4.0" })).toBe(
-    "?/unknown running/capacity · 2 sandboxes retained · v1.4.0",
-  );
-  expect(hostFact({ sandboxes: 0, version: "v2.0.0" })).toBe(
-    "?/unknown running/capacity · No sandboxes retained · v2.0.0",
-  );
-  expect(hostFact({ sandboxes: 1, version: null })).toBe(
-    "?/unknown running/capacity · 1 sandbox retained · version unknown",
+    "Update the server to report running sandboxes and limits.",
   );
 });
 
@@ -115,7 +109,8 @@ test("a host's state reads in plain words and an offline or unregistered host so
   expect(hostState(host(), NOW)).toMatchObject({ bucket: "ready", tone: "success", label: "Online" });
   expect(hostState(host({ state: "offline", lastSeenAt: "2026-11-13T10:00:00Z" }), NOW)).toMatchObject({
     bucket: "action",
-    label: "Last seen 2 hours ago",
+    label: "Offline",
+    detail: "Last seen 2 hours ago. Check that the machine is on and Docker is running.",
   });
   expect(hostState(host({ state: "pending", lastSeenAt: null, createdAt: "2026-11-13T11:58:00Z" }), NOW)).toMatchObject(
     { bucket: "action", label: "Waiting for check-in" },
@@ -127,9 +122,9 @@ test("a host's state reads in plain words and an offline or unregistered host so
   });
   expect(hostState(host({ state: "revoked", revokedAt: "2026-11-13T09:00:00Z" }), NOW)).toMatchObject({
     bucket: "rest",
-    label: "Revoked",
+    label: "Unlinked",
   });
-  expect(hostName(host())).toBe("Host 70bde9cd");
+  expect(hostName(host())).toBe("Unnamed server");
   expect(hostName(host({ name: "Workstation" }))).toBe("Workstation");
 });
 
@@ -147,9 +142,9 @@ test("the dialog's host is connected, with its name, once listed online or offli
 });
 
 test("revoking warns that a revoked host can no longer clean up its sandboxes", () => {
-  expect(revokeWarning(0)).not.toContain("delete");
-  expect(revokeWarning(1)).toContain("It still has 1 sandbox: delete it first");
-  expect(revokeWarning(3)).toContain("It still has 3 sandboxes: delete them first");
+  expect(revokeWarning(0)).toContain("run the uninstall command there first");
+  expect(revokeWarning(1)).toContain("Stop its 1 sandbox first");
+  expect(revokeWarning(3)).toContain("Stop its 3 sandboxes first");
 });
 
 test("only an unmounted host route (404 or 405 without a code) reads as Docker not enabled", () => {
@@ -179,7 +174,7 @@ test("resource observations survive parsing while malformed capacity data is exc
   const value = host({ running: 3, resources });
   const parsed = parseDockerHostList({ placement: true, hosts: [value] });
   expect(parsed?.hosts[0]?.resources).toEqual(resources);
-  expect(hostFact(parsed!.hosts[0]!)).toContain("3/6 running/capacity");
+  expect(hostFact(parsed!.hosts[0]!)).toContain("3 sandboxes running · up to 6");
   for (const broken of [
     { ...resources, capacity: -1 },
     { ...resources, mode: "surprise" },
@@ -234,7 +229,7 @@ test("busy-machine capacity including zero remains visible with held-back guidan
     mode: "automatic" as const,
   };
   const parsed = parseDockerHostList({ placement: true, hosts: [host({ resources, running: 5 })] });
-  expect(hostFact(parsed!.hosts[0]!)).toContain("5/7 (2 held back: machine busy)");
+  expect(hostFact(parsed!.hosts[0]!)).toContain("5 sandboxes running · up to 7 (2 held back: machine busy)");
   expect(
     parseDockerHostList({ placement: true, hosts: [host({ resources: { ...resources, capacity: 0 }, running: 0 })] })
       ?.skipped,
