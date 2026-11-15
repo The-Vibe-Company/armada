@@ -1624,3 +1624,35 @@ completion. Known sandbox cleanup remains independent of the proof result.
 The focused coordinator checks are `--parity --only modal --feature steer` and
 `--parity --only modal --feature interrupt`. These observations do not replace
 live Modal execution evidence; workers run only deterministic transport tests.
+
+### Installed skills after resume
+
+Use `--parity --feature skills-resume`, optionally `--only modal|docker`, with the
+same existing `skill` fingerprint and template configuration as `--feature
+skills`. The installation-only probe remains available and does not require
+follow-up support. The deeper probe additionally requires advertised stop, resume,
+follow-up, logs and exec support; missing support allocates nothing and is explicitly
+unsupported/not-run, never downgraded to an initial-only pass.
+
+The deep probe verifies frozen launch/status skill identities and installed
+`SKILL.md` bytes before stopping its own sandbox. It then resumes the same logical
+sandbox (ordinary send on native providers, explicit resume plus send on Docker),
+observes an answered finished wake turn, and rechecks the original receipt
+identities and independently known file hash. It does not trust metadata alone
+or replace the expected hash with whatever the resumed guest returns.
+`skills-before-resume` and `skills-after-resume` are separate receipts; only both
+observations pass `skills-resume`. A refused/unobserved resume never passes, and
+post-resume file/receipt loss fails even after a valid initial installation.
+
+Filtered proof requests and observation share 110 seconds, including late guest
+exec replies; known-sandbox cleanup remains independent. No skill/template is
+modified. To include this depth in a full run set `skillsResume: true` on the
+case. The full run chooses this deeper probe instead of the installation-only
+skills child, so it adds no allocation beyond that child; ordinary lifecycle and
+separate template proof allocations remain counted as before. The before/after checks share the same skills sandbox,
+and the one final table carries initial and resumed evidence plus cleanup.
+
+This proves installed content persistence, not skill invocation by the model or
+default pin precedence. Keep those older coordinator checks until they have
+replacement rows. Boat remains coordinator-only via
+`--only boat --production-boat`, never the release gate.

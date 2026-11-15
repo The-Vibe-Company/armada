@@ -13,6 +13,17 @@ for (const mode of [
   "content",
   "no_exec",
   "no_followup",
+  "resume_valid",
+  "resume_content",
+  "resume_status",
+  "resume_quota",
+  "resume_no_followup",
+  "resume_no_resume",
+  "resume_no_stop",
+  "resume_budget",
+  "resume_stop_budget",
+  "resume_echo",
+  "resume_missing",
 ] as const) {
   test(`skills delivery parity: ${mode}`, async () => {
     const harness = mode === "claude" ? "claude" : mode === "opencode" ? "opencode" : "codex";
@@ -28,6 +39,8 @@ for (const mode of [
     const calls: string[] = [],
       lines: string[] = [];
     const states = new Map<string, string>();
+    const resumed = new Set<string>();
+    const executions = new Map<string, number>();
     let now = 0;
     const passed = await providerParitySmoke(
       {
@@ -44,7 +57,7 @@ for (const mode of [
             golden: "golden",
             hostId: "host",
             template: { id: "10000000-0000-4000-8000-000000000001", revision: 1 },
-            ...(mode === "missing"
+            ...(mode === "missing" || mode === "resume_missing"
               ? {}
               : { skill: { reference, projectDir: "/home/user/project", fileSha256: digest } }),
           })),
@@ -71,9 +84,11 @@ for (const mode of [
                   capabilities: {
                     launch: true,
                     exec: mode !== "no_exec",
-                    stop: true,
+                    stop: mode !== "resume_no_stop",
                     delete: true,
-                    followupPrompts: mode !== "no_followup",
+                    followupPrompts: mode !== "no_followup" && mode !== "resume_no_followup",
+                    logs: true,
+                    resume: mode !== "resume_no_resume",
                   },
                   unsupportedReasons: {},
                 })),
@@ -113,18 +128,62 @@ for (const mode of [
               result = {
                 id: body.id,
                 status: states.get(id),
-                skills: [{ ...receipt, checksum: mode === "status" ? `sha256:${"c".repeat(64)}` : receipt.checksum }],
+                skills: [
+                  {
+                    ...receipt,
+                    checksum:
+                      mode === "status" || (mode === "resume_status" && resumed.has(id))
+                        ? `sha256:${"c".repeat(64)}`
+                        : receipt.checksum,
+                  },
+                ],
               };
               break;
             case "sandbox/exec":
+              executions.set(id, (executions.get(id) ?? 0) + 1);
+              if (mode === "resume_budget" && (executions.get(id) ?? 0) > 1) now += 110_001;
               expect(body.command).toContain(
                 `/home/user/project/${harness === "claude" ? ".claude" : ".agents"}/skills/parity-fixture/SKILL.md`,
               );
               expect(Boolean(body.request_id)).toBe(id === "docker");
-              result = { exitCode: 0, timedOut: false, stdout: mode === "content" ? "wrong" : digest };
+              result = {
+                exitCode: 0,
+                timedOut: false,
+                stdout: mode === "content" || (mode === "resume_content" && resumed.has(id)) ? "wrong" : digest,
+              };
+              break;
+            case "sandbox/send":
+              if (mode === "resume_quota")
+                return Response.json({ error: { code: "rate_limited", message: "fixture quota" } }, { status: 429 });
+              expect(states.get(id)).toBe(id === "docker" ? "ready" : "stopped");
+              resumed.add(id);
+              states.set(id, "ready");
+              result = { promptId: `wake_${id}` };
+              break;
+            case "logs/read":
+              result = {
+                events: [
+                  { kind: "prompt", promptId: `wake_${id}`, status: "finished" },
+                  {
+                    id: "wake_answer",
+                    kind: "message",
+                    promptId: `wake_${id}`,
+                    text: "SMOKE_OK",
+                    partial: false,
+                    responseKind: mode === "resume_echo" ? "tool_result" : "assistant",
+                  },
+                ],
+              };
+              break;
+            case "sandbox/resume":
+              expect(id).toBe("docker");
+              expect(states.get(id)).toBe("stopped");
+              states.set(id, "ready");
+              result = { status: "ready" };
               break;
             case "sandbox/stop":
               states.set(id, "stopped");
+              if (mode === "resume_stop_budget") now += 110_001;
               result = { id: body.id, status: "stopped" };
               break;
             case "sandbox/delete":
@@ -137,8 +196,53 @@ for (const mode of [
           return Response.json(result);
         },
       },
-      ["--feature", "skills"],
+      ["--feature", mode.startsWith("resume_") ? "skills-resume" : "skills"],
     );
+    if (mode.startsWith("resume_")) {
+      expect(passed).toBe(
+        !["resume_content", "resume_status", "resume_budget", "resume_echo", "resume_stop_budget"].includes(mode),
+      );
+      const report = lines
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .find((value) => value?.step === "provider_parity");
+      const noAllocation = ["resume_missing", "resume_no_followup", "resume_no_resume", "resume_no_stop"].includes(
+        mode,
+      );
+      expect(report.starts).toBe(noAllocation ? 0 : 2);
+      for (const provider of ["modal", "docker"]) {
+        expect(report.features["skills-resume"][provider].status).toBe(
+          mode === "resume_missing" || mode === "resume_quota" || mode === "resume_stop_budget"
+            ? "not-run"
+            : ["resume_no_followup", "resume_no_resume", "resume_no_stop"].includes(mode)
+              ? "unsupported"
+              : mode === "resume_valid"
+                ? "pass"
+                : "fail",
+        );
+        if (noAllocation) expect(calls).not.toContain(`${provider}:templates/launch`);
+        else {
+          expect(report.features["skills-before-resume"][provider].status).toBe("pass");
+          expect(report.features.cleanup[provider].status).toBe("pass");
+          expect(calls.filter((call) => call === `${provider}:templates/launch`)).toHaveLength(1);
+        }
+        if (mode === "resume_stop_budget") {
+          expect(report.features["prerequisite:stop"][provider].status).toBe("fail");
+          expect(calls).not.toContain(`${provider}:sandbox/send`);
+          expect(calls).not.toContain(`${provider}:sandbox/resume`);
+        }
+        if (mode === "resume_valid") {
+          expect(executions.get(provider)).toBe(2);
+          expect(report.features["skills-after-resume"][provider].status).toBe("pass");
+        }
+      }
+      return;
+    }
     expect(passed).toBe(["valid", "claude", "opencode", "no_followup", "missing", "no_exec"].includes(mode));
     const report = lines
       .map((line) => {
