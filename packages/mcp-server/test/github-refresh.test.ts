@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { GitHubHydrationError } from "@armada/core";
+import { expect, spyOn, test } from "bun:test";
+import { GitHubHydrationError, VERSION } from "@armada/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { callSharedTool } from "../src/tool-api.ts";
@@ -26,11 +26,23 @@ test.each([
   );
   const provider = await context.provider({} as never);
   if (expected === "connected") {
-    expect(await callSharedTool(context, "github_refresh", { id: "sandbox" })).toEqual({
-      id: "sandbox",
-      login: "octocat",
-      status: "connected",
+    // Observe the real initialize handshake, including the HTTP adapter's server identity.
+    const connect = Client.prototype.connect;
+    let serverInfo: ReturnType<Client["getServerVersion"]>;
+    const handshake = spyOn(Client.prototype, "connect").mockImplementation(async function (this: Client, ...args) {
+      await connect.apply(this, args);
+      serverInfo = this.getServerVersion();
     });
+    try {
+      expect(await callSharedTool(context, "github_refresh", { id: "sandbox" })).toEqual({
+        id: "sandbox",
+        login: "octocat",
+        status: "connected",
+      });
+      expect(serverInfo).toEqual({ name: "armada", version: VERSION });
+    } finally {
+      handshake.mockRestore();
+    }
     expect(calls).toEqual([[{ userId: "owner", orgId: "org", role: "member" }, provider, "bx"]]);
   } else {
     await expect(callSharedTool(context, "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
