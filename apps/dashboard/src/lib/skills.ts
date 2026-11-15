@@ -149,3 +149,12 @@ export function skillCatalogFailure(status: number | undefined, code?: string): 
     return "That skill choice could not be read. Check its exact name and version before trying again.";
   return "Skill discovery is unavailable. Check Skills setup, try again, or enter an exact pin.";
 }
+
+/** Launch UI recovery is intentionally less technical than the CLI's value-free diagnostics. */
+export function skillLaunchFailure(reason: string): string {
+  if (["skillpack_credential_missing", "skillpack_credential_refused"].includes(reason))
+    return "Connect a usable Skillpack key in Skills, then try again.";
+  if (["skillpack_cli_unavailable", "skillpack_download_unavailable"].includes(reason))
+    return "This snapshot needs private-skill tools. Ask an administrator to check network access and rebuild the snapshot before launching.";
+  return "A requested skill could not be prepared. Check the chosen skills and Skillpack access before trying again.";
+}

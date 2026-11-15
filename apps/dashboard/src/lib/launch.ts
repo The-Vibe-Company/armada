@@ -2,6 +2,7 @@ import { SIZED_LAUNCH_ROUTE_V1 } from "@armada/core";
 import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost } from "./control.ts";
 import type { LaunchArgs } from "./model-choice.ts";
+import { skillLaunchFailure } from "./skills";
 import { launchReason } from "./templates.ts";
 
 /**
@@ -140,13 +141,7 @@ export function decodeLaunchAttempt(value: string | undefined): LaunchAttempt | 
 
 /** Only curated guidance reaches the launch dialog; followLaunch owns uncertain outcomes and request keys. */
 export function launchFailureMessage(error: Pick<ControlError, "status" | "code" | "message">): string {
-  if (error.code?.startsWith("skillpack_")) {
-    if (["skillpack_credential_missing", "skillpack_credential_refused"].includes(error.code))
-      return "Connect a usable Skillpack key in Skills, then try again.";
-    if (["skillpack_cli_unavailable", "skillpack_download_unavailable"].includes(error.code))
-      return "This snapshot needs private-skill tools. Ask an administrator to check network access and rebuild the snapshot before launching.";
-    return "A requested skill could not be prepared. Check the chosen skills and Skillpack access before trying again.";
-  }
+  if (error.code?.startsWith("skillpack_")) return skillLaunchFailure(error.code);
   if (
     error.code?.startsWith("model_account_") ||
     ["missing_credential", "credential_refused", "credential_busy"].includes(error.code ?? "")

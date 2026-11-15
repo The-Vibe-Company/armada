@@ -7,13 +7,13 @@ import {
   PROVIDER_LIMITS,
   type SandboxPlacementProviderId,
   type SandboxProviderId,
-  skillRefusalMessage,
   validateSkillPins,
 } from "@armada/core";
 import { EFFORT_LABEL, HARNESS_LABELS } from "./labels.ts";
 import { accountProblem, accountsFor, type LaunchAccounts } from "./model-accounts";
 import { type ModelFields, modelChoice } from "./model-choice.ts";
 import type { Bucket, ResourceState } from "./resource-list.ts";
+import { skillLaunchFailure } from "./skills";
 
 /**
  * The Templates page (#949, slice 6b of #906): launch presets as the control API's `templates/*` routes return them.
@@ -442,7 +442,7 @@ const LAUNCH_REASONS: Record<string, string> = {
 };
 
 export function launchReason(reason: string | null | undefined): string {
-  if (reason?.startsWith("skillpack_")) return skillRefusalMessage(reason);
+  if (reason?.startsWith("skillpack_")) return skillLaunchFailure(reason);
   const canonical =
     reason === "credential_refused"
       ? "model_account_refused"
