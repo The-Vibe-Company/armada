@@ -700,3 +700,38 @@ test("idle evidence upgrades long archives, survives enrolment renewal, and bloc
   await sweep();
   expect(admitted).toBe(1);
 });
+
+test("runtime retry metadata is published without a status read and clears on progress", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  await f.db.query("insert into sandbox_turn_models(sandbox_id,prompt_id) values($1,'retry_prompt')", [f.id]);
+  const retry: AgentEvent = {
+    id: "retry_metadata",
+    at: Date.now(),
+    kind: "other",
+    promptId: "retry_prompt",
+    type: "armada/modelRateLimit",
+    data: { retryCount: 1, delayMs: 60000, totalWaitMs: 60000 },
+  };
+  const retryAt = async () =>
+    (
+      await f.db.query<{ pending: boolean }>(
+        "select rate_limit_retry_at > now() as pending from sandbox_turn_models where sandbox_id=$1 and prompt_id='retry_prompt'",
+        [f.id],
+      )
+    ).rows[0]?.pending;
+  expect((await f.publish(active, [{ sequence: 1, event: retry }])).status).toBe(200);
+  expect(await retryAt()).toBe(true);
+  const progress: AgentEvent = {
+    id: "retry_progress",
+    text: "work",
+    at: retry.at + 1,
+    kind: "prompt",
+    promptId: "retry_prompt",
+    status: "finished",
+  };
+  expect((await f.publish(active, [{ sequence: 2, event: progress }])).status).toBe(200);
+  expect(await retryAt()).toBeNull();
+  await f.publish(active, [{ sequence: 1, event: retry }]);
+  expect(await retryAt()).toBeNull();
+});

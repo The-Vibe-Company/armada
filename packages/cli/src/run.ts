@@ -1278,10 +1278,10 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
           ...(repo === undefined ? {} : { repo }),
           ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
           harness,
-          ...resolveModelChoice(harness, {
-            model: single(args, "--model"),
-            reasoningEffort: single(args, "--reasoning-effort"),
-          }),
+          ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model") }),
+          ...(single(args, "--reasoning-effort") === undefined
+            ? {}
+            : { reasoningEffort: single(args, "--reasoning-effort") }),
           ...(prompt === undefined ? {} : { prompt }),
           ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
           ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),

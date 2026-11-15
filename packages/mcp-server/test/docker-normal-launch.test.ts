@@ -278,7 +278,8 @@ async function fixture(
         }) as typeof fetch,
       }).authorizeRepositories
     : undefined;
-  const resolver: Pick<LaunchCredentialResolver, "resolve" | "authorizeRepositories"> = {
+  const resolver: Pick<LaunchCredentialResolver, "resolve" | "authorizeRepositories" | "defaults"> = {
+    defaults: async (...args) => credentials.defaults?.(...args),
     ...(publicRepositoryAccess ? { authorizeRepositories: publicRepositoryAccess } : {}),
     ...(options.repositoryAccessDenied
       ? {
@@ -2790,4 +2791,24 @@ test("failed snapshot machine facts persist a safe reason in get and list respon
   expect(await f.snapshots.command(f.caller, "list", { org: f.actor.orgId })).toMatchObject({
     snapshots: [expect.objectContaining({ id, status: "failed", failureReason })],
   });
+});
+
+test("Docker normal launch uses the saved model unless explicitly overridden", async () => {
+  for (const explicit of [false, true]) {
+    const f = await fixture();
+    await createSqlVaultStore(sql).setAgentDefault!(f.actor.userId, {
+      harness: "codex",
+      credentialId: f.body.credentialId,
+      model: "gpt-6-astra",
+    });
+    const result = await f.service().launch(f.caller, { ...f.body, ...(explicit ? { model: "gpt-6.1-terra" } : {}) });
+    expect(result.sandbox.model).toBe(explicit ? "gpt-6.1-terra" : "gpt-6-astra");
+    await createSqlVaultStore(sql).setAgentDefault!(f.actor.userId, {
+      harness: "codex",
+      credentialId: null,
+      model: "gpt-6.1-sol",
+    });
+    const replay = await f.service().launch(f.caller, { ...f.body, ...(explicit ? { model: "gpt-6.1-terra" } : {}) });
+    expect(replay.sandbox.model).toBe(result.sandbox.model);
+  }
 });

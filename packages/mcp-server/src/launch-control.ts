@@ -250,9 +250,17 @@ function launchJson(result: LaunchResult) {
   };
 }
 
-function modelChoice(harness: Harness, model: string | undefined, reasoningEffort: string | undefined): ModelChoice {
+function modelChoice(
+  harness: Harness,
+  model: string | undefined,
+  reasoningEffort: string | undefined,
+): Partial<ModelChoice> {
   try {
-    return resolveModelChoice(harness, { model, reasoningEffort });
+    const checked = resolveModelChoice(harness, { model, reasoningEffort });
+    return {
+      ...(model === undefined ? {} : { model: checked.model }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort: checked.reasoningEffort }),
+    };
   } catch (error) {
     if (error instanceof LaunchError) throw new VaultError("invalid", error.message);
     throw error;

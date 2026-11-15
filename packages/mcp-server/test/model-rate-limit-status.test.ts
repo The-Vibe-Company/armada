@@ -26,10 +26,15 @@ test("running status exposes rate-limit wait without settling or failing the tur
     model: "kimi",
     conversationIds: [],
   } as unknown as SandboxView;
+  const retries: (number | null)[] = [];
   const store = {
+    recordAccountRateLimit: async (_id: string, _prompt: string, until: number | null) => {
+      retries.push(until);
+    },
     readTurnModel: async () => ({ requestedModel: "kimi", evidence: null }),
   } as unknown as ServerSandboxStore;
   const report = await readStatus(provider, store, sandbox, { now: new Date(2000), stored: true });
+  expect(retries).toEqual([21000]);
   expect(report).toMatchObject({
     status: "running",
     settled: false,
@@ -43,4 +48,6 @@ test("running status exposes rate-limit wait without settling or failing the tur
       },
     },
   });
+  await readStatus(provider, store, sandbox, { now: new Date(22000), stored: true });
+  expect(retries).toEqual([21000, null]);
 });

@@ -739,6 +739,23 @@ async function dispatch(
     case "members/remove":
       await removeMember(store, userId, { org, email: required(body, "email") });
       return { ok: true };
+    case "creds/defaults/set": {
+      const harness = required(body, "harness");
+      if (harness !== "claude" && harness !== "codex" && harness !== "opencode")
+        throw new VaultError("invalid", "Unknown agent.");
+      const credentialId = body.credentialId === null ? null : required(body, "credentialId");
+      const model = body.model === null ? null : required(body, "model");
+      if (
+        (credentialId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(credentialId)) ||
+        (model && (!model.trim() || model.length > 256 || /\s/.test(model)))
+      )
+        throw new VaultError("invalid", "Invalid agent default.");
+      if (model) resolveModelChoice(harness, { model });
+      if (!store.setAgentDefault) throw new VaultError("unavailable", "Agent defaults unavailable.");
+      const member = org ? await resolveOrg(store, userId, org) : undefined;
+      await store.setAgentDefault(userId, { harness, credentialId, model }, member?.id);
+      return { ok: true };
+    }
     case "creds/accounts/limits":
     case "creds/accounts/set":
     case "creds/accounts/rename":

@@ -86,6 +86,10 @@ export interface LaunchRequest {
 
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
 export interface LaunchCredentialResolver {
+  defaults?(
+    actor: GoldenActor,
+    harness: Harness,
+  ): Promise<{ credentialId: string | null; model: string | null } | undefined>;
   /** Resolve only for private launch pins, under the already-authorized actor. Never harness env. */
   skillpackKey?(actor: GoldenActor): Promise<string | null>;
   /** Server transport port; the browser-safe launcher must not import SSH implementation. */
@@ -305,6 +309,16 @@ export async function launchSandbox(
       "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
   const prompt = checkPrompt(request.prompt);
+  const preference = await stores.credentials.defaults?.(actor, harness);
+  if (preference && (request.credentialId === undefined || request.credentialId === preference.credentialId)) {
+    request = {
+      ...request,
+      ...(request.credentialId === undefined && preference.credentialId
+        ? { credentialId: preference.credentialId }
+        : {}),
+      ...(request.model === undefined && preference.model ? { model: preference.model } : {}),
+    };
+  }
   const choice = checkModel(provider, harness, request, Boolean(runtime));
 
   const defaults = !request.skipSkillDefaults ? await stores.skillDefaults?.resolve(actor, golden) : undefined;

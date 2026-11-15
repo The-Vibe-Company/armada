@@ -100,6 +100,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   } catch {
     throw new GoldenError("invalid_config", "Invalid application secret bindings. Use --secret KEY:UUID:VERSION.");
   }
+  resolveModelChoice(harness, { model: single(args, "--model"), reasoningEffort: single(args, "--reasoning-effort") });
   const skills = values(args, "--skill");
   try {
     validateSkillPins(skills);
@@ -134,10 +135,10 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     harness,
     ...(credentialId === undefined ? {} : { credentialId }),
     requestId,
-    ...resolveModelChoice(harness, {
-      model: single(args, "--model"),
-      reasoningEffort: single(args, "--reasoning-effort"),
-    }),
+    ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model")! }),
+    ...(single(args, "--reasoning-effort") === undefined
+      ? {}
+      : { reasoningEffort: single(args, "--reasoning-effort")! }),
     ...(skills.length ? { skills } : {}),
     ...(flag(args, "--no-connections") ? { connections: [] } : selected ? { connections: selected } : {}),
     ...(version === undefined ? {} : { credentialVersion: Number(version) }),

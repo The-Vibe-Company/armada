@@ -206,6 +206,17 @@ export async function readStatus(
         }
       }
     }
+    try {
+      await store.recordAccountRateLimit?.(
+        sandbox.id,
+        target.promptId,
+        outcome.state === "running" && rateLimit?.waiting && rateLimit.message.startsWith("Rate limited by")
+          ? rateLimit.retryAt
+          : null,
+      );
+    } catch {
+      /* A telemetry write cannot change turn status. Existing retry evidence expires on its own. */
+    }
     const selectionFailed =
       outcome.state === "finished" &&
       recorded?.requestedModel != null &&

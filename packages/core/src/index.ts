@@ -35,6 +35,7 @@ export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export type { CredentialBinding } from "./credentials.ts";
 export {
   type AccountConnectionModels,
+  type AgentDefault,
   CODEX_AUTH_ENV,
   CODEX_AUTH_PATH,
   type ConnectionModelInfo,

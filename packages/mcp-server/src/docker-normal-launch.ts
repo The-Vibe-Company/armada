@@ -137,7 +137,7 @@ type Options = {
   /** Trusted server release configuration, never accepted from a caller. */
   officialImage?: string;
   github?: Pick<RuntimeGitHub, "prepare" | "prepareLaunch" | "prepareTurn" | "preflightRepositories">;
-  credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey" | "authorizeRepositories">;
+  credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey" | "authorizeRepositories" | "defaults">;
   mcp?: RuntimeMcp;
   bootstrap?: ReturnType<typeof createDockerBootstrapService>;
   clock?: Clock;
@@ -487,17 +487,15 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       if (snapshotId && (body.image !== undefined || body.repos !== undefined)) throw failure("invalid_request");
       const org = identifier(body.org);
       if (!caller.orgs.some((member) => member.orgId === org)) throw failure("not_found");
-      const retained = snapshotId
-        ? (
-            await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-              `select d.request_enc from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
+      const retained = (
+        await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+          `select d.request_enc from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=d.actor_epoch
-           where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.provider='docker' and s.docker_snapshot_id=$4`,
-              [identifier(body.requestId), caller.userId, org, snapshotId],
-            )
-          ).rows[0]
-        : undefined;
+           where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.provider='docker' and ($4::uuid is null or s.docker_snapshot_id=$4)`,
+          [identifier(body.requestId), caller.userId, org, snapshotId ?? null],
+        )
+      ).rows[0];
       const frozen = retained
         ? (JSON.parse(await decryptSecret(retained.request_enc, key)) as Manifest).request
         : undefined;
@@ -505,8 +503,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         snapshotId && !frozen
           ? await resolveDockerSnapshot(sql, { userId: caller.userId, orgId: org }, snapshotId)
           : undefined;
-      const sourceHost = frozen?.hostId ?? source?.host_id,
-        sourceImage = frozen?.image ?? source?.image_id;
+      const sourceHost = snapshotId ? (frozen?.hostId ?? source?.host_id) : undefined,
+        sourceImage = snapshotId ? (frozen?.image ?? source?.image_id) : undefined;
       if (sourceHost && body.hostId !== undefined && identifier(body.hostId) !== sourceHost) throw failure("not_found");
       let image: string;
       try {
@@ -520,7 +518,27 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             "Armada's sandbox image configuration is invalid. Ask the server operator to deploy a matching release image pin. No sandbox was created.",
         });
       }
-      const request = normalize(sourceHost ? { ...body, hostId: sourceHost } : body, image);
+      // Resolve personal choices before normalization supplies catalog defaults. Explicit
+      // account/model selections and replayed frozen manifests retain their authority.
+      let selected = body;
+      if (HARNESSES.includes(body.harness as Harness)) {
+        const preference = frozen
+          ? { credentialId: frozen.credentialId ?? null, model: frozen.model }
+          : await options.credentials.defaults?.(
+              { userId: caller.userId, orgId: org, role: caller.orgs.find((entry) => entry.orgId === org)!.role },
+              body.harness as Harness,
+            );
+        if (preference && (body.credentialId === undefined || body.credentialId === preference.credentialId)) {
+          selected = {
+            ...body,
+            ...(body.credentialId === undefined && preference.credentialId
+              ? { credentialId: preference.credentialId }
+              : {}),
+            ...(body.model === undefined && preference.model ? { model: preference.model } : {}),
+          };
+        }
+      }
+      const request = normalize(sourceHost ? { ...selected, hostId: sourceHost } : selected, image);
       const actor = { userId: identifier(caller.userId), orgId: request.org };
       if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
       const hash = dockerLaunchRequestHash(request);

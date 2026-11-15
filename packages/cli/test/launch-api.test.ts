@@ -131,8 +131,6 @@ describe("launch through the Armada API", () => {
               ? { sizePolicyVersion: 1 }
               : { repo, size: "large", sizePolicyVersion: 1 }),
           ...(selection === undefined ? {} : { connections: [...selection] }),
-          model: "gpt-6.1-sol",
-          reasoningEffort: "medium",
           harness: "codex",
           prompt: "do it",
           ttlSeconds: 1800,
