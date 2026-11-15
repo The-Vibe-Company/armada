@@ -1,4 +1,5 @@
 import { type Sql, VaultError, validateReadableVariables } from "@armada/core/server";
+import { type RuntimeConfigurationInput, runtimeConfiguration } from "./runtime-configuration.ts";
 
 /** Readable values were copied at template admission. Never re-resolve mutable
  * variable sources on later turns/resume, and never decrypt application secrets.
@@ -79,4 +80,17 @@ export async function readRuntimeVariables(
   } catch {
     throw new VaultError("unavailable", "Frozen runtime readable configuration is unavailable.");
   }
+}
+
+/** Merge frozen readables only after private configuration admission succeeds. */
+export async function runtimeConfigurationWithVariables(
+  sql: Sql,
+  input: RuntimeConfigurationInput,
+  provider: "boat" | "modal",
+  emptyMcpRevision: string,
+) {
+  const plan = await runtimeConfiguration(input, provider, emptyMcpRevision);
+  const variables = await readRuntimeVariables(sql, input.actor, input.sandbox.id, provider);
+  Object.assign(plan.configuration[`${input.sandbox.harness}Env`], variables);
+  return { ...plan, configuration: { ...plan.configuration, readableVariables: variables } };
 }
