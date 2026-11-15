@@ -4,7 +4,35 @@ import { readFileSync } from "node:fs";
 const command = process.argv[2];
 if (command === "acp") await import("./acp.ts");
 else if (command === "export" && process.env.FAIL_EXPORT) process.exit(2);
-else if (command === "export") {
+else if (command === "export" && process.env.OPENCODE_THROTTLE_STATE) {
+  const throttled = readFileSync(process.env.OPENCODE_THROTTLE_STATE, "utf8") === "throttled";
+  process.stdout.write(
+    JSON.stringify({
+      info: { id: "session-1" },
+      messages: [
+        {
+          info: {
+            id: throttled ? "limited" : "continued",
+            role: "assistant",
+            sessionID: "session-1",
+            ...(throttled
+              ? {
+                  error: {
+                    name: "APIError",
+                    data: {
+                      statusCode: Number(process.env.OPENCODE_THROTTLE_STATUS),
+                      responseHeaders: { "retry-after": "20" },
+                    },
+                  },
+                }
+              : {}),
+          },
+          parts: [],
+        },
+      ],
+    }),
+  );
+} else if (command === "export") {
   const step = (
     id: string,
     input: number,

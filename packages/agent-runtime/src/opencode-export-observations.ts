@@ -1,3 +1,4 @@
+import { modelThrottle } from "./model-rate-limit.ts";
 import type { McpConfiguration } from "./protocol.ts";
 
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -142,3 +143,26 @@ export function exportedToolProofs(saved: unknown, baseline: Set<string>, mcp?: 
 }
 
 export { record as isOpenCodeRecord };
+
+/** ACP drops HTTP metadata; the last new native assistant error is the authoritative terminal evidence. */
+export function exportedModelThrottle(saved: unknown, baseline: Set<string>) {
+  if (!record(saved) || !Array.isArray(saved.messages)) return;
+  const assistant = saved.messages
+    .filter(
+      (message: unknown) =>
+        record(message) &&
+        record(message.info) &&
+        message.info.role === "assistant" &&
+        typeof message.info.id === "string" &&
+        !baseline.has(message.info.id),
+    )
+    .at(-1);
+  if (
+    !record(assistant) ||
+    !record(assistant.info) ||
+    !record(assistant.info.error) ||
+    assistant.info.error.name !== "APIError"
+  )
+    return;
+  return modelThrottle(assistant.info.error);
+}

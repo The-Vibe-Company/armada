@@ -12,7 +12,7 @@ test("model backoff honors Retry-After seconds/date against a fake clock and cap
   expect(modelRetryDelay(8, 1, "0", now)).toBe(0);
 });
 
-test("ACP throttle classification accepts structured 429/529 metadata, not arbitrary error text", () => {
+test("throttle classification accepts structured 429/529 metadata, not arbitrary error text", () => {
   expect(modelThrottle({ data: { statusCode: 429, responseHeaders: { "retry-after": "20" } } })).toEqual({
     retryAfter: "20",
   });

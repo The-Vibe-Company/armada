@@ -1,11 +1,15 @@
 import { expect, jest, test } from "bun:test";
-import { AcpDriver } from "../src/acp.ts";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ClaudeDriver } from "../src/claude.ts";
+import { OpenCodeDriver } from "../src/opencode.ts";
 import type { DriverEvent } from "../src/protocol.ts";
 
 for (const kind of ["claude", "opencode"] as const)
   for (const status of [429, 529]) {
     test(`${kind} terminal ${status} continues the same turn after a fake-clock backoff`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "model-retry-"));
       const driver =
         kind === "claude"
           ? new ClaudeDriver({
@@ -16,11 +20,16 @@ for (const kind of ["claude", "opencode"] as const)
                 ARMADA_THROTTLE_CASE: status === 429 ? "rate_limit" : "overloaded",
               },
             })
-          : new AcpDriver({
-              executable: process.execPath,
-              args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
-              cwd: import.meta.dir,
-              env: { ACP_THROTTLE: String(status) },
+          : new OpenCodeDriver({
+              executable: `${import.meta.dir}/fixtures/opencode.ts`,
+              root: join(root, "native"),
+              cwd: root,
+              env: {
+                PATH: process.env.PATH ?? "/usr/bin:/bin",
+                OPENCODE_THROTTLE_STATE: join(root, "throttle"),
+                OPENCODE_THROTTLE_STATUS: String(status),
+              },
+              redact: (text) => text,
             });
       const events: DriverEvent[] = [];
       const sessions: string[] = [];
@@ -43,6 +52,7 @@ for (const kind of ["claude", "opencode"] as const)
       } finally {
         jest.useRealTimers();
         await driver.close();
+        await rm(root, { recursive: true, force: true });
       }
     });
   }
@@ -67,5 +77,42 @@ test("Claude native API retries are reported without starting an Armada backoff"
     ]);
   } finally {
     await driver.close();
+  }
+});
+
+test("OpenCode does not reuse a preceding throttle when the resumed process fails before new output", async () => {
+  const root = await mkdtemp(join(tmpdir(), "model-retry-stale-"));
+  const driver = new OpenCodeDriver({
+    executable: `${import.meta.dir}/fixtures/opencode.ts`,
+    root: join(root, "native"),
+    cwd: root,
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      OPENCODE_THROTTLE_STATE: join(root, "throttle"),
+      OPENCODE_THROTTLE_STATUS: "429",
+      OPENCODE_THROTTLE_SECOND_FAIL: "1",
+    },
+    redact: (text) => text,
+  });
+  let retries = 0;
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "opencode", text: "original" },
+      signal: new AbortController().signal,
+      session: () => {},
+      emit: (event) => {
+        if (event.kind === "other" && event.type === "armada/modelRateLimit") {
+          retries++;
+          jest.useFakeTimers();
+          queueMicrotask(() => jest.advanceTimersByTime(300000));
+        }
+      },
+    });
+    await expect(turn.done).rejects.toThrow("harness_failed");
+    expect(retries).toBe(1);
+  } finally {
+    jest.useRealTimers();
+    await driver.close();
+    await rm(root, { recursive: true, force: true });
   }
 });

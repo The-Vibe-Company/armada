@@ -8,16 +8,14 @@ test("running status exposes rate-limit wait without settling or failing the tur
   const provider = boat.providerFor("placeholder");
   const native = await provider.fork({ from: "snapshot" });
   const receipt = await provider.prompt({ sandboxId: native.id, harness: "codex", text: "work" });
-  boat
-    .sandbox(native.id)
-    .events.push({
-      id: "wait",
-      at: 1000,
-      promptId: receipt.promptId,
-      kind: "other",
-      type: "armada/modelRateLimit",
-      data: { retryCount: 2, delayMs: 20_000, totalWaitMs: 21_000 },
-    });
+  boat.sandbox(native.id).events.push({
+    id: "wait",
+    at: 1000,
+    promptId: receipt.promptId,
+    kind: "other",
+    type: "armada/modelRateLimit",
+    data: { retryCount: 2, delayMs: 20_000, totalWaitMs: 21_000 },
+  });
   const sandbox = {
     id: "sandbox",
     providerSandboxId: native.id,

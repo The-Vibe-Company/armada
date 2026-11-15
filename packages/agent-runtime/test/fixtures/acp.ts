@@ -1,6 +1,6 @@
+import { existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-let throttled = false;
 let active: number | undefined;
 const send = (value: object) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...value })}\n`);
 const lines = createInterface({ input: process.stdin });
@@ -9,6 +9,14 @@ for await (const line of lines) {
   const reply = (result: object) => send({ id: m.id, result });
   switch (m.method) {
     case "initialize":
+      if (
+        process.env.OPENCODE_THROTTLE_SECOND_FAIL &&
+        process.env.OPENCODE_THROTTLE_STATE &&
+        existsSync(process.env.OPENCODE_THROTTLE_STATE)
+      ) {
+        send({ id: m.id, error: { code: -32603, message: "session initialization failed" } });
+        break;
+      }
       reply({ protocolVersion: process.env.BAD_ACP ? 2 : 1, agentCapabilities: { loadSession: true } });
       break;
     case "session/new":
@@ -30,17 +38,21 @@ for await (const line of lines) {
     case "session/prompt": {
       if (m.params.sessionId !== "session-1") throw Error("wrong_session");
       const text = m.params.prompt[0].text;
-      if (process.env.ACP_THROTTLE && !throttled) {
-        throttled = true;
-        send({
-          id: m.id,
-          error: {
-            code: -32603,
-            message: "Request failed",
-            data: { statusCode: Number(process.env.ACP_THROTTLE), responseHeaders: { "retry-after": "20" } },
-          },
-        });
-        break;
+      if (process.env.OPENCODE_THROTTLE_STATE) {
+        const state = process.env.OPENCODE_THROTTLE_STATE;
+        if (!existsSync(state)) {
+          writeFileSync(state, "throttled");
+          send({
+            id: m.id,
+            error: {
+              code: -32603,
+              message: "Provider request failed",
+              data: { service: "session", errorName: "APIError" },
+            },
+          });
+          break;
+        }
+        writeFileSync(state, "continued");
       }
 
       send({
