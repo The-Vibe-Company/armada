@@ -346,7 +346,10 @@ async function dispatch(
   if (route === "launch/options")
     return {
       ...launchOptions,
-      providers: launchProviderOptions(options.docker, Boolean(options.launch?.boatRuntimeDefault)),
+      providers: launchProviderOptions(
+        options.docker,
+        Boolean(options.launch?.boatRuntimeDefault || options.launch?.boatEndpointRuntime),
+      ),
       modalRuntime: {
         defaultPath: options.launch?.modalRuntimeDefault ? "runtime" : "native",
         version: 1,

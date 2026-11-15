@@ -269,7 +269,10 @@ export async function launchSandbox(
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId)
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
-  const runtimeDefaults = { boat: options.boatRuntimeDefault, modal: options.modalRuntimeDefault };
+  const runtimeDefaults = {
+    boat: options.boatRuntimeDefault ?? (request.harness === "opencode" ? options.boatEndpointRuntime : undefined),
+    modal: options.modalRuntimeDefault,
+  };
   const defaultRuntime = !options.runtime && !options.boatRuntime ? runtimeDefaults[golden.provider] : undefined;
   if (defaultRuntime) {
     const providerName = golden.provider === "boat" ? "Boat" : "Modal";
@@ -1105,12 +1108,20 @@ function messageOf(error: unknown): string {
 }
 
 function checkHarness(provider: Provider, harness: string, runtime = false): Harness {
+  if (provider.id === "boat" && harness === "opencode" && !runtime)
+    throw new LaunchError(
+      "invalid_request",
+      "OpenCode on Boat requires the Boat runtime artifacts to be installed on the server.",
+    );
   if (
     !(HARNESSES as readonly string[]).includes(harness) ||
     (!(provider.harnesses as readonly string[]).includes(harness) &&
       !(runtime && provider.id === "boat" && harness === "opencode"))
   ) {
-    throw new LaunchError("invalid_request", `Unknown agent '${harness}'. Use one of: ${HARNESSES.join(", ")}.`);
+    throw new LaunchError(
+      "invalid_request",
+      `Unknown agent '${harness}'. Use one of: ${provider.harnesses.join(", ")}.`,
+    );
   }
   return harness as Harness;
 }
