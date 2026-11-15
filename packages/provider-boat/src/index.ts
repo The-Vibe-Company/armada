@@ -10,10 +10,6 @@ export {
   BOAT_CAPABILITIES,
   type BoatProvider,
   type BoatProviderOptions,
-  type BoatRuntimeHost,
   createBoatProvider,
-  DEFAULT_BASE_URL,
-  DEFAULT_TTL_SECONDS,
-  MAX_TTL_SECONDS,
 } from "./provider.ts";
 export { startBoatRuntime } from "./runtime-bootstrap.ts";

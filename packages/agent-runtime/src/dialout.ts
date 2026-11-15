@@ -6,7 +6,7 @@ export class RuntimeChannelRevoked extends Error {
     super("runtime_channel_revoked");
   }
 }
-export interface RuntimeSession {
+interface RuntimeSession {
   sandboxId: string;
   epoch: string;
   runtimeToken: string;

@@ -38,7 +38,7 @@ export function projectGitHubExecEnvironment(
   return result;
 }
 
-export const TRUSTED_TOOL_PATH = "/usr/local/bin:/usr/bin:/bin";
+const TRUSTED_TOOL_PATH = "/usr/local/bin:/usr/bin:/bin";
 /** npm's Codex launcher uses /usr/bin/env node. Supply a public tool baseline explicitly instead
  * of relying on Claude SDK's parent-env merge (Codex intentionally uses the exact provided env). */
 export function withTrustedHarnessPath(env: Readonly<Record<string, string>>): Record<string, string> {

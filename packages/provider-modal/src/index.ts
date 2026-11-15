@@ -10,7 +10,7 @@ export {
 export { runModalConformance } from "./conformance.ts";
 export { createRunnerDistribution, type DistributionOptions } from "./distribution.ts";
 export { ModalOperationError, modalFailureReceipt } from "./errors.ts";
-export { projectGitHubExecEnvironment, TRUSTED_TOOL_PATH, withTrustedHarnessPath } from "./exec-env.ts";
+export { projectGitHubExecEnvironment, withTrustedHarnessPath } from "./exec-env.ts";
 export { executeGoldenCommand } from "./golden-exec.ts";
 export { createGenerationGrants } from "./grants.ts";
 export { MODAL_CONFORMANCE_APP, MODAL_IMAGE_LOCK } from "./image-lock.ts";
