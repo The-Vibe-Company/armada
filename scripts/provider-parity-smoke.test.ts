@@ -2172,6 +2172,7 @@ test("accounts appends both human-readable tables to the Actions summary without
     expect(summary).toContain("| codex-subscription | docker | all | not-run: no account on staging |");
     expect(summary).toContain("| claude-morph | modal | not-run: no account configured |");
     expect(summary).toContain("| codex-morph | docker | not-run: no account configured |");
+    expect(summary).toContain("| opencode-morph | modal | not-run: no account configured |");
     expect(summary).not.toContain("USD 0");
     expect(lines.some((line) => line.startsWith("## Accounts parity"))).toBe(false);
   } finally {

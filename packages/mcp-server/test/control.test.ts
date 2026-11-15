@@ -1817,9 +1817,9 @@ test.each(["claude", "codex"] as const)(
       expect((await post(STAN, chosen)).status).toBe(404); // Org admins cannot adopt another owner's workspace.
       const incompatible = await post(ADA, wrong);
       expect(await incompatible.json()).toMatchObject({
-        error: { code: "credential_refused", message: expect.stringContaining("incompatible") },
+        error: { code: "invalid", message: expect.stringContaining("This account cannot drive") },
       });
-      expect(incompatible.status).toBe(422);
+      expect(incompatible.status).toBe(400);
       await options.store.removeMember(org.id, ADA);
       expect((await post(ADA, chosen)).status).toBe(404); // The named org is resolved against fresh memberships.
       // Without --org, the bearer's org list may be stale: the transaction checks membership again.

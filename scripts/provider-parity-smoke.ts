@@ -140,6 +140,7 @@ const features = [
 const accountMatrix = {
   "claude-morph": "claude",
   "codex-morph": "codex",
+  "opencode-morph": "opencode",
   "codex-openai": "codex",
   "codex-subscription": "codex",
   "codex-azure": "codex",

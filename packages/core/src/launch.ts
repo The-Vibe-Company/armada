@@ -419,6 +419,8 @@ export async function launchSandbox(
     const configured = credentials.env[OPENCODE_ENDPOINT_ENV];
     if (configured) {
       const endpoint = parseOpenCodeEndpoint(JSON.parse(configured));
+      // Shared accounts advertise provider model IDs; native OpenCode needs its connection namespace.
+      if (endpoint.models.includes(choice.model)) choice.model = `${OPENCODE_CONNECTION_PROVIDER}/${choice.model}`;
       const wanted = choice.model;
       if (!endpoint.models.some((id) => wanted === `${OPENCODE_CONNECTION_PROVIDER}/${id}`))
         throw new LaunchError(

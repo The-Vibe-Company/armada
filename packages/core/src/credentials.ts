@@ -5,7 +5,7 @@ import type { Harness, Visibility } from "./contract.ts";
 import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import type { CredentialKind, CredentialScope } from "./database.types.ts";
 import type { GitHubAccess } from "./github.ts";
-import { HARNESS_CATALOG, mapHarnesses } from "./harnesses.ts";
+import { HARNESS_CATALOG, harnessesForCredential, mapHarnesses } from "./harnesses.ts";
 import { LaunchError } from "./launch-error.ts";
 import { type ModelPriceOverrides, parseModelPriceOverrides } from "./model-price-overrides.ts";
 import {
@@ -427,15 +427,21 @@ export async function resolveCredentials(
             ? candidates[0]
             : undefined;
     if (!row) throw new VaultError("conflict", "Multiple compatible accounts: choose credentialId or set a default.");
+    if (!kinds.includes(row.kind)) {
+      const supported = harnessesForCredential(row.kind).map((id) => HARNESS_CATALOG[id].label);
+      throw new VaultError(
+        "invalid",
+        `This account cannot drive ${HARNESS_CATALOG[input.harness].label}. This account works with ${supported.join(" and ") || "no coding harness"}; for ${HARNESS_CATALOG[input.harness].label} use ${kinds.map(credentialName).join(" or ")}.`,
+      );
+    }
     if (
-      !kinds.includes(row.kind) ||
       (row.status !== undefined && row.status !== "active") ||
       (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) ||
       (input.credentialVersion !== undefined && row.version !== input.credentialVersion)
     ) {
       throw new VaultError(
         "credential_refused",
-        "The selected credential is incompatible, expired, revoked or changed. No fallback was used.",
+        "The selected credential is expired, revoked or changed. No fallback was used.",
       );
     }
     const result = deliver(row.kind, scope, await open(row.valueEnc, encryptionKey), input.harness);
@@ -557,6 +563,20 @@ function deliver(kind: CredentialKind, scope: CredentialScope, value: string, ha
   const source = { kind, scope };
   if (kind === "morph") {
     const provider = COMPATIBLE_MODEL_PROVIDERS[kind];
+    if (harness === "opencode") {
+      return {
+        env: {
+          OPENCODE_API_KEY: parseCredentialValue(kind, value),
+          [OPENCODE_ENDPOINT_ENV]: JSON.stringify({
+            version: 1,
+            baseUrl: provider.codex.baseUrl,
+            models: provider.models,
+          }),
+        },
+        files: [],
+        sources: [source],
+      };
+    }
     const claude = harness === "claude";
     return {
       env: {

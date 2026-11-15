@@ -352,3 +352,31 @@ test.each([
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("Morph account reaches OpenCode through the generic compatible provider", async () => {
+  const { resolveCredentials } = await import("../../core/src/credentials.ts");
+  const { encryptSecret } = await import("../../core/src/crypto.ts");
+  const key = Buffer.alloc(32, 7).toString("base64");
+  const valueEnc = await encryptSecret("morph_test_key", key);
+  const resolved = await resolveCredentials(
+    {
+      credentials: async () => [{ id: "account", kind: "morph", valueEnc }],
+      orgBoatKey: async () => null,
+    },
+    key,
+    { userId: "u", orgId: "o", harness: "opencode", credentialId: "account" },
+  );
+  configureOpenCodeEndpoint(resolved.env);
+  expect(JSON.parse(resolved.env.OPENCODE_CONFIG_CONTENT!).provider.armada).toEqual({
+    npm: "@ai-sdk/openai-compatible",
+    name: "Armada model connection",
+    options: { baseURL: "https://api.morphllm.com/v1", apiKey: "morph_test_key" },
+    models: {
+      "morph-kimik31": { name: "morph-kimik31" },
+      "morph-dsv41flash": { name: "morph-dsv41flash" },
+      "morph-dsv41flash-1017": { name: "morph-dsv41flash-1017" },
+    },
+  });
+  expect(resolved.env.OPENCODE_API_KEY).toBeUndefined();
+  expect(resolved.env[OPENCODE_ENDPOINT_ENV]).toBeUndefined();
+});

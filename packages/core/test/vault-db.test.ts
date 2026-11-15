@@ -450,7 +450,7 @@ describe("named model accounts", () => {
       ).rejects.toThrow(/No such account/);
       await expect(
         resolveCredentials(store, KEY, { ...actor, harness: "claude", credentialId: first.id! }),
-      ).rejects.toThrow(/incompatible/);
+      ).rejects.toThrow(/This account cannot drive/);
       await expect(
         setCredential(store, KEY, people.stan, { scope: "user", org: undefined, kind: "openai", value: "overwrite" }),
       ).rejects.toThrow(/Multiple accounts/);
@@ -866,7 +866,9 @@ test("OpenCode accounts keep independent defaults, sealed endpoints and the mode
       baseUrl: "https://api.deepseek.com/v1",
       models: ["deepseek-flash"],
     });
-    await expect(resolveCredentials(store, KEY, { ...actor, harness: "codex" })).rejects.toThrow(/incompatible/);
+    await expect(resolveCredentials(store, KEY, { ...actor, harness: "codex" })).rejects.toThrow(
+      /This account cannot drive/,
+    );
     const encrypted = (
       await db.query<{ value_enc: Uint8Array }>("select value_enc from credentials where id=$1", [account.id])
     ).rows[0]!.value_enc;
