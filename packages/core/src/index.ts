@@ -89,13 +89,9 @@ export type {
 } from "./database.types.ts";
 export * from "./delegated-access.ts";
 export type {
-  DockerHostListRequest,
   DockerHostListResponse,
-  DockerHostRegistrationRequest,
   DockerHostRegistrationResponse,
   DockerHostResourceSummary,
-  DockerHostRevokeRequest,
-  DockerHostRevokeResponse,
   DockerHostSummary,
   DockerLaunchRequest,
   DockerLaunchResult,
@@ -189,7 +185,6 @@ export {
   assignDirs,
   configFromFlags,
   type GitHubGoldenConfig,
-  GOLDEN_BUILD_TTL_SECONDS,
   GOLDEN_POLL_MS,
   GOLDEN_ROOT,
   GOLDEN_SANDBOX_POLLS,

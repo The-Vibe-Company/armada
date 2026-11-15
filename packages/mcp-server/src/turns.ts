@@ -410,10 +410,6 @@ async function allEvents(
   return dedupeEvents(all);
 }
 
-export interface WaitReport extends StatusReport {
-  timedOut: boolean;
-}
-
 /** Reads the status until the agent settles or the timeout passes. Never longer than `timeoutMs`. */
 export async function waitSettled<T extends StatusReport>(
   read: () => Promise<T>,
