@@ -1,4 +1,4 @@
-import { CircleAlertIcon, CircleCheckIcon, InfoIcon, PlugIcon, StarIcon, UserIcon, UsersIcon } from "lucide-react";
+import { CircleAlertIcon, CircleCheckIcon, InfoIcon, PlugIcon, UserIcon, UsersIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { AddServerDialog, ServiceCatalog, ServiceMark, ToolPanel, ToolRowAction } from "@/components/connections";
@@ -32,7 +32,7 @@ export const dynamic = "force-dynamic";
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
 const TITLE = "Tools";
-const DESCRIPTION = "Connect external tools and services for your agents.";
+const DESCRIPTION = "Services your agents can call while they work.";
 
 export default async function ToolsPage({ searchParams }: Props) {
   const selected = await selectedOrganization();
@@ -119,56 +119,58 @@ export default async function ToolsPage({ searchParams }: Props) {
   const initial = requested;
 
   return (
-    <ResourceBrowser
-      title={TITLE}
-      description={DESCRIPTION}
-      meta={list.connections.length > 0 ? list.connections.length : undefined}
-      label="Tools"
-      rows={rows}
-      blockers={blockers}
-      notices={notice}
-      initial={initial}
-      actions={<AddServerDialog {...org} />}
-      footer={
-        <>
-          <p className="text-xs text-muted-foreground">
-            Personal tools reach only the sandboxes you launch. Org tools reach every member's;{" "}
-            {isAdmin ? "you manage them." : "only an admin changes them."}
-          </p>
-          <section aria-labelledby="services-title" className="space-y-3 pt-5">
-            <div className="space-y-0.5">
-              <h2 id="services-title" className="text-base font-semibold tracking-tight">
-                Services
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                Sign in once with the account Armada should use. For anything else, use Add server.
-              </p>
-            </div>
-            {catalog.state === "ready" ? (
-              services.length > 0 ? (
-                <ServiceCatalog services={services} connections={list.connections} {...org} />
-              ) : (
-                <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-                  No ready-to-connect services are offered here. Use Add server to connect another tool.
+    <div className="max-sm:[&_[data-connection]>div:first-child]:col-span-full max-sm:[&_[data-connection]>div:nth-child(2)]:col-span-full max-sm:[&_[data-connection]>div:last-child]:col-span-full max-sm:[&_[data-connection]>div:last-child]:col-start-1 max-sm:[&_[data-connection]>div:last-child]:row-start-3 max-sm:[&_[data-connection]>div:last-child]:row-span-1 max-sm:[&_[data-connection]>div:last-child]:justify-start">
+      <ResourceBrowser
+        title={TITLE}
+        description={DESCRIPTION}
+        meta={list.connections.length > 0 ? list.connections.length : undefined}
+        label="Tools"
+        rows={rows}
+        blockers={blockers}
+        notices={notice}
+        initial={initial}
+        actions={<AddServerDialog {...org} />}
+        footer={
+          <>
+            <p className="text-xs text-muted-foreground">
+              A switched-on tool is pre-selected in the launch dialog; you can still remove it for one launch. Sandboxes
+              on your own server (Docker hosts) do not get tools yet.
+            </p>
+            <section aria-labelledby="services-title" className="space-y-3 pt-5">
+              <div className="space-y-0.5">
+                <h2 id="services-title" className="text-base font-semibold tracking-tight">
+                  Services
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  Sign in once with the account Armada should use. For anything else, use Add a tool.
                 </p>
-              )
-            ) : (
-              <p
-                className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground"
-                data-catalog-unavailable
-              >
-                Services could not be loaded here. You can still use Add server to connect a custom tool.
-              </p>
-            )}
-          </section>
-        </>
-      }
-      empty={
-        <Empty title="No tools yet" icon={<PlugIcon />}>
-          Connect a service below or use Add server to connect another tool for your agents.
-        </Empty>
-      }
-    />
+              </div>
+              {catalog.state === "ready" ? (
+                services.length > 0 ? (
+                  <ServiceCatalog services={services} connections={list.connections} {...org} />
+                ) : (
+                  <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+                    No ready-to-connect services are offered here. Use Add a tool to connect another tool.
+                  </p>
+                )
+              ) : (
+                <p
+                  className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground"
+                  data-catalog-unavailable
+                >
+                  Services could not be loaded here. You can still use Add a tool to connect a custom tool.
+                </p>
+              )}
+            </section>
+          </>
+        }
+        empty={
+          <Empty title="No tools yet" icon={<PlugIcon />}>
+            Connect a service below or use Add a tool to connect another tool for your agents.
+          </Empty>
+        }
+      />
+    </div>
   );
 }
 
@@ -182,10 +184,19 @@ function connectionRow(
 ): ResourceRow & { bucket: Bucket } {
   const remote = connection.transport !== "stdio";
   const where =
-    serviceLabel ?? (remote ? (connection.url ? hostOf(connection.url) : "URL hidden") : connection.command);
+    serviceLabel ??
+    (remote ? (connection.url ? hostOf(connection.url) : "URL hidden") : "a command inside the sandbox");
   const meta = [where, remote ? authLabel(connection.authType) : transportLabel(connection.transport)]
     .filter(Boolean)
     .join(" · ");
+  const explanation =
+    connection.transport === "stdio" && connection.status === "connected"
+      ? "Starts with each sandbox; Armada cannot test it in advance."
+      : !canManage && connection.status !== "connected"
+        ? "Managed by the organization’s admins."
+        : connection.lastError
+          ? connectionRecovery(connection)
+          : toolFact(connection);
   return {
     key: connection.id,
     name: connection.name,
@@ -209,25 +220,22 @@ function connectionRow(
     tags: (
       <>
         <ScopeTag scope={connection.scope} />
-        {connection.defaultForLaunch && (
-          <RowTag title="Included in new launches by default" data-default-for-launch>
-            <StarIcon aria-hidden /> Default
-          </RowTag>
-        )}
       </>
     ),
     meta,
     subtitle: meta,
     state: (
-      <StateCell
-        tone={state.tone}
-        label={state.label}
-        detail={connection.lastError ? connectionRecovery(connection) : undefined}
-        data-connection-status={connection.status}
-      />
+      <div className="space-y-1">
+        <StateCell
+          tone={state.tone}
+          label={connection.transport === "stdio" && connection.status === "connected" ? "Set up" : state.label}
+          data-connection-status={connection.status}
+        />
+        {explanation && <p className="text-xs text-muted-foreground">{explanation}</p>}
+      </div>
     ),
-    fact: toolFact(connection),
-    action: canManage ? <ToolRowAction connection={connection} /> : null,
+
+    action: <ToolRowAction connection={connection} canManage={canManage} />,
     detail: (
       <div className="space-y-4">
         <ToolPanel connection={connection} canManage={canManage} serviceLabel={serviceLabel} />
@@ -242,7 +250,7 @@ function ScopeTag({ scope }: { scope: McpConnection["scope"] }) {
   return (
     <RowTag>
       {scope === "personal" ? <UserIcon aria-hidden /> : <UsersIcon aria-hidden />}
-      {scope === "personal" ? "Personal" : "Org"}
+      {scope === "personal" ? "Only you" : "Organization"}
     </RowTag>
   );
 }
