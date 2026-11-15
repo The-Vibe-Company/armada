@@ -107,6 +107,7 @@ export async function prepareMcpProbe(
       io.until,
     );
   if (harness === "opencode") await boundedInventory();
+  let verified = false;
   return {
     verifyManifest(manifest: {
       definition?: { connections?: unknown };
@@ -126,6 +127,7 @@ export async function prepareMcpProbe(
         fail("invalid_mcp_binding");
     },
     async verify(id: string, provider: "boat" | "modal" | "docker") {
+      if (harness === "opencode" && verified) await boundedInventory();
       if (!connected(await io.request("mcp/sandbox-connections", { id }))) fail("invalid_mcp_binding");
       const answer = `PARITY_MCP_DONE_${crypto.randomUUID()}`;
       const turn = await io.request<{ promptId?: string }>("sandbox/send", {
@@ -233,6 +235,7 @@ export async function prepareMcpProbe(
         io.until,
       );
       if (harness === "opencode") await boundedInventory();
+      verified = true;
     },
   };
 }
