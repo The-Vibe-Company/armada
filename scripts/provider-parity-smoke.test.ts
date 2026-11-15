@@ -15,6 +15,7 @@ for (const mode of [
   "client_stop_full",
   "client_stop_full_slow",
   "client_stop_full_no_resume",
+  "client_stop_full_usage_lost",
   "readable_valid",
   "readable_missing",
   "readable_full",
@@ -1053,10 +1054,15 @@ for (const mode of [
                 ...(clientFull ? { conversationIds: ["client_conversation"] } : {}),
                 ...(mode === "skills_resume_full" ? { skills: [skillReceipt] } : {}),
                 usage: {
-                  turnCount: turns.get(p)?.length ?? 0,
+                  turnCount:
+                    mode === "client_stop_full_usage_lost" && (turns.get(p)?.length ?? 0) >= 3
+                      ? turns.get(p)!.length - 1
+                      : (turns.get(p)?.length ?? 0),
                   turns: (mode === "usage_lost" && (turns.get(p)?.length ?? 0) > 1
                     ? (turns.get(p) ?? []).slice(-1)
-                    : (turns.get(p) ?? [])
+                    : mode === "client_stop_full_usage_lost" && (turns.get(p)?.length ?? 0) >= 3
+                      ? (turns.get(p) ?? []).filter((_, index) => index !== 1)
+                      : (turns.get(p) ?? [])
                   ).map((promptId, i) => ({
                     promptId,
                     model: "fake-model",
@@ -1128,7 +1134,7 @@ for (const mode of [
                         ? null
                         : mode === "cost_mismatch"
                           ? "99"
-                          : `0.${turns.get(p)?.length ?? 0}`,
+                          : `0.${mode === "client_stop_full_usage_lost" && (turns.get(p)?.length ?? 0) >= 3 ? turns.get(p)!.length - 1 : (turns.get(p)?.length ?? 0)}`,
                   },
                 },
               };
@@ -1546,7 +1552,7 @@ for (const mode of [
       return;
     }
     if (clientStopFull) {
-      expect(passed).toBe(true);
+      expect(passed).toBe(mode !== "client_stop_full_usage_lost");
       expect(report.starts).toBe(2);
       for (const provider of ["modal", "docker"]) {
         expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
@@ -1558,8 +1564,12 @@ for (const mode of [
         else {
           expect(clientStops.get(provider)).toBe(2);
           expect(turns.get(provider)).toHaveLength(3);
-          for (const feature of ["client-stop-dashboard", "client-stop-cli", "resume-recall", "usage", "exact-cost"])
+          for (const feature of ["client-stop-dashboard", "client-stop-cli", "resume-recall"])
             expect(report.features[feature][provider].status).toBe("pass");
+          for (const feature of ["usage", "exact-cost"])
+            expect(report.features[feature][provider].status).toBe(
+              mode === "client_stop_full_usage_lost" ? "fail" : "pass",
+            );
         }
       }
       return;

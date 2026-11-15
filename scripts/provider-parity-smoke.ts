@@ -649,12 +649,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         const detail = diagnostic(error),
           status = detail.quota || detail.notRun ? "not-run" : "fail";
         if (error instanceof ClientSendError) {
-          // Authentication and request-schema refusals precede any admitted stop.
-          if (
-            [401, 403].includes(error.httpStatus ?? 0) ||
-            ["invalid_request", "invalid_request_id", "unauthorized", "forbidden"].includes(error.code)
-          )
-            stopRequested = false;
+          // Only a refusal of the business write, never a later status read, proves non-admission.
+          if (error.writeRefused) stopRequested = false;
           record(`client-stop-${error.client}`, c.provider, status, detail.quota ? "quota" : detail.code, detail);
         }
         record("client-stop", c.provider, status, detail.quota ? "quota" : detail.code, detail);
@@ -1065,6 +1061,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
       // Bounded auxiliary wake turns are included in the later ordinary lifecycle usage read.
       if (observationUntil === undefined) await checkUsage(turn.promptId);
+      else measuredPrompts.add(turn.promptId);
     }
     type IdleState = {
       id: string;

@@ -12,6 +12,7 @@ for (const mode of [
   "resume_quota",
   "unsupported",
   "late_stop",
+  "post_status_refused",
 ] as const) {
   test(`client stop parity: ${mode}`, async () => {
     const org = { modal: "10000000-0000-4000-8000-000000000001", docker: "20000000-0000-4000-8000-000000000001" };
@@ -21,6 +22,7 @@ for (const mode of [
       turns = new Map<string, number>(),
       due = new Map<string, number>(),
       cleanupStops = new Map<string, number>();
+    const statusRefused = new Set<string>();
     const wire: Array<{ provider: string; client: string }> = [],
       lines: string[] = [];
     let now = 0,
@@ -153,6 +155,17 @@ for (const mode of [
               });
             }
             case "sandbox/status":
+              if (
+                mode === "post_status_refused" &&
+                wire.some((call) => call.provider === provider) &&
+                !statusRefused.has(provider)
+              ) {
+                statusRefused.add(provider);
+                return Response.json(
+                  { error: { code: "forbidden", message: "private_error_placeholder" } },
+                  { status: 403 },
+                );
+              }
               if (due.has(provider) && now >= due.get(provider)!) states.set(provider, "stopped");
               return Response.json({ id: body.id, status: states.get(provider) });
             case "sandbox/stop":
@@ -220,7 +233,7 @@ for (const mode of [
       }
       if (["ack_only", "wrong_ack", "lost_ack", "late_stop", "dashboard_refused", "resume_quota"].includes(mode))
         expect(wire.some((call) => call.provider === provider && call.client === "cli")).toBe(false);
-      if (["ack_only", "wrong_ack", "lost_ack", "late_stop"].includes(mode))
+      if (["ack_only", "wrong_ack", "lost_ack", "late_stop", "post_status_refused"].includes(mode))
         expect(cleanupStops.get(provider) ?? 0).toBe(0);
       if (mode === "dashboard_refused") expect(cleanupStops.get(provider)).toBe(1);
       if (mode === "cli_unauthorized") {

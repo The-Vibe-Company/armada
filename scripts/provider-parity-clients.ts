@@ -10,6 +10,7 @@ export class ClientProofError extends Error {
     readonly code: string,
     readonly httpStatus?: number,
     readonly action: "send" | "stop" = "send",
+    readonly writeRefused = false,
   ) {
     super(code);
   }
@@ -31,10 +32,13 @@ export async function createParityClients(
   let client: ProofClient = "dashboard";
   let expired = false;
   let lastStatus: number | undefined;
+  let lastBusiness = false;
   function fail(code: string): never {
     throw new ClientProofError(client, code, undefined, action);
   }
   const relay = async (raw: string | URL | Request, init?: RequestInit) => {
+    lastStatus = undefined;
+    lastBusiness = false;
     const url = new URL(typeof raw === "string" ? raw : raw instanceof URL ? raw.href : raw.url);
     if (
       url.origin !== input.origin ||
@@ -69,6 +73,7 @@ export async function createParityClients(
     }
     const signal = AbortSignal.timeout(Math.max(1, Math.min(110_000, remaining)));
     lastStatus = undefined;
+    lastBusiness = business;
     if (business) io.dispatch?.(client);
     const result = await io.fetch(url.href, {
       ...init,
@@ -135,18 +140,19 @@ export async function createParityClients(
             : lastStatus !== undefined && lastStatus >= 400
               ? lastStatus
               : undefined;
-        throw new ClientProofError(
-          client,
+        const safeCode =
           typeof code === "string" && /^[a-zA-Z0-9_-]{1,80}$/.test(code)
             ? code
             : status === 401
               ? "unauthorized"
               : status === 403
                 ? "forbidden"
-                : `client_${action}_failed`,
-          status,
-          action,
-        );
+                : `client_${action}_failed`;
+        const writeRefused =
+          lastBusiness &&
+          ([401, 403].includes(status ?? 0) ||
+            ["invalid_request", "invalid_request_id", "unauthorized", "forbidden"].includes(safeCode));
+        throw new ClientProofError(client, safeCode, status, action, writeRefused);
       }
     },
   };
