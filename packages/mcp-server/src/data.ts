@@ -681,7 +681,9 @@ export function createSqlData(
         // than the pre-dispatch reservation. Transfer ownership in the same SQL
         // statement so there is never an uncounted admission window.
         const releaseReservation =
-          patch.taskPromptId !== undefined || patch.stoppedAt !== undefined || patch.status === "deleted";
+          patch.taskPromptId !== undefined ||
+          (patch.stoppedAt !== undefined && patch.stoppedAt !== null) ||
+          patch.status === "deleted";
         const wrapped = releaseReservation;
         const result = await sql.query<{ id: string }>(
           `${wrapped ? "with updated as (" : ""}update public.sandboxes s set ${sets.join(", ")} from public.goldens g

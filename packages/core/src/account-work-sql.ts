@@ -2,7 +2,7 @@
  * Unknown accepted work stays occupied; a machine merely being alive does not.
  */
 export const ACCOUNT_WORKING_PREDICATE = `s.deleted_at is null and s.stopped_at is null
-  and s.status in ('starting','ready','running')
+  and s.status in ('starting','ready','running','stopping')
   and (s.status='starting' or s.activity_lease_id is not null
     or (s.task_prompt_id is not null and not exists(
       select 1 from public.runtime_idle_turns t

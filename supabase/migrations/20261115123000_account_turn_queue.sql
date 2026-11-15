@@ -21,3 +21,26 @@ alter table public.account_turn_queue enable row level security;
 revoke all on public.account_turn_queue from anon, authenticated;
 grant all on public.account_turn_queue to service_role;
 create index account_turn_queue_waiting on public.account_turn_queue(account_id,sequence) where state='queued';
+
+-- Allocation ownership transfers only when a turn identity is published, or
+-- readiness proves there is no pending prompt. In particular Docker's running
+-- status may precede the native prompt receipt and must retain its reservation.
+create or replace function public.release_account_agent_reservation() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+  if new.deleted_at is not null or new.stopped_at is not null
+     or new.task_prompt_id is not null
+     or (new.status='ready' and not exists (
+       select 1 from public.runtime_commands c where c.sandbox_id=new.id
+         and c.result_enc is null and
+           (starts_with(c.request_id,'docker_prompt_') or starts_with(c.request_id,'follow_'))
+     )) then
+    delete from public.account_agent_reservations where sandbox_id=new.id;
+  end if;
+  return new;
+end;
+$$;
+drop trigger release_account_agent_reservation on public.sandboxes;
+create trigger release_account_agent_reservation
+  after insert or update of status, stopped_at, deleted_at, task_prompt_id on public.sandboxes
+  for each row execute function public.release_account_agent_reservation();
