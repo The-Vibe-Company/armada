@@ -201,7 +201,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
   const environment = definition
     ? definition.provider === "docker"
       ? `${lookups.snapshots?.find((snapshot) => snapshot.id === definition.snapshotId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official Armada image")} · your server ${lookups.hosts?.find((host) => host.id === definition.hostId)?.name ?? "Unavailable server"}`
-      : `${golden?.name ?? "Unavailable snapshot"} on ${PROVIDER_LABELS[definition.provider]}`
+      : `${golden?.name ?? "Unavailable snapshot"} on ${PROVIDER_LABELS[definition.provider]} cloud`
     : null;
   const meta = definition
     ? [
@@ -396,7 +396,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
         {item.scope === "personal" ? "Personal" : "Org"}
       </RowTag>
     ),
-    meta,
+    meta: <span className="block whitespace-normal leading-relaxed">{meta}</span>,
     subtitle: `Version ${item.currentRevision} · ${templateAudience(item.scope, org.name)}`,
     state: <StateCell tone={state.tone} label={state.label} data-template-state={state.label} />,
     fact: templateAudience(item.scope, org.name),

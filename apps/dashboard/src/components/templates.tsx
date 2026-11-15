@@ -265,7 +265,7 @@ function TemplateForm({
         </>
       )}
       <ResultLine result={state} />
-      <div className="space-y-3 text-[17px] leading-loose">
+      <div className="space-y-3 text-[17px] leading-loose sm:[&_[data-slot=native-select-wrapper]]:inline-block sm:[&_[data-slot=native-select-wrapper]]:w-auto [&_[data-slot=native-select-wrapper]]:max-w-full">
         <div>
           A template named{" "}
           {editing ? (
