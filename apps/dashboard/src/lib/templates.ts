@@ -138,6 +138,8 @@ export function parseRevision(value: unknown): TemplateRevision | null {
 
 /** What a template refers to, as the viewer sees it now. A list that could not be read is null: nothing is judged. */
 export type TemplateLookups = {
+  hosts?: readonly { id: string; name: string | null }[];
+  snapshots?: readonly { id: string; name: string; hostId: string; visibility: string; status: string }[];
   accounts?: LaunchAccounts;
   goldens: readonly {
     id: string;
@@ -262,6 +264,7 @@ export type TemplateFormFields = {
   name: string;
   scope: string;
   goldenId: string;
+  placement?: string;
   harness: string;
   connections: readonly string[];
   variables: readonly string[];
@@ -294,10 +297,25 @@ export function templateRequest(
   if (fields.scope !== "personal" && fields.scope !== "org") return { ok: false, error: "Choose who can use it." };
   const scope = fields.scope;
   const golden = lookups.goldens.find((row) => row.id === fields.goldenId);
-  if (!golden) return { ok: false, error: "Choose a snapshot." };
-  if (!golden.ready) return { ok: false, error: `${golden.name} has no snapshot yet: snapshot it first.` };
-  if (scope === "org" && golden.visibility !== "org")
-    return { ok: false, error: `${golden.name} is private: an organization template needs a shared snapshot.` };
+  let placement: Record<string, unknown>;
+  if (fields.placement) {
+    const [hostId, snapshotId, extra] = fields.placement.split(":");
+    const host = lookups.hosts?.find((row) => row.id === hostId);
+    const snapshot = snapshotId
+      ? lookups.snapshots?.find((row) => row.id === snapshotId && row.hostId === hostId)
+      : null;
+    if (extra !== undefined || !host || (snapshotId && !snapshot))
+      return { ok: false, error: "Choose an available server and snapshot." };
+    if (snapshot && (snapshot.status !== "ready" || (scope === "org" && snapshot.visibility !== "org")))
+      return { ok: false, error: "Choose a ready snapshot shared with everyone who can use this template." };
+    placement = { provider: "docker", hostId, ...(snapshotId ? { snapshotId } : {}) };
+  } else {
+    if (!golden) return { ok: false, error: "Choose a snapshot." };
+    if (!golden.ready) return { ok: false, error: `${golden.name} has no snapshot yet: build it first.` };
+    if (scope === "org" && golden.visibility !== "org")
+      return { ok: false, error: `${golden.name} is private: an organization template needs a shared snapshot.` };
+    placement = { goldenId: golden.id, provider: golden.provider };
+  }
   const model = modelChoice(fields.harness, fields);
   if (!model.ok) return model;
   let modelAccount: TemplateDefinition["modelAccount"];
@@ -381,8 +399,7 @@ export function templateRequest(
       name,
       scope,
       definition: {
-        goldenId: golden.id,
-        provider: golden.provider,
+        ...placement,
         harness: model.args.harness,
         model: model.args.model,
         reasoningEffort: model.args.reasoningEffort,

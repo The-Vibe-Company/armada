@@ -345,7 +345,7 @@ describe("template launch", () => {
       { ...lookups, variables: [] },
     );
     expect(target).toMatchObject({
-      goldenName: "shared",
+      goldenName: "shared · Boat cloud",
       repositories: ["web"],
       tools: ["Docs"],
       sizing: { policy: null },
@@ -472,4 +472,21 @@ test("template skill refusals give GUI recovery without internal codes or CLI in
   }
   expect(launchReason("skillpack_credential_missing")).toContain("key in Skills");
   expect(launchReason("skillpack_cli_unavailable")).toContain("rebuild the snapshot");
+});
+
+test("host template pins the exact selected snapshot and rejects private organization bindings", () => {
+  const sources: TemplateLookups = {
+    ...lookups,
+    hosts: [{ id: SHARED, name: "Build server" }],
+    snapshots: [{ id: PRIVATE, hostId: SHARED, name: "Warm", status: "ready", visibility: "private" }],
+  };
+  const selection = { placement: `${SHARED}:${PRIVATE}`, goldenId: "" };
+  const personal = templateRequest(form({ ...selection, scope: "personal" }), sources);
+  expect(personal.ok && personal.value.definition).toMatchObject({
+    provider: "docker",
+    hostId: SHARED,
+    snapshotId: PRIVATE,
+  });
+  expect(templateRequest(form({ ...selection, scope: "org" }), sources).ok).toBe(false);
+  expect(templateRequest(form({ placement: `${SHARED}:`, goldenId: "" }), sources).ok).toBe(true);
 });

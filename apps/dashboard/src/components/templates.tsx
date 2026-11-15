@@ -2,20 +2,14 @@
 
 import type { Harness } from "@armada/core";
 import {
-  ArrowLeftIcon,
   BracesIcon,
-  CpuIcon,
-  LayersIcon,
   LayoutTemplateIcon,
   LockIcon,
   LockKeyholeIcon,
-  PackageIcon,
   PencilIcon,
   PlugIcon,
   RocketIcon,
   Trash2Icon,
-  UserIcon,
-  UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, type RefObject, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
@@ -27,12 +21,20 @@ import {
   type TemplateLaunchResult,
 } from "@/app/actions/templates";
 import { SubmitButton } from "@/components/action-form";
-import { ChoiceCard } from "@/components/connections";
 import { CreateDialog } from "@/components/create-dialog";
-import { RepositoryField, Segmented } from "@/components/launch-dialog";
+import {
+  LaunchAdvanced,
+  LaunchChoice,
+  LaunchDialogContent,
+  LaunchDialogHeader,
+  LaunchFields,
+  LaunchLocation,
+  LaunchTaskField,
+  useLaunchSurface,
+} from "@/components/launch-surface";
 import { MachineSizeField } from "@/components/machine-size-field";
 import { SubmitShortcut } from "@/components/mod-key";
-import { type ModelCatalog, ModelFields } from "@/components/model-fields";
+import type { ModelCatalog } from "@/components/model-fields";
 import { SkillPicker } from "@/components/skill-picker";
 import {
   AlertDialog,
@@ -56,22 +58,19 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
-import { RadioGroup } from "@/components/ui/radio-group";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
-import { HARNESS_LABELS } from "@/lib/labels";
+import { EFFORT_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { accountProblem, accountsFor, HARNESS_PATH, launchDefault } from "@/lib/model-accounts";
-import { isSubmitShortcut } from "@/lib/shortcut";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import {
   MAX_TEMPLATE_NAME,
+  modelLabel,
   newRequestKey,
   type TemplateDefinition,
   type TemplateLookups,
   type TemplateScope,
-  ttlOptions,
   unreadableSelections,
 } from "@/lib/templates";
 import { cn } from "@/lib/utils";
@@ -138,9 +137,7 @@ function useKeepOnReset(root: RefObject<HTMLFormElement | null>) {
 type Editing = { id: string; name: string; scope: TemplateScope; revision: number; definition: TemplateDefinition };
 
 /**
- * The create flow (#949), the shared {@link CreateDialog}: one form in two steps so it fits a laptop. The first
- * step holds what defines a template (its name, who can use it, the environment and the agent); the second, the
- * optional tools, skills and variables. Who can use it cannot be changed later, so it is marked.
+ * The create flow (#949), the shared {@link CreateDialog}: one launch sentence followed by its optional resources. The sentence holds its name, audience, snapshot and agent; below it are optional tools, skills and variables. Who can use it cannot be changed later, so it is marked.
  */
 export function CreateTemplateDialog(props: {
   orgId: string;
@@ -161,7 +158,7 @@ export function CreateTemplateDialog(props: {
   );
   return (
     <CreateDialog
-      label="New"
+      label="New template"
       title="New template"
       description="A preset agents start from: a snapshot, tools, a model and variables."
       open={open}
@@ -195,12 +192,15 @@ function TemplateForm({
   onDone: (message: string) => void;
   editing?: Editing;
 }) {
-  const id = useId();
   const [state, formAction] = useActionState(action, null);
-  const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState(editing?.name ?? "");
   const [scope, setScope] = useState<TemplateScope>(editing?.scope ?? "personal");
   const [golden, setGolden] = useState(editing?.definition.goldenId ?? "");
+  const [placement, setPlacement] = useState(
+    editing?.definition.provider === "docker"
+      ? `${editing.definition.hostId}:${editing.definition.snapshotId ?? ""}`
+      : "",
+  );
   const [harness, setHarness] = useState<Harness>(editing?.definition.harness ?? "claude");
   const [keepAccount, setKeepAccount] = useState(true);
   const [credential, setCredential] = useState("");
@@ -218,16 +218,6 @@ function TemplateForm({
     if (state?.ok) onDone(state.message);
   }, [state, onDone]);
   useKeepOnReset(root);
-  // A step change moves focus to the new step, so a keyboard or screen reader user lands where the form went.
-  const first = useRef(true);
-  useEffect(() => {
-    if (first.current) {
-      first.current = false;
-      return;
-    }
-    root.current?.querySelector<HTMLElement>(`[data-template-step="${step}"] [data-step-heading]`)?.focus();
-  }, [step]);
-
   // A list that could not be read would silently drop what the current revision chose from it: no publication.
   const lost = editing ? unreadableSelections(editing.definition, lookups) : null;
   const environments = lookups.goldens.filter((row) => scope === "personal" || row.visibility === "org");
@@ -237,32 +227,36 @@ function TemplateForm({
       ? `${chosen.name} is private: an organization template needs a shared snapshot.`
       : null;
 
-  function next() {
-    if (!name.trim()) return setProblem("Name the template.");
-    const otherModel = root.current?.querySelector<HTMLInputElement>('input[name="other_model"]');
-    if (otherModel && !otherModel.value.trim()) return setProblem("Enter the model id.");
-    if (!chosen) return setProblem("Choose a snapshot.");
-    if (!chosen.ready) return setProblem(`${chosen.name} has no snapshot yet: snapshot it first.`);
-    if (goldenProblem) return setProblem(goldenProblem);
-    setProblem(null);
-    setStep(2);
-  }
-
+  const [model, setModel] = useState(editing?.definition.model ?? catalog[harness].defaultModel);
+  const [effort, setEffort] = useState(editing?.definition.reasoningEffort ?? catalog[harness].defaultReasoningEffort);
+  const modelEntry = catalog[harness];
+  const efforts =
+    modelEntry.models.find((entry) => entry.id === model)?.reasoningEfforts ?? modelEntry.reasoningEfforts;
+  const word = "inline-flex h-10 max-w-full rounded-md border bg-muted/30 px-2 align-middle text-sm sm:h-8";
   return (
     <form
       ref={root}
       action={formAction}
       className="space-y-4"
       data-template-form
-      // Enter in a step-1 field goes to the next step; only step 2 publishes.
       onSubmit={(event) => {
-        if (step === 2) return;
-        event.preventDefault();
-        next();
+        const message = !name.trim()
+          ? "Name the template."
+          : !chosen && !placement
+            ? "Choose a snapshot."
+            : chosen && !chosen.ready
+              ? "Build the snapshot first."
+              : goldenProblem;
+        if (message) {
+          event.preventDefault();
+          setProblem(message);
+        }
       }}
     >
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="scope" value={scope} />
+      <input type="hidden" name="placement" value={placement} />
+      {placement && <input type="hidden" name="golden" value="" />}
       {editing && (
         <>
           <input type="hidden" name="id" value={editing.id} />
@@ -270,168 +264,230 @@ function TemplateForm({
           <input type="hidden" name="name" value={editing.name} />
         </>
       )}
-      <Steps step={step} />
-      {/* A refusal stays in view whichever step is shown. */}
       <ResultLine result={state} />
-
-      <div hidden={step !== 1} className="space-y-4" data-template-step="1">
-        <h3 data-step-heading tabIndex={-1} className="sr-only">
-          Step 1 of 2: basics
-        </h3>
-        {!editing && (
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-name`}>Name</Label>
+      <div className="space-y-3 text-[17px] leading-loose">
+        <div>
+          A template named{" "}
+          {editing ? (
+            <strong>{editing.name}</strong>
+          ) : (
             <Input
-              id={`${id}-name`}
+              aria-label="Template name"
               name="name"
               value={name}
               onChange={(event) => setName(event.target.value)}
               maxLength={MAX_TEMPLATE_NAME}
+              required
               autoComplete="off"
-              placeholder="Backend with Sentry"
+              placeholder="review-pr"
+              className="inline-block h-9 w-44 rounded-none border-0 border-b border-dashed px-1 text-base shadow-none"
             />
-          </div>
-        )}
-        {!editing && (
-          <fieldset className="space-y-2">
-            <legend className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm font-medium">
-              Who can use it
-              <span className="inline-flex items-center gap-1 rounded-md bg-warning/10 px-1.5 py-0.5 text-xs font-medium text-warning [&_svg]:size-3">
-                <LockIcon aria-hidden /> Cannot be changed later
-              </span>
-            </legend>
-            <RadioGroup
-              value={scope}
-              onValueChange={(value) => setScope(value as TemplateScope)}
-              aria-label="Who can use it"
-              className="sm:grid-cols-2"
-            >
-              <ChoiceCard value="personal" icon={<UserIcon />} title="Personal" hint="Only you launch it." />
-              <ChoiceCard
-                value="org"
-                disabled={!isAdmin}
-                icon={<UsersIcon />}
-                title={`Org (${orgName})`}
-                hint={isAdmin ? "Every member launches it. Only admins change it." : "Only an org admin adds these."}
-              />
-            </RadioGroup>
-          </fieldset>
-        )}
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-golden`}>Snapshot</Label>
+          )}
+          , usable by{" "}
+          {editing ? (
+            <span>{scope === "personal" ? "only you" : `everyone in ${orgName}`}</span>
+          ) : (
             <NativeSelect
-              id={`${id}-golden`}
-              name="golden"
-              value={golden}
-              onChange={(event) => setGolden(event.target.value)}
-              aria-describedby={`${id}-golden-hint`}
-              aria-invalid={goldenProblem ? true : undefined}
+              aria-label="Who can use it"
+              value={scope}
+              onChange={(event) => {
+                setScope(event.target.value as TemplateScope);
+                setCredential("");
+              }}
+              className={word}
             >
-              <option value="">Choose a snapshot</option>
-              {environments.map((row) => (
-                <option key={row.id} value={row.id} disabled={!row.ready}>
-                  {row.name} on {PROVIDER_LABELS[row.provider]}
-                  {row.ready ? "" : " (no snapshot yet)"}
-                </option>
-              ))}
+              <option value="personal">only you</option>
+              <option value="org" disabled={!isAdmin}>
+                everyone in {orgName}
+              </option>
             </NativeSelect>
-            <p
-              id={`${id}-golden-hint`}
-              className={cn("text-xs", goldenProblem ? "text-destructive" : "text-muted-foreground")}
+          )}
+          .
+        </div>
+        <p className="flex items-center gap-2 text-xs leading-normal text-foreground">
+          <LockIcon className="size-3 shrink-0" aria-hidden /> The name and who can use it are permanent.
+        </p>
+        <div>
+          It launches{" "}
+          <NativeSelect
+            aria-label="Agent"
+            name="harness"
+            value={harness}
+            className={word}
+            onChange={(event) => {
+              const next = event.target.value as Harness;
+              setHarness(next);
+              setCredential("");
+              setModel(catalog[next].defaultModel);
+              setEffort(catalog[next].defaultReasoningEffort);
+            }}
+          >
+            {(Object.keys(catalog) as Harness[]).map((value) => (
+              <option key={value} value={value}>
+                {HARNESS_LABELS[value]}
+              </option>
+            ))}
+          </NativeSelect>{" "}
+          running{" "}
+          <NativeSelect
+            aria-label="Model"
+            name="model"
+            value={modelEntry.models.some((entry) => entry.id === model) ? model : "other"}
+            className={word}
+            onChange={(event) => {
+              setModel(event.target.value === "other" ? "" : event.target.value);
+              setEffort(modelEntry.defaultReasoningEffort);
+            }}
+          >
+            {modelEntry.models.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.label}
+              </option>
+            ))}
+            <option value="other">Other model id</option>
+          </NativeSelect>
+          {!modelEntry.models.some((entry) => entry.id === model) && (
+            <Input
+              aria-label="Other model id"
+              name="other_model"
+              required
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              className="mt-2"
+            />
+          )}
+          , reasoning effort{" "}
+          <NativeSelect
+            aria-label="Reasoning effort"
+            name="reasoning_effort"
+            value={effort}
+            className={word}
+            onChange={(event) => setEffort(event.target.value)}
+          >
+            {efforts.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </NativeSelect>
+          , paid by{" "}
+          {keepingPinnedAccount ? (
+            <span>its pinned account</span>
+          ) : (
+            <NativeSelect
+              aria-label="Model account"
+              name="credential"
+              value={credential}
+              className={word}
+              onChange={(event) => setCredential(event.target.value)}
             >
-              {goldenProblem ??
-                (scope === "org"
-                  ? "Shared snapshots only. Launches use its latest snapshot."
-                  : "Launches use its latest snapshot.")}
-            </p>
-          </div>
-          {!keepingPinnedAccount && (
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-model-account`}>Model account</Label>
-              <NativeSelect
-                id={`${id}-model-account`}
-                name="credential"
-                value={credential}
-                onChange={(event) => setCredential(event.target.value)}
-                aria-describedby={`${id}-model-account-hint`}
-              >
-                <option value="">Use the launcher's own account</option>
-                {lookups.accounts?.state === "ready" &&
-                  accountsFor(lookups.accounts.accounts, harness).map((account) => (
+              <option value="">each person's own account</option>
+              {lookups.accounts?.state === "ready" &&
+                accountsFor(lookups.accounts.accounts, harness)
+                  .filter((account) => scope === "personal" || account.scope === "org")
+                  .map((account) => (
                     <option
                       key={account.id}
                       value={account.id}
                       disabled={
-                        accountProblem(account, lookups.accounts?.state === "ready" ? lookups.accounts.now : 0) !==
-                          null ||
-                        (scope === "org" && account.scope !== "org")
+                        accountProblem(account, lookups.accounts?.state === "ready" ? lookups.accounts.now : 0) !== null
                       }
                     >
-                      {account.name} ({account.scope === "org" ? orgName : "Yours"})
+                      {account.name}
                     </option>
                   ))}
-              </NativeSelect>
-              <p id={`${id}-model-account-hint`} className="text-xs text-muted-foreground">
-                {lookups.accounts?.state === "unavailable"
-                  ? "Model accounts could not be loaded. Refresh to choose one."
-                  : "Pins this version; rotation needs a new revision. Org templates use org accounts."}
-              </p>
-            </div>
+            </NativeSelect>
           )}
+          .
         </div>
-        <Segmented
-          legend="Agent"
-          name="harness"
-          value={harness}
-          onChange={(value) => {
-            setHarness(value);
-            setCredential("");
-          }}
-          options={(Object.keys(catalog) as Harness[]).map((value) => ({ value, label: HARNESS_LABELS[value] }))}
-        />
-        {!keepingPinnedAccount && !credential && accountSelection && accountSelection !== "resolved" && (
-          <p role="status" className="text-sm text-amber-700 dark:text-amber-300">
-            {accountSelection === "ambiguous"
-              ? `Several ${HARNESS_LABELS[harness]} accounts are available. Set a default in `
-              : `No usable ${HARNESS_LABELS[harness]} account is available to you in this organization. Add or reconnect one in `}
-            <Link className="underline" href={HARNESS_PATH}>
-              Account &gt; Models
-            </Link>
-            {accountSelection === "ambiguous" ? "." : " or choose another agent."} You can save this template, but
-            launching it requires {accountSelection === "ambiguous" ? "an unambiguous account selection" : "an account"}
-            .
+        <div className="text-sm">
+          It starts from{" "}
+          <NativeSelect
+            aria-label="Snapshot"
+            name={placement ? undefined : "golden"}
+            value={placement || golden}
+            required
+            className={word}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (value.includes(":")) {
+                setPlacement(value);
+                setGolden("");
+              } else {
+                setPlacement("");
+                setGolden(value);
+              }
+            }}
+          >
+            <option value="">Choose a snapshot</option>
+            {environments.map((row) => (
+              <option key={row.id} value={row.id} disabled={!row.ready}>
+                {row.name} · {PROVIDER_LABELS[row.provider]} cloud{row.ready ? "" : " (not built yet)"}
+              </option>
+            ))}
+            {(lookups.hosts ?? []).map((host) => (
+              <optgroup key={host.id} label={`Your server ${host.name ?? "Unnamed server"}`}>
+                <option value={`${host.id}:`}>Official Armada image · {host.name ?? "Unnamed server"}</option>
+                {(lookups.snapshots ?? [])
+                  .filter(
+                    (snapshot) =>
+                      snapshot.hostId === host.id &&
+                      snapshot.status === "ready" &&
+                      (scope === "personal" || snapshot.visibility === "org"),
+                  )
+                  .map((snapshot) => (
+                    <option key={snapshot.id} value={`${host.id}:${snapshot.id}`}>
+                      {snapshot.name} · {host.name ?? "Unnamed server"}
+                    </option>
+                  ))}
+              </optgroup>
+            ))}
+          </NativeSelect>
+          {placement
+            ? ", using this exact snapshot or the official image on that server."
+            : ", and picks up each rebuild of it automatically."}
+        </div>
+        {goldenProblem && (
+          <p role="alert" className="text-sm text-destructive">
+            {goldenProblem}
           </p>
         )}
-        <ModelFields
-          key={harness}
-          idPrefix={id}
-          harness={harness}
-          catalog={catalog}
-          {...(editing && editing.definition.harness === harness
-            ? { initial: { model: editing.definition.model, effort: editing.definition.reasoningEffort } }
-            : {})}
-        />
+        {!environments.some((row) => row.ready) && !lookups.hosts?.length && (
+          <p className="text-sm">
+            A template starts from a snapshot, and none is built yet.{" "}
+            <Link href="/snapshots" className="underline">
+              New snapshot
+            </Link>
+          </p>
+        )}
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Account is the subscription or API key that pays for the model. Naming one pins its version: after
+          reconnecting or replacing it, save a new version of this template. Organization templates can only name
+          organization accounts.
+        </p>
+        {lookups.accounts?.state === "unavailable" && (
+          <p role="status" className="text-sm text-warning">
+            Model accounts could not be loaded. Refresh to choose one.
+          </p>
+        )}
+        {!keepingPinnedAccount && !credential && accountSelection && accountSelection !== "resolved" && (
+          <p role="status" className="text-sm text-warning">
+            No unambiguous usable account is available.{" "}
+            <Link href={HARNESS_PATH} className="underline">
+              Add or select an account in Models
+            </Link>{" "}
+            before launching.
+          </p>
+        )}
         {editing?.definition.modelAccount && harness === editing.definition.harness && (
-          <Label
-            htmlFor={`${id}-keep-account`}
-            className="flex items-start gap-3 rounded-md border p-3 text-sm font-normal"
-            data-keep-account
-          >
+          <Label className="flex items-center gap-2 text-sm">
             <Checkbox
-              id={`${id}-keep-account`}
               name="keep_account"
               value="on"
               checked={keepAccount}
               onCheckedChange={(value) => setKeepAccount(value === true)}
-              className="mt-0.5"
             />
-            <span>
-              <span className="block font-medium">Keep its pinned model account</span>
-              <span className="block text-xs text-muted-foreground">
-                Untick to choose another account or let each launch use the launcher's own account.
-              </span>
-            </span>
+            Keep its pinned model account
           </Label>
         )}
         {problem && (
@@ -439,17 +495,9 @@ function TemplateForm({
             {problem}
           </p>
         )}
-        <div className="flex justify-end">
-          <Button type="button" onClick={next} data-template-next>
-            Next: tools and variables
-          </Button>
-        </div>
       </div>
-
-      <div hidden={step !== 2} className="space-y-4" data-template-step="2">
-        <h3 data-step-heading tabIndex={-1} className="sr-only">
-          Step 2 of 2: tools and variables
-        </h3>
+      <div className="space-y-4 border-t pt-4">
+        <h3 className="text-sm font-medium">What the agent gets</h3>
         <PickList
           legend="Tools"
           name="connections"
@@ -507,7 +555,7 @@ function TemplateForm({
               return { id: row.id, label: row.name, note: aliased ? `as ${keys.join(", ")}` : scopeLabel };
             })}
           initial={editing?.definition.variables.map((binding) => binding.variableId) ?? []}
-          hint="Each value is copied into the sandbox at launch, under its own name unless the revision named it otherwise. Publishing uses its current version."
+          hint="Each value is copied into the sandbox at launch, under its own name unless the version named it otherwise. Publishing uses its current version."
         />
         <PickList
           legend="Secrets"
@@ -553,53 +601,16 @@ function TemplateForm({
             {lost}
           </p>
         )}
-        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <Button type="button" variant="ghost" onClick={() => setStep(1)}>
-            <ArrowLeftIcon /> Back
-          </Button>
-          <div className="flex flex-col items-stretch gap-1 sm:items-end">
-            <SubmitButton data-template-publish {...(lost ? { disabled: true } : {})}>
-              {editing ? `Publish revision ${editing.revision + 1}` : "Publish template"}
-            </SubmitButton>
-            <p className="text-xs text-muted-foreground">
-              {editing ? "Revision" : "Revision 1"} cannot be edited once published.
-            </p>
-          </div>
+        <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-muted-foreground">
+            Task, folder, machine size and duration are chosen at each launch.
+          </p>
+          <SubmitButton data-template-publish {...(lost ? { disabled: true } : {})}>
+            {editing ? `Save as version ${editing.revision + 1}` : "Save template"}
+          </SubmitButton>
         </div>
       </div>
     </form>
-  );
-}
-
-/** The two steps of the form, as a sequence: where the person is, and what comes next. */
-function Steps({ step }: { step: 1 | 2 }) {
-  const items = [
-    { n: 1, label: "Basics" },
-    { n: 2, label: "Tools and variables" },
-  ] as const;
-  return (
-    <ol className="grid grid-cols-2 gap-2" aria-label="Steps">
-      {items.map((item) => (
-        <li
-          key={item.n}
-          aria-current={item.n === step ? "step" : undefined}
-          className={cn(
-            "flex items-center gap-2 border-t-2 pt-2 text-xs",
-            item.n <= step ? "border-primary text-foreground" : "border-border text-muted-foreground",
-          )}
-        >
-          <span
-            className={cn(
-              "flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-medium tabular-nums",
-              item.n <= step ? "bg-primary text-primary-foreground" : "bg-muted",
-            )}
-          >
-            {item.n}
-          </span>
-          <span className="truncate font-medium">{item.label}</span>
-        </li>
-      ))}
-    </ol>
   );
 }
 
@@ -677,68 +688,6 @@ function PickList({
   );
 }
 
-/** The template's choices, read-only: what a launch from it will use. */
-function Preset({ target }: { target: TemplateLaunchTarget }) {
-  const facts = [
-    {
-      key: "environment",
-      icon: <LayersIcon />,
-      label: "Snapshot",
-      text: `${target.goldenName ?? "Unavailable"} on ${PROVIDER_LABELS[target.definition.provider]}`,
-    },
-    { key: "agent", icon: <CpuIcon />, label: "Agent", text: target.agent },
-    ...(target.definition.skills.length
-      ? [
-          {
-            key: "skills",
-            icon: <PackageIcon />,
-            label: "Skills",
-            text: target.definition.skills.join(", "),
-          },
-        ]
-      : []),
-    {
-      key: "tools",
-      icon: <PlugIcon />,
-      label: "Tools",
-      text: target.tools.length ? target.tools.join(", ") : "None",
-    },
-    {
-      key: "variables",
-      icon: <BracesIcon />,
-      label: "Variables",
-      text: target.definition.variables.length
-        ? target.definition.variables.map((binding) => binding.key).join(", ")
-        : "None",
-    },
-  ];
-  return (
-    <dl
-      className="grid gap-x-3 gap-y-1.5 rounded-md border bg-muted/30 p-3 text-sm sm:grid-cols-[auto_minmax(0,1fr)]"
-      data-template-preset
-    >
-      {facts.map((fact) => (
-        <div key={fact.key} className="contents" data-preset-fact={fact.key}>
-          <dt className="flex items-center gap-1.5 text-xs text-muted-foreground [&_svg]:size-3.5">
-            <span aria-hidden className="contents">
-              {fact.icon}
-            </span>
-            {fact.label}
-          </dt>
-          <dd
-            className={cn(
-              "min-w-0 break-words",
-              (fact.key === "variables" || fact.key === "skills") && "font-mono text-xs leading-5 break-all",
-            )}
-          >
-            {fact.text}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
 /**
  * A launch from one template revision. Everything the template chose is shown, not editable; only the task, the
  * project, the machine size and how long it runs can change. One request key per opening: a retry after a lost
@@ -756,19 +705,7 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
   const [project, setProject] = useState(target.repositories.length === 1 ? (target.repositories[0] ?? "") : "");
   const root = useRef<HTMLFormElement>(null);
   useKeepOnReset(root);
-  useEffect(() => {
-    const form = root.current;
-    if (!form) return;
-    const shortcut = (event: KeyboardEvent) => {
-      if (!isSubmitShortcut(event)) return;
-      event.preventDefault();
-      const button = form.querySelector<HTMLButtonElement>('button[type="submit"]');
-      if (button && !button.disabled) form.requestSubmit(button);
-    };
-    form.addEventListener("keydown", shortcut);
-    return () => form.removeEventListener("keydown", shortcut);
-  }, []);
-  const ttl = ttlOptions(target.definition.provider);
+  useLaunchSurface(root);
   const accountList = target.accounts;
   const eligible =
     accountList?.state === "ready"
@@ -789,17 +726,47 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
       <input type="hidden" name="id" value={target.id} />
       <input type="hidden" name="revision" value={target.revision} />
       <input type="hidden" name="request_key" value={requestKey} />
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 pb-4">
-        <Preset target={target} />
+      <LaunchFields>
+        <LaunchTaskField idPrefix={id} />
+        <div className="text-sm leading-loose text-muted-foreground">
+          <span className="max-sm:hidden">Launch </span>
+          <LaunchChoice
+            label="Agent"
+            value={HARNESS_LABELS[target.definition.harness]}
+            options={[]}
+            disabled
+            onChange={() => {}}
+          />
+          <span className="max-sm:hidden"> running </span>
+          <LaunchChoice
+            label="Model"
+            value={modelLabel(target.definition.harness, target.definition.model)}
+            options={[]}
+            disabled
+            onChange={() => {}}
+          />
+          <span className="max-sm:hidden">, reasoning effort </span>
+          <LaunchChoice
+            label="Effort"
+            value={EFFORT_LABEL[target.definition.reasoningEffort] ?? target.definition.reasoningEffort}
+            options={[]}
+            disabled
+            onChange={() => {}}
+          />
+        </div>
         {target.definition.modelAccount ? (
-          <p className="text-sm text-muted-foreground">
-            This revision pins{" "}
-            {accountList?.state === "ready"
-              ? (accountList.accounts.find((account) => account.id === target.definition.modelAccount?.id)?.name ??
-                "its account")
-              : "its account"}
-            ; publish a new revision to change it.
-          </p>
+          <LaunchChoice
+            label="Account"
+            value={
+              accountList?.state === "ready"
+                ? (accountList.accounts.find((account) => account.id === target.definition.modelAccount?.id)?.name ??
+                  "Unavailable account")
+                : "Unavailable account"
+            }
+            options={[]}
+            disabled
+            onChange={() => {}}
+          />
         ) : eligible.length > 0 ? (
           <div className="space-y-2">
             <Label htmlFor={`${id}-account`}>Account</Label>
@@ -823,20 +790,25 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
             </p>
           </div>
         ) : null}
-        <div className="space-y-2">
-          <Label htmlFor={`${id}-prompt`}>Task</Label>
-          <Textarea
-            id={`${id}-prompt`}
-            name="prompt"
-            rows={4}
-            className="max-h-[40dvh] min-h-24"
-            placeholder="What should the agent do? Leave empty to start idle."
-          />
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          {target.repositories.length > 0 && (
-            <RepositoryField idPrefix={id} repositories={target.repositories} onChange={setProject} />
-          )}
+        <LaunchLocation
+          lockedStart
+          provider={target.definition.provider}
+          start={target.goldenName ?? "Unavailable snapshot"}
+          repositories={target.repositories}
+          project={project}
+          onProject={setProject}
+        />
+        <p className="text-xs text-muted-foreground">
+          Agent, model, effort and snapshot come from the template, with its tools and skills. The account is locked too
+          when the template names one. Remove the template to change them.
+        </p>
+        <LaunchAdvanced
+          summary={
+            <span className="text-xs text-muted-foreground">
+              {target.tools.length} tools · {target.definition.skills.length} extra skills
+            </span>
+          }
+        >
           {target.sizing && target.definition.provider !== "docker" && (
             <MachineSizeField
               idPrefix={id}
@@ -845,18 +817,10 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
               repositoryDir={project}
             />
           )}
-          <div className="min-w-0 space-y-2">
-            <Label htmlFor={`${id}-ttl`}>Runs for</Label>
-            <NativeSelect id={`${id}-ttl`} name="ttl" defaultValue="">
-              {ttl.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </NativeSelect>
-          </div>
-        </div>
-      </div>
+          <p className="text-sm">Tools: {target.tools.join(", ") || "None"}</p>
+          <p className="text-sm">Extra skills: {target.definition.skills.join(", ") || "None"}</p>
+        </LaunchAdvanced>
+      </LaunchFields>
       <div className="space-y-2 border-t px-6 py-4">
         {state && !state.ok && (
           <p role="alert" className={cn("text-sm", state.pending ? "text-warning" : "text-destructive")}>
@@ -902,15 +866,13 @@ export function TemplateLaunchDialog({
           <RocketIcon /> Launch
         </Button>
       </DialogTrigger>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0">
-        <DialogHeader className="px-6 pt-6 pb-4 pr-12">
-          <DialogTitle className="truncate">Launch {target.name}</DialogTitle>
-          <DialogDescription>
-            Revision {target.revision}. Its choices are fixed; the task and the run are yours.
-          </DialogDescription>
-        </DialogHeader>
+      <LaunchDialogContent>
+        <LaunchDialogHeader
+          title={`Launch ${target.name}`}
+          description={`Version ${target.revision}. Its choices are fixed; the task and the run are yours.`}
+        />
         <TemplateLaunchForm target={target} />
-      </DialogContent>
+      </LaunchDialogContent>
     </Dialog>
   );
 }
@@ -953,17 +915,18 @@ export function TemplateManage({
   return (
     <div className="flex flex-wrap gap-2 border-t pt-4">
       <Button variant="outline" size="sm" onClick={() => setDialog("edit")} data-edit-template>
-        <PencilIcon /> New revision
+        <PencilIcon /> Change
       </Button>
       <Button variant="destructive-outline" size="sm" onClick={() => setDialog("delete")}>
-        <Trash2Icon /> Delete
+        <Trash2Icon /> Remove
       </Button>
       <Dialog open={dialog === "edit"} onOpenChange={(open) => !open && setDialog(null)}>
         <DialogContent className="max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>New revision of {editing.name}</DialogTitle>
+            <DialogTitle>Change {editing.name}</DialogTitle>
             <DialogDescription>
-              Revision {editing.revision} stays as it is. Launches use the new one from now on.
+              Saving creates version {editing.revision + 1}. New launches use it; version {editing.revision} stays as it
+              was, and routines keep the version they were set up with.
             </DialogDescription>
           </DialogHeader>
           {dialog === "edit" && (
@@ -983,10 +946,10 @@ export function TemplateManage({
       <AlertDialog open={dialog === "delete"} onOpenChange={(open) => !open && setDialog(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete {editing.name}?</AlertDialogTitle>
+            <AlertDialogTitle>Remove {editing.name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Nobody can launch from it any more. Sandboxes already launched from it keep running. This cannot be
-              undone.
+              Nobody can launch from it any more, and routines using it will fail. Sandboxes already launched from it
+              keep running. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <ResultLine result={deleted} />
@@ -997,7 +960,7 @@ export function TemplateManage({
               <input type="hidden" name="id" value={editing.id} />
               <input type="hidden" name="revision" value={editing.revision} />
               <input type="hidden" name="name" value={editing.name} />
-              <SubmitButton variant="destructive">Delete</SubmitButton>
+              <SubmitButton variant="destructive">Remove template</SubmitButton>
             </form>
           </AlertDialogFooter>
         </AlertDialogContent>
