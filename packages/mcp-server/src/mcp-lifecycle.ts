@@ -16,6 +16,7 @@ import {
 } from "@armada/core/server";
 import { bootstrapBoatMcp, type McpBootstrap, normalizeNativeMcpBootstrap } from "./mcp-native.ts";
 import { resolveMcpStdioExecutable } from "./mcp-stdio-bootstrap.ts";
+import { providerPhysicalGeneration } from "./provider-physical-generation.ts";
 
 /** Server-authorized lease reconciliation; no VM or user receives the signing key. */
 export function createMcpLifecycle(options: {
@@ -59,14 +60,9 @@ export function createMcpLifecycle(options: {
     }
     if (provider.id !== "boat")
       throw Error("Provider must expose a trusted physicalGeneration that changes on restore/runtime replacement.");
-    const result = await provider.exec({
-      sandboxId: id,
-      command: "cat /proc/sys/kernel/random/boot_id",
-      timeoutSeconds: 30,
-    });
-    if (result.detached || result.timedOut || result.exitCode !== 0 || !/^[a-f0-9-]{36}$/i.test(result.stdout.trim()))
-      throw Error("Cannot identify the physical MCP sandbox generation.");
-    return JSON.stringify([provider.id, id, result.stdout.trim()]);
+    const generation = await providerPhysicalGeneration(provider, id);
+    if (!generation) throw Error("Cannot identify the physical MCP sandbox generation.");
+    return JSON.stringify([provider.id, id, generation]);
   }
   async function reconcile(
     provider: Provider,

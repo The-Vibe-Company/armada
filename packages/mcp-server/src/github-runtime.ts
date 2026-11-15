@@ -8,6 +8,7 @@ import {
   resolveGitHubAccess,
   type Sql,
 } from "@armada/core/server";
+import { providerPhysicalGeneration } from "./provider-physical-generation.ts";
 
 const PATH = "/api/internal/github/credentials";
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -76,17 +77,8 @@ export function createGitHubRuntime(options: {
       info.expiresAt.getTime() <= Date.now()
     )
       return denied();
-    let generation = info.physicalGeneration;
-    if (!generation && provider.id === "boat") {
-      const result = await provider.exec({
-        sandboxId: identity.providerSandboxId,
-        command: "cat /proc/sys/kernel/random/boot_id",
-        timeoutSeconds: 30,
-      });
-      if (result.detached || result.timedOut || result.exitCode !== 0 || !/^[a-f0-9-]{36}$/i.test(result.stdout.trim()))
-        return denied();
-      generation = result.stdout.trim();
-    }
+    const generation =
+      info.physicalGeneration || (await providerPhysicalGeneration(provider, identity.providerSandboxId));
     if (!generation || !backend.id) return denied();
     return { physical: generation, backend: backend.id, expires: info.expiresAt.getTime() };
   }
