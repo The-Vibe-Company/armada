@@ -12,10 +12,11 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { launchedDockerSandbox, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
-import { LAUNCH_PATH, LAUNCH_TIMEOUT_MS } from "@/lib/launch";
+import { LAUNCH_PATH, LAUNCH_TIMEOUT_MS, launchFailureMessage } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
 import { checkAccountChoice } from "@/lib/model-accounts";
 import { chosenConnection, modelChoice } from "@/lib/model-choice";
+import { snapshotActionFailure } from "@/lib/snapshot-action-errors";
 export type SnapshotCreateResult = { ok: true; message: string; snapshotId: string } | { ok: false; error: string };
 const createFail = (error: string): SnapshotCreateResult => ({ ok: false, error });
 export async function buildDockerSnapshot(
@@ -72,7 +73,7 @@ export async function buildDockerSnapshot(
       error instanceof ControlError && error.outcomeUnknown
         ? "Build outcome unknown. Retry this unchanged form; do not start a second build."
         : error instanceof ControlError
-          ? error.message
+          ? snapshotActionFailure(error, "build")
           : "Snapshot build could not be started.",
     );
   }
@@ -152,7 +153,7 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
       error instanceof ControlError && (error.outcomeUnknown || error.code === "outcome_unknown")
         ? UNKNOWN_DOCKER_LAUNCH
         : error instanceof ControlError
-          ? error.message
+          ? launchFailureMessage(error)
           : "Launch could not be confirmed.",
     );
   }
@@ -192,7 +193,7 @@ export async function rebuildDockerSnapshot(
   } catch (error) {
     return createFail(
       error instanceof ControlError && !error.outcomeUnknown && error.code !== "outcome_unknown"
-        ? error.message
+        ? snapshotActionFailure(error, "build")
         : "Rebuild outcome unknown. Retry this same rebuild; do not start another request.",
     );
   }
