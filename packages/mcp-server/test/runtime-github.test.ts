@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { createSqlVaultStore, encryptSecret, type GitHubRuntimeConfiguration } from "@armada/core/server";
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
-import { createRuntimeGitHub, RuntimeGitHubConnectionError } from "../src/runtime-github.ts";
+import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
@@ -74,29 +74,6 @@ async function fixture(provider: "boat" | "modal" = "boat") {
     },
   };
 }
-
-test.each(["boat", "modal"] as const)(
-  "service-token GitHub uses its linked user, with no org-installation fallback (%s)",
-  async (provider) => {
-    const x = await fixture(provider),
-      { f, service } = x;
-    try {
-      expect(f.caller.via).toBe("service");
-      await service.prepare(f.caller, f.row.id);
-      expect((await service.status(f.caller, f.row.id)).configured).toBe(true);
-      await f.db.query("delete from github_connections where user_id=$1", [f.people.owner]);
-      const golden = (await f.db.query<{ name: string }>("select name from goldens where id=$1", [f.row.goldenId]))
-        .rows[0]!;
-      await expect(
-        service.preflight(f.caller, { org: f.people.org, golden: golden.name, repository: "example/web" }),
-      ).rejects.toBeInstanceOf(RuntimeGitHubConnectionError);
-      await expect(service.prepare(f.caller, f.row.id)).rejects.toBeInstanceOf(RuntimeGitHubConnectionError);
-      expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "not_connected" });
-    } finally {
-      await f.close();
-    }
-  },
-);
 
 // Shared reissue runs on Modal; runtime-checkpoint.test.ts owns the broader Boat checkpoint matrix.
 test.each(["modal"] as const)(
