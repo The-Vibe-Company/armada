@@ -9,8 +9,10 @@ export function SandboxState({
   expiresAt,
   statusMessage,
   readyLabel,
+  viewerOwns = true,
 }: {
   status: SandboxStatus;
+  viewerOwns?: boolean;
   idlePaused?: boolean | undefined;
   expiresAt?: string | null | undefined;
   statusMessage?: string | null | undefined;
@@ -22,17 +24,26 @@ export function SandboxState({
   );
   const waiting = status === "running" && /waiting for a free (agent )?slot/i.test(statusMessage ?? "");
   const look = statusLook(status);
-  const label = paused ? "Paused" : status === "ready" ? (readyLabel ?? look.label) : look.label;
+  const label =
+    status === "ready" && !viewerOwns && readyLabel !== "Finished"
+      ? "Waiting"
+      : paused
+        ? "Paused"
+        : status === "ready"
+          ? (readyLabel ?? look.label)
+          : look.label;
   const hollow = paused || status === "stopped";
   return (
-    <span className={cn("inline-flex items-center gap-2 text-sm", status === "failed" && "text-destructive")}>
+    <span
+      className={cn("inline-flex items-center gap-2 text-sm", status === "failed" && viewerOwns && "text-destructive")}
+    >
       <span
         aria-hidden="true"
         className={cn(
           "size-2 shrink-0 rounded-full",
           hollow
             ? "border border-muted-foreground"
-            : waiting || look.tone === "neutral"
+            : !viewerOwns || waiting || look.tone === "neutral"
               ? "bg-muted-foreground/60"
               : label === "Waiting for you"
                 ? "bg-warning"

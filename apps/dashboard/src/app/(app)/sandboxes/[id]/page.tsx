@@ -2,7 +2,6 @@ import {
   accountBindingAvailability,
   isSandboxProvider,
   MODEL_CATALOG,
-  SANDBOX_PLACEMENT_LABELS,
   type Sandbox,
   type SandboxListMetadata,
 } from "@armada/core";
@@ -10,7 +9,9 @@ import { ArrowLeftIcon, ContainerIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import type { ReactNode } from "react";
 import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
+import { CreatedAt } from "@/components/created-at";
 import { InstalledSkills } from "@/components/installed-skills";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
@@ -39,7 +40,6 @@ import { sandboxHostLabel } from "@/lib/docker-hosts";
 import { type DockerSandboxControls, dockerImageLabel, dockerSandboxControls } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
-import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
@@ -155,7 +155,7 @@ export default async function SandboxPage({ params }: Props) {
     ["Machine ID", sandbox.provider_sandbox_id ?? "Not assigned"],
     ["Snapshot", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
     ["Org", org?.org.name ?? "Unknown"],
-    ["Provider", PROVIDER_LABELS[sandbox.provider] ?? sandbox.provider],
+    ["Provider", sandbox.provider === "boat" ? "Boat cloud" : "Modal cloud"],
     ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Account", account.name],
     ["Billing type", account.billing],
@@ -197,7 +197,12 @@ export default async function SandboxPage({ params }: Props) {
             <h1 className="w-full min-w-0 text-xl font-semibold tracking-tight break-words">
               {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {golden?.name ?? "snapshot"}
             </h1>
+            <p className="w-full text-sm break-words text-muted-foreground">
+              running {sandbox.model ?? "the provider default model"} on {account.name} ·{" "}
+              {sandbox.provider === "boat" ? "Boat cloud" : "Modal cloud"}
+            </p>
             <SandboxState
+              viewerOwns={owner}
               status={sandbox.status}
               statusMessage={sandbox.status_reason}
               readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
@@ -228,7 +233,6 @@ export default async function SandboxPage({ params }: Props) {
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
-            outcomeBlocked={parseTaskOutcome(sandbox.task_outcome)?.state === "blocked"}
             pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
             initialIdlePaused={sandbox.status_reason === "idle_paused"}
             expiresAt={sandbox.expires_at}
@@ -251,8 +255,8 @@ export default async function SandboxPage({ params }: Props) {
               sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} />}
             <Facts
               facts={[
-                ["Started", formatDate(sandbox.created_at)],
-                ["Ends", lifecycle.expiresAt ? formatDate(lifecycle.expiresAt) : "Not recorded"],
+                ["Started", <CreatedAt key="started" iso={sandbox.created_at} now={Date.now()} />],
+                ["Ends", lifecycle.expiresAt ? formatDate(lifecycle.expiresAt) : "No time limit recorded"],
                 ["Who can open it", "Owner and organization admins"],
               ]}
             />
@@ -346,7 +350,7 @@ function DockerSandbox({
   const facts: Fact[] = [
     ["Sandbox ID", sandbox.id],
     ["Org", org],
-    ["Provider", SANDBOX_PLACEMENT_LABELS.docker],
+    ["Provider", `your server ${host}`],
     ["Host", host],
     ["Image", image.label, image.detail ?? undefined],
     ...(sandbox.provider_sandbox_id ? [["Container", sandbox.provider_sandbox_id] as Fact] : []),
@@ -385,7 +389,11 @@ function DockerSandbox({
             <h1 className="w-full min-w-0 text-xl font-semibold tracking-tight break-words">
               {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {host}
             </h1>
+            <p className="w-full text-sm break-words text-muted-foreground">
+              running {sandbox.model ?? "the provider default model"} on {billing.name} · your server {host}
+            </p>
             <SandboxState
+              viewerOwns={sandbox.owner_id === viewer.id}
               status={sandbox.status}
               statusMessage={sandbox.status_reason}
               readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
@@ -440,7 +448,6 @@ function DockerSandbox({
             <SandboxChat
               sandboxId={sandbox.id}
               initialStatus={sandbox.status}
-              outcomeBlocked={parseTaskOutcome(sandbox.task_outcome)?.state === "blocked"}
               initialIdlePaused={sandbox.status_reason === "idle_paused"}
               expiresAt={sandbox.expires_at}
               initialUsageRevision={usageRevision(sandbox.usage_turns)}
@@ -461,8 +468,8 @@ function DockerSandbox({
             <BillingAccountSummary account={billing} />
             <Facts
               facts={[
-                ["Started", formatDate(sandbox.created_at)],
-                ["Ends", lifecycle.expiresAt ? formatDate(lifecycle.expiresAt) : "Not recorded"],
+                ["Started", <CreatedAt key="started" iso={sandbox.created_at} now={Date.now()} />],
+                ["Ends", lifecycle.expiresAt ? formatDate(lifecycle.expiresAt) : "No time limit recorded"],
                 ["Who can open it", "Owner and organization admins"],
               ]}
             />
@@ -520,7 +527,10 @@ function DockerSandbox({
 function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; owner: string }) {
   const life = lifecycleView(sandbox.status, readLifecycle(sandbox), new Date());
   const facts: [string, string][] = [
-    ["Provider", SANDBOX_PLACEMENT_LABELS[sandbox.provider]],
+    [
+      "Provider",
+      sandbox.provider === "boat" ? "Boat cloud" : sandbox.provider === "modal" ? "Modal cloud" : "your server",
+    ],
     ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoningEffort ?? "Provider default"],
@@ -557,6 +567,7 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
             {HARNESS_LABELS[sandbox.harness] ?? "Agent"} sandbox
           </h1>
           <SandboxState
+            viewerOwns={false}
             status={sandbox.status}
             idlePaused={sandbox.idlePaused === true}
             readyLabel="Waiting for you"
@@ -585,7 +596,7 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
 }
 
 /** A detail row: its label, its value and, optionally, the full value for a tooltip (an image's digest). */
-type Fact = [string, string] | [string, string, string | undefined];
+type Fact = [string, ReactNode] | [string, ReactNode, string | undefined];
 
 function Facts({ facts }: { facts: Fact[] }) {
   return (
