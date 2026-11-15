@@ -23,6 +23,7 @@ import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
+import { DockerLaunchDialog } from "@/components/docker-launch";
 import { SnapshotBuildRefresh, SnapshotCreateChoice, SnapshotRebuildDialog } from "@/components/docker-snapshot-forms";
 import { EnvironmentTemplates } from "@/components/environment-templates";
 import { GoldenCreateDialog } from "@/components/golden-create-dialog";
@@ -56,6 +57,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { listSelectedTemplates, lookupsFrom, type TemplateList } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
+import { dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
 import { hasDockerHost, snapshotLaunchEnabled, snapshotRebuildAvailable, snapshotState } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import {
@@ -308,6 +310,45 @@ export default async function GoldensPage({ searchParams }: Props) {
   const notices = (
     <>
       <SnapshotBuildRefresh building={snapshots.some((row) => row.status === "building")} />
+      {selected && hosts.length > 0 && dockerOption?.enabled && (
+        <section aria-label="Launch on a Docker host" className="space-y-3 rounded-lg border p-4">
+          <div>
+            <h2 className="text-sm font-medium">Launch on a host</h2>
+            <p className="text-sm text-muted-foreground">
+              Start from the official Armada environment without building a snapshot.
+            </p>
+          </div>
+          <ul className="space-y-3">
+            {hosts.map((host) => {
+              const name = host.name ?? "Unnamed machine";
+              const blocker = dockerLaunchBlocker(
+                dockerOption,
+                hostRead.state === "ready" && hostRead.list.placement,
+                host,
+              );
+              const agents = dockerHarnesses(dockerOption);
+              return (
+                <li key={host.id} className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm">{name}</span>
+                  {blocker ? (
+                    <p className="text-xs text-muted-foreground">{blocker}</p>
+                  ) : (
+                    <DockerLaunchDialog
+                      orgId={selected.org.id}
+                      hostId={host.id}
+                      hostName={name}
+                      accounts={accounts}
+                      unavailable={dockerUnavailable(dockerOption)}
+                      harnesses={agents.offered}
+                      initialHarness={agents.initial ?? "codex"}
+                    />
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
       {snapshotsUnavailable && (
         <Alert variant="destructive">
           <TriangleAlertIcon />
