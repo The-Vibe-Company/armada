@@ -275,25 +275,23 @@ test("template failures use closed actionable diagnostics without echoing untrus
 });
 
 test("template help documents definition inputs, scope and safe retry semantics without authentication", async () => {
-  // Focused reader, delete and launch help are owned by onboarding-help.test.ts.
-  for (const action of ["", "create", "publish"]) {
-    for (const help of ["--help", "-h"]) {
-      const result = await invoke(["template", ...(action ? [action] : []), help]);
-      expect(result.code).toBe(0);
-      expect(result.requests).toHaveLength(0);
-      for (const text of [
-        "--file",
-        "--host UUID --provider docker",
-        "--scope",
-        "--expected-revision",
-        "--request-key",
-        "--prompt",
-        "--ttl",
-        "--size",
-        "--repo",
-      ])
-        expect(result.out).toContain(text);
-    }
+  // Leaf help is owned by the focused run-boundary onboarding-help test.
+  for (const help of ["--help", "-h"]) {
+    const result = await invoke(["template", help]);
+    expect(result.code).toBe(0);
+    expect(result.requests).toHaveLength(0);
+    for (const text of [
+      "--file",
+      "--host UUID --provider docker",
+      "--scope",
+      "--expected-revision",
+      "--request-key",
+      "--prompt",
+      "--ttl",
+      "--size",
+      "--repo",
+    ])
+      expect(result.out).toContain(text);
   }
 });
 
