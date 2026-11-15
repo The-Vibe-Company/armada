@@ -13,7 +13,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
+import { readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import { CreatedAt } from "@/components/created-at";
+import { LaunchStart } from "@/components/launch-dialog";
+import { LaunchDialogContent } from "@/components/launch-surface";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderName } from "@/components/provider-mark";
@@ -24,6 +27,7 @@ import LoadingSandboxes from "@/components/sandboxes-skeleton";
 import { StatusBadge } from "@/components/status-badge";
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
@@ -52,6 +56,8 @@ import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Sandboxes" };
 export const dynamic = "force-dynamic";
+// Match Snapshots: launch actions wait for the same server timeout.
+export const maxDuration = 800;
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
@@ -121,14 +127,15 @@ async function SandboxesContent({ searchParams }: Props) {
       <Link href={CLOUD_PROVIDERS_PATH}>Connect a provider</Link>
     </Button>
   ) : selected ? (
-    <Button asChild>
-      <Link href="/snapshots">
-        <LinkPendingIcon>
-          <RocketIcon />
-        </LinkPendingIcon>
-        Launch a sandbox
-      </Link>
-    </Button>
+    <Suspense
+      fallback={
+        <Button disabled>
+          <RocketIcon /> Launch a sandbox
+        </Button>
+      }
+    >
+      <SandboxLaunchAction />
+    </Suspense>
   ) : null;
 
   return (
@@ -460,4 +467,76 @@ function ConversationHint({ sandbox, now }: { sandbox: SandboxListMetadata; now:
       ? "Waiting for you"
       : null;
   return text ? <p className="mt-1 max-w-48 text-xs whitespace-normal text-muted-foreground">{text}</p> : null;
+}
+
+/** Reuse the unified dialog without routing the person through the snapshot inventory. */
+async function SandboxLaunchAction() {
+  const options = await readLaunchDialogOptions().catch(() => null);
+  const target = options?.targets.find((item) => !item.reason);
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button>
+          <RocketIcon /> Launch a sandbox
+        </Button>
+      </DialogTrigger>
+      <LaunchDialogContent>
+        {options && target ? (
+          target.hostId ? (
+            <LaunchStart
+              orgId={options.orgId}
+              hostId={target.hostId}
+              hostName={target.label.replace(/^Empty machine · /, "")}
+              accounts={options.accounts}
+              unavailable={[]}
+              harnesses={target.harnesses ?? []}
+              initialHarness={target.initialHarness ?? "codex"}
+            />
+          ) : (
+            <LaunchStart
+              orgId={options.orgId}
+              golden={target.golden}
+              provider={target.provider}
+              {...(target.snapshotId ? { snapshotId: target.snapshotId } : {})}
+              repositories={target.repositories}
+              {...(target.sizing ? { sizing: target.sizing } : {})}
+              accounts={options.accounts}
+              catalog={options.catalog}
+              connections={options.connections}
+              boatOpenCodeAvailable={options.boatOpenCodeAvailable}
+            />
+          )
+        ) : (
+          <DialogHeader className="overflow-y-auto p-6 pr-12 text-left">
+            <DialogTitle>Launch a sandbox</DialogTitle>
+            <DialogDescription>
+              {options
+                ? options.targets.length > 0
+                  ? "Your starting points need attention before launching."
+                  : "No starting points yet. Build a snapshot or connect your server before launching."
+                : "Starting points could not be loaded. Reload Sandboxes to try again."}
+            </DialogDescription>
+            {options && options.targets.length > 0 && (
+              <ul className="space-y-3 text-sm">
+                {options.targets.map((item) => (
+                  <li key={item.id}>
+                    <p className="font-medium">{item.label}</p>
+                    <p className="text-muted-foreground">{item.reason}</p>
+                    <Link className="underline underline-offset-4" href={item.hostId ? "/hosts" : "/snapshots"}>
+                      {item.hostId ? "Open Hosts" : "Open Snapshots"}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <Button asChild variant="outline">
+              <Link href={options ? "/snapshots" : "/sandboxes"}>
+                {options ? "Open Snapshots" : "Reload Sandboxes"}
+              </Link>
+            </Button>
+          </DialogHeader>
+        )}
+      </LaunchDialogContent>
+    </Dialog>
+  );
 }
