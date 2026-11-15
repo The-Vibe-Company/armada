@@ -662,11 +662,10 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       subcommand === "create" ? await readConfig(args, deps) : undefined,
     );
   }
-  providerFlag(args);
+  const provider = providerFlag(args);
   switch (subcommand) {
     case "capabilities": {
       if (args.positionals.length) throw new GoldenError("invalid_config", "golden capabilities takes no name.");
-      const requested = providerFlag(args);
       const auth = authOf(io, deps);
       const client = await createArmadaApiClient({
         env: auth.env,
@@ -677,7 +676,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          ...(requested === undefined ? {} : { provider: requested }),
+          ...(provider === undefined ? {} : { provider }),
           ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
         }),
       });
@@ -685,7 +684,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
       if (
         !isSandboxProvider(data.provider) ||
-        (requested !== undefined && requested !== data.provider) ||
+        (provider !== undefined && provider !== data.provider) ||
         (data.maxGoldens !== null &&
           (typeof data.maxGoldens !== "number" || !Number.isSafeInteger(data.maxGoldens) || data.maxGoldens < 0))
       ) {
@@ -751,7 +750,6 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       });
       let id = oneName(args.positionals);
       let org = single(args, "--org");
-      const provider = providerFlag(args);
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
         const { goldens } = await client.request<{ goldens: GoldenRecord[] }>("/api/v1/golden/list", {
           method: "POST",
@@ -827,7 +825,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       const result = await client.request<{ build: GoldenBuildStatus | null }>("/api/v1/golden/build/find", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, provider: providerFlag(args), org: single(args, "--org") }),
+        body: JSON.stringify({ name, provider, org: single(args, "--org") }),
         signal: AbortSignal.timeout(10_000),
       });
       if (flag(args, "--json")) io.out(JSON.stringify(result) + "\n");
@@ -1153,7 +1151,8 @@ async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Pro
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }) }),
   });
-  const rows = result.goldens.filter((row) => providerFlag(args) === undefined || row.provider === providerFlag(args));
+  const provider = providerFlag(args);
+  const rows = result.goldens.filter((row) => provider === undefined || row.provider === provider);
   if (flag(args, "--json")) {
     io.out(`${JSON.stringify(rows.map(jsonGolden), null, 2)}\n`);
     return 0;
