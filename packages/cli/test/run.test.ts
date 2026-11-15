@@ -128,11 +128,30 @@ describe("run", () => {
     expect(out).not.toContain("armada snapshot create");
   });
 
-  test("an unknown command fails with a usage error", async () => {
-    const { code, out, err } = await capture(["frobnicate"]);
-    expect(code).toBe(2);
-    expect(out).toBe("");
-    expect(err).toContain("unknown command 'frobnicate'");
+  test("an unknown command fails with a usage error in human or JSON form", async () => {
+    const forbidden = () => {
+      throw new Error("Unknown command attempted I/O");
+    };
+    for (const json of [false, true]) {
+      const { code, out, err } = await capture(["frobnicate", ...(json ? ["--json"] : [])], {
+        env: {},
+        fetch: Object.assign(forbidden, { preconnect: forbidden }),
+        readStdin: forbidden,
+      });
+      expect(code).toBe(2);
+      expect(out).toBe("");
+      if (json) {
+        expect(JSON.parse(err)).toEqual({
+          error: {
+            code: "usage",
+            message: "unknown command 'frobnicate'. Run 'armada --help'.",
+          },
+        });
+      } else {
+        expect(err).toContain("unknown command 'frobnicate'");
+        expect(err).toContain("armada --help");
+      }
+    }
   });
 });
 
