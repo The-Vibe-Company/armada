@@ -402,16 +402,9 @@ export class GoldenSnapshotRetirements {
     )
       return "provenance_unavailable";
     const g = (
-      await this.options.sql.query<{
-        org_id: string;
-        owner_id: string;
-        visibility: "org" | "private";
-        provider: SandboxProviderId;
-        provider_snapshot_id: string | null;
-        modal_workspace: string | null;
-        modal_environment: string | null;
-        modal_app_id: string | null;
-      }>("select * from public.goldens where id=$1", [c.golden_id])
+      await this.options.sql.query<
+        Parameters<typeof goldenRowProviderTarget>[0] & Pick<GoldenRow, "provider_snapshot_id">
+      >("select * from public.goldens where id=$1", [c.golden_id])
     ).rows[0];
     if (!g || !targetMatches(proof.target, goldenRowProviderTarget(g))) return "target_changed";
     const read = async <T>(work: () => Promise<T>): Promise<T> => {
