@@ -104,13 +104,7 @@ function CredentialSection({
                         description={`This removes your saved ${info.label}. You will need to save it again to build or launch private snapshots with this provider. Organization providers are not affected.`}
                         confirm="Remove key"
                         pendingLabel="Removing…"
-                        successFocusId={
-                          !canSave
-                            ? "settings-storage-reload"
-                            : info.kind === "modal"
-                              ? `modal-id-${owner}`
-                              : `value-${owner}`
-                        }
+                        successFocusId={!canSave ? "settings-storage-reload" : "personal-key-add"}
                       >
                         <input type="hidden" name="id" value={row.id} />
                       </ConfirmedAction>
@@ -129,7 +123,9 @@ function CredentialSection({
 
       {canManage && canSave && (
         <details className="group">
-          <summary className="cursor-pointer text-sm font-medium">Add a key</summary>
+          <summary id="personal-key-add" className="cursor-pointer text-sm font-medium">
+            Add a key
+          </summary>
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <div className="space-y-3 rounded-lg border p-4" data-hosting-form="key">
               <div className="space-y-0.5">

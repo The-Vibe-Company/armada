@@ -142,7 +142,7 @@ function row(
     name: item.name,
     tie: item.kind,
     bucket: state.bucket,
-    search: [item.name, item.kind, item.scope, item.status].join(" "),
+    search: [item.name, item.kind, item.kind === "variable" ? "setting" : "secret", item.scope, item.status].join(" "),
     mark: <VaultMark kind={item.kind} />,
     tags: (
       <RowTag>

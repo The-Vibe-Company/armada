@@ -491,7 +491,7 @@ export function VaultPanel({
             action={revokeVaultItem}
             fields={fields}
             title={`Revoke ${item.name}?`}
-            description={`Its value is erased now and it can no longer be used. A revoked ${item.kind} cannot be restored or replaced: to reuse the name, delete it and add it again.`}
+            description={`Its value is erased now and it can no longer be used. A revoked ${item.kind === "variable" ? "setting" : "secret"} cannot be restored or replaced: to reuse the name, delete it and add it again.`}
             confirm="Revoke"
           />
           <ConfirmAction
