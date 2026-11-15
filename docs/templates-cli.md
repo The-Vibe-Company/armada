@@ -217,3 +217,12 @@ for example, `--prompt -h` supplies the literal prompt `-h`, and
 `template create --file definition.json -- --help` supplies a literal template
 name after the terminator. Malformed operations still fail validation rather
 than silently showing help. No launch or definition handling changes otherwise.
+
+### Vault help and literal arguments
+
+For vars/secrets, long help follows the same token rules as short help: tokens
+after `--` are literal operation arguments, not help requests. Option values
+are left to the normal parser: `--file --help` is a missing-value error, not
+a successful help response. Valid family/subcommand help remains available
+before authentication or value input. Server validation still controls which
+names/IDs are accepted; this does not broaden the vault's accepted names.
