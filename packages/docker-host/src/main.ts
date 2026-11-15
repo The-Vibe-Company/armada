@@ -186,6 +186,13 @@ async function main(args: string[]) {
         cacheDir: join(directory, "runtime-cache"),
       }),
     };
+    if (process.env.ARMADA_DOCKER_RETENTION_SECONDS !== undefined) {
+      const seconds = Number(process.env.ARMADA_DOCKER_RETENTION_SECONDS);
+      if (!/^\d+$/.test(process.env.ARMADA_DOCKER_RETENTION_SECONDS) || !Number.isSafeInteger(seconds))
+        throw new Error("Invalid ARMADA_DOCKER_RETENTION_SECONDS");
+      state.retentionSeconds = seconds;
+      await store.save(state);
+    }
     let stopping = false;
     const stop = () => {
       stopping = true;

@@ -42,6 +42,12 @@ export type State = {
     imageId: string | null,
   ][];
   cleanupLimit?: number;
+  /** Local durable retention obligations survive receipt compaction and offline polls. */
+  retention?: { request: DockerMachineRequest; requestId: string; deadline: number; deleted?: true }[];
+  retentionSeconds?: number;
+  retentionScanAfter?: string;
+  retentionDeleteAfter?: string;
+  retentionReportAfter?: string;
   lastPollAt?: string;
   /** Receipt identities for unique active generations, in fair sweep order. */
   activeTtl?: string[];
@@ -56,6 +62,7 @@ export interface Api {
   register(server: string, token: string, installationId: string): Promise<{ hostId: string; hostToken: string }>;
   poll(state: State, options?: { skipSnapshots?: boolean }): Promise<{ job: Job | null; limits?: DockerSandboxLimits }>;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
+  cleaned?(state: State, requestId: string): Promise<void>;
 }
 export interface Executor {
   configureLimits?(limits: DockerSandboxLimits | undefined): void;
@@ -66,6 +73,9 @@ export interface Executor {
   stop(request: DockerMachineRequest): Promise<unknown>;
   delete(request: DockerMachineRequest): Promise<unknown>;
   stopIfExpired(request: DockerMachineRequest): Promise<unknown>;
+  deleteStopped?(request: DockerMachineRequest): Promise<void>;
+  isRunning?(request: DockerMachineRequest): Promise<boolean>;
+  isStopped?(request: DockerMachineRequest): Promise<boolean>;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function validId(value: unknown): value is string {
@@ -133,8 +143,67 @@ export async function register(store: Store, api: Api, server: string, token: st
   });
 }
 /** One serialized production iteration. Durable receipts precede all machine operations. */
-export async function tick(store: Store, api: Api, executor: Executor, skipSnapshots = false): Promise<void> {
+export async function tick(
+  store: Store,
+  api: Api,
+  executor: Executor,
+  skipSnapshots = false,
+  now = Date.now,
+): Promise<void> {
   const state = await store.load();
+  state.retention ??= [];
+  const retentionSeconds = state.retentionSeconds ?? 86400;
+  if (!Number.isSafeInteger(retentionSeconds) || retentionSeconds < 0) throw Error("Invalid retention policy");
+  // Observe exact owned allocations even while disconnected. Never infer physical exit from a failed RPC.
+  if (executor.isStopped) {
+    const candidates = new Map<string, Receipt>();
+    for (const receipt of state.receipts) {
+      if (receipt.operation === "buildSnapshot" || receipt.operation === "delete") continue;
+      candidates.set(generationKey(receipt.request), receipt);
+    }
+    const values = [...candidates.values()];
+    const after = values.findIndex((receipt) => receipt.requestId === state.retentionScanAfter);
+    const receipt = values[(after + 1) % values.length];
+    if (receipt) {
+      state.retentionScanAfter = receipt.requestId;
+      const key = generationKey(receipt.request);
+      const scheduled = state.retention.find((entry) => generationKey(entry.request) === key);
+      try {
+        const stopped = await executor.isStopped(receipt.request);
+        if (!stopped && scheduled && !scheduled.deleted && (await executor.isRunning?.(receipt.request)) === true) {
+          state.retention = state.retention.filter((entry) => entry !== scheduled);
+          await store.save(state);
+        }
+        if (stopped && !scheduled) {
+          state.retention.push({
+            request: receipt.request,
+            requestId: receipt.requestId,
+            deadline: now() + retentionSeconds * 1000,
+          });
+          await store.save(state);
+        }
+      } catch {
+        /* Unknown ownership or disk failure never authorizes deletion. */
+      }
+    }
+  }
+  // One physical cleanup per tick, rotated durably even when Docker refuses it.
+  // Reporting is deliberately deferred until after all local physical TTL work.
+  const deleteAfter = state.retention.findIndex((entry) => entry.requestId === state.retentionDeleteAfter);
+  const due = [...state.retention.slice(deleteAfter + 1), ...state.retention.slice(0, deleteAfter + 1)].find(
+    (entry) => !entry.deleted && entry.deadline <= now(),
+  );
+  if (due && executor.deleteStopped) {
+    try {
+      state.retentionDeleteAfter = due.requestId;
+      await store.save(state);
+      await executor.deleteStopped(due.request);
+      due.deleted = true;
+      await store.save(state);
+    } catch {
+      /* Exact idempotent cleanup retries on a later fair local iteration. */
+    }
+  }
   // Upgrade legacy state once. Replay identity is retained independently of TTL work.
   if (!state.activeTtl) {
     state.activeTtl = [];
@@ -186,6 +255,21 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
       } catch {
         /* uncertain ownership/stop: retry on a later fair turn */
       }
+    }
+  }
+  const cleanAfter = state.retention.findIndex((entry) => entry.requestId === state.retentionReportAfter);
+  const cleaned = [...state.retention.slice(cleanAfter + 1), ...state.retention.slice(0, cleanAfter + 1)].find(
+    (entry) => entry.deleted,
+  );
+  if (cleaned && api.cleaned) {
+    try {
+      state.retentionReportAfter = cleaned.requestId;
+      await store.save(state);
+      await api.cleaned(state, cleaned.requestId);
+      state.retention = state.retention.filter((entry) => entry !== cleaned);
+      await store.save(state);
+    } catch {
+      /* Retry one durable physical-cleanup report per tick, without delaying local expiry. */
     }
   }
   // Never let offline reporting delay another machine's physical TTL sweep.
@@ -249,6 +333,10 @@ export async function tick(store: Store, api: Api, executor: Executor, skipSnaps
     const saved = latest.receipts.find((item) => item.requestId === receipt.requestId);
     if (!saved) throw Error("Missing durable receipt");
     Object.assign(saved, receipt);
+    if (receipt.operation === "resume" && receipt.outcome === "completed")
+      latest.retention = (latest.retention ?? []).filter(
+        (entry) => generationKey(entry.request) !== generationKey(receipt.request),
+      );
     updateActiveTtl(latest, saved);
     Object.assign(state, latest);
     await store.save(state);

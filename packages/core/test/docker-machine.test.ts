@@ -537,3 +537,23 @@ test("registry digest references whose repository is named sha256 do not require
     ["image", "pull", "--quiet", image],
   ]);
 });
+
+test("retention deletion refuses running or foreign allocations and preserves snapshot images", async () => {
+  const f = fixture();
+  await f.executor.create(request);
+  expect(await f.executor.isStopped(request)).toBe(false);
+  await expect(f.executor.deleteStopped(request)).rejects.toThrow("ownership_mismatch");
+  await f.executor.stop(request);
+  expect(await f.executor.isStopped(request)).toBe(true);
+  const container = [...f.containers.values()][0];
+  container.Config.Labels["dev.armada.machine.host"] = "another_host";
+  await expect(f.executor.deleteStopped(request)).rejects.toThrow("ownership_mismatch");
+  expect(f.containers.size).toBe(1);
+  expect(f.volumes.size).toBe(1);
+  container.Config.Labels["dev.armada.machine.host"] = "22222222-2222-2222-2222-222222222222";
+  await f.executor.deleteStopped(request);
+  await f.executor.deleteStopped(request);
+  expect(f.containers.size).toBe(0);
+  expect(f.volumes.size).toBe(0);
+  expect(f.images.size).toBe(1);
+});
