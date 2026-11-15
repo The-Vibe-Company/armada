@@ -67,6 +67,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
       RELEASE_SHA: ${{ inputs.source_sha || github.sha }}
+      STAGING_FORWARD_HISTORY: 'true'
       STAGING_LATEST_ONLY: ${{ inputs.source_sha == '' && 'true' || 'false' }}
       ARMADA_URL: ${{ vars.ARMADA_ORIGIN }}
       ARMADA_TOKEN: ${{ secrets.ARMADA_SMOKE_TOKEN }}
