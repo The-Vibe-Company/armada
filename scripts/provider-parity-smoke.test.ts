@@ -12,6 +12,9 @@ for (const mode of [
   "online",
   "client_send_full",
   "client_send_full_slow",
+  "client_stop_full",
+  "client_stop_full_slow",
+  "client_stop_full_no_resume",
   "readable_valid",
   "readable_missing",
   "readable_full",
@@ -150,6 +153,7 @@ for (const mode of [
   "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
+    const clientStopFull = mode.startsWith("client_stop_full");
     const clientFull = mode === "client_send_full" || mode === "client_send_full_slow";
     const deepFull = mode === "skills_resume_full" || mode === "mcp_resume_full";
     const mcpConnection = "10000000-0000-4000-8000-000000000003";
@@ -202,6 +206,14 @@ for (const mode of [
     const calls: string[] = [];
     let dashboardProvider = "modal";
     const clientAnswers = new Map<string, string>();
+    const clientStops = new Map<string, number>();
+    function acceptStop(provider: string, args: Record<string, unknown>) {
+      expect(args.id).toBe(provider);
+      expect(["ready", "running"]).toContain(states.get(provider)!);
+      clientStops.set(provider, (clientStops.get(provider) ?? 0) + 1);
+      states.set(provider, "stopped");
+      return { id: provider, status: "stopped" };
+    }
     function acceptClient(provider: string, args: Record<string, unknown>) {
       expect(args.id).toBe(provider);
       expect(args.conversation_id).toBe("client_conversation");
@@ -237,6 +249,7 @@ for (const mode of [
               ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
               provider,
               ...(clientFull ? { clientSend: true } : {}),
+              ...(clientStopFull ? { clientStop: true } : {}),
               ...(mode.startsWith("subscription_probe") && mode !== "subscription_probe_missing"
                 ? { subscriptionAccount: true }
                 : {}),
@@ -349,7 +362,7 @@ for (const mode of [
         },
         fetch: async (url, init) => {
           if (new URL(url).pathname === "/mcp") {
-            expect(clientFull).toBe(true);
+            expect(clientFull || clientStopFull).toBe(true);
             const rpc = JSON.parse(String(init.body));
             calls.push(`${dashboardProvider}:mcp:${rpc.method}`);
             if (rpc.method === "initialize")
@@ -364,6 +377,19 @@ for (const mode of [
               });
             if (rpc.method === "notifications/initialized") return new Response(null, { status: 202 });
             expect(rpc.method).toBe("tools/call");
+            if (clientStopFull) {
+              expect(rpc.params.name).toBe("stop");
+              expect(rpc.params.arguments).toEqual({ id: dashboardProvider });
+              return Response.json({
+                jsonrpc: "2.0",
+                id: rpc.id,
+                result: {
+                  content: [
+                    { type: "text", text: JSON.stringify(acceptStop(dashboardProvider, rpc.params.arguments)) },
+                  ],
+                },
+              });
+            }
             expect(rpc.params.name).toBe("send");
             return Response.json({
               jsonrpc: "2.0",
@@ -440,7 +466,7 @@ for (const mode of [
                     status: true,
                     logs: true,
                     stop: mode !== "accounts_stop_unsupported",
-                    resume: !(id === "docker" && mode === "unsupported"),
+                    resume: mode !== "client_stop_full_no_resume" && !(id === "docker" && mode === "unsupported"),
                     delete: true,
                   },
                   unsupportedReasons: {
@@ -669,7 +695,7 @@ for (const mode of [
                   },
                   { status: mode === "quota" ? 429 : 403 },
                 );
-              if (mode === "client_send_full_slow") clock += 110_001;
+              if (mode === "client_send_full_slow" || mode === "client_stop_full_slow") clock += 110_001;
               states.set(p, "ready");
               result = {
                 sandbox: {
@@ -913,17 +939,19 @@ for (const mode of [
                         ? "tool_result"
                         : "assistant",
                     text:
-                      mode === "skills_resume_full" && String(body.id).endsWith("template-2")
-                        ? "SMOKE_OK"
-                        : mode === "snapshot_answer_missing" || mode === "template_no_answer"
-                          ? "WRONG"
-                          : mode.startsWith("subscription_probe")
-                            ? (turns.get(p)?.length ?? 0) > 1
-                              ? prompts.get(p)
-                              : "SMOKE_OK"
-                            : mode.startsWith("idle_") && woken.has(p)
-                              ? prompts.get(p)
-                              : `SMOKE_OK ${prompts.get(p)}`,
+                      clientStopFull && (turns.get(p)?.length ?? 0) > 1
+                        ? prompts.get(p)
+                        : mode === "skills_resume_full" && String(body.id).endsWith("template-2")
+                          ? "SMOKE_OK"
+                          : mode === "snapshot_answer_missing" || mode === "template_no_answer"
+                            ? "WRONG"
+                            : mode.startsWith("subscription_probe")
+                              ? (turns.get(p)?.length ?? 0) > 1
+                                ? prompts.get(p)
+                                : "SMOKE_OK"
+                              : mode.startsWith("idle_") && woken.has(p)
+                                ? prompts.get(p)
+                                : `SMOKE_OK ${prompts.get(p)}`,
                   },
                   ...(mode === "subscription_probe_later_answer" && (turns.get(p)?.length ?? 0) > 1
                     ? [
@@ -1106,6 +1134,11 @@ for (const mode of [
               };
               break;
             case "sandbox/stop":
+              if (clientStopFull && !body.request_id) {
+                expect(body).toEqual({ org: p, id: p });
+                result = acceptStop(p, body);
+                break;
+              }
               states.set(p, mode === "already_deleted" ? "deleted" : mode === "terminal_failed" ? "failed" : "stopped");
               if (mode === "recall_loss") prompts.delete(p);
               if (mode === "stop_response_lost") throw new Error("stop_response_lost");
@@ -1509,6 +1542,25 @@ for (const mode of [
           `${kind}-resume-cleanup`,
         ])
           expect(report.features[name][provider].status).toBe("pass");
+      }
+      return;
+    }
+    if (clientStopFull) {
+      expect(passed).toBe(true);
+      expect(report.starts).toBe(2);
+      for (const provider of ["modal", "docker"]) {
+        expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
+        expect(report.features["client-stop"][provider].status).toBe(
+          mode === "client_stop_full_no_resume" ? "unsupported" : "pass",
+        );
+        expect(report.features.cleanup[provider].status).toBe("pass");
+        if (mode === "client_stop_full_no_resume") expect(clientStops.get(provider) ?? 0).toBe(0);
+        else {
+          expect(clientStops.get(provider)).toBe(2);
+          expect(turns.get(provider)).toHaveLength(3);
+          for (const feature of ["client-stop-dashboard", "client-stop-cli", "resume-recall", "usage", "exact-cost"])
+            expect(report.features[feature][provider].status).toBe("pass");
+        }
       }
       return;
     }
