@@ -50,7 +50,9 @@ Pause wording and #1532 debt rows are implemented. Provider staging verification
 This PR does not claim the issue's end-to-end acceptance criteria are met.
 
 The coordinator must validate idle shutdown and conversation-preserving wake
-on staging for Boat, Modal and the owner's Docker host after the follow-ups.
+on staging for Modal and the owner's Docker host. Boat is not part of the release
+gate; print `boat: not part of the release gate`. On-demand Boat verification is
+coordinator-only, never a staging acceptance requirement.
 No provider lifecycle or staging operation was run for this implementation.
 
 ## Idle-pause presentation

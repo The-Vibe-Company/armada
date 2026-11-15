@@ -1,4 +1,4 @@
-# OpenCode on Modal and Docker
+# OpenCode on Modal, Docker and shared Boat runtime
 
 **OpenCode is enabled on Modal, Docker hosts and the Boat shared runtime**; native Boat still
 refuses before fork. See [Boat runtime launch](../boat-runtime-first-prompt.md#opencode-on-the-shared-boat-runtime-2052)
@@ -42,7 +42,7 @@ the retired `deepseek-chat` alias is not a launch default. API keys are stdin/fi
 armada creds set opencode --name deepseek --base-url https://api.deepseek.com \
   --models deepseek-flash --file /private/deepseek-key
 armada creds list --json
-armada launch MODAL_GOLDEN --provider modal --agent opencode \
+armada launch MODAL_SNAPSHOT --provider modal --agent opencode \
   --credential-id ACCOUNT_UUID --model armada/deepseek-flash \
   --reasoning-effort default 'Reply with exactly: armada-opencode-ok'
 ```
@@ -64,6 +64,26 @@ and `reasoningEffort:"default"`. The server pins the account ID/revision.
 Dashboard/iOS harness choices derive from the shared/generated catalog; account
 creation in the dashboard supports provider presets, declared models and raw plan keys.
 
+## Morph and simultaneous-agent limits
+
+Morph is a shared model-account kind compatible with OpenCode, Claude Code and
+Codex, not a sandbox provider. Connect its key through stdin or a private file,
+then select its account UUID and a supported Morph model at launch; see
+[Morph setup](../morph.md). Do not create a generic OpenCode connection merely
+to reuse that shared Morph account.
+
+Per-account capacity applies across harnesses/providers: Morph defaults to
+2 simultaneous agents, other account kinds to unlimited. Stopped/idle-paused
+sandboxes do not count. Over-cap admission refuses without silently selecting
+another billing account; lowering a cap does not stop running agents.
+Connect/set/import/login accept `--max-agents N` or `--unlimited`.
+For an existing account:
+
+```sh
+armada creds limits ACCOUNT_UUID --max-agents 2
+armada creds limits ACCOUNT_UUID --unlimited
+```
+
 ## Test a custom connection
 
 On Account → Models, a custom OpenCode connection with declared models offers
@@ -77,7 +97,10 @@ in the bound connection's declared list. This proves connectivity, not a full
 agent turn, tool use or streaming.
 
 OpenCode plan-key checks remain unavailable: the native CLI owns its plan
-routing/session headers. OpenCode runs on Modal and Docker; connection checks currently use Modal. No sandbox is
+routing/session headers. OpenCode runs on Modal, Docker and the shared Boat runtime. Public API/CLI
+connection checks support Modal and the shared Boat runtime, not Docker; the
+dashboard sandbox picker currently offers Modal only. Boat is not part of the
+staging/release gate. No sandbox is
 started or resumed for a check. Coordinator staging: launch an idle Modal
 sandbox with a saved DeepSeek custom connection, then send a tiny check from
 Models with its declared model. Expect safe success/authentication/model-error
@@ -97,7 +120,7 @@ No separate coordinator publication is required. See
 [runtime artifact publication](../runtime-startup.md#build-and-publish) for the image's
 manifest paths and exact post-deploy HEAD checks. Only selected OpenCode
 launches fetch this artifact, and only at start/resume when its verified native
-binary/cache is missing. Older goldens need no model key or new native installer
+binary/cache is missing. Older snapshots need no model key or new native installer
 baked into them. Wrong/missing bytes fail closed. No npm/latest fetch happens
 inside a prompt and native auto-update is disabled. Native title generation is
 disabled: Armada owns names and avoids unreported auxiliary model requests. Credentials arrive separately
@@ -123,7 +146,7 @@ turn unknown, never an invented partial sum.
 ## Staging lifecycle check (coordinator-owned real DeepSeek key)
 
 1. Migrate/deploy the artifact-bearing image, create the account and launch as above
-   on a Modal golden. Expect an answer and current-turn input/output tokens in
+   on a Modal snapshot. Expect an answer and current-turn input/output tokens in
    `armada status ID --json`, without any key in logs/events/exec output.
 2. Send a follow-up. Start a tool-bearing prompt, steer it while active, then
    start another and interrupt it. Expect one terminal Armada prompt per turn,
@@ -155,7 +178,7 @@ process-group ownership through teardown. Raw RPC errors never become diagnostic
 
 The private custom endpoint uses inline `OPENCODE_CONFIG_CONTENT`, fixed `armada`
 provider and `@ai-sdk/openai-compatible`. API keys are memory-only driver environment,
-not argv, golden/project config or public receipts. Native updates/catalog fetches
+not argv, snapshot/project config or public receipts. Native updates/catalog fetches
 are disabled. Export/import persists only atomic redacted `sessions/<id>.json`
 (mode 0600), not SQLite/WAL, auth, logs or provider caches. No-text restore imports
 and verifies the exact session; missing/malformed export refuses, not replacement.
@@ -194,7 +217,7 @@ remain valid. A model without saved pricing remains honestly unpriced.
 Coordinator staging verification after the normal deployment: create the
 **Anthropic for OpenCode** connection with a real key, then add matching
 `account: "opencode-anthropic"` entries to the existing staging account cases
-(one Modal golden and one owned Docker host). Run:
+(one Modal snapshot and one owned Docker host). Run:
 
 ```sh
 ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --accounts

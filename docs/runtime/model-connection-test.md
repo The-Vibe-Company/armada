@@ -1,7 +1,7 @@
-# Runtime-backed connection check (private primitive)
+# Runtime-backed connection checks
 
-Refs #1162. This slice adds the runtime operation underpinning a later public
-CLI/dashboard Test Connection action, not those public controls themselves.
+Refs #1162. The runtime operation underpins the public CLI/dashboard
+Test Connection action documented below.
 It follows the runtime-only owner decision: no model request goes through a
 host API or directly from the Armada server.
 
@@ -14,7 +14,7 @@ An already bootstrapped Modal runtime accepts this authenticated protocol-1 RPC:
 Only the selected API-key connection from the current private bootstrap is used.
 The RPC accepts no URL, key, arbitrary headers or prompt. Standard OpenAI and
 Anthropic API keys use the vendor default address when no custom endpoint is
-bound. Custom OpenCode connections are supported on Modal; subscription and
+bound. Custom OpenCode connections are supported on Modal and shared-runtime Boat; subscription and
 OpenCode plan-key credentials are not checked. Builders,
 checkpointed/busy runners and unsupported/unconfigured harnesses refuse it.
 The operation joins the runtime's in-flight command set so checkpoint waits
@@ -37,7 +37,7 @@ connection_failed, or null. Status is the real HTTP status (null on transport
 failure). Code is a recognized provider diagnostic such as invalid_api_key,
 DeploymentNotFound or rate_limit_error, or null. Free-form error text, headers,
 model output and unknown diagnostics are deliberately never returned: providers
-can echo keys. Future public UI must not claim a successful check proves a
+can echo keys. A successful public check must not be presented as proof of a
 complete agent turn or support for arbitrary models.
 
 Wire fields checked against the official [Responses create API](https://developers.openai.com/api/reference/resources/responses/methods/create)
@@ -75,7 +75,8 @@ with `{id,model,org?}`; `id` is the public Armada sandbox UUID, not a provider
 or host ID. The API derives harness and bound credentials from that sandbox.
 Only its owner can run a check. It revalidates the account's current status
 and version, refuses subscription accounts, unsupported harnesses and stopped/starting/unbound or
-non-Modal sandboxes, and never starts/resumes a machine. Extra request fields
+sandboxes outside Modal or the shared Boat runtime, and never starts/resumes a
+machine. Native Boat and Docker are not supported by this check. Extra request fields
 (including keys and URLs) are refused. A short activity lease protects the
 check from idle-stop races without creating a conversation or clearing task
 outcomes. Runtime receipts are validated against the shared closed DTO before
@@ -102,6 +103,12 @@ HTTP401 and a recognized code when supplied by the provider. Rotate/revoke the
 bound account, retry the old sandbox, and expect refusal before runtime I/O.
 A non-owner admin, stopped sandbox, extra request key/URL, or malformed receipt
 must fail closed. No model key leaves the existing private bootstrap. The Models page uses this surface as described below.
+
+The CLI/API also accepts an eligible Boat shared-runtime sandbox. This is
+product support, not an instruction to probe Boat on staging: Boat is not part
+of the release gate, and on-demand Boat verification is coordinator-only.
+The Models page picker remains Modal-only; API support does not imply a Boat
+dashboard picker.
 
 ## Models page
 
