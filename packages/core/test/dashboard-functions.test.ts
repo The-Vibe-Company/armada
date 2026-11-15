@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { migratedDatabase } from "./support/database.ts";
+
+const database = migratedDatabase();
 
 type People = { org: string; admin: string; owner: string; member: string; outsider: string };
 
@@ -146,12 +148,7 @@ describe("dashboard functions", () => {
 });
 
 async function withDb(run: (db: PGlite) => Promise<void>): Promise<void> {
-  const db = await openMigratedDatabase();
-  try {
-    await run(db);
-  } finally {
-    await db.close();
-  }
+  await run(database());
 }
 
 async function fixture(db: PGlite): Promise<People> {
