@@ -968,3 +968,32 @@ configured (or fixture-not-configured otherwise). It never claims that a plain
 image proved snapshot launch. Cloud golden probes remain unchanged. Boat is not
 part of staging/release acceptance. No deployment or real provider check was
 performed by this worker; these instructions are not acceptance evidence.
+
+## Multiple Armada servers on one machine (#2169)
+
+The CLI installer keeps an existing legacy installation untouched when installing
+for a different HTTPS server origin. Additional instances use
+`armada-docker-host@<sha256-of-origin>` for their binary and private state
+directory, and the same name plus `.service` for their systemd user unit.
+Each has independent registration credentials, durable receipts and runtime cache.
+The daemon's existing installation-ID and host-ID ownership labels scope container,
+volume and snapshot operations, including cleanup; shared images remain shared.
+
+Use `armada host status --server https://armada.example` or
+`armada host uninstall --server https://armada.example` to select one.
+Without `--server`, multiple installations are listed, never implicitly removed.
+An old legacy daemon's origin is read from its private state when status does not
+yet expose it. Unreadable registration refuses installation before reading or
+exchanging the new one-use token; repair the existing local installation first.
+Managed daemon commands also accept `--instance SHA256_SERVER_ORIGIN`.
+
+Capacity is computed independently per registration from the same machine.
+Availability sampling treats other instances' workloads as unrelated machine
+load; admission reservations are not coordinated across servers. Simultaneous
+starts can therefore compete; use conservative per-host overrides as needed.
+
+Coordinator acceptance (not performed here): run the production one-click
+installer while staging remains connected; check both dashboards, launch one
+sandbox from each and verify distinct ownership labels and state. Stop/delete
+through each server, uninstall production with `--server`, and confirm staging
+still runs. No production mutation or deployment was performed by this change.

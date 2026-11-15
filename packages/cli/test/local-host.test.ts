@@ -22,6 +22,7 @@ function machine() {
   let out = "";
   let err = "";
   const native: LocalHostIo = {
+    readServer: async () => "https://armada.example",
     home,
     platform: "linux",
     arch: "x64",
@@ -290,3 +291,33 @@ test.each([
     expect(result.out + result.err).not.toContain("privateCredential");
   },
 );
+
+test("another server installs independently; ambiguous uninstall lists without removing either instance", async () => {
+  const m = machine();
+  m.existing(registered);
+  const other = "https://production.example";
+  const suffix = createHash("sha256").update(other).digest("hex");
+  m.native.listInstances = async () => [];
+  expect((await m.capture(["host", "install", "--server", other])).code).toBe(0);
+  const install = m.calls.find((c) => c.args[0] === "install");
+  expect(install?.program).toBe(`${binary}@${suffix}`);
+  expect(install?.args).toEqual(["install", "--server", other, "--instance", suffix]);
+  expect(m.calls.some((c) => c.args[0] === "upgrade")).toBe(false);
+  m.native.listInstances = async () => [`armada-docker-host@${suffix}`];
+  m.native.readServer = async (path) => (path.includes("@") ? other : "https://armada.example");
+  const listed = await m.capture(["host", "uninstall"]);
+  expect(listed.code).toBe(0);
+  expect(m.calls.some((c) => c.args[0] === "uninstall")).toBe(false);
+  expect((await m.capture(["host", "uninstall", "--server", other])).code).toBe(0);
+  expect(m.calls.find((c) => c.args[0] === "uninstall")?.program).toBe(`${binary}@${suffix}`);
+});
+
+test("unknown existing origin refuses before reading or exchanging the token", async () => {
+  const m = machine();
+  m.existing(registered);
+  m.native.readServer = async () => undefined;
+  const result = await m.capture();
+  expect(result.code).toBe(1);
+  expect(m.requests).toEqual([]);
+  expect(result.err).not.toContain("run armada doctor");
+});
