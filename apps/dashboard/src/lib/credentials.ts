@@ -4,6 +4,7 @@ import {
   parseCredentialValue,
   VaultError,
 } from "@armada/core";
+import { explainDbError } from "./action";
 
 /**
  * The hosting credentials this page stores directly: they pay for and run sandboxes, stay on the Armada server
@@ -74,4 +75,16 @@ export function checkModalToken(rawId: unknown, rawSecret: unknown): SecretCheck
     if (error instanceof VaultError) return { ok: false, error: error.message };
     throw error;
   }
+}
+
+export const PERSONAL_KEY_STORAGE_UNAVAILABLE =
+  "Personal key storage is not ready here. Ask an Armada administrator to finish secure storage setup, then reload Settings.";
+
+/** Personal-key forms never display database/session implementation diagnostics. */
+export function personalKeyDbFailure(error: { code?: string; message: string }): string {
+  if (error.code === "28000") return "Your session cannot change this key. Sign in again, then reload Settings.";
+  if (error.code === "P0002") return "That key is no longer available. Reload Settings to check its current state.";
+  if (error.code === "23514")
+    return "The key settings were not accepted. Check the form and reload Settings before trying again.";
+  return explainDbError(error);
 }

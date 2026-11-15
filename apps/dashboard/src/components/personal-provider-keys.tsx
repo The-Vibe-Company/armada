@@ -5,11 +5,12 @@ import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConfirmedAction } from "@/components/confirmed-action";
 import { ToneBadge } from "@/components/status-badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
-import { CREDENTIAL_KINDS, SINGLE_VALUE_KINDS } from "@/lib/credentials";
+import { CREDENTIAL_KINDS, PERSONAL_KEY_STORAGE_UNAVAILABLE, SINGLE_VALUE_KINDS } from "@/lib/credentials";
 import type { CredentialRow } from "@/lib/data/credentials";
 
 /**
@@ -18,6 +19,7 @@ import type { CredentialRow } from "@/lib/data/credentials";
  * actions; an organization's keys are its provider rows above them, changed only by an admin.
  */
 export function PersonalProviderKeys({ owner, rows }: { owner: string; rows: CredentialRow[] }) {
+  const canSave = Boolean(encryptionKey());
   return (
     <Card data-settings="personal-keys" id="personal-keys" aria-labelledby="personal-provider-keys">
       <CardHeader>
@@ -30,14 +32,19 @@ export function PersonalProviderKeys({ owner, rows }: { owner: string; rows: Cre
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {!encryptionKey() && (
+        {!canSave && (
           <Alert variant="destructive">
             <AlertDescription>
-              Encryption is not configured on this server: provider keys cannot be saved.
+              <p>{PERSONAL_KEY_STORAGE_UNAVAILABLE}</p>
+              <Button asChild variant="outline" size="sm" className="mt-2">
+                <a id="settings-storage-reload" href="/settings">
+                  Reload Settings
+                </a>
+              </Button>
             </AlertDescription>
           </Alert>
         )}
-        <CredentialSection scope="user" owner={owner} rows={rows} canManage />
+        <CredentialSection scope="user" owner={owner} rows={rows} canManage canSave={canSave} />
       </CardContent>
     </Card>
   );
@@ -48,12 +55,14 @@ function CredentialSection({
   owner,
   rows,
   canManage,
+  canSave,
 }: {
   /** Only the viewer's own: an organization's keys are its provider rows. */
   scope: "user";
   owner: string;
   rows: CredentialRow[];
   canManage: boolean;
+  canSave: boolean;
 }) {
   const byKind = new Map(rows.map((row) => [row.kind, row]));
   const single = SINGLE_VALUE_KINDS.length === 1 ? SINGLE_VALUE_KINDS[0] : undefined;
@@ -96,7 +105,13 @@ function CredentialSection({
                         description={`This removes your saved ${info.label}. You will need to save it again to build or launch private snapshots with this provider. Organization providers are not affected.`}
                         confirm="Remove key"
                         pendingLabel="Removing…"
-                        successFocusId={info.kind === "modal" ? `modal-id-${owner}` : `value-${owner}`}
+                        successFocusId={
+                          !canSave
+                            ? "settings-storage-reload"
+                            : info.kind === "modal"
+                              ? `modal-id-${owner}`
+                              : `value-${owner}`
+                        }
                       >
                         <input type="hidden" name="id" value={row.id} />
                       </ConfirmedAction>
@@ -113,7 +128,7 @@ function CredentialSection({
         </ul>
       </div>
 
-      {canManage && (
+      {canManage && canSave && (
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="space-y-3 rounded-lg border p-4" data-hosting-form="key">
             <div className="space-y-0.5">

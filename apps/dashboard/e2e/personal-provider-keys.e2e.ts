@@ -85,32 +85,24 @@ test("a value with spaces is refused before anything is stored", async ({ page }
   await expect(mine.locator('p[role="alert"]')).toContainText("no spaces");
 });
 
-test("personal provider keys sit in Settings under the org's providers; Harness offers no provider key", async ({
+test("personal keys live in Settings while organization providers and model accounts stay separate", async ({
   page,
 }) => {
   await signIn(page, "alice@example.com", "/settings");
-  const providers = page.locator('[data-settings="providers"]');
   const personal = page.locator('[data-settings="personal-keys"]');
-  await expect(providers).toBeVisible();
   await expect(personal.getByRole("heading", { name: "Your personal provider keys" })).toBeVisible();
-  // Right after the organization's provider rows, before GitHub.
-  const order = await page
-    .locator("[data-settings]")
-    .evaluateAll((cards) => cards.map((card) => card.getAttribute("data-settings")));
-  expect(order).toEqual(["providers", "personal-keys", "github"]);
   await expect(
     personal.locator('[data-credentials="user"]').locator("li", { hasText: "boat.dev API key" }),
   ).toHaveCount(1);
+  await expect(page.getByRole("main").getByText("Cloud accounts", { exact: true })).toHaveCount(0);
+
+  await page.goto("/providers/cloud");
+  await expect(page.getByRole("main").getByText("Cloud accounts", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Your personal provider keys" })).toHaveCount(0);
 
   await page.goto("/harness");
   await expect(page.getByRole("heading", { name: "Models", level: 1 })).toBeVisible();
-  await expect
-    .poll(() =>
-      page
-        .locator("[data-harness]")
-        .evaluateAll((sections) => sections.map((section) => section.getAttribute("data-harness"))),
-    )
-    .toEqual(["claude", "codex", "opencode"]);
+  await expect(page.getByRole("button", { name: "Add a model account", exact: true })).toBeVisible();
   await expect(page.locator("[data-credentials]")).toHaveCount(0);
   await expect(page.locator("[data-modal-token]")).toHaveCount(0);
   await expect(page.getByText("boat.dev API key")).toHaveCount(0);
@@ -183,7 +175,7 @@ for (const email of ["alice@example.com", "bob@example.com"])
     await signIn(page, email, "/settings");
     await expect(page.locator('[data-credentials="user"] [data-modal-token]')).toBeVisible();
     await expect(page.locator('[data-credentials="Acme (org)"] [data-modal-token]')).toHaveCount(0);
-    // Their own form, pointed at the org: hosting for an org is connected in Settings, checked by the server first.
+    // Their own form, pointed at the org: hosting for an org is connected on Providers, checked by the server first.
     const modal = page.locator('[data-credentials="user"] [data-modal-token]');
     await modal.locator('input[name="scope"]').evaluate((input) => {
       (input as HTMLInputElement).value = "org";
@@ -195,7 +187,7 @@ for (const email of ["alice@example.com", "bob@example.com"])
     await modal.getByLabel("Token secret").fill(MODAL_SECRET);
     await modal.getByRole("button", { name: "Save Modal token" }).click();
     await expect(modal.locator('p[role="alert"]')).toHaveText(
-      "Organization sandbox providers are managed in Settings.",
+      "Organization sandbox providers are managed on the Providers page.",
     );
     const stored = (await (await fetch(`${MOCK}/__test/credentials`)).json()) as { kind: string }[];
     expect(stored.some((item) => item.kind === "modal")).toBe(false);

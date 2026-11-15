@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { checkModalToken, checkSecretValue, isCredentialKind } from "../src/lib/credentials.ts";
+import { checkModalToken, checkSecretValue, isCredentialKind, personalKeyDbFailure } from "../src/lib/credentials.ts";
 
 describe("credentials", () => {
   test("only hosting kinds are written directly: a model credential is a named account on the server", () => {
@@ -38,4 +38,14 @@ describe("credentials", () => {
       expect(JSON.stringify(checked)).not.toMatch(/AbCdEf123456|ZyXwVu987654/);
     }
   });
+});
+
+test("personal-key database failures give next steps without technical diagnostics", () => {
+  const message = "HTTP 400: credentials.value_enc constraint internal_field";
+  for (const code of ["23514", "P0002", "28000"]) {
+    const result = personalKeyDbFailure({ code, message });
+    expect(result).not.toContain(message);
+    expect(result).toContain("Settings");
+  }
+  expect(personalKeyDbFailure({ code: "42501", message: "permission denied" })).toBe("You are not allowed to do that.");
 });
