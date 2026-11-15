@@ -143,13 +143,13 @@ export class DataError extends Error {
   override readonly name = "DataError";
   constructor(
     message: string,
-    readonly code: "unavailable" | "sandbox_not_ready" = "unavailable",
+    readonly code: "unavailable" | "sandbox_not_ready" | "not_found" = "unavailable",
   ) {
     super(message);
   }
 }
 
-export function createSqlData(sql: Sql): DataSource {
+export function createSqlData(sql: Sql, listOrgId?: string): DataSource {
   return (caller) => {
     const orgIds = caller.orgs.map((org) => org.orgId);
     const scope = [orgIds, caller.userId];
@@ -695,16 +695,24 @@ export function createSqlData(sql: Sql): DataSource {
       },
       async list(filter) {
         const statuses = filter.statuses?.length ? [...filter.statuses] : null;
-        const result = await sql.query<(SandboxListMetadata & { total: number }) | { id: null; total: number }>(
-          `with matched as (
+        const result = await sql.query<
+          | (SandboxListMetadata & { total: number; scope_member: boolean })
+          | { id: null; total: number; scope_member: boolean }
+        >(
+          `with scope_member as (
+             select 1 from public.members m join public.orgs o on o.id=m.org_id
+             where m.user_id=$2::uuid and m.org_id=$9::uuid
+           ), matched as (
              select ${SANDBOX_LIST_COLUMNS} from public.sandboxes s
              where ${SANDBOX_MEMBER}
+               and ($9::uuid is null or s.org_id=$9::uuid)
                and (($3::text[] is null and s.status <> 'deleted') or s.status::text = any($3::text[]))
                and ($4::text is null or s.harness::text = $4)
                and ($5::uuid is null or s.golden_id = $5 and exists(select 1 from public.goldens g where g.id=s.golden_id
                  and g.org_id=s.org_id and g.removed_at is null and (g.visibility='org' or g.owner_id=$2::uuid)))
                and ($6::uuid is null or s.owner_id = $6)
-           ) select p.*, totals.total from (select count(*)::int as total from matched) totals
+           ) select p.*, totals.total, ($9::uuid is null or exists(select 1 from scope_member)) as scope_member
+             from (select count(*)::int as total from matched) totals
              left join (select * from matched order by "createdAt" desc, id limit $7 offset $8) p on true
              order by p."createdAt" desc, p.id`,
           [
@@ -715,14 +723,17 @@ export function createSqlData(sql: Sql): DataSource {
             filter.ownerId ?? null,
             filter.limit,
             ((filter.page ?? 1) - 1) * filter.limit,
+            listOrgId ?? null,
           ],
         );
         const page = result.rows[0];
         if (!page) throw new DataError("The sandbox page could not be read.");
+        if (listOrgId !== undefined && page.scope_member !== true)
+          throw new DataError("You are not a member of that org.", "not_found");
         return {
           rows: result.rows
-            .filter((row): row is SandboxListMetadata & { total: number } => row.id !== null)
-            .map(({ total: _total, ...row }) => ({
+            .filter((row): row is SandboxListMetadata & { total: number; scope_member: boolean } => row.id !== null)
+            .map(({ total: _total, scope_member: _member, ...row }) => ({
               ...row,
               usage: withServerCost(withUsageTotals(row.usage), row.harness),
               createdAt: new Date(row.createdAt).toISOString(),
