@@ -467,3 +467,11 @@ Connect/reconnect concern account authorization, and install waits for a new
 installation. Leaf help explains browser and no-browser output and bounded
 waiting. A URL is not authorization proof. Family help does not open browsers
 or call GitHub/Armada, and bare no-argument behavior is unchanged.
+
+### Account command discovery
+
+`armada account --help` (or `-h`) shows server status and remote sign-out
+choices without making requests or signing out. Remote account logout requires
+a personal session; local `armada logout` only clears saved login. Use leaf
+help for details, including ARMADA_TOKEN precedence. Bare no-argument account
+invocation retains its existing behavior.
