@@ -24,11 +24,10 @@ export function PersonalProviderKeys({ owner, rows }: { owner: string; rows: Cre
     <Card data-settings="personal-keys" id="personal-keys" aria-labelledby="personal-provider-keys">
       <CardHeader>
         <CardTitle id="personal-provider-keys" role="heading" aria-level={2} className="flex items-center gap-2">
-          <KeyRoundIcon className="size-4" />
-          Your personal provider keys
+          <KeyRoundIcon className="size-4" />A personal Boat or Modal key
         </CardTitle>
         <CardDescription>
-          Only you see these. They host your private snapshots, never an organization's.
+          Optional. These host your private snapshots. The organization’s cloud accounts are on Machines.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -38,7 +37,7 @@ export function PersonalProviderKeys({ owner, rows }: { owner: string; rows: Cre
               <p>{PERSONAL_KEY_STORAGE_UNAVAILABLE}</p>
               <Button asChild variant="outline" size="sm" className="mt-2">
                 <a id="settings-storage-reload" href="/settings">
-                  Reload Settings
+                  Reload Your connections
                 </a>
               </Button>
             </AlertDescription>
@@ -105,13 +104,7 @@ function CredentialSection({
                         description={`This removes your saved ${info.label}. You will need to save it again to build or launch private snapshots with this provider. Organization providers are not affected.`}
                         confirm="Remove key"
                         pendingLabel="Removing…"
-                        successFocusId={
-                          !canSave
-                            ? "settings-storage-reload"
-                            : info.kind === "modal"
-                              ? `modal-id-${owner}`
-                              : `value-${owner}`
-                        }
+                        successFocusId={!canSave ? "settings-storage-reload" : "personal-key-add"}
                       >
                         <input type="hidden" name="id" value={row.id} />
                       </ConfirmedAction>
@@ -129,88 +122,93 @@ function CredentialSection({
       </div>
 
       {canManage && canSave && (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="space-y-3 rounded-lg border p-4" data-hosting-form="key">
-            <div className="space-y-0.5">
-              <h3 className="text-sm font-semibold">{single ? single.label : "Save a key"}</h3>
-              <p className="text-sm text-muted-foreground">
-                {single ? "Replaces the one stored." : "Replaces the one stored for that kind."}
-              </p>
-            </div>
-            <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3">
-              <input type="hidden" name="scope" value={scope} />
-              <input type="hidden" name="owner" value={owner} />
-              {/* One kind needs no choice: a select with a single option is a control that does nothing. */}
-              {single && <input type="hidden" name="kind" value={single.kind} />}
-              <div className={single ? "grid gap-3" : "grid gap-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]"}>
-                {!single && (
+        <details className="group">
+          <summary id="personal-key-add" className="cursor-pointer text-sm font-medium">
+            Add a key
+          </summary>
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <div className="space-y-3 rounded-lg border p-4" data-hosting-form="key">
+              <div className="space-y-0.5">
+                <h3 className="text-sm font-semibold">{single ? single.label : "Save a key"}</h3>
+                <p className="text-sm text-muted-foreground">
+                  {single ? "Replaces the one stored." : "Replaces the one stored for that kind."}
+                </p>
+              </div>
+              <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3">
+                <input type="hidden" name="scope" value={scope} />
+                <input type="hidden" name="owner" value={owner} />
+                {/* One kind needs no choice: a select with a single option is a control that does nothing. */}
+                {single && <input type="hidden" name="kind" value={single.kind} />}
+                <div className={single ? "grid gap-3" : "grid gap-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]"}>
+                  {!single && (
+                    <div className="space-y-2">
+                      <Label htmlFor={`kind-${owner}`}>Kind</Label>
+                      <NativeSelect id={`kind-${owner}`} name="kind" defaultValue="boat">
+                        {SINGLE_VALUE_KINDS.map((info) => (
+                          <option key={info.kind} value={info.kind}>
+                            {info.label}
+                          </option>
+                        ))}
+                      </NativeSelect>
+                    </div>
+                  )}
                   <div className="space-y-2">
-                    <Label htmlFor={`kind-${owner}`}>Kind</Label>
-                    <NativeSelect id={`kind-${owner}`} name="kind" defaultValue="boat">
-                      {SINGLE_VALUE_KINDS.map((info) => (
-                        <option key={info.kind} value={info.kind}>
-                          {info.label}
-                        </option>
-                      ))}
-                    </NativeSelect>
+                    <Label htmlFor={`value-${owner}`}>Value</Label>
+                    <Input
+                      id={`value-${owner}`}
+                      name="value"
+                      type="password"
+                      autoComplete="off"
+                      spellCheck={false}
+                      required
+                      placeholder="Paste the value"
+                    />
                   </div>
-                )}
-                <div className="space-y-2">
-                  <Label htmlFor={`value-${owner}`}>Value</Label>
-                  <Input
-                    id={`value-${owner}`}
-                    name="value"
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    required
-                    placeholder="Paste the value"
-                  />
                 </div>
-              </div>
-              <SubmitButton className="justify-self-start">Save key</SubmitButton>
-            </ActionForm>
-          </div>
-
-          <div className="space-y-3 rounded-lg border p-4" data-modal-token>
-            <div className="space-y-0.5">
-              <h3 className="text-sm font-semibold">Modal token</h3>
-              <p className="text-sm text-muted-foreground">A token ID and its secret, stored together.</p>
+                <SubmitButton className="justify-self-start">Save key</SubmitButton>
+              </ActionForm>
             </div>
-            <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3">
-              <input type="hidden" name="scope" value={scope} />
-              <input type="hidden" name="owner" value={owner} />
-              <input type="hidden" name="kind" value="modal" />
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor={`modal-id-${owner}`}>Token ID</Label>
-                  <Input
-                    id={`modal-id-${owner}`}
-                    name="modal_token_id"
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    required
-                    placeholder="ak-…"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor={`modal-secret-${owner}`}>Token secret</Label>
-                  <Input
-                    id={`modal-secret-${owner}`}
-                    name="modal_token_secret"
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    required
-                    placeholder="as-…"
-                  />
-                </div>
+
+            <div className="space-y-3 rounded-lg border p-4" data-modal-token>
+              <div className="space-y-0.5">
+                <h3 className="text-sm font-semibold">Modal token</h3>
+                <p className="text-sm text-muted-foreground">A token ID and its secret, stored together.</p>
               </div>
-              <SubmitButton className="justify-self-start">Save Modal token</SubmitButton>
-            </ActionForm>
+              <ActionForm action={saveCredential} resetOnSuccess className="grid gap-3">
+                <input type="hidden" name="scope" value={scope} />
+                <input type="hidden" name="owner" value={owner} />
+                <input type="hidden" name="kind" value="modal" />
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor={`modal-id-${owner}`}>Token ID</Label>
+                    <Input
+                      id={`modal-id-${owner}`}
+                      name="modal_token_id"
+                      type="password"
+                      autoComplete="off"
+                      spellCheck={false}
+                      required
+                      placeholder="ak-…"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor={`modal-secret-${owner}`}>Token secret</Label>
+                    <Input
+                      id={`modal-secret-${owner}`}
+                      name="modal_token_secret"
+                      type="password"
+                      autoComplete="off"
+                      spellCheck={false}
+                      required
+                      placeholder="as-…"
+                    />
+                  </div>
+                </div>
+                <SubmitButton className="justify-self-start">Save Modal token</SubmitButton>
+              </ActionForm>
+            </div>
           </div>
-        </div>
+        </details>
       )}
     </div>
   );

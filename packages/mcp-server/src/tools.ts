@@ -438,10 +438,39 @@ export function createArmadaServer(context: ToolContext, version: string, option
             typeof (args as Record<string, unknown>).id === "string"
           )
             await context.accountTurns?.cancelQueued(caller, (args as Record<string, unknown>).id as string);
+          if (name === "report") {
+            const input = args as Record<string, unknown>;
+            const queued = await context.accountTurns?.status(caller, input.id as string, input.prompt_id as string);
+            if (queued && "nativePromptId" in queued) input.prompt_id = queued.nativePromptId;
+          }
           const routed = ["send", "status", "wait"].includes(name)
             ? undefined
             : await context.dockerControls?.invoke(caller, name, args);
           const raw = routed?.handled ? routed.result : await run(args);
+          if (["logs", "status", "wait", "list"].includes(name) && context.accountTurns?.publicPromptIds) {
+            type PublicReport = {
+              id?: string;
+              sandboxes?: PublicReport[];
+              events?: { promptId?: string }[];
+              prompt?: { promptId: string };
+              usage?: { turns: { promptId: string }[] };
+            };
+            const root = raw as PublicReport;
+            for (const report of name === "list" ? (root.sandboxes ?? []) : [root]) {
+              const items = [
+                ...(report.events ?? []),
+                ...(report.prompt ? [report.prompt] : []),
+                ...(report.usage?.turns ?? []),
+              ];
+              const ids = await context.accountTurns.publicPromptIds(
+                caller,
+                report.id ?? ((args as Record<string, unknown>).id as string),
+                items.flatMap((item) => (item.promptId ? [item.promptId] : [])),
+              );
+              for (const item of items)
+                if (item.promptId && ids.has(item.promptId)) item.promptId = ids.get(item.promptId)!;
+            }
+          }
           const value =
             routed?.handled && (name === "status" || name === "wait")
               ? {

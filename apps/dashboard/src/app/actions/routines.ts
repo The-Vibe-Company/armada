@@ -2,10 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
-import { ControlError } from "@/lib/control";
+import { ControlError, createControlClient } from "@/lib/control";
 import { viewerRoutines } from "@/lib/data/routines";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { viewerTemplates } from "@/lib/data/templates";
+import { requireViewer } from "@/lib/data/viewer";
+import { mcpUrl } from "@/lib/env";
 import { type RoutineRun, routineFailure, routineRequest } from "@/lib/routines";
 
 async function scoped(data: FormData) {
@@ -57,16 +59,29 @@ export async function setRoutineState(_previous: ActionResult | null, data: Form
     !isUuid(id) ||
     !Number.isSafeInteger(expectedVersion) ||
     expectedVersion < 1 ||
-    !["enable", "pause"].includes(operation)
+    !["enable", "pause", "delete"].includes(operation)
   )
     return fail("That routine request is not valid.");
   try {
-    await context.control[operation as "enable" | "pause"]({ org: context.org, id, expectedVersion });
+    if (operation === "delete") {
+      const viewer = await requireViewer();
+      const url = mcpUrl();
+      if (!url || !viewer.token) return fail("Sign in again before deleting a routine.");
+      await createControlClient({ serverUrl: url, token: viewer.token }).post("routines/delete", {
+        org: context.org,
+        id,
+        expectedVersion,
+      });
+    } else {
+      await context.control[operation as "enable" | "pause"]({ org: context.org, id, expectedVersion });
+    }
     revalidatePath("/routines");
     return done(
-      operation === "enable"
-        ? "Routine enabled. It will run at its next scheduled time."
-        : "Routine paused. Already admitted runs may still finish.",
+      operation === "delete"
+        ? "Routine deleted. Existing sandboxes are not deleted."
+        : operation === "enable"
+          ? "Routine enabled. It will run at its next scheduled time."
+          : "Routine paused. Already admitted runs may still finish.",
     );
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;

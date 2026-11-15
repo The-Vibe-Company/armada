@@ -1,6 +1,6 @@
 "use client";
 
-import { Clock3Icon, PauseIcon, PlayIcon, RefreshCwIcon } from "lucide-react";
+import { Clock3Icon, RefreshCwIcon } from "lucide-react";
 import Link from "next/link";
 import { useActionState, useCallback, useEffect, useId, useMemo, useState } from "react";
 import { createRoutine, routineHistory, setRoutineState } from "@/app/actions/routines";
@@ -40,9 +40,9 @@ export function CreateRoutineDialog(props: { orgId: string; isAdmin: boolean; te
   );
   return (
     <CreateDialog
-      label="New"
+      label="New routine"
       title="New routine"
-      description="A template and a prompt, on a schedule. Created paused so you can check it first."
+      description="Templates launched by themselves, on a schedule."
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
@@ -78,44 +78,26 @@ function RoutineForm({
     <form action={action} className="space-y-4" data-routine-form>
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="revision" value={selected?.currentRevision ?? ""} />
-      <fieldset disabled={pending} className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label htmlFor={`${base}-name`}>Name</Label>
-            <Input
-              id={`${base}-name`}
-              name="name"
-              required
-              maxLength={200}
-              placeholder="Daily code review"
-              autoComplete="off"
-            />
-          </div>
-          {isAdmin ? (
-            <div className="space-y-1.5">
-              <Label htmlFor={`${base}-scope`}>Visibility</Label>
-              <NativeSelect
-                id={`${base}-scope`}
-                name="scope"
-                value={scope}
-                onChange={(e) => {
-                  setScope(e.target.value);
-                  setTemplate("");
-                }}
-              >
-                <option value="personal">Personal</option>
-                <option value="org">Organization</option>
-              </NativeSelect>
-              <p className="text-xs text-muted-foreground">Cannot change later.</p>
-            </div>
-          ) : (
-            <input type="hidden" name="scope" value="personal" />
-          )}
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${base}-template`}>Template</Label>
+      <fieldset disabled={pending} className="space-y-4 text-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <Label htmlFor={`${base}-interval`}>Every</Label>
+          <Input
+            id={`${base}-interval`}
+            aria-label="Interval in hours"
+            className="w-20"
+            type="number"
+            name="interval"
+            min={1}
+            max={720}
+            step={1}
+            defaultValue={24}
+            required
+          />
+          <span>hours, launch</span>
           <NativeSelect
             id={`${base}-template`}
+            aria-label="Template"
+            className="w-full sm:w-auto sm:max-w-64"
             name="template"
             required
             value={template}
@@ -126,80 +108,101 @@ function RoutineForm({
             </option>
             {available.map((x) => (
               <option key={x.id} value={x.id}>
-                {x.name} — revision {x.currentRevision} ({x.scope === "org" ? "organization" : "personal"})
+                {x.name}
               </option>
             ))}
           </NativeSelect>
-          <p className="text-xs text-muted-foreground">
-            {selected
-              ? `Pinned to revision ${selected.currentRevision}. Later template changes will not update this routine.`
-              : "Choose a published template. Its revision stays pinned."}
-          </p>
-          {!available.length && (
-            <p className="text-sm text-muted-foreground">
-              No eligible templates.{" "}
-              <Link href="/templates" className="underline">
-                Create a template
-              </Link>{" "}
-              first.
-            </p>
-          )}
+          <Label htmlFor={`${base}-prompt`}>with this task:</Label>
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${base}-prompt`}>Prompt</Label>
-          <Textarea
-            id={`${base}-prompt`}
-            name="prompt"
-            required
-            maxLength={32000}
-            rows={3}
-            placeholder="What should the agent do each time?"
-          />
-          <p className="text-xs text-muted-foreground">
-            Readable configuration, not a place for secrets. Whitespace is preserved.
+        {!available.length && (
+          <p>
+            No eligible templates.{" "}
+            <Link href="/templates" className="underline">
+              Create a template
+            </Link>{" "}
+            first.
           </p>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${base}-interval`}>Interval (hours)</Label>
+        )}
+        <Textarea
+          id={`${base}-prompt`}
+          name="prompt"
+          required
+          maxLength={32000}
+          rows={3}
+          placeholder="What should the agent do each time?"
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Label htmlFor={`${base}-name`}>Call it</Label>
           <Input
-            id={`${base}-interval`}
-            className="max-w-32"
-            type="number"
-            name="interval"
-            min={1}
-            max={720}
-            step={1}
-            defaultValue={24}
+            id={`${base}-name`}
+            className="w-full sm:w-52"
+            name="name"
             required
+            maxLength={200}
+            placeholder="Daily code review"
+            autoComplete="off"
           />
-          <p className="text-xs text-muted-foreground">
-            Minimum one hour. Enabling follows the saved calendar schedule.
-          </p>
+          <span>for</span>
+          {isAdmin ? (
+            <NativeSelect
+              aria-label="Visibility (permanent)"
+              className="w-auto"
+              name="scope"
+              value={scope}
+              onChange={(e) => {
+                setScope(e.target.value);
+                setTemplate("");
+              }}
+            >
+              <option value="personal">only you</option>
+              <option value="org">the organization</option>
+            </NativeSelect>
+          ) : (
+            <>
+              <input type="hidden" name="scope" value="personal" />
+              <span>only you</span>
+            </>
+          )}
+          <Label htmlFor={`${base}-ttl`}>. Each run lasts up to</Label>
+          <Input
+            id={`${base}-ttl`}
+            className="w-24"
+            type="number"
+            name="ttl"
+            required
+            min={5}
+            max={1440}
+            step={1}
+            defaultValue={60}
+          />
+          <span>minutes.</span>
         </div>
-        <details className="rounded-lg border px-3 py-2">
-          <summary className="cursor-pointer text-sm font-medium">
-            Limits <span className="ml-1 font-normal text-muted-foreground">Lifetime and daily cap</span>
-          </summary>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor={`${base}-ttl`}>TTL (minutes)</Label>
-              <Input
-                id={`${base}-ttl`}
-                type="number"
-                name="ttl"
-                required
-                min={5}
-                max={1440}
-                step={1}
-                defaultValue={60}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`${base}-cap`}>Max runs per day</Label>
-              <Input id={`${base}-cap`} type="number" name="cap" required min={1} max={24} step={1} defaultValue={24} />
-            </div>
+        <details>
+          <summary className="cursor-pointer text-muted-foreground">Safety limit</summary>
+          <div className="mt-3 flex items-center gap-2">
+            <Label htmlFor={`${base}-cap`}>At most</Label>
+            <Input
+              className="w-20"
+              id={`${base}-cap`}
+              type="number"
+              name="cap"
+              required
+              min={1}
+              max={24}
+              step={1}
+              defaultValue={24}
+            />
+            <span>runs per rolling 24 hours</span>
           </div>
         </details>
+        <p className="text-xs text-muted-foreground">
+          The task is readable by anyone who can see the routine: no password or key in it. It keeps the template as it
+          is today, even if the template changes later. A routine cannot be edited after creation: you can only switch
+          it on or off, or delete it. Visibility is permanent.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          The first run comes one interval after you turn it on. It runs as you, with your accounts and access.
+        </p>
       </fieldset>
       {result && !result.ok && (
         <p role="alert" className="text-sm text-destructive">
@@ -207,7 +210,7 @@ function RoutineForm({
         </p>
       )}
       <div className="flex items-center justify-between gap-3 border-t pt-4">
-        <p className="text-xs text-muted-foreground">Runs as you, with your current access.</p>
+        <p className="text-xs text-muted-foreground">Created switched off; turn it on from the list.</p>
         <SubmitButton disabled={pending || !available.length}>Create routine</SubmitButton>
       </div>
     </form>
@@ -228,9 +231,20 @@ export function RoutineToggle({ item, orgId }: { item: RoutineItem; orgId: strin
       <input type="hidden" name="id" value={item.id} />
       <input type="hidden" name="version" value={item.version} />
       <input type="hidden" name="operation" value={enabled ? "pause" : "enable"} />
-      <SubmitButton variant="outline" size="sm" aria-label={`${enabled ? "Pause" : "Enable"} ${item.name}`}>
-        {enabled ? <PauseIcon /> : <PlayIcon />}
-        {enabled ? "Pause" : "Enable"}
+      <SubmitButton
+        variant="ghost"
+        size="sm"
+        role="switch"
+        aria-checked={enabled}
+        aria-label={`Switch ${item.name} ${enabled ? "off" : "on"}`}
+      >
+        <span
+          aria-hidden
+          className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 ${enabled ? "bg-emerald-600" : "bg-muted"}`}
+        >
+          <span className={`size-4 rounded-full bg-background ${enabled ? "translate-x-4" : ""}`} />
+        </span>
+        {enabled ? "On" : "Off"}
       </SubmitButton>
     </ActionForm>
   );
@@ -279,7 +293,7 @@ export function RoutineHistory({ id, orgId, version }: { id: string; orgId: stri
         </Button>
       </div>
       <p className="text-xs text-muted-foreground">
-        Latest 100 decisions. Launch success is separate from the original prompt outcome.
+        Latest 100 runs. “Launched” means the sandbox started; what the agent achieved is on the sandbox page.
       </p>
       {loading || !result ? (
         <p role="status" className="text-sm text-muted-foreground">
@@ -313,12 +327,12 @@ export function RoutineHistory({ id, orgId, version }: { id: string; orgId: stri
                     run.state === "succeeded"
                       ? "Launched"
                       : run.state === "admitted"
-                        ? "Admitted"
+                        ? "Launching"
                         : run.state === "reconciling"
-                          ? "Uncertain"
+                          ? "Not confirmed"
                           : run.state === "skipped"
                             ? "Skipped"
-                            : "Failed"
+                            : "Not launched"
                   }
                 />
                 <time dateTime={run.scheduledDueAt} className="text-xs text-muted-foreground">
@@ -332,11 +346,11 @@ export function RoutineHistory({ id, orgId, version }: { id: string; orgId: stri
               </div>
               <p className="text-sm text-muted-foreground">{runDescription(run)}</p>
               <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                <span>Agent: {run.taskState ?? "not observed"}</span>
+                {run.state === "succeeded" && <span>Agent {run.taskState ?? "state not observed"}</span>}
                 {run.missedIntervals > 0 && <span>{run.missedIntervals} missed intervals</span>}
                 {run.sandboxId && (
                   <Link className="text-foreground underline underline-offset-4" href={`/sandboxes/${run.sandboxId}`}>
-                    View sandbox
+                    Open sandbox
                   </Link>
                 )}
               </div>
@@ -349,5 +363,30 @@ export function RoutineHistory({ id, orgId, version }: { id: string; orgId: stri
         </p>
       )}
     </section>
+  );
+}
+
+export function DeleteRoutine({ item, orgId }: { item: RoutineItem; orgId: string }) {
+  const [confirm, setConfirm] = useState(false);
+  return confirm ? (
+    <div className="space-y-3 border-t pt-4">
+      <p className="text-sm">Delete {item.name}? This cannot be undone. Existing sandboxes are not deleted.</p>
+      <ActionForm action={setRoutineState} successToast="Routine deleted.">
+        <input type="hidden" name="org" value={orgId} />
+        <input type="hidden" name="id" value={item.id} />
+        <input type="hidden" name="version" value={item.version} />
+        <input type="hidden" name="operation" value="delete" />
+        <div className="flex gap-2">
+          <SubmitButton variant="destructive">Delete routine</SubmitButton>
+          <Button type="button" variant="ghost" onClick={() => setConfirm(false)}>
+            Cancel
+          </Button>
+        </div>
+      </ActionForm>
+    </div>
+  ) : (
+    <Button variant="ghost" className="text-destructive" onClick={() => setConfirm(true)}>
+      Delete routine
+    </Button>
   );
 }

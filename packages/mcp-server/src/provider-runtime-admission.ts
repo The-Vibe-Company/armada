@@ -17,3 +17,9 @@ export function runtimeHarnessSupported(provider: string, harness: string): bool
     ["codex", "claude"].includes(harness) || (["boat", "modal", "docker"].includes(provider) && harness === "opencode")
   );
 }
+
+/** Closed provider refusal names; unrecognized identities retain the generic diagnostic. */
+export function runtimeConfigurationFailure(id: unknown) {
+  const names: Record<string, string> = { boat: "Boat runtime", docker: "Docker runtime" };
+  return `${typeof id === "string" && Object.hasOwn(names, id) ? names[id] : "Runtime"} configuration is unavailable.`;
+}

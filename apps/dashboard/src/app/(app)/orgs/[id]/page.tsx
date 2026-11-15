@@ -65,12 +65,12 @@ export default async function OrgPage({ params, searchParams }: Props) {
 
   return (
     <>
-      <PageHeader title={membership.org.name} description={isAdmin ? "Admin" : "Member"}>
+      <PageHeader title="Organization" description={`${membership.org.name} · ${roster.data.length} members`}>
         <Button variant="outline" asChild>
-          <Link href={CLOUD_PROVIDERS_PATH}>Sandbox providers</Link>
+          <Link href={CLOUD_PROVIDERS_PATH}>Machines</Link>
         </Button>
         <Button variant="outline" asChild>
-          <Link href={HARNESS_PATH}>Subscriptions</Link>
+          <Link href={HARNESS_PATH}>Models</Link>
         </Button>
       </PageHeader>
 
@@ -122,7 +122,9 @@ export default async function OrgPage({ params, searchParams }: Props) {
           id="members-heading"
           title="Members"
           description={
-            isAdmin ? "Admins manage members, org snapshots and providers." : "Only an admin changes members."
+            isAdmin
+              ? "Admins invite people, connect machines and shared accounts, and manage shared snapshots, templates and tools. Members launch and use them."
+              : "Members launch and use shared resources. Ask an admin to invite people or change members."
           }
         >
           <span className="text-sm text-muted-foreground tabular-nums">
@@ -131,7 +133,7 @@ export default async function OrgPage({ params, searchParams }: Props) {
         </SectionHeader>
         <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
           <Table>
-            <TableHeader>
+            <TableHeader className="max-sm:sr-only">
               <TableRow className="hover:bg-transparent">
                 <TableHead className="pl-3 sm:pl-4">Member</TableHead>
                 <TableHead>Role</TableHead>
@@ -142,13 +144,17 @@ export default async function OrgPage({ params, searchParams }: Props) {
                 )}
               </TableRow>
             </TableHeader>
-            <TableBody>
+            <TableBody className="max-sm:block">
               {roster.data.map((member) => {
                 const self = member.user_id === viewer.id;
                 const role = member.role === "admin" ? "admin" : "member";
                 return (
-                  <TableRow key={member.user_id} data-member={member.email} className="hover:bg-muted/30">
-                    <TableCell className="pl-3 whitespace-normal sm:pl-4 sm:whitespace-nowrap">
+                  <TableRow
+                    key={member.user_id}
+                    data-member={member.email}
+                    className="hover:bg-muted/30 max-sm:grid max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:p-2"
+                  >
+                    <TableCell className="pl-3 whitespace-normal max-sm:col-span-2 sm:pl-4 sm:whitespace-nowrap">
                       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:flex-nowrap">
                         <span
                           aria-hidden="true"
