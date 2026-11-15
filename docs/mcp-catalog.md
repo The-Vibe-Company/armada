@@ -31,8 +31,8 @@ armada mcp catalog --org UUID
 armada mcp add Work --service linear --org UUID
 armada mcp rename CONNECTION_UUID "Work account" --org UUID
 armada mcp default CONNECTION_UUID on --org UUID
-armada launch GOLDEN --agent claude --no-connections
-armada launch GOLDEN --agent claude --connections UUID,UUID
+armada launch SNAPSHOT --agent claude --no-connections
+armada launch SNAPSHOT --agent claude --connections UUID,UUID
 ```
 
 ## Compatibility and deployment
