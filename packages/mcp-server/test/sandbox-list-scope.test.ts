@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
-import { createSqlVaultStore, type Sql } from "@armada/core/server";
+import { createSqlVaultStore, resolveOrg, type Sql } from "@armada/core/server";
 import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
-import { createSqlData } from "../src/data.ts";
+import { createScopedSandboxData, createSqlData } from "../src/data.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
 const database = rowOnlyDatabase();
@@ -68,7 +68,7 @@ async function fixture() {
     authStore,
     store: createSqlVaultStore(sql),
     data: createSqlData(sql),
-    scopedSandboxData: (actor: Caller, org: string) => createSqlData(sql, org)(actor),
+    scopedSandboxData: createScopedSandboxData(sql, createSqlVaultStore(sql)),
     providers: {
       resolve: async () => {
         throw new Error("list must not call a provider");
@@ -123,7 +123,7 @@ test("UUID sandbox pages use one statement and retain totals, filters and privat
     authStore.memberships = originalMemberships;
   }
   const named = await call({ org: "Example" });
-  expect([named.status, named.queries, named.body.total]).toEqual([200, 2, 2]);
+  expect([named.status, named.queries, named.body.total]).toEqual([200, 1, 2]);
 });
 
 test("scope guard distinguishes empty pages from revoked membership and retains service binding and invalid-input precedence", async () => {
@@ -144,4 +144,56 @@ test("scope guard distinguishes empty pages from revoked membership and retains 
   expect([revoked.status, revoked.queries, revoked.body.error?.code]).toEqual([404, 1, "not_found"]);
   const invalid = await call({ org: people.org, limit: 0 });
   expect([invalid.status, invalid.queries, invalid.body.error?.code]).toEqual([404, 1, "not_found"]);
+});
+
+test("named and empty selections use one query with exact core normalization and per-org pagination", async () => {
+  const { db, people, ids, call, authStore } = await fixture();
+  const other = await call({ org: "Other", limit: 1 });
+  expect([other.status, other.queries, other.body.total]).toEqual([200, 1, 1]);
+  expect(other.body.sandboxes.map((row) => row.id)).toEqual([ids[2]]);
+  const original = authStore.memberships;
+  authStore.memberships = async () => [{ orgId: people.org, name: "Example", role: "member" }];
+  try {
+    const frozen = await call({ org: "Other" });
+    expect([frozen.status, frozen.queries, frozen.body.total]).toEqual([200, 1, 0]);
+  } finally {
+    authStore.memberships = original;
+  }
+  await db.query("update orgs set name=$2 where id=$1", [people.org, "\t\vExAmPle\f\r"]);
+  const ascii = await call({ org: "example", limit: 1, page: 2 });
+  expect([ascii.status, ascii.queries, ascii.body.total]).toEqual([200, 1, 2]);
+  expect(ascii.body.sandboxes.map((row) => row.id)).toEqual([ids[0]]);
+  // JavaScript lowercases the final sigma contextually; database lower() need not agree.
+  await db.query("update orgs set name=$2 where id=$1", [people.org, "\u00a0ΟΣ\u2007"]);
+  await db.query("update orgs set name=$2 where id=$1", [people.otherOrg, "Άλλο"]);
+  const unicode = await call({ org: "ος", limit: 1, page: 2 });
+  expect([unicode.status, unicode.queries, unicode.body.total]).toEqual([200, 1, 2]);
+  expect(unicode.body.sandboxes.map((row) => row.id)).toEqual([ids[0]]);
+  for (const field of ["selection_id", "selection_name", "selection_role"])
+    expect(unicode.body.sandboxes[0]).not.toHaveProperty(field);
+  const noRows = await call({ org: "ος", status: ["deleted"] });
+  expect([noRows.status, noRows.queries, noRows.body.total, noRows.body.sandboxes]).toEqual([200, 1, 0, []]);
+  const beyond = await call({ org: "ος", limit: 1, page: 20 });
+  expect([beyond.status, beyond.queries, beyond.body.total, beyond.body.sandboxes]).toEqual([200, 1, 2, []]);
+  await db.query("update orgs set name=$2 where id=$1", [people.otherOrg, "ΟΣ"]);
+  const expected = await resolveOrg(createSqlVaultStore(db), people.member, "ος");
+  const duplicate = await call({ org: "ος", limit: 1 });
+  expect([duplicate.status, duplicate.queries, duplicate.body.total]).toEqual([
+    200,
+    1,
+    expected.id === people.org ? 2 : 1,
+  ]);
+  expect(duplicate.body.sandboxes[0]?.orgId).toBe(expected.id);
+  const ambiguous = await call({ org: "" });
+  expect([ambiguous.status, ambiguous.queries, ambiguous.body.error?.code]).toEqual([400, 1, "invalid"]);
+  const missing = await call({ org: "unknown_org" });
+  expect([missing.status, missing.queries, missing.body.error?.code]).toEqual([404, 1, "not_found"]);
+  await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [people.otherOrg, people.admin]);
+  await db.query("delete from members where org_id=$1 and user_id=$2", [people.otherOrg, people.member]);
+  const only = await call({ org: "", limit: 1, page: 2 });
+  expect([only.status, only.queries, only.body.total]).toEqual([200, 1, 2]);
+  expect(only.body.sandboxes.map((row) => row.id)).toEqual([ids[0]]);
+  await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.member]);
+  const revoked = await call({ org: "ος" });
+  expect([revoked.status, revoked.queries, revoked.body.error?.code]).toEqual([404, 1, "not_found"]);
 });

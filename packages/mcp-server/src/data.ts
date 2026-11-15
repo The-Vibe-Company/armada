@@ -7,6 +7,8 @@ import {
   type ModalBinding,
   mapGoldenRow,
   mapSandboxRow,
+  type OrgSummary,
+  resolveOrg,
   type SandboxListMetadata,
   type SandboxRecord,
   type SandboxRow,
@@ -18,6 +20,8 @@ import {
   type TaskOutcome,
   type TurnPriceContext,
   type TurnTokenUsage,
+  VaultError,
+  type VaultStore,
   type Visibility,
   withUsageTotals,
 } from "@armada/core";
@@ -25,6 +29,7 @@ import type { Provider } from "@armada/core/server";
 import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import type { Caller } from "./caller.ts";
+import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
@@ -129,6 +134,14 @@ const SANDBOX_LIST_COLUMNS = `case when (s.owner_id=$2::uuid or exists(select 1 
   (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) as "canOpen",
   (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) as "canManage"`;
 
+const SANDBOX_LIST_MATCH = `${SANDBOX_MEMBER}
+               and ($9::uuid is null or s.org_id=$9::uuid)
+               and (($3::text[] is null and s.status <> 'deleted') or s.status::text = any($3::text[]))
+               and ($4::text is null or s.harness::text = $4)
+               and ($5::uuid is null or s.golden_id = $5 and exists(select 1 from public.goldens g where g.id=s.golden_id
+                 and g.org_id=s.org_id and g.removed_at is null and (g.visibility='org' or g.owner_id=$2::uuid)))
+               and ($6::uuid is null or s.owner_id = $6)`;
+
 type SandboxViewRow = SandboxRow & {
   golden: string;
   visibility: string;
@@ -143,16 +156,20 @@ export class DataError extends Error {
   override readonly name = "DataError";
   constructor(
     message: string,
-    readonly code: "unavailable" | "sandbox_not_ready" | "not_found" = "unavailable",
+    readonly code: "unavailable" | "sandbox_not_ready" | "not_found" | "invalid" = "unavailable",
   ) {
     super(message);
   }
 }
 
-export function createSqlData(sql: Sql, listOrgId?: string): DataSource {
+export function createSqlData(
+  sql: Sql,
+  listOrgId?: string,
+  namedList?: { ref: string; store: VaultStore },
+): DataSource {
   return (caller) => {
     const orgIds = caller.orgs.map((org) => org.orgId);
-    const scope = [orgIds, caller.userId];
+    const scope: [string[], string] = [orgIds, caller.userId];
     const ownOrg = (orgId: string) => {
       if (!orgIds.includes(orgId)) throw new GoldenError("not_found", "No such golden.");
     };
@@ -694,6 +711,7 @@ export function createSqlData(sql: Sql, listOrgId?: string): DataSource {
         return row ? mapView(row) : null;
       },
       async list(filter) {
+        if (namedList) return namedSandboxPage(sql, scope, filter, namedList);
         const statuses = filter.statuses?.length ? [...filter.statuses] : null;
         const result = await sql.query<
           | (SandboxListMetadata & { total: number; scope_member: boolean })
@@ -704,13 +722,7 @@ export function createSqlData(sql: Sql, listOrgId?: string): DataSource {
              where m.user_id=$2::uuid and m.org_id=$9::uuid
            ), matched as (
              select ${SANDBOX_LIST_COLUMNS} from public.sandboxes s
-             where ${SANDBOX_MEMBER}
-               and ($9::uuid is null or s.org_id=$9::uuid)
-               and (($3::text[] is null and s.status <> 'deleted') or s.status::text = any($3::text[]))
-               and ($4::text is null or s.harness::text = $4)
-               and ($5::uuid is null or s.golden_id = $5 and exists(select 1 from public.goldens g where g.id=s.golden_id
-                 and g.org_id=s.org_id and g.removed_at is null and (g.visibility='org' or g.owner_id=$2::uuid)))
-               and ($6::uuid is null or s.owner_id = $6)
+             where ${SANDBOX_LIST_MATCH}
            ) select p.*, totals.total, ($9::uuid is null or exists(select 1 from scope_member)) as scope_member
              from (select count(*)::int as total from matched) totals
              left join (select * from matched order by "createdAt" desc, id limit $7 offset $8) p on true
@@ -733,13 +745,7 @@ export function createSqlData(sql: Sql, listOrgId?: string): DataSource {
         return {
           rows: result.rows
             .filter((row): row is SandboxListMetadata & { total: number; scope_member: boolean } => row.id !== null)
-            .map(({ total: _total, scope_member: _member, ...row }) => ({
-              ...row,
-              usage: withServerCost(withUsageTotals(row.usage), row.harness),
-              createdAt: new Date(row.createdAt).toISOString(),
-              stoppedAt: row.stoppedAt === null ? null : new Date(row.stoppedAt).toISOString(),
-              expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt).toISOString(),
-            })),
+            .map(({ total: _total, scope_member: _member, ...row }) => sandboxListRow(row)),
           total: page.total,
         };
       },
@@ -817,4 +823,101 @@ function mapView(row: SandboxViewRow): SandboxView {
 function visibility(value: string): Visibility {
   if (value !== "org" && value !== "private") throw new DataError("A golden row has an unknown visibility.");
   return value;
+}
+
+/** Server-owned list scope; named refs retain core's exact current-membership resolution. */
+export function createScopedSandboxData(sql: Sql, store: VaultStore) {
+  return (caller: Caller, ref: string): ScopedData => {
+    const bound = scopedOrg(caller, ref)!;
+    const wanted = bound.trim().toLowerCase();
+    return UUID.test(wanted)
+      ? createSqlData(sql, wanted)(caller)
+      : createSqlData(sql, undefined, { ref: bound, store })(caller);
+  };
+}
+
+function sandboxListRow(row: SandboxListMetadata): SandboxListMetadata {
+  return {
+    ...row,
+    usage: withServerCost(withUsageTotals(row.usage), row.harness),
+    createdAt: new Date(row.createdAt).toISOString(),
+    stoppedAt: row.stoppedAt === null ? null : new Date(row.stoppedAt).toISOString(),
+    expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt).toISOString(),
+  };
+}
+
+type NamedMembership = {
+  selection_id: string;
+  selection_name: string;
+  selection_role: OrgSummary["role"];
+  total: number;
+};
+type NamedRow = NamedMembership & (SandboxListMetadata | { id: null });
+// SQL only narrows ASCII names with exact ASCII trim/C-lower rules; all non-ASCII
+// candidates survive for core's final resolution. Page each candidate before reading wide metadata.
+async function namedSandboxPage(
+  sql: Sql,
+  scope: readonly [readonly string[], string],
+  filter: Parameters<ServerSandboxStore["list"]>[0],
+  named: { ref: string; store: VaultStore },
+) {
+  const result = await sql.query<NamedRow>(
+    `with memberships as materialized (
+       select o.id as selection_id,o.name as selection_name,m.role::text as selection_role
+       from public.members m join public.orgs o on o.id=m.org_id where m.user_id=$2::uuid
+     ), candidates as (
+       select selection_id from memberships
+       where ($10::text='' and (select count(*) from memberships)=1)
+         or ($10::text<>'' and (length(convert_to(selection_name,'UTF8'))<>length(selection_name)
+           or lower(btrim(selection_name,$11::text) collate "C")=$10::text))
+     ), matched as materialized (
+       select s.id,s.org_id,s.created_at from public.sandboxes s
+       where ${SANDBOX_LIST_MATCH}
+         and exists(select 1 from candidates c where c.selection_id=s.org_id)
+     ), ranked as (
+       select id,org_id,row_number() over(partition by org_id order by created_at desc,id) as ordinal from matched
+     ), pages as (
+       select * from ranked where ordinal>$8::bigint and ordinal<=$8::bigint+$7::bigint
+     ), totals as (
+       select org_id,count(*)::int as total from matched group by org_id
+     ) select ${SANDBOX_LIST_COLUMNS},a.selection_id,a.selection_name,a.selection_role,coalesce(t.total,0) as total
+       from memberships a left join totals t on t.org_id=a.selection_id
+       left join pages p on p.org_id=a.selection_id left join public.sandboxes s on s.id=p.id
+       order by lower(a.selection_name),a.selection_id,p.ordinal`,
+    [
+      ...scope,
+      filter.statuses?.length ? [...filter.statuses] : null,
+      filter.harness ?? null,
+      filter.goldenId ?? null,
+      filter.ownerId ?? null,
+      filter.limit,
+      ((filter.page ?? 1) - 1) * filter.limit,
+      null,
+      named.ref.trim().toLowerCase(),
+      String.fromCharCode(32, 9, 10, 13, 11, 12),
+    ],
+  );
+  const orgs = new Map(
+    result.rows.map((row) => [
+      row.selection_id,
+      { id: row.selection_id, name: row.selection_name, role: row.selection_role },
+    ]),
+  );
+  let selected: OrgSummary;
+  try {
+    selected = await resolveOrg({ ...named.store, memberships: async () => [...orgs.values()] }, scope[1], named.ref);
+  } catch (error) {
+    if (error instanceof VaultError && (error.code === "invalid" || error.code === "not_found"))
+      throw new DataError(error.message, error.code);
+    throw error;
+  }
+  const page = result.rows.filter((row) => row.selection_id === selected.id);
+  return {
+    total: page[0]?.total ?? 0,
+    rows: page
+      .filter((row): row is NamedMembership & SandboxListMetadata => row.id !== null)
+      .map(({ total: _total, selection_id: _id, selection_name: _name, selection_role: _role, ...row }) =>
+        sandboxListRow(row),
+      ),
+  };
 }
