@@ -757,9 +757,24 @@ export function createArmadaServer(context: ToolContext, version: string, option
   ): Promise<StatusReport & ReturnType<typeof logicalExpiry>> => {
     const queued = await context.accountTurns?.status(caller, sandboxId, promptId);
     // Route reads with the native ID, but keep the receipt identity stable for clients.
-    const publicPromptId = queued && "nativePromptId" in queued ? promptId : undefined;
+    const publicPromptId = queued && "nativePromptId" in queued ? (promptId ?? queued.publicPromptId) : undefined;
     const publicReport = (report: StatusReport): StatusReport =>
-      publicPromptId && report.prompt ? { ...report, prompt: { ...report.prompt, promptId: publicPromptId } } : report;
+      publicPromptId
+        ? {
+            ...report,
+            ...(report.prompt ? { prompt: { ...report.prompt, promptId: publicPromptId } } : {}),
+            ...(report.usage
+              ? {
+                  usage: {
+                    ...report.usage,
+                    turns: report.usage.turns.map((turn) =>
+                      turn.promptId === promptId ? { ...turn, promptId: publicPromptId } : turn,
+                    ),
+                  },
+                }
+              : {}),
+          }
+        : report;
     if (queued && "nativePromptId" in queued) promptId = queued.nativePromptId;
     const waiting = queued && !("nativePromptId" in queued) ? queued : undefined;
     const routed = await context.dockerControls?.invoke(caller, "status", {
@@ -787,7 +802,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
     if (waiting) return { ...recordedStatus(found), ...logicalExpiry(found.expiresAt, context.now()), ...queuePatch };
     if (recorded)
       return {
-        ...recordedStatus(found),
+        ...publicReport(recordedStatus(found)),
         ...logicalExpiry(found.expiresAt, context.now()),
         statusMessage: `Recorded state only; use armada status ${sandboxId} --live for provider and prompt details.`,
       };
@@ -814,7 +829,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
     } catch (error) {
       if (!allowRecordedFallback || !(error instanceof ProviderError)) throw error;
       return {
-        ...recordedStatus(found),
+        ...publicReport(recordedStatus(found)),
         ...logicalExpiry(found.expiresAt, context.now()),
         statusMessage: "Provider observation unavailable; showing recorded state.",
       };
