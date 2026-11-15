@@ -1,5 +1,32 @@
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
+  "vars list": `Usage: armada vars list [--org NAME|UUID] [--json]
+List readable application-variable metadata, not values or model credentials.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Includes your personal entries and visible organization entries. Use IDs from this list
+with vars read; names are not accepted as read selectors.
+Human output is compact metadata; --json emits {items:[...]} with safe scalar metadata only.
+Readable variables are not secrets. Use secrets for sensitive application values.
+Example: armada vars list --org ORG_UUID --json
+`,
+  "vars read": `Usage: armada vars read ID [--org NAME|UUID] [--json]
+Read an application-variable value by ID from vars list, not by name.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Your personal entries and authorized organization entries are readable; variables are not secrets.
+Default stdout is the value exactly, without adding a newline. --json emits
+{item: metadata, value: string} followed by a newline. Take care when sharing or piping values.
+This does not read an application secret, export model credentials or deliver values to a sandbox.
+Example: armada vars read VARIABLE_UUID --org ORG_UUID --json
+`,
+  "secrets list": `Usage: armada secrets list [--org NAME|UUID] [--json]
+List application-secret metadata, never secret values or model credentials.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Includes your personal entries and visible organization entries. IDs and versions are used
+by guarded rotate/revoke/delete operations; list itself makes no changes.
+Human output is compact metadata; --json emits {items:[...]} with safe scalar metadata only.
+Secrets have no read, reveal or export operation. Use vars read only for readable variables.
+Example: armada secrets list --org ORG_UUID --json
+`,
   routine: `Usage: armada routine <command> [arguments]
 Manage scheduled template launches that run as the routine owner.
 

@@ -254,9 +254,10 @@ test("vault API errors select actionable local messages without echoing untruste
 });
 
 test("vault help documents secure input and supports both aliases before value input or requests", async () => {
+  // Focused read help is owned by onboarding-help.test.ts.
   for (const [resource, actions] of [
-    ["vars", ["set", "list", "read"]],
-    ["secrets", ["set", "list", "rotate", "revoke", "delete"]],
+    ["vars", ["set"]],
+    ["secrets", ["set", "rotate", "revoke", "delete"]],
   ] as const) {
     for (const prefix of [[resource], ...actions.map((action) => [resource, action])]) {
       for (const option of ["--help", "-h"]) {
