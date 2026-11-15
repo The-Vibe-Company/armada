@@ -188,11 +188,11 @@ test("Docker status and wait resolve the account queue alias before Docker promp
   await queue.drain();
   expect(await callSharedTool(context, "status", { id: input.id, prompt_id: input.request_id })).toMatchObject({
     settled: true,
-    prompt: { promptId: "actual_docker_prompt" },
+    prompt: { promptId: input.request_id },
   });
   expect(
     await callSharedTool(context, "wait", { id: input.id, prompt_id: input.request_id, timeout_seconds: 0 }),
-  ).toMatchObject({ settled: true, timedOut: false });
+  ).toMatchObject({ settled: true, timedOut: false, prompt: { promptId: input.request_id, state: "finished" } });
   expect(routedPrompts).toEqual([undefined, undefined, "actual_docker_prompt", "actual_docker_prompt"]);
 });
 
