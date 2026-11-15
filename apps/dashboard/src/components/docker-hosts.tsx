@@ -10,11 +10,11 @@ import {
   updateDockerHostLimits,
 } from "@/app/actions/docker-hosts";
 import { ConfirmedAction } from "@/components/confirmed-action";
-import { CopyButton } from "@/components/copy-button";
 import { CreateDialog } from "@/components/create-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -55,9 +55,9 @@ export function AddHostDialog({ orgId }: { orgId: string }) {
   return (
     <CreateDialog
       dismissible={!guarded}
-      label="Add host"
-      title="Add a Docker host"
-      description="Run one command on a Linux machine you own that has Docker, so sandboxes can run on it."
+      label="Add your own server"
+      title="Add your own server"
+      description="A Linux machine you own, with Docker installed. Armada runs sandboxes on it as containers."
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
@@ -107,6 +107,9 @@ function AddHostForm({ orgId, onGuard }: { orgId: string; onGuard: (guarded: boo
   return (
     <form action={formAction} className="space-y-4" data-add-host-form>
       {fields}
+      <p className="rounded-lg border-l-4 border-warning bg-muted p-3 text-sm">
+        Whoever runs this command gives Armada control of Docker on that machine, which is as powerful as root there.
+      </p>
       <div className="space-y-1.5">
         <Label htmlFor="host-name">
           Name <span className="font-normal text-muted-foreground">(optional)</span>
@@ -153,6 +156,7 @@ function Registration({
 }) {
   const router = useRouter();
   const [connected, setConnected] = useState<string | null>(null);
+  const [copyState, setCopyState] = useState("Copy command");
   const [now, setNow] = useState(() => Date.now());
   const heading = useRef<HTMLHeadingElement>(null);
   // The form and its button are gone: focus lands on the command, the one thing to act on now.
@@ -191,16 +195,29 @@ function Registration({
 
   if (connected !== null)
     return (
-      <p role="status" className="flex items-center gap-2 text-sm" data-host-connected={hostId}>
-        <CircleCheckIcon aria-hidden className="size-4 shrink-0 text-success" />
-        <span>
-          Connected: <span className="font-medium">{connected}</span> is online. You can close this dialog.
-        </span>
-      </p>
+      <div className="space-y-4" data-host-connected={hostId}>
+        <p role="status" className="flex items-center gap-2 text-sm">
+          <CircleCheckIcon aria-hidden className="size-4 text-success" />
+          {connected} is online
+        </p>
+        <div className="flex flex-wrap justify-between gap-2">
+          <DialogClose asChild>
+            <Button type="button" variant="ghost">
+              Close
+            </Button>
+          </DialogClose>
+          <Button asChild>
+            <a href={`/providers/cloud?item=${hostId}`}>Launch a sandbox on it</a>
+          </Button>
+        </div>
+      </div>
     );
 
   return (
     <div className="space-y-4" data-host-registration={hostId}>
+      <p className="rounded-lg border-l-4 border-warning bg-muted p-3 text-sm">
+        Whoever runs this command gives Armada control of Docker on that machine, which is as powerful as root there.
+      </p>
       <section className="space-y-1.5">
         <h3 ref={heading} tabIndex={-1} className="text-sm font-medium outline-none">
           Run this command on the machine
@@ -211,37 +228,53 @@ function Registration({
         >
           <pre
             className={cn(
-              "min-w-0 flex-1 overflow-x-auto font-mono text-xs leading-6 whitespace-pre",
+              "min-w-0 flex-1 break-all font-mono text-xs leading-6 whitespace-pre-wrap",
               left === null && "text-muted-foreground line-through",
             )}
             data-registration-command
           >
             {command}
           </pre>
-          {left !== null && <CopyButton value={command} label="Copy command" />}
         </div>
         <p className="text-xs text-muted-foreground">
-          Run it only on a machine you own: Docker access there is as powerful as root.
+          If the machine is already linked to this Armada, the command keeps the existing registration and updates the
+          daemon.
         </p>
       </section>
       {left === null ? (
-        <div className="flex items-center justify-between gap-3" data-registration-expired>
+        <div className="flex flex-wrap items-center justify-between gap-3" data-registration-expired>
           <p role="status" className="text-sm text-muted-foreground">
             This command has expired.
           </p>
           <Button type="submit" variant="outline" size="sm" disabled={renewing}>
             {renewing && <Loader2Icon aria-hidden className="animate-spin" />}
-            {renewing ? "Creating command…" : "Generate a new command"}
+            {renewing ? "Creating command…" : "Make a new command"}
           </Button>
         </div>
       ) : (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2Icon aria-hidden className="size-4 animate-spin" />
-          <span role="status">Waiting for the host to connect…</span>
-          <span className="ml-auto font-mono text-xs tabular-nums" data-registration-expires>
-            Expires in {left}
-          </span>
-        </p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p role="status" className="text-sm text-muted-foreground">
+            Waiting for the machine · works for{" "}
+            <span className="tabular-nums" data-registration-expires>
+              {left}
+            </span>{" "}
+            more
+          </p>
+          <Button
+            type="button"
+            className="w-full sm:w-auto"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(command);
+                setCopyState("Copied");
+              } catch {
+                setCopyState("Copy failed");
+              }
+            }}
+          >
+            {copyState}
+          </Button>
+        </div>
       )}
     </div>
   );
@@ -265,12 +298,12 @@ export function RevokeHost({
   return (
     <ConfirmedAction
       action={revokeDockerHost}
-      trigger="Revoke"
-      triggerLabel={`Revoke ${name}`}
-      title={`Revoke ${name}?`}
+      trigger="Unlink"
+      triggerLabel={`Unlink ${name}`}
+      title={`Unlink ${name}?`}
       description={revokeWarning(sandboxes)}
-      confirm="Revoke host"
-      pendingLabel="Revoking…"
+      confirm="Unlink server"
+      pendingLabel="Unlinking…"
       successFocusId={`host-${hostId}-title`}
     >
       <input type="hidden" name="org" value={orgId} />
@@ -283,30 +316,32 @@ export function RevokeHost({
 export function HostLimitsDialog({ orgId, host }: { orgId: string; host: DockerHost }) {
   const [open, setOpen] = useState(false);
   if (host.state === "revoked")
-    return <p className="text-sm text-muted-foreground">Resource limits are unavailable for revoked hosts.</p>;
+    return <p className="text-sm text-muted-foreground">Resource limits are unavailable for unlinked servers.</p>;
   if (!host.limitsSupported)
     return (
       <p className="text-sm text-muted-foreground">
-        Limits unavailable. Update the host daemon and wait for it to report machine resources.
+        Limits unavailable. Update the server and wait for it to report machine resources.
       </p>
     );
   if (!host.canManageLimits)
-    return <p className="text-sm text-muted-foreground">Only the host owner can change resource limits.</p>;
+    return (
+      <p className="text-sm text-muted-foreground">Only the member who added the server can change resource limits.</p>
+    );
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <div className="space-y-1.5">
         <DialogTrigger asChild>
           <Button variant="outline" size="sm" disabled={host.state !== "online"}>
-            Edit limits
+            Change limits
           </Button>
         </DialogTrigger>
         {host.state !== "online" && (
-          <p className="text-sm text-muted-foreground">Bring the host online to change limits.</p>
+          <p className="text-sm text-muted-foreground">Bring the server online to change limits.</p>
         )}
       </div>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Host resource limits</DialogTitle>
+          <DialogTitle>Server limits</DialogTitle>
           <DialogDescription>
             Stop all sandboxes and wait for builds and pending work to finish before changing CPU or memory. Capacity
             can change while running, but cannot be lowered below current reservations.
@@ -351,7 +386,7 @@ function HostLimitsForm({ orgId, host, onSaved }: { orgId: string; host: DockerH
           step="any"
           placeholder={host.resources ? String(host.resources.perSandbox.cpus) : "Unknown"}
           aria-describedby="host-limits-hint"
-          disabled={pending || !host.resources}
+          disabled={pending || !host.resources || (host.running ?? host.sandboxes) > 0}
         />
       </div>
       <div className="space-y-1.5">
@@ -362,7 +397,7 @@ function HostLimitsForm({ orgId, host, onSaved }: { orgId: string; host: DockerH
           placeholder="e.g. 4g or 512m"
           autoComplete="off"
           aria-describedby="host-limits-hint"
-          disabled={pending || !host.resources}
+          disabled={pending || !host.resources || (host.running ?? host.sandboxes) > 0}
         />
       </div>
       <div className="space-y-1.5">
@@ -384,7 +419,14 @@ function HostLimitsForm({ orgId, host, onSaved }: { orgId: string; host: DockerH
         </p>
       )}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        <Button type="submit" name="mode" value="auto" variant="outline" disabled={pending} formNoValidate>
+        <Button
+          type="submit"
+          name="mode"
+          value="auto"
+          variant="outline"
+          disabled={pending || (host.running ?? host.sandboxes) > 0}
+          formNoValidate
+        >
           Use automatic
         </Button>
         <Button type="submit" name="mode" value="save" disabled={pending || !host.resources}>

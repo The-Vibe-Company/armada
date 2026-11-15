@@ -1,32 +1,40 @@
-import { RotateCwIcon, TriangleAlertIcon } from "lucide-react";
+import { type DockerSnapshotRecord, dockerHostResourceDisplay, type Harness } from "@armada/core";
+import { CircleAlertIcon, RotateCwIcon, ServerIcon, TriangleAlertIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import type { ReactNode } from "react";
+import { CopyButton } from "@/components/copy-button";
+import { CreatedAt } from "@/components/created-at";
+import { AddHostDialog, HostLimitsDialog, HostMark, RevokeHost } from "@/components/docker-hosts";
+import { DockerLaunchDialog } from "@/components/docker-launch";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderConnection, type ProviderRowState } from "@/components/provider-connection";
-import { ProviderMark } from "@/components/provider-mark";
-import { ToneBadge } from "@/components/status-badge";
+import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
+import { PanelSection, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { type DockerHostsState, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
+import { readSelectedDockerSnapshots } from "@/lib/data/docker-snapshots";
+import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { type ProviderSetup, readProviderSetup } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import type { Membership } from "@/lib/data/viewer";
-import { HOSTS_PATH } from "@/lib/docker-hosts";
+import { type DockerHost, HOSTS_PATH, hostFact, hostState, sandboxCount } from "@/lib/docker-hosts";
+import { type DockerLaunchOption, dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
+import type { LaunchAccounts } from "@/lib/model-accounts";
 import { CLOUD_PROVIDERS_PATH, isConfigured, SETUP_PROVIDERS } from "@/lib/provider-setup";
+import { relativeAge } from "@/lib/relative-time";
+import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
 import { createClient } from "@/lib/supabase/server";
-
-export const metadata: Metadata = { title: "Providers" };
+export const metadata: Metadata = { title: "Machines" };
 export const dynamic = "force-dynamic";
 
-const DESCRIPTION = "Cloud accounts and self-hosted machines for your organization.";
+const DESCRIPTION = "Where your sandboxes run: cloud accounts and your own servers.";
 
-/**
- * Cloud sandbox providers (#1474, moved out of Settings): the active organization's Boat and Modal accounts, which an
- * admin connects, replaces and disconnects, and a member sees the status of. The self-hosted machines live on the
- * Hosts page; a viewer's personal provider keys stay in Settings.
- */
-export default async function CloudProvidersPage() {
+/** Cloud accounts and own servers share one Machines surface; personal keys stay in Your connections. */
+export default async function CloudProvidersPage({ searchParams }: Props) {
   const supabase = await createClient();
   const selected = await selectedOrganization();
   const [setup, admins, hosts] = await Promise.all([
@@ -39,11 +47,20 @@ export default async function CloudProvidersPage() {
       : [],
     readSelectedDockerHosts(),
   ]);
+  const cloud = <SandboxProviders selected={selected} setup={setup} admins={admins} />;
+  if (selected && hosts.state === "ready") {
+    return OwnServers({ selected, hosts, query: await searchParams, cloud });
+  }
   return (
     <>
-      <PageHeader title="Providers" description={DESCRIPTION} />
-      <SandboxProviders selected={selected} setup={setup} admins={admins} />
-      <MachineProviders selected={selected} hosts={hosts} />
+      <PageHeader title="Machines" description={DESCRIPTION} />
+      {cloud}
+      {hosts.state === "error" && (
+        <Alert variant="destructive">
+          <AlertTitle>Servers could not be loaded</AlertTitle>
+          <AlertDescription>Reload Machines to try again.</AlertDescription>
+        </Alert>
+      )}
     </>
   );
 }
@@ -62,7 +79,7 @@ function SandboxProviders({
     <Card data-settings="providers" aria-labelledby="sandbox-providers-title" id="sandbox-providers">
       <CardHeader>
         <CardTitle id="sandbox-providers-title" role="heading" aria-level={2} className="flex items-center gap-2">
-          Cloud accounts
+          Cloud
         </CardTitle>
         {selected && (
           <CardDescription>
@@ -145,83 +162,273 @@ function SandboxProviders({
   );
 }
 
-/** One overview of usable placement choices; setup entries are not machines that can take work. */
-function MachineProviders({ selected, hosts }: { selected: Membership | null; hosts: DockerHostsState }) {
-  if (!selected || hosts.state === "disabled") return null;
-  const admin = selected.role === "admin";
-  const machines =
-    hosts.state === "ready"
-      ? hosts.list.hosts.filter((host) => host.state === "online" || host.state === "offline")
-      : [];
-  return (
-    <Card data-provider-machines>
-      <CardHeader>
-        <CardTitle role="heading" aria-level={2}>
-          Self-hosted machines
-        </CardTitle>
-        <CardDescription>Machines shared with {selected.org.name}. Sandboxes run in Docker.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {hosts.state === "ready" && !hosts.list.placement && (
-          <p role="status" className="text-sm text-muted-foreground">
-            Launching on self-hosted machines is not enabled here yet. You can still view their connections.
-          </p>
-        )}
-        {hosts.state === "ready" && hosts.list.skipped > 0 && (
-          <p role="status" className="text-sm text-muted-foreground">
-            Some machines could not be shown. Open Self-hosted to review them.
-          </p>
-        )}
-        {hosts.state === "error" ? (
-          <Alert variant="destructive">
-            <TriangleAlertIcon />
-            <AlertTitle>Machine status unavailable</AlertTitle>
-            <AlertDescription>
-              <p>Your machines could not be loaded. Open Self-hosted to check the connection and try again.</p>
-              <Button asChild variant="outline" size="sm" className="mt-2">
-                <Link href={HOSTS_PATH}>View machines</Link>
-              </Button>
-            </AlertDescription>
-          </Alert>
-        ) : machines.length === 0 ? (
-          <Empty
-            title={hosts.list.skipped > 0 ? "No machines available to show" : "No machines connected yet"}
-            action={
-              <Button asChild variant="outline" size="sm">
-                <Link href={HOSTS_PATH}>{admin && hosts.list.skipped === 0 ? "Manage machines" : "View machines"}</Link>
-              </Button>
-            }
-          >
-            {hosts.list.skipped > 0
-              ? "Open Self-hosted to check your machines before setting up another."
-              : admin
-                ? "Open machine management to connect a Linux machine running Docker."
-                : "Ask an organization admin to connect a Linux machine running Docker."}
-          </Empty>
-        ) : (
-          <ul className="divide-y rounded-lg border" aria-label="Self-hosted machines">
-            {machines.map((host) => {
-              const name = host.name ?? "Unnamed machine";
-              return (
-                <li key={host.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
-                  <p className="flex min-w-0 flex-wrap items-center gap-2 text-sm font-medium">
-                    <ProviderMark provider="docker" />
-                    <span className="min-w-0 max-w-full break-words">{name}</span>
-                    <ToneBadge tone={host.state === "online" ? "success" : "warning"}>
-                      {host.state === "online" ? "Online" : "Offline"}
-                    </ToneBadge>
-                  </p>
-                  <Button asChild variant="outline" size="sm">
-                    <Link href={`${HOSTS_PATH}?item=${host.id}`} aria-label={`View ${name}`}>
-                      View machine
-                    </Link>
-                  </Button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
+type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
+
+const TITLE = "Machines";
+async function OwnServers({
+  selected,
+  hosts,
+  query,
+  cloud,
+}: {
+  selected: Membership;
+  hosts: Extract<Awaited<ReturnType<typeof readSelectedDockerHosts>>, { state: "ready" }>;
+  query: Record<string, string | string[] | undefined>;
+  cloud: ReactNode;
+}) {
+  const isAdmin = selected.role === "admin";
+  const orgId = selected.org.id;
+  const now = Date.now();
+  // The launch options say why a launch is unavailable, so they are read whenever a host is listed that is not
+  // revoked; the accounts only when some host could take a launch now.
+  const live = hosts.list.hosts.some((host) => host.state !== "revoked");
+  const launchable = hosts.list.placement && hosts.list.hosts.some((host) => host.state === "online");
+  const [option, accountList, snapshots] = await Promise.all([
+    live ? readDockerLaunchOption() : null,
+    launchable ? listSelectedAccounts() : null,
+    readSelectedDockerSnapshots(),
+  ]);
+  const launch: Launch = {
+    option,
+    placement: hosts.list.placement,
+    accounts: accountList ? launchAccounts(accountList, now) : { state: "unavailable", reason: "Not read." },
+    unavailable: option ? dockerUnavailable(option) : [],
+    harnesses: dockerHarnesses(option),
+  };
+  const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
+  const unfinished = hosts.list.hosts.filter((host) => host.state === "pending");
+  // Old links to an unfinished registration still open its cleanup controls.
+  const showSetup = query.setup === "unfinished" || unfinished.some((host) => host.id === requested);
+  const visible = hosts.list.hosts.filter((host) => (host.state === "pending") === showSetup);
+  const rows = sortResources(
+    visible.map((host) =>
+      row(host, orgId, isAdmin, now, launch, snapshots.state === "ready" ? snapshots.snapshots : null),
+    ),
   );
+
+  return (
+    <ResourceBrowser
+      title={TITLE}
+      description={DESCRIPTION}
+      label="Your own servers"
+      rows={rows}
+      blockers={[]}
+      notices={
+        <div className="space-y-3">
+          {cloud}
+          {!hosts.list.placement && (
+            <p className="text-sm text-muted-foreground">
+              Launching on your own servers is not enabled here yet. You can still view their connections.
+            </p>
+          )}
+          <h2 className="pt-4 text-sm font-medium">Your own servers</h2>
+          {(unfinished.length > 0 || showSetup) && (
+            <nav aria-label="Host setup" className="flex flex-wrap gap-2">
+              <Button asChild variant={showSetup ? "outline" : "secondary"} size="sm">
+                <Link href={HOSTS_PATH} aria-current={!showSetup ? "page" : undefined}>
+                  Machines
+                </Link>
+              </Button>
+              <Button asChild variant={showSetup ? "secondary" : "outline"} size="sm">
+                <Link href={`${HOSTS_PATH}?setup=unfinished`} aria-current={showSetup ? "page" : undefined}>
+                  Unfinished setup ({unfinished.length})
+                </Link>
+              </Button>
+            </nav>
+          )}
+          {showSetup && (
+            <p className="text-sm text-muted-foreground">
+              {isAdmin
+                ? "These machines have not connected yet. If you no longer have the install command, unlink the entry and add the server again to get a new one. Unlinking an entry does not uninstall anything on your machine."
+                : "These machines have not connected yet. Ask an organization admin to finish setup or remove unused entries."}
+            </p>
+          )}
+          {hosts.list.skipped > 0 && (
+            <Alert>
+              <CircleAlertIcon />
+              <AlertTitle>Some machines could not be shown</AlertTitle>
+              <AlertDescription>
+                <p>
+                  Your machine list is incomplete. Reload to try again. If this continues, ask an organization admin for
+                  help.
+                </p>
+                <Button asChild variant="outline" size="sm" className="mt-2">
+                  <a href={HOSTS_PATH}>Reload Machines</a>
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
+      }
+      initial={requested}
+      actions={isAdmin ? <AddHostDialog orgId={orgId} /> : undefined}
+      footer={
+        <p className="text-xs text-pretty text-muted-foreground">
+          Hosts are shared with every member of {selected.org.name};{" "}
+          {isAdmin ? "you add and unlink them." : "only an admin adds or unlinks them."}
+        </p>
+      }
+      empty={
+        <Empty
+          title={
+            hosts.list.skipped > 0
+              ? "Machines are not fully loaded"
+              : showSetup
+                ? "No unfinished setup"
+                : "No machines connected yet"
+          }
+          icon={<ServerIcon />}
+        >
+          {hosts.list.skipped > 0
+            ? "Some machines could not be read. Reload the list before adding a machine or checking setup."
+            : showSetup
+              ? "Your machines have completed setup or their entries have been unlinked. Choose Machines to see them."
+              : isAdmin
+                ? "Choose Add your own server to connect a Linux machine running Docker. After you run its install command, it appears here."
+                : "Ask an organization admin to add a server. It appears here after its install command runs."}
+        </Empty>
+      }
+    />
+  );
+}
+
+type Launch = {
+  option: DockerLaunchOption | null;
+  placement: boolean;
+  accounts: LaunchAccounts;
+  unavailable: { name: string; reason: string }[];
+  /** The agents the server launches on Docker. */
+  harnesses: { offered: Harness[]; initial: Harness | null };
+};
+
+function row(
+  host: DockerHost,
+  orgId: string,
+  isAdmin: boolean,
+  now: number,
+  launch: Launch,
+  snapshots: DockerSnapshotRecord[] | null,
+): ResourceRow & { bucket: Bucket } {
+  const resources = dockerHostResourceDisplay(host);
+  const name = host.name ?? "Unnamed machine";
+  const blocker = dockerLaunchBlocker(launch.option, launch.placement, host);
+  const state = hostState(host, now);
+  const meta = host.canManageLimits ? "Added by you" : "Added by a teammate";
+  const seen = host.lastSeenAt ? relativeAge(host.lastSeenAt, now) : null;
+  return {
+    key: host.id,
+    name,
+    bucket: state.bucket,
+    search: [name, host.id, host.state, host.version ?? ""].join(" "),
+    mark: <HostMark />,
+    meta,
+    subtitle: meta,
+    state: (
+      <div className="space-y-1">
+        <StateCell tone={state.tone} label={state.label} data-host-state={host.state} />
+        <p className="text-xs text-muted-foreground">{state.detail}</p>
+        <p className="text-xs text-muted-foreground @3xl:hidden">{hostFact(host)}</p>
+      </div>
+    ),
+    fact: hostFact(host),
+    action: !blocker ? (
+      <DockerLaunchDialog
+        orgId={orgId}
+        hostId={host.id}
+        hostName={name}
+        accounts={launch.accounts}
+        unavailable={launch.unavailable}
+        harnesses={launch.harnesses.offered}
+        initialHarness={launch.harnesses.initial ?? "codex"}
+      />
+    ) : undefined,
+    detail: (
+      <div className="space-y-4">
+        <PanelSection title="State">
+          <p id={`host-${host.id}-title`} tabIndex={-1} className="text-sm outline-none">
+            {state.detail}
+          </p>
+        </PanelSection>
+        <PanelSection title="Launch">
+          {blocker ? (
+            <p className="text-sm text-muted-foreground" data-docker-launch-blocker>
+              {blocker}
+            </p>
+          ) : (
+            <DockerLaunchDialog
+              orgId={orgId}
+              hostId={host.id}
+              hostName={name}
+              accounts={launch.accounts}
+              unavailable={launch.unavailable}
+              harnesses={launch.harnesses.offered}
+              initialHarness={launch.harnesses.initial ?? "codex"}
+            />
+          )}
+        </PanelSection>
+        <PanelSection title="Per sandbox and at the same time">
+          <HostLimitsDialog orgId={orgId} host={host} />
+        </PanelSection>
+        <PanelSection title="Limits and usage">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+            <dt className="text-muted-foreground">Added</dt>
+            <dd>
+              <CreatedAt iso={host.createdAt} now={now} />
+            </dd>
+            <dt className="text-muted-foreground">Last check-in</dt>
+            <dd>{seen ?? "Never"}</dd>
+            <dt className="text-muted-foreground">Machine</dt>
+            <dd>{resources.machine}</dd>
+            <dt className="text-muted-foreground">Per sandbox</dt>
+            <dd>{resources.limits}</dd>
+            <dt className="text-muted-foreground">Running / capacity</dt>
+            <dd className="tabular-nums">{resources.usage}</dd>
+            <dt className="text-muted-foreground">Retained sandboxes</dt>
+            <dd>{sandboxCount(host.sandboxes)}</dd>
+          </dl>
+        </PanelSection>
+        <PanelSection title="Snapshots on it">
+          <p className="text-sm text-muted-foreground">
+            {snapshots === null
+              ? "Snapshots could not be loaded."
+              : snapshots
+                  .filter((snapshot) => snapshot.hostId === host.id)
+                  .map((snapshot) => snapshot.name)
+                  .join(", ") || "No snapshots yet"}
+          </p>
+          <Link className="text-sm underline underline-offset-4" href="/snapshots">
+            See in Snapshots
+          </Link>
+        </PanelSection>
+        <Collapsible className="border-t pt-4">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-xs font-medium text-muted-foreground">Technical details</h3>
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm">
+                Show
+              </Button>
+            </CollapsibleTrigger>
+          </div>
+          <CollapsibleContent className="pt-3">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
+              {" "}
+              <dt className="text-muted-foreground">Host ID</dt>
+              <dd className="flex min-w-0 items-center gap-1">
+                <code className="truncate font-mono text-xs">{host.id}</code>
+                <CopyButton value={host.id} label="Copy host ID" />
+              </dd>
+              <dt className="text-muted-foreground">Daemon version</dt>
+              <dd>{host.version ?? "Unknown"}</dd>
+            </dl>
+          </CollapsibleContent>
+        </Collapsible>
+        {isAdmin && host.state !== "revoked" && (
+          <PanelSection title="Unlink this server">
+            <RevokeHost orgId={orgId} hostId={host.id} name={name} sandboxes={host.sandboxes} />
+          </PanelSection>
+        )}
+      </div>
+    ),
+    attrs: { "data-host": host.id },
+  };
 }

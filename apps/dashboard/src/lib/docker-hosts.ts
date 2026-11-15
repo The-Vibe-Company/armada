@@ -1,7 +1,6 @@
 import {
   type DockerHostListResponse,
   type DockerHostSummary,
-  dockerHostResourceDisplay,
   parseDockerMemory,
   validDockerHostResources,
 } from "@armada/core";
@@ -24,7 +23,7 @@ export const DOCKER_HOST_ROUTES = {
   limits: "docker/hosts/limits",
 } as const;
 
-export const HOSTS_PATH = "/hosts";
+export const HOSTS_PATH = "/providers/cloud";
 
 /** A parsed host: the daemon version is narrowed to a non-empty string or null (unknown). */
 export type DockerHost = Omit<DockerHostSummary, "version"> & { version: string | null };
@@ -149,7 +148,7 @@ export function shortHostId(id: string): string {
 }
 
 export function hostName(host: Pick<DockerHost, "id" | "name">): string {
-  return host.name ?? `Host ${shortHostId(host.id)}`;
+  return host.name ?? "Unnamed server";
 }
 
 /** A host's state in the page's words and where it sorts: an offline host needs a look first. */
@@ -167,8 +166,8 @@ export function hostState(host: DockerHost, now: number): ResourceState & { deta
       return {
         bucket: "action",
         tone: "warning",
-        label: seen ? `Last seen ${seen}` : "Offline",
-        detail: "The host has not checked in recently: its daemon may be stopped or the machine offline.",
+        label: "Offline",
+        detail: `${seen ? `Last seen ${seen}. ` : ""}Check that the machine is on and Docker is running.`,
       };
     case "pending":
       if (now - Date.parse(host.createdAt) > REGISTRATION_TTL_MS)
@@ -177,7 +176,7 @@ export function hostState(host: DockerHost, now: number): ResourceState & { deta
           tone: "warning",
           label: "Registration expired",
           detail:
-            "Its registration token expired before the host checked in. Revoke this entry and add the host again.",
+            "Its registration command expired before the server checked in. Unlink this entry and add the server again.",
         };
       return {
         bucket: "action",
@@ -189,8 +188,8 @@ export function hostState(host: DockerHost, now: number): ResourceState & { deta
       return {
         bucket: "rest",
         tone: "neutral",
-        label: "Revoked",
-        detail: "Revoked: this host can take no new work.",
+        label: "Unlinked",
+        detail: "Unlinked: this server can take no new work.",
       };
   }
 }
@@ -209,15 +208,16 @@ export function connectedHostName(list: DockerHostList, hostId: string): string 
 
 /** A row's fact: what runs there and which daemon runs it. */
 export function hostFact(host: Pick<DockerHost, "sandboxes" | "version" | "resources" | "running">): string {
-  return `${dockerHostResourceDisplay(host).usage} running/capacity · ${sandboxCount(host.sandboxes)} retained · ${host.version ? `v${host.version.replace(/^v/, "")}` : "version unknown"}`;
+  if (!host.resources || host.running === undefined) return "Update the server to report running sandboxes and limits.";
+  return `${host.running} ${host.running === 1 ? "sandbox" : "sandboxes"} running · up to ${host.resources.capacity}${host.resources.heldBack ? ` (${host.resources.heldBack} held back: machine busy)` : ""}`;
 }
 
 /** What revoking a host does, said before it happens. */
 export function revokeWarning(sandboxes: number): string {
   const base =
-    "Its credential stops working and it takes no new work. This cannot be undone: to use the machine again, add it as a new host.";
+    "Only admins can unlink a server. This cannot be undone. Nothing is removed from the machine; to add it again later, run the uninstall command there first.";
   if (sandboxes === 0) return base;
-  return `${base} It still has ${sandboxCount(sandboxes).toLowerCase()}: delete ${sandboxes === 1 ? "it" : "them"} first, because a revoked host can no longer stop or delete them.`;
+  return `${base} Stop its ${sandboxCount(sandboxes).toLowerCase()} first: after unlinking, Armada can no longer stop or delete them.`;
 }
 
 /** A Docker sandbox's host in its page's details: the host's name when the list has it, else its short id (#1526). */
