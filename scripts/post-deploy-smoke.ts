@@ -405,6 +405,25 @@ async function runPostDeploySmoke(
     }
     fail("poll_limit_exceeded");
   }
+  // Validate all ordinary cases before feature setup or compute mutations.
+  for (const [index, item] of cases.entries()) {
+    try {
+      const result = await request<{ pairs: { provider: string; harness: string; enabled: boolean }[] }>(
+        "sandbox/capabilities",
+        { org: item.org, provider: item.provider, golden: item.golden, credentialId: item.modelAccountId },
+      );
+      if (
+        !result.pairs?.some(
+          (pair) => pair.provider === item.provider && pair.harness === item.harness && pair.enabled === true,
+        )
+      )
+        fail("invalid_response");
+      report(index, "ordinary_capabilities");
+    } catch (error) {
+      report(index, "ordinary_capabilities", error);
+      return false;
+    }
+  }
   const defaultPins = new Map<number, string[]>();
   if (defaultSkills) {
     for (const [index, item] of cases.entries()) {
