@@ -10,6 +10,7 @@ test("staging applies ordinary histories but skips only complete known forward e
   expect(stagingMigrationDecision([a], [a, b, c], [a, b, c])).toBe("skip");
   for (const [local, remote, main] of [
     [[a], [a, b], [a]], // unknown
+    [[a], [a, c], [a, b, c]], // missing intervening main migration
     [[b], [a, b], [a, b]], // not strictly newer
     [
       [a, b],
