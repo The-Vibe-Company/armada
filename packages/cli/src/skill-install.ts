@@ -17,6 +17,7 @@ Project roots: <directory>/.agents/skills and <directory>/.claude/skills.
 Global roots: ~/.agents/skills and ~/.claude/skills (native agent defaults).
 --yes explicitly approves a noninteractive install; no prompts are ever opened.
 Default source: The-Vibe-Company/armada at reviewed commit ${SKILL_PACKAGE.revision}.
+Example: armada skill install --project . --yes
 `;
 
 async function git(args: string[], cwd: string): Promise<string> {
@@ -106,7 +107,10 @@ export async function copySkillPackages(checkout: string, base: string): Promise
 }
 
 export async function skillCommand(argv: readonly string[], io: Io): Promise<number> {
-  if (argv.includes("--help")) {
+  if (
+    (argv.length === 1 && ["--help", "-h"].includes(argv[0] ?? "")) ||
+    (argv.length === 2 && argv[0] === "install" && ["--help", "-h"].includes(argv[1] ?? ""))
+  ) {
     io.out(HELP);
     return 0;
   }

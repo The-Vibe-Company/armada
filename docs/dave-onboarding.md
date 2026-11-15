@@ -396,3 +396,11 @@ The shared authenticated control API exposes `POST org/provider/status` (`{org}`
 Readiness is derived from current organization credentials, so interrupted onboarding resumes
 without cookies or query flags. Credential repair, account access and managed sandbox operations
 remain available even when a provider key is removed.
+
+### Skill installer help
+
+Use `armada skill --help` or `armada skill install -h` for login-free help.
+Both help spellings work only at those command boundaries; malformed install
+arguments are validated rather than silently returning help. Installation still
+requires an explicit project/global target and `--yes`; requesting help never
+checks out or installs anything.
