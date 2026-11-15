@@ -4,13 +4,12 @@ import {
   type MemberRole,
   PROMPT_STATUSES,
   reportedTurnUsage,
-  type Sql,
   VaultError,
 } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
-import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
+import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, runtimeTransaction } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
 import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
@@ -238,12 +237,7 @@ export function createRuntimeEvents(
         if (!owner) throw new RuntimeEnrolmentDenied();
         // Stay inside the epoch/archive transaction. A query-only tx would take
         // recordUsage's legacy unpriced fallback and silently lose admission.
-        const local: Sql = {
-          ...tx,
-          query: tx.query.bind(tx),
-          transaction: async (work) => work(tx),
-        };
-        const data = createSqlData(local)({
+        const data = createSqlData(runtimeTransaction(tx))({
           userId: owner.owner_id,
           orgs: [{ orgId: owner.org_id, role: owner.role }],
           via: "service",
