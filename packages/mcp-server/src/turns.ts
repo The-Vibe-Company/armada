@@ -127,7 +127,9 @@ export async function readStatus(
     } catch {
       /* Telemetry unavailable: neutral unknown. */
     }
-    const cached = recorded?.evidence as (TurnModelEvidence & { terminalOutcome?: PromptOutcome }) | null;
+    const cached = recorded?.evidence as
+      | (TurnModelEvidence & { terminalOutcome?: PromptOutcome; rateLimit?: ModelRateLimit | null })
+      | null;
     const retained =
       recorded?.requestedModel && cached && cached.modelSelectionReason !== "model_selection_unverified"
         ? cached
@@ -143,6 +145,7 @@ export async function readStatus(
     // Terminal observations survive provider history retention. Never substitute the sandbox default.
     if (retained?.terminalOutcome) {
       outcome = retained.terminalOutcome;
+      rateLimit = retained.rateLimit ?? null;
       evidence = {
         requestedModel: retained.requestedModel,
         observedModel: retained.observedModel,
@@ -195,6 +198,7 @@ export async function readStatus(
             await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, {
               ...evidence,
               terminalOutcome: outcome,
+              rateLimit,
             });
           } catch {
             /* Next read can retry telemetry storage. */

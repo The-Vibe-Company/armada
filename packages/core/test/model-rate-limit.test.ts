@@ -42,3 +42,15 @@ test("rate-limit status follows the target turn and stops waiting after progress
   });
   expect(modelRateLimit(events, "turn", 3000)?.waiting).toBe(false);
 });
+
+test("malformed backoff telemetry cannot become a visible wait", () => {
+  const event: AgentEvent = {
+    id: "bad",
+    at: 1000,
+    promptId: "turn",
+    kind: "other",
+    type: "armada/modelRateLimit",
+    data: { retryCount: 1, delayMs: "20000", totalWaitMs: Infinity },
+  };
+  expect(modelRateLimit([event], "turn", 2000)).toBeNull();
+});
