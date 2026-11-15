@@ -5,7 +5,7 @@ import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { type GoldenConfig, GoldenError, parseGoldenConfig } from "./golden-config.ts";
 import type { HelperReceipt } from "./helper.ts";
 import { parseMachineSizePolicy } from "./machine-size.ts";
-import { isSandboxProvider, type ModalBinding } from "./sandbox-provider.ts";
+import { isSandboxProvider, sandboxRowModalBinding } from "./sandbox-provider.ts";
 
 /** The slice of a database client the golden store needs. Postgres `$1` parameters. */
 export interface Sql {
@@ -181,6 +181,8 @@ export function mapGoldenRow(row: GoldenRow): GoldenRecord {
   const provider = row.provider;
   if (!isSandboxProvider(provider)) throw new Error("Golden row provider is invalid.");
   const config = typeof row.config === "string" ? JSON.parse(row.config) : row.config;
+  const modal = sandboxRowModalBinding(row);
+  if (provider === "modal" && !modal) throw new Error("Modal golden row has no pinned binding.");
   return {
     id: row.id,
     orgId: row.org_id,
@@ -190,7 +192,7 @@ export function mapGoldenRow(row: GoldenRow): GoldenRecord {
     provider,
     providerSandboxId: row.provider_sandbox_id,
     providerSnapshotId: row.provider_snapshot_id,
-    modal: modalBinding(provider, row),
+    modal,
     config: parseGoldenConfig(config),
     buildWarnings: row.build_warnings ?? [],
     helperReceipt: row.helper_receipt ?? null,
@@ -203,14 +205,6 @@ export function mapGoldenRow(row: GoldenRow): GoldenRecord {
           ),
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
   };
-}
-
-function modalBinding(provider: string, row: GoldenRow): ModalBinding | null {
-  if (provider !== "modal") return null;
-  if (!row.modal_workspace || !row.modal_environment || !row.modal_app_id) {
-    throw new Error("Modal golden row has no pinned binding.");
-  }
-  return { workspace: row.modal_workspace, environment: row.modal_environment, appId: row.modal_app_id };
 }
 
 /** Live membership/role proof, not mere org-golden visibility or a stale caller role. */
