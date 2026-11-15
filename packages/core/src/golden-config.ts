@@ -3,9 +3,6 @@ import { shellQuote as shQuote } from "./shell-quote.ts";
 /** Where a golden's repositories are cloned. Launch pulls the same directories. */
 export const GOLDEN_ROOT = "/home/user";
 
-/** How long the sandbox a golden is built in stays up, so `.env` files can be placed before it stops. */
-export const GOLDEN_BUILD_TTL_SECONDS = 86_400;
-
 /** How often create and snapshot ask the provider whether it has finished. */
 export const GOLDEN_POLL_MS = 1000;
 

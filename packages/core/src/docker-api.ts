@@ -12,9 +12,6 @@ import type { SandboxUsage } from "./sandbox-usage.ts";
 export type { SandboxPlacementProviderId } from "./sandbox-provider.ts";
 
 import type { SandboxPlacementProviderId } from "./sandbox-provider.ts";
-export interface DockerHostListRequest {
-  org: string;
-}
 export interface DockerHostResourceSummary {
   machine: { cpus: number; memoryBytes: number; availableCpus?: number; availableMemoryBytes?: number };
   perSandbox: { cpus: number; memoryBytes: number; pids: number };
@@ -47,10 +44,6 @@ export interface DockerHostListResponse {
   placement: boolean;
   hosts: DockerHostSummary[];
 }
-export interface DockerHostRegistrationRequest {
-  org: string;
-  name?: string;
-}
 export interface DockerHostRegistrationResponse {
   hostId: string;
   /** Single-use, five-minute capability. Show once, never persist or log it. */
@@ -58,13 +51,6 @@ export interface DockerHostRegistrationResponse {
   /** One-click shell command containing only the short-lived registration capability. */
   command: string;
   expiresAt: string;
-}
-export interface DockerHostRevokeRequest {
-  org: string;
-  hostId: string;
-}
-export interface DockerHostRevokeResponse {
-  revoked: true;
 }
 
 /** Code/feature support only. Authorization and selected-account admission remain server policy. */
