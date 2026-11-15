@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
@@ -6,11 +6,9 @@ import { generateDatabaseTypes } from "../../../scripts/db/generate.ts";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { encryptSecret, HARNESSES, type SandboxState, type Visibility } from "../src/index.ts";
 
-// Migration setup is shared immutable fixture preparation, not part of a schema assertion's runtime.
-beforeAll(async () => {
-  const db = await openMigratedDatabase();
-  await db.close();
-});
+import { migratedDatabase } from "./support/database.ts";
+
+const database = migratedDatabase();
 
 const PROVIDER_STATES = [
   "starting",
@@ -192,7 +190,7 @@ describe("database", () => {
             or has_function_privilege('anon', 'public.later_fn()', 'execute') as any`,
       );
       expect(later.rows[0]?.any).toBe(false);
-    });
+    }, true);
   });
 
   test("no column stores a secret in plaintext", async () => {
@@ -953,7 +951,9 @@ describe("database", () => {
   });
 });
 
-async function withDb(run: (db: PGlite) => Promise<void>): Promise<void> {
+async function withDb(run: (db: PGlite) => Promise<void>, isolatedSchema = false): Promise<void> {
+  // Grant/default-privilege assertions create schema objects; never reuse that connection.
+  if (!isolatedSchema) return run(database());
   const db = await openMigratedDatabase();
   try {
     await run(db);
