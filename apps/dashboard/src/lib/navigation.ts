@@ -23,35 +23,34 @@ export type NavGroup = { label: string; links: readonly NavLink[] };
 
 export const NAV_GROUPS: readonly NavGroup[] = [
   {
-    label: "Run",
+    label: "Running",
     links: [
       { href: "/sandboxes", label: "Sandboxes", icon: "sandboxes" },
       { href: "/routines", label: "Routines", icon: "routines" },
-      { href: "/templates", label: "Templates", icon: "templates" },
     ],
   },
   {
-    label: "Library",
+    label: "Launch from",
     links: [
+      { href: "/templates", label: "Templates", icon: "templates" },
       { href: "/snapshots", label: "Snapshots", icon: "environments" },
-      { href: "/skills", label: "Skills", icon: "skills" },
+    ],
+  },
+  {
+    label: "What agents have",
+    links: [
+      { href: "/harness", label: "Models", icon: "models" },
       { href: "/tools", label: "Tools", icon: "tools" },
+      { href: "/skills", label: "Skills", icon: "skills" },
       { href: "/variables", label: "Variables", icon: "variables" },
     ],
   },
   {
-    label: "Providers",
+    label: "Setup",
     links: [
-      // The overview always shows cloud accounts; machine management follows the server Docker opt-in.
-      { href: "/providers/cloud", label: "Overview", icon: "cloud" },
-      { href: "/hosts", label: "Self-hosted", icon: "selfHosted", optIn: "dockerHosts" },
-    ],
-  },
-  {
-    label: "Account",
-    links: [
-      { href: "/harness", label: "Models", icon: "models" },
-      { href: "/settings", label: "Settings", icon: "settings" },
+      { href: "/providers/cloud", label: "Machines", icon: "cloud" },
+      { href: "/orgs", label: "Organization", icon: "selfHosted" },
+      { href: "/settings", label: "Your connections", icon: "settings" },
     ],
   },
 ];
