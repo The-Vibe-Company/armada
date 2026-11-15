@@ -231,13 +231,17 @@ export function LaunchSentence({
         running{" "}
         {phone ? (
           <button type="button" className={word} onClick={() => setOpen(true)}>
-            {model}
+            {catalog[harness].models.find((option) => option.id === model)?.label ?? (
+              <span className="font-mono">{model}</span>
+            )}
           </button>
         ) : (
           <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
               <button type="button" className={word}>
-                {model}
+                {catalog[harness].models.find((option) => option.id === model)?.label ?? (
+                  <span className="font-mono">{model}</span>
+                )}
               </button>
             </PopoverTrigger>
             <PopoverContent
@@ -303,7 +307,9 @@ export function LaunchSentence({
           <SheetTitle>Choose model and account</SheetTitle>
           {picker}
           <p className="text-sm">
-            {HARNESS_LABELS[harness]} running {model} on {chosen?.name ?? "no account"}.
+            {HARNESS_LABELS[harness]} running{" "}
+            {catalog[harness].models.find((option) => option.id === model)?.label ?? model} on{" "}
+            {chosen?.name ?? "no account"}.
           </p>
           <label htmlFor="launch-sheet-effort" className="text-sm">
             Reasoning effort

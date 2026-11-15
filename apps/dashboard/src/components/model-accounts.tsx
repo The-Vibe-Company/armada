@@ -6,6 +6,7 @@ import {
   type ConnectionPreset,
   type ConnectionPresetId,
   connectionPreset,
+  HARNESS_CATALOG,
   type Harness,
 } from "@armada/core";
 import {
@@ -52,14 +53,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -100,7 +94,6 @@ import {
   usageView,
 } from "@/lib/model-accounts";
 import type { ConnectionTestChoices } from "@/lib/model-connection-check";
-import { connectionModelsNote } from "@/lib/model-picker";
 import { modelsPageDefault, modelsPageModel, modelsPageStatus } from "@/lib/models-page";
 import { cn } from "@/lib/utils";
 
@@ -127,20 +120,23 @@ function ConnectionTestDialog({
   account,
   orgId,
   choices,
+  open,
+  onOpenChange,
+  onCloseAutoFocus,
 }: {
   account: ModelAccount;
   orgId: string;
   choices: ConnectionTestChoices;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCloseAutoFocus: (event: Event) => void;
 }) {
   return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="sm" aria-label={`Test connection, ${account.name}`}>
-          Test connection
-        </Button>
-      </DialogTrigger>
-
-      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        onCloseAutoFocus={onCloseAutoFocus}
+        className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg"
+      >
         <DialogHeader>
           <DialogTitle>Test {account.name}</DialogTitle>
           <DialogDescription>
@@ -460,7 +456,7 @@ export function UsagePanel({
 
 /* ---------------------------------------------------------------- one account */
 
-type RowDialog = "limits" | "rename" | "replace" | "remove" | null;
+type RowDialog = "limits" | "rename" | "replace" | "remove" | "test" | null;
 
 const STATE_ICON = { ok: CircleCheckIcon, warn: CircleHelpIcon, error: CircleAlertIcon } as const;
 
@@ -538,25 +534,12 @@ export function AccountRow({
           )}
         </div>
         <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-          <span>{kindNote(account) ?? info.label}</span>
-          {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
           <span>
-            Updated <time dateTime={account.updatedAt}>{relativeTime(account.updatedAt, now)}</time>
+            {kindNote(account) ?? (info.billing === "subscription" ? "Subscription" : "API key")} ·{" "}
+            {account.scope === "user" ? "only you" : orgName}
           </span>
+          {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
         </p>
-        {account.models?.length ? (
-          <p data-account-models className="text-xs text-muted-foreground">
-            {connectionModelsNote(account.models.map((declared) => declared.model))}
-          </p>
-        ) : null}
-        {/* OpenCode plan keys keep vendor-owned routing; only declared custom connections can be checked. */}
-        {info.billing === "api" &&
-          (account.kind !== "opencode" || !!account.models?.length) &&
-          account.status === "active" && (
-            <div className="pt-1.5">
-              <ConnectionTestDialog account={account} orgId={orgId} choices={testChoices} />
-            </div>
-          )}
       </td>
 
       <td className="block sm:table-cell">
@@ -610,9 +593,7 @@ export function AccountRow({
               >
                 {info.billing === "subscription" ? "Reconnect" : "Replace key"}
               </Button>
-            ) : (
-              <DefaultAccountAction account={account} previous={previousDefault} orgId={orgId} onResult={setResult} />
-            )}
+            ) : null}
 
             <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
@@ -635,10 +616,14 @@ export function AccountRow({
                         ?.click()
                     }
                   >
-                    Set account-wide default for {info.harnessLabel}
+                    Make account-wide default
                   </DropdownMenuItem>
                 )}
-
+                {info.billing === "api" &&
+                  (account.kind !== "opencode" || !!account.models?.length) &&
+                  account.status === "active" && (
+                    <DropdownMenuItem onSelect={() => setDialog("test")}>Test connection</DropdownMenuItem>
+                  )}
                 <DropdownMenuItem onSelect={() => setDialog("limits")}>
                   <PencilIcon /> Agent limit
                 </DropdownMenuItem>
@@ -664,6 +649,17 @@ export function AccountRow({
 
         {canManage && (
           <>
+            <div className={cn(!account.isDefault && "[&>div>form:first-child]:hidden")}>
+              <DefaultAccountAction account={account} previous={previousDefault} orgId={orgId} onResult={setResult} />
+            </div>
+            <ConnectionTestDialog
+              account={account}
+              orgId={orgId}
+              choices={testChoices}
+              open={dialog === "test"}
+              onOpenChange={closeDialog}
+              onCloseAutoFocus={restoreFocus}
+            />
             <LimitsDialog
               account={account}
               orgId={orgId}
@@ -1418,7 +1414,7 @@ export function AddAccountDialog({
   capabilities: _capabilities,
   initialKind = "claude_oauth",
   triggerLabel = "Add account",
-  triggerVariant: _triggerVariant = "default",
+  triggerVariant = "default",
 }: {
   orgId: string;
   orgName: string;
@@ -1542,6 +1538,7 @@ export function AddAccountDialog({
   };
   return (
     <CreateDialog
+      triggerVariant={triggerVariant}
       label={triggerLabel}
       title="Add an account"
       description="A subscription, an API key, or your own endpoint. Choose what you have."
@@ -1578,30 +1575,35 @@ export function AddAccountDialog({
           ))}
           <button
             type="button"
-            aria-pressed={endpoint}
+            aria-pressed={
+              endpoint ||
+              (!!preset &&
+                !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))
+            }
             onClick={() => choose("your-endpoint")}
             className={cn(
               "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
-              endpoint && "border-primary bg-accent",
+              (endpoint ||
+                (!!preset &&
+                  !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))) &&
+                "border-primary bg-accent",
             )}
           >
-            Your endpoint<span className="block text-xs text-muted-foreground">Azure, gateway</span>
+            Your endpoint<span className="block text-xs text-muted-foreground">Azure, OpenRouter, DeepSeek, other</span>
           </button>
-          {CONNECTION_PRESETS.map((option) => (
+          {CONNECTION_PRESETS.filter((option) => ["anthropic", "openai", "morph"].includes(option.id)).map((option) => (
             <button
               key={option.id}
               type="button"
-              aria-pressed={choice === option.id}
+              aria-pressed={choice === option.id || choice === `opencode-${option.id}`}
               onClick={() => choose(option.id)}
               className={cn(
                 "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
-                choice === option.id && "border-primary bg-accent",
+                (choice === option.id || choice === `opencode-${option.id}`) && "border-primary bg-accent",
               )}
             >
-              {option.label}
-              <span className="block text-xs text-muted-foreground">
-                {option.models === "choose" ? "Connection" : "API key"}
-              </span>
+              {option.id === "anthropic" ? "Anthropic" : option.id === "openai" ? "OpenAI" : option.label}
+              <span className="block text-xs text-muted-foreground">API key</span>
             </button>
           ))}
         </fieldset>
@@ -1609,16 +1611,48 @@ export function AddAccountDialog({
           key={choice}
           className="space-y-4 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-150"
         >
-          {endpoint && (
+          {(endpoint ||
+            (preset &&
+              !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))) && (
             <div className="space-y-2">
-              <Label htmlFor={`${id}-endpoint-agent`}>Agent</Label>
+              <Label htmlFor={`${id}-provider`}>Provider</Label>
               <NativeSelect
-                id={`${id}-endpoint-agent`}
+                id={`${id}-provider`}
                 value={choice}
                 onChange={(event) => choose(event.target.value as AddChoice)}
               >
-                <option value="your-endpoint">Codex</option>
-                <option value="your-endpoint-claude">Claude Code</option>
+                <option value="your-endpoint">Custom endpoint for Codex</option>
+                <option value="your-endpoint-claude">Custom endpoint for Claude Code</option>
+                {CONNECTION_PRESETS.filter(
+                  (option) =>
+                    !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(option.id),
+                ).map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </NativeSelect>
+            </div>
+          )}
+          {["anthropic", "openai", "opencode-openai", "opencode-anthropic"].includes(choice) && (
+            <div className="space-y-2">
+              <Label htmlFor={`${id}-agents`}>Which agents will use it?</Label>
+              <NativeSelect
+                id={`${id}-agents`}
+                value={choice}
+                onChange={(event) => choose(event.target.value as AddChoice)}
+              >
+                {choice.includes("anthropic") ? (
+                  <>
+                    <option value="anthropic">Claude Code</option>
+                    <option value="opencode-anthropic">OpenCode</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="openai">Codex</option>
+                    <option value="opencode-openai">OpenCode</option>
+                  </>
+                )}
               </NativeSelect>
             </div>
           )}
@@ -1912,14 +1946,24 @@ function PersonalDefaultSentence({
               runs{" "}
               <button
                 type="button"
-                className={cn(word, "break-all font-mono text-base")}
+                className={cn(
+                  word,
+                  !HARNESS_CATALOG[harness].models.some(
+                    (model) => model.id === (current.model ?? modelsPageModel(account, harness)),
+                  ) && "font-mono",
+                  "text-base",
+                )}
                 onClick={(event) => {
                   opener.current = event.currentTarget;
                   setOpen(true);
                 }}
                 aria-label={`Change default model for ${HARNESS_LABELS[harness]}`}
               >
-                {current.model ?? modelsPageModel(account, harness)}
+                {HARNESS_CATALOG[harness].models.find(
+                  (model) => model.id === (current.model ?? modelsPageModel(account, harness)),
+                )?.label ??
+                  current.model ??
+                  modelsPageModel(account, harness)}
               </button>{" "}
               on{" "}
               <button
