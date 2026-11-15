@@ -2,7 +2,9 @@
 
 `armada vars` manages readable application configuration; `armada secrets`
 manages write-only application secrets. These are separate from model credentials
-(`armada creds`). Values must be piped on stdin or loaded with `--file`, never
+(`armada creds`, including Morph accounts and their simultaneous-agent limits).
+Configure those separately; vault entries do not select a model account or change
+its capacity. See [account setup](dave-onboarding.md). Values must be piped on stdin or loaded with `--file`, never
 passed as command arguments. The CLI does not cache values.
 
 For coordinator staging acceptance, use the disposable staging checks in

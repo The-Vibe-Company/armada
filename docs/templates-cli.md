@@ -29,7 +29,7 @@ To use a built Docker environment, add `"snapshotId": "SNAPSHOT_UUID"` to the
 definition above. Publish it using `--file`; snapshot selection is not a launch
 override. Omit `snapshotId` to keep the existing official host environment.
 `goldenId` and `goldenBinding` remain null: Docker snapshots are built per host,
-not reused from Modal or Boat goldens.
+not reused from Modal or Boat snapshots.
 
 The host must be registered, active and in the selected organization, with its
 issuer still a member. A selected snapshot must be ready, visible to the caller
@@ -66,15 +66,17 @@ For a name-based launch, the CLI prints its resolved template ID before submissi
 Retain that ID and key. To recover a lost response, retry with that ID and the same
 organization, revision and overrides (the same API body), without allocating again.
 Use the ID rather than the name even if the template was later renamed or deleted. Do not invent a new key while an earlier outcome is unknown.
-Only prompt, TTL, size and repository may override the preset; tools, model and
-readable-variable versions require publication. Use `--json` to inspect the
+Only prompt, TTL, size, repository and an unpinned model account may override
+the preset; tools, model and readable-variable versions require publication.
+Select an unpinned account with both `--model-account ACCOUNT_UUID` and
+`--model-account-version N`; a pinned account cannot be replaced at launch. Use `--json` to inspect the
 returned frozen manifest; readable values may appear there.
 
 ## Definition and API
 
 ```json
 {
-  "goldenId": "<provider-specific-golden-uuid>",
+  "goldenId": "<provider-specific-snapshot-uuid>",
   "provider": "modal",
   "harness": "codex",
   "model": "<supported-model-id>",
@@ -92,7 +94,18 @@ omitted account resolves the launching actor's user-over-org default, then freez
 its ID/version. Pinned accounts never silently fall back. Revisions store connection
 IDs, not access tokens: current connected grant generations/versions resolve at
 launch admission, so ordinary OAuth refresh requires no republication. Variables
-and secrets require explicit versions. No arbitrary environment override exists.
+and secrets require explicit versions. The JSON field `goldenId` and definition
+flag `--golden UUID` retain their API/CLI spelling but identify a Boat or Modal
+snapshot; do not rename the field to `snapshotId` (that field selects a Docker
+snapshot).
+
+Morph is a model account, not a sandbox provider. Its shared account supports
+Claude Code, Codex and OpenCode; use a supported Morph model and a
+runtime-backed launch (native Boat is unsupported). See [Morph](morph.md).
+Per-account simultaneous-agent limits also apply to template/routine launches:
+Morph defaults to 2, other accounts to unlimited. A busy account refuses admission,
+not a silent fallback; wait for capacity or deliberately select another eligible
+unpinned account. See the [account setup and limits](dave-onboarding.md). No arbitrary environment override exists.
 
 Authenticated no-store POST `/api/v1/templates/{create,list,get,publish,delete,launch}`
 and MCP `template_{create,list,get,publish,delete,launch}` share validation; the
@@ -172,8 +185,10 @@ no template lookup round trips or SSH; only nonempty readable manifests prepare.
 
 ## Secret bindings and security limits
 
-Repeat CLI `--secret KEY:UUID:VERSION` on create/publish, use reference-only
-`definition.secrets`, or select names/scope in the dashboard Secrets picker.
+With definition flags, repeat CLI `--secret KEY:UUID:VERSION` on create/publish.
+With `--file`, put reference-only bindings in `definition.secrets` instead;
+`--file` cannot be combined with definition flags (including `--secret`).
+Alternatively, select names/scope in the dashboard Secrets picker.
 Never pass secret values to template commands. Publication/admission check current
 membership, ownership/org scope, active status, expiry and exact version; the whole
 decrypted environment is size-validated before allocation. References only enter
