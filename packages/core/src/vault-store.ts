@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { accountWorkingCountSql } from "./account-work-sql.ts";
-import { HARNESS_KINDS } from "./credentials.ts";
+import { type AgentDefault, HARNESS_KINDS } from "./credentials.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore, GitHubUser, StoredGitHubConnection } from "./github.ts";
 import type { Sql } from "./golden-store.ts";
@@ -30,6 +30,31 @@ const githubRefreshQueues = new WeakMap<Sql, Map<string, Promise<void>>>();
  */
 export function createSqlVaultStore(sql: Sql): VaultStore {
   return {
+    async agentDefaults(userId) {
+      return (
+        await sql.query<AgentDefault>(
+          `select harness, credential_id as "credentialId", model from public.agent_defaults where user_id=$1`,
+          [userId],
+        )
+      ).rows;
+    },
+    async setAgentDefault(userId, value, orgId) {
+      if (!sql.transaction) throw new VaultError("unavailable", "Agent defaults require a transaction.");
+      await sql.transaction(async (tx) => {
+        if (value.credentialId) {
+          const account = await tx.query<{ kind: CredentialKind }>(
+            `select c.kind from public.credentials c where c.id=$1 and c.status<>'deleted' and ((c.scope='user' and c.owner_id=$2) or (c.scope='org' and ($3::uuid is null or c.owner_id=$3) and exists(select 1 from public.members m where m.org_id=c.owner_id and m.user_id=$2))) for share`,
+            [value.credentialId, userId, orgId ?? null],
+          );
+          if (!account.rows[0] || !HARNESS_KINDS[value.harness].includes(account.rows[0].kind))
+            throw new VaultError("not_found", "No compatible visible account.");
+        }
+        await tx.query(
+          `insert into public.agent_defaults(user_id,harness,credential_id,model) values($1,$2,$3,$4) on conflict(user_id,harness) do update set credential_id=excluded.credential_id,model=excluded.model`,
+          [userId, value.harness, value.credentialId, value.model],
+        );
+      });
+    },
     async mutateAccount(userId, input, valueEnc) {
       if (!sql.transaction) throw new VaultError("unavailable", "Account mutations require a transaction.");
       return sql.transaction(async (tx) => {

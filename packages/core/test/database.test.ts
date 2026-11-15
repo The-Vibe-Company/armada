@@ -210,6 +210,7 @@ describe("database", () => {
         }
         if (!secretName.test(column.column_name)) continue;
         if (
+          id === "agent_defaults.credential_id" ||
           id === "account_turn_queue.credential_version" ||
           id === "sandboxes.credential_id" ||
           id === "sandboxes.credential_version" ||

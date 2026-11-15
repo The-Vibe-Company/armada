@@ -14,6 +14,16 @@ test("one metadata statement preserves canonical credentials, all reference form
     "insert into credentials(scope,owner_id,kind,value_enc,status) values('user',$1,'anthropic',$2,'deleted')",
     [people.owner, await encryptSecret("deleted_placeholder", ENCRYPTION_KEY)],
   );
+  const preferred = (
+    await db.query<{ id: string }>(
+      "select id from credentials where scope='user' and owner_id=$1 and kind='claude_oauth'",
+      [people.owner],
+    )
+  ).rows[0]!;
+  await db.query(
+    "insert into agent_defaults(user_id,harness,credential_id,model) values($1,'claude',$2,'claude-sonnet-5-5')",
+    [people.owner, preferred.id],
+  );
   let queries = 0;
   const sql: Sql = {
     query: async <T>(text: string, params?: unknown[]) => {
@@ -25,6 +35,7 @@ test("one metadata statement preserves canonical credentials, all reference form
   const list = createSqlCredentialList(sql, store);
   // Independent legacy SQL projection is the existing wire contract, not the new mapper's output.
   const canonical = await listCredentials(store, people.owner, people.org);
+  expect(canonical.defaults).toEqual([{ harness: "claude", credentialId: preferred.id, model: "claude-sonnet-5-5" }]);
   queries = 0;
   expect(await list(people.owner, people.org.toUpperCase())).toEqual(canonical);
   expect(queries).toBe(1);
@@ -40,6 +51,7 @@ test("one metadata statement preserves canonical credentials, all reference form
   const expectedOrgOrder = (await store.memberships(people.member)).map((row) => row.id);
   queries = 0;
   const multiple = await list(people.member, undefined);
+  expect(multiple.defaults).toEqual([]);
   expect(multiple.orgs.map((row) => row.id)).toEqual(expectedOrgOrder);
   expect(multiple.orgs.find((row) => row.id === people.otherOrg)?.credentials).toEqual([]);
   expect(queries).toBe(1);
@@ -114,4 +126,39 @@ test("HTTP credentials use one statement after auth and preserve service-token b
   await db.query("delete from members where user_id=$1 and org_id=$2", [people.member, people.org]);
   const revoked = await call(people.org);
   expect([revoked.status, revoked.queries, revoked.body.error?.code]).toEqual([404, 1, "not_found"]);
+});
+
+test("account retry flag aggregates only live unexpired turns on that account", async () => {
+  const { db, people } = await database();
+  const account = (
+    await db.query<{ id: string }>(
+      "select id from credentials where scope='user' and owner_id=$1 and kind='claude_oauth'",
+      [people.owner],
+    )
+  ).rows[0]!;
+  const golden = (await db.query<{ id: string }>("select id from goldens where org_id=$1 limit 1", [people.org]))
+    .rows[0]!;
+  const sandbox = (
+    await db.query<{ id: string }>(
+      "insert into sandboxes(boat_id,golden_id,org_id,owner_id,harness,status,credential_id) values('retry_placeholder',$1,$2,$3,'claude','running',$4) returning id",
+      [golden.id, people.org, people.owner, account.id],
+    )
+  ).rows[0]!;
+  await db.query(
+    "insert into sandbox_turn_models(sandbox_id,prompt_id,rate_limit_retry_at) values($1,'retry_prompt',now()+interval '1 minute')",
+    [sandbox.id],
+  );
+  const list = createSqlCredentialList(db, createSqlVaultStore(db));
+  const flag = async () =>
+    (await list(people.owner, people.org)).user.find((row) => row.id === account.id)?.rateLimited;
+  expect(await flag()).toBe(true);
+  await db.query("update sandbox_turn_models set rate_limit_retry_at=now()-interval '1 second' where sandbox_id=$1", [
+    sandbox.id,
+  ]);
+  expect(await flag()).toBeUndefined();
+  await db.query("update sandbox_turn_models set rate_limit_retry_at=now()+interval '1 minute' where sandbox_id=$1", [
+    sandbox.id,
+  ]);
+  await db.query("update sandboxes set status='stopped', stopped_at=now() where id=$1", [sandbox.id]);
+  expect(await flag()).toBeUndefined();
 });

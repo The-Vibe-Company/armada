@@ -111,6 +111,42 @@ export type Database = {
           },
         ];
       };
+      agent_defaults: {
+        Row: {
+          user_id: string;
+          harness: string;
+          credential_id: string | null;
+          model: string | null;
+        };
+        Insert: {
+          user_id: string;
+          harness: string;
+          credential_id?: string | null;
+          model?: string | null;
+        };
+        Update: {
+          user_id?: string;
+          harness?: string;
+          credential_id?: string | null;
+          model?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "agent_defaults_credential_id_fkey";
+            columns: ["credential_id"];
+            isOneToOne: false;
+            referencedRelation: "credentials";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "agent_defaults_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       application_secret_uploads: {
         Row: {
           hash: string;
@@ -3952,6 +3988,7 @@ export type Database = {
           requested_model: string | null;
           evidence: Json | null;
           pricing_context: Json | null;
+          rate_limit_retry_at: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -3959,6 +3996,7 @@ export type Database = {
           requested_model?: string | null;
           evidence?: Json | null;
           pricing_context?: Json | null;
+          rate_limit_retry_at?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -3966,6 +4004,7 @@ export type Database = {
           requested_model?: string | null;
           evidence?: Json | null;
           pricing_context?: Json | null;
+          rate_limit_retry_at?: string | null;
         };
         Relationships: [
           {
@@ -4421,6 +4460,7 @@ export type Database = {
 
 export type AccountAgentReservationRow = Database["public"]["Tables"]["account_agent_reservations"]["Row"];
 export type AccountTurnQueueRow = Database["public"]["Tables"]["account_turn_queue"]["Row"];
+export type AgentDefaultsRow = Database["public"]["Tables"]["agent_defaults"]["Row"];
 export type ApplicationSecretUploadRow = Database["public"]["Tables"]["application_secret_uploads"]["Row"];
 export type ApplicationSecretRow = Database["public"]["Tables"]["application_secrets"]["Row"];
 export type ApplicationVaultAuditRow = Database["public"]["Tables"]["application_vault_audit"]["Row"];

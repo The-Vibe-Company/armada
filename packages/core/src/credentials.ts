@@ -382,7 +382,14 @@ export interface StoredCredential {
   version?: number;
 }
 
+export interface AgentDefault {
+  harness: Harness;
+  credentialId: string | null;
+  model: string | null;
+}
+
 export interface CredentialReader {
+  agentDefaults?(userId: string): Promise<AgentDefault[]>;
   credentials(scope: CredentialScope, ownerId: string): Promise<StoredCredential[]>;
   orgBoatKey(orgId: string): Promise<Uint8Array | null>;
 }
@@ -407,6 +414,10 @@ export async function resolveCredentials(
   encryptionKey: string | undefined,
   input: { userId: string; orgId: string; harness: Harness; credentialId?: string; credentialVersion?: number },
 ): Promise<ResolvedCredentials> {
+  if (input.credentialId === undefined) {
+    const preference = (await reader.agentDefaults?.(input.userId))?.find((row) => row.harness === input.harness);
+    if (preference?.credentialId) input = { ...input, credentialId: preference.credentialId };
+  }
   const kinds = HARNESS_KINDS[input.harness];
   for (const [scope, ownerId] of [
     ["user", input.userId],

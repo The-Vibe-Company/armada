@@ -236,6 +236,9 @@ export function launchCredentials(
         await ownership.admitSandboxCapacity(sandboxId);
       }
     },
+    async defaults(actor, harness) {
+      return (await reader.agentDefaults?.(actor.userId))?.find((row) => row.harness === harness);
+    },
     async resolve(
       actor: GoldenActor,
       harness: Harness,

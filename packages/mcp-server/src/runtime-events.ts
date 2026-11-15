@@ -2,6 +2,7 @@ import {
   type AgentEvent,
   type Harness,
   type MemberRole,
+  modelRateLimit,
   PROMPT_STATUSES,
   reportedTurnUsage,
   VaultError,
@@ -214,6 +215,27 @@ export function createRuntimeEvents(
            from unnest($3::bigint[],$4::text[],$5::text[]) as batch(sequence,marker,event_hex)`,
           [scope.sandboxId, scope.epoch, sequences, markers, encrypted],
         );
+      // Project only the newly committed contiguous archive prefix. Replays cannot
+      // resurrect waits, and assistant progress or terminal events clear them.
+      const retryUpdates = new Map<string, number | null>();
+      for (const item of fresh) {
+        if (!item.promptId) continue;
+        if (item.kind === "other" && item.type === "armada/modelRateLimit") {
+          const retry = modelRateLimit([item], item.promptId, Date.now());
+          retryUpdates.set(
+            item.promptId,
+            retry?.waiting && retry.message.startsWith("Rate limited by") ? retry.retryAt : null,
+          );
+        } else if (item.kind === "message" || (item.kind === "prompt" && item.status !== "running")) {
+          retryUpdates.set(item.promptId, null);
+        }
+      }
+      for (const [promptId, retryAt] of retryUpdates) {
+        await tx.query(
+          "update public.sandbox_turn_models set rate_limit_retry_at=$3::timestamptz where sandbox_id=$1 and prompt_id=$2",
+          [scope.sandboxId, promptId, retryAt === null ? null : new Date(retryAt).toISOString()],
+        );
+      }
       await projectRuntimeIdle(tx, scope.sandboxId, key, initialAck, fresh, ack);
       const usage = reportedTurnUsage(fresh);
       if (addedPrompt || usage.turns.length) {

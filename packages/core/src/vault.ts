@@ -1,4 +1,4 @@
-import { type CredentialReader, parseCredentialValue } from "./credentials.ts";
+import { type AgentDefault, type CredentialReader, parseCredentialValue } from "./credentials.ts";
 import { encryptSecret } from "./crypto.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore } from "./github.ts";
@@ -24,6 +24,8 @@ export interface CredentialInfo {
   isDefault?: boolean;
   maxAgents?: number | null;
   runningAgents?: number;
+  /** A live turn is currently waiting for a structured provider rate-limit retry. */
+  rateLimited?: boolean;
   waitingAgents?: number;
   status?: string;
   expiresAt?: string | null;
@@ -55,6 +57,7 @@ export interface AccountMutation {
   value?: string;
 }
 export interface VaultStore extends CredentialReader, GitHubConnectionStore {
+  setAgentDefault?(userId: string, value: AgentDefault, orgId?: string): Promise<void>;
   mutateAccount?(userId: string, input: AccountMutation, valueEnc?: Uint8Array): Promise<CredentialInfo>;
 
   /** Inserts the org and its first admin together. This is the one way an org is created. */
@@ -241,9 +244,10 @@ export async function listCredentials(
   store: VaultStore,
   userId: string,
   ref: string | undefined,
-): Promise<{ user: CredentialInfo[]; orgs: OrgCredentials[] }> {
+): Promise<{ user: CredentialInfo[]; orgs: OrgCredentials[]; defaults?: AgentDefault[] }> {
   const orgs = ref === undefined ? await store.memberships(userId) : [await resolveOrg(store, userId, ref)];
   return {
+    ...(store.agentDefaults ? { defaults: await store.agentDefaults(userId) } : {}),
     user: (await store.listCredentials("user", userId)).filter((row) => row.status !== "deleted"),
     orgs: await Promise.all(
       orgs.map(async (org) => {

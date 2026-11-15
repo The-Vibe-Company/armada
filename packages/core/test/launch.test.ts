@@ -762,6 +762,19 @@ describe("launch", () => {
     expect(JSON.stringify(world.execs)).not.toContain(CLAUDE_TOKEN);
   });
 
+  test("saved model defaults reach ordinary launches while explicit models win", async () => {
+    for (const explicit of [false, true]) {
+      const world = setup({ golden: golden("org") });
+      world.stores.credentials.defaults = async () => ({ credentialId: null, model: "claude-sonnet-5-5" });
+      const result = await launchSandbox(world.provider, world.stores, owner, {
+        golden: "web",
+        harness: "claude",
+        ...(explicit ? { model: "claude-opus-5-5" } : {}),
+      });
+      expect(world.rows.get(result.sandbox.id)?.model).toBe(explicit ? "claude-opus-5-5" : "claude-sonnet-5-5");
+    }
+  });
+
   test("without a prompt the sandbox is ready, has no conversation and no prompt was sent", async () => {
     const world = setup({ golden: golden("org") });
     const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });

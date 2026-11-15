@@ -46,6 +46,7 @@ export interface SandboxView extends SandboxRecord {
 }
 
 export interface ServerSandboxStore extends SandboxStore {
+  recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
   /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
@@ -315,6 +316,13 @@ export function createSqlData(
         const usage = rows.rows[0]?.usage;
         const pending = usage?.turns.filter((turn) => turn.promptId === promptId && !turn.pricing) ?? [];
         if (usage && pending.length) await sandboxes.recordUsage!(id, usage, { observations: pending });
+      },
+      async recordAccountRateLimit(id, promptId, retryAt) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await sql.query(
+          `update public.sandbox_turn_models set rate_limit_retry_at=$3::timestamptz where sandbox_id=$1::uuid and prompt_id=$2`,
+          [id, promptId, retryAt === null ? null : new Date(retryAt).toISOString()],
+        );
       },
       async readTurnModel(id, promptId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");

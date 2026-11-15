@@ -80,8 +80,6 @@ test.each(["codex", "claude", "opencode"] as const)(
       harness,
       credentialId: credential,
       requestId,
-      model: harness === "codex" ? "gpt-6.1-sol" : harness === "claude" ? "claude-opus-5-5" : "armada/deepseek-flash",
-      reasoningEffort: harness === "opencode" ? "default" : "medium",
       ttlSeconds: 1800,
       prompt: "answer once",
     });
