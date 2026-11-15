@@ -12,6 +12,8 @@ public struct SandboxTurn: Decodable, Sendable, Equatable {
     public let observedModel: String?
     public let modelSelectionReason: String?
     public let modelSelectionMessage: String?
+    /// Structured provider wait evidence; absent on older servers or turns without throttling.
+    public let rateLimit: ModelRateLimit?
 
     /// Closed interruption reasons are safe to offer as a manual resend, never an automatic replay.
     public var resendHint: String? {
@@ -22,6 +24,17 @@ public struct SandboxTurn: Decodable, Sendable, Equatable {
         default: return nil
         }
     }
+}
+
+/// Model-provider retry status from the server, not inferred from conversation prose.
+public struct ModelRateLimit: Decodable, Sendable, Equatable {
+    public let retryCount: Int
+    public let delayMs: Double
+    public let totalWaitMs: Double
+    /// Unix milliseconds, matching runtime journal timestamps.
+    public let retryAt: Double
+    public let waiting: Bool
+    public let message: String
 }
 
 /// Interior detail of one sandbox: `POST /api/v1/sandbox/detail`, the same route `armada status`
