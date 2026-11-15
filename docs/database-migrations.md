@@ -212,3 +212,27 @@ Coordinator staging checks (workers have no staging credentials):
    staging or production history for this test.
 4. Confirm the public production probe treats that 503 as failure before enabling
    production rollout. No production changes or probes were performed by the worker.
+
+## Staging ahead of an exact release (#2093)
+
+The staging deployment accepts a database ahead of the pinned release only when
+all release migration versions are already recorded and every remote-only version
+is strictly newer than the release maximum and exists in fetched `origin/main`.
+It then skips SQL apply, deploys the exact release source and runs the full staging
+smoke against that newer schema. This forward-only exception avoids changing the
+FIFO staging lock or starving ordinary main runs. Migration versions are compared,
+not SQL equivalence; applied migrations must remain immutable and backward compatible.
+
+Unknown versions, older remote-only versions, missing release migrations in an
+otherwise ahead history, malformed history or failed main resolution block deployment.
+An ordinary non-ahead history still uses the CLI dry-run and apply checks. No history
+repair, rollback, newer SQL application or moving-main application checkout is used.
+Production never enables this staging-only exception: its migration apply remains
+exactly the validated release commit's set and still fails on remote-only history.
+
+Coordinator acceptance (not performed by agents): under the staging lock, verify
+an exact-release staging deployment against a known newer main migration skips
+SQL but completes pinned-source smoke; confirm unknown history blocks before any
+provider upload. Inspect the authorized release's production migration inventory
+against its tag; do not inject production drift or repair history to test this.
+No new configuration secrets, CI jobs or required checks are needed.
