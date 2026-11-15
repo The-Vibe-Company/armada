@@ -11,6 +11,7 @@ const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
 for (const mode of [
   "online",
   "client_send_full",
+  "client_send_full_slow",
   "readable_valid",
   "readable_missing",
   "readable_full",
@@ -139,6 +140,7 @@ for (const mode of [
   "baseline_quota",
 ] as const) {
   test(`parity normal lifecycle and honest reporting: ${mode}`, async () => {
+    const clientFull = mode === "client_send_full" || mode === "client_send_full_slow";
     const deepFull = mode === "skills_resume_full" || mode === "mcp_resume_full";
     const mcpConnection = "10000000-0000-4000-8000-000000000003";
     const mcpExpected = `parity_mcp_${crypto.randomUUID()}`;
@@ -221,7 +223,7 @@ for (const mode of [
             (mode.startsWith("accounts") ? ["codex-openai", "codex-azure"] : [undefined]).map((account) => ({
               ...(account ? { account: mode === "accounts_invalid" ? "unknown-account" : account } : {}),
               provider,
-              ...(mode === "client_send_full" ? { clientSend: true } : {}),
+              ...(clientFull ? { clientSend: true } : {}),
               ...(mode.startsWith("subscription_probe") && mode !== "subscription_probe_missing"
                 ? { subscriptionAccount: true }
                 : {}),
@@ -331,7 +333,7 @@ for (const mode of [
         },
         fetch: async (url, init) => {
           if (new URL(url).pathname === "/mcp") {
-            expect(mode).toBe("client_send_full");
+            expect(clientFull).toBe(true);
             const rpc = JSON.parse(String(init.body));
             calls.push(`${dashboardProvider}:mcp:${rpc.method}`);
             if (rpc.method === "initialize")
@@ -619,6 +621,7 @@ for (const mode of [
                   },
                   { status: mode === "quota" ? 429 : 403 },
                 );
+              if (mode === "client_send_full_slow") clock += 110_001;
               states.set(p, "ready");
               result = { sandbox: { id: p, provider: p } };
               break;
@@ -662,7 +665,7 @@ for (const mode of [
               result = { connections: [{ id: mcpConnection, status: "connected" }] };
               break;
             case "sandbox/send": {
-              if (mode === "client_send_full" && String(body.prompt).includes("PARITY_CLIENT_CLI_")) {
+              if (clientFull && String(body.prompt).includes("PARITY_CLIENT_CLI_")) {
                 result = acceptClient(p, body);
                 break;
               }
@@ -708,7 +711,7 @@ for (const mode of [
               break;
             }
             case "logs/read":
-              if (mode === "client_send_full" && clientAnswers.has(turns.get(p)?.at(-1) ?? "")) {
+              if (clientFull && clientAnswers.has(turns.get(p)?.at(-1) ?? "")) {
                 const promptId = turns.get(p)!.at(-1)!;
                 result = {
                   events: [
@@ -956,7 +959,7 @@ for (const mode of [
               result = {
                 id: mode === "template_identity" || mode.startsWith("routine_") || deepFull ? body.id : p,
                 status: states.get(p),
-                ...(mode === "client_send_full" ? { conversationIds: ["client_conversation"] } : {}),
+                ...(clientFull ? { conversationIds: ["client_conversation"] } : {}),
                 ...(mode === "skills_resume_full" ? { skills: [skillReceipt] } : {}),
                 usage: {
                   turnCount: turns.get(p)?.length ?? 0,
@@ -1427,7 +1430,7 @@ for (const mode of [
       }
       return;
     }
-    if (mode === "client_send_full") {
+    if (clientFull) {
       expect(passed).toBe(true);
       expect(report.starts).toBe(2);
       for (const provider of ["modal", "docker"]) {

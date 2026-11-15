@@ -6,6 +6,7 @@ for (const mode of [
   "valid",
   "dashboard_reject",
   "cli_reject",
+  "cli_unauthorized",
   "dashboard_echo",
   "cli_stale",
   "cli_later_answer",
@@ -145,6 +146,11 @@ for (const mode of [
               expect(body).not.toHaveProperty("model");
               expect(body).not.toHaveProperty("reasoning_effort");
               wire.push({ provider, client: "cli", body });
+              if (mode === "cli_unauthorized")
+                return Response.json(
+                  { error: { code: "unauthorized", message: "private_error_placeholder" } },
+                  { status: 401 },
+                );
               if (mode === "cli_reject")
                 return Response.json(
                   { error: { code: "sandbox_not_ready", message: "private_error_placeholder" } },
@@ -242,6 +248,11 @@ for (const mode of [
         expect(wire.some((value) => value.provider === provider && value.client === "cli")).toBe(false);
       if (mode === "dashboard_reject")
         expect(report.features["client-send-dashboard"][provider].diagnostic.code).toBe("invalid_request_id");
+      if (mode === "cli_unauthorized")
+        expect(report.features["client-send-cli"][provider].diagnostic).toMatchObject({
+          code: "unauthorized",
+          httpStatus: 401,
+        });
       if (mode === "cli_reject")
         expect(report.features["client-send-cli"][provider].diagnostic).toMatchObject({
           code: "sandbox_not_ready",

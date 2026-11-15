@@ -565,8 +565,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       : api;
     async function verifyClientSend() {
       if (!id) throw Error("launch_not_available");
+      const until = feature === "client-send" ? readableUntil : Math.min(deadline, io.now() + 110_000);
+      const previous = requestDeadline;
+      requestDeadline = until;
       try {
-        const detail = await readableApi<{ id: string; conversationIds?: string[] }>("sandbox/detail", { id });
+        const detail = await api<{ id: string; conversationIds?: string[] }>("sandbox/detail", { id });
+        if (io.now() > until) throw new ClientSendError("dashboard", "client_send_timeout");
         const conversations = detail?.conversationIds;
         if (
           detail?.id !== id ||
@@ -583,7 +587,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             fetch: io.fetch,
             now: io.now,
             sleep: io.sleep,
-            until: readableUntil,
+            until,
             verified: (client) => record(`client-send-${client}`, c.provider, "pass"),
           },
         );
@@ -596,6 +600,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           record("client-send", c.provider, status, detail.quota ? "quota" : detail.code, detail);
         }
         throw error;
+      } finally {
+        requestDeadline = previous;
       }
     }
     async function verifySkills() {

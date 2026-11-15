@@ -1,4 +1,5 @@
 import { createGateway, GatewayError, sandboxGateway } from "../apps/dashboard/src/lib/gateway.ts";
+import { AuthError } from "../packages/auth/src/index.ts";
 import { ArmadaApiError, createArmadaApiClient } from "../packages/cli/src/armada-api.ts";
 import { operation } from "../packages/cli/src/operations.ts";
 
@@ -29,6 +30,7 @@ export async function probeClientSend(
 ) {
   let client: SendClient = "dashboard";
   let expired = false;
+  let lastStatus: number | undefined;
   function fail(code: string): never {
     throw new ClientSendError(client, code);
   }
@@ -48,11 +50,13 @@ export async function probeClientSend(
       fail("client_send_timeout");
     }
     const signal = AbortSignal.timeout(Math.max(1, Math.min(110_000, remaining)));
+    lastStatus = undefined;
     const result = await io.fetch(url.href, {
       ...init,
       redirect: "error",
       signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
     });
+    lastStatus = result.status;
     if (io.now() > io.until) {
       expired = true;
       fail("client_send_timeout");
@@ -184,8 +188,19 @@ export async function probeClientSend(
       if (error instanceof ClientSendError) throw error;
       if (expired || io.now() >= io.until) fail("client_send_timeout");
       const code =
-        error instanceof ArmadaApiError ? error.serverCode : error instanceof GatewayError ? error.code : undefined;
-      const status = error instanceof ArmadaApiError || error instanceof GatewayError ? error.status : undefined;
+        error instanceof ArmadaApiError
+          ? error.serverCode
+          : error instanceof GatewayError
+            ? error.code
+            : error instanceof AuthError && error.code === "unauthorized"
+              ? "unauthorized"
+              : undefined;
+      const status =
+        error instanceof ArmadaApiError || error instanceof GatewayError
+          ? error.status
+          : lastStatus !== undefined && lastStatus >= 400
+            ? lastStatus
+            : undefined;
       throw new ClientSendError(
         client,
         typeof code === "string" && /^[a-zA-Z0-9_-]{1,80}$/.test(code)
