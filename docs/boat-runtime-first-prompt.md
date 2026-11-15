@@ -1,6 +1,6 @@
 # Boat runtime
 
-Experimental, **default off**, ordinary Boat Codex/Claude workers only. Selected launches
+Experimental, **default off**, ordinary Boat Codex/Claude/OpenCode workers only. Selected launches
 use Armada's compiled runtime for prompts, journal/history and private model
 configuration. Native Boat sessions remain native; Modal retains its existing
 tunnel. There is no native-agent fallback after runtime failure and no migration
@@ -599,7 +599,7 @@ same manifest projection before the retained machine activates; source edits do
 not change the admitted values. Native launches remain unchanged.
 
 Application-secret bindings still refuse before allocation. This slice does not
-enable raw secret delivery, OpenCode on Boat, scoped child/helper launches or a
+enable raw secret delivery, scoped child/helper launches or a
 runtime default switch. Reserved keys, mismatched account/provider/actor metadata
 and corrupted frozen manifests refuse rather than becoming an empty environment.
 
@@ -660,3 +660,28 @@ allocation retry. Add existing MCP/skills flags only with their real prerequisit
 Boat is coordinator-only/on-demand in production, never staging/release acceptance.
 This checker mode is evidence tooling, not permission to flip defaults or remove
 the native runner; complete parity and the owner's cutover decision remain gates.
+
+### OpenCode on the shared Boat runtime (#2052)
+
+OpenCode is admitted by the existing shared runtime launch, configuration, turn,
+checkpoint and restore paths. Native Boat has no OpenCode harness alias and stays
+unsupported. Apply `20261115071000_boat_runtime_opencode.sql` through the normal
+release migration path and deploy matching server/runtime artifacts first.
+
+Use `sandbox/launch-runtime-v1` with `runtimeVersion:1`, `boatRuntime:true`,
+`provider:"boat"`, `harness:"opencode"` and an authorized OpenCode account/model.
+`launch/options.boatRuntime.opencodeVersion:1` advertises explicit runtime support.
+Ordinary launches also work when the operator has already selected the Boat runtime
+default; only then does the Boat provider option advertise OpenCode. This does not
+change the default or invent native support. The dashboard form still disables
+Boat OpenCode: use the versioned runtime API until UI capability discovery is wired.
+
+Coordinator-only production verification after normal release: use an existing
+OpenCode account and Boat golden, launch one runtime sandbox, send a prompt and a
+same-conversation follow-up, then checkpoint/stop and resume it, requiring archived
+runtime answers and remembered context. With the existing runtime-default server
+setting, `post-deploy-smoke.ts --parity --only boat --production-boat --feature opencode`
+uses the standard harness probe and refuses before allocation unless OpenCode
+runtime support is advertised. Boat remains outside staging and the release gate.
+No live provider check, migration application, deployment or default change was
+performed by this worker.

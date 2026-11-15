@@ -1221,10 +1221,17 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       const options = await discoveryApi<{
         providers: LaunchProviderOption[];
         modalRuntime?: { opencodeMcpProofVersion?: number };
+        boatRuntime?: { opencodeVersion?: number; defaultPath?: string };
       }>("launch/options");
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
+      if (
+        c.provider === "boat" &&
+        c.harness === "opencode" &&
+        (options.boatRuntime?.opencodeVersion !== 1 || options.boatRuntime.defaultPath !== "runtime")
+      )
+        throw new Error("boat_opencode_runtime_not_advertised");
       if (feature === "client-send") {
         const missing = (["followupPrompts", "logs"] as const).find((name) => option!.capabilities[name] !== true);
         if (missing) {

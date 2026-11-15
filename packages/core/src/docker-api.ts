@@ -133,6 +133,7 @@ export interface LaunchOptionsResponse {
     skillsVersion?: number;
     workspaceVersion?: number;
     controlsVersion?: number;
+    opencodeVersion?: number;
     enabled: boolean;
   };
 }

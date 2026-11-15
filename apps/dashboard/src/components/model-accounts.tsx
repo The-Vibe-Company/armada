@@ -1369,7 +1369,7 @@ export function AddAccountDialog({
               {kind === "morph"
                 ? "Claude Code and Codex share this account and its Morph plan models on Modal, Docker hosts and runtime-backed Boat sandboxes. Boat native gateways and OpenCode are not supported by this account."
                 : kind === "opencode"
-                  ? "OpenCode runs on Modal only. Boat and Docker hosts are not supported. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
+                  ? "OpenCode runs on Modal and through the Boat shared runtime API. Native Boat is not supported. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
                   : preset?.models === "choose"
                     ? "This custom connection requires Modal. It is not available on Boat or Docker hosts."
                     : "With a standard vendor account, Codex and Claude Code run on Modal, Boat and Docker hosts. Custom endpoints require Modal."}
@@ -1591,7 +1591,7 @@ export function HarnessAccounts({
         </h2>
         <p className="text-xs text-muted-foreground" data-harness-availability>
           {harness === "opencode"
-            ? "Modal only. OpenCode is not available on Boat or Docker hosts. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
+            ? "OpenCode runs on Modal and through the Boat shared runtime API, not native Boat. Custom connections can be tested in a running Modal sandbox; OpenCode plan-key checks are not available."
             : "Standard vendor accounts work on Modal, Boat and Docker hosts. Custom endpoints require Modal; testing also requires a running Modal sandbox."}
         </p>
         {accounts.length > 0 && <LaunchUses resolved={resolved} harnessLabel={harnessLabel} now={now} />}

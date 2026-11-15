@@ -32,6 +32,7 @@ import {
   REPOSITORY_FETCH_FAILED_MARKER,
   type ShellCommand,
 } from "./golden-config.ts";
+import { HARNESS_CAPABILITIES } from "./harnesses.ts";
 import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
@@ -282,21 +283,21 @@ export async function launchSandbox(
     stores = { ...stores, credentials: defaultRuntime.credentials, connections: defaultRuntime.connections };
     options = { ...options, runtime: defaultRuntime.policy };
   }
-  const harness = checkHarness(provider, request.harness);
   const runtime = options.runtime ?? options.boatRuntime;
+  const harness = checkHarness(provider, request.harness, Boolean(runtime));
   if (
     runtime &&
     (!["boat", "modal"].includes(provider.id) ||
-      (harness !== "codex" && harness !== "claude" && !(provider.id === "modal" && harness === "opencode")) ||
+      (harness !== "codex" && harness !== "claude" && harness !== "opencode") ||
       options.privateParent ||
       options.privateVisibility)
   )
     throw new LaunchError(
       "invalid_request",
-      "The experimental runtime supports ordinary Boat Codex/Claude or Modal Codex/Claude/OpenCode workers only.",
+      "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
   const prompt = checkPrompt(request.prompt);
-  const choice = checkModel(provider, harness, request);
+  const choice = checkModel(provider, harness, request, Boolean(runtime));
 
   const defaults = !request.skipSkillDefaults ? await stores.skillDefaults?.resolve(actor, golden) : undefined;
   try {
@@ -392,7 +393,8 @@ export async function launchSandbox(
   if (credentials.env[CODEX_ENDPOINT_ENV] && provider.id !== "modal" && !runtime)
     throw new LaunchError("invalid_request", "Custom Codex endpoints currently require Modal.");
   if (harness === "opencode") {
-    if (provider.id !== "modal") throw new LaunchError("invalid_request", "OpenCode currently requires Modal.");
+    if (provider.id !== "modal" && !runtime)
+      throw new LaunchError("invalid_request", "OpenCode on Boat requires the shared runtime.");
     const configured = credentials.env[OPENCODE_ENDPOINT_ENV];
     if (configured) {
       const endpoint = parseOpenCodeEndpoint(JSON.parse(configured));
@@ -1075,10 +1077,11 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function checkHarness(provider: Provider, harness: string): Harness {
+function checkHarness(provider: Provider, harness: string, runtime = false): Harness {
   if (
     !(HARNESSES as readonly string[]).includes(harness) ||
-    !(provider.harnesses as readonly string[]).includes(harness)
+    (!(provider.harnesses as readonly string[]).includes(harness) &&
+      !(runtime && provider.id === "boat" && harness === "opencode"))
   ) {
     throw new LaunchError("invalid_request", `Unknown agent '${harness}'. Use one of: ${HARNESSES.join(", ")}.`);
   }
@@ -1086,9 +1089,9 @@ function checkHarness(provider: Provider, harness: string): Harness {
 }
 
 /** Before anything is allocated: an unknown model or effort is refused, never replaced by another. */
-function checkModel(provider: Provider, harness: Harness, request: LaunchRequest): ModelChoice {
+function checkModel(provider: Provider, harness: Harness, request: LaunchRequest, runtime = false): ModelChoice {
   const choice = resolveModelChoice(harness, request);
-  if (!provider.capabilities[harness]?.reasoningEffort) {
+  if (!(runtime ? HARNESS_CAPABILITIES[harness] : provider.capabilities[harness])?.reasoningEffort) {
     throw new LaunchError("invalid_request", `${provider.id} cannot set a reasoning effort for ${harness}.`);
   }
   return choice;

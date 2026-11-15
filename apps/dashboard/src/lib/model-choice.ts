@@ -77,7 +77,7 @@ export function launchArgs(
     return { ok: false, error: "Armada access is available for Codex only." };
   const provider = fields.provider;
   if (provider === "boat" && HARNESS_CATALOG[harness].boatProvider === null)
-    return { ok: false, error: `${HARNESS_CATALOG[harness].label} currently requires Modal.` };
+    return { ok: false, error: `${HARNESS_CATALOG[harness].label} on Boat requires the shared runtime launch API.` };
   const repo = fields.repo?.trim() ?? "";
   if (repo && !REPO.test(repo)) return { ok: false, error: "Choose a repository recorded in the snapshot." };
   const size = fields.size?.trim() ?? "";
