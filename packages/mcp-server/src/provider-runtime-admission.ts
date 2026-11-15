@@ -1,3 +1,5 @@
+import { isSandboxPlacementProvider } from "@armada/core";
+
 /** Shared runtime capabilities; callers retain placement, transport and authorization guards. */
 export function runtimeBridgeTarget(target: {
   provider: string;
@@ -12,11 +14,8 @@ export function runtimeBridgeTarget(target: {
   );
 }
 
-export function runtimeHarnessSupported(provider: string, harness: string): boolean {
-  return (
-    ["codex", "claude"].includes(harness) || (["boat", "modal", "docker"].includes(provider) && harness === "opencode")
-  );
-}
+export const runtimeHarnessSupported = (provider: string, harness: string): boolean =>
+  ["codex", "claude"].includes(harness) || (isSandboxPlacementProvider(provider) && harness === "opencode");
 
 /** Closed provider refusal names; unrecognized identities retain the generic diagnostic. */
 export function runtimeConfigurationFailure(id: unknown) {
