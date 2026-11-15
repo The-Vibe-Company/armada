@@ -901,3 +901,36 @@ wake return `host_full`, including CLI JSON and dashboard refusal. Repeat with
 an explicit manual max and with an old-daemon/preceding-server pairing.
 No deployment, remote SQL, unrelated workload changes or real-host proof was
 performed by this PR.
+
+## Existing Docker snapshot parity probe (#2052)
+
+The coordinator can verify an already-built snapshot with the existing staging
+parity checker; this probe never builds a snapshot or an image. Add `snapshotId`
+(the exact snapshot UUID) to the owned Docker entry in `ARMADA_SMOKE_CASES`, keeping
+its existing `org`, `hostId`, harness, model and model-account ID. The snapshot
+must be ready and available on that same host and organization, private and owned
+by the caller. This deliberately narrow smoke-fixture prerequisite does not mean
+org-visible snapshots are unsupported by the product. Discovery uses the caller's
+server-filtered snapshot list and account identity; no owner ID is accepted from
+the smoke configuration.
+
+After normal deployment, with existing staging origin/token and consent:
+
+```sh
+ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --only docker --feature launch-snapshot
+```
+
+The server must advertise its golden/snapshot launch source and capability. The
+probe launches via normal `sandbox/launch` with only the selected `snapshotId`,
+not an image or explicit repository recipe. Require exact snapshot/host/image/
+organization/owner identity in its receipt, a real finished answer, and confirmed
+stop/delete cleanup. Missing, unready or unavailable fixtures allocate nothing;
+malformed or mismatched identity cannot pass. A rejected receipt with a known
+sandbox ID is still journaled and cleaned up.
+
+Unfiltered parity keeps its ordinary plain-image Docker launch unchanged and
+reports the snapshot cell as not-run with a dedicated-probe-required reason when
+configured (or fixture-not-configured otherwise). It never claims that a plain
+image proved snapshot launch. Cloud golden probes remain unchanged. Boat is not
+part of staging/release acceptance. No deployment or real provider check was
+performed by this worker; these instructions are not acceptance evidence.
