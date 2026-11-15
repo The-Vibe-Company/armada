@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { migratedDatabase } from "./support/database.ts";
+
+const database = migratedDatabase();
+
 import { encryptSecret } from "../src/crypto.ts";
 import { GoldenBuildJobs } from "../src/golden-build-jobs.ts";
 import { createSqlGoldenStore } from "../src/golden-store.ts";
@@ -13,8 +17,8 @@ const key = Buffer.alloc(32, 37).toString("base64");
 const binding: ModalBinding = { workspace: "verified-workspace", environment: "production", appId: "ap_pinned" };
 
 /** Actual queue/transactions/vault and service; only GitHub HTTP and the remote VM provider are synthetic. */
-async function fixture() {
-  const db = await openMigratedDatabase();
+async function fixture(isolatedSchema = false) {
+  const db = isolatedSchema ? await openMigratedDatabase() : database();
   const userId = crypto.randomUUID(),
     orgId = crypto.randomUUID(),
     admin = crypto.randomUUID();
@@ -162,7 +166,7 @@ async function fixture() {
 
 // New owner risk: unbounded Modal uses the same durable publication protocol without fabricating a Boat slot.
 test("Modal admission seals pinned context, allocates only after commit, and publishes job plus golden atomically without a slot", async () => {
-  const f = await fixture();
+  const f = await fixture(true);
   try {
     const setup = "echo fixture-encrypted-setup";
     const idempotency = crypto.randomUUID();
@@ -281,7 +285,6 @@ test("Modal queued authority is rechecked and a lost worker fence cannot publish
   } finally {
     release();
     await worker;
-    await f.db.close();
   }
 });
 
@@ -289,74 +292,66 @@ test.each(["unknown", "refusal"])(
   "an uncertain Modal snapshot retains its original source without replay (%s)",
   async (outcome) => {
     const f = await fixture();
-    try {
-      f.snapshot(async () => {
-        if (outcome === "refusal")
-          throw new ProviderError({
-            provider: "modal",
-            code: "invalid_request",
-            message: "refused save",
-            retryable: false,
-          });
-        throw new Error("fixture lost remote snapshot response");
-      });
-      const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
-      await f.jobs.runOne();
-      expect(await f.jobs.status(f.actor.userId, job.jobId)).toMatchObject({
-        state: "recovery_required",
-        phase: "snapshot",
-      });
-      expect(f.deleted).toEqual([]);
-      f.rotate();
-      await f.jobs.reconcileOne();
-      expect((await f.jobs.status(f.actor.userId, job.jobId)).state).toBe("recovery_required");
-      expect(f.contexts.at(-1)?.modal).toEqual(binding);
-      expect(f.deleted).toEqual([]);
-      expect(await f.jobs.runOne()).toBe(false);
-      expect(f.allocations()).toBe(1);
-      expect((await f.db.query("select 1 from goldens")).rows).toEqual([]);
-    } finally {
-      await f.db.close();
-    }
+    f.snapshot(async () => {
+      if (outcome === "refusal")
+        throw new ProviderError({
+          provider: "modal",
+          code: "invalid_request",
+          message: "refused save",
+          retryable: false,
+        });
+      throw new Error("fixture lost remote snapshot response");
+    });
+    const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
+    await f.jobs.runOne();
+    expect(await f.jobs.status(f.actor.userId, job.jobId)).toMatchObject({
+      state: "recovery_required",
+      phase: "snapshot",
+    });
+    expect(f.deleted).toEqual([]);
+    f.rotate();
+    await f.jobs.reconcileOne();
+    expect((await f.jobs.status(f.actor.userId, job.jobId)).state).toBe("recovery_required");
+    expect(f.contexts.at(-1)?.modal).toEqual(binding);
+    expect(f.deleted).toEqual([]);
+    expect(await f.jobs.runOne()).toBe(false);
+    expect(f.allocations()).toBe(1);
+    expect((await f.db.query("select 1 from goldens")).rows).toEqual([]);
   },
 );
 
 test("an older retained recovery queue head does not starve an interrupted builder", async () => {
   const f = await fixture();
-  try {
-    const retained = await f.jobs.admit(
-      f.provider,
-      f.actor,
-      { ...f.input, name: "retained-source" },
-      crypto.randomUUID(),
-    );
-    const recoverable = await f.jobs.admit(
-      f.provider,
-      f.actor,
-      { ...f.input, name: "recoverable-source" },
-      crypto.randomUUID(),
-    );
-    const builder = await f.provider.createGolden({ idempotencyKey: recoverable.jobId });
-    await f.db.query(
-      "update golden_build_jobs set state='recovery_required',error_code='build_failed',fence=$2,phase='snapshot',builder_id='retained-builder',updated_at='2000-01-01' where id=$1",
-      [retained.jobId, crypto.randomUUID()],
-    );
-    await f.db.query(
-      "update golden_build_jobs set state='recovery_required',error_code='build_failed',fence=$2,phase='builder',updated_at='2001-01-01' where id=$1",
-      [recoverable.jobId, crypto.randomUUID()],
-    );
-    await f.jobs.reconcileOne();
-    await f.jobs.reconcileOne();
-    expect(await f.jobs.status(f.actor.userId, retained.jobId)).toMatchObject({
-      state: "recovery_required",
-      phase: "snapshot",
-    });
-    expect(await f.jobs.status(f.actor.userId, recoverable.jobId)).toMatchObject({ state: "failed", phase: "builder" });
-    expect(f.deleted).toEqual([builder.id]);
-    expect(f.allocations()).toBe(1);
-  } finally {
-    await f.db.close();
-  }
+  const retained = await f.jobs.admit(
+    f.provider,
+    f.actor,
+    { ...f.input, name: "retained-source" },
+    crypto.randomUUID(),
+  );
+  const recoverable = await f.jobs.admit(
+    f.provider,
+    f.actor,
+    { ...f.input, name: "recoverable-source" },
+    crypto.randomUUID(),
+  );
+  const builder = await f.provider.createGolden({ idempotencyKey: recoverable.jobId });
+  await f.db.query(
+    "update golden_build_jobs set state='recovery_required',error_code='build_failed',fence=$2,phase='snapshot',builder_id='retained-builder',updated_at='2000-01-01' where id=$1",
+    [retained.jobId, crypto.randomUUID()],
+  );
+  await f.db.query(
+    "update golden_build_jobs set state='recovery_required',error_code='build_failed',fence=$2,phase='builder',updated_at='2001-01-01' where id=$1",
+    [recoverable.jobId, crypto.randomUUID()],
+  );
+  await f.jobs.reconcileOne();
+  await f.jobs.reconcileOne();
+  expect(await f.jobs.status(f.actor.userId, retained.jobId)).toMatchObject({
+    state: "recovery_required",
+    phase: "snapshot",
+  });
+  expect(await f.jobs.status(f.actor.userId, recoverable.jobId)).toMatchObject({ state: "failed", phase: "builder" });
+  expect(f.deleted).toEqual([builder.id]);
+  expect(f.allocations()).toBe(1);
 });
 
 // Token resolution in these fixtures must not leak audit records to stdout.
@@ -364,36 +359,28 @@ captureGitHubAuditLogs();
 
 test("repository authorization denial refuses admission without a job, slot or builder", async () => {
   const f = await fixture();
-  try {
-    f.denyRepository();
-    await expect(f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID())).rejects.toThrow(
-      "GitHub cannot read acme/web",
-    );
-    expect((await f.db.query("select id from golden_build_jobs")).rows).toEqual([]);
-    expect((await f.db.query("select id from golden_backend_slots")).rows).toEqual([]);
-    expect(f.allocations()).toBe(0);
-  } finally {
-    await f.db.close();
-  }
+  f.denyRepository();
+  await expect(f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID())).rejects.toThrow(
+    "GitHub cannot read acme/web",
+  );
+  expect((await f.db.query("select id from golden_build_jobs")).rows).toEqual([]);
+  expect((await f.db.query("select id from golden_backend_slots")).rows).toEqual([]);
+  expect(f.allocations()).toBe(0);
 });
 
 test("a repository revoked after admission preserves only its safe diagnostic and failure phase in status", async () => {
   const f = await fixture();
-  try {
-    const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
-    f.denyRepository();
-    await f.jobs.runOne();
-    const status = await f.jobs.status(f.actor.userId, job.jobId);
-    expect(status).toMatchObject({ state: "failed", phase: "authorization" });
-    expect(status.failureReason).toContain("detail:GitHub cannot read acme/web");
-    expect(status.failureReason).not.toContain("fixture-upstream-secret");
-    const stored = await f.db.query<{ failure_reason: string | null }>(
-      "select failure_reason from golden_build_jobs where id=$1",
-      [job.jobId],
-    );
-    expect(status.failureReason).toEqual(stored.rows[0]?.failure_reason);
-    expect(f.allocations()).toBe(0);
-  } finally {
-    await f.db.close();
-  }
+  const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
+  f.denyRepository();
+  await f.jobs.runOne();
+  const status = await f.jobs.status(f.actor.userId, job.jobId);
+  expect(status).toMatchObject({ state: "failed", phase: "authorization" });
+  expect(status.failureReason).toContain("detail:GitHub cannot read acme/web");
+  expect(status.failureReason).not.toContain("fixture-upstream-secret");
+  const stored = await f.db.query<{ failure_reason: string | null }>(
+    "select failure_reason from golden_build_jobs where id=$1",
+    [job.jobId],
+  );
+  expect(status.failureReason).toEqual(stored.rows[0]?.failure_reason);
+  expect(f.allocations()).toBe(0);
 });
