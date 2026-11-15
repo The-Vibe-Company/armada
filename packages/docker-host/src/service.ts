@@ -6,13 +6,18 @@ import { dirname, join } from "node:path";
 import { type State, type Store, serverOrigin } from "./daemon.ts";
 import { dockerCli } from "./native.ts";
 
-export const stateDirectory = (home = homedir()) => join(home, ".local/state/armada-docker-host");
-const serviceName = "armada-docker-host.service";
-function paths(home = homedir()) {
+export function instanceName(instance?: string) {
+  if (instance !== undefined && !/^[a-f0-9]{64}$/.test(instance)) throw new Error("Invalid Docker host instance.");
+  return instance ? `armada-docker-host@${instance}` : "armada-docker-host";
+}
+export const stateDirectory = (home = homedir(), instance?: string) =>
+  join(home, ".local/state", instanceName(instance));
+const serviceName = (instance?: string) => `${instanceName(instance)}.service`;
+function paths(home = homedir(), instance?: string) {
   return {
-    binary: join(home, ".local/bin/armada-docker-host"),
+    binary: join(home, ".local/bin", instanceName(instance)),
     units: join(home, ".config/systemd/user"),
-    unit: join(home, ".config/systemd/user", serviceName),
+    unit: join(home, ".config/systemd/user", serviceName(instance)),
   };
 }
 async function command(args: string[]) {
@@ -22,7 +27,7 @@ async function command(args: string[]) {
     throw new Error("User service command failed; check systemd user services and linger permissions.");
   return output.trim();
 }
-export async function servicePreflight() {
+export async function servicePreflight(instance?: string) {
   if (process.platform !== "linux") throw new Error("Linux with systemd user services is required.");
   if ((await dockerCli.run(["info"])).exitCode !== 0)
     throw new Error(
@@ -34,9 +39,10 @@ export async function servicePreflight() {
   await command(["loginctl", "enable-linger"]);
   if ((await command(["loginctl", "show-user", String(process.getuid?.()), "--property=Linger", "--value"])) !== "yes")
     throw new Error("Linger is required for reboot persistence; ask the administrator to enable it for this account.");
-  const p = paths();
-  if (process.execPath !== p.binary) throw new Error("Run the downloaded binary from ~/.local/bin/armada-docker-host.");
-  for (const file of [p.unit, join(stateDirectory(), "managed.json")]) {
+  const p = paths(homedir(), instance);
+  if (process.execPath !== p.binary)
+    throw new Error("Run the downloaded binary from its selected ~/.local/bin installation path.");
+  for (const file of [p.unit, join(stateDirectory(homedir(), instance), "managed.json")]) {
     try {
       await lstat(file);
     } catch (error) {
@@ -50,13 +56,13 @@ function quoted(value: string) {
   if (/[\r\n\0]/.test(value)) throw new Error("Unsupported installation path.");
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%").replaceAll("$", "$$")}"`;
 }
-export async function installService(state: State) {
-  const p = paths();
-  const unit = `[Unit]\nDescription=Armada Docker host\nAfter=network-online.target\n\n[Service]\nExecStart=${quoted(p.binary)} run --state-dir ${quoted(stateDirectory())}\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=90\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+export async function installService(state: State, instance?: string) {
+  const p = paths(homedir(), instance);
+  const unit = `[Unit]\nDescription=Armada Docker host\nAfter=network-online.target\n\n[Service]\nExecStart=${quoted(p.binary)} run --state-dir ${quoted(stateDirectory(homedir(), instance))}\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=90\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
   await mkdir(p.units, { recursive: true, mode: 0o700 });
   await writeFile(p.unit, unit, { flag: "wx", mode: 0o600 });
   await writeFile(
-    join(stateDirectory(), "managed.json"),
+    join(stateDirectory(homedir(), instance), "managed.json"),
     JSON.stringify({
       installationId: state.installationId,
       binarySha256: createHash("sha256")
@@ -67,7 +73,7 @@ export async function installService(state: State) {
     { flag: "wx", mode: 0o600 },
   );
   await command(["systemctl", "--user", "daemon-reload"]);
-  await command(["systemctl", "--user", "enable", "--now", serviceName]);
+  await command(["systemctl", "--user", "enable", "--now", serviceName(instance)]);
   console.log("Installed Armada Docker host user service with linger. Use armada-docker-host status.");
 }
 
@@ -130,9 +136,13 @@ async function ownedFile(path: string, home: string, executable = false): Promis
 }
 
 /** Refuse all unknown files and preserve shared Docker images and linger settings. */
-export async function validateInstallation(state: State, home = homedir()): Promise<ManagedInstallation> {
-  const p = paths(home);
-  const directory = stateDirectory(home);
+export async function validateInstallation(
+  state: State,
+  home = homedir(),
+  instance?: string,
+): Promise<ManagedInstallation> {
+  const p = paths(home, instance);
+  const directory = stateDirectory(home, instance);
   const marker = JSON.parse((await ownedFile(join(directory, "managed.json"), home)).toString("utf8"));
   const actualDigest = sha256(await ownedFile(p.binary, home, true));
   if (
@@ -206,27 +216,28 @@ export async function upgradeService(
   store: Pick<Store, "load"> & { lock(): Promise<() => Promise<void>> },
   server: string,
   io: UpgradeServiceIo = { home: homedir(), executable: process.execPath, service: command },
+  instance?: string,
 ) {
   const origin = serverOrigin(server);
   const initial = await store.load();
   if (origin !== initial.server)
     throw new Error("Upgrade server does not match the registered host; registration preserved.");
-  const initialMarker = await validateInstallation(initial, io.home);
+  const initialMarker = await validateInstallation(initial, io.home, instance);
   const bytes = await ownedFile(io.executable, io.home, true);
   const digest = sha256(bytes);
   if (initialMarker.binarySha256 === digest && initialMarker.pendingBinarySha256 === undefined) return;
   // Do not disable the service or touch work. Stop must complete before taking
   // the daemon's exclusive lock; restart even if stop/lock/update fails.
   try {
-    await io.service(["systemctl", "--user", "stop", serviceName]);
+    await io.service(["systemctl", "--user", "stop", serviceName(instance)]);
     const unlock = await store.lock();
     try {
       const state = await store.load();
       if (state.server !== origin || state.installationId !== initial.installationId || state.hostId !== initial.hostId)
         throw new Error("Installation identity changed; registration preserved.");
-      const marker = await validateInstallation(state, io.home);
-      const p = paths(io.home);
-      const directory = stateDirectory(io.home);
+      const marker = await validateInstallation(state, io.home, instance);
+      const p = paths(io.home, instance);
+      const directory = stateDirectory(io.home, instance);
       const markerFile = join(directory, "managed.json");
       const currentDigest = sha256(await ownedFile(p.binary, io.home, true));
       const stable = { installationId: marker.installationId, binarySha256: currentDigest, unit: marker.unit };
@@ -249,20 +260,20 @@ export async function upgradeService(
       await unlock();
     }
   } finally {
-    await io.service(["systemctl", "--user", "start", serviceName]);
+    await io.service(["systemctl", "--user", "start", serviceName(instance)]);
   }
 }
-export async function uninstallPreflight(state: State) {
-  await validateInstallation(state);
+export async function uninstallPreflight(state: State, instance?: string) {
+  await validateInstallation(state, homedir(), instance);
   if (!(await inventory(state)).empty)
     throw new Error("Host resources remain after drain; preserve registration files and inspect through Armada.");
 }
-export async function stopService() {
-  await command(["systemctl", "--user", "disable", "--now", serviceName]);
+export async function stopService(instance?: string) {
+  await command(["systemctl", "--user", "disable", "--now", serviceName(instance)]);
 }
-export async function removeInstallation() {
-  const p = paths();
-  const directory = stateDirectory();
+export async function removeInstallation(instance?: string) {
+  const p = paths(homedir(), instance);
+  const directory = stateDirectory(homedir(), instance);
   // Preserve registration/ownership proof until the final binary unlink succeeds.
   const saved = await Promise.all(
     [p.unit, join(directory, "state.json"), join(directory, "managed.json")].map(async (path) => ({

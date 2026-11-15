@@ -4,7 +4,13 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "../src/daemon.ts";
-import { type UpgradeServiceIo, upgradeService, validateInstallation } from "../src/service.ts";
+import {
+  instanceName,
+  stateDirectory,
+  type UpgradeServiceIo,
+  upgradeService,
+  validateInstallation,
+} from "../src/service.ts";
 
 // Real service-management boundary with recorded local executables: no systemd,
 // Docker daemon, network or sleeps. Protect service persistence and cleanup refusal.
@@ -15,7 +21,7 @@ test("managed service persists registration and refuses cleanup of unknown files
     process.env.HOME = home;
     process.env.PATH = `${home}/.local/bin:${original.PATH}`;
     const bin = join(home, ".local/bin");
-    const directory = join(home, ".local/state/armada-docker-host");
+    const directory = stateDirectory(home);
     await mkdir(bin, { recursive: true });
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await writeFile(join(bin, "armada-docker-host"), "verified host bytes", { mode: 0o700 });
@@ -68,12 +74,12 @@ test("managed service persists registration and refuses cleanup of unknown files
 });
 
 // Real filesystem boundary; service/lock recording needs no child or wall-clock wait.
-async function upgradeFixture() {
+async function upgradeFixture(instance?: string) {
   const home = await mkdtemp(join(tmpdir(), "armada-upgrade-"));
-  const binary = join(home, ".local/bin/armada-docker-host");
-  const directory = join(home, ".local/state/armada-docker-host");
+  const binary = join(home, ".local/bin", instanceName(instance));
+  const directory = stateDirectory(home, instance);
   const markerFile = join(directory, "managed.json");
-  const unitFile = join(home, ".config/systemd/user/armada-docker-host.service");
+  const unitFile = join(home, ".config/systemd/user", `${instanceName(instance)}.service`);
   const executable = join(home, "verified-download");
   const oldBytes = "previous verified binary",
     newBytes = "new verified binary";
@@ -264,6 +270,28 @@ test("same verified binary with a stable marker leaves the running service untou
     expect((await lstat(f.binary)).ino).toBe(inode);
     expect(await readFile(f.markerFile, "utf8")).toBe(marker);
     expect(await f.store.load()).toEqual(f.state);
+  } finally {
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
+test("namespaced upgrade changes only its own binary and service, preserving legacy installation", async () => {
+  const instance = createHash("sha256").update("https://second.example").digest("hex");
+  const f = await upgradeFixture(instance);
+  try {
+    const legacy = join(f.home, ".local/bin/armada-docker-host");
+    await writeFile(legacy, "legacy untouched", { mode: 0o700 });
+    await upgradeService(f.store, f.state.server, f.io, instance);
+    expect(await readFile(f.binary, "utf8")).toBe(f.newBytes);
+    expect(await readFile(legacy, "utf8")).toBe("legacy untouched");
+    expect(f.events).toEqual([
+      `systemctl --user stop armada-docker-host@${instance}.service`,
+      "lock",
+      "unlock",
+      `systemctl --user start armada-docker-host@${instance}.service`,
+    ]);
+    await validateInstallation(f.state, f.home, instance);
+    expect(() => stateDirectory(f.home, "../escape")).toThrow("Invalid Docker host instance");
   } finally {
     await rm(f.home, { recursive: true, force: true });
   }
