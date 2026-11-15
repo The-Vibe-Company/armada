@@ -30,7 +30,6 @@ import { interruptSandbox, sendToSandbox, steerSandbox } from "@/app/actions/san
 import { Markdown } from "@/components/markdown";
 import { SubmitShortcut } from "@/components/mod-key";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
-import { SandboxState } from "@/components/sandbox-state";
 import { StatusDot } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -84,7 +83,6 @@ const CLOSED_COMPOSER: Record<Exclude<SandboxStatus, (typeof CAN_SEND)[number]>,
 type Props = {
   sandboxId: string;
   initialStatus: SandboxStatus;
-  outcomeBlocked?: boolean;
   initialIdlePaused?: boolean;
   expiresAt?: string | null;
   initialUsageRevision: string;
@@ -437,18 +435,6 @@ export function SandboxChat(props: Props) {
                 <StatusDot tone="success" pulse /> Live
               </span>
             )}
-            <SandboxState
-              status={status}
-              idlePaused={idlePaused}
-              expiresAt={props.expiresAt ?? null}
-              statusMessage={statusMessage}
-              readyLabel={
-                !props.outcomeBlocked &&
-                [...chat.items].reverse().find((item) => item.kind === "user")?.status === "finished"
-                  ? "Finished"
-                  : "Waiting for you"
-              }
-            />
           </div>
         </div>
 
@@ -1150,8 +1136,8 @@ function Composer({
                     aria-hidden="true"
                   />
                 )}
-                {/* Icon only on a phone, where the controls must fit one row; the name stays for assistive tech. */}
-                <span className="max-sm:sr-only">{override ? "Model changed" : "Model"}</span>
+                {/* Keep the label visible on phones as well as the model-settings icon. */}
+                <span>{override ? "Model changed" : "Model"}</span>
               </Button>
             </CollapsibleTrigger>
           )}

@@ -2,7 +2,6 @@ import {
   HARNESSES,
   idlePauseMessage,
   MACHINE_SIZES,
-  SANDBOX_PLACEMENT_LABELS,
   SANDBOX_PLACEMENT_PROVIDERS,
   type SandboxCost,
   type SandboxListMetadata,
@@ -18,7 +17,7 @@ import { LaunchStart } from "@/components/launch-dialog";
 import { LaunchDialogContent } from "@/components/launch-surface";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
-import { ProviderName } from "@/components/provider-mark";
+import { ProviderMark } from "@/components/provider-mark";
 import { RowCost } from "@/components/sandbox-cost";
 import { SandboxListTabs } from "@/components/sandbox-list-tabs";
 import { SandboxRowMenu } from "@/components/sandbox-row-menu";
@@ -184,7 +183,9 @@ async function SandboxesContent({ searchParams }: Props) {
                         ? "Not recorded"
                         : machineSizeLabel(value as (typeof MACHINE_SIZES)[number])
                       : key === "provider"
-                        ? (SANDBOX_PLACEMENT_LABELS[value as SandboxPlacementProviderId] ?? capitalize(value))
+                        ? ({ boat: "Boat cloud", modal: "Modal cloud", docker: "Your server" }[
+                            value as SandboxPlacementProviderId
+                          ] ?? capitalize(value))
                         : key === "model"
                           ? value === "unknown"
                             ? "Not recorded"
@@ -254,7 +255,7 @@ async function SandboxesContent({ searchParams }: Props) {
             const paused = Boolean(idlePauseMessage(sandbox, now));
             const working = sandbox.status === "running" || sandbox.status === "starting";
             const need =
-              sandbox.canOpen &&
+              sandbox.ownerId === viewer.id &&
               !paused &&
               (sandbox.status === "ready" ||
                 sandbox.status === "failed" ||
@@ -275,6 +276,7 @@ async function SandboxesContent({ searchParams }: Props) {
                   </div>
                   <div className="col-start-1 sm:col-auto">
                     <SandboxState
+                      viewerOwns={sandbox.ownerId === viewer.id}
                       status={sandbox.status}
                       idlePaused={sandbox.idlePaused}
                       expiresAt={sandbox.expiresAt}
@@ -408,12 +410,16 @@ function capitalize(value: string): string {
 function ProviderPlacement({ sandbox, hostName }: { sandbox: SandboxListMetadata; hostName: string | undefined }) {
   return (
     <span className="inline-flex min-w-0 flex-col gap-0.5">
-      <ProviderName provider={sandbox.provider} />
-      {sandbox.provider === "docker" && (
-        <span className="max-w-48 text-xs whitespace-normal text-muted-foreground break-words">
-          {sandbox.canOpen ? (hostName ?? "Machine name unavailable") : "Machine details private"}
+      <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
+        <ProviderMark provider={sandbox.provider} />
+        <span className="min-w-0 break-words whitespace-normal">
+          {sandbox.provider === "docker"
+            ? `your server${sandbox.canOpen && hostName ? ` ${hostName}` : ""}`
+            : sandbox.provider === "modal"
+              ? "Modal cloud"
+              : "Boat cloud"}
         </span>
-      )}
+      </span>
     </span>
   );
 }
