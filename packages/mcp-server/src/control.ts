@@ -104,8 +104,8 @@ export const CONTROL_PREFIX = "/api/v1/";
 export interface ControlOptions {
   /** Authenticated own-user metadata and current org membership in one snapshot. */
   listCredentialMetadata?: ReturnType<typeof createSqlCredentialList>;
-  /** SQL list data must enforce fresh UUID selection authority inside its page/count statement. */
-  scopedSandboxData?: (caller: Caller, orgId: string) => ScopedData;
+  /** SQL list data must enforce fresh selection authority inside its page/count statement. */
+  scopedSandboxData?: (caller: Caller, ref: string) => ScopedData;
   /** Optional read model combining fresh org resolution with visibility-filtered rows. */
   listGoldenRecords?: (caller: Caller, ref: string | undefined) => Promise<GoldenRecord[]>;
   sandboxBillingAccount?: (
@@ -545,17 +545,20 @@ async function dispatch(
     )
       throw new VaultError("forbidden", "You are not a member of this org.");
     const ref = optional(body, "org");
-    const candidate =
+    const listRef =
       route === "sandbox/list" &&
       options.scopedSandboxData &&
       ref !== undefined &&
       sandboxListInput.safeParse(body).success
-        ? scopedOrg(caller, ref)?.trim().toLowerCase()
+        ? scopedOrg(caller, ref)
         : undefined;
-    const listOrgId = candidate && UUID.test(candidate) ? candidate : undefined;
-    const scopedCaller = listOrgId
-      ? { ...caller, orgs: caller.orgs.filter((org) => org.orgId === listOrgId) }
-      : await selectedCaller(options, caller, ref);
+    const listOrgId = listRef && UUID.test(listRef.trim()) ? listRef.trim().toLowerCase() : undefined;
+    const scopedCaller =
+      listRef !== undefined
+        ? listOrgId
+          ? { ...caller, orgs: caller.orgs.filter((org) => org.orgId === listOrgId) }
+          : caller
+        : await selectedCaller(options, caller, ref);
     const result = await callSharedTool(
       {
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
@@ -569,7 +572,7 @@ async function dispatch(
         ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
-        data: listOrgId ? options.scopedSandboxData!(scopedCaller, listOrgId) : options.data(scopedCaller),
+        data: listRef !== undefined ? options.scopedSandboxData!(scopedCaller, listRef) : options.data(scopedCaller),
         measure: (phase, work) => measureRequestPhase(options.timing, phase, work),
         storedProviders: options.storedProviderFor
           ? {

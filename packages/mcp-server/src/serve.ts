@@ -23,7 +23,7 @@ import { configFromEnv } from "./config.ts";
 import { type ConfiguredControlOptions, handleControlRequest } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
-import { createSqlData } from "./data.ts";
+import { createScopedSandboxData, createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
@@ -486,7 +486,7 @@ export async function startServer(
     store,
     listGoldenRecords: createSqlGoldenList(sql, store),
     listCredentialMetadata: createSqlCredentialList(sql, store),
-    scopedSandboxData: (caller, orgId) => createSqlData(sql, orgId)(caller),
+    scopedSandboxData: createScopedSandboxData(sql, store),
     encryptionKey: config.encryptionKey,
     data,
     connections: mcp.connections,
