@@ -63,6 +63,8 @@ test("missing source package and source symlinks fail closed before copying", as
 test("CLI requires explicit scope and consent, rejects unknown options and invalid revisions without authentication", async () => {
   for (const argv of [
     ["install"],
+    ["install", "--help", "--unknown"],
+    ["install", "--project", "--help"],
     ["install", "--global"],
     ["install", "--global", "--project=", "--yes"],
     ["install", "--project=", "--yes"],
@@ -87,7 +89,7 @@ test("CLI requires explicit scope and consent, rejects unknown options and inval
         },
       ),
     ).toBe(2);
-    expect(error).toContain("Usage:");
+    expect(error).toContain(argv.includes("--help") ? "Next step:" : "Usage:");
   }
 });
 
@@ -165,5 +167,41 @@ test("CLI fetches one pinned Git source and reports its actual commit and both i
     const destination = join(target, root, "skills/armada");
     expect(output).toContain(`Installed: ${destination}`);
     expect(await readFile(join(destination, "SKILL.md"), "utf8")).toContain("name: armada");
+  }
+});
+
+test("skill family and install help support both spellings without authentication or installation", async () => {
+  for (const action of ["", "install"]) {
+    for (const help of ["-h", "--help"]) {
+      let out = "",
+        err = "";
+      const code = await run(
+        ["skill", ...(action ? [action] : []), help],
+        {
+          out: (text) => {
+            out += text;
+          },
+          err: (text) => {
+            err += text;
+          },
+        },
+        {
+          env: {},
+          fetch: Object.assign(
+            () => {
+              throw Error("Help must not fetch");
+            },
+            {
+              preconnect() {
+                throw Error("Help must not fetch");
+              },
+            },
+          ),
+        },
+      );
+      expect({ code, err }).toEqual({ code: 0, err: "" });
+      expect(out).toContain("Usage: armada skill install");
+      expect(out).toContain("Example: armada skill install");
+    }
   }
 });
