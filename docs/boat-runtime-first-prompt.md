@@ -673,8 +673,15 @@ Use `sandbox/launch-runtime-v1` with `runtimeVersion:1`, `boatRuntime:true`,
 `launch/options.boatRuntime.opencodeVersion:1` advertises explicit runtime support.
 Ordinary launches also work when the operator has already selected the Boat runtime
 default; only then does the Boat provider option advertise OpenCode. This does not
-change the default or invent native support. The dashboard form still disables
-Boat OpenCode: use the versioned runtime API until UI capability discovery is wired.
+change the default or invent native support. The dashboard snapshot launch form
+now offers Boat OpenCode only when ordinary Boat provider discovery advertises
+that harness and the installed runtime reports its enabled runtime default and
+OpenCode v1 support. Missing, older, unavailable or native-default discovery keeps
+the choice disabled with an explanation. The launch action rereads trusted server
+options rather than accepting an availability field from the form. It uses the
+existing ordinary/sized route; it does not select or flip the runtime path.
+Default-off deployments can still use the explicit versioned runtime API when
+installed.
 
 Coordinator-only production verification after normal release: use an existing
 OpenCode account and Boat golden, launch one runtime sandbox, send a prompt and a
@@ -711,3 +718,17 @@ custom gateway account preserves its base URL/model configuration. Inspect logs
 for absence of credentials. Network reachability and real inference remain
 unverified by offline tests. Do not add Boat to staging or release gates; Modal
 and Docker keep their existing staging acceptance.
+
+
+### Boat OpenCode dashboard acceptance (#2052)
+
+Coordinator-only production check after normal dashboard/server release, using
+existing authorized resources: on a server already configured with the Boat
+runtime default, open a ready Boat snapshot, choose OpenCode and its usable
+account/model, then launch. Require persisted `boatRuntime:true`, an archived
+runtime answer and normal follow-up. No default flip is authorized by this check.
+On an existing native-default or older/unavailable server, verify OpenCode is
+disabled with its reason. A stale open form or forged availability field must not
+bypass the action's new discovery read; the server still enforces native refusal
+and never falls back. Boat remains outside staging and the release gate. No real
+launch, provider call or deployment was performed by this worker.

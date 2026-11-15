@@ -19,6 +19,7 @@ import { ControlError } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
 import { viewerGateway } from "@/lib/data/gateway";
 import { listGoldens } from "@/lib/data/goldens";
+import { readLaunchOptions } from "@/lib/data/launch-options";
 import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { newWorkBlocker } from "@/lib/data/provider-setup";
 import { getSandbox } from "@/lib/data/sandboxes";
@@ -191,17 +192,25 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     (data.get("armada_access") !== null && data.get("armada_access") !== "on")
   )
     return fail("That request is not valid.");
-  const parsed = launchArgs({
-    golden: formString(data, "golden"),
-    provider: formString(data, "provider"),
-    org: formString(data, "org"),
-    harness: formString(data, "harness"),
-    prompt: formString(data, "prompt"),
-    repo: formString(data, "repo"),
-    size: formString(data, "size"),
-    armadaAccess: formString(data, "armada_access"),
-    ...modelFields(data),
-  });
+  // Never trust a posted availability field; reauthorize normal runtime support on this request.
+  const discovery =
+    formString(data, "provider") === "boat" && formString(data, "harness") === "opencode"
+      ? await readLaunchOptions()
+      : undefined;
+  const parsed = launchArgs(
+    {
+      golden: formString(data, "golden"),
+      provider: formString(data, "provider"),
+      org: formString(data, "org"),
+      harness: formString(data, "harness"),
+      prompt: formString(data, "prompt"),
+      repo: formString(data, "repo"),
+      size: formString(data, "size"),
+      armadaAccess: formString(data, "armada_access"),
+      ...modelFields(data),
+    },
+    discovery,
+  );
   if (!parsed.ok) return fail(parsed.error);
   if (!isUuid(parsed.args.org)) return fail("That request is not valid.");
   // A connection model is billed to its own connection: never run it on another account.
