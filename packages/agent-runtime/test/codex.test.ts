@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -119,7 +119,6 @@ nativeTest.each([
   ["recorded-failure", "harness_failed"],
   ["unauthorized", "authentication_failed"],
   ["usageLimitExceeded", "usage_limit_exceeded"],
-  ["rateLimitExceeded", "rate_limited"],
 ])("Codex terminal %s is a typed failure, never successful completion", async (text, code) => {
   const driver = new CodexDriver({
     executable: `${import.meta.dir}/fixtures/app-server.ts`,
@@ -418,12 +417,6 @@ nativeTest.each([
     "updated",
   ],
   [
-    "rateLimitExceeded",
-    { primary: { usedPercent: 100, resetsAt: 1794268800 }, secondary: { usedPercent: 100, resetsAt: 1794270000 } },
-    "2026-11-10T00:20:00.000Z",
-    "updated",
-  ],
-  [
     "usageLimitExceeded",
     { primary: { usedPercent: 100, resetsAt: "private-vendor-error-body" } },
     undefined,
@@ -453,7 +446,7 @@ nativeTest.each([
         session: () => {},
         emit: (event) => events.push(event),
       });
-      const code = text === "rateLimitExceeded" ? "rate_limited" : "usage_limit_exceeded";
+      const code = "usage_limit_exceeded";
       await expect(turn.done).rejects.toMatchObject({ code });
       const publicEvents = events.filter(
         (event) =>
@@ -761,3 +754,64 @@ nativeTest.each(["closed", "after-abort", "unclosed", "wrong-session", "corrupt"
     }
   },
 );
+
+nativeTest("Codex journals a terminal rate limit and remains interruptible during backoff", async () => {
+  const controller = new AbortController();
+  const events: DriverEvent[] = [];
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", OPENAI_API_KEY: "synthetic-not-a-real-key" },
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "codex", text: "rateLimitExceeded" },
+      signal: controller.signal,
+      session: () => {},
+      emit: (event) => {
+        events.push(event);
+        if (event.kind === "other" && event.type === "armada/modelRateLimit") controller.abort();
+      },
+    });
+    expect(await turn.done).toBe("interrupted");
+    expect(events.find((event) => event.kind === "other" && event.type === "armada/modelRateLimit")).toMatchObject({
+      data: { retryCount: 1 },
+    });
+  } finally {
+    await driver.close();
+  }
+});
+
+nativeTest("Codex resumes the same thread after throttling without a real wait", async () => {
+  const events: DriverEvent[] = [];
+  const sessions: string[] = [];
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", OPENAI_API_KEY: "synthetic-not-a-real-key" },
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "codex", text: "rateLimitExceeded" },
+      signal: new AbortController().signal,
+      session: (id) => sessions.push(id),
+      emit: (event) => {
+        events.push(event);
+        if (event.kind === "other" && event.type === "armada/modelRateLimit") {
+          jest.useFakeTimers();
+          queueMicrotask(() => {
+            jest.advanceTimersByTime(1000);
+            jest.useRealTimers();
+          });
+        }
+      },
+    });
+    expect(await turn.done).toBe("finished");
+    expect(sessions).toHaveLength(1);
+    expect(events.filter((e) => e.kind === "other" && e.type === "armada/modelRateLimit")).toHaveLength(1);
+    expect(events.filter((e) => e.kind === "message" && e.text === "redirect delivered once")).toHaveLength(1);
+  } finally {
+    jest.useRealTimers();
+    await driver.close();
+  }
+});

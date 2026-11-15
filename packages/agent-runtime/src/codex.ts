@@ -1,6 +1,8 @@
 import { createInterface } from "node:readline";
+import { setTimeout as sleep } from "node:timers/promises";
 import { codexPlanLimit, planLimitFromMessage, planLimitMessage } from "@armada/core";
 import { ChildOwner } from "./children.ts";
+import { codexRateLimited, codexRetryDelay } from "./codex-rate-limit.ts";
 import { codexResumeUsage } from "./codex-resume-usage.ts";
 import type { ReasoningEffort } from "./codex-schema/ReasoningEffort.ts";
 import type { LoginAccountParams } from "./codex-schema/v2/LoginAccountParams.ts";
@@ -346,6 +348,7 @@ export class CodexDriver implements Driver {
       }
     });
     const begin = async (text: string) => {
+      c.signal.throwIfAborted();
       turnId = "";
       const terminal = new Promise<TurnCompletedNotification>((resolve, reject) => {
         terminalResolve = resolve;
@@ -463,8 +466,10 @@ export class CodexDriver implements Driver {
       }
     })();
     if (!resumeOnly) current = initialized.then(() => begin(c.request.text));
+    let retryWait: AbortController | undefined;
     const interrupt = async () => {
       stopping = true;
+      retryWait?.abort();
       await initialized;
       if (resumeOnly) {
         await this.children.release(child);
@@ -484,6 +489,8 @@ export class CodexDriver implements Driver {
     };
     c.signal.addEventListener("abort", abort, { once: true });
     let steerFinished: Promise<void> = Promise.resolve();
+    let retryCount = 0;
+    let totalWaitMs = 0;
     const done = (async () => {
       try {
         if (resumeOnly) {
@@ -501,6 +508,37 @@ export class CodexDriver implements Driver {
           if (active !== current) continue;
           if (result.turn.status === "completed" && !result.turn.error) return "finished" as const;
           if (result.turn.status === "interrupted" && stopping && !result.turn.error) return "interrupted" as const;
+          // Only retry after a terminal: app-server owns all in-flight retries.
+          // Continue the same thread; never replay the original prompt/tools.
+          if (!stopping && codexRateLimited(result.turn.error?.codexErrorInfo)) {
+            const delayMs = codexRetryDelay(retryCount++);
+            totalWaitMs += delayMs;
+            c.emit({
+              kind: "other",
+              type: "armada/modelRateLimit",
+              data: {
+                retryCount,
+                delayMs,
+                totalWaitMs,
+                message: `Rate limited by the model provider, retrying in ${Math.ceil(delayMs / 1000)} s`,
+              },
+            });
+            retryWait = new AbortController();
+            if (stopping || c.signal.aborted) return "interrupted" as const;
+            try {
+              await sleep(delayMs, undefined, { signal: retryWait.signal });
+            } catch (error) {
+              if (!retryWait.signal.aborted) throw error;
+            } finally {
+              retryWait = undefined;
+            }
+            if (stopping || c.signal.aborted) return "interrupted" as const;
+            if (active !== current) continue;
+            current = begin(
+              "Continue from where the model provider request was rate limited. Do not repeat completed work.",
+            );
+            continue;
+          }
           const info = result.turn.error?.codexErrorInfo;
           const code =
             typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : undefined;
@@ -571,6 +609,7 @@ export class CodexDriver implements Driver {
               throw error;
             }
             current = begin(text);
+            retryWait?.abort();
             await current;
           } finally {
             steering = false;
