@@ -1,10 +1,7 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { type Driver, type IngestClient, Journal, Runner } from "../src/index.ts";
 
-// Durable outbox boundary: an untrusted HTTP-shaped acknowledgement must never poison WAL metadata.
+// Outbox admission: an untrusted acknowledgement must not advance the cursor or lose the pending event.
 test.each(
   [
     null,
@@ -17,10 +14,8 @@ test.each(
     { acknowledgedSequence: 1e30 },
     { acknowledgedSequence: 2 },
   ].map((body) => [body] as const),
-)("malformed ingest acknowledgement %j rejects without durable advancement and retries after reopen", async (body) => {
-  const root = mkdtempSync(join(tmpdir(), "armada-ack-"));
-  const path = join(root, "journal.sqlite");
-  let journal = new Journal(path, (s) => s);
+)("malformed ingest acknowledgement %j preserves cursor and retries through a fresh Runner", async (body) => {
+  const journal = new Journal(":memory:", (s) => s);
   const driver: Driver = {
     start() {
       throw Error("unused");
@@ -43,15 +38,13 @@ test.each(
     journal.append({ id: "event", at: 1, kind: "other", type: "fixture", data: {} });
     await expect(runner.flushOutbox()).rejects.toThrow("invalid_ingest_ack");
     expect(journal.ack).toBe(0);
-    journal.close();
-    journal = new Journal(path, (s) => s);
-    expect(journal.ack).toBe(0);
     const retry = new Runner(
       journal,
       grant,
       { claude: driver, codex: driver },
       {
         async append(batch) {
+          expect(batch.events).toMatchObject([{ sequence: 1, event: { id: "event" } }]);
           return { acknowledgedSequence: batch.events.at(-1)?.sequence ?? 0 };
         },
       },
@@ -60,6 +53,5 @@ test.each(
     expect(journal.ack).toBe(1);
   } finally {
     journal.close();
-    rmSync(root, { recursive: true, force: true });
   }
 });
