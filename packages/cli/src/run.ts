@@ -856,8 +856,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     case "list":
       return list(args, io, deps);
     default:
-      io.err(`armada: unknown command 'snapshot ${subcommand}'. Run 'armada --help'.\n`);
-      return 2;
+      throw new AuthError(`unknown command 'snapshot ${subcommand}'. Run 'armada --help'.`, "usage");
   }
 }
 
