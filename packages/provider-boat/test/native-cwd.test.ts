@@ -37,6 +37,7 @@ exec /bin/bash -c "$4"
     cwd: root,
     env: {
       ...process.env,
+      HOME: root,
       PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
       ARMADA_NATIVE_TEST_ROOT: root,
     },
@@ -113,6 +114,7 @@ exit 23
             cwd: base,
             env: {
               ...process.env,
+              HOME: base,
               PATH: `${bin}:${process.env.PATH}`,
               PYTHONPATH: cwd,
               PYTHONHOME: join(cwd, "hostile-python-home"),
@@ -190,6 +192,7 @@ sys.exit(23)
     // A default MCP refresh must retain the explicitly selected repository across reinstall.
     expect(installProtocolFixture(path, base).status).toBe(0);
     const unsupported = spawnSync(path, ["app-server", "--listen", "ws://127.0.0.1:9000"], {
+      env: { HOME: base, PATH: process.env.PATH ?? "/usr/bin:/bin" },
       encoding: "utf8",
       timeout: 5000,
     });
@@ -217,6 +220,8 @@ sys.exit(23)
     ];
     const args = ["app-server", "--listen", "stdio://", "--config", 'model="runtime-model"'];
     const result = spawnSync(path, args, {
+      // Never inherit real subscription/GitHub configuration from the agent running this test.
+      env: { HOME: base, PATH: process.env.PATH ?? "/usr/bin:/bin" },
       input: `${messages.map((m) => JSON.stringify(m)).join("\n")}\nnot-json\n`,
       encoding: "utf8",
       cwd: base,
@@ -565,7 +570,10 @@ for line in sys.stdin:
   let child: ReturnType<typeof spawn> | undefined;
   try {
     expect(installProtocolFixture(path, base).status).toBe(0);
-    child = spawn(path, ["app-server"], { stdio: ["pipe", "pipe", "pipe"] });
+    child = spawn(path, ["app-server"], {
+      env: { HOME: base, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     const { createInterface } = await import("node:readline");
     const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
     const read = async () => {
@@ -626,7 +634,7 @@ ${failure === "abort" ? "os.kill(os.getpid(), signal.SIGABRT)" : "sys.exit(1)"}
         input: JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "boat" } } }) + "\n",
         encoding: "utf8",
         timeout: 5000,
-        env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+        env: { HOME: base, PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
       });
       expect(result.signal).toBeNull();
       expect(result.status).toBe(1);
@@ -656,7 +664,10 @@ test("Codex boot abort before initialize still answers the later first request",
     });
     symlinkSync(native, path);
     expect(installProtocolFixture(path, base).status).toBe(0);
-    child = spawn(path, ["app-server"], { stdio: ["pipe", "pipe", "pipe"] });
+    child = spawn(path, ["app-server"], {
+      env: { HOME: base, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     const { createInterface } = await import("node:readline");
     const stderr = createInterface({ input: child.stderr! })[Symbol.asyncIterator]();
     const stdout = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
