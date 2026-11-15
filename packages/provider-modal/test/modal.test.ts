@@ -3216,3 +3216,33 @@ test("connection probe uses only the active runtime and validates its receipt wi
   expect(f.creates).toBe(creates);
   expect(f.log).toEqual([]);
 });
+
+test("Modal distinguishes missing App authority from missing current disk and retained recovery image", async () => {
+  const missing = () => Object.assign(new Error("synthetic missing resource"), { name: "NotFoundError" });
+  const f = fixture();
+  const row = await runningFork(f);
+  const appLookup = f.client.apps.fromName;
+  f.client.apps.fromName = async () => {
+    throw missing();
+  };
+  await expect(f.provider.get(row.id)).rejects.toMatchObject({ code: "not_found" });
+  f.client.apps.fromName = appLookup;
+  const machineLookup = f.client.sandboxes.fromId;
+  f.client.sandboxes.fromId = async () => {
+    throw missing();
+  };
+  await expect(f.provider.get(row.id)).rejects.toMatchObject({ code: "sandbox_not_restorable" });
+  f.client.sandboxes.fromId = machineLookup;
+  await f.provider.stop({ sandboxId: row.id });
+  const stopped = await f.store.get(row.id);
+  expect(stopped.recoveryImageId).toBeDefined();
+  const creates = f.creates;
+  f.client.images.fromId = async () => {
+    throw missing();
+  };
+  await expect(f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "recall" })).rejects.toMatchObject({
+    code: "sandbox_not_restorable",
+  });
+  expect(f.creates).toBe(creates);
+  expect((await f.store.get(row.id)).recoveryImageId).toBe(stopped.recoveryImageId);
+});

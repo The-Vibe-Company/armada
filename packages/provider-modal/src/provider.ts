@@ -301,7 +301,19 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       if ((await sb.poll()) !== null)
         throw refusal("conflict", "Reconciled creation already terminated; manual recovery required.");
     } else if (row.phase === "reserved") {
-      const image = row.imageId ? await client.images.fromId(row.imageId) : await distribution.image(client);
+      const image = row.imageId
+        ? await client.images.fromId(row.imageId).catch((error) => {
+            if (
+              !row.golden &&
+              !row.commonRuntime &&
+              row.generation > 1 &&
+              row.imageId === row.recoveryImageId &&
+              modalError(error).code === "not_found"
+            )
+              throw refusal("sandbox_not_restorable", "The retained recovery image no longer exists.");
+            throw error;
+          })
+        : await distribution.image(client);
       row.phase = "creating";
       row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
       await save(row);
@@ -474,8 +486,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     if (row.golden && row.quiesced) throw refusal("sandbox_not_ready", "Sealed golden admission cannot be reopened.");
     if (row.phase === "stopped") {
       if (row.commonRuntime) throw refusal("invalid_request", "Enrolled Modal resume is not enabled.");
+      if (!row.recoveryImageId)
+        throw refusal("sandbox_not_restorable", "Stopped sandbox has no durable recovery image.");
       await options.beforeResume?.(provider, row.info.id);
-      if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
       row.generation++;
       row.quiesced = false;
       delete row.ordinaryStopAttempted;
@@ -494,7 +507,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     if (row.phase !== "active") throw refusal("sandbox_not_ready", "Sandbox lifecycle is not active.");
     if ((await (await physical(row)).poll()) !== null)
       throw refusal(
-        "sandbox_not_ready",
+        "sandbox_not_restorable",
         "Physical machine expired or exited; no verified checkpoint is available for current writes.",
       );
     return row;
@@ -983,7 +996,15 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       let exited = false;
       if (row.phase === "active" && !options.storedReads) {
         if (!row.physicalId) throw refusal("sandbox_not_ready", "No current physical machine.");
-        exited = (await (await client.sandboxes.fromId(row.physicalId)).poll()) !== null;
+        try {
+          exited = (await (await client.sandboxes.fromId(row.physicalId)).poll()) !== null;
+        } catch (error) {
+          // bound() has already established App authority. Only absence at the
+          // exact current machine lookup proves that its writable disk is gone.
+          if (!row.golden && modalError(error).code === "not_found")
+            throw refusal("sandbox_not_restorable", "The current physical machine no longer exists.");
+          throw error;
+        }
       }
       if (exited)
         return {

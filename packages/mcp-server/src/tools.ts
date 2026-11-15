@@ -1567,7 +1567,26 @@ export function createArmadaServer(context: ToolContext, version: string, option
         ? stored
         : resolveModelChoice(found.harness, { model: args.model, reasoningEffort: args.reasoning_effort }, stored);
     const conversation = args.conversation_id ?? found.conversationIds.at(-1);
-    const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
+    const notRestorable = () => {
+      const recovery = found.preservationNote?.match(/work_recovery:[0-9a-f-]+\/[0-9a-f-]+/i)?.[0];
+      return new ToolError(
+        "sandbox_not_restorable",
+        `Sandbox '${found.id}' is no longer restorable: its current disk/checkpoint is unavailable.${recovery ? ` Preserved work: ${recovery}. Use work_recovery to retrieve it.` : ""}`,
+      );
+    };
+    const recoveryFailure = (error: unknown): never => {
+      // Typed absence is conclusive. Authorization, outages and uncertain dispatch
+      // must retain their original classification and remain retryable.
+      if (
+        error instanceof ProviderError &&
+        (error.code === "sandbox_not_restorable" || (found.provider === "boat" && error.code === "not_found"))
+      )
+        throw notRestorable();
+      throw error;
+    };
+    const machine = await measure("send_state", () => provider.get(found.providerSandboxId)).catch(recoveryFailure);
+    if (machine.physicalExitConfirmed || machine.stopNote === "checkpoint_failed_disk_not_retained")
+      throw notRestorable();
     if (machine.state === "stopped" && found.stoppedAt === null) {
       await data.sandboxes.update(found.id, {
         status: "stopped",
@@ -1603,7 +1622,18 @@ export function createArmadaServer(context: ToolContext, version: string, option
               ...(conversation ? { conversationId: conversation } : {}),
               ...(choice ?? {}),
             })
-            .catch(unknownMutationOutcome),
+            .catch(unknownMutationOutcome)
+            .catch(async (error) => {
+              if (error instanceof ProviderError && error.code === "sandbox_not_restorable") throw notRestorable();
+              if (error instanceof ProviderError && error.code === "not_found") {
+                // A missing conversation is not proof of a missing disk. Confirm
+                // resource loss independently before closing recovery.
+                const current = await provider.get(found.providerSandboxId).catch(recoveryFailure);
+                if (current.physicalExitConfirmed || current.stopNote === "checkpoint_failed_disk_not_retained")
+                  throw notRestorable();
+              }
+              throw error;
+            }),
         );
         acknowledged = true;
         try {
