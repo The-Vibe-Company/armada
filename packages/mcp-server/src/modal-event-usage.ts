@@ -1,6 +1,7 @@
 import { type AgentEvent, type MemberRole, reportedTurnUsage, type Sql } from "@armada/core";
 import { type Scope, scopeKey } from "@armada/provider-modal";
 import { createSqlData } from "./data.ts";
+import { runtimeTransaction } from "./runtime-enrolment.ts";
 
 /** Tunnel and dial-out events use the same native-counter extraction and persisted usage recorder.
  * Called under the authenticated Modal generation/archive transaction, never from a status read. */
@@ -36,8 +37,7 @@ export async function projectModalEventUsage(
     ).rows[0]?.count ?? "0",
   );
   // Preserve transaction-aware pricing; do not take recordUsage's query-only legacy fallback.
-  const local: Sql = { ...tx, query: tx.query.bind(tx), transaction: async (work) => work(tx) };
-  const store = createSqlData(local)({
+  const store = createSqlData(runtimeTransaction(tx))({
     userId: scope.userId,
     orgs: [{ orgId: scope.orgId, role: target.role }],
     via: "service",
