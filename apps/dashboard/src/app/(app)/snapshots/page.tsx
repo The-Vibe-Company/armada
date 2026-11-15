@@ -36,6 +36,7 @@ import { SizeDefaults } from "@/components/size-defaults";
 import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { isUuid } from "@/lib/action";
 import {
   CAPABILITIES_TIMEOUT_MS,
@@ -599,7 +600,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
   const membership = context.orgs.get(golden.org_id);
   const isAdmin = membership?.role === "admin";
   const row = goldenRowState(golden, context.all, { id: context.viewerId, isAdmin });
-  const label = PROVIDER_LABELS[golden.provider];
+  const label = `${PROVIDER_LABELS[golden.provider]} cloud`;
   const canStart = context.connected?.includes(golden.provider) ?? false;
   const readiness = goldenLaunchReadiness({
     provider: golden.provider,
@@ -620,7 +621,13 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
   const sizing = goldenSizing(golden, directories);
   const owner = displayUser(context.directory, golden.owner_id, context.viewerId);
   const age = relativeAge(golden.created_at, now);
-  const meta = [label, owner === "You" ? "yours" : `by ${owner}`, age].filter(Boolean).join(" · ");
+  const meta = [
+    label,
+    golden.visibility === "private" ? "only you" : (membership?.org.name ?? "Organization"),
+    age ? `created ${age}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const twinLabel = `${golden.name} on ${label}`;
 
   const buildWarnings = (golden.build_warnings ?? []).flatMap((warning) => {
@@ -660,13 +667,13 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
         {...(sizing.kind === "ready" ? { sizing: { policy: sizing.policy } } : {})}
       />
     ) : state.action === "snapshot" ? (
-      <SelectItem item={golden.id} size="sm" aria-label={`Snapshot ${twinLabel}`}>
-        Snapshot
+      <SelectItem item={golden.id} size="sm" aria-label={`Build ${twinLabel}`}>
+        Build
       </SelectItem>
     ) : state.action === "connect" ? (
       <Button variant="outline" size="sm" asChild>
         <Link href={CLOUD_PROVIDERS_PATH} aria-label={`Connect ${label} to launch ${golden.name}`}>
-          Connect {label}
+          Connect {PROVIDER_LABELS[golden.provider]}
         </Link>
       </Button>
     ) : null;
@@ -684,7 +691,6 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
           <AlertTitle>{warning.label}</AlertTitle>
           <AlertDescription>
             <p>{warning.message}</p>
-            <code className="text-xs">{warning.reason}</code>
           </AlertDescription>
         </Alert>
       ))}
@@ -713,13 +719,13 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
         )}
       </PanelSection>
       {goldenInit(golden.config).length > 0 && (
-        <PanelSection title="Init commands">
+        <PanelSection title="Setup commands">
           <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs">
             {goldenInit(golden.config).join("\n")}
           </pre>
         </PanelSection>
       )}
-      <PanelSection title="Details">
+      <IdentifierDetails>
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
           <dt className="text-muted-foreground">Snapshot</dt>
           <dd className="flex min-w-0 items-center gap-1">
@@ -741,7 +747,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
           <dt className="text-muted-foreground">Owner</dt>
           <dd>{owner}</dd>
         </dl>
-      </PanelSection>
+      </IdentifierDetails>
       {sizing.kind !== "unsupported" && context.serverReady && membership && (
         <PanelSection title="Machine size">
           <SizeDefaults
@@ -931,14 +937,17 @@ function dockerSnapshotRow(
         accounts={context.accounts}
       />
     ) : null;
-  const meta = `Built on ${snapshot.builtOnVersion ?? "unknown version"} · Docker · ${snapshot.hostName ?? snapshot.hostId}`;
+  const organization = context.orgs.get(snapshot.orgId)?.org.name ?? "Organization";
+  const age = relativeAge(snapshot.createdAt, Date.now());
+  const scope = snapshot.visibility === "private" ? "only you" : organization;
+  const meta = `${snapshot.hostName ?? "Your server"} · your own server · ${scope}`;
+  const repoSummary = snapshot.config.repos.map((repo) => repo.dir).join(", ") || "No repository";
   const repos = snapshot.config.repos;
   const detailText =
     snapshot.status === "building"
       ? "Repositories and setup are building on this host. Closing this panel does not stop the build."
       : snapshot.status === "failed"
-        ? (snapshot.failureReason ??
-          "The build did not publish a snapshot. Check the config and host, then create a new build.")
+        ? (snapshot.failureReason ?? "The build did not publish a snapshot.")
         : !snapshot.hostAvailable
           ? "Bring the original registered host online. Snapshots are local to its installation; they are not copied to other hosts."
           : !launchEnabled
@@ -969,10 +978,19 @@ function dockerSnapshotRow(
     ),
     meta,
     subtitle: meta,
-    state: <StateCell tone={state.tone} label={state.label} detail={detailText} />,
+    state: (
+      <div className="space-y-1">
+        <StateCell tone={state.tone} label={state.label} />
+        {snapshot.status === "failed" && <p className="text-xs text-muted-foreground">{detailText}</p>}
+        {canRebuild && (
+          <p className="text-xs text-muted-foreground">A newer Armada version is available. Open it to rebuild.</p>
+        )}
+      </div>
+    ),
     fact: (
-      <span className="font-mono text-xs">
-        {repos.length} {repos.length === 1 ? "repository" : "repositories"}
+      <span className="text-xs text-muted-foreground">
+        {repoSummary}
+        {snapshot.status === "ready" && age ? ` · built ${age}` : ""}
       </span>
     ),
     action,
@@ -980,6 +998,12 @@ function dockerSnapshotRow(
       <div className="space-y-4">
         <StateCell tone={state.tone} label={state.label} />
         <p className="text-sm text-muted-foreground">{detailText}</p>
+        {snapshot.status === "failed" && (
+          <p className="text-sm text-muted-foreground">
+            Check this server and the build configuration, then use New snapshot to create a new build. This failed
+            snapshot cannot be rebuilt.
+          </p>
+        )}
         {action}
         {canRebuild && currentVersion && (
           <PanelSection title="New Armada version available">
@@ -1006,8 +1030,14 @@ function dockerSnapshotRow(
             ))}
           </ul>
         </PanelSection>
-        <PanelSection title="Snapshot">
-          <p className="font-mono text-xs break-all">{snapshot.id}</p>
+        {snapshot.config.init.length > 0 && (
+          <PanelSection title="Setup commands">
+            <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs">
+              {snapshot.config.init.join("\n")}
+            </pre>
+          </PanelSection>
+        )}
+        <PanelSection title="Visibility">
           <p className="text-sm text-muted-foreground">
             {snapshot.visibility === "private"
               ? "Only you may see and launch this snapshot."
@@ -1015,8 +1045,35 @@ function dockerSnapshotRow(
             Visibility and host are fixed when built.
           </p>
         </PanelSection>
+        <IdentifierDetails>
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
+            <dt>Snapshot</dt>
+            <dd className="break-all font-mono">{snapshot.id}</dd>
+            <dt>Host</dt>
+            <dd className="break-all font-mono">{snapshot.hostId}</dd>
+            <dt>Armada version</dt>
+            <dd>{snapshot.builtOnVersion ?? "Unknown"}</dd>
+          </dl>
+        </IdentifierDetails>
       </div>
     ),
     attrs: { "data-golden": snapshot.name, "data-golden-provider": "docker" },
   };
+}
+
+/** Keep machine identifiers out of the normal reading path, with an aligned ghost disclosure. */
+function IdentifierDetails({ children }: { children: import("react").ReactNode }) {
+  return (
+    <Collapsible className="border-t pt-4">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-xs font-medium text-muted-foreground">Technical details</h3>
+        <CollapsibleTrigger asChild>
+          <Button variant="ghost" size="sm">
+            Show identifiers
+          </Button>
+        </CollapsibleTrigger>
+      </div>
+      <CollapsibleContent className="pt-3">{children}</CollapsibleContent>
+    </Collapsible>
+  );
 }
