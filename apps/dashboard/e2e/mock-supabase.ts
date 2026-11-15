@@ -534,6 +534,7 @@ let vaultActionFailure: { status: number; code?: string; message: string } | nul
 let invitationListFailure: string | null = null;
 let invitationActionFailure: string | null = null;
 let snapshotListFailure: string | null = null;
+let dockerSnapshotCreateFailure: string | null = null;
 let templateListFailure: { unsupported: boolean; message: string } | null = null;
 let vaultListFailure: { unsupported: boolean; message: string } | null = null;
 let accountListFailure: string | null = null;
@@ -2797,6 +2798,8 @@ function control(url: URL, body: Row): Response {
     invitationListFailure = typeof body.invitationListFailure === "string" ? body.invitationListFailure : null;
     invitationActionFailure = null;
     snapshotListFailure = typeof body.snapshotListFailure === "string" ? body.snapshotListFailure : null;
+    dockerSnapshotCreateFailure =
+      typeof body.dockerSnapshotCreateFailure === "string" ? body.dockerSnapshotCreateFailure : null;
     if (body.emptyGoldens) state.goldens = [];
     // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
     if (body.missingTemplateRevision)
@@ -3416,6 +3419,12 @@ const server = Bun.serve({
           return controlFail(403, "forbidden", "Only organization members can list hosts.");
         return json({ placement: true, hosts: dockerHosts });
       }
+      if (route === "docker/snapshots/create" && dockerSnapshotCreateFailure) {
+        const caller = viewer(request);
+        if (!caller || !isMember(body.org, caller))
+          return controlFail(403, "forbidden", "Only organization members can build snapshots.");
+        return controlFail(503, "unavailable", dockerSnapshotCreateFailure);
+      }
       if (route === "docker/snapshots/list" && dockerHosts !== null) {
         const caller = viewer(request);
         if (!caller || !isMember(body.org, caller))
@@ -3429,9 +3438,17 @@ const server = Bun.serve({
             {
               id: "docker",
               enabled: true,
-              launchSources: ["image"],
+              launchSources: dockerSnapshotCreateFailure ? ["image", "golden"] : ["image"],
               harnesses: ["claude", "codex"],
-              capabilities: { launch: true, followupPrompts: true, stop: true, delete: true, status: true, logs: true },
+              capabilities: {
+                launch: true,
+                followupPrompts: true,
+                stop: true,
+                delete: true,
+                status: true,
+                logs: true,
+                ...(dockerSnapshotCreateFailure ? { goldens: true } : {}),
+              },
               unsupportedReasons: {},
             },
           ],
