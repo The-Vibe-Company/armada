@@ -1,4 +1,11 @@
-import { HOST_CAPABILITIES, isSandboxProvider, type Provider, ProviderError, type Sql } from "@armada/core/server";
+import {
+  HOST_CAPABILITIES,
+  isSandboxProvider,
+  type Provider,
+  ProviderError,
+  type Sql,
+  VaultError,
+} from "@armada/core/server";
 
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
@@ -76,7 +83,30 @@ export function createSandboxLifecycle(
         )
       ).rows[0];
       if (!row) return false;
+      // Only an already-requested stop may enter operator custody. This is not
+      // provider authority: the worker never substitutes credentials or allocates.
+      const operatorStop = row.status === "stopping" && row.stop_requested_at !== null;
+      const deferToOperator = async (reason: string) => {
+        await sql.query(
+          `update public.sandboxes set lifecycle_error=$4,
+            reconcile_after='infinity'::timestamptz,reconcile_lease=null,reconcile_lease_until=null
+          where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
+            and status='stopping' and stop_requested_at is not null
+            and reconcile_lease_until>clock_timestamp()
+            and (activity_until is null or activity_until<now())`,
+          [
+            row.id,
+            token,
+            row.lifecycle_generation,
+            `Operator cleanup required: ${reason} Physical outcome unknown; retained identity unchanged. Follow docs/stopping-authority-loss.md.`,
+          ],
+        );
+      };
       if (!row.owner_is_member) {
+        if (operatorStop) {
+          await deferToOperator("owner membership removed.");
+          return true;
+        }
         // Missing membership grants no worker management authority. Report the orphan
         // without resolving credentials, observing the machine or changing its status.
         await sql.query(
@@ -221,6 +251,14 @@ export function createSandboxLifecycle(
         if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
           error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
+        const authorityLost =
+          (caught instanceof VaultError &&
+            ["missing_credential", "forbidden", "not_found", "credential_refused"].includes(caught.code)) ||
+          (caught instanceof ProviderError && ["unauthorized", "forbidden"].includes(caught.code));
+        if (authorityLost && operatorStop && !signal?.aborted) {
+          await deferToOperator("original provider authority unavailable.");
+          return true;
+        }
         // A definitive absence for the exact registered identity is terminal.
         // Never infer absence from transport errors or discover resources by name.
         if (resolved && caught instanceof ProviderError && caught.code === "not_found") terminal = true;
