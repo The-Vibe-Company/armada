@@ -16,7 +16,7 @@ import { audience, canManage, itemKey, type VaultItem, vaultState } from "@/lib/
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
 const TITLE = "Variables";
-const DESCRIPTION = "Configuration and write-only secrets for your agents.";
+const DESCRIPTION = "Values handed to the agent in the sandbox, as environment variables.";
 
 export default async function VariablesContent({ searchParams }: Props) {
   // Template usage is independent of the resource list. Settle speculative failures so
@@ -104,7 +104,7 @@ export default async function VariablesContent({ searchParams }: Props) {
       title={TITLE}
       description={DESCRIPTION}
       meta={rows.length > 0 ? rows.length : undefined}
-      label="Variables and secrets"
+      label="Settings and secrets"
       rows={rows}
       blockers={[]}
       initial={requested}
@@ -112,16 +112,15 @@ export default async function VariablesContent({ searchParams }: Props) {
       footer={
         <p className="text-xs text-pretty text-muted-foreground">
           Personal entries are visible only to you in Armada. Org entries are shared with every member of {orgName};{" "}
-          {isAdmin ? "you manage them." : "only an admin changes them."} Variables are readable configuration, not
-          secrets. Stored secret values cannot be read back from this page. Bind entries through templates on supported
-          sandboxes. Delivered values can be inspected by people or agents with access to the sandbox; changing or
-          revoking an entry does not erase copies already delivered.
+          {isAdmin ? "you manage them." : "only an admin changes them."} Settings are readable configuration, not
+          secrets. Stored secret values cannot be read back from this page. Attach entries to a template. Revoke stops
+          handing a value out; Delete removes the entry. Delivered values can be inspected by people or agents with
+          access to the sandbox; changing or revoking an entry does not erase copies already delivered.
         </p>
       }
       empty={
-        <Empty title="No variables or secrets yet" icon={<VariableIcon />}>
-          Choose Add to store readable configuration or a write-only secret, then bind it through a template on a
-          supported sandbox.
+        <Empty title="No settings or secrets yet" icon={<VariableIcon />}>
+          Add a setting or a secret, then attach it to a template.
         </Empty>
       }
     />
@@ -137,13 +136,13 @@ function row(
   templates: TemplateList,
 ): ResourceRow & { bucket: Bucket; tie: string } {
   const state = vaultState(item);
-  const meta = `${item.kind === "secret" ? "Write-only secret" : "Variable"} · version ${item.version}`;
+  const meta = item.kind === "secret" ? "Secret · never shown again" : "Setting · anyone who can use it can read it";
   return {
     key: itemKey(item),
     name: item.name,
     tie: item.kind,
     bucket: state.bucket,
-    search: [item.name, item.kind, item.scope, item.status].join(" "),
+    search: [item.name, item.kind, item.kind === "variable" ? "setting" : "secret", item.scope, item.status].join(" "),
     mark: <VaultMark kind={item.kind} />,
     tags: (
       <RowTag>

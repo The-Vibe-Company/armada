@@ -68,7 +68,7 @@ export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, 
     <>
       <PageHeader title={title} description={description}>
         <CreateDialog
-          label="Add key"
+          label="Add a key"
           title="Add a Skillpack key"
           description="Armada uses it to install private skills in the sandboxes it launches."
           open={open}
@@ -112,9 +112,9 @@ export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, 
           ))}
         </ul>
         <p className="max-w-3xl text-xs text-pretty text-muted-foreground">
-          Your key is used first; the organization's serves members without one. If your key is refused, Armada does not
-          fall back to the organization's. Without a key, only public skills install. A key is write-only: once stored,
-          nobody can read it back.
+          You pick skills in a template or at launch, not here. Your key is used first; the organization's serves
+          members without one. If your key is refused, Armada does not fall back to the organization's. Without a key,
+          only public skills install. Once a key is stored, nobody can read it back.
         </p>
       </div>
     </>
@@ -136,7 +136,7 @@ function KeyRow({
   canManage: boolean;
   onSet: (from: HTMLElement) => void;
 }) {
-  const name = scope === "user" ? "Your key" : `${orgName} key`;
+  const name = scope === "user" ? "Your Skillpack key" : "The organization’s key";
   const state = !stored
     ? { tone: "neutral" as const, label: "Not set" }
     : stored.usable
@@ -170,8 +170,10 @@ function KeyRow({
               </>
             ) : stored ? (
               "Value hidden"
+            ) : scope === "user" ? (
+              "Gives agents your private skills. Used before the organization’s."
             ) : (
-              "No key stored"
+              "For members without a key of their own."
             )}
           </p>
         </div>
