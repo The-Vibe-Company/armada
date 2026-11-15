@@ -17,6 +17,7 @@ import { createBoatProvider } from "@armada/provider-boat";
 import { databasePoolMax } from "./config.ts";
 import type { ConfiguredControlOptions } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
+import { createSqlCredentialList } from "./credential-list-sql.ts";
 import { createSqlData } from "./data.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { providerRegistry } from "./http.ts";
@@ -139,6 +140,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     github: { app: githubApp },
     store,
     listGoldenRecords: createSqlGoldenList(sql, store),
+    listCredentialMetadata: createSqlCredentialList(sql, store),
     scopedSandboxData: (caller, orgId) => createSqlData(sql, orgId)(caller),
     modelAuth,
     providerFor,
