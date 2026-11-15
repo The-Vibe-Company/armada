@@ -1,5 +1,17 @@
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
+  "template delete": `Usage: armada template delete NAME|ID --expected-revision N [--org NAME|UUID] [--json]
+Mark a launch template deleted; this command is not sandbox deletion.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+An organization-scoped template requires administrator permission.
+Names must match exactly and identify one active template. Use an ID from template list
+when names collide across scopes.
+--expected-revision is required and must be a positive integer. Copy the current revision
+from template get or template list; a stale revision is refused, not retried automatically.
+On a conflict, inspect the template again before deciding whether to delete the newer revision.
+Human output shows template metadata and deleted status; --json emits the API response with item.
+Example: armada template delete TEMPLATE_UUID --expected-revision 2 --org ORG_UUID --json
+`,
   "template list": `Usage: armada template list [--org NAME|UUID] [--json]
 List visible launch-template metadata: IDs, names, scope, status and current revision.
 Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
