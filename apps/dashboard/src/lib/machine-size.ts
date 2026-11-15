@@ -33,18 +33,18 @@ function gib(mib: number): string {
   return `${Number((mib / 1024).toFixed(1))} GiB`;
 }
 
-function cores(count: number): string {
-  return `${count} physical ${count === 1 ? "core" : "cores"}`;
+function cpuLabel({ vcpus, cpuPhysicalCores: count }: ReturnType<typeof machineCapacity>): string {
+  return count === null ? `${vcpus} vCPU` : `${count} physical ${count === 1 ? "core" : "cores"}`;
 }
 
 /** One line of what a size asks the provider for, in that provider's units. */
 export function sizeSpec(provider: SandboxProviderId, size: MachineSize): string {
   const capacity = machineCapacity(provider, size);
-  if (provider === "modal") {
+  if (capacity.cpuPhysicalCores !== null) {
     // A Modal physical core is two vCPU. "Capped" only when the contract sets the limits equal to the request.
     const capped =
       capacity.cpuLimitPhysicalCores === capacity.cpuPhysicalCores && capacity.memoryLimitMiB === capacity.memoryMiB;
-    return `${cores(capacity.cpuPhysicalCores ?? capacity.vcpus / 2)} (${capacity.vcpus} vCPU) · ${gib(capacity.memoryMiB)}${capped ? ", capped" : ""}`;
+    return `${cpuLabel(capacity)} (${capacity.vcpus} vCPU) · ${gib(capacity.memoryMiB)}${capped ? ", capped" : ""}`;
   }
   return `${capacity.vcpus} vCPU · ${gib(capacity.memoryMiB)} · ${MACHINE_SIZE_CATALOG[size].boatDiskGB} GB disk`;
 }
@@ -52,8 +52,7 @@ export function sizeSpec(provider: SandboxProviderId, size: MachineSize): string
 /** An option of the size select, short enough for a phone: CPU in the provider's unit and memory. The hint has the rest. */
 export function sizeOptionLabel(provider: SandboxProviderId, size: MachineSize): string {
   const capacity = machineCapacity(provider, size);
-  const cpu = provider === "modal" ? cores(capacity.cpuPhysicalCores ?? capacity.vcpus / 2) : `${capacity.vcpus} vCPU`;
-  return `${MACHINE_SIZE_LABELS[size]} · ${cpu} · ${gib(capacity.memoryMiB)}`;
+  return `${MACHINE_SIZE_LABELS[size]} · ${cpuLabel(capacity)} · ${gib(capacity.memoryMiB)}`;
 }
 
 export function sizeOptions(provider: SandboxProviderId): { value: MachineSize; label: string }[] {
