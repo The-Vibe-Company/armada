@@ -1,5 +1,39 @@
 # Changelog
 
+## [2.38.0](https://github.com/The-Vibe-Company/armada/compare/v2.37.0...v2.38.0) (2026-11-15)
+
+
+### Features
+
+* **smoke:** prove installed skills after resume ([#1984](https://github.com/The-Vibe-Company/armada/issues/1984)) ([30c9cb4](https://github.com/The-Vibe-Company/armada/commit/30c9cb4a50b696d2cc400c047e4584aa20da1e80))
+
+
+### Bug Fixes
+
+* **cli:** clarify resource advice help ([#1968](https://github.com/The-Vibe-Company/armada/issues/1968)) ([d3e1a75](https://github.com/The-Vibe-Company/armada/commit/d3e1a75e17b782bddafc05ed368255e18a0bfb27))
+* **cli:** clarify snapshot retirement help ([#1975](https://github.com/The-Vibe-Company/armada/issues/1975)) ([f9a21bf](https://github.com/The-Vibe-Company/armada/commit/f9a21bfeb4f3e5cf5a6a274a54c7c9ba2694cffc))
+* **cli:** clarify task report command help ([#1972](https://github.com/The-Vibe-Company/armada/issues/1972)) ([12f80ca](https://github.com/The-Vibe-Company/armada/commit/12f80caad9f935e5b7ff3410d7025e7feb86292b))
+* **cli:** preserve literal routine arguments when detecting help ([#1982](https://github.com/The-Vibe-Company/armada/issues/1982)) ([6ae534a](https://github.com/The-Vibe-Company/armada/commit/6ae534a9946b95760e87e79092bb9c32a7fc931b))
+* **cli:** preserve literal template arguments when detecting help ([#1978](https://github.com/The-Vibe-Company/armada/issues/1978)) ([7861681](https://github.com/The-Vibe-Company/armada/commit/7861681b503b299f253b284ce9224bd77e08144c))
+* **cli:** respect vault argument boundaries for long help ([#1986](https://github.com/The-Vibe-Company/armada/issues/1986)) ([3f7f0d7](https://github.com/The-Vibe-Company/armada/commit/3f7f0d70f8bbcf0d821e11f00c25ec64be4e5825))
+* **cli:** support short skill help at command boundaries ([#1988](https://github.com/The-Vibe-Company/armada/issues/1988)) ([74c199a](https://github.com/The-Vibe-Company/armada/commit/74c199a63d2dcf842c46785b175cead79b058072))
+* **dashboard:** clarify provider action failures and uncertain replacements ([#1973](https://github.com/The-Vibe-Company/armada/issues/1973)) ([4aace1f](https://github.com/The-Vibe-Company/armada/commit/4aace1fb6c30cc276fe97fc40548717e85f660ca))
+* **dashboard:** clarify unconfirmed sandbox account changes ([#1987](https://github.com/The-Vibe-Company/armada/issues/1987)) ([f61aef4](https://github.com/The-Vibe-Company/armada/commit/f61aef48c0ee00d8309f11d280cc79ee54ec1c3c))
+* **dashboard:** contain skill discovery diagnostics in launch picker ([#1985](https://github.com/The-Vibe-Company/armada/issues/1985)) ([5f5dea8](https://github.com/The-Vibe-Company/armada/commit/5f5dea84748807d17ea93f8881fa79a32600813f))
+* **dashboard:** curate model account action errors ([#1971](https://github.com/The-Vibe-Company/armada/issues/1971)) ([f8db9f6](https://github.com/The-Vibe-Company/armada/commit/f8db9f6bea631e7f41004e49ce53709c8b0c55b0))
+* **dashboard:** curate snapshot API action errors ([#1981](https://github.com/The-Vibe-Company/armada/issues/1981)) ([469c2a3](https://github.com/The-Vibe-Company/armada/commit/469c2a36e4b265a8fc814c6abf46e879486e2656))
+* **dashboard:** curate snapshot launch refusal guidance ([#1974](https://github.com/The-Vibe-Company/armada/issues/1974)) ([206d53e](https://github.com/The-Vibe-Company/armada/commit/206d53e42301b0890c7f2c4119e395964a4758fc))
+* **dashboard:** curate tool action and connection diagnostics ([#1967](https://github.com/The-Vibe-Company/armada/issues/1967)) ([60bf771](https://github.com/The-Vibe-Company/armada/commit/60bf77172f60cafb69e00276271640e977d76e9a))
+* **dashboard:** guide recovery from host action failures ([#1970](https://github.com/The-Vibe-Company/armada/issues/1970)) ([32a8ea8](https://github.com/The-Vibe-Company/armada/commit/32a8ea82c487c26c00e52504cbbe7359c54f879e))
+* **dashboard:** make snapshot build status readable and recoverable ([#1979](https://github.com/The-Vibe-Company/armada/issues/1979)) ([c38da1c](https://github.com/The-Vibe-Company/armada/commit/c38da1c63486c531f6249b7530260b7196d14cdc))
+* **routines:** isolate scheduling from stalled provider effects ([#1980](https://github.com/The-Vibe-Company/armada/issues/1980)) ([7a3a743](https://github.com/The-Vibe-Company/armada/commit/7a3a743b9ef15bfd0a62a7767267bb0a04a54da7))
+
+
+### Performance Improvements
+
+* **server:** expose bounded per-statement response timings ([#1977](https://github.com/The-Vibe-Company/armada/issues/1977)) ([927ff32](https://github.com/The-Vibe-Company/armada/commit/927ff32ed9cc2f24cb11342186603e72d81680f6))
+* **server:** list goldens with one statement after auth ([#1983](https://github.com/The-Vibe-Company/armada/issues/1983)) ([312bd8c](https://github.com/The-Vibe-Company/armada/commit/312bd8c79bca9cb17401e9d71b8524431bf6ef5c))
+
 ## [2.37.0](https://github.com/The-Vibe-Company/armada/compare/v2.36.0...v2.37.0) (2026-11-14)
 
 
