@@ -271,8 +271,10 @@ export function LaunchLocation({
   idleDelaySeconds,
   starts,
   onStart,
+  lockedStart = false,
 }: {
   provider: SandboxPlacementProviderId;
+  lockedStart?: boolean;
   start: string;
   repositories?: readonly string[];
   project?: string;
@@ -290,6 +292,7 @@ export function LaunchLocation({
         <span className="max-sm:hidden">It starts from </span>
         <span className="whitespace-nowrap max-sm:block">
           <LaunchChoice
+            disabled={lockedStart}
             label="Starts from"
             value={start}
             options={starts ?? [{ value: start, label: start }]}

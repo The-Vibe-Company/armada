@@ -54,7 +54,12 @@ export function launchTarget(
     revision: item.revision.revision,
     definition,
     ...(lookups.accounts ? { accounts: lookups.accounts } : {}),
-    goldenName: definition.provider === "docker" ? definition.hostId : (golden?.name ?? null),
+    goldenName:
+      definition.provider === "docker"
+        ? `${lookups.snapshots?.find((row) => row.id === definition.snapshotId && row.hostId === definition.hostId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official image")} · ${lookups.hosts?.find((row) => row.id === definition.hostId)?.name ?? "Your own server"}`
+        : golden
+          ? `${golden.name} · ${definition.provider === "boat" ? "Boat" : "Modal"} cloud`
+          : null,
     repositories,
     ...(sizing?.kind === "ready" ? { sizing: { policy: sizing.policy } } : {}),
     tools: definition.connections.map(

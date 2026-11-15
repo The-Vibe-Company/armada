@@ -4,6 +4,8 @@ import { mcpUrl } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
 import type { TemplateItem, TemplateLookups } from "@/lib/templates";
 import { type ConnectionList, listSelectedConnections } from "./connections";
+import { readSelectedDockerHosts } from "./docker-hosts";
+import { readSelectedDockerSnapshots } from "./docker-snapshots";
 import { listGoldens } from "./goldens";
 import { selectedOrganization } from "./selected-org";
 import { listSelectedVault, type VaultList } from "./variables";
@@ -62,12 +64,18 @@ export async function listSelectedTemplates(): Promise<TemplateList> {
  * the server could not give is null, so nothing is judged from it.
  */
 export async function templateLookups(): Promise<TemplateLookups> {
-  const [goldens, connections, vault] = await Promise.all([
+  const [goldens, connections, vault, hosts, snapshots] = await Promise.all([
     createClient().then(listGoldens),
     listSelectedConnections(),
     listSelectedVault(),
+    readSelectedDockerHosts(),
+    readSelectedDockerSnapshots(),
   ]);
-  return lookupsFrom(goldens, connections, vault);
+  return {
+    ...lookupsFrom(goldens, connections, vault),
+    hosts: hosts.state === "ready" ? hosts.list.hosts : [],
+    snapshots: snapshots.state === "ready" ? snapshots.snapshots : [],
+  };
 }
 
 export function lookupsFrom(

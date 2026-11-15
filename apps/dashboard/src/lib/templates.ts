@@ -138,6 +138,8 @@ export function parseRevision(value: unknown): TemplateRevision | null {
 
 /** What a template refers to, as the viewer sees it now. A list that could not be read is null: nothing is judged. */
 export type TemplateLookups = {
+  hosts?: readonly { id: string; name: string | null }[];
+  snapshots?: readonly { id: string; name: string; hostId: string; visibility: string; status: string }[];
   accounts?: LaunchAccounts;
   goldens: readonly {
     id: string;
@@ -188,7 +190,7 @@ export function templateProblems(definition: TemplateDefinition, lookups: Templa
       else if (variable.version !== binding.version)
         problems.push({
           kind: "variable",
-          text: `${variable.name} changed since this revision: publish a new revision to use its new value.`,
+          text: `${variable.name} changed since this version: save a new version to use its new value.`,
         });
     }
   if (lookups.secrets)
@@ -197,10 +199,10 @@ export function templateProblems(definition: TemplateDefinition, lookups: Templa
       if (!secret || secret.status !== "active" || (secret.expiresAt && Date.parse(secret.expiresAt) <= Date.now()))
         problems.push({
           kind: "secret",
-          text: `${binding.key} is expired, revoked, removed or inaccessible. Publish a new revision.`,
+          text: `${binding.key} is expired, revoked, removed or inaccessible. Save a new version.`,
         });
       else if (secret.version !== binding.version)
-        problems.push({ kind: "secret", text: `${binding.key} changed since this revision: publish a new revision.` });
+        problems.push({ kind: "secret", text: `${binding.key} changed since this version: save a new version.` });
     }
   return problems.filter(
     (problem, index) =>
@@ -262,6 +264,7 @@ export type TemplateFormFields = {
   name: string;
   scope: string;
   goldenId: string;
+  placement?: string;
   harness: string;
   connections: readonly string[];
   variables: readonly string[];
@@ -294,10 +297,25 @@ export function templateRequest(
   if (fields.scope !== "personal" && fields.scope !== "org") return { ok: false, error: "Choose who can use it." };
   const scope = fields.scope;
   const golden = lookups.goldens.find((row) => row.id === fields.goldenId);
-  if (!golden) return { ok: false, error: "Choose a snapshot." };
-  if (!golden.ready) return { ok: false, error: `${golden.name} has no snapshot yet: snapshot it first.` };
-  if (scope === "org" && golden.visibility !== "org")
-    return { ok: false, error: `${golden.name} is private: an organization template needs a shared snapshot.` };
+  let placement: Record<string, unknown>;
+  if (fields.placement) {
+    const [hostId, snapshotId, extra] = fields.placement.split(":");
+    const host = lookups.hosts?.find((row) => row.id === hostId);
+    const snapshot = snapshotId
+      ? lookups.snapshots?.find((row) => row.id === snapshotId && row.hostId === hostId)
+      : null;
+    if (extra !== undefined || !host || (snapshotId && !snapshot))
+      return { ok: false, error: "Choose an available server and snapshot." };
+    if (snapshot && (snapshot.status !== "ready" || (scope === "org" && snapshot.visibility !== "org")))
+      return { ok: false, error: "Choose a ready snapshot shared with everyone who can use this template." };
+    placement = { provider: "docker", hostId, ...(snapshotId ? { snapshotId } : {}) };
+  } else {
+    if (!golden) return { ok: false, error: "Choose a snapshot." };
+    if (!golden.ready) return { ok: false, error: `${golden.name} has no snapshot yet: build it first.` };
+    if (scope === "org" && golden.visibility !== "org")
+      return { ok: false, error: `${golden.name} is private: an organization template needs a shared snapshot.` };
+    placement = { goldenId: golden.id, provider: golden.provider };
+  }
   const model = modelChoice(fields.harness, fields);
   if (!model.ok) return model;
   let modelAccount: TemplateDefinition["modelAccount"];
@@ -381,8 +399,7 @@ export function templateRequest(
       name,
       scope,
       definition: {
-        goldenId: golden.id,
-        provider: golden.provider,
+        ...placement,
         harness: model.args.harness,
         model: model.args.model,
         reasoningEffort: model.args.reasoningEffort,
@@ -405,39 +422,39 @@ export function unreadableSelections(
   lookups: Pick<TemplateLookups, "connections" | "variables" | "secrets">,
 ): string | null {
   if (previous.connections.length > 0 && !lookups.connections)
-    return "Tools could not be read, so this revision's tools would be lost. Refresh and try again.";
+    return "Tools could not be read, so this version's tools would be lost. Refresh and try again.";
   if (previous.secrets?.length && !lookups.secrets) return "Secrets could not be read. Refresh before publishing.";
   if (previous.variables.length > 0 && !lookups.variables)
-    return "Variables could not be read, so this revision's variables would be lost. Refresh and try again.";
+    return "Variables could not be read, so this version's variables would be lost. Refresh and try again.";
   return null;
 }
 
 /** Why a launch was refused, in words, from the server's value-free reason code. */
 const LAUNCH_REASONS: Record<string, string> = {
   environment_unavailable: "Its snapshot is no longer available or has not been built.",
-  environment_binding_changed: "Its snapshot moved to another Modal workspace. Publish a new revision.",
+  environment_binding_changed: "Its snapshot moved to another Modal workspace. Publish a new version.",
   environment_snapshot_unavailable: "Its saved snapshot was retired. Rebuild the snapshot and try again.",
   environment_admission_unavailable: "Its snapshot changed while launching. Try again.",
-  secret_unavailable: "A secret is expired, revoked or inaccessible. Publish a revision with an available secret.",
-  secret_version_changed: "A secret changed. Publish a new revision to use its current version.",
+  secret_unavailable: "A secret is expired, revoked or inaccessible. Publish a version with an available secret.",
+  secret_version_changed: "A secret changed. Publish a new version to use its current version.",
   secret_delivery_unavailable: "This provider cannot deliver secret environment values.",
-  variable_unavailable: "A variable it uses was revoked or deleted. Publish a new revision without it.",
-  variable_version_changed: "A variable it uses changed. Publish a new revision to use the new value.",
+  variable_unavailable: "A variable it uses was revoked or deleted. Publish a new version without it.",
+  variable_version_changed: "A variable it uses changed. Publish a new version to use the new value.",
   environment_limits_exceeded:
     "Template variables and secrets exceed the snapshot limits (64 entries, 8 KiB per value, 64 KiB total). Reduce the bindings.",
   variable_delivery_unavailable: "This provider cannot deliver variables yet.",
-  connection_unavailable: "A tool it uses is not connected. Reconnect it in Tools, or publish a revision without it.",
+  connection_unavailable: "A tool it uses is not connected. Reconnect it in Tools, or publish a version without it.",
   connection_version_changed: "A tool it uses was reconnected while launching. Try again.",
   credential_busy: "The model account is busy. Wait before trying again, or choose another account.",
   model_account_unavailable:
     "No usable model account is available for this agent in this organization. Add one in Account > Models or choose another agent.",
   model_account_ambiguous:
-    "Several model accounts can run this agent. Set a default in Account > Models or publish a revision with an explicit account binding.",
+    "Several model accounts can run this agent. Set a default in Account > Models or publish a version with an explicit pinned account.",
   model_account_refused:
-    "The selected model account is expired, revoked, changed or incompatible. Reconnect it in Account > Models or publish a revision with a usable account binding.",
+    "The selected model account is expired, revoked, changed or incompatible. Reconnect it in Account > Models or publish a version with a usable pinned account.",
   model_account_version_changed: "Its model account changed. Try again.",
   model_account_incompatible: "Its model account cannot run this agent.",
-  template_revision_changed: "A new revision was published while launching. Try again.",
+  template_revision_changed: "A new version was published while launching. Try again.",
   launch_unavailable: "The sandbox could not be started.",
 };
 
@@ -476,7 +493,7 @@ export function templateFailure(status: number | undefined, message: string, cod
         return "This launch is still being confirmed. Close the dialog and check Sandboxes before launching again.";
       if (message === "Template name or request key already exists.")
         return "A template with this name already exists for the same people. Choose another name.";
-      return "Someone published a newer revision since this page loaded. Refresh and try again.";
+      return "Someone published a newer version since this page loaded. Refresh and try again.";
     case 503:
       return "Templates are not available on this Armada server right now.";
     default:

@@ -76,6 +76,7 @@ async function request(data: FormData, scope: string, previous?: TemplateDefinit
       name: formString(data, "name"),
       scope,
       goldenId: formString(data, "golden"),
+      placement: formString(data, "placement"),
       harness: formString(data, "harness"),
       model: formString(data, "model"),
       otherModel: formString(data, "other_model"),
@@ -98,7 +99,7 @@ export async function createTemplate(_previous: ActionResult | null, data: FormD
     const parsed = await request(data, scope);
     if (!parsed.ok) return fail(parsed.error);
     const { item } = await templates.create({ org, ...parsed.value });
-    return done(`${item.name} is published (revision 1).`);
+    return done(`${item.name} is published (version 1).`);
   }, data);
 }
 
@@ -133,7 +134,7 @@ export async function publishTemplate(_previous: ActionResult | null, data: Form
         );
       throw error;
     }
-    return done(`${item.name}: revision ${item.currentRevision} is published.`);
+    return done(`${item.name}: version ${item.currentRevision} is published.`);
   }, data);
 }
 
