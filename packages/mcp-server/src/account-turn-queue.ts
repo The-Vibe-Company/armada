@@ -196,7 +196,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       const row = (
         await sql.query<Entry>(
           `select q.* from public.account_turn_queue q join public.members m on m.org_id=q.org_id and m.user_id=$2
-         where q.sandbox_id=$1 and q.owner_id=$2 and ($3::uuid is null and q.state in ('queued','dispatching') or q.request_id=$3::uuid)
+         where q.sandbox_id=$1 and q.owner_id=$2 and ($3::uuid is null or q.request_id=$3::uuid)
          order by q.sequence desc limit 1`,
           [
             sandboxId,
@@ -209,7 +209,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         return null;
       if (row.result_enc) {
         const result = JSON.parse(await decryptSecret(row.result_enc, key));
-        return { nativePromptId: result.promptId as string };
+        return { nativePromptId: result.promptId as string, ...(!promptId ? { publicPromptId: row.request_id } : {}) };
       }
       return {
         requestId: row.request_id,

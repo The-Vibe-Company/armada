@@ -72,6 +72,10 @@ test("full-account prompts persist, dispatch FIFO after a turn settles, and queu
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
   expect(dispatched).toEqual(["first instruction"]);
+  expect(await queue.status(caller, ids[1]!)).toEqual({
+    nativePromptId: `actual_${requests[0]}`,
+    publicPromptId: requests[0]!,
+  });
   expect(await queue.status(caller, ids[1]!, requests[0])).toEqual({ nativePromptId: `actual_${requests[0]}` });
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
   await db.query("insert into runtime_idle_turns values($1,$2,true)", [ids[1], requests[0]]);
