@@ -395,7 +395,7 @@ export async function startServer(
     runtimeCommands,
     boatResume || modalResume
       ? (caller, sandbox) => {
-          const prepare = sandbox.provider === "modal" ? modalResume : boatResume;
+          const prepare = { boat: boatResume, modal: modalResume }[sandbox.provider];
           if (!prepare) throw new VaultError("unavailable", "Runtime resume policy unavailable.");
           return prepare(caller, sandbox);
         }
@@ -437,6 +437,7 @@ export async function startServer(
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
         })
       : undefined;
+  const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
   const control: ConfiguredControlOptions = {
     ...(dockerControls ? { dockerControls } : {}),
     ...(dockerLaunch ? { dockerLaunch } : {}),
@@ -510,9 +511,7 @@ export async function startServer(
       const sandbox = await scoped.sandboxes.get(sandboxId);
       if (!sandbox) throw new Error("No such sandbox.");
       return {
-        provider: await (sandbox.provider === "modal"
-          ? modal.storedProviderFor(sandbox, caller)
-          : providers.resolve(sandbox, caller)),
+        provider: await logProviders[sandbox.provider](sandbox, caller),
         providerSandboxId: sandbox.providerSandboxId,
       };
     },
