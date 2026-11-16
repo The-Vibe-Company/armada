@@ -400,6 +400,31 @@ async function counts(f: Fixture) {
   ).rows[0];
 }
 
+test("an initial actor epoch reserves a CLI-session Docker launch without weakening revocation", async () => {
+  const f = await fixture();
+  // Members present when MCP epochs were introduced were backfilled at zero.
+  await db.query("update public.mcp_actor_epochs set epoch=0 where org_id=$1 and user_id=$2", [
+    f.actor.orgId,
+    f.actor.userId,
+  ]);
+  const service = f.service(sql, true, 10_000, officialImage, true);
+  await service.launch(f.caller, f.body);
+  expect(
+    (
+      await db.query<{ actor_epoch: string }>(
+        "select actor_epoch::text from public.docker_launch_requests where sandbox_id=$1",
+        [f.body.requestId],
+      )
+    ).rows,
+  ).toEqual([{ actor_epoch: "0" }]);
+  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 1, commands: 0 });
+  await db.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [
+    f.actor.orgId,
+    f.actor.userId,
+  ]);
+  await rejected(service.launch(f.caller, f.body), "not_found");
+});
+
 test("normal launch drives create, bootstrap, health and one first prompt, seals its claim and replays current metadata", async () => {
   const f = await fixture();
   const result = await f.service().launch(f.caller, f.body);
