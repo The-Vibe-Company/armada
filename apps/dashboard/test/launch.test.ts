@@ -5,6 +5,7 @@ import {
   decodeLaunchAttempt,
   encodeLaunchAttempt,
   followLaunch,
+  followTemplateLaunch,
   LAUNCH_TIMEOUT_MS,
   launchFailureMessage,
   launchSandbox,
@@ -302,4 +303,40 @@ test("launch refusal guidance hides arbitrary diagnostics while retaining setup 
   expect(
     launchFailureMessage(new ControlError("This Armada server does not offer launching with machine sizes yet.", 404)),
   ).toContain("finish setup");
+});
+
+test("template confirmation recovers only the same request and follows an existing sandbox", async () => {
+  for (const exists of [true, false]) {
+    let calls = 0;
+    const result = await followTemplateLaunch({
+      key: "dashboard:11111111-1111-4111-8111-111111111111",
+      launch: async () => {
+        if (++calls === 1) throw new ControlError("Connection lost", undefined, undefined, { outcomeUnknown: true });
+        return { state: "reconciling", id: args.org };
+      },
+      exists: async (id) => {
+        expect(id).toBe(args.org);
+        return exists;
+      },
+    });
+    expect(calls).toBe(2);
+    expect(result).toMatchObject(exists ? { state: "started", id: args.org } : { state: "unknown" });
+  }
+});
+
+test("a template replay's confirmed refusal is not reported as still pending", async () => {
+  let calls = 0;
+  await expect(
+    followTemplateLaunch({
+      key: "dashboard:11111111-1111-4111-8111-111111111111",
+      launch: async () => {
+        if (++calls === 1) throw new ControlError("Connection lost", undefined, undefined, { outcomeUnknown: true });
+        return { state: "failed", reason: "launch_unavailable" };
+      },
+      exists: async () => {
+        throw new Error("A refusal needs no sandbox lookup.");
+      },
+    }),
+  ).rejects.toMatchObject({ status: 400, code: "launch_unavailable" });
+  expect(calls).toBe(2);
 });

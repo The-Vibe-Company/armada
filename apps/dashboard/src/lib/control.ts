@@ -77,6 +77,9 @@ type Options = {
  */
 export const CONTROL_TIMEOUT_MS = 10_000;
 
+/** Launches perform provider allocation and first-prompt preparation inside the request. */
+export const LAUNCH_TIMEOUT_MS = 10 * 60_000;
+
 /** A capacity read is metadata: a page render does not wait on it for long. */
 export const CAPABILITIES_TIMEOUT_MS = 10_000;
 
@@ -534,7 +537,14 @@ export function createTemplateControl(options: ArmadaApiOptions) {
       size?: string;
       repo?: string;
     }): Promise<LaunchOutcome> {
-      const outcome = parseLaunchOutcome(await post("launch", request));
+      const outcome = parseLaunchOutcome(
+        await controlPost(
+          { ...options, timeoutMs: options.timeoutMs ?? LAUNCH_TIMEOUT_MS },
+          "/api/v1/templates/launch",
+          request,
+          "templates",
+        ),
+      );
       if (!outcome) throw new ControlError("The Armada server sent an unexpected launch answer.");
       return outcome;
     },
