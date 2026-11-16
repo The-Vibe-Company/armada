@@ -11,15 +11,15 @@ for (const width of [1280, 390])
       await page.setViewportSize({ width, height: 844 });
       await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
       await signIn(page, "alice@example.com", "/environments");
-      for (const [route, label] of [
-        ["environments", "Snapshots"],
-        ["templates", "Templates"],
-        ["tools", "Tools"],
-        ["variables", "Variables and secrets"],
+      for (const [route, role, label] of [
+        ["environments", "list", "Snapshots"],
+        ["templates", "list", "Templates"],
+        ["tools", "list", "Tools"],
+        ["variables", "table", "Settings and secrets"],
       ] as const) {
         await page.goto(`/${route}`);
         const list = page
-          .getByRole("list", { name: label, exact: true, includeHidden: true })
+          .getByRole(role, { name: label, exact: true, includeHidden: true })
           .filter({ visible: true });
         await expect(list).toBeVisible();
         const before = await list.boundingBox();
@@ -83,7 +83,7 @@ test("shared scope radios support keyboard selection without granting organizati
 
 test("a refused org secret keeps kind/scope for retry but clears its one-time value", async ({ page }) => {
   await signIn(page, "alice@example.com", "/variables");
-  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByRole("button", { name: "Add a variable", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("radio", { name: "Secret", exact: true }).check();
   await dialog.getByRole("radio", { name: "Org (Acme)", exact: true }).check();

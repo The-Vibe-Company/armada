@@ -359,7 +359,14 @@ export function VaultPanel({
   const close = useCallback((next: boolean) => {
     if (!next) setDialog(null);
   }, []);
-  const onResult = useCallback((next: ActionResult) => setResult(next), []);
+  const onResult = useCallback(
+    (next: ActionResult) => {
+      setResult(next);
+      // The refresh that follows a write can remount this panel; a toast keeps the confirmation visible.
+      if (next.ok) toast({ tone: "success", title: next.message });
+    },
+    [toast],
+  );
   // The panel goes away with the item, so a deletion is confirmed where it stays visible.
   const onDeleted = useCallback(
     (next: ActionResult) => {

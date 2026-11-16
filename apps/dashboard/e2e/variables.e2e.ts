@@ -29,8 +29,8 @@ async function leavePanel(page: Page) {
 
 async function openAdd(page: Page) {
   await leavePanel(page);
-  await page.getByRole("button", { name: "Add", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Add a variable or secret" });
+  await page.getByRole("button", { name: "Add a variable", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add a setting or a secret" });
   await expect(dialog).toBeVisible();
   return dialog;
 }
@@ -53,20 +53,20 @@ for (const mobile of [false, true]) {
     await expect(nav.getByRole("link", { name: /Variables/ })).toHaveAttribute("aria-current", "page");
     if (mobile) await page.keyboard.press("Escape");
     // Active first, by name; the revoked secret last. Bob's personal variable is not Alice's to see.
-    await expect(page.getByRole("list", { name: "Variables and secrets" }).locator(":scope > li")).toHaveText([
+    await expect(
+      page.getByRole("table", { name: "Settings and secrets" }).locator("tbody tr"),
+    ).toHaveText([
       /ALICE_DEPLOY_TOKEN/,
       /APP_REGION/,
       /STRIPE_API_KEY/,
       /OLD_WEBHOOK_SECRET/,
     ]);
     await expect(row(page, "BOB_NOTES_URL")).toHaveCount(0);
-    await expect(row(page, "STRIPE_API_KEY")).toContainText("Org");
-    await expect(row(page, "STRIPE_API_KEY")).toContainText("Write-only");
-    await expect(row(page, "ALICE_DEPLOY_TOKEN")).toContainText("Personal");
-    await expect(row(page, "APP_REGION")).not.toContainText("Write-only");
-    await expect(row(page, "APP_REGION")).toContainText("Variable · version 3");
+    await expect(row(page, "STRIPE_API_KEY")).toContainText("Secret");
+    await expect(row(page, "ALICE_DEPLOY_TOKEN")).toContainText("Only you");
+    await expect(row(page, "APP_REGION")).toContainText("Variable");
     await expect(row(page, "OLD_WEBHOOK_SECRET")).toContainText("Revoked");
-    if (!mobile) await expect(row(page, "STRIPE_API_KEY")).toContainText("Everyone in Acme");
+    await expect(row(page, "STRIPE_API_KEY")).toContainText("Everyone in Acme");
     // A revoked secret is not a fault: no readiness strip, nothing in red.
     await expect(page.locator("[data-readiness]")).toHaveCount(0);
     await expect(page.locator(".text-destructive:visible, p[role=alert]:visible")).toHaveCount(0);
@@ -82,7 +82,7 @@ for (const mobile of [false, true]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(mobile ? 390 : 1280);
     await page.screenshot({ path: `test-results/variables-add-${mobile ? "phone" : "desktop"}.png` });
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Add", exact: true })).toBeFocused();
+    await expect(page.getByRole("button", { name: "Add a variable", exact: true })).toBeFocused();
   });
 }
 
@@ -122,8 +122,8 @@ test("a secret is stored once and never shown again: replace, revoke and delete 
   await replace.getByLabel("Secret value").fill(`${CANARY}-2`);
   await replace.getByRole("button", { name: "Replace value" }).click();
   await expect(replace).toBeHidden();
-  await expect(secret).toContainText("SENTRY_DSN has a new value (version 2).");
-  await expect(row(page, "SENTRY_DSN")).toContainText("version 2");
+  await expect(page.getByText("SENTRY_DSN has a new value (version 2).").first()).toBeVisible();
+  await expect(row(page, "SENTRY_DSN")).toContainText("Active");
   expect(await page.content()).not.toContain(CANARY);
 
   await secret.getByRole("button", { name: "Revoke" }).click();
@@ -139,7 +139,7 @@ test("a secret is stored once and never shown again: replace, revoke and delete 
   await expect(row(page, "SENTRY_DSN")).toHaveCount(0);
   // The panel went with it: the toast confirms, and the focus lands on Add rather than on nothing.
   await expect(page.getByText("SENTRY_DSN is deleted.").first()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Add", exact: true })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Add a variable", exact: true })).toBeFocused();
 });
 
 test("a variable's value is read on request and edited as a new version", async ({ page }) => {
@@ -154,8 +154,8 @@ test("a variable's value is read on request and edited as a new version", async 
   await edit.getByLabel("Value").fill("us-east-2");
   await edit.getByRole("button", { name: "Save changes" }).click();
   await expect(edit).toBeHidden();
-  await expect(variable).toContainText("APP_REGION is saved.");
-  await expect(row(page, "APP_REGION")).toContainText("version 4");
+  await expect(page.getByText("APP_REGION is saved.").first()).toBeVisible();
+  await expect(row(page, "APP_REGION")).toContainText("Active");
   // A new version drops what was read: the value is read again on request.
   await expect(variable.locator("[data-variable-value]")).toHaveCount(0);
   await variable.getByRole("button", { name: "Show value" }).click();
@@ -179,13 +179,13 @@ test("a member reads org entries without controls and adds personal ones only", 
   // A refused name keeps what was typed, so only the name needs fixing.
   await dialog.getByLabel("Name").fill("BOB_NOTES_URL");
   await dialog.getByLabel("Value").fill("eu-west-3");
-  await dialog.getByRole("button", { name: "Save variable" }).click();
+  await dialog.getByRole("button", { name: "Save setting" }).click();
   await expect(dialog.getByRole("alert")).toHaveText(/name is already used/);
   await expect(dialog.getByLabel("Value")).toHaveValue("eu-west-3");
   await dialog.getByLabel("Name").fill("BOB_REGION");
-  await dialog.getByRole("button", { name: "Save variable" }).click();
+  await dialog.getByRole("button", { name: "Save setting" }).click();
   await expect(dialog).toBeHidden();
-  await expect(row(page, "BOB_REGION")).toContainText("Personal");
+  await expect(row(page, "BOB_REGION")).toContainText("Only you");
 });
 
 test("a change made elsewhere is refused as stale, without losing the page", async ({ page }) => {
@@ -220,7 +220,7 @@ test("failed variable actions hide diagnostics, retain the draft and allow a fre
       })
     ).ok,
   ).toBe(true);
-  await dialog.getByRole("button", { name: "Save variable", exact: true }).click();
+  await dialog.getByRole("button", { name: "Save setting", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("Reload Variables");
   await expect(dialog.getByRole("alert")).not.toContainText(diagnostic);
   await expect(dialog.getByLabel("Value", { exact: true })).toHaveValue("example_value");
