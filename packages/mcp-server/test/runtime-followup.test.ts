@@ -2,8 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture as fixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
+
+const sharedDatabase = rowOnlyDatabase();
 
 describe.each([
   { provider: "boat", harness: "codex" },
@@ -18,7 +21,7 @@ describe.each([
   // Runner turn are setup, not send/replay behavior. Keep them out of the test's
   // 5s budget; the real SQL/Runner/epoch assertions below remain unchanged.
   beforeAll(async () => {
-    f = await fixture(undefined, provider, harness);
+    f = await fixture(await sharedDatabase(), provider, harness);
     if (provider === "modal")
       f.context.runtimeSend = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
         preparations++;
@@ -64,7 +67,7 @@ describe.each([
 });
 
 test("uncertain send reconciles the same durable identity/lease; changed input and unauthorized/stopped targets never start work", async () => {
-  const f = await fixture();
+  const f = await fixture(await sharedDatabase());
   try {
     const input = f.input();
     f.lose();
@@ -113,7 +116,7 @@ test("stop committing after runtime acceptance fences late turn publication and 
 });
 
 test("a competing accepted turn invalidates an older finished probe before admission can clear its task", async () => {
-  const f = await fixture();
+  const f = await fixture(await sharedDatabase());
   const done = Promise.withResolvers<"finished">();
   try {
     const generation = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
@@ -150,7 +153,7 @@ describe.each([
 ] as const)("idle $provider $harness first send", ({ provider, harness }) => {
   let f: Awaited<ReturnType<typeof fixture>>;
   beforeAll(async () => {
-    f = await fixture(undefined, provider, harness, true);
+    f = await fixture(await sharedDatabase(), provider, harness, true);
   }, 20_000);
   afterAll(async () => {
     await f?.close();
