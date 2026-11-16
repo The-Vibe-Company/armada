@@ -46,11 +46,11 @@ export type Database = {
           conversation_id: string;
           sequence: number;
           state: string;
-          queued_generation: number;
           dispatch_generation: number | null;
           dispatch_until: string | null;
           result_enc: string | null;
           failure_reason: string | null;
+          queued_generation: number;
         };
         Insert: {
           sandbox_id: string;
@@ -65,11 +65,11 @@ export type Database = {
           conversation_id: string;
           sequence: number;
           state?: string;
-          queued_generation?: number;
           dispatch_generation?: number | null;
           dispatch_until?: string | null;
           result_enc?: string | null;
           failure_reason?: string | null;
+          queued_generation: number;
         };
         Update: {
           sandbox_id?: string;
@@ -84,11 +84,11 @@ export type Database = {
           conversation_id?: string;
           sequence?: number;
           state?: string;
-          queued_generation?: number;
           dispatch_generation?: number | null;
           dispatch_until?: string | null;
           result_enc?: string | null;
           failure_reason?: string | null;
+          queued_generation?: number;
         };
         Relationships: [
           {
