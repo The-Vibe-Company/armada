@@ -161,7 +161,11 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         }
         const rows = await createSqlVaultStore(tx).listCredentials(input.scope, owner ?? "");
         const row = rows.find((row) => row.id === id);
-        if (!row) throw new VaultError("unavailable", "Account mutation failed.");
+        if (!row)
+          throw new VaultError(
+            "unavailable",
+            "The account change could not be verified because the updated account was not returned. Reload the account list before retrying.",
+          );
         return row;
       });
     },

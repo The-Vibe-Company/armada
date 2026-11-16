@@ -31,15 +31,32 @@ export async function emailLogin(io: AuthIo, email: string, origin: string): Pro
   };
   const sessionFrom = async (path: string, body: unknown, failure: string): Promise<SessionDto> => {
     const response = await post(path, body);
-    const value = (await response.json().catch(() => null)) as Partial<SessionDto> | null;
+    const value = (await response.json().catch(() => null)) as
+      | (Partial<SessionDto> & { error?: { code?: string; message?: string } })
+      | null;
+    if (!response.ok) {
+      if (
+        value?.error &&
+        typeof value.error.message === "string" &&
+        ["usage", "unauthorized", "unavailable"].includes(value.error.code ?? "")
+      )
+        throw new AuthError(value.error.message, value.error.code as "usage" | "unauthorized" | "unavailable");
+      if (response.status === 401 || response.status === 403) throw new AuthError(failure, "unauthorized");
+      throw new AuthError(
+        "Email sign-in could not finish because Armada could not complete the request. Try again later.",
+        "unavailable",
+      );
+    }
     if (
-      !response.ok ||
       !value ||
       typeof value.accessToken !== "string" ||
       typeof value.refreshToken !== "string" ||
       typeof value.expiresAt !== "string"
     )
-      throw new AuthError(failure, "unauthorized");
+      throw new AuthError(
+        "Email sign-in could not finish because Armada returned an invalid session. Try signing in again; if this continues, contact the server operator.",
+        "unavailable",
+      );
     return { accessToken: value.accessToken, refreshToken: value.refreshToken, expiresAt: value.expiresAt };
   };
   const server = Bun.serve({
@@ -71,7 +88,9 @@ export async function emailLogin(io: AuthIo, email: string, origin: string): Pro
         return new Response("Logged in. You can close this window.", {
           headers: { "cache-control": "no-store", "referrer-policy": "no-referrer" },
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof AuthError)
+          return new Response(error.message, { status: error.code === "unavailable" ? 503 : 400 });
         return new Response(
           "Email link was refused. Return to the terminal to enter the code or request a new email.",
           { status: 400 },

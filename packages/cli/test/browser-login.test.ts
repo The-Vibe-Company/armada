@@ -39,7 +39,10 @@ test("browser login uses randomized PKCE and state, rejects a bad callback, then
   );
   const rejected = await fetch(`${callback}?code=wrong&state=wrong`);
   expect(rejected.status).toBe(400);
-  await expect(outcome).resolves.toThrow("Login callback was refused.");
+  await expect(outcome).resolves.toMatchObject({
+    code: "unauthorized",
+    message: expect.stringContaining("state did not match"),
+  });
   expect(exchange).toBeUndefined();
 });
 

@@ -220,3 +220,21 @@ test("the generic client retains arbitrary JSON and its own refusal mappings", a
     );
   }
 });
+
+test("unreadable control errors separate refusal from uncertain outcomes without leaking proxy text", async () => {
+  for (const status of [400, 502]) {
+    const client = createControlClient({
+      serverUrl: "https://armada.test/mcp",
+      token: TOKEN,
+      fetch: (async () => new Response("private_proxy_diagnostic", { status })) as typeof fetch,
+    });
+    try {
+      await client.post("sandbox/stop", {});
+      throw new Error("expected refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ControlError);
+      expect((error as Error).message).toContain(status === 400 ? "refused" : "could not be confirmed");
+      expect((error as Error).message).not.toContain("private_proxy_diagnostic");
+    }
+  }
+});

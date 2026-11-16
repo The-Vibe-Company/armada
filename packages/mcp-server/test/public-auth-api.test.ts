@@ -136,7 +136,9 @@ test("public refresh succeeds and refusal never exposes provider configuration o
   expect(refused.status).toBe(401);
   const text = await refused.text();
   for (const secret of secrets) expect(text).not.toContain(secret);
-  expect(text).toContain("Refresh token was refused.");
+  expect(text).toContain(
+    "Your session could not be renewed because it was refused by the sign-in service. Sign in again.",
+  );
 });
 
 test("public email start validates input and valid start and verify use the provider shapes", async () => {
@@ -246,4 +248,28 @@ test("CLI email-link opt-in binds the loopback callback to state without changin
   ])
     expect((await start(invalid)).status).toBe(400);
   expect(calls).toHaveLength(1);
+});
+
+test("public login preserves safe auth failures and their status instead of masking them as refusals", async () => {
+  for (const [path, body] of [
+    ["auth/email/verify", { email: "person@example.test", code: "123456" }],
+    ["auth/exchange", { code: "authorization_code", verifier }],
+    ["auth/refresh", { refreshToken: "refresh_placeholder" }],
+  ] as const) {
+    const handler = publicHandler(() => new Response("private_diagnostic", { status: 503 }));
+    const response = await handler(
+      request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "unavailable",
+        message: "Sign-in could not finish because the sign-in service is unavailable. Try again later.",
+      },
+    });
+  }
 });

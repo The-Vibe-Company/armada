@@ -135,8 +135,10 @@ export async function skillCommand(argv: readonly string[], io: Io): Promise<num
     await git(["init", "--quiet"], temp);
     await git(["fetch", "--quiet", "--depth=1", `${SOURCE}.git`, revision ?? SKILL_PACKAGE.revision], temp);
     const commit = await git(["rev-parse", "FETCH_HEAD"], temp);
-    if (!/^[a-f0-9]{40}$/.test(commit) || (revision && revision !== commit))
-      throw new Error("Source revision verification failed.");
+    if (!/^[a-f0-9]{40}$/.test(commit) || (revision ?? SKILL_PACKAGE.revision) !== commit)
+      throw new Error(
+        "Skill installation stopped because the fetched source did not match the pinned revision. Retry with a trusted revision; no skills were installed.",
+      );
     await git(["checkout", "--quiet", commit, "--", SKILL_PACKAGE.sourceDirectory], temp);
     const destinations = await copySkillPackages(temp, base);
     io.out(`Source: ${SOURCE}/tree/${commit}/.agents/skills\n`);

@@ -171,8 +171,12 @@ export async function loginCommand(
         `Next: run ${cli} launch for guided setup, or ${cli} host add to connect your own machine. Check setup with ${cli} doctor.\n`,
       );
       return;
-    } catch {
-      throw new AuthError("Armada browser login failed.", "unauthorized");
+    } catch (error) {
+      if (error instanceof AuthError) throw error;
+      throw new AuthError(
+        "Browser sign-in could not finish because the browser flow was interrupted. Check your connection and start sign-in again.",
+        "unavailable",
+      );
     }
   }
   throw new AuthError("Sign in with --provider github or google.", "usage");
