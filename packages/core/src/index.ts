@@ -269,7 +269,12 @@ export {
   type ModelOption,
   resolveModelChoice,
 } from "./models.ts";
-export { describeNativeFailure, describeSandboxFailure, promptFailureReason } from "./native-failure.ts";
+export {
+  describeNativeFailure,
+  describeSandboxFailure,
+  dockerSandboxFailureReason,
+  promptFailureReason,
+} from "./native-failure.ts";
 export { OFFICIAL_SANDBOX_IMAGE, officialSandboxImage } from "./official-sandbox-image.ts";
 export {
   CONNECTION_MODEL_ID,

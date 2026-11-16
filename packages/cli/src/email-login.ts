@@ -37,7 +37,7 @@ export async function emailLogin(io: AuthIo, email: string, origin: string): Pro
     if (!response.ok) {
       if (
         value?.error &&
-        typeof value.error.message === "string" &&
+        typeof value?.error?.message === "string" &&
         ["usage", "unauthorized", "unavailable"].includes(value.error.code ?? "")
       )
         throw new AuthError(value.error.message, value.error.code as "usage" | "unauthorized" | "unavailable");
@@ -115,7 +115,20 @@ export async function emailLogin(io: AuthIo, email: string, origin: string): Pro
         state,
         cli_email_link: true,
       });
-      if (!response.ok) throw new AuthError("Armada could not start email login.", "unauthorized");
+      if (!response.ok) {
+        const value = (await response.json().catch(() => null)) as {
+          error?: { code?: string; message?: string };
+        } | null;
+        if (
+          ["usage", "unauthorized", "unavailable", "rate_limited"].includes(value?.error?.code ?? "") &&
+          typeof value?.error?.message === "string"
+        )
+          throw new AuthError(
+            value.error.message,
+            value.error.code as "usage" | "unauthorized" | "unavailable" | "rate_limited",
+          );
+        throw new AuthError("Armada could not start email login. Try again later.", "unavailable");
+      }
       controller.signal.throwIfAborted();
       io.err(
         `Sent a sign-in email to ${email}. Open its link on this machine, or type the code here (use one, not both).\n`,
