@@ -21,15 +21,15 @@ describe("action errors", () => {
   test("the messages the dashboard functions raise reach the person, other failures do not leak", () => {
     expect(
       explainDbError({ code: "P0002", message: "no account for that email: the person signs in to Armada once first" }),
-    ).toContain("signs in to Armada once first");
+    ).toContain("sign in to Armada once first");
     expect(explainDbError({ code: "23514", message: "an org keeps at least one admin" })).toBe(
-      "an org keeps at least one admin",
+      "This change would leave the org without an admin. Make another member an admin first.",
     );
     expect(explainDbError({ code: "23514", message: 'violates check constraint "orgs_name_chk"' })).toBe(
       "The name must be between 1 and 120 characters.",
     );
     expect(explainDbError({ code: "XX000", message: 'relation "secret_table" is broken' })).toBe(
-      "Something went wrong. Try again.",
+      "The change could not be saved because the database request failed. Reload the page to check whether it was saved before retrying.",
     );
   });
 
@@ -45,4 +45,12 @@ test("dashboard failures translate legacy snapshot names without changing identi
     ok: false,
     error: "Snapshot capacity reached; remove old snapshots (golden_id).",
   });
+});
+
+test("unknown constraint diagnostics never reach the person", () => {
+  for (const code of ["23514", "P0002", "28000"]) {
+    const message = explainDbError({ code, message: "internal_constraint private_value" });
+    expect(message).not.toContain("private_value");
+    expect(message).toMatch(/Reload|Sign in/);
+  }
 });

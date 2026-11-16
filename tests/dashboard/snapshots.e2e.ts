@@ -46,7 +46,7 @@ for (const org of [
     await app.open("/snapshots");
     await expect(screen.getByRole("heading", "Needs something first")).toBeVisible();
     await expect(screen.getByRole("heading", "Ready", { exact: true })).toBeVisible();
-    await screen.getByRole("button", "New", { exact: true }).tap();
+    await screen.getByRole("button", "New snapshot", { exact: true }).tap();
     const dialog = screen.getByRole("dialog", "New snapshot");
     await dialog.getByRole("textbox", "Snapshot name").fill("capacity-check");
     await dialog.getByRole("textbox", "Repository 1").fill("example/fixture");
@@ -76,7 +76,7 @@ for (const org of [
       try {
         const name = `journey-${org.name.toLowerCase()}-${provider.toLowerCase()}`;
         await app.open("/snapshots");
-        await screen.getByRole("button", "New", { exact: true }).tap();
+        await screen.getByRole("button", "New snapshot", { exact: true }).tap();
         const dialog = screen.getByRole("dialog", "New snapshot");
         await dialog.getByRole("button", /^Where to build:/).tap();
         await screen.getByRole("option", new RegExp(`^${provider} cloud`)).tap();

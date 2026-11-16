@@ -1,7 +1,11 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, rmSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { ChildOwner } from "../src/children.ts";
 import { AUTH_HEADER, type Driver, type Grant, Journal, Runner } from "../src/index.ts";
 
 const grant: Grant = {
@@ -210,40 +214,52 @@ test("native steering reaches the active turn and refuses a terminal conversatio
     journal.close();
   }
 });
-test.skipIf(process.platform !== "linux")(
-  "checkpoint refuses live detached groups after restart and never signals unverifiable recycled identities",
-  async () => {
-    const s = setup();
-    let pid: number | undefined;
-    try {
-      const receipt = await payload(
-        await call(s.runner, { op: "exec", input: { sandboxId: "logical", command: "exec sleep 60", detached: true } }),
-      );
-      pid = receipt.result.processId;
-      const restored = new Runner(s.journal, { ...grant, generation: "g2" }, { claude: unused, codex: unused });
-      expect((await payload(await call(restored, { op: "getExec", processId: pid }))).result.status).toBe(
-        "running_after_restart",
-      );
-      const blocked = await call(restored, { op: "checkpoint" });
-      expect(blocked.status).toBe(409);
-      expect(((await blocked.json()) as { error: string }).error).toBe("checkpoint_exec_processes_live");
-      const row = s.journal.db.query("SELECT body FROM processes WHERE pid=?").get(pid) as { body: string };
-      const record = JSON.parse(row.body);
-      s.journal.db
-        .query("UPDATE processes SET body=? WHERE pid=?")
-        .run(JSON.stringify({ ...record, identity: { ...record.identity, start: "different-process-birth" } }), pid);
-      const unknown = new Runner(s.journal, { ...grant, generation: "g3" }, { claude: unused, codex: unused });
-      expect((await call(unknown, { op: "checkpoint" })).status).toBe(409);
-      expect(() => process.kill(pid as number, 0)).not.toThrow();
-    } finally {
-      if (pid)
-        try {
-          process.kill(-pid, "SIGKILL");
-        } catch {}
-      await s.close();
-    }
-  },
-);
+test("shutdown drains a delayed detached close and its receipt before the journal closes", async () => {
+  const child = Object.assign(new EventEmitter(), {
+    pid: 2147483647,
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+  }) as unknown as ChildProcessWithoutNullStreams;
+  const spawned = Promise.withResolvers<void>();
+  const ownerClosed = Promise.withResolvers<void>();
+  const spawn = spyOn(ChildOwner.prototype, "spawn").mockImplementation(() => {
+    spawned.resolve();
+    return child;
+  });
+  const close = spyOn(ChildOwner.prototype, "close").mockImplementation(async () => {
+    ownerClosed.resolve();
+  });
+  const s = setup();
+  try {
+    const request = call(s.runner, {
+      op: "exec",
+      input: { sandboxId: "logical", command: "fixture", detached: true },
+    });
+    await spawned.promise;
+    let closed = false;
+    const shutdown = s.runner.close().then(() => {
+      closed = true;
+    });
+    await ownerClosed.promise;
+    // Let the owner-close barrier finish before delivering the delayed spawn.
+    await new Promise<void>((resolve) => queueMicrotask(() => queueMicrotask(resolve)));
+    child.emit("spawn");
+    expect((await payload(await request)).result.processId).toBe(2147483647);
+    expect(closed).toBe(false);
+    child.emit("close", 0);
+    await shutdown;
+    const row = s.journal.db.query("SELECT body FROM processes WHERE pid=?").get(2147483647) as { body: string };
+    expect(JSON.parse(row.body).status).toBe("exited");
+    expect(closed).toBe(true);
+  } finally {
+    child.emit("spawn");
+    child.emit("close", 0);
+    await s.close();
+    spawn.mockRestore();
+    close.mockRestore();
+  }
+});
 
 test("revoking a dial-out request kills its synchronous exec before returning", async () => {
   const s = setup();

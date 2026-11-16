@@ -200,6 +200,11 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             !["ready", "running"].includes(sandbox.status)
           )
             deny();
+          const refused = await tx.query(
+            "select 1 from public.account_turn_queue where sandbox_id=$1 and request_id=$2 and state='failed'",
+            [sandboxId, input.requestId],
+          );
+          if (refused.rows.length) deny();
           // The launch reserves a conversation before any native admission or queued receipt.
           const launch = (
             await tx.query<{ request_enc: Uint8Array<ArrayBuffer>; result_enc: Uint8Array<ArrayBuffer> | null }>(

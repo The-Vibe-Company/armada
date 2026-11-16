@@ -241,7 +241,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       await sql.query(
         `update public.account_turn_queue q set state='failed',failure_reason='Queued prompt was cancelled.'
         from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2
-        where q.sandbox_id=s.id and s.id=$1 and s.owner_id=$2 and q.owner_id=$2 and q.state='queued'
+        where q.sandbox_id=s.id and s.id=$1 and s.owner_id=$2 and q.owner_id=$2 and q.state in ('queued','dispatching')
         and s.org_id=any($3::uuid[])`,
         [sandboxId, caller.userId, caller.orgs.map((org) => org.orgId)],
       );
@@ -336,7 +336,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             or (s.status='stopped' and s.lifecycle_generation<>q.queued_generation))`);
         await sql.query(`update public.account_turn_queue q set state='failed',failure_reason='Dispatch cancelled by confirmed stop.'
           from public.sandboxes s where q.sandbox_id=s.id and q.state='dispatching'
-          and s.activity_lease_id is null and s.status in ('stopped','deleted') and s.lifecycle_generation>q.dispatch_generation`);
+          and (s.stop_requested_at is not null or s.deleted_at is not null or s.status in ('deleted','stopping','failed') or (s.status='stopped' and s.lifecycle_generation<>q.queued_generation) or s.expires_at<=now())`);
         const candidates = (
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
@@ -372,7 +372,8 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               const abandoned = await tx.query(
                 `select s.id from public.sandboxes s
                  join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
-                 where s.id=$1 and not coalesce(${RUNTIME_LANE},false)
+                 where s.id=$1 and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
+                 and (s.status in ('ready','running') or (s.status='stopped' and s.lifecycle_generation=q.queued_generation)) and not coalesce(${RUNTIME_LANE},false)
                  and s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null
                  and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false) for update of s`,
                 [candidate.sandbox_id, candidate.request_id],
@@ -394,7 +395,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
              and c.version=$5 and c.status='active' and (c.expires_at is null or c.expires_at>now())
              and ((c.scope='user' and c.owner_id=$2) or (c.scope='org' and c.owner_id=$3))
              and s.deleted_at is null and s.stop_requested_at is null and s.expires_at>now()
-             and ($6::boolean or s.status<>'stopped' or s.lifecycle_generation=$7::bigint)
+             and (s.status<>'stopped' or s.lifecycle_generation=$7::bigint)
              and (s.status in ('ready','running','stopped') or ($6::boolean and s.status='starting')) for update of s`,
               [
                 candidate.sandbox_id,
@@ -476,7 +477,8 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               `select s.id from public.sandboxes s
               join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
               where s.id=$1 and q.state='dispatching' and s.lifecycle_generation=q.dispatch_generation
-              and s.activity_lease_id is null
+              and s.activity_lease_id is null and s.stop_requested_at is null
+              and s.status in ('ready','running') and s.deleted_at is null and s.expires_at>now()
               and not exists(select 1 from public.runtime_commands where sandbox_id=s.id
                 and request_id in ('follow_'||$2::text,'docker_prompt_'||$2::text,'resume_'||$2::text))
               and not exists(select 1 from public.docker_host_jobs where bound_sandbox_id=s.id and request_id=$2::uuid)

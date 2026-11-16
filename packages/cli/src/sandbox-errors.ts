@@ -1,3 +1,5 @@
+import { sandboxControlRefusal } from "@armada/core";
+
 /** Sandbox command failures may contain guest secrets; only closed reasons leave the client. */
 export function sandboxFailure(path: string, status: number, serverCode: unknown, serverMessage: unknown) {
   if (
@@ -11,6 +13,7 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
   if (status === 401) return undefined; // Keep the shared login/token recovery path.
   const inspect = "Run armada list --json to find a visible sandbox ID and check its state and selected organization.";
   const help: Record<string, string> = {
+    sandbox_terminal: `This sandbox cannot accept this operation. Start a new sandbox on the same branch. ${inspect}`,
     not_found: `Sandbox not found or not accessible. ${inspect}`,
     forbidden:
       "Sandbox access denied. Check your organization membership and ask the sandbox owner or an org admin for access.",
@@ -68,10 +71,33 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
     Object.hasOwn(bindingReasons, serverMessage)
       ? bindingReasons[serverMessage]
       : undefined;
+  // Match only complete policy-owned messages: arbitrary provider/guest text remains redacted.
+  const controlReason =
+    ["sandbox_terminal", "invalid_request", "conflict"].includes(String(serverCode)) &&
+    typeof serverMessage === "string" &&
+    ["boat", "modal", "docker"].some((provider) =>
+      ["stopped", "failed", "expired", "deleted", "removed"].some((state) =>
+        [false, true].some((runtime) =>
+          [null, "checkpoint_failed_disk_not_retained"].some((preservationNote) =>
+            [null, "idle_paused"].some(
+              (statusReason) =>
+                sandboxControlRefusal(
+                  { provider, status: state, boatRuntime: runtime, preservationNote, statusReason },
+                  new Date(0),
+                  "exec",
+                ) === serverMessage,
+            ),
+          ),
+        ),
+      ),
+    )
+      ? serverMessage
+      : undefined;
   return {
     code,
     exitCode: code === "invalid_request" ? (2 as const) : (1 as const),
     message:
+      controlReason ??
       bindingReason ??
       help[code] ??
       `Sandbox operation failed (${status}). Check access and sandbox status. ${inspect} A mutation may already have been accepted; check its outcome before retrying.`,

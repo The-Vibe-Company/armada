@@ -154,7 +154,7 @@ test.each([
 test.each([
   ["auth/email/start", "Too many attempts", 429, "rate_limited"],
   ["auth/email/start", "dependency offline", 400, "invalid"],
-  ["auth/email/verify", "dependency offline", 401, "unauthorized"],
+  ["auth/email/verify", "dependency offline", 503, "unavailable"],
 ] as const)("%s dependency failure: %s", async (route, message, status, code) => {
   const response = await handleControlRequest(
     new Request(`https://armada.test/api/v1/${route}`, {

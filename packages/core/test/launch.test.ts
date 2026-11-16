@@ -1069,7 +1069,7 @@ exit 1
   ])("ownership rejection retries once, then succeeds or cleans up (%j)", async ({ repo, transient }) => {
     const diagnostics: string[] = [];
     const waits: number[] = [];
-    const log = spyOn(console, "info").mockImplementation((line: string) => {
+    const log = spyOn(console, "error").mockImplementation((line: string) => {
       diagnostics.push(line);
     });
     let rejectedPulls = 0;

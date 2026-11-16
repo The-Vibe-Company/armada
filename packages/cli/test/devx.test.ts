@@ -103,22 +103,23 @@ test("doctor reports personal-login GitHub requirement when a service bearer is 
     "/api/v1/github/status": Response.json({ error: "forbidden" }, { status: 403 }),
   });
   expect(await doctor(["--json"], f.auth)).toBe(0);
-  expect(f.output()).toContain("Unset ARMADA_TOKEN");
+  expect(f.output()).toContain("unset ARMADA_TOKEN");
   expect(JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "GitHub")).toMatchObject({
     status: "unknown",
-    detail: expect.stringContaining("sign in as a person with armada login (not a service token)"),
+    detail: expect.stringContaining("run armada login as a person"),
   });
 });
 
-test("doctor fails honestly when health and session cannot be confirmed", async () => {
+test.each([true, false])("doctor diagnoses failed session for token mode %s", async (token) => {
   const f = fixture({});
+  if (!token) f.auth.env = {};
   expect(await doctor(["--json"], f.auth)).toBe(1);
   expect(JSON.parse(f.output()).checks).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
         check: "Session",
         status: "failed",
-        detail: expect.stringContaining("Run armada login"),
+        detail: expect.stringContaining(token ? "Check or replace ARMADA_TOKEN" : "Run armada login"),
       }),
       expect.objectContaining({ check: "Hosts", status: "unknown" }),
     ]),

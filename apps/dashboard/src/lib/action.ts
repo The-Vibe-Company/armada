@@ -55,7 +55,13 @@ export function explainDbError(error: DbError): string {
     return "The name must be between 1 and 120 characters.";
   }
   if (error.code === "23514" || error.code === "P0002" || error.code === "28000") {
-    return error.message;
+    if (error.message === "no account for that email: the person signs in to Armada once first")
+      return "No account was found for that email. Ask the person to sign in to Armada once first, then invite them again.";
+    if (error.message === "an org keeps at least one admin")
+      return "This change would leave the org without an admin. Make another member an admin first.";
+    if (error.code === "28000") return "The session was refused. Sign in again before retrying this change.";
+    if (error.code === "P0002") return "The requested item was not found. Reload the page and check your selection.";
+    return "This change violates a resource rule. Reload the page and check the values before trying again.";
   }
-  return "Something went wrong. Try again.";
+  return "The change could not be saved because the database request failed. Reload the page to check whether it was saved before retrying.";
 }

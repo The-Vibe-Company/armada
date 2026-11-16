@@ -55,12 +55,12 @@ test("keyboard: a row is focusable, Enter opens its panel, Escape closes it and 
   await expect(page).not.toHaveURL(/[?&]item=/);
 
   // New opens the create dialog over the list; Escape closes it and gives the focus back.
-  await page.getByRole("button", { name: "New", exact: true }).click();
+  await page.getByRole("button", { name: "New snapshot", exact: true }).click();
   await expect(createDialog(page)).toBeVisible();
   await openCreate(page);
   await page.keyboard.press("Escape");
   await expect(createDialog(page)).toBeHidden();
-  await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
+  await expect(page.getByRole("button", { name: "New snapshot", exact: true })).toBeFocused();
 });
 
 for (const mobile of [false, true]) {
@@ -94,7 +94,7 @@ for (const mobile of [false, true]) {
     await page.keyboard.press("Escape");
     await expect(createDialog(page)).toBeHidden();
     await expect(page).not.toHaveURL(/[?&]item=/);
-    await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
+    await expect(page.getByRole("button", { name: "New snapshot", exact: true })).toBeFocused();
 
     // Details own the background; dismiss them before creating another environment.
     if (!mobile) {
@@ -103,7 +103,7 @@ for (const mobile of [false, true]) {
       await openCreate(page);
       await page.keyboard.press("Escape");
       await expect(createDialog(page)).toBeHidden();
-      await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
+      await expect(page.getByRole("button", { name: "New snapshot", exact: true })).toBeFocused();
     }
   });
 }
@@ -144,7 +144,7 @@ test("on a phone the list fits the width and the panel is a sheet over it", asyn
   );
   // A modal sheet: named by its title, the list behind it out of reach, Tab kept inside.
   await expect(page.getByRole("dialog", { name: "web-frontend" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New snapshot", exact: true })).toHaveCount(0);
   await expect(page.locator("[data-resource-panel-title]")).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   expect(await sheet.evaluate((element) => element.contains(document.activeElement))).toBe(true);

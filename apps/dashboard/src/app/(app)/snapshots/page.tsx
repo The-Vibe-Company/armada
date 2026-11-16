@@ -523,11 +523,7 @@ export default async function GoldensPage({ searchParams }: Props) {
         title="Snapshots"
         description="Saved machines, with your repositories already set up, that sandboxes start from."
       >
-        {create && (
-          <span className="[&>button]:border [&>button]:border-input [&>button]:bg-background [&>button]:text-foreground [&>button:hover]:bg-accent">
-            {create}
-          </span>
-        )}
+        {create}
         {launch}
       </PageHeader>
       {notices}

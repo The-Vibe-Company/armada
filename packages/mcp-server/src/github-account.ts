@@ -120,7 +120,7 @@ export function createGitHubAccountApi(options: {
           await tx.query("delete from public.github_authorizations where user_id = $1::uuid", [caller.userId]);
           await tx.query("delete from public.github_connections where user_id = $1::uuid", [caller.userId]);
         });
-        console.info(
+        console.error(
           JSON.stringify({
             event: "github_connection_disconnected",
             caller: "account_disconnect",
@@ -224,7 +224,7 @@ export function createGitHubAccountApi(options: {
             ],
           );
         });
-        console.info(
+        console.error(
           JSON.stringify({
             event: "github_connection_replaced",
             caller: "account_callback",

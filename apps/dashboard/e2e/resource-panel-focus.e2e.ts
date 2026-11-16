@@ -12,7 +12,7 @@ test("a direct mobile link owns focus and excludes the whole background; closing
   const sheet = page.getByRole("dialog", { name: "alice-private", exact: true });
   await expect(sheet).toBeVisible();
   await expect(page.locator("[data-resource-panel-title]")).toBeFocused();
-  await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New snapshot", exact: true })).toHaveCount(0);
   for (const key of ["Shift+Tab", "Tab", "Tab", "Shift+Tab"]) {
     await page.keyboard.press(key);
     expect(await sheet.evaluate((node) => node.contains(document.activeElement))).toBe(true);

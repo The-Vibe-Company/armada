@@ -30,7 +30,7 @@ export function GoldenCreateDialog({
     <>
       {!open && <BuildFollower key={param} param={param} />}
       <CreateDialog
-        label="New"
+        label="New snapshot"
         title="New snapshot"
         description="A saved machine with your repositories already set up."
         open={open}

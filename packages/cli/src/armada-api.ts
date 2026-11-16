@@ -417,15 +417,32 @@ async function refreshLocked(
     accessToken?: unknown;
     refreshToken?: unknown;
     expiresAt?: unknown;
+    error?: { code?: string; message?: string };
   } | null;
+  if (!response.ok) {
+    if (
+      value?.error &&
+      typeof value.error.message === "string" &&
+      ["usage", "unauthorized", "unavailable"].includes(value.error.code ?? "")
+    )
+      throw new AuthError(value.error.message, value.error.code as "usage" | "unauthorized" | "unavailable");
+    if (response.status === 401 || response.status === 403)
+      throw new AuthError("Your session was refused by the sign-in service. Run armada login again.", "unauthorized");
+    throw new AuthError(
+      "Session renewal could not finish because Armada could not complete the request. Try again later.",
+      "unavailable",
+    );
+  }
   if (
-    !response.ok ||
     !value ||
     typeof value.accessToken !== "string" ||
     typeof value.refreshToken !== "string" ||
     typeof value.expiresAt !== "string"
   )
-    throw new AuthError("Run armada login again.", "unauthorized");
+    throw new AuthError(
+      "Session renewal could not finish because Armada returned an invalid session. Try signing in again; if this continues, contact the server operator.",
+      "unavailable",
+    );
   const updated = {
     ...saved,
     accessToken: value.accessToken,

@@ -74,6 +74,8 @@ export interface SandboxPatch {
   taskPromptId?: string;
   renewLifecycle?: boolean;
   expectedGeneration?: number;
+  /** Refuse a durable send that stop already cancelled, at activity admission. */
+  queueRequestId?: string;
   advanceGeneration?: boolean;
   finishActivity?: boolean;
   activityToken?: string;

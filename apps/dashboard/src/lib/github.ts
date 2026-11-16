@@ -335,7 +335,7 @@ export async function completeGitHubConnection(
       installations,
     });
     if (saved)
-      console.info(
+      console.error(
         JSON.stringify({
           event: "github_connection_replaced",
           caller: "dashboard_callback",

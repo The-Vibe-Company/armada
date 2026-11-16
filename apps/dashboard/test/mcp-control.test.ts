@@ -173,7 +173,11 @@ describe("MCP control client", () => {
     [405, { error: { message: "Unknown route." } }, "does not offer MCP connections yet"],
     [404, { error: { code: "not_found", message: "Unknown route." } }, "does not offer MCP connections yet"],
     [409, { error: { code: "conflict", message: "A connection with that name exists." } }, "name exists"],
-    [500, "<html>", "could not complete the request"],
+    [
+      500,
+      "<html>",
+      "The request could not be confirmed because the Armada server returned an unreadable error. Reload to check the current state before retrying.",
+    ],
   ])("a %i answer becomes a ControlError the person can read", async (status, body, expected) => {
     const { control } = server(() =>
       typeof body === "string" ? new Response(body, { status }) : Response.json(body, { status }),
@@ -181,6 +185,8 @@ describe("MCP control client", () => {
     const error = await control.list(ORG).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ControlError);
     expect((error as ControlError).message).toContain(expected);
+    expect((error as ControlError).status).toBe(status);
+    expect((error as ControlError).message).not.toContain("<html>");
   });
 
   test("an unreachable server is reported without detail", async () => {

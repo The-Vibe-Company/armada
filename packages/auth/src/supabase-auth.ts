@@ -145,6 +145,9 @@ export async function refreshSupabaseSession(options: {
   );
 }
 
+const INVALID_SESSION =
+  "Sign-in could not finish because the sign-in service returned an invalid session. Try signing in again; if this continues, contact the server operator.";
+
 async function requestSession(
   options: { fetch: AuthFetch; supabaseUrl: string; anonKey: string; now: Date },
   body: Record<string, string>,
@@ -158,20 +161,38 @@ async function requestSession(
       body: JSON.stringify(body),
     });
   } catch {
-    throw new AuthError("Armada could not reach Supabase.", "unavailable");
+    throw new AuthError(
+      "Sign-in could not reach the sign-in service. Check your connection and try again.",
+      "unavailable",
+    );
   }
-  if (!response.ok) throw new AuthError("Login failed.", "unauthorized");
+  if (!response.ok) {
+    if (response.status === 429)
+      throw new AuthError(
+        "Sign-in is temporarily rate limited. Wait a few minutes before trying again.",
+        "unavailable",
+      );
+    if (response.status >= 500)
+      throw new AuthError(
+        "Sign-in could not finish because the sign-in service is unavailable. Try again later.",
+        "unavailable",
+      );
+    const message = path.includes("refresh_token")
+      ? "Your session could not be renewed because it was refused by the sign-in service. Sign in again."
+      : "Sign-in was refused because the code or login request is invalid, expired, or already used. Start sign-in again to get a new code or link.";
+    throw new AuthError(message, "unauthorized");
+  }
   let payload: unknown;
   try {
     payload = await response.json();
   } catch {
-    throw new AuthError("Login failed.", "unauthorized");
+    throw new AuthError(INVALID_SESSION, "unavailable");
   }
   return sessionFrom(payload, options.supabaseUrl, options.now);
 }
 
 function sessionFrom(payload: unknown, supabaseUrl: string, now: Date): Session {
-  if (!isRecord(payload) || !isRecord(payload.user)) throw new AuthError("Login failed.", "unauthorized");
+  if (!isRecord(payload) || !isRecord(payload.user)) throw new AuthError(INVALID_SESSION, "unavailable");
   const { access_token: accessToken, refresh_token: refreshToken, expires_in: expiresIn } = payload;
   const userId = payload.user.id;
   if (
@@ -185,7 +206,7 @@ function sessionFrom(payload: unknown, supabaseUrl: string, now: Date): Session 
     typeof userId !== "string" ||
     !UUID_PATTERN.test(userId)
   ) {
-    throw new AuthError("Login failed.", "unauthorized");
+    throw new AuthError(INVALID_SESSION, "unavailable");
   }
   return {
     supabaseUrl,
