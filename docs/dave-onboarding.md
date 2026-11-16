@@ -35,7 +35,13 @@ still use `--revision` and `--expected-revision`).
 
 In **Routines**, choose **New routine** to schedule a task from a template.
 It keeps the template as it is at creation; later template versions do not update
-the routine. Routines cannot be edited: switch one on or off, or create a replacement.
+the routine. To edit it, use `armada routine update NAME|ID --expected-version N`:
+`--file config.json` replaces all mutable configuration (including name), while
+`--cron EXPRESSION --timezone IANA_ZONE` changes the schedule and retains the
+other fields. Copy the current version from `routine show` or `routine list`;
+conflicts are not retried. Updating an enabled routine selects its next matching
+occurrence. Enable/pause control new scheduled admissions; pause/delete do not
+stop already admitted runs. See `armada routine --help` for the complete JSON fields.
 
 ## 1. Install the CLI
 
@@ -234,7 +240,7 @@ armada creds limits ACCOUNT_UUID --max-agents 2
 ```
 
 Replace `ACCOUNT_UUID` with the ID returned by list. The same Morph account supports
-Claude Code and Codex, not OpenCode. On a Modal snapshot, choose it explicitly:
+Claude Code, Codex and OpenCode. On a Modal snapshot, choose it explicitly:
 
 ```sh
 armada launch first-modal --org my-team --provider modal --agent codex   --credential-id ACCOUNT_UUID --model morph-kimik31 "Summarize the repositories"

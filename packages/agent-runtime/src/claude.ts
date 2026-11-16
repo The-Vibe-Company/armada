@@ -5,7 +5,7 @@ import { ClaudeMessages } from "./claude-messages.ts";
 import { claudeResumeUsage, claudeUsageDelta } from "./claude-resume-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
-import { HarnessError, type HarnessErrorCode } from "./errors.ts";
+import { HarnessError, type HarnessErrorCode, nativeHarnessError } from "./errors.ts";
 import { PrivateMcpFile } from "./mcp-file.ts";
 import { ModelRateLimitWait } from "./model-rate-limit.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
@@ -213,13 +213,7 @@ export class ClaudeDriver implements Driver {
               // Rendered /usage text is equally account-private.
               continue;
             }
-            terminalError = event.error
-              ? event.error === "authentication_failed" || event.error === "cloud_credential_error"
-                ? "authentication_failed"
-                : event.error === "rate_limit" || event.error === "overloaded"
-                  ? "rate_limited"
-                  : "harness_failed"
-              : undefined;
+            terminalError = event.error ? nativeHarnessError({ code: event.error }, "assistant").code : undefined;
             if (privateUsage) continue;
             messages.complete(event);
           } else if (event.type === "user") {
@@ -318,7 +312,7 @@ export class ClaudeDriver implements Driver {
         throw Error("claude_stream_closed_without_result");
       } catch (error) {
         if (interrupted || c.signal.aborted) return "interrupted" as const;
-        throw error;
+        throw error instanceof HarnessError ? error : nativeHarnessError(error, "session/prompt");
       } finally {
         closed = true;
         wake?.();

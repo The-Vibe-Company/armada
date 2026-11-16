@@ -52,17 +52,23 @@ Production API and MCP share one controller. Boat/Modal routing and default Boat
 archive authorization are unchanged. No credential is resolved for read/cleanup;
 no worker receives host or model credentials. No migration or new package.
 
-## Truthful discovery
+## Historical discovery contract (#1380)
 
 launch/options adds status and logs capability names. Docker status/logs/stop/delete
 are true only while their normal controller is installed and host support enabled.
-Normal launch remains false until the normal API/CLI launch handler ships, even
-if private preview placement is enabled. Normal followupPrompts and resume remain
+At that increment, normal launch remained false until the normal API/CLI launch handler shipped, even
+if private preview placement is enabled. Normal followupPrompts and resume were
 false. Unsupported fields retain server-written short reasons. The frontend can
 replace its read-only Docker placeholder with the existing conversation reader
 and these cleanup actions, while keeping unsupported controls disabled.
 
-## Exact coordinator check on the same host
+For current discovery, use the [host reference](docker-host-daemon.md#dashboard-availability)
+and its [retained-host check](docker-host-daemon.md#host-listdiscovery-acceptance-on-a-retained-host).
+With host support, placement and a valid installed runtime manifest, the current
+server enables normal launch, follow-up and resume; the old false values above
+are not current acceptance criteria.
+
+## Historical coordinator check on the same host
 
 After deploying this revision with the existing explicit Docker flags/x64 manifest,
 use the same SSH configuration, staging org and current model-account pin as the

@@ -1484,6 +1484,59 @@ function launchRoute(body: Row, userId: string | null, route = "sandbox/launch")
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   state.launches.push(body);
   state.launchRoutes.push(route);
+  // #681: omitted connections are the caller's enabled defaults, snapshotted here; every one must be connected.
+  const ids = Array.isArray(body.connections)
+    ? body.connections.map(String)
+    : visibleConnections(String(body.org), userId)
+        .filter((row) => row.defaultForLaunch && row.status !== "disabled")
+        .map((row) => String(row.id));
+  for (const cid of ids) {
+    const connection = visibleConnections(String(body.org), userId).find((row) => row.id === cid);
+    if (!connection) return controlFail(404, "not_found", "A connection is not available.");
+    if (connection.status !== "connected")
+      return controlFail(
+        403,
+        "forbidden",
+        "Please reconnect every selected MCP connection before launching, or explicitly select connections to continue without it.",
+      );
+  }
+  if (body.provider === "docker") {
+    if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Only organization members can launch.");
+    const host = (dockerHosts ?? (body.org === LARGE ? largeHosts() : [])).find((row) => row.id === body.hostId);
+    if (!host) return controlFail(404, "not_found", "No such host.");
+    if (host.state !== "online") return controlFail(409, "conflict", "The host is not online.");
+    const account = state.credentials.find(
+      (row) =>
+        row.id === body.credentialId &&
+        ((row.scope === "user" && row.owner_id === userId) || (row.scope === "org" && row.owner_id === body.org)),
+    );
+    if (account?.status !== "active" || MODEL_KINDS[String(account.kind)] !== body.harness)
+      return controlFail(400, "invalid", "That account cannot run this agent.");
+    const row = sandbox(
+      crypto.randomUUID(),
+      `docker_launched_${++sequence}`,
+      "",
+      userId,
+      String(body.harness),
+      body.prompt ? "running" : "ready",
+      new Date().toISOString(),
+    );
+    Object.assign(row, {
+      org_id: body.org,
+      provider: "docker",
+      golden_id: null,
+      boat_id: null,
+      docker_host_id: body.hostId,
+      connections: ids,
+      credential_id: body.credentialId,
+      credential_version: account.version,
+      model: body.model,
+      reasoning_effort: body.reasoningEffort,
+      visibility: "private",
+    });
+    state.sandboxes.unshift(row);
+    return json({ sandbox: { id: row.id, provider: "docker" } });
+  }
   const source = liveGoldens(userId).find(
     (row) => row.name === body.golden && row.provider === body.provider && row.org_id === body.org,
   );
@@ -1510,22 +1563,6 @@ function launchRoute(body: Row, userId: string | null, route = "sandbox/launch")
   // As the server maps Boat's `machine_class_plan_required` ProviderError: 403 forbidden, nothing allocated.
   if (sized && body.size !== undefined && body.size === state.refuseSize)
     return controlFail(403, "forbidden", "Requested size cannot be allocated.");
-  // #681: omitted connections are the caller's enabled defaults, snapshotted here; every one must be connected.
-  const ids = Array.isArray(body.connections)
-    ? body.connections.map(String)
-    : visibleConnections(String(body.org), userId)
-        .filter((row) => row.defaultForLaunch && row.status !== "disabled")
-        .map((row) => String(row.id));
-  for (const cid of ids) {
-    const connection = visibleConnections(String(body.org), userId).find((row) => row.id === cid);
-    if (!connection) return controlFail(404, "not_found", "A connection is not available.");
-    if (connection.status !== "connected")
-      return controlFail(
-        403,
-        "forbidden",
-        "Please reconnect every selected MCP connection before launching, or explicitly select connections to continue without it.",
-      );
-  }
   const row = sandbox(
     crypto.randomUUID(),
     `bx_launched_${++sequence}`,
@@ -1535,6 +1572,7 @@ function launchRoute(body: Row, userId: string | null, route = "sandbox/launch")
     body.prompt ? "running" : "ready",
     new Date().toISOString(),
   );
+  row.org_id = source.org_id;
   row.model = body.model;
   row.reasoning_effort = body.reasoningEffort;
   if (body.armadaAccess) row.visibility = "private";
@@ -1745,6 +1783,7 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
     ],
     enable: ["org", "id", "expectedVersion"],
     pause: ["org", "id", "expectedVersion"],
+    delete: ["org", "id", "expectedVersion"],
   };
   if (!fields[operation] || Object.keys(body).some((key) => !fields[operation]!.includes(key)))
     return controlFail(400, "invalid", "Invalid routine request.");
@@ -1787,6 +1826,7 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
         String(body.templateId),
         Number(body.templateRevision),
       ),
+      orgId: body.org,
       prompt: body.prompt,
       intervalHours: body.intervalHours,
       ttlSeconds: body.ttlSeconds ?? 3600,
@@ -1812,7 +1852,7 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
     return controlFail(403, "forbidden", "Routine administrator permission required.");
   if (body.expectedVersion !== item.version) return controlFail(409, "conflict", "Routine version changed.");
   Object.assign(item, {
-    status: operation === "enable" ? "enabled" : "paused",
+    status: operation === "enable" ? "enabled" : operation === "delete" ? "deleted" : "paused",
     version: Number(item.version) + 1,
     nextDueAt:
       operation === "enable" ? new Date(Date.now() + Number(item.intervalHours) * 3600000).toISOString() : null,
@@ -2018,6 +2058,7 @@ function templateRoute(route: string, body: Row, request: Request): Response {
         body.prompt ? "running" : "ready",
         now,
       );
+      launched.org_id = golden.org_id;
       launched.model = def.model;
       launched.reasoning_effort = def.reasoningEffort;
       launched.provider = golden.provider;
