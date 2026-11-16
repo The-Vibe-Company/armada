@@ -9,6 +9,7 @@ import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { handleControlRequest } from "../../mcp-server/src/control.ts";
 import { providerRegistry } from "../../mcp-server/src/http.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
+import { rowOnlyConnection } from "../../mcp-server/test/row-only-database.ts";
 import helperManifest from "../helper/manifest.json";
 import {
   connectGolden,
@@ -31,273 +32,262 @@ const KEY = Buffer.alloc(32, 7).toString("base64");
 const APP = { clientId: "Iv1.test", clientSecret: "github-client-secret" };
 
 describe("createGoldenCreateService, wired to a real database", () => {
+  const connection = rowOnlyConnection();
   test("refuses a caller with no GitHub connection before touching the provider or the database", async () => {
-    const db = await openMigratedDatabase();
-    try {
-      const { actor } = await fixture(db);
-      const service = createGoldenCreateService({
-        sql: db,
-        github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP },
-        installationApp: null,
-      });
-      const untouched: Provider = readyProvider();
-      await expect(
-        service.create(untouched, actor, { name: "web", visibility: "org", repos: ["acme/web"] }),
-      ).rejects.toThrow(GoldenError);
-      const rows = await db.query("select 1 from goldens");
-      expect(rows.rows).toHaveLength(0);
-    } finally {
-      await db.close();
-    }
+    const db = await connection();
+    const { actor } = await fixture(db);
+    const service = createGoldenCreateService({
+      sql: db,
+      github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP },
+      installationApp: null,
+    });
+    const untouched: Provider = readyProvider();
+    await expect(
+      service.create(untouched, actor, { name: "web", visibility: "org", repos: ["acme/web"] }),
+    ).rejects.toThrow(GoldenError);
+    const rows = await db.query("select 1 from goldens");
+    expect(rows.rows).toHaveLength(0);
   });
 
   test.each(["boat", "modal"] as const)(
     "secure %s checkout persists provider-specific identity without Boat aliases",
     async (providerId) => {
-      const db = await openMigratedDatabase();
-      try {
-        const { actor, userId } = await fixture(db);
-        await connectGitHub(db, userId);
-        const sshCalls: { token: string; script: string }[] = [];
-        // PGlite has one connection. Route a provider's read-only validation to the active
-        // transaction instead of deadlocking an independent pool read (production Bun SQL pools).
-        let active: Sql | undefined;
-        const sql: Sql = {
-          query: (text, params) => (active ?? db).query(text, params),
-          transaction: (work) =>
-            db.transaction(async (tx) => {
-              active = tx;
-              try {
-                return await work(tx);
-              } finally {
-                active = undefined;
-              }
-            }),
-        };
-        const serviceOptions = {
-          github: { store: createSqlVaultStore(sql), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
-          installationApp: null,
-          fetch: fakeGitHubFetch(),
-          ssh: async (
-            _provider: Provider,
-            input: {
-              token: string;
-              script: string;
-              onWarning?: (warning: "skillpack_download_unavailable" | "skillpack_user_local_only") => void;
-            },
-          ) => {
-            if (providerId === "modal") input.onWarning?.("skillpack_download_unavailable");
-            sshCalls.push(input);
+      const db = await connection();
+      const { actor, userId } = await fixture(db);
+      await connectGitHub(db, userId);
+      const sshCalls: { token: string; script: string }[] = [];
+      // PGlite has one connection. Route a provider's read-only validation to the active
+      // transaction instead of deadlocking an independent pool read (production Bun SQL pools).
+      let active: Sql | undefined;
+      const sql: Sql = {
+        query: (text, params) => (active ?? db).query(text, params),
+        transaction: (work) =>
+          db.transaction(async (tx) => {
+            active = tx;
+            try {
+              return await work(tx);
+            } finally {
+              active = undefined;
+            }
+          }),
+      };
+      const serviceOptions = {
+        github: { store: createSqlVaultStore(sql), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+        installationApp: null,
+        fetch: fakeGitHubFetch(),
+        ssh: async (
+          _provider: Provider,
+          input: {
+            token: string;
+            script: string;
+            onWarning?: (warning: "skillpack_download_unavailable" | "skillpack_user_local_only") => void;
           },
-        };
-        const { maxGoldens: _capacity, backendIdentity: _identity, ...uncapped } = readyProvider();
-        const provider: Provider = providerId === "modal" ? { ...uncapped, id: "modal" } : readyProvider();
-        let builders = 0;
-        const createBuilder = provider.createGolden;
-        provider.createGolden = async (input) => {
-          builders++;
-          return createBuilder(input);
-        };
-        const modal = { workspace: "workspace-authority", environment: "main", appId: "ap-immutable" };
-        const store = createSqlVaultStore(sql);
-        const orgPair = { token_id: "ak-org000001", token_secret: "as-org000001" };
-        let activePair = orgPair;
-        for (const [scope, owner, value] of [
-          ["org", actor.orgId, orgPair],
-          ["user", actor.userId, { token_id: "ak-personal01", token_secret: "as-personal01" }],
-        ] as const)
-          await db.query("insert into credentials(scope,owner_id,kind,value_enc) values($1,$2,'modal',$3)", [
-            scope,
-            owner,
-            await encryptSecret(JSON.stringify(value), KEY),
-          ]);
-        await store.setOrgBoatKey(actor.orgId, await encryptSecret("boat-test", KEY));
-        const authStore = createMemoryAuthStore();
-        authStore.addMembership(actor.userId, { orgId: actor.orgId, name: "Example", role: "admin" });
-        const registry = providerRegistry({
-          vault: store,
-          encryptionKey: KEY,
-          providerFor: () => {
-            expect(providerId).toBe("boat");
-            return provider;
-          },
-          modalProviderFor: (tokens, binding, context) => {
-            expect(tokens).toEqual({ tokenId: activePair.token_id, tokenSecret: activePair.token_secret });
-            expect(binding).toEqual(modal);
-            expect(context.credentialScope).toBe("org");
-            expect(context.caller.userId).toBe(actor.userId);
-            return provider;
-          },
-        });
-        const workerTargets: unknown[] = [];
-        const jobs = new GoldenBuildJobs({
-          sql,
-          encryptionKey: KEY,
-          service: serviceOptions,
-          provider: (freshActor, visibility, target) => {
-            expect(visibility).toBe("org");
-            expect(target).toEqual({
-              provider: providerId,
-              orgId: actor.orgId,
-              visibility: "org",
-              sourceGoldenVisibility: "org",
-              modal: providerId === "modal" ? modal : null,
-            });
-            workerTargets.push(target);
-            return registry.resolve(target, { userId: freshActor.userId });
-          },
-        });
-        let configurationCalls = 0;
-        const control = {
-          authStore,
-          store,
-          encryptionKey: KEY,
-          goldenBuilds: jobs,
-          providerFor: () => provider,
-          supabase: {
-            supabaseUrl: "https://supabase.test",
-            anonKey: "anon",
-            fetch: (async () => Response.json({ id: actor.userId })) as unknown as typeof fetch,
-          },
-          goldenTarget: async (target: Omit<import("../src/sandbox-provider.ts").ProviderTarget, "modal">) => {
-            configurationCalls++;
-            return { ...target, modal: providerId === "modal" ? modal : null };
-          },
-          providers: registry,
-        };
-        const request = (path: string, body: object) =>
-          handleControlRequest(
-            new Request(`https://armada.test/api/v1/${path}`, {
-              method: "POST",
-              headers: { authorization: "Bearer eyJheader.eyJpayload.signature" },
-              body: JSON.stringify(body),
-            }),
-            control,
-          );
-        const response = await request("golden/create", {
-          name: "web",
-          provider: providerId,
-          repos: ["acme/web"],
-          setup: "echo setup",
-          idempotencyKey: "async-build-contract-01",
-        });
-        expect(response?.status).toBe(202);
-        const admitted = (await response?.json()) as GoldenBuildStatus;
-        expect(admitted).toMatchObject({ state: "queued", provider: providerId, result: null });
-        expect(builders).toBe(0);
-        expect(sshCalls).toHaveLength(0);
-        expect((await db.query("select id from goldens")).rows).toHaveLength(0);
-        const encrypted = (
-          await db.query<{ payload_enc: Uint8Array; reservation_id: string | null }>(
-            "select payload_enc,reservation_id from golden_build_jobs",
-          )
-        ).rows[0]!;
-        const payload = await import("../src/crypto.ts").then((crypto) =>
-          crypto.decryptSecret(new Uint8Array(encrypted.payload_enc), KEY),
-        );
-        expect(JSON.parse(payload)).toMatchObject({
-          provider: providerId,
-          modal: providerId === "modal" ? modal : null,
-        });
-        expect(payload).not.toContain(orgPair.token_secret);
-        expect(encrypted.reservation_id === null).toBe(providerId === "modal");
-        activePair = { token_id: "ak-orgrotated01", token_secret: "as-orgrotated01" };
-        await db.query("update credentials set value_enc=$2 where scope='org' and owner_id=$1 and kind='modal'", [
-          actor.orgId,
-          await encryptSecret(JSON.stringify(activePair), KEY),
+        ) => {
+          if (providerId === "modal") input.onWarning?.("skillpack_download_unavailable");
+          sshCalls.push(input);
+        },
+      };
+      const { maxGoldens: _capacity, backendIdentity: _identity, ...uncapped } = readyProvider();
+      const provider: Provider = providerId === "modal" ? { ...uncapped, id: "modal" } : readyProvider();
+      let builders = 0;
+      const createBuilder = provider.createGolden;
+      provider.createGolden = async (input) => {
+        builders++;
+        return createBuilder(input);
+      };
+      const modal = { workspace: "workspace-authority", environment: "main", appId: "ap-immutable" };
+      const store = createSqlVaultStore(sql);
+      const orgPair = { token_id: "ak-org000001", token_secret: "as-org000001" };
+      let activePair = orgPair;
+      for (const [scope, owner, value] of [
+        ["org", actor.orgId, orgPair],
+        ["user", actor.userId, { token_id: "ak-personal01", token_secret: "as-personal01" }],
+      ] as const)
+        await db.query("insert into credentials(scope,owner_id,kind,value_enc) values($1,$2,'modal',$3)", [
+          scope,
+          owner,
+          await encryptSecret(JSON.stringify(value), KEY),
         ]);
-        expect(await jobs.runOne()).toBe(true);
-        expect(workerTargets).toHaveLength(providerId === "modal" ? 2 : 1);
-        expect(configurationCalls).toBe(1); // Never rederive App binding during execution.
-        expect(builders).toBe(1);
-        const status = await request("golden/build/status", { jobId: admitted.jobId });
-        expect(status?.status).toBe(200);
-        const completed = (await status?.json()) as GoldenBuildStatus;
-        expect(completed).toMatchObject({
-          state: "succeeded",
-          provider: providerId,
-          result: {
-            snapshot: "golden-bx-1",
-            warnings: providerId === "modal" ? ["skillpack_download_unavailable"] : [],
-          },
-        });
-        const persistedWarning = (
-          await sql.query<{ build_warnings: string[] }>(
-            "select build_warnings from public.goldens where name=$1 and provider=$2",
-            [completed.result?.name, providerId],
-          )
-        ).rows[0];
-        expect(persistedWarning?.build_warnings).toEqual(
-          providerId === "modal" ? ["skillpack_download_unavailable"] : [],
+      await store.setOrgBoatKey(actor.orgId, await encryptSecret("boat-test", KEY));
+      const authStore = createMemoryAuthStore();
+      authStore.addMembership(actor.userId, { orgId: actor.orgId, name: "Example", role: "admin" });
+      const registry = providerRegistry({
+        vault: store,
+        encryptionKey: KEY,
+        providerFor: () => {
+          expect(providerId).toBe("boat");
+          return provider;
+        },
+        modalProviderFor: (tokens, binding, context) => {
+          expect(tokens).toEqual({ tokenId: activePair.token_id, tokenSecret: activePair.token_secret });
+          expect(binding).toEqual(modal);
+          expect(context.credentialScope).toBe("org");
+          expect(context.caller.userId).toBe(actor.userId);
+          return provider;
+        },
+      });
+      const workerTargets: unknown[] = [];
+      const jobs = new GoldenBuildJobs({
+        sql,
+        encryptionKey: KEY,
+        service: serviceOptions,
+        provider: (freshActor, visibility, target) => {
+          expect(visibility).toBe("org");
+          expect(target).toEqual({
+            provider: providerId,
+            orgId: actor.orgId,
+            visibility: "org",
+            sourceGoldenVisibility: "org",
+            modal: providerId === "modal" ? modal : null,
+          });
+          workerTargets.push(target);
+          return registry.resolve(target, { userId: freshActor.userId });
+        },
+      });
+      let configurationCalls = 0;
+      const control = {
+        authStore,
+        store,
+        encryptionKey: KEY,
+        goldenBuilds: jobs,
+        providerFor: () => provider,
+        supabase: {
+          supabaseUrl: "https://supabase.test",
+          anonKey: "anon",
+          fetch: (async () => Response.json({ id: actor.userId })) as unknown as typeof fetch,
+        },
+        goldenTarget: async (target: Omit<import("../src/sandbox-provider.ts").ProviderTarget, "modal">) => {
+          configurationCalls++;
+          return { ...target, modal: providerId === "modal" ? modal : null };
+        },
+        providers: registry,
+      };
+      const request = (path: string, body: object) =>
+        handleControlRequest(
+          new Request(`https://armada.test/api/v1/${path}`, {
+            method: "POST",
+            headers: { authorization: "Bearer eyJheader.eyJpayload.signature" },
+            body: JSON.stringify(body),
+          }),
+          control,
         );
-        expect(sshCalls).toHaveLength(1);
-        expect(sshCalls[0]?.token).toBe("ghu_caller_access_token");
+      const response = await request("golden/create", {
+        name: "web",
+        provider: providerId,
+        repos: ["acme/web"],
+        setup: "echo setup",
+        idempotencyKey: "async-build-contract-01",
+      });
+      expect(response?.status).toBe(202);
+      const admitted = (await response?.json()) as GoldenBuildStatus;
+      expect(admitted).toMatchObject({ state: "queued", provider: providerId, result: null });
+      expect(builders).toBe(0);
+      expect(sshCalls).toHaveLength(0);
+      expect((await db.query("select id from goldens")).rows).toHaveLength(0);
+      const encrypted = (
+        await db.query<{ payload_enc: Uint8Array; reservation_id: string | null }>(
+          "select payload_enc,reservation_id from golden_build_jobs",
+        )
+      ).rows[0]!;
+      const payload = await import("../src/crypto.ts").then((crypto) =>
+        crypto.decryptSecret(new Uint8Array(encrypted.payload_enc), KEY),
+      );
+      expect(JSON.parse(payload)).toMatchObject({
+        provider: providerId,
+        modal: providerId === "modal" ? modal : null,
+      });
+      expect(payload).not.toContain(orgPair.token_secret);
+      expect(encrypted.reservation_id === null).toBe(providerId === "modal");
+      activePair = { token_id: "ak-orgrotated01", token_secret: "as-orgrotated01" };
+      await db.query("update credentials set value_enc=$2 where scope='org' and owner_id=$1 and kind='modal'", [
+        actor.orgId,
+        await encryptSecret(JSON.stringify(activePair), KEY),
+      ]);
+      expect(await jobs.runOne()).toBe(true);
+      expect(workerTargets).toHaveLength(providerId === "modal" ? 2 : 1);
+      expect(configurationCalls).toBe(1); // Never rederive App binding during execution.
+      expect(builders).toBe(1);
+      const status = await request("golden/build/status", { jobId: admitted.jobId });
+      expect(status?.status).toBe(200);
+      const completed = (await status?.json()) as GoldenBuildStatus;
+      expect(completed).toMatchObject({
+        state: "succeeded",
+        provider: providerId,
+        result: {
+          snapshot: "golden-bx-1",
+          warnings: providerId === "modal" ? ["skillpack_download_unavailable"] : [],
+        },
+      });
+      const persistedWarning = (
+        await sql.query<{ build_warnings: string[] }>(
+          "select build_warnings from public.goldens where name=$1 and provider=$2",
+          [completed.result?.name, providerId],
+        )
+      ).rows[0];
+      expect(persistedWarning?.build_warnings).toEqual(
+        providerId === "modal" ? ["skillpack_download_unavailable"] : [],
+      );
+      expect(sshCalls).toHaveLength(1);
+      expect(sshCalls[0]?.token).toBe("ghu_caller_access_token");
 
-        const row = await db.query<{
-          visibility: string;
-          boat_snapshot_id: string;
-          boat_sandbox_id: string;
-          config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
-        }>(
-          "select provider, modal_app_id, provider_snapshot_id, provider_sandbox_id, visibility, boat_snapshot_id, boat_sandbox_id, config, helper_receipt from goldens where name = 'web'",
-        );
-        expect(row.rows[0]).toMatchObject({
-          visibility: "org",
-          provider: providerId,
-          modal_app_id: providerId === "modal" ? modal.appId : null,
-          provider_snapshot_id: "golden-bx-1",
-          helper_receipt: {
-            version: "0.1.0",
-            protocol: 1,
-            digest: helperManifest.x86_64.digest,
-            platform: "x86_64",
-            capabilities: ["diagnose"],
-            snapshotId: "golden-bx-1",
-          },
-          provider_sandbox_id: null,
-          boat_snapshot_id: providerId === "boat" ? "golden-bx-1" : null,
-          boat_sandbox_id: null,
-          config: {
-            repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
-            init: ["echo setup"],
-          },
-        });
-        const slots = await db.query("select golden_id,build_id from golden_backend_slots");
-        expect(slots.rows).toHaveLength(providerId === "boat" ? 1 : 0);
-        if (providerId === "boat") expect((slots.rows[0] as { build_id: string | null }).build_id).toBeNull();
-      } finally {
-        await db.close();
-      }
+      const row = await db.query<{
+        visibility: string;
+        boat_snapshot_id: string;
+        boat_sandbox_id: string;
+        config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
+      }>(
+        "select provider, modal_app_id, provider_snapshot_id, provider_sandbox_id, visibility, boat_snapshot_id, boat_sandbox_id, config, helper_receipt from goldens where name = 'web'",
+      );
+      expect(row.rows[0]).toMatchObject({
+        visibility: "org",
+        provider: providerId,
+        modal_app_id: providerId === "modal" ? modal.appId : null,
+        provider_snapshot_id: "golden-bx-1",
+        helper_receipt: {
+          version: "0.1.0",
+          protocol: 1,
+          digest: helperManifest.x86_64.digest,
+          platform: "x86_64",
+          capabilities: ["diagnose"],
+          snapshotId: "golden-bx-1",
+        },
+        provider_sandbox_id: null,
+        boat_snapshot_id: providerId === "boat" ? "golden-bx-1" : null,
+        boat_sandbox_id: null,
+        config: {
+          repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
+          init: ["echo setup"],
+        },
+      });
+      const slots = await db.query("select golden_id,build_id from golden_backend_slots");
+      expect(slots.rows).toHaveLength(providerId === "boat" ? 1 : 0);
+      if (providerId === "boat") expect((slots.rows[0] as { build_id: string | null }).build_id).toBeNull();
     },
   );
 
   test("Boat capacity requires a backend identity and a second factory build is refused globally", async () => {
-    const db = await openMigratedDatabase();
-    try {
-      const { actor, userId } = await fixture(db);
-      await connectGitHub(db, userId);
-      const options = {
-        sql: db,
-        github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
-        installationApp: null,
-        fetch: fakeGitHubFetch(),
-        ssh: async () => {},
-      };
-      const service = createGoldenCreateService(options);
-      const noIdentity = readyProvider();
-      delete noIdentity.backendIdentity;
-      await expect(
-        service.create(noIdentity, actor, { name: "missing-id", visibility: "org", repos: ["acme/web"] }),
-      ).rejects.toThrow("backend identity");
-      await service.create(readyProvider(), actor, { name: "one", visibility: "org", repos: ["acme/web"] });
-      const anotherFactory = createGoldenCreateService(options);
-      await expect(
-        anotherFactory.create(readyProvider(), actor, { name: "two", visibility: "org", repos: ["acme/web"] }),
-      ).rejects.toThrow("capacity");
-      expect((await db.query("select 1 from goldens")).rows).toHaveLength(1);
-    } finally {
-      await db.close();
-    }
+    const db = await connection();
+    const { actor, userId } = await fixture(db);
+    await connectGitHub(db, userId);
+    const options = {
+      sql: db,
+      github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+      installationApp: null,
+      fetch: fakeGitHubFetch(),
+      ssh: async () => {},
+    };
+    const service = createGoldenCreateService(options);
+    const noIdentity = readyProvider();
+    delete noIdentity.backendIdentity;
+    await expect(
+      service.create(noIdentity, actor, { name: "missing-id", visibility: "org", repos: ["acme/web"] }),
+    ).rejects.toThrow("backend identity");
+    await service.create(readyProvider(), actor, { name: "one", visibility: "org", repos: ["acme/web"] });
+    const anotherFactory = createGoldenCreateService(options);
+    await expect(
+      anotherFactory.create(readyProvider(), actor, { name: "two", visibility: "org", repos: ["acme/web"] }),
+    ).rejects.toThrow("capacity");
+    expect((await db.query("select 1 from goldens")).rows).toHaveLength(1);
   });
 
   test.each([
@@ -307,7 +297,8 @@ describe("createGoldenCreateService, wired to a real database", () => {
   ])(
     "factory rolls back on finalize failure and redacts driver diagnostics ($expected)",
     async ({ code, errno, expected }) => {
-      const db = await openMigratedDatabase();
+      const db = await connection();
+      const transaction = db.transaction;
       const logs = spyOn(console, "error").mockImplementation(() => {});
       try {
         const { actor, userId } = await fixture(db);
@@ -356,78 +347,70 @@ describe("createGoldenCreateService, wired to a real database", () => {
           expect(JSON.stringify(diagnostics)).not.toContain(value);
       } finally {
         logs.mockRestore();
-        await db.close();
+        db.transaction = transaction;
       }
     },
   );
 
   test("with GITHUB_APP_PRIVATE_KEY configured, checkout uses a scoped installation token and revokes it", async () => {
-    const db = await openMigratedDatabase();
-    try {
-      const { actor, userId } = await fixture(db);
-      await connectGitHub(db, userId);
-      const installationApp: GitHubInstallationApp = {
-        appId: "1",
-        privateKey: generateKeyPairSync("rsa", { modulusLength: 2048 })
-          .privateKey.export({ type: "pkcs8", format: "pem" })
-          .toString(),
-      };
-      const revoked: string[] = [];
-      const fetchImpl = fakeGitHubFetch(revoked);
-      const sshCalls: { token: string }[] = [];
-      const service = createGoldenCreateService({
-        sql: db,
-        github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fetchImpl },
-        installationApp,
-        fetch: fetchImpl,
-        ssh: async (_provider, input) => {
-          sshCalls.push(input);
-        },
-      });
-      await service.create(readyProvider(), actor, { name: "web", visibility: "private", repos: ["acme/web"] });
-      expect(sshCalls[0]?.token).toBe("ghs_scoped_installation_token");
-      expect(revoked).toEqual(["ghs_scoped_installation_token"]);
-    } finally {
-      await db.close();
-    }
+    const db = await connection();
+    const { actor, userId } = await fixture(db);
+    await connectGitHub(db, userId);
+    const installationApp: GitHubInstallationApp = {
+      appId: "1",
+      privateKey: generateKeyPairSync("rsa", { modulusLength: 2048 })
+        .privateKey.export({ type: "pkcs8", format: "pem" })
+        .toString(),
+    };
+    const revoked: string[] = [];
+    const fetchImpl = fakeGitHubFetch(revoked);
+    const sshCalls: { token: string }[] = [];
+    const service = createGoldenCreateService({
+      sql: db,
+      github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fetchImpl },
+      installationApp,
+      fetch: fetchImpl,
+      ssh: async (_provider, input) => {
+        sshCalls.push(input);
+      },
+    });
+    await service.create(readyProvider(), actor, { name: "web", visibility: "private", repos: ["acme/web"] });
+    expect(sshCalls[0]?.token).toBe("ghs_scoped_installation_token");
+    expect(revoked).toEqual(["ghs_scoped_installation_token"]);
   });
 
   test("a fail-closed scan stops the build before any snapshot or database row", async () => {
-    const db = await openMigratedDatabase();
-    try {
-      const { actor, userId } = await fixture(db);
-      await connectGitHub(db, userId);
-      const stops: string[] = [];
-      const provider: Provider = {
-        ...readyProvider(),
-        exec: async () => ({
-          detached: false,
-          exitCode: 97,
-          stdout: "",
-          stderr: "",
-          timedOut: false,
-          truncated: false,
-        }),
-        stop: async ({ sandboxId }) => {
-          stops.push(sandboxId);
-        },
-      };
-      const service = createGoldenCreateService({
-        sql: db,
-        github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
-        installationApp: null,
-        fetch: fakeGitHubFetch(),
-        ssh: async () => {},
-      });
-      await expect(
-        service.create(provider, actor, { name: "web", visibility: "org", repos: ["acme/web"] }),
-      ).rejects.toThrow(GoldenError);
-      expect(stops).toEqual(["bx_1"]);
-      const rows = await db.query("select 1 from goldens");
-      expect(rows.rows).toHaveLength(0);
-    } finally {
-      await db.close();
-    }
+    const db = await connection();
+    const { actor, userId } = await fixture(db);
+    await connectGitHub(db, userId);
+    const stops: string[] = [];
+    const provider: Provider = {
+      ...readyProvider(),
+      exec: async () => ({
+        detached: false,
+        exitCode: 97,
+        stdout: "",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      }),
+      stop: async ({ sandboxId }) => {
+        stops.push(sandboxId);
+      },
+    };
+    const service = createGoldenCreateService({
+      sql: db,
+      github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+      installationApp: null,
+      fetch: fakeGitHubFetch(),
+      ssh: async () => {},
+    });
+    await expect(
+      service.create(provider, actor, { name: "web", visibility: "org", repos: ["acme/web"] }),
+    ).rejects.toThrow(GoldenError);
+    expect(stops).toEqual(["bx_1"]);
+    const rows = await db.query("select 1 from goldens");
+    expect(rows.rows).toHaveLength(0);
   });
 });
 
