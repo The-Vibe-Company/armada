@@ -38,18 +38,40 @@ export function LoginForm({ next, providers, initialError }: Props) {
   const error = fieldError ?? (step === "email" ? initialError : undefined);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {error && (
         <Alert variant="destructive">
           <AlertDescription id={errorId}>{error}</AlertDescription>
         </Alert>
       )}
 
+      {providers.length > 0 && (
+        <>
+          <form action={signInWithProvider} className="grid gap-2">
+            <input type="hidden" name="next" value={next} />
+            {providers.map((provider) => (
+              <SubmitButton
+                key={provider}
+                variant={provider === "github" ? "default" : "outline"}
+                className="h-10"
+                name="provider"
+                value={provider}
+              >
+                Continue with {PROVIDER_LABELS[provider]}
+              </SubmitButton>
+            ))}
+          </form>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <Separator className="flex-1" /> or with a code by email <Separator className="flex-1" />
+          </div>
+        </>
+      )}
+
       {step === "email" ? (
         <form action={sendAction} className="space-y-3">
           <input type="hidden" name="next" value={next} />
           <div className="space-y-2">
-            <Label htmlFor={emailId}>Email</Label>
+            <Label htmlFor={emailId}>Work email</Label>
             <Input
               ref={emailInput}
               id={emailId}
@@ -61,7 +83,9 @@ export function LoginForm({ next, providers, initialError }: Props) {
               aria-describedby={fieldError ? errorId : undefined}
             />
           </div>
-          <SubmitButton className="w-full">Email me a sign-in link</SubmitButton>
+          <SubmitButton variant="outline" className="h-10 w-full">
+            Email me a code
+          </SubmitButton>
         </form>
       ) : (
         <form action={verifyAction} className="space-y-3">
@@ -87,22 +111,6 @@ export function LoginForm({ next, providers, initialError }: Props) {
           </div>
           <SubmitButton className="w-full">Sign in</SubmitButton>
         </form>
-      )}
-
-      {providers.length > 0 && (
-        <>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <Separator className="flex-1" /> or <Separator className="flex-1" />
-          </div>
-          <form action={signInWithProvider} className="grid gap-2">
-            <input type="hidden" name="next" value={next} />
-            {providers.map((provider) => (
-              <SubmitButton key={provider} variant="outline" name="provider" value={provider}>
-                Continue with {PROVIDER_LABELS[provider]}
-              </SubmitButton>
-            ))}
-          </form>
-        </>
       )}
     </div>
   );

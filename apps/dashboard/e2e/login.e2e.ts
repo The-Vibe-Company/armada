@@ -29,7 +29,7 @@ test("social login buttons show up when they are configured", async ({ page }) =
 test("a wrong code is refused with a clear message", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("alice@example.com");
-  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
+  await page.getByRole("button", { name: "Email me a code" }).click();
   const code = page.getByLabel("Code");
   await expect(code).toBeFocused();
   for (const attempt of ["000000", "000001"]) {
@@ -51,7 +51,7 @@ test("a login redirect cannot leave the site", async ({ page }) => {
   await page.context().clearCookies();
   await page.goto("/login?next=https%3A%2F%2Fevil.example%2F");
   await page.getByLabel("Email").fill("alice@example.com");
-  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
+  await page.getByRole("button", { name: "Email me a code" }).click();
   await page.getByLabel("Code").fill("123456");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page).toHaveURL(/\/sandboxes$/);

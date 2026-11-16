@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { BrandMark } from "@/components/brand-mark";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { enabledProviders } from "@/lib/auth-config";
 import { GITHUB_RESULT_MESSAGES } from "@/lib/github";
 import { INVITATION_ACCEPT_PATH } from "@/lib/invitations";
@@ -24,21 +23,24 @@ export default async function LoginPage({ searchParams }: Props) {
   const providers = enabledProviders(process.env.NEXT_PUBLIC_AUTH_PROVIDERS);
 
   return (
-    <main className="flex min-h-dvh items-center justify-center p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader className="items-center text-center">
-          <BrandMark className="mx-auto mb-2 size-10 rounded-xl [&_svg]:size-5" />
-          <CardTitle className="text-xl">Sign in to Armada</CardTitle>
-          <CardDescription>
-            {next === INVITATION_ACCEPT_PATH
-              ? "Use the address your invitation was sent to. We email you a sign-in link and a code."
-              : "We email you a sign-in link and a code. No password."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <LoginForm next={next} providers={providers} initialError={error} />
-        </CardContent>
-      </Card>
+    <main className="flex min-h-dvh items-center justify-center bg-background p-8">
+      <div className="flex w-full max-w-[360px] flex-col gap-6">
+        <header className="flex flex-col gap-4">
+          <BrandMark className="size-10 rounded-[10px] [&_svg]:size-6" />
+          <div className="space-y-1.5">
+            <h1 className="text-[22px] font-semibold tracking-[-0.015em]">Sign in to Armada</h1>
+            <p className="text-sm leading-normal text-muted-foreground">
+              {next === INVITATION_ACCEPT_PATH
+                ? "Use the address your invitation was sent to. We email you a sign-in link and a code."
+                : "Run Claude Code and Codex in sandboxes built from your repositories."}
+            </p>
+          </div>
+        </header>
+        <LoginForm next={next} providers={providers} initialError={error} />
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Prefer the terminal? <code>npm i -g @the-vibe-company/armada &amp;&amp; armada login</code>
+        </p>
+      </div>
     </main>
   );
 }

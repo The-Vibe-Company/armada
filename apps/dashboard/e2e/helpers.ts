@@ -33,7 +33,7 @@ export async function reset(): Promise<void> {
 export async function signIn(page: Page, email: string, next = "/sandboxes"): Promise<void> {
   await page.goto(`/login?next=${encodeURIComponent(next)}`);
   await page.getByLabel("Email").fill(email);
-  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
+  await page.getByRole("button", { name: "Email me a code" }).click();
   await page.getByLabel("Code").fill("123456");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.waitForURL(`**${next}`);
