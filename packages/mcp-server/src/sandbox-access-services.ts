@@ -179,22 +179,36 @@ export function createSandboxAccessServices(input: {
     },
     async stop(operation) {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
-      await sandboxActivity(stores.sandboxes, saved, { stopRequested: true }, async () => {
-        if (
-          (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop").catch(
-            () => {},
-          )) === "pending"
-        )
-          throw new ProviderError({
-            provider: provider.id,
-            code: "sandbox_not_ready",
-            retryable: true,
-            message: "Interruption is pending; retry stop after turns settle.",
-          });
-        recordStopDispatch(saved.id, saved.providerSandboxId, "managed_child_stop");
-        await provider.stop({ sandboxId: saved.providerSandboxId });
-        return { result: undefined, patch: { status: "stopped", stoppedAt: new Date().toISOString() } };
-      });
+      const scoped = createSqlData(sql)({
+        via: "service",
+        userId: operation.ownerId,
+        orgs: [{ orgId: operation.orgId, role: "member" }],
+      }).sandboxes;
+      await sandboxActivity(
+        scoped,
+        saved,
+        { status: "stopping", stopRequested: true, statusReason: null },
+        async () => {
+          if (
+            (await preserveBeforeStop(
+              input.sql,
+              provider,
+              saved.id,
+              saved.providerSandboxId,
+              "managed_child_stop",
+            ).catch(() => {})) === "pending"
+          )
+            throw new ProviderError({
+              provider: provider.id,
+              code: "sandbox_not_ready",
+              retryable: true,
+              message: "Interruption is pending; retry stop after turns settle.",
+            });
+          recordStopDispatch(saved.id, saved.providerSandboxId, "managed_child_stop");
+          await provider.stop({ sandboxId: saved.providerSandboxId });
+          return { result: undefined, patch: { status: "stopped", stoppedAt: new Date().toISOString() } };
+        },
+      );
     },
     async reconcile(operation, signal) {
       signal?.throwIfAborted();

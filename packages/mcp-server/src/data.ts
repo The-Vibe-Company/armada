@@ -669,7 +669,7 @@ export function createSqlData(
           fence += " and s.stop_requested_at is null";
         if (patch.advanceGeneration && patch.activityToken && patch.stopRequested === false)
           fence +=
-            " and (s.status_reason is distinct from 'idle_paused' or (s.status<>'stopping' and s.expires_at>clock_timestamp()))";
+            " and s.stop_requested_at is null and s.status<>'stopping' and (s.status_reason is distinct from 'idle_paused' or s.expires_at>clock_timestamp())";
         if (patch.expectedGeneration !== undefined) {
           params.push(patch.expectedGeneration);
           fence += ` and s.lifecycle_generation = $${params.length}`;

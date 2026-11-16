@@ -558,7 +558,9 @@ test("forward repair fails historical stopped rows and preserves live queued wor
 test("stranded receipts settle without replay while safe unlimited and paused work dispatches", async () => {
   for (const id of ids) await queue.accept(caller, { id, request_id: requests[0]!, prompt: "historical" });
   await db.query("update sandboxes set activity_lease_id=$2 where id=$1", [ids[0], requests[0]]);
-  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
+  await db.query("update sandboxes set status='stopped',status_reason='idle_paused',stopped_at=now() where id=$1", [
+    ids[1],
+  ]);
   await db.query("update sandboxes set status='running',task_prompt_id='busy_turn' where id=$1", [ids[2]]);
   const count = async () =>
     Number(
@@ -749,3 +751,31 @@ test("terminal admission creates neither queue entries nor reservations", async 
   expect((await db.query("select * from account_turn_queue")).rows).toHaveLength(0);
   expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(0);
 });
+
+// Runtime evidence is not permission to wake a sandbox after its owner stopped it.
+test.each(["boat", "modal", "docker"])(
+  "%s stopped runtime receipts are refused instead of resumed",
+  async (provider) => {
+    const input = { id: ids[1]!, request_id: requests[0]!, prompt: "old instruction" };
+    await db.query(
+      "update sandboxes set provider=$2,boat_runtime=($2='boat'),runtime_transport=case when $2='modal' then 'dialout' else null end where id=$1",
+      [input.id, provider],
+    );
+    await queue.accept(caller, input);
+    await db.query(
+      "update account_turn_queue set state='dispatching',dispatch_generation=2,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
+      [input.id],
+    );
+    await db.query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
+    await db.query("update sandboxes set status='stopped',lifecycle_generation=2 where id=$1", [input.id]);
+    let calls = 0;
+    queue.setDispatch(async () => {
+      calls++;
+      return { promptId: "unwanted_turn" };
+    });
+    await queue.reconcileOne(new AbortController().signal);
+    await queue.drain();
+    expect(calls).toBe(0);
+    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
+  },
+);

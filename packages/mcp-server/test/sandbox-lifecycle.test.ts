@@ -205,7 +205,8 @@ for (const outcome of [
       requestedTtlSeconds: 60,
       effectiveTtlSeconds: 60,
     });
-    if (outcome === "manual-stop") await db.query("update sandboxes set status='stopping' where id=$1", [id]);
+    if (outcome === "manual-stop")
+      await db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [id]);
     if (!externalStop && outcome !== "stale" && outcome !== "manual-stop")
       await db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [id]);
     const requests: string[] = [];
@@ -256,6 +257,7 @@ for (const outcome of [
         status_reason: string | null;
         stop_time_finite: boolean | null;
         provider_stop_retained: boolean | null;
+        stop_requested_at: Date | null;
       }>(
         "select *,isfinite(stopped_at) as stop_time_finite,stopped_at=$2::timestamptz as provider_stop_retained from sandboxes where id=$1",
         [id, validStoppedAt],
@@ -273,6 +275,7 @@ for (const outcome of [
         ? "expired"
         : null,
     );
+    if (outcome === "manual-stop") expect(row.stop_requested_at).not.toBeNull();
     expect(row.effective_ttl_seconds).toBe(60);
     expect(row.requested_ttl_seconds).toBe(60);
     if (outcome === "external-stop") expect(row.provider_stop_retained).toBe(true);
@@ -382,6 +385,17 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
       }).sandboxes;
       const confirmed = await store.get(id);
       if (!confirmed) throw Error("missing confirmed failed sandbox");
+      if (observation === "expired") {
+        let dispatched = false;
+        await expect(
+          sandboxActivity(store, confirmed, { status: "running", stopRequested: false }, async () => {
+            dispatched = true;
+            return { result: undefined, patch: {} };
+          }),
+        ).rejects.toThrow();
+        expect(dispatched).toBe(false);
+        return;
+      }
       // The production send-admission owner rearms the persisted policy, then the
       // real SDK resumes the stopped machine and admits its next native prompt.
       await sandboxActivity(

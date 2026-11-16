@@ -223,7 +223,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
             const restarted = await tx.query(
               `update public.sandboxes set status='starting',status_reason=null,stop_requested_at=null,stopped_at=null,
                  lifecycle_generation=lifecycle_generation+1
-                 where id=$1 and status='stopped' and deleted_at is null and expires_at>now() returning id`,
+                 where id=$1 and status='stopped' and (stop_requested_at is null or status_reason='idle_paused') and deleted_at is null and expires_at>now() returning id`,
               [sandboxId],
             );
             if (!restarted.rows.length) deny();

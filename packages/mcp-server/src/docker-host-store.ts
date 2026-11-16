@@ -836,7 +836,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         if (selection.operation === "stop")
           await tx.query(
-            `update public.sandboxes set status='stopping',status_reason=case when $2::boolean then 'idle_paused' else status_reason end,stop_requested_at=coalesce(stop_requested_at,now()),
+            `update public.sandboxes set status='stopping',status_reason=case when $2::boolean then 'idle_paused' else nullif(status_reason,'idle_paused') end,stop_requested_at=coalesce(stop_requested_at,now()),
            lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running')`,
             [sandboxId, selection.operation === "stop" && selection.idleCheckpointRequest !== undefined],
           );

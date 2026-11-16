@@ -48,6 +48,8 @@ type Row = {
   status: SandboxRecord["status"];
   status_reason: string | null;
   stopped_at: string | Date | null;
+  lifecycle_generation: number;
+  stop_requested_at: Date | string | null;
   model: string | null;
   reasoning_effort: string | null;
   conversation_ids: string[];
@@ -116,7 +118,7 @@ export function createDockerSandboxControls(
     const row = (
       await sql.query<Row>(
         `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.docker_snapshot_id,s.harness,s.status,s.status_reason,
-        s.stopped_at,s.model,s.reasoning_effort,s.conversation_ids,s.expires_at,s.usage_turns,m.role,
+        s.stopped_at,s.lifecycle_generation,s.stop_requested_at,s.model,s.reasoning_effort,s.conversation_ids,s.expires_at,s.usage_turns,m.role,
        (select coalesce(max(c.sequence),0)::text from public.runtime_commands c where c.sandbox_id=s.id and starts_with(c.request_id,'docker_prompt_')) as prompt_sequence,
        (select coalesce(max(e.sequence),0)::text from public.runtime_events e where e.sandbox_id=s.id) as journal_sequence
        from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2
@@ -510,6 +512,17 @@ export function createDockerSandboxControls(
         : current.status === "deleted" ||
           (["stopped", "failed"].includes(current.status) && current.stopped_at !== null);
     const result = (current: Row) => ({ id: current.id, status: current.status });
+    if (
+      operation === "stop" &&
+      (row.status_reason === "idle_paused" || (row.status === "stopped" && row.stop_requested_at === null))
+    ) {
+      const retired = await sql.query(
+        `update public.sandboxes set status_reason=null,stop_requested_at=coalesce(stop_requested_at,now()),
+         lifecycle_generation=lifecycle_generation+1 where id=$1 and lifecycle_generation=$2 returning id`,
+        [row.id, row.lifecycle_generation],
+      );
+      if (!retired.rows.length) throw failure("conflict", "Sandbox changed during stop; retry stop.");
+    }
     if (done(row)) return result(row);
     if (operation === "delete" && !["stopped", "failed"].includes(row.status))
       throw failure("conflict", "Stop the Docker sandbox before deleting it.");
@@ -558,6 +571,8 @@ export function createDockerSandboxControls(
     }
   }
   async function resume(caller: Caller, row: Row, requestId?: string) {
+    if (row.status === "stopped" && row.stop_requested_at !== null && row.status_reason !== "idle_paused")
+      throw failure("conflict", "Owner-stopped Docker sandboxes cannot resume; launch a new sandbox.");
     if (!options.resume) throw failure("unavailable", "Docker sandbox resume is unavailable.");
     if (row.owner_id !== caller.userId) throw denied();
     if (!requestId) throw invalid();

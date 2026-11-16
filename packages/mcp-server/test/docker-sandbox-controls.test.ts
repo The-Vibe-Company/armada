@@ -741,7 +741,32 @@ test("normal Docker send continues the saved native conversation and retries exa
   await rejected(invoke(caller(f.admin, "admin"), "send", args, controller), "conflict");
 });
 
-test("ordinary Docker send resumes once and never wakes a stopped sandbox for a prior prompt UUID", async () => {
+test("owner-stopped Docker compute refuses new sends and resume without host dispatch", async () => {
+  const f = await fixture();
+  await ready(f);
+  const requestId = randomUUID();
+  await reservations.stop(f.actor, f.sandbox.id, requestId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
+  const controller = createDockerSandboxControls(sql, key, {
+    send: createDockerNormalSend(sql, key, { enabled: true }),
+  });
+  await database().query("update sandboxes set status_reason='idle_paused' where id=$1", [f.sandbox.id]);
+  await invoke(caller(f.actor), "stop", { id: f.sandbox.id }, controller);
+  expect((await database().query("select status_reason from sandboxes where id=$1", [f.sandbox.id])).rows[0]).toEqual({
+    status_reason: null,
+  });
+  await rejected(
+    invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller),
+    "conflict",
+  );
+  await rejected(
+    invoke(caller(f.actor), "send", { id: f.sandbox.id, request_id: randomUUID(), prompt: "late work" }, controller),
+    "conflict",
+  );
+  expect(await hosts.poll(f.hostToken, f.installationId, "2.28.0")).toBeNull();
+});
+
+test("retained external Docker stop resumes once and never wakes a stopped sandbox for a prior prompt UUID", async () => {
   const db = database();
   const f = await fixture();
   let session = await ready(f);
@@ -755,6 +780,8 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
     const requestId = randomUUID();
     await reservations.stop(f.actor, f.sandbox.id, requestId);
     await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
+    // External retained shutdown has no owner stop intent.
+    await db.query("update sandboxes set stop_requested_at=null where id=$1", [f.sandbox.id]);
   };
   await stop();
   let now = 0,

@@ -334,3 +334,28 @@ test("a provider-reported lost workspace is failed, never advertised as a resuma
   expect(failed.stoppedAt).not.toBeNull();
   await f.worker.drain();
 });
+
+test("owner stop retires an idle pause so a later send cannot wake compute", async () => {
+  const f = await fixture();
+  await f.tick();
+  f.setClock(f.at + 600_000);
+  await f.tick();
+  const context = {
+    caller: f.caller,
+    data: f.data,
+    provider: async () => f.provider,
+    launchCredentials: { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) },
+    exposedSecrets: async () => [],
+    now: () => new Date(f.at + 600_000),
+    sleep: async () => {},
+  };
+  expect(await callSharedTool(context, "stop", { id: f.id })).toMatchObject({ status: "stopped" });
+  const stopped = (await f.data.sandboxes.get(f.id))!;
+  expect(stopped.statusReason).toBeNull();
+  expect(stopped.stopRequestedAt).not.toBeNull();
+  await expect(
+    callSharedTool(context, "send", { id: f.id, prompt: "late receipt", request_id: crypto.randomUUID() }),
+  ).rejects.toThrow();
+  expect(f.stops()).toBe(1);
+  await f.worker.drain();
+});
