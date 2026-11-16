@@ -3,9 +3,10 @@
 import type { SandboxStatus } from "@armada/core";
 import { PlayIcon, RotateCcwIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useActionState, useEffect, useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { extendSandbox, sendToSandbox, steerSandbox } from "@/app/actions/sandboxes";
 import { Button } from "@/components/ui/button";
+import { useMutationState } from "@/components/use-mutation-state";
 import { type Attention, CONTINUE_PROMPT } from "@/lib/sandbox-attention";
 
 /** The existing shortcuts; reply/steer, stop, PR/recovery links already live in this sandbox's conversation/header. */
@@ -35,7 +36,7 @@ export function SandboxAttentionActions(props: AttentionActionProps) {
 }
 
 function RecoverySend({ sandboxId, name, status, configured, busy, attention, resend }: AttentionActionProps) {
-  const [state, action, pending] = useActionState(sendToSandbox, null);
+  const [state, action, pending] = useMutationState(sendToSandbox);
   const [requestId] = useState(() => crypto.randomUUID());
   const canSend = configured && !busy && ["ready", "running", "stopped"].includes(status);
   const prompt = attention === "interrupted" ? resend?.text : attention === "unconcluded" ? CONTINUE_PROMPT : null;
@@ -109,7 +110,7 @@ export function CopyRecoveryCommand({ command }: { command: string }) {
 }
 
 export function PushSandboxWork({ sandboxId, restarts }: { sandboxId: string; restarts: boolean }) {
-  const [state, action, pending] = useActionState(steerSandbox, null);
+  const [state, action, pending] = useMutationState(steerSandbox);
   return (
     <form action={action} className="space-y-1">
       <input type="hidden" name="sandbox" value={sandboxId} />
@@ -132,7 +133,7 @@ export function PushSandboxWork({ sandboxId, restarts }: { sandboxId: string; re
 }
 
 export function AddSandboxTime({ sandboxId }: { sandboxId: string }) {
-  const [state, action, pending] = useActionState(extendSandbox, null);
+  const [state, action, pending] = useMutationState(extendSandbox);
   return (
     <form action={action} className="space-y-2">
       <input type="hidden" name="sandbox" value={sandboxId} />

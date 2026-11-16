@@ -1,7 +1,6 @@
 "use client";
 
 import { Loader2Icon, Trash2Icon } from "lucide-react";
-import { useActionState } from "react";
 import { removeGolden } from "@/app/actions/goldens";
 import {
   AlertDialog,
@@ -14,6 +13,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { useMutationState } from "@/components/use-mutation-state";
 
 /**
  * Removes a golden after a confirmation that says what stays: its sandboxes, their conversations and logs, and the
@@ -30,7 +30,7 @@ export function RemoveGolden({
   name: string;
   providerLabel: string;
 }) {
-  const [state, action, pending] = useActionState(removeGolden, null);
+  const [state, action, pending] = useMutationState(removeGolden);
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>

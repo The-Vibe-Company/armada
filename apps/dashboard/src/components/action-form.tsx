@@ -7,7 +7,7 @@ import { useFormStatus } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import { useMutationState } from "@/components/use-mutation-state";
-import { usePreservedActionForm } from "@/components/use-preserved-action-form";
+import { resetPreservedActionForm, usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import { cn } from "@/lib/utils";
 
@@ -53,7 +53,7 @@ export function ActionForm({
   // Always recover transport failures locally, including forms without success toasts.
   const [state, formAction] = useMutationState(run);
   const form = useRef<HTMLFormElement>(null);
-  const preserve = usePreservedActionForm(!(resetOnSuccess && state?.ok));
+  const preserve = usePreservedActionForm();
   const attach = useCallback(
     (node: HTMLFormElement | null) => {
       form.current = node;
@@ -64,7 +64,7 @@ export function ActionForm({
   const message = useRef<HTMLParagraphElement>(null);
 
   useEffect(() => {
-    if (resetOnSuccess && state?.ok) form.current?.reset();
+    if (resetOnSuccess && state?.ok && form.current) resetPreservedActionForm(form.current);
   }, [state, resetOnSuccess]);
 
   useEffect(() => {

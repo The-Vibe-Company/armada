@@ -20,7 +20,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
+import { clientMutation } from "@/lib/client-mutation";
 import { SETUP_PROVIDER_INFO } from "@/lib/provider-setup";
 
 /** One provider as the server reports it for the active organization; `unavailable` when it could not be read. */
@@ -44,6 +46,7 @@ export function ProviderConnection({
   state: ProviderRowState;
   canManage: boolean;
 }) {
+  const preserve = usePreservedActionForm();
   const info = SETUP_PROVIDER_INFO[provider];
   const connected = state === "connected";
   const [open, setOpen] = useState(false);
@@ -51,7 +54,7 @@ export function ProviderConnection({
   // an error only in the form that caused it, so neither outlives a later change.
   const [feedback, setFeedback] = useState<{ result: ActionResult; state: ProviderRowState } | null>(null);
   const [, action] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
-    const next = await connectProvider(previous, data);
+    const next = await clientMutation(() => connectProvider(previous, data));
     setFeedback({ result: next, state: next.ok ? "connected" : state });
     if (next.ok) setOpen(false);
     return next;
@@ -120,6 +123,7 @@ export function ProviderConnection({
 
       {open && (
         <form
+          ref={preserve}
           action={action}
           aria-label={`${connected ? "Replace" : "Connect"} ${info.label}`}
           className="space-y-3 rounded-lg border bg-muted/30 p-4"
@@ -257,7 +261,7 @@ function DisconnectProvider({
 }) {
   const label = SETUP_PROVIDER_INFO[provider].label;
   const [state, action, pending] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
-    const next = await disconnectProvider(previous, data);
+    const next = await clientMutation(() => disconnectProvider(previous, data));
     if (next.ok) onDisconnected(next);
     return next;
   }, null);
