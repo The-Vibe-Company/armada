@@ -113,6 +113,7 @@ export async function preserveWork(
   sandboxId: string,
   callerSignal?: AbortSignal,
   onWorkAtRisk?: () => void,
+  preservationContext?: Parameters<Provider["exec"]>[0]["preservationContext"],
 ): Promise<WorkPreservation> {
   const { publicKey, privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
@@ -146,7 +147,12 @@ export async function preserveWork(
     execStage = stage;
     try {
       signal.throwIfAborted();
-      return await provider.exec({ ...request, signal, preservationStage: stage });
+      return await provider.exec({
+        ...request,
+        signal,
+        preservationStage: stage,
+        ...(preservationContext ? { preservationContext } : {}),
+      });
     } catch (error) {
       throw new CaptureError("exec_failed", { stage, ...workPreservationError(error) });
     }

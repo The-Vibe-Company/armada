@@ -212,9 +212,15 @@ async function captureAndStore(
     stage = progress.stage = "capture";
     reason = "failed";
     observed("capture_started");
-    const result = await preserveWork(provider, providerId, signal, () => {
-      progress.workAtRisk = true;
-    });
+    const result = await preserveWork(
+      provider,
+      providerId,
+      signal,
+      () => {
+        progress.workAtRisk = true;
+      },
+      { source, captureId: crypto.randomUUID() },
+    );
     if (expired()) return;
     observed(`capture_${result.status}`);
     if (result.status === "preserved") {
