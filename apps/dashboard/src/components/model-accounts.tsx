@@ -1708,7 +1708,7 @@ export function AddAccountDialog({
                 </label>
               ))}
             </div>
-            <Disclosure summary="Other providers and custom endpoints">
+            <Disclosure summary="Other providers and custom endpoints" defaultOpen={false}>
               <Label htmlFor={`${id}-kind`}>Provider</Label>
               <NativeSelect
                 id={`${id}-kind`}
@@ -1751,7 +1751,7 @@ export function AddAccountDialog({
             <div data-wizard-panel="2" className="space-y-4">
               {saveFields}
               {command && (
-                <Disclosure summary="Sign-in instructions and terminal login">
+                <Disclosure summary="Sign-in instructions and terminal login" defaultOpen={false}>
                   {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
                   <TerminalSignIn
                     command={command}

@@ -19,7 +19,9 @@ for (const session of ["alice", "large"]) {
       await screen.getByPlaceholder(resource.search).fill("");
       await browser.locator(resource.row).first().tap();
       await expect(screen.getByRole("dialog")).toBeVisible();
-      await screen.getByRole("button", "Close details", { exact: true }).tap();
+      await screen
+        .getByRole("button", resource.title === "Skills" ? "Close details" : "Close the panel", { exact: true })
+        .tap();
       await screen.getByRole("button", resource.add, { exact: true }).tap();
       await expect(screen.getByRole("dialog")).toBeVisible();
       await screen.getByRole("button", "Close", { exact: true }).tap();
@@ -35,7 +37,7 @@ for (const session of ["alice", "large"]) {
     await expect(screen.getByRole("cell", "Not shown", { exact: true }).first()).toBeVisible();
     await browser.locator("[data-select-item]").first().tap();
     await expect(screen.getByRole("dialog")).toBeVisible();
-    await screen.getByRole("button", "Close details", { exact: true }).tap();
+    await screen.getByRole("button", "Close the panel", { exact: true }).tap();
     await screen.getByRole("button", "Add a variable", { exact: true }).tap();
     await expect(screen.getByRole("dialog", "Add a setting or a secret")).toBeVisible();
   });
