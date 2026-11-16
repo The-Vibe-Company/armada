@@ -10,7 +10,7 @@ import {
 } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
 import { createAvailabilitySampler } from "./availability.ts";
-import { enforcePhysicalExpiry, register, serverOrigin, tick, validToken } from "./daemon.ts";
+import { createPhysicalExpirySweep, register, serverOrigin, tick, validToken } from "./daemon.ts";
 import { dockerDiskFreeBytes, withDiskFloor } from "./disk.ts";
 import { cleanupOfficialImages } from "./image-retention.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
@@ -221,18 +221,17 @@ async function main(args: string[]) {
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
-    // Independent of mailbox, artifact/bootstrap and image maintenance latency.
-    // This lane performs no state writes; do not overlap physical sweeps.
-    let expirySweep: Promise<void> | undefined;
+    // No batch-wide admission fence: only the same generation must not overlap.
+    const expiry = createPhysicalExpirySweep(store, runtime);
+    const scans = new Set<Promise<void>>();
     const sweep = () => {
-      if (expirySweep) return;
-      expirySweep = enforcePhysicalExpiry(store, runtime)
+      const scan = expiry
+        .sweep()
         .catch(() => {
           console.error("Docker host physical expiry sweep failed; retrying independently.");
         })
-        .finally(() => {
-          expirySweep = undefined;
-        });
+        .finally(() => scans.delete(scan));
+      scans.add(scan);
     };
     sweep();
     const expiryTimer = setInterval(sweep, 10_000);
@@ -258,7 +257,8 @@ async function main(args: string[]) {
       }
     } finally {
       clearInterval(expiryTimer);
-      await expirySweep;
+      await Promise.all(scans);
+      await expiry.drain();
     }
   } finally {
     await release();

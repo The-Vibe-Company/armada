@@ -8,8 +8,8 @@ import { createDockerMachineExecutor, DockerMachineError } from "../../core/src/
 import {
   type Api,
   compactReceipts,
+  createPhysicalExpirySweep,
   type Executor,
-  enforcePhysicalExpiry,
   type Job,
   register,
   type State,
@@ -1373,20 +1373,51 @@ test("physical expiry stops every generation while create is stalled without rac
   await started.promise;
   const before = structuredClone(f.state());
   const stopped: string[] = [];
+  let time = 0;
+  let checks = 0;
+  let blockedChecks = 0;
   const observed = Promise.withResolvers<void>();
   f.executor.stopIfExpired = async (request) => {
-    if (request.generation === blocked.job.request.generation) await slowInspection.promise;
-    stopped.push(request.generation);
+    if (request.generation === blocked.job.request.generation) {
+      blockedChecks++;
+      await slowInspection.promise;
+    }
+    checks++;
+    if (time >= 5) stopped.push(request.generation);
     if (request.generation === second.job.request.generation) observed.resolve();
     return true;
   };
-  const sweeping = enforcePhysicalExpiry(f.store, f.executor);
+  const expiry = createPhysicalExpirySweep(f.store, f.executor);
+  await expiry.sweep();
   await observed.promise;
+  expect(stopped).toEqual([]);
+  expect(f.state()).toEqual(before);
+  // Settle fast inspections without releasing the blocked allocation.
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(checks).toBe(2);
+  const newlyAdmitted = fixture();
+  const updated = await f.store.load();
+  updated.receipts.push({
+    inputHash: "resume_input",
+    requestId: newlyAdmitted.job.requestId,
+    request: newlyAdmitted.job.request,
+    operation: "resume",
+    outcome: "completed",
+  });
+  updated.activeTtl?.push(newlyAdmitted.job.requestId);
+  await f.store.save(updated);
+  const afterAdmission = structuredClone(f.state());
+  time = 10;
+  await expiry.sweep();
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(checks).toBe(5);
+  expect(blockedChecks).toBe(1);
+  expect(stopped).toContain(newlyAdmitted.job.request.generation);
   expect(stopped).toContain(f.job.request.generation);
   expect(stopped).toContain(second.job.request.generation);
-  expect(f.state()).toEqual(before);
+  expect(f.state()).toEqual(afterAdmission);
   slowInspection.resolve();
-  await sweeping;
+  await expiry.drain();
   finish.resolve();
   await pending;
   // Only the serialized mailbox persists and publishes the physical proof.
