@@ -1693,6 +1693,7 @@ test.each(["claude", "codex"] as const)(
         "insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,stopped_at,conversation_ids) values($1,'modal',$2,$3,$4,$5, $6,'stopped',now(),ARRAY['existing-conversation'])",
         [id, machineId, golden, org.id, ADA, harness],
       );
+      await db.query("update sandboxes set status_reason='idle_paused' where id=$1", [id]);
       const scope: Scope = {
         orgId: org.id,
         userId: ADA,
