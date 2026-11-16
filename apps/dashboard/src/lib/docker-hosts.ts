@@ -2,6 +2,7 @@ import {
   type DockerHostListResponse,
   type DockerHostSummary,
   parseDockerMemory,
+  validDockerDiskReport,
   validDockerHostResources,
 } from "@armada/core";
 import { relativeAge } from "./relative-time.ts";
@@ -72,7 +73,8 @@ function parseHost(value: unknown): DockerHost | null {
     (value.canManageLimits !== undefined && typeof value.canManageLimits !== "boolean") ||
     (value.limitsSupported !== undefined && typeof value.limitsSupported !== "boolean") ||
     (value.running !== undefined && (!Number.isSafeInteger(value.running) || Number(value.running) < 0)) ||
-    (value.resources !== undefined && value.resources !== null && !validDockerHostResources(value.resources))
+    (value.resources !== undefined && value.resources !== null && !validDockerHostResources(value.resources)) ||
+    (value.disk !== undefined && value.disk !== null && !validDockerDiskReport(value.disk))
   )
     return null;
   return {
@@ -94,6 +96,7 @@ function parseHost(value: unknown): DockerHost | null {
     ...(value.resources === undefined
       ? {}
       : { resources: value.resources as Exclude<DockerHost["resources"], undefined> }),
+    ...(value.disk === undefined ? {} : { disk: value.disk as Exclude<DockerHost["disk"], undefined> }),
     version: typeof version === "string" && version.trim() !== "" ? version.trim() : null,
   };
 }

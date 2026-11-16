@@ -61,6 +61,11 @@ async function fixture() {
   const registration = await hosts.issueRegistration(admin),
     installationId = randomUUID();
   const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
+  await db.query(
+    "update public.docker_hosts set free_disk_bytes=$2,disk_floor_bytes=$3,last_seen_at=now() where id=$1",
+    [host.hostId, 100 * 1024 ** 3, 10 * 1024 ** 3],
+  );
+
   await db.query(`insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)`, [
     credentialId,
     userId,
@@ -75,7 +80,11 @@ async function fixture() {
   });
   await hosts.complete(host.hostToken, installationId, { requestId: sandbox.id, outcome: "completed" });
   await bootstrap.bootstrap(actor, sandbox.id, randomUUID());
-  const job = await hosts.poll(host.hostToken, installationId);
+  const job = await hosts.poll(host.hostToken, installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   if (job?.operation !== "bootstrap") throw Error("missing bootstrap");
   await hosts.complete(host.hostToken, installationId, { requestId: job.requestId, outcome: "completed" });
   const enrol = () => authority.enrol(job.bootstrap.enrolmentToken);
@@ -452,7 +461,11 @@ test("rebound Docker usage has its epoch's admitted prices before the accepted p
   await ready(f);
   const stopId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, stopId);
-  const stop = await hosts.poll(f.hostToken, f.installationId);
+  const stop = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   if (stop?.operation !== "stop") throw Error("missing retained stop");
   await hosts.complete(f.hostToken, f.installationId, { requestId: stop.requestId, outcome: "completed" });
   const selected = randomUUID();
@@ -478,7 +491,11 @@ test("rebound Docker usage has its epoch's admitted prices before the accepted p
     { id: f.sandbox.id, credentialId: selected },
   );
   await bootstrap.resume(f.actor, f.sandbox.id, randomUUID());
-  const resumed = await hosts.poll(f.hostToken, f.installationId);
+  const resumed = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   if (resumed?.operation !== "resume") throw Error("missing fresh enrollment");
   const session = await authority.enrol(resumed.bootstrap.enrolmentToken);
   await hosts.complete(f.hostToken, f.installationId, { requestId: resumed.requestId, outcome: "completed" });

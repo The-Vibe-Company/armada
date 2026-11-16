@@ -114,6 +114,13 @@ export {
   type DockerJobFailureReason,
   type DockerSnapshotRecord,
 } from "./docker-api.ts";
+export { dockerHostDiskDisplay } from "./docker-disk-display.ts";
+export {
+  DEFAULT_DOCKER_DISK_FLOOR_BYTES,
+  type DockerDiskReport,
+  dockerDiskRefusal,
+  validDockerDiskReport,
+} from "./docker-disk-policy.ts";
 export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export {
   DOCKER_LOCAL_IMAGE_LABELS,

@@ -1122,3 +1122,32 @@ Once a server-requested retention policy has been received, it takes precedence
 over the installer/environment default even across daemon restarts. Before any
 server override, changing the environment default shifts existing deadlines by
 the policy delta, preserving their original stopped age.
+
+## Docker storage headroom
+
+The host reports free bytes on the Docker data filesystem, not the sandbox home
+or daemon working directory. Machines → server panel and `armada host list/show`
+show this last-reported observation and the minimum free space. The default floor
+is **10 GiB** (10,737,418,240 bytes); configure the daemon with
+`ARMADA_DOCKER_DISK_FLOOR_BYTES` to change it. This is a floor, not a disk quota or
+a guarantee that a particular image will fit.
+
+Server admission refuses new allocations below the reported floor or without a
+current verifiable report. The daemon checks the actual Docker storage again
+before a normal sandbox launch allocates storage or pulls its image, closing the
+check-in-to-launch gap. Retained resume does not allocate a new container/home
+and remains available. Snapshot builds are a separate path, not gated by this
+normal-launch floor. An old host
+must be upgraded; an unreadable filesystem or remote Docker endpoint reports
+unknown free space instead of pretending the daemon's local filesystem is the
+Docker host. Cleanup remains available when disk is low or unknown; this does not
+authorize deleting snapshots, shared data or unrelated Docker resources.
+
+Coordinator staging acceptance: set a temporary floor above the host's measured
+free space, wait for check-in and confirm CLI/dashboard show the observation and
+launch fails with an actionable disk message before image pull/container/volume
+creation. Lower the floor and confirm launch works. Also change free-space
+evidence between server admission and local execution and confirm the local gate
+refuses allocation. Confirm stop/delete/retention cleanup still works below the
+floor and snapshots and unrelated workloads are untouched. No production probe or
+configuration change was performed by this PR.

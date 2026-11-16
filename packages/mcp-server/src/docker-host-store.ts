@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerHostSummary,
   type DockerJobFailureReason,
   type Sql,
@@ -317,9 +318,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
        lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
       [
         row.id,
-        reason === "image_unavailable" && operation === "create"
-          ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
-          : "Docker sandbox startup failed.",
+        reason === "disk_full"
+          ? DOCKER_LAUNCH_FAILURE_MESSAGES.diskFull
+          : reason === "disk_unavailable"
+            ? DOCKER_LAUNCH_FAILURE_MESSAGES.diskUnavailable
+            : reason === "image_unavailable" && operation === "create"
+              ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
+              : "Docker sandbox startup failed.",
       ],
     );
   }
@@ -346,6 +351,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           sandbox_cpus: number | null;
           sandbox_memory_bytes: string | number | null;
           max_sandboxes: number | null;
+          free_disk_bytes: number | string | null;
+          disk_floor_bytes: number | string | null;
           available_cpus: number | null;
           available_memory_bytes: number | string | null;
           machine_cpus: number | null;
@@ -364,7 +371,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
+            h.free_disk_bytes,h.disk_floor_bytes,h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -393,6 +400,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
           retentionSeconds: host.reported_retention_seconds ?? null,
           retentionOverrideSeconds: host.retention_seconds ?? null,
           nextCleanupAt: host.next_cleanup_at == null ? null : new Date(host.next_cleanup_at).toISOString(),
+          disk:
+            host.disk_floor_bytes == null
+              ? null
+              : {
+                  freeBytes: host.free_disk_bytes == null ? null : Number(host.free_disk_bytes),
+                  floorBytes: Number(host.disk_floor_bytes),
+                },
           canManageLimits: host.owner_id === actor.userId,
           limitsSupported: host.resource_policy_version === 1,
           sandboxes: host.sandboxes,
@@ -873,18 +887,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
         ).rows[0];
         const host = await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
         await tx.query(
-          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null where id=$1`,
+          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,free_disk_bytes=null,disk_floor_bytes=null where id=$1`,
           [host.id, version ?? null, resourcePolicyVersion ?? null],
         );
         if (resources) {
           await tx.query(
-            "update public.docker_hosts set machine_cpus=$2,machine_memory_bytes=$3,available_cpus=$4,available_memory_bytes=$5 where id=$1",
+            "update public.docker_hosts set machine_cpus=$2,machine_memory_bytes=$3,available_cpus=$4,available_memory_bytes=$5,free_disk_bytes=$6,disk_floor_bytes=$7 where id=$1",
             [
               host.id,
               resources.cpus,
               resources.memoryBytes,
               resources.availableCpus ?? null,
               resources.availableMemoryBytes ?? null,
+              resources.disk?.freeBytes ?? null,
+              resources.disk?.floorBytes ?? null,
             ],
           );
         }

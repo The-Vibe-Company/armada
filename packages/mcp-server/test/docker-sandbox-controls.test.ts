@@ -84,6 +84,11 @@ async function fixture() {
   const registration = await hosts.issueRegistration(admin),
     installationId = randomUUID();
   const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
+  await db.query(
+    "update public.docker_hosts set free_disk_bytes=$2,disk_floor_bytes=$3,last_seen_at=now() where id=$1",
+    [host.hostId, 100 * 1024 ** 3, 10 * 1024 ** 3],
+  );
+
   await db.query(`insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)`, [
     credentialId,
     userId,
@@ -108,7 +113,11 @@ async function fixture() {
     }),
   );
   await bootstrap.bootstrap(actor, sandbox.id, randomUUID());
-  const job = await hosts.poll(host.hostToken, installationId);
+  const job = await hosts.poll(host.hostToken, installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   if (job?.operation !== "bootstrap") throw Error("missing bootstrap");
   await hosts.complete(host.hostToken, installationId, { requestId: job.requestId, outcome: "completed" });
   const enrol = () => authority.enrol(job.bootstrap.enrolmentToken);
@@ -416,7 +425,11 @@ test("cleanup waits outside transactions for physical ACK; timeout retries reuse
       now: () => now,
       wait: async (ms) => {
         now += ms;
-        const job = await hosts.poll(f.hostToken, f.installationId);
+        const job = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+          cpus: 128,
+          memoryBytes: 1024 ** 4,
+          disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+        });
         if (!job) throw Error("missing cleanup job");
         await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
       },
@@ -451,7 +464,11 @@ test("failed/expired cleanup preserves failure facts and unfinished prompt outco
       now: () => now,
       wait: async (ms) => {
         now += ms;
-        const job = await hosts.poll(f.hostToken, f.installationId);
+        const job = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+          cpus: 128,
+          memoryBytes: 1024 ** 4,
+          disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+        });
         if (!job) throw Error("missing cleanup");
         await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome });
       },
@@ -515,7 +532,11 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     clock: {
       now: () => now,
       async wait(ms) {
-        const job = await hosts.poll(f.hostToken, f.installationId);
+        const job = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+          cpus: 128,
+          memoryBytes: 1024 ** 4,
+          disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+        });
         if (!job || !["stop", "delete"].includes(job.operation)) throw Error("Expected bound cleanup job");
         await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
         now += ms;
@@ -665,7 +686,11 @@ test("Docker child deletion requires permanent delegated parent deletion before 
     clock: {
       now: () => now,
       async wait(ms) {
-        const job = await hosts.poll(f.hostToken, f.installationId);
+        const job = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+          cpus: 128,
+          memoryBytes: 1024 ** 4,
+          disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+        });
         if (!job || job.operation !== "delete") throw Error("Expected authorized delete job");
         await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
         now += ms;
@@ -749,7 +774,11 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
     now: () => now,
     async wait(ms: number) {
       now += ms;
-      const job = await hosts.poll(f.hostToken, f.installationId, "2.28.0");
+      const job = await hosts.poll(f.hostToken, f.installationId, "2.28.0", false, {
+        cpus: 128,
+        memoryBytes: 1024 ** 4,
+        disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+      });
       if (job) {
         if (job.operation !== "resume") throw Error("expected resume");
         resumes++;
@@ -792,7 +821,13 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
   await stop();
   await rejected(invoke(caller(f.actor), "send", args, controller), "conflict");
   await rejected(invoke(caller(f.actor), "send", { ...args, prompt: "changed" }, controller), "conflict");
-  expect(await hosts.poll(f.hostToken, f.installationId, "2.28.0")).toBeNull();
+  expect(
+    await hosts.poll(f.hostToken, f.installationId, "2.28.0", false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    }),
+  ).toBeNull();
   expect((await invoke(caller(f.actor), "status", { id: f.sandbox.id })).status).toBe("stopped");
   expect(
     (

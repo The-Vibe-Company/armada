@@ -1,10 +1,12 @@
 import {
   type DockerHostListResponse,
   type DockerHostRegistrationResponse,
+  dockerHostDiskDisplay,
   dockerHostResourceDisplay,
   GoldenError,
   parseDockerMemory,
   isRecord as record,
+  validDockerDiskReport,
   validDockerHostResources,
 } from "@armada/core";
 import { parseArgs, single } from "./args.ts";
@@ -41,6 +43,7 @@ export async function listHosts(client: ArmadaApiClient, org: string): Promise<D
       !(host.version === undefined || host.version === null || typeof host.version === "string") ||
       (host.running !== undefined && (!Number.isSafeInteger(host.running) || Number(host.running) < 0)) ||
       (host.resources !== undefined && host.resources !== null && !validDockerHostResources(host.resources)) ||
+      (host.disk !== undefined && host.disk !== null && !validDockerDiskReport(host.disk)) ||
       !Number.isSafeInteger(host.sandboxes) ||
       Number(host.sandboxes) < 0
     )
@@ -106,11 +109,13 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
     }
     if (args.options.has("--json")) auth.out(`${JSON.stringify(result, null, 2)}\n`);
     else {
-      auth.out("ID\tNAME\tSTATE\tLAST SEEN\tVERSION\tRETAINED\tMACHINE\tPER SANDBOX\tRUNNING/CAPACITY\n");
+      auth.out(
+        "ID\tNAME\tSTATE\tLAST SEEN\tVERSION\tRETAINED\tDOCKER STORAGE\tMACHINE\tPER SANDBOX\tRUNNING/CAPACITY\n",
+      );
       for (const host of result.hosts) {
         const resources = dockerHostResourceDisplay(host);
         auth.out(
-          `${host.id}\t${host.name ?? "—"}\t${host.state}\t${host.lastSeenAt ?? "never"}\t${host.version ?? "unknown"}\t${host.sandboxes}\t${resources.machine}\t${resources.limits}\t${resources.usage}\n`,
+          `${host.id}\t${host.name ?? "—"}\t${host.state}\t${host.lastSeenAt ?? "never"}\t${host.version ?? "unknown"}\t${host.sandboxes}\t${dockerHostDiskDisplay(host)}\t${resources.machine}\t${resources.limits}\t${resources.usage}\n`,
         );
         if (operation === "show")
           auth.out(`Retention: ${host.retentionSeconds == null ? "unknown (upgrade host)" : `${host.retentionSeconds}s`}

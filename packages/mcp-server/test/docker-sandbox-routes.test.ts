@@ -44,6 +44,10 @@ async function fixture() {
   const hosts = createDockerHostStore(sql, key);
   const ticket = await hosts.issueRegistration(actor);
   const host = await hosts.exchangeRegistration(ticket.registrationToken, installationId);
+  await db.query(
+    "update public.docker_hosts set free_disk_bytes=$2,disk_floor_bytes=$3,last_seen_at=now() where id=$1",
+    [host.hostId, 100 * 1024 ** 3, 10 * 1024 ** 3],
+  );
   const credentialId = randomUUID();
   await db.query(`insert into credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)`, [
     credentialId,
@@ -255,7 +259,11 @@ test("public Docker preview dispatches two same-conversation prompts through run
 
 test("full host refusal is an actionable HTTP conflict rather than a generic server failure", async () => {
   const f = await fixture();
-  await f.hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });
+  await f.hosts.poll(f.hostToken, f.installationId, "2.31.0", false, {
+    cpus: 2,
+    memoryBytes: 6 * 1024 ** 3,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   expect((await f.post("launch", f.launch)).status).toBe(201);
   const response = await f.post("launch", { ...f.launch, requestId: randomUUID() });
   expect(response.status).toBe(409);

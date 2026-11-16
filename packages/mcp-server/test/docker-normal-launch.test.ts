@@ -116,7 +116,11 @@ async function fixture(
   const registration = await hosts.issueRegistration(admin),
     installationId = randomUUID();
   const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
-  await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
+  await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0", false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   const secret = `offline-normal-launch-${randomUUID()}`;
   // Omitted version must select the current pin, not fabricate version one.
   await db.query(
@@ -148,7 +152,7 @@ async function fixture(
   };
   let now = 0,
     drive = true,
-    failCreate: false | "plain" | "image" = false,
+    failCreate: false | "plain" | "image" | "disk_full" | "disk_unavailable" = false,
     malformedSkills = false;
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
@@ -157,7 +161,11 @@ async function fixture(
     native: unknown[] = [],
     checkoutStatuses: string[] = [];
   async function step() {
-    const job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
+    const job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0", false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    });
     if (job) {
       jobs.push(job);
       if (job.operation === "bootstrap" || job.operation === "resume")
@@ -166,7 +174,14 @@ async function fixture(
       await hosts.complete(host.hostToken, installationId, {
         requestId: job.requestId,
         outcome: failed ? "failed" : "completed",
-        ...(failed && failCreate === "image" ? { reason: "image_unavailable" as const } : {}),
+        ...(failed && failCreate !== "plain"
+          ? {
+              reason:
+                failCreate === "image"
+                  ? ("image_unavailable" as const)
+                  : (failCreate as "disk_full" | "disk_unavailable"),
+            }
+          : {}),
       });
       if (job.operation === "create" && options.lifecycleGenerationAfterCreate !== undefined) {
         await db.query(`update public.sandboxes set lifecycle_generation=$2 where id=$1`, [
@@ -369,7 +384,7 @@ async function fixture(
     setDrive(value: boolean) {
       drive = value;
     },
-    setFailure(kind: "plain" | "image" = "plain") {
+    setFailure(kind: "plain" | "image" | "disk_full" | "disk_unavailable" = "plain") {
       failCreate = kind;
     },
     resolutions: () => resolutions,
@@ -668,16 +683,23 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("deleted");
 });
 
-test("a launch whose host could not fetch the image says so in plain words, at launch and in status", async () => {
-  const f = await fixture();
-  f.setFailure("image");
-  await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
-  await expect(f.service().launch(f.caller, f.body)).rejects.toThrow(DOCKER_IMAGE_UNAVAILABLE_MESSAGE);
-  const status = await createDockerSandboxControls(sql, key, { clock: f.clock }).invoke(f.caller, "status", {
-    id: f.body.requestId,
-  });
-  expect(status).toMatchObject({ result: { status: "failed", statusReason: DOCKER_IMAGE_UNAVAILABLE_MESSAGE } });
-});
+test.each([
+  ["image", DOCKER_IMAGE_UNAVAILABLE_MESSAGE],
+  ["disk_full", DOCKER_LAUNCH_FAILURE_MESSAGES.diskFull],
+  ["disk_unavailable", DOCKER_LAUNCH_FAILURE_MESSAGES.diskUnavailable],
+] as const)(
+  "a host admission failure is retained in launch and status without becoming a misleading image error (%s)",
+  async (reason, message) => {
+    const f = await fixture();
+    f.setFailure(reason);
+    await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
+    await expect(f.service().launch(f.caller, f.body)).rejects.toThrow(message);
+    const status = await createDockerSandboxControls(sql, key, { clock: f.clock }).invoke(f.caller, "status", {
+      id: f.body.requestId,
+    });
+    expect(status).toMatchObject({ result: { status: "failed", statusReason: message } });
+  },
+);
 
 test("prompt-free, image-free launch normalizes UUIDs, uses the default image, honors TTL and stops at runtime readiness", async () => {
   const f = await fixture({ daemonVersion: "2.27.0" });
@@ -1444,7 +1466,13 @@ test("stop after accepted starting launch bypasses queued startup and settles wi
     handled: true,
     result: { prompt: { promptId: queuedId, state: "failed" } },
   });
-  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect(
+    await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    }),
+  ).toBeNull();
   expect(f.native).toHaveLength(0);
   expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("stopped");
   await server.close();
@@ -2307,7 +2335,11 @@ async function readyTemplateSnapshot(f: Awaited<ReturnType<typeof snapshotFixtur
     visibility: "private",
     config: f.config,
   });
-  const build = await hosts.poll(f.hostToken, f.installationId);
+  const build = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   if (build?.operation !== "buildSnapshot") throw Error("missing template snapshot build");
   await hosts.complete(f.hostToken, f.installationId, {
     requestId: snapshotId,
@@ -2419,7 +2451,11 @@ test.each(["private", "org"] as const)(
     ).rejects.toThrow("Snapshot base is immutable");
     expect(JSON.stringify(created)).not.toContain("offline-snapshot-access");
     expect(await f.snapshots.command(creator, "create", input)).toMatchObject({ snapshot: { id } });
-    const build = await hosts.poll(f.hostToken, f.installationId);
+    const build = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    });
     if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
     expect(build.build.config).toEqual(input.config);
     expect(build.request.image).toBe(officialSandboxImage());
@@ -2516,7 +2552,11 @@ test("snapshot caller-access port refuses before Docker host admission with the 
     visibility: "private",
     config: f.config,
   });
-  const build = await hosts.poll(f.hostToken, f.installationId);
+  const build = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
   await hosts.complete(f.hostToken, f.installationId, {
     requestId: id,
@@ -2549,7 +2589,11 @@ test.each([false, true])(
       visibility: "private",
       config: f.config,
     });
-    const build = await hosts.poll(f.hostToken, f.installationId);
+    const build = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    });
     if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
     await hosts.complete(f.hostToken, f.installationId, {
       requestId: id,
@@ -2596,7 +2640,11 @@ test.each(["timeout", "stop"] as const)(
       visibility: "private",
       config: f.config,
     });
-    const build = await hosts.poll(f.hostToken, f.installationId);
+    const build = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    });
     if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
     await hosts.complete(f.hostToken, f.installationId, {
       requestId: id,
@@ -2629,7 +2677,11 @@ test.each(["auth", "auth-deferred", "network"] as const)(
       visibility: "private",
       config: f.config,
     });
-    const build = await hosts.poll(f.hostToken, f.installationId);
+    const build = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    });
     if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
     await hosts.complete(f.hostToken, f.installationId, {
       requestId: id,
@@ -2706,7 +2758,16 @@ test.each([
   });
   if (reason === "issuer-rejoined")
     await db.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [f.actor.orgId, f.otherId]);
-  if (delivered) expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
+  if (delivered)
+    expect(
+      (
+        await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+          cpus: 128,
+          memoryBytes: 1024 ** 4,
+          disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+        })
+      )?.operation,
+    ).toBe("buildSnapshot");
   const userId = reason === "owner-rejoined" ? f.actor.userId : f.admin.userId;
   await db.query("delete from public.members where org_id=$1 and user_id=$2", [f.actor.orgId, userId]);
   await db.query("insert into public.members(org_id,user_id,role) values($1,$2,$3)", [
@@ -2720,7 +2781,14 @@ test.each([
       outcome: "completed",
       imageId: `sha256:${"e".repeat(64)}`,
     });
-  else expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  else
+    expect(
+      await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+        cpus: 128,
+        memoryBytes: 1024 ** 4,
+        disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+      }),
+    ).toBeNull();
   expect((await db.query("select status,image_id from public.docker_snapshots where id=$1", [id])).rows[0]).toEqual({
     status: "failed",
     image_id: null,
@@ -2779,7 +2847,11 @@ test.each(["private", "org"] as const)(
       visibility,
       config: f.config,
     });
-    const job = await hosts.poll(f.hostToken, f.installationId);
+    const job = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    });
     if (job?.operation !== "buildSnapshot") throw Error("Missing source build");
     await hosts.complete(f.hostToken, f.installationId, {
       requestId: id,
@@ -2800,7 +2872,11 @@ test.each(["private", "org"] as const)(
       snapshot: { id: requestId, status: "building", builtOnVersion: VERSION, name: "rebuild-source" },
     });
     expect(await f.snapshots.command(creator, "get", { org: f.actor.orgId, id })).toEqual(source);
-    const build = await hosts.poll(f.hostToken, f.installationId);
+    const build = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    });
     expect(build).toMatchObject({
       operation: "buildSnapshot",
       request: { image: officialSandboxImage() },
@@ -2827,7 +2903,15 @@ test("failed snapshot machine facts persist a safe reason in get and list respon
     visibility: "private",
     config: f.config,
   });
-  expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
+  expect(
+    (
+      await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+        cpus: 128,
+        memoryBytes: 1024 ** 4,
+        disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+      })
+    )?.operation,
+  ).toBe("buildSnapshot");
   await hosts.complete(f.hostToken, f.installationId, {
     requestId: id,
     outcome: "failed",

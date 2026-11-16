@@ -263,3 +263,11 @@ test("retention observations preserve explicit nulls and zero while malformed va
   ])
     expect(parse(fields)).toMatchObject({ hosts: [], skipped: 1 });
 });
+
+test("Docker disk observations preserve zero and unavailable free space without accepting malformed reports", () => {
+  const parse = (disk: unknown) => parseDockerHostList({ placement: true, hosts: [{ ...host(), disk }] });
+  for (const disk of [null, { freeBytes: null, floorBytes: 10737418240 }, { freeBytes: 0, floorBytes: 10737418240 }])
+    expect(parse(disk)?.hosts[0]?.disk).toEqual(disk);
+  for (const disk of [{ freeBytes: -1, floorBytes: 10 }, { freeBytes: "0", floorBytes: 10 }, { freeBytes: 1 }])
+    expect(parse(disk)).toMatchObject({ hosts: [], skipped: 1 });
+});

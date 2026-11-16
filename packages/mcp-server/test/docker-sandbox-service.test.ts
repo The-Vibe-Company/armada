@@ -37,6 +37,11 @@ async function fixture(ttlSeconds?: number) {
   const registration = await hosts.issueRegistration(admin),
     installationId = randomUUID();
   const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
+  await db.query(
+    "update public.docker_hosts set free_disk_bytes=$2,disk_floor_bytes=$3,last_seen_at=now() where id=$1",
+    [host.hostId, 100 * 1024 ** 3, 10 * 1024 ** 3],
+  );
+
   const credentialId = randomUUID();
   await db.query(`insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)`, [
     credentialId,
@@ -120,7 +125,11 @@ test("member allocation and lost-commit-response retry retain one SQL-derived bo
     credentialVersion: 1,
   });
   expect(retried.providerSandboxId).toBe(`armada-${f.installationId}-${f.hostId}-${retried.id}-${retried.generation}`);
-  const delivery = await hosts.poll(f.hostToken, f.installationId);
+  const delivery = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   expect(delivery).toEqual({
     requestId: retried.id,
     operation: "create",
@@ -241,7 +250,13 @@ test("retained owner/admin diagnostics and delegated cleanup are independent of 
   const stopping = await retained.get(f.actor, saved.id);
   expect(stopping.status).toBe("stopping");
   expect(stopping.stopRequestedAt).not.toBeNull();
-  expect(await hosts.poll(f.hostToken, f.installationId)).toMatchObject({ requestId: stopId, operation: "stop" });
+  expect(
+    await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    }),
+  ).toMatchObject({ requestId: stopId, operation: "stop" });
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   expect((await retained.get(f.actor, saved.id)).status).toBe("stopped");
   expect((await service.reserve(f.actor, f.input)).generation).toBe(saved.generation);
@@ -267,7 +282,10 @@ test("retained owner/admin diagnostics and delegated cleanup are independent of 
 test("host capacity reserves pending starts, preserves retries, and releases only confirmed physical stops", async () => {
   const f = await fixture();
   // Heartbeat observations, not user-supplied launch choices, establish capacity.
-  await hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });
+  await hosts.poll(f.hostToken, f.installationId, "2.31.0", false, {
+    ...{ cpus: 2, memoryBytes: 6 * 1024 ** 3 },
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   await db.query("update public.docker_hosts set name='capacity-host' where id=$1", [f.hostId]);
   const first = await service.reserve(f.actor, f.input);
   expect((await hosts.list(f.actor))[0]).toMatchObject({
@@ -304,7 +322,10 @@ test("available resource admission and displayed held-back slots agree without e
     f.installationId,
     "2.33.0",
     false,
-    { ...hardware, availableCpus: 8, availableMemoryBytes: 30 * 1024 ** 3 },
+    {
+      ...{ ...hardware, availableCpus: 8, availableMemoryBytes: 30 * 1024 ** 3 },
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    },
     1,
   );
   const saved = [];
@@ -315,7 +336,10 @@ test("available resource admission and displayed held-back slots agree without e
     f.installationId,
     "2.33.0",
     false,
-    { ...hardware, availableCpus: 0, availableMemoryBytes: 0 },
+    {
+      ...{ ...hardware, availableCpus: 0, availableMemoryBytes: 0 },
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    },
     1,
   );
   expect((await hosts.list(f.actor))[0]).toMatchObject({ running: 5, resources: { capacity: 5, heldBack: 4 } });
@@ -329,11 +353,62 @@ test("available resource admission and displayed held-back slots agree without e
     f.installationId,
     "2.33.0",
     false,
-    { ...hardware, availableCpus: 8, availableMemoryBytes: 30 * 1024 ** 3 },
+    {
+      ...{ ...hardware, availableCpus: 8, availableMemoryBytes: 30 * 1024 ** 3 },
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    },
     1,
   );
   expect((await service.reserve(f.actor, { ...f.input, requestId: randomUUID() })).status).toBe("starting");
   // An older daemon's next poll removes stale observations rather than inventing current headroom.
-  await hosts.poll(f.hostToken, f.installationId, "2.32.0", false, hardware, 1);
+  await hosts.poll(
+    f.hostToken,
+    f.installationId,
+    "2.32.0",
+    false,
+    { ...hardware, disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 } },
+    1,
+  );
   expect((await hosts.list(f.actor))[0]?.resources?.capacity).toBe(9);
+});
+
+test("disk admission refuses low, unknown and stale telemetry before reservation while exact-floor admission and retained cleanup remain available", async () => {
+  const f = await fixture();
+  const floor = 10 * 1024 ** 3;
+  for (const [free, reportedFloor, fresh, diagnostic] of [
+    [floor - 1, floor, true, "below this host's configured floor"],
+    [null, floor, true, "free space is unavailable"],
+    [floor * 2, null, true, "free space is unavailable"],
+    [floor * 2, floor, false, "fresh host heartbeat"],
+  ] as const) {
+    await db.query(
+      "update public.docker_hosts set free_disk_bytes=$2,disk_floor_bytes=$3,last_seen_at=now()-$4::integer*interval '1 second' where id=$1",
+      [f.hostId, free, reportedFloor, fresh ? 0 : 61],
+    );
+    const request = { ...f.input, requestId: randomUUID() };
+    await expect(service.reserve(f.actor, request)).rejects.toThrow(diagnostic);
+    expect((await db.query("select id from sandboxes where id=$1", [request.requestId])).rows).toHaveLength(0);
+    expect(
+      (await db.query("select request_id from docker_host_jobs where request_id=$1", [request.requestId])).rows,
+    ).toHaveLength(0);
+  }
+  await hosts.poll(f.hostToken, f.installationId, "2.47.0", false, {
+    cpus: 4,
+    memoryBytes: 16 * 1024 ** 3,
+    disk: { freeBytes: floor, floorBytes: floor },
+  });
+  expect((await hosts.list(f.actor))[0]?.disk).toEqual({ freeBytes: floor, floorBytes: floor });
+  const admitted = await service.reserve(f.actor, f.input);
+  // An old daemon heartbeat invalidates cached disk data; historical retries never allocate again.
+  await hosts.poll(f.hostToken, f.installationId);
+  expect((await hosts.list(f.actor))[0]?.disk).toBeNull();
+  expect(await service.reserve(f.actor, f.input)).toEqual(admitted);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: admitted.id, outcome: "completed" });
+  const stop = randomUUID();
+  await service.stop(f.actor, admitted.id, stop);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stop, outcome: "completed" });
+  const remove = randomUUID();
+  await service.delete(f.actor, admitted.id, remove);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: remove, outcome: "completed" });
+  expect((await service.get(f.actor, admitted.id)).status).toBe("deleted");
 });

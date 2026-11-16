@@ -1,5 +1,5 @@
 import { readBoundedText } from "@armada/auth";
-import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
+import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason, validDockerDiskReport } from "@armada/core";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import type { CallerResult } from "./caller.ts";
@@ -159,8 +159,10 @@ export function createDockerHostRoutes(
           fields(body.resources, [
             "cpus",
             "memoryBytes",
+            ...("disk" in body.resources ? ["disk"] : []),
             ...("availableCpus" in body.resources ? ["availableCpus", "availableMemoryBytes"] : []),
           ]);
+          if ("disk" in body.resources && !validDockerDiskReport(body.resources.disk)) throw new InvalidInput();
           if (!validDockerAvailability(body.resources as DockerHostResources)) throw new InvalidInput();
           try {
             dockerResourceLimits(body.resources as { cpus: number; memoryBytes: number });

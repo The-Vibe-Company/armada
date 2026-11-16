@@ -177,6 +177,12 @@ test("a failed image fetch is reported with its reason, and an older server stil
   f.failExecution(new DockerMachineError("image_unavailable"));
   await tick(f.store, f.api, f.executor);
   expect(f.state().receipts[0]).toMatchObject({ outcome: "failed", reason: "image_unavailable" });
+  for (const reason of ["disk_full", "disk_unavailable"] as const) {
+    const denied = fixture();
+    denied.failExecution(new DockerMachineError(reason));
+    await tick(denied.store, denied.api, denied.executor);
+    expect(denied.state().receipts[0]).toMatchObject({ outcome: "failed", reason });
+  }
   const generic = fixture();
   generic.failExecution(new DockerMachineError("docker_failed"));
   await tick(generic.store, generic.api, generic.executor);

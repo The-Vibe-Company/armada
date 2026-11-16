@@ -1,7 +1,9 @@
+import type { DockerDiskReport } from "./docker-disk-policy.ts";
 /** Browser-safe policy, shared by server admission and the host's Docker argv. */
 export type DockerHostResources = {
   cpus: number;
   memoryBytes: number;
+  disk?: DockerDiskReport;
   /** Headroom for Armada, including its current working set/CPU use; missing on older daemons. */
   availableCpus?: number;
   availableMemoryBytes?: number;

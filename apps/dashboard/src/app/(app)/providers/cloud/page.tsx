@@ -1,4 +1,10 @@
-import { type DockerSnapshotRecord, dockerHostResourceDisplay, type Harness } from "@armada/core";
+import {
+  type DockerSnapshotRecord,
+  dockerDiskRefusal,
+  dockerHostDiskDisplay,
+  dockerHostResourceDisplay,
+  type Harness,
+} from "@armada/core";
 import { CircleAlertIcon, RotateCwIcon, ServerIcon, TriangleAlertIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -311,7 +317,11 @@ function row(
 ): ResourceRow & { bucket: Bucket } {
   const resources = dockerHostResourceDisplay(host);
   const name = host.name ?? "Unnamed machine";
-  const blocker = dockerLaunchBlocker(launch.option, launch.placement, host);
+  const blocker =
+    dockerLaunchBlocker(launch.option, launch.placement, host) ??
+    (dockerDiskRefusal(host.disk)
+      ? `${dockerHostDiskDisplay(host)}. Free disk space or wait for an updated host check-in.`
+      : null);
   const state = hostState(host, now);
   const meta = host.canManageLimits ? "Added by you" : "Added by a teammate";
   const seen = host.lastSeenAt ? relativeAge(host.lastSeenAt, now) : null;
@@ -382,6 +392,8 @@ function row(
             <dd>{seen ?? "Never"}</dd>
             <dt className="text-muted-foreground">Machine</dt>
             <dd>{resources.machine}</dd>
+            <dt className="text-muted-foreground">Docker storage</dt>
+            <dd className="tabular-nums">{dockerHostDiskDisplay(host)}</dd>
             <dt className="text-muted-foreground">Per sandbox</dt>
             <dd>{resources.limits}</dd>
             <dt className="text-muted-foreground">Running / capacity</dt>

@@ -11,6 +11,7 @@ import {
 import { VERSION } from "../../core/src/version.ts";
 import { createAvailabilitySampler } from "./availability.ts";
 import { register, serverOrigin, tick, validToken } from "./daemon.ts";
+import { createDockerDiskSampler, diskFloorBytes, requireDockerDisk } from "./disk.ts";
 import { cleanupOfficialImages } from "./image-retention.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
@@ -169,7 +170,11 @@ async function main(args: string[]) {
     }
   };
   try {
-    const api = httpApi(fetch, createAvailabilitySampler(dockerCli));
+    const sampleDisk = createDockerDiskSampler(dockerCli, {
+      floorBytes: diskFloorBytes(process.env.ARMADA_DOCKER_DISK_FLOOR_BYTES),
+    });
+    const availability = createAvailabilitySampler(dockerCli);
+    const api = httpApi(fetch, async (state) => ({ ...(await availability(state)), disk: await sampleDisk() }));
     if (command === "register" || command === "install") {
       if (await store.exists()) throw new Error("Host already registered");
       const token = (await Bun.stdin.text()).trim();
@@ -189,6 +194,7 @@ async function main(args: string[]) {
       cli: dockerCli,
       now: Date.now,
       limits: () => limits,
+      beforeCreate: () => requireDockerDisk(sampleDisk),
     });
     const runtime = {
       ...executor,

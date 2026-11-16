@@ -1,5 +1,6 @@
 import type { Harness } from "./contract.ts";
 import type { CredentialKind } from "./database.types.ts";
+import type { DockerDiskReport } from "./docker-disk-policy.ts";
 import { GITHUB_CALLER_NOT_CONNECTED } from "./github.ts";
 import type { GitHubLaunchInfo } from "./launch.ts";
 import type { MachineSize, MachineSizeEvidence } from "./machine-size.ts";
@@ -34,6 +35,8 @@ export interface DockerHostSummary {
   running?: number;
   /** Missing on older servers; null until upgraded host hardware has been observed. */
   resources?: DockerHostResourceSummary | null;
+  /** Last heartbeat's Docker data filesystem measurement; null on older hosts. */
+  disk?: DockerDiskReport | null;
   canManageLimits?: boolean;
   retentionSeconds?: number | null;
   retentionOverrideSeconds?: number | null;
@@ -132,13 +135,22 @@ export interface LaunchOptionsResponse {
 }
 
 /** Why a host reports a failed machine operation, when the person can act on it (#1507). */
-export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable", "snapshot_build_failed"] as const;
+export const DOCKER_JOB_FAILURE_REASONS = [
+  "image_unavailable",
+  "snapshot_build_failed",
+  "disk_full",
+  "disk_unavailable",
+] as const;
 export type DockerJobFailureReason = (typeof DOCKER_JOB_FAILURE_REASONS)[number];
 /** What a sandbox and its launch say when its host could not fetch the image. */
 export const DOCKER_IMAGE_UNAVAILABLE_MESSAGE =
   "Your host could not fetch the image. Check that the image exists and that the host can reach its registry, then launch again.";
 /** Public diagnostics for admitted launch preparation; never derive these from command output. */
 export const DOCKER_LAUNCH_FAILURE_MESSAGES = {
+  diskFull:
+    "Docker disk free space is below this host's configured floor. Free space on the Docker data filesystem, then launch again.",
+  diskUnavailable:
+    "Docker disk free space is unavailable. Upgrade the host daemon and verify access to its local Docker data filesystem before launching; remote Docker endpoints cannot be measured safely.",
   startup: "Docker sandbox startup failed. Check the host and retry with a new request.",
   github:
     "Repository authorization failed. Connect GitHub and grant access to the requested repositories, then launch again.",

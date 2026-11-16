@@ -41,6 +41,8 @@ export class DockerMachineError extends Error {
       | "invalid_request"
       | "docker_failed"
       | "image_unavailable"
+      | "disk_full"
+      | "disk_unavailable"
       | "ownership_mismatch"
       | "expired"
       | "not_found",
@@ -78,6 +80,7 @@ export function createDockerMachineExecutor(options: {
   hostId: string;
   cli: DockerMachineCli;
   now: () => number;
+  beforeCreate?: () => Promise<void>;
   limits?: () => DockerSandboxLimits;
 }) {
   if (!uuid.test(options.installationId) || !uuid.test(options.hostId)) fail("invalid_request");
@@ -266,7 +269,10 @@ export function createDockerMachineExecutor(options: {
       fail("expired");
     // An immutable local ID alone is not authorization to consume another host's cache.
     // Approval is checked before any new allocation, never required for retained cleanup/resume.
-    if (!state.container) await approveLocalImage(request.image, request.snapshot);
+    if (!state.container) {
+      await options.beforeCreate?.();
+      await approveLocalImage(request.image, request.snapshot);
+    }
     if (!state.volume) {
       const created = absoluteCreationTime ?? now();
       const labels = {
@@ -290,6 +296,9 @@ export function createDockerMachineExecutor(options: {
         !isLocalImage(request.image) &&
         (await run(["image", "inspect", "--format", "{{.Id}}", request.image])).exitCode !== 0
       ) {
+        // Volume setup and external workloads may have changed disk headroom since admission.
+        // Keep this outside the pull-error mapping so a floor refusal remains actionable.
+        await options.beforeCreate?.();
         let pulled = false;
         try {
           const pull = ["image", "pull", "--quiet", request.image];

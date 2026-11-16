@@ -330,7 +330,11 @@ export async function tick(
         console.error(
           `Snapshot ${receipt.request.sandboxId}: Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.`,
         );
-      } else if (error instanceof DockerMachineError && error.code === "image_unavailable") receipt.reason = error.code;
+      } else if (
+        error instanceof DockerMachineError &&
+        ["image_unavailable", "disk_full", "disk_unavailable"].includes(error.code)
+      )
+        receipt.reason = error.code as DockerJobFailureReason;
     } // Uncertain native failure is terminal for this request identity.
     // A long build continues ordinary mailbox/TTL work; merge its receipt into the latest durable state.
     const latest = await store.load();

@@ -61,6 +61,11 @@ async function fixture(ack = true, harness: Harness = "codex") {
   const registration = await hosts.issueRegistration(admin),
     installationId = randomUUID();
   const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
+  await db.query(
+    "update public.docker_hosts set free_disk_bytes=$2,disk_floor_bytes=$3,last_seen_at=now() where id=$1",
+    [host.hostId, 100 * 1024 ** 3, 10 * 1024 ** 3],
+  );
+
   // Generated offline value, not an actual credential or an externally usable fixture secret.
   const secret = `offline-bootstrap-${randomUUID()}`,
     credentialId = randomUUID();
@@ -161,7 +166,11 @@ test("sealed account configuration is delivered only by enrolment, host gets tic
   expect(Buffer.from(stored.configuration_enc).includes(Buffer.from(f.secret))).toBe(false);
   const configuration = JSON.parse(await decryptSecret(stored.configuration_enc, key));
   expect(configuration.codexEnv.OPENAI_API_KEY).toBe(f.secret);
-  const delivery = await hosts.poll(f.hostToken, f.installationId);
+  const delivery = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   if (delivery?.operation !== "bootstrap") throw Error("missing bootstrap delivery");
   expect(delivery.bootstrap).toEqual({
     serverUrl: options.serverUrl,
@@ -202,7 +211,11 @@ test("lost commit response retries retain original encrypted job and do not rota
       [f.requestId],
     )
   ).rows[0]?.input_enc;
-  const delivery = await hosts.poll(f.hostToken, f.installationId);
+  const delivery = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   if (delivery?.operation !== "bootstrap") throw Error("missing delivery");
   const enrolled = await createRuntimeEnrolments(sql, key).enrol(delivery.bootstrap.enrolmentToken);
   await db.query(`update public.credentials set status='revoked' where id=$1`, [f.credentialId]);
@@ -327,7 +340,11 @@ test.each(["codex", "claude", "opencode"] as const)(
   async (harness) => {
     const f = await fixture(true, harness);
     await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
-    const first = await hosts.poll(f.hostToken, f.installationId);
+    const first = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    });
     if (first?.operation !== "bootstrap") throw Error("missing initial bootstrap");
     const authority = createRuntimeEnrolments(sql, key);
     const initial = await authority.enrol(first.bootstrap.enrolmentToken);
@@ -350,6 +367,12 @@ test.each(["codex", "claude", "opencode"] as const)(
     const stopId = randomUUID();
     await reservations.stop(f.actor, f.sandbox.id, stopId);
     await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
+    // Retained resume never allocates a new volume or pulls an image. Recovering work
+    // must remain possible below the disk floor or without fresh/known disk telemetry.
+    await db.query(
+      "update public.docker_hosts set free_disk_bytes=$2,disk_floor_bytes=$3,last_seen_at=now()-interval '61 seconds' where id=$1",
+      [f.hostId, harness === "codex" ? 0 : null, harness === "opencode" ? null : 10 * 1024 ** 3],
+    );
     const resumeId = randomUUID();
     await denied(service.resume(f.admin, f.sandbox.id, resumeId));
     expect(await service.resume(f.actor, f.sandbox.id, resumeId)).toEqual({
@@ -357,7 +380,11 @@ test.each(["codex", "claude", "opencode"] as const)(
       operation: "resume",
       state: "pending",
     });
-    const resumed = await hosts.poll(f.hostToken, f.installationId);
+    const resumed = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+      cpus: 128,
+      memoryBytes: 1024 ** 4,
+      disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+    });
     if (resumed?.operation !== "resume") throw Error("missing resumed bootstrap");
     expect(resumed.request).toEqual(first.request);
     expect(resumed.bootstrap.enrolmentToken).not.toBe(first.bootstrap.enrolmentToken);
@@ -415,7 +442,11 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
   const f = await fixture();
   const authority = createRuntimeEnrolments(sql, key);
   await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
-  const boot = await hosts.poll(f.hostToken, f.installationId);
+  const boot = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   if (boot?.operation !== "bootstrap") throw Error("missing bootstrap");
   const session = await authority.enrol(boot.bootstrap.enrolmentToken);
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
@@ -507,7 +538,11 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
   clock += 60_000;
   await idle.reconcileOne(new AbortController().signal);
-  const stop = await hosts.poll(f.hostToken, f.installationId);
+  const stop = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   if (stop?.operation !== "stop") throw Error("missing idle stop");
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopping");
   await hosts.complete(f.hostToken, f.installationId, { requestId: stop.requestId, outcome: "completed" });
@@ -536,7 +571,10 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
   await db.query("update public.docker_hosts set sandbox_cpus=null where id=$1", [f.hostId]);
   const resumeId = randomUUID();
-  await hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });
+  await hosts.poll(f.hostToken, f.installationId, "2.31.0", false, {
+    ...{ cpus: 2, memoryBytes: 6 * 1024 ** 3 },
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   const occupied = await reservations.reserve(f.actor, {
     hostId: f.hostId,
     image: `worker@sha256:${"a".repeat(64)}`,
@@ -549,7 +587,11 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
   await hosts.complete(f.hostToken, f.installationId, { requestId: occupied.id, outcome: "completed" });
   await hosts.expired(f.hostToken, f.installationId, { requestId: occupied.id });
   await service.resume(f.actor, f.sandbox.id, resumeId);
-  const resume = await hosts.poll(f.hostToken, f.installationId);
+  const resume = await hosts.poll(f.hostToken, f.installationId, undefined, false, {
+    cpus: 128,
+    memoryBytes: 1024 ** 4,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  });
   if (resume?.operation !== "resume") throw Error("missing resume");
   const resumed = await authority.enrol(resume.bootstrap.enrolmentToken);
   const proof = { epoch: session.epoch, watermark: 1, conversationId };

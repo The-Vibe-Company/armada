@@ -19,7 +19,10 @@ const request: DockerMachineRequest = {
 
 // Minimal independent Docker state machine: inspect returns stored Docker-shaped records,
 // not receipts or ownership decisions supplied by the executor.
-function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: number }) {
+function fixture(
+  limits?: () => { cpus: number; memoryBytes: number; pids: number },
+  beforeCreate?: () => Promise<void>,
+) {
   const containers = new Map<string, any>();
   const volumes = new Map<string, any>();
   const calls: {
@@ -102,6 +105,7 @@ function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: numbe
     cli,
     now: () => time,
     ...(limits ? { limits } : {}),
+    ...(beforeCreate ? { beforeCreate } : {}),
   });
   return {
     executor,
@@ -125,6 +129,30 @@ function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: numbe
 }
 
 describe("Docker machine executor", () => {
+  test("fresh admission failure prevents volume allocation and image pulls while retained cleanup remains available", async () => {
+    const f = fixture(undefined, async () => {
+      throw Error("disk floor");
+    });
+    f.images.clear();
+    await expect(f.executor.create(request)).rejects.toThrow("disk floor");
+    expect(f.calls.some(({ argv }) => argv[1] === "create" || argv[1] === "pull")).toBe(false);
+    expect(f.volumes.size).toBe(0);
+    await f.executor.stop(request);
+    await f.executor.delete(request);
+  });
+
+  test("disk admission is rechecked immediately before a missing image is pulled", async () => {
+    let samples = 0;
+    const f = fixture(undefined, async () => {
+      if (++samples === 2) throw Error("disk space dropped after volume setup");
+    });
+    f.images.clear();
+    f.registry.add(request.image);
+    await expect(f.executor.create(request)).rejects.toThrow("disk space dropped");
+    expect(samples).toBe(2);
+    expect(f.calls.some(({ argv }) => argv[0] === "image" && argv[1] === "pull")).toBe(false);
+  });
+
   test("fetches an image the host does not have with a pull's own bound, and names a failed fetch", async () => {
     const fresh = { ...request, image: `buildpack-deps@sha256:${"b".repeat(64)}` };
     const pulled = fixture();

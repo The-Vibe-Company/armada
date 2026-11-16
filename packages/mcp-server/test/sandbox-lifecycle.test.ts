@@ -24,6 +24,10 @@ test("private Docker reservations remain untouched while the generic lifecycle r
   const hosts = createDockerHostStore(sql, ENCRYPTION_KEY);
   const registration = await hosts.issueRegistration({ userId: people.admin, orgId: people.org });
   const host = await hosts.exchangeRegistration(registration.registrationToken, crypto.randomUUID());
+  await db.query(
+    "update public.docker_hosts set free_disk_bytes=$2,disk_floor_bytes=$3,last_seen_at=now() where id=$1",
+    [host.hostId, 100 * 1024 ** 3, 10 * 1024 ** 3],
+  );
   const credential = (
     await db.query<{ id: string }>(
       `select id from public.credentials where scope='org' and owner_id=$1 and kind='openai'`,

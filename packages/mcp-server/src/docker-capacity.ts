@@ -1,4 +1,5 @@
-import { ProviderError, type Sql } from "@armada/core";
+import { DOCKER_LAUNCH_FAILURE_MESSAGES, ProviderError, type Sql } from "@armada/core";
+import { dockerDiskRefusal } from "../../core/src/docker-disk-policy.ts";
 import { dockerResourcePolicy } from "../../core/src/docker-resources.ts";
 
 export type DockerPolicyRow = {
@@ -53,6 +54,36 @@ export class DockerHostFull extends ProviderError {
       message: `Host ${name} is full: ${running}/${capacity} sandboxes running; stop one or raise the limit.`,
     });
   }
+}
+
+/** New allocations reserve disk; retained resume consumes only its existing owned allocation.
+ * Caller holds the same host lock as capacity admission so heartbeat state cannot change mid-admission. */
+export async function admitDockerDisk(tx: Sql, hostId: string): Promise<void> {
+  const host = (
+    await tx.query<{
+      free_disk_bytes: number | string | null;
+      disk_floor_bytes: number | string | null;
+      disk_fresh: boolean | null;
+    }>(
+      "select free_disk_bytes,disk_floor_bytes,last_seen_at>now()-interval '60 seconds' as disk_fresh from public.docker_hosts where id=$1",
+      [hostId],
+    )
+  ).rows[0];
+  const disk =
+    host?.disk_floor_bytes == null || !host.disk_fresh
+      ? null
+      : {
+          freeBytes: host.free_disk_bytes == null ? null : Number(host.free_disk_bytes),
+          floorBytes: Number(host.disk_floor_bytes),
+        };
+  const refusal = dockerDiskRefusal(disk);
+  if (refusal)
+    throw new DockerLimitsRefused(
+      "conflict",
+      refusal === "disk_full"
+        ? DOCKER_LAUNCH_FAILURE_MESSAGES.diskFull
+        : `${DOCKER_LAUNCH_FAILURE_MESSAGES.diskUnavailable} Wait for a fresh host heartbeat (within 60 seconds).`,
+    );
 }
 
 /** Caller must hold the host row FOR UPDATE. Pending starts reserve capacity too:

@@ -168,10 +168,18 @@ test("host show resolves exact names and renders resources, automatic limits and
   };
   for (const selector of ["office", hostId]) {
     const result = await capture(["host", "show", selector], async () =>
-      Response.json({ placement: true, hosts: [{ ...summary, running: 3, resources }] }),
+      Response.json({
+        placement: true,
+        hosts: [{ ...summary, running: 3, resources, disk: { freeBytes: 8 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 } }],
+      }),
     );
     expect(result.code).toBe(0);
-    for (const text of ["8 CPUs · 26 GiB RAM", "2 CPUs · 4 GiB RAM · 4096 processes (automatic)", "3/6"])
+    for (const text of [
+      "8 CPUs · 26 GiB RAM",
+      "2 CPUs · 4 GiB RAM · 4096 processes (automatic)",
+      "3/6",
+      "8 GiB free · 10 GiB minimum · launches blocked",
+    ])
       expect(result.out).toContain(text);
   }
   const unknown = await capture(["host", "show", "missing"], async () =>

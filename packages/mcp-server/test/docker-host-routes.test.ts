@@ -148,7 +148,7 @@ test("opt-in host HTTP routes separate user and host capabilities and never cach
   ).toBe(401);
   for (const body of [
     { ...unknownJob, outcome: "completed", reason: "image_unavailable" },
-    { ...unknownJob, reason: "disk_full" },
+    { ...unknownJob, reason: "unknown_reason" },
     { ...unknownJob, reason: 1 },
     { ...expiry, reason: "image_unavailable" },
   ])
@@ -258,6 +258,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     limitsSupported: false,
     running: 0,
     resources: null,
+    disk: null,
     version: null,
   });
   expect(byId.get(online.hostId)?.state).toBe("online");
@@ -272,6 +273,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     expect(Object.keys(host).sort()).toEqual([
       "canManageLimits",
       "createdAt",
+      "disk",
       "id",
       "lastSeenAt",
       "limitsSupported",
@@ -341,7 +343,11 @@ test("only the owner changes a drained capable host; policy reaches admission an
     post("/api/docker-host/poll", host.hostToken, {
       installationId,
       version: "2.31.0",
-      resources: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
+      resources: {
+        cpus: 8,
+        memoryBytes: 26 * 1024 ** 3,
+        disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+      },
       ...(capable ? { resourcePolicyVersion: 1 } : {}),
     });
   const first = await poll(true);
@@ -392,7 +398,14 @@ test("only the owner changes a drained capable host; policy reaches admission an
   expect(reset.status).toBe(200);
   expect(await reset.json()).toMatchObject({ resources: { capacity: 6, mode: "automatic" } });
   await post(endpoint, "fixture-user-token", { ...body, cpus: 4 });
-  await store.poll(host.hostToken, installationId, "2.31.0", false, { cpus: 2, memoryBytes: 26 * 1024 ** 3 }, 1);
+  await store.poll(
+    host.hostToken,
+    installationId,
+    "2.31.0",
+    false,
+    { cpus: 2, memoryBytes: 26 * 1024 ** 3, disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 } },
+    1,
+  );
   await expect(sandboxes.reserve(actor, { ...input, requestId: randomUUID() })).rejects.toThrow(
     "Host hardware changed",
   );
@@ -405,7 +418,13 @@ test("heartbeat availability is validated and drives the public busy-capacity su
   const ticket = await store.issueRegistration({ userId, orgId });
   const installationId = randomUUID();
   const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
-  const resources = { cpus: 16, memoryBytes: 38 * 1024 ** 3, availableCpus: 8, availableMemoryBytes: 30 * 1024 ** 3 };
+  const resources = {
+    cpus: 16,
+    memoryBytes: 38 * 1024 ** 3,
+    availableCpus: 8,
+    availableMemoryBytes: 30 * 1024 ** 3,
+    disk: { freeBytes: 100 * 1024 ** 3, floorBytes: 10 * 1024 ** 3 },
+  };
   const poll = (value: unknown) =>
     post("/api/docker-host/poll", host.hostToken, {
       installationId,
@@ -416,8 +435,15 @@ test("heartbeat availability is validated and drives the public busy-capacity su
   expect((await poll(resources)).status).toBe(200);
   const listed = await post("/api/v1/docker/hosts/list", "fixture-user-token", { org: orgId });
   const list = (await listed.json()) as DockerHostListResponse;
-  expect(list.hosts[0]).toMatchObject({ resources: { capacity: 7, heldBack: 2 } });
+  expect(list.hosts[0]).toMatchObject({ resources: { capacity: 7, heldBack: 2 }, disk: resources.disk });
   for (const invalid of [
+    ...[
+      { freeBytes: -1, floorBytes: 0 },
+      { freeBytes: 1, floorBytes: -1 },
+      { freeBytes: 1.5, floorBytes: 1 },
+      { freeBytes: 1, floorBytes: 1, unexpected: true },
+      { freeBytes: 1 },
+    ].map((disk) => ({ ...resources, disk })),
     { ...resources, availableCpus: 17 },
     { ...resources, availableMemoryBytes: -1 },
     { cpus: 16, memoryBytes: 38 * 1024 ** 3, availableCpus: 8 },
