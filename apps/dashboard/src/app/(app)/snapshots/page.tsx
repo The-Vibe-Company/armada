@@ -538,6 +538,11 @@ export default async function GoldensPage({ searchParams }: Props) {
                 {/* Each group keeps the existing detail/history controller; its duplicate page heading is not needed. */}
                 <div className="space-y-3 [&>div>div:first-child]:hidden">
                   <CatalogBrowser
+                    filters={[
+                      { label: "Boat", match: "boat" },
+                      { label: "Modal", match: "modal" },
+                      { label: "Needs attention", match: "attention" },
+                    ]}
                     title=""
                     description=""
                     label={group.label}
@@ -950,7 +955,11 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
       ),
     action,
     detail,
-    attrs: { "data-golden": golden.name, "data-golden-provider": golden.provider },
+    attrs: {
+      "data-catalog-filter": `${golden.provider} ${state.bucket === "ready" ? "" : "attention"}`,
+      "data-golden": golden.name,
+      "data-golden-provider": golden.provider,
+    },
     panelAttrs: { "data-golden-panel": golden.name, "data-golden-provider": golden.provider },
   };
 }
@@ -1140,7 +1149,11 @@ function dockerSnapshotRow(
         </IdentifierDetails>
       </div>
     ),
-    attrs: { "data-golden": snapshot.name, "data-golden-provider": "docker" },
+    attrs: {
+      "data-catalog-filter": `docker ${state.bucket === "ready" ? "" : "attention"}`,
+      "data-golden": snapshot.name,
+      "data-golden-provider": "docker",
+    },
   };
 }
 

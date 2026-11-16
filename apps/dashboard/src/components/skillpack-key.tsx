@@ -29,6 +29,9 @@ import type { ActionResult } from "@/lib/action";
 import { clientMutation } from "@/lib/client-mutation";
 import { type SkillpackKey, type SkillpackKeys, type SkillpackScope, skillpackAudience } from "@/lib/skillpack-key";
 
+// Route revalidation remounts Skills; carry only the pending focus target across that render.
+let removalFocus: { orgId: string; scope: SkillpackScope } | null = null;
+
 type Props = {
   title: string;
   description: ReactNode;
@@ -144,6 +147,12 @@ function KeyRow({
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsTrigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!stored && removalFocus?.orgId === orgId && removalFocus.scope === scope) {
+      removalFocus = null;
+      requestAnimationFrame(() => detailsTrigger.current?.focus());
+    }
+  }, [stored, orgId, scope]);
   const name = scope === "user" ? "Your Skillpack key" : "The organization’s key";
   const state = !stored
     ? { tone: "neutral" as const, label: "Not set" }
@@ -250,13 +259,19 @@ function KeyForm({
   initialScope: SkillpackScope;
   onDone: (message: string) => void;
 }) {
-  const [state, formAction] = useMutationState(saveSkillpackKey);
+  // Run completion before revalidation replaces this route's keyed content.
+  const save = useCallback(
+    async (previous: ActionResult | null, data: FormData) => {
+      const result = await saveSkillpackKey(previous, data);
+      if (result.ok) onDone(result.message);
+      return result;
+    },
+    [onDone],
+  );
+  const [state, formAction] = useMutationState(save);
   const formRef = usePreservedActionForm();
   const [scope, setScope] = useState<SkillpackScope>(isAdmin ? initialScope : "user");
   const id = useId();
-  useEffect(() => {
-    if (state?.ok) onDone(state.message);
-  }, [state, onDone]);
 
   return (
     <form ref={formRef} action={formAction} className="space-y-4" data-skillpack-form>
@@ -370,7 +385,14 @@ function RemoveKey({ scope, orgId }: { scope: SkillpackScope; orgId: string }) {
             Revoke the key in Skillpack too if you no longer need it.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <RemoveForm scope={scope} orgId={orgId} onRemoved={() => setOpen(false)} />
+        <RemoveForm
+          scope={scope}
+          orgId={orgId}
+          onRemoved={() => {
+            removalFocus = { orgId, scope };
+            setOpen(false);
+          }}
+        />
       </AlertDialogContent>
     </AlertDialog>
   );

@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { MOCK, reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
+
+async function openAccountReplacement(page: Page, name: string) {
+  await page.locator(`[data-account="${name}"] button[aria-expanded]`).click();
+  const drawer = page.getByRole("dialog", { name, exact: true });
+  await drawer.getByRole("button", { name: `More actions for ${name}`, exact: true }).click();
+  await page.getByRole("menuitem", { name: "Replace key", exact: true }).click();
+  return page.getByRole("dialog", { name: `Replace the API key of ${name}`, exact: true });
+}
 
 async function seedAccount(id: string, kind: "openai" | "anthropic", name: string) {
   const seeded = await fetch(`${MOCK}/__test/accounts`, {
@@ -76,11 +84,7 @@ test("Codex replacement chooses a route explicitly, keeps the version fence and 
   await signIn(page, "alice@example.com", "/harness");
   const stale = await page.context().newPage();
   await stale.goto("/harness");
-  const open = async (on: typeof page) => {
-    await on.getByRole("button", { name: "More actions for Foundry existing" }).click();
-    await on.getByRole("menuitem", { name: "Replace key", exact: true }).click();
-    return on.getByRole("dialog");
-  };
+  const open = (on: typeof page) => openAccountReplacement(on, "Foundry existing");
   const dialog = await open(page);
   await expect(dialog.getByLabel("Connection type")).toHaveValue("");
   await expect(dialog.locator('input[name="value"]')).toHaveCount(0);
@@ -130,11 +134,7 @@ test("Claude gateway replacement keeps explicit routing/auth and refuses a stale
   await signIn(page, "alice@example.com", "/harness");
   const stale = await page.context().newPage();
   await stale.goto("/harness");
-  const open = async (on: typeof page) => {
-    await on.getByRole("button", { name: "More actions for Gateway existing" }).click();
-    await on.getByRole("menuitem", { name: "Replace key", exact: true }).click();
-    return on.getByRole("dialog");
-  };
+  const open = (on: typeof page) => openAccountReplacement(on, "Gateway existing");
   const dialog = await open(page);
   await expect(dialog.getByLabel("Connection type")).toHaveValue("");
   await expect(dialog.locator('input[name="value"]')).toHaveCount(0);
@@ -243,9 +243,7 @@ test("a DeepSeek connection is added by choosing the provider, pasting a key and
   await expect(page.locator("body")).not.toContainText(key);
 
   // Replacing the key re-enters the provider: a plain plan key is never chosen silently.
-  await page.getByRole("button", { name: "More actions for DeepSeek" }).click();
-  await page.getByRole("menuitem", { name: "Replace key", exact: true }).click();
-  const replace = page.getByRole("dialog");
+  const replace = await openAccountReplacement(page, "DeepSeek");
   await expect(replace.getByLabel("Connection type")).toHaveValue("");
   await replace.getByLabel("Connection type").selectOption("deepseek");
   await replace.getByRole("searchbox", { name: "Search models" }).fill("flash");

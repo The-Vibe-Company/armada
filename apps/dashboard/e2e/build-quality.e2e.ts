@@ -66,7 +66,7 @@ test("shared scope radios support keyboard selection without granting organizati
   page,
 }) => {
   await signIn(page, "alice@example.com", "/skills");
-  await page.getByRole("button", { name: "Add key", exact: true }).click();
+  await page.getByRole("button", { name: "Add a key", exact: true }).click();
   const dialog = page.getByRole("dialog");
   const personal = dialog.getByRole("radio", { name: "Personal", exact: true });
   await personal.focus();
@@ -76,7 +76,7 @@ test("shared scope radios support keyboard selection without granting organizati
   await page.keyboard.press("Escape");
   await page.context().clearCookies();
   await signIn(page, "bob@example.com", "/skills");
-  await page.getByRole("button", { name: "Add key", exact: true }).click();
+  await page.getByRole("button", { name: "Add a key", exact: true }).click();
   await expect(dialog.getByRole("radio", { name: "Org (Acme)", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("radio", { name: "Personal", exact: true })).toBeChecked();
 });

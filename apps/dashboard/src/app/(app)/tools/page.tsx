@@ -123,6 +123,10 @@ export default async function ToolsPage({ searchParams }: Props) {
   return (
     <div className="max-sm:[&_[data-connection]>div:first-child]:col-span-full max-sm:[&_[data-connection]>div:nth-child(2)]:col-span-full max-sm:[&_[data-connection]>div:last-child]:col-span-full max-sm:[&_[data-connection]>div:last-child]:col-start-1 max-sm:[&_[data-connection]>div:last-child]:row-start-3 max-sm:[&_[data-connection]>div:last-child]:row-span-1 max-sm:[&_[data-connection]>div:last-child]:justify-start">
       <CatalogBrowser
+        filters={[
+          { label: "Connected", match: "connected" },
+          { label: "Needs attention", match: "attention" },
+        ]}
         title={TITLE}
         description={DESCRIPTION}
         meta={list.connections.length > 0 ? list.connections.length : undefined}
@@ -242,7 +246,10 @@ function connectionRow(
         <TemplateUsage list={templates} uses={(definition) => definition.connections.includes(connection.id)} />
       </div>
     ),
-    attrs: { "data-connection": connection.name },
+    attrs: {
+      "data-catalog-filter": connection.status === "connected" ? "connected" : "attention",
+      "data-connection": connection.name,
+    },
   };
 }
 

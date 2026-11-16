@@ -5,7 +5,8 @@ import { ExternalLinkIcon, Loader2Icon } from "lucide-react";
 import { useActionState, useEffect, useId, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { connectProvider, disconnectProvider } from "@/app/actions/provider-setup";
-import { ProviderName } from "@/components/provider-mark";
+import { CatalogDrawer } from "@/components/catalog-drawer";
+import { ProviderMark, ProviderName } from "@/components/provider-mark";
 import { ConnectionBadge } from "@/components/status-badge";
 import {
   AlertDialog,
@@ -50,6 +51,8 @@ export function ProviderConnection({
   const info = SETUP_PROVIDER_INFO[provider];
   const connected = state === "connected";
   const [open, setOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const detailsTrigger = useRef<HTMLButtonElement>(null);
   // The last outcome, and the status it reported: a success is shown only while the row is still in that status, and
   // an error only in the form that caused it, so neither outlives a later change.
   const [feedback, setFeedback] = useState<{ result: ActionResult; state: ProviderRowState } | null>(null);
@@ -76,80 +79,124 @@ export function ProviderConnection({
   const error = feedback && !feedback.result.ok && open ? feedback.result.error : null;
 
   return (
-    <li className="space-y-4 p-4" data-provider-row={provider} data-provider-state={state}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0 space-y-0.5">
-          <p className="flex items-center gap-2 text-sm font-medium">
-            <ProviderName provider={provider} /> cloud
-          </p>
-          <p className="text-xs text-muted-foreground">
+    <li
+      className="min-w-0 overflow-hidden rounded-[10px] border bg-card transition-colors hover:border-foreground/25"
+      data-provider-row={provider}
+      data-provider-state={state}
+    >
+      <button
+        ref={detailsTrigger}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={detailsOpen}
+        onClick={() => setDetailsOpen(true)}
+        className="flex w-full items-start gap-3 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        <span className="flex size-9 shrink-0 items-center justify-center [&_svg]:size-8">
+          <ProviderMark provider={provider} />
+        </span>
+        <span className="min-w-0 flex-1 space-y-1">
+          <span className="block text-sm font-semibold">{info.label}</span>
+          <span className="block text-xs text-muted-foreground">
             {connected
               ? `${orgName}’s account`
               : state === "not-connected"
                 ? "No account yet"
                 : "Account status unavailable"}
-          </p>
-          <ConnectionBadge state={state} />
-          {state === "not-connected" && (
-            <p className="text-xs text-muted-foreground">
-              {provider === "modal" ? "Needs a Modal token (two values)." : "Needs a Boat API key."}
+          </span>
+        </span>
+        <ConnectionBadge state={state} />
+      </button>
+      <div className="border-t bg-muted/20 px-4 py-2.5 text-xs text-muted-foreground">Organization cloud account</div>
+      <CatalogDrawer
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+        title={info.label}
+        subtitle={`${orgName} · Organization cloud account`}
+        mark={
+          <span className="flex size-10 items-center justify-center [&_svg]:size-8">
+            <ProviderMark provider={provider} />
+          </span>
+        }
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          detailsTrigger.current?.focus();
+        }}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0 space-y-0.5">
+            <p className="flex items-center gap-2 text-sm font-medium">
+              <ProviderName provider={provider} /> cloud
             </p>
-          )}
-        </div>
-        {manageable && !open && (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              ref={toggle}
-              variant={connected ? "outline" : "default"}
-              size="sm"
-              onClick={() => {
-                setFeedback(null);
-                setOpen(true);
-              }}
-            >
-              {connected ? `Replace ${info.credentialNoun}` : "Connect"}
-            </Button>
-            {connected && (
-              <DisconnectProvider
-                orgId={orgId}
-                orgName={orgName}
-                provider={provider}
-                onDisconnected={(result) => setFeedback({ result, state: "not-connected" })}
-              />
+            <p className="text-xs text-muted-foreground">
+              {connected
+                ? `${orgName}’s account`
+                : state === "not-connected"
+                  ? "No account yet"
+                  : "Account status unavailable"}
+            </p>
+            <ConnectionBadge state={state} />
+            {state === "not-connected" && (
+              <p className="text-xs text-muted-foreground">
+                {provider === "modal" ? "Needs a Modal token (two values)." : "Needs a Boat API key."}
+              </p>
             )}
           </div>
-        )}
-      </div>
-
-      {open && (
-        <form
-          ref={preserve}
-          action={action}
-          aria-label={`${connected ? "Replace" : "Connect"} ${info.label}`}
-          className="space-y-3 rounded-lg border bg-muted/30 p-4"
-        >
-          <input type="hidden" name="org" value={orgId} />
-          <input type="hidden" name="provider" value={provider} />
-          <input type="hidden" name="mode" value={connected ? "replace" : "connect"} />
-          <ProviderFields provider={provider} />
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
+          {manageable && !open && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                ref={toggle}
+                variant={connected ? "outline" : "default"}
+                size="sm"
+                onClick={() => {
+                  setFeedback(null);
+                  setOpen(true);
+                }}
+              >
+                {connected ? `Replace ${info.credentialNoun}` : "Connect"}
+              </Button>
+              {connected && (
+                <DisconnectProvider
+                  orgId={orgId}
+                  orgName={orgName}
+                  provider={provider}
+                  onDisconnected={(result) => setFeedback({ result, state: "not-connected" })}
+                />
+              )}
+            </div>
           )}
-          <div className="flex flex-wrap items-center gap-2">
-            <ConnectButton label={info.label} replacing={connected} />
-            <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-          </div>
-        </form>
-      )}
-      {success && (
-        <p role="status" className="text-sm text-success">
-          {success}
-        </p>
-      )}
+        </div>
+
+        {open && (
+          <form
+            ref={preserve}
+            action={action}
+            aria-label={`${connected ? "Replace" : "Connect"} ${info.label}`}
+            className="space-y-3 rounded-lg border bg-muted/30 p-4"
+          >
+            <input type="hidden" name="org" value={orgId} />
+            <input type="hidden" name="provider" value={provider} />
+            <input type="hidden" name="mode" value={connected ? "replace" : "connect"} />
+            <ProviderFields provider={provider} />
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <ConnectButton label={info.label} replacing={connected} />
+              <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        )}
+        {success && (
+          <p role="status" className="text-sm text-success">
+            {success}
+          </p>
+        )}
+      </CatalogDrawer>
     </li>
   );
 }

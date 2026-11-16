@@ -65,3 +65,67 @@ body:has(.catalog) [role="dialog"][aria-labelledby$="-panel-title"] aside {
   border-left: 1px solid var(--border);
   background: var(--card);
 }
+
+.catalog.table section > div > ul {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--card);
+}
+
+.catalog.table section > div > ul > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr);
+  align-items: center;
+  gap: 16px;
+  padding: 9px 16px;
+  border: 0;
+  border-radius: 0;
+}
+
+.catalog.table section > div > ul > li > div:last-child {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .catalog.table section > div > ul > li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+
+.catalog:not(.table) section > div > ul > li {
+  padding: 0;
+}
+
+.catalog:not(.table) section > div > ul > li > div:not(:first-child) {
+  display: none;
+}
+
+.catalog:not(.table) section > div > ul > li > div:first-child {
+  align-self: stretch;
+  flex: 1;
+}
+
+/* The catalog owns the always-visible search rather than the dense-list threshold. */
+.catalog section > div > div:has(> input[type="search"]) {
+  display: none;
+}
+
+.catalog:not(.table) section > div > ul > li > div:first-child > div {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  z-index: 1;
+}
+
+.catalog.table section > div > ul > li + li {
+  border-top: 1px solid var(--border);
+}
+
+.catalog section > div > ul > li[data-catalog-shown="false"] {
+  display: none;
+}

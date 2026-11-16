@@ -121,7 +121,11 @@ function SandboxProviders({
                 </AlertDescription>
               </Alert>
             )}
-            <ul className="divide-y rounded-lg border" data-setup-state={setup.state} aria-label="Cloud accounts">
+            <ul
+              className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,310px),1fr))] gap-3"
+              data-setup-state={setup.state}
+              aria-label="Cloud accounts"
+            >
               {SETUP_PROVIDERS.map((provider) => {
                 const state: ProviderRowState =
                   setup.state === "unavailable"

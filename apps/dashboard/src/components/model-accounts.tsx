@@ -2049,6 +2049,27 @@ export function ModelsOverview({
 }) {
   const router = useRouter();
   const [refreshing, startRefresh] = useTransition();
+  const [filter, setFilter] = useState<Harness | "all">("all");
+  const [query, setQuery] = useState("");
+  const filters = [
+    { value: "all" as const, label: "All", count: accounts.length },
+    { value: "claude" as const, label: "Claude Code", count: accountsFor(accounts, "claude").length },
+    { value: "codex" as const, label: "Codex", count: accountsFor(accounts, "codex").length },
+  ];
+  const compatible = filter === "all" ? accounts : accountsFor(accounts, filter);
+  const matching = new Set(
+    compatible
+      .filter((account) =>
+        `${account.name} ${KIND_INFO[account.kind].label} ${KIND_INFO[account.kind].harnessLabel} ${account.scope === "user" ? "Personal" : orgName}`
+          .toLowerCase()
+          .includes(query.trim().toLowerCase()),
+      )
+      .map((account) => account.id),
+  );
+  const clearFilters = () => {
+    setFilter("all");
+    setQuery("");
+  };
   return (
     <div className="space-y-8">
       <section aria-labelledby="all-accounts" className="space-y-3">
@@ -2071,26 +2092,73 @@ export function ModelsOverview({
             <span className="text-xs text-muted-foreground">{refreshing ? "Refreshing…" : "Refresh accounts"}</span>
           </Button>
         </div>
+        {accounts.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <fieldset
+              aria-label="Filter model accounts by agent"
+              className="inline-flex flex-wrap gap-0.5 rounded-lg bg-muted p-[3px]"
+            >
+              {filters.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  aria-pressed={filter === item.value}
+                  onClick={() => setFilter(item.value)}
+                  className={cn(
+                    "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-ring",
+                    filter === item.value
+                      ? "bg-card text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {item.label}
+                  <span className="font-mono text-[11px] text-muted-foreground">{item.count}</span>
+                </button>
+              ))}
+            </fieldset>
+            <Input
+              type="search"
+              aria-label="Search model accounts"
+              placeholder="Search accounts…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              className="h-[34px] w-[260px] max-w-full text-[13px]"
+            />
+          </div>
+        )}
+        {accounts.length > 0 && matching.size === 0 && (
+          <Empty
+            title="Nothing matches"
+            action={
+              <Button variant="outline" size="sm" onClick={clearFilters}>
+                Clear filters
+              </Button>
+            }
+          >
+            Try another agent or account name.
+          </Empty>
+        )}
         {accounts.length ? (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,310px),1fr))] gap-3">
             {orderAccounts(accounts, now).map((account) => (
-              <AccountRow
-                key={account.id}
-                account={account}
-                previousDefault={accounts.find(
-                  (other) =>
-                    other.id !== account.id &&
-                    other.scope === account.scope &&
-                    other.isDefault &&
-                    accountsFor([other], KIND_INFO[account.kind].harness).length > 0,
-                )}
-                orgId={orgId}
-                orgName={orgName}
-                canManage={account.scope === "user" || isAdmin}
-                usage={usage[account.id] ?? null}
-                now={now}
-                testChoices={testChoices}
-              />
+              <div key={account.id} hidden={!matching.has(account.id)}>
+                <AccountRow
+                  account={account}
+                  previousDefault={accounts.find(
+                    (other) =>
+                      other.id !== account.id &&
+                      other.scope === account.scope &&
+                      other.isDefault &&
+                      accountsFor([other], KIND_INFO[account.kind].harness).length > 0,
+                  )}
+                  orgId={orgId}
+                  orgName={orgName}
+                  canManage={account.scope === "user" || isAdmin}
+                  usage={usage[account.id] ?? null}
+                  now={now}
+                  testChoices={testChoices}
+                />
+              </div>
             ))}
           </div>
         ) : (
@@ -2113,6 +2181,7 @@ export function ModelsOverview({
             orgId={orgId}
             isAdmin={isAdmin}
             emptyAction={emptyAction}
+            onInspect={clearFilters}
           />
         ))}
       </section>
@@ -2129,7 +2198,9 @@ function PersonalDefaultSentence({
   orgId,
   isAdmin,
   emptyAction,
+  onInspect,
 }: {
+  onInspect: () => void;
   harness: Harness;
   accounts: ModelAccount[];
   defaults: AgentDefault[] | undefined;
@@ -2256,6 +2327,7 @@ function PersonalDefaultSentence({
         <Button
           size="sm"
           onClick={() => {
+            onInspect();
             const row = document.getElementById(`account-${account.id}`)?.closest("[data-account]");
             const summary = row?.querySelector<HTMLButtonElement>("button[aria-expanded]");
             if (summary?.getAttribute("aria-expanded") === "false") summary.click();

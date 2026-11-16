@@ -102,6 +102,7 @@ export default async function VariablesContent({ searchParams }: Props) {
 
   return (
     <CatalogBrowser
+      layout="table"
       title={TITLE}
       description={DESCRIPTION}
       meta={rows.length > 0 ? rows.length : undefined}

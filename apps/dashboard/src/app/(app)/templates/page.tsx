@@ -146,6 +146,10 @@ export default async function TemplatesPage({ searchParams }: Props) {
 
   return (
     <CatalogBrowser
+      filters={[
+        { label: "Claude Code", match: "claude" },
+        { label: "Codex", match: "codex" },
+      ]}
       title={TITLE}
       description={DESCRIPTION}
       meta={rows.length > 0 ? rows.length : undefined}
@@ -387,10 +391,18 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
     search: [item.name, item.scope, environment ?? "", definition ? agentSummary(definition) : ""].join(" "),
     mark: definition ? <CatalogHarnessMark harness={definition.harness} /> : undefined,
     tags: (
-      <RowTag>
-        {item.scope === "personal" ? <UserIcon aria-hidden /> : <UsersIcon aria-hidden />}
-        {item.scope === "personal" ? "Personal" : "Org"}
-      </RowTag>
+      <>
+        {environment && <RowTag>{environment}</RowTag>}
+        {definition?.connections.map((id) => (
+          <RowTag key={id}>
+            {lookups.connections?.find((connection) => connection.id === id)?.name ?? "Unavailable tool"}
+          </RowTag>
+        ))}
+        <RowTag>
+          {item.scope === "personal" ? <UserIcon aria-hidden /> : <UsersIcon aria-hidden />}
+          {item.scope === "personal" ? "Personal" : "Org"}
+        </RowTag>
+      </>
     ),
     meta,
     subtitle: `Version ${item.currentRevision} · ${templateAudience(item.scope, org.name)}`,
@@ -398,7 +410,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
     fact: templateAudience(item.scope, org.name),
     ...(target && !blocker ? { action: <TemplateLaunchDialog target={target} /> } : {}),
     detail,
-    attrs: { "data-template": item.name },
+    attrs: { "data-catalog-filter": definition?.harness ?? "", "data-template": item.name },
   };
 }
 

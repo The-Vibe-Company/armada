@@ -65,7 +65,7 @@ test("long account names and subscription fallback fit a phone", { session: "ali
   const name = "a".repeat(120);
   const fits = async () => {
     const overflow = await browser.evaluate(() => {
-      const dialog = document.querySelector('[role="dialog"], [role="alertdialog"]');
+      const dialog = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')].at(-1);
       if (!(dialog instanceof HTMLElement)) return true;
       const rect = dialog.getBoundingClientRect();
       return (

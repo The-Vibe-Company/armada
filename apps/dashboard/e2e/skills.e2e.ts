@@ -10,6 +10,18 @@ const ACME = "00000000-0000-4000-8000-000000000010";
 
 const row = (page: Page, scope: "user" | "org") => page.locator(`[data-skillpack-key="${scope}"]`);
 
+async function openDetails(page: Page, scope: "user" | "org") {
+  const close = page.getByRole("button", { name: "Close details", exact: true });
+  if (await close.isVisible()) await close.click();
+  await row(page, scope).getByRole("button").click();
+  const drawer = page.getByRole("dialog", {
+    name: scope === "user" ? "Your Skillpack key" : "The organization’s key",
+    exact: true,
+  });
+  await expect(drawer).toBeVisible();
+  return drawer;
+}
+
 async function calls(): Promise<{ route: string; body: Record<string, unknown> }[]> {
   const { calls } = await (await fetch(`${MOCK}/__test/accounts`, { method: "POST", body: "{}" })).json();
   return calls.filter((call: { route: string }) => call.route === "creds/set" || call.route === "creds/rm");
@@ -21,7 +33,7 @@ async function stored(): Promise<Record<string, unknown>[]> {
 }
 
 async function openAdd(page: Page) {
-  await page.getByRole("button", { name: "Add key", exact: true }).click();
+  await page.getByRole("button", { name: "Add a key", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Add a Skillpack key" });
   await expect(dialog).toBeVisible();
   return dialog;
@@ -42,13 +54,9 @@ for (const [device, width, height] of [
     if (mobile) await page.keyboard.press("Escape");
     await expect(row(page, "user")).toContainText("Not set");
     await expect(row(page, "org")).toContainText("Not set");
-    await expect(row(page, "org")).toContainText("Acme key");
-    // Every row's action stays on screen at any width.
-    await expect(row(page, "org").getByRole("button", { name: "Add the organization's Skillpack key" })).toBeInViewport(
-      {
-        ratio: 1,
-      },
-    );
+    await expect(row(page, "org")).toContainText("Everyone in Acme");
+    // Each card stays inspectable at any width; key actions live in its drawer.
+    await expect(row(page, "org").getByRole("button")).toBeInViewport({ ratio: 1 });
 
     const dialog = await openAdd(page);
     // Least privilege is advice, not a restriction on valid keys.
@@ -58,7 +66,7 @@ for (const [device, width, height] of [
     if (!mobile) await expect(dialog.getByRole("button", { name: "Store key" })).toBeInViewport({ ratio: 1 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "Add key", exact: true })).toBeFocused();
+    await expect(page.getByRole("button", { name: "Add a key", exact: true })).toBeFocused();
   });
 }
 
@@ -91,8 +99,9 @@ test("a key is stored write-only: never in an answer, the page or the form after
   expect(JSON.stringify(sealed)).not.toContain(KEY);
   expect(await page.content()).not.toContain(KEY);
 
-  // Replace from the row: the same dialog, on that scope, says it replaces the stored key and starts empty.
-  await row(page, "user").getByRole("button", { name: "Replace your Skillpack key" }).click();
+  // Replace from the details drawer: the same dialog, on that scope, says it replaces the stored key and starts empty.
+  let details = await openDetails(page, "user");
+  await details.getByRole("button", { name: "Replace your Skillpack key" }).click();
   dialog = page.getByRole("dialog", { name: "Add a Skillpack key" });
   await expect(dialog.locator("[data-skillpack-replaces]")).toContainText("replaces the personal key");
   await expect(dialog.getByLabel("Key", { exact: true })).toHaveValue("");
@@ -102,20 +111,22 @@ test("a key is stored write-only: never in an answer, the page or the form after
   expect(await stored()).toHaveLength(1);
 
   // The organization's key, by its admin.
-  await row(page, "org").getByRole("button", { name: "Add the organization's Skillpack key" }).click();
+  details = await openDetails(page, "org");
+  await details.getByRole("button", { name: "Add the organization's Skillpack key" }).click();
   await expect(dialog.getByRole("radio", { name: /Org \(Acme\)/ })).toBeChecked();
   await dialog.getByLabel("Key", { exact: true }).fill(ORG_KEY);
   await dialog.getByRole("button", { name: "Store key" }).click();
   await expect(dialog).toBeHidden();
   await expect(row(page, "org")).toHaveAttribute("data-skillpack-state", "active");
 
-  await row(page, "user").getByRole("button", { name: "Remove your Skillpack key" }).click();
+  details = await openDetails(page, "user");
+  await details.getByRole("button", { name: "Remove your Skillpack key" }).click();
   const confirm = page.getByRole("alertdialog");
   await expect(confirm).toContainText("the organization's key");
   await confirm.getByRole("button", { name: "Remove key" }).click();
   await expect(confirm).toBeHidden();
   await expect(row(page, "user")).toHaveAttribute("data-skillpack-state", "not-set");
-  await expect(row(page, "user").getByRole("button", { name: "Add your Skillpack key" })).toBeFocused();
+  await expect(row(page, "user").getByRole("button")).toBeFocused();
   expect((await calls()).map((call) => [call.route, call.body.scope])).toEqual([
     ["creds/set", "user"],
     ["creds/set", "user"],
@@ -146,8 +157,10 @@ test("a member sees the organization's key but only an admin changes it", async 
   await signIn(page, "bob@example.com", "/skills");
   await expect(row(page, "org")).toHaveAttribute("data-skillpack-state", "unusable");
   await expect(row(page, "org")).toContainText("Expired or revoked");
-  await expect(row(page, "org")).toContainText("Only an admin changes it.");
-  await expect(row(page, "org").getByRole("button")).toHaveCount(0);
+  const details = await openDetails(page, "org");
+  await expect(details).toContainText("Only an admin changes it.");
+  await expect(details.getByRole("button", { name: /^(Add|Replace|Remove) .*Skillpack key$/ })).toHaveCount(0);
+  await details.getByRole("button", { name: "Close details", exact: true }).click();
   const dialog = await openAdd(page);
   await expect(dialog.getByRole("radio", { name: /Org \(Acme\)/ })).toBeDisabled();
 });

@@ -26,12 +26,24 @@ async function writes(): Promise<Call[]> {
 
 const providers = (page: Page) => page.locator('[data-settings="providers"]');
 const row = (page: Page, provider: "boat" | "modal") => page.locator(`[data-provider-row="${provider}"]`);
+const details = (page: Page, provider: "boat" | "modal") =>
+  page.getByRole("dialog", { name: provider === "boat" ? "Boat" : "Modal", exact: true });
+
+async function openDetails(page: Page, provider: "boat" | "modal") {
+  if (await details(page, provider).isVisible()) return details(page, provider);
+  const close = page.getByRole("button", { name: "Close details", exact: true });
+  if (await close.isVisible()) await close.click();
+  await row(page, provider).getByRole("button").click();
+  await expect(details(page, provider)).toBeVisible();
+  return details(page, provider);
+}
 
 async function connectModal(page: Page) {
-  await row(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
-  await row(page, "modal").getByLabel("Token ID").fill(MODAL_ID);
-  await row(page, "modal").getByLabel("Token secret").fill(MODAL_SECRET);
-  await row(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
+  await openDetails(page, "modal");
+  await details(page, "modal").getByRole("button", { name: "Connect", exact: true }).click();
+  await details(page, "modal").getByLabel("Token ID").fill(MODAL_ID);
+  await details(page, "modal").getByLabel("Token secret").fill(MODAL_SECRET);
+  await details(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
   await expect(row(page, "modal")).toHaveAttribute("data-provider-state", "connected");
 }
 
@@ -57,11 +69,12 @@ test("a new org connects its first provider in Settings; new work waits for it; 
     await expect(page).toHaveURL(/\/settings$/);
   }
 
-  await row(page, "boat").getByRole("button", { name: "Connect Boat" }).click();
-  await expect(row(page, "boat").getByLabel("Boat API key")).toBeFocused();
-  await expect(row(page, "boat").getByLabel("Boat API key")).toHaveAttribute("type", "password");
-  await row(page, "boat").getByLabel("Boat API key").fill(`${BOAT_KEY}-rejected`);
-  await row(page, "boat").getByRole("button", { name: "Connect Boat" }).click();
+  await openDetails(page, "boat");
+  await details(page, "boat").getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(details(page, "boat").getByLabel("Boat API key")).toBeFocused();
+  await expect(details(page, "boat").getByLabel("Boat API key")).toHaveAttribute("type", "password");
+  await details(page, "boat").getByLabel("Boat API key").fill(`${BOAT_KEY}-rejected`);
+  await details(page, "boat").getByRole("button", { name: "Connect Boat" }).click();
   await expect(alert(page)).toHaveText("Boat refused these credentials.");
   await expect(page.locator("body")).not.toContainText(BOAT_KEY);
   await expect(row(page, "boat")).toHaveAttribute("data-provider-state", "not-connected");
@@ -71,7 +84,7 @@ test("a new org connects its first provider in Settings; new work waits for it; 
 
   // Only Modal's pair is sent for Modal; the org can then build on Modal alone, without a choice.
   await connectModal(page);
-  await expect(row(page, "modal")).toContainText("Modal connected.");
+  await expect(details(page, "modal")).toContainText("Modal connected.");
   const sent = (await writes()).at(-1);
   expect(sent?.body.provider).toBe("modal");
   expect(JSON.parse(String(sent?.body.value))).toEqual({ token_id: MODAL_ID, token_secret: MODAL_SECRET });
@@ -92,9 +105,10 @@ test("an admin adds a second provider and new goldens offer both; a rejected rep
   await expect(form.locator("[data-provider-choice]")).toHaveCount(2);
 
   await page.goto("/settings");
-  await row(page, "boat").getByRole("button", { name: "Replace key" }).click();
-  await row(page, "boat").getByLabel("Boat API key").fill(`${BOAT_KEY}-rejected`);
-  await row(page, "boat").getByRole("button", { name: "Save and replace" }).click();
+  await openDetails(page, "boat");
+  await details(page, "boat").getByRole("button", { name: "Replace key" }).click();
+  await details(page, "boat").getByLabel("Boat API key").fill(`${BOAT_KEY}-rejected`);
+  await details(page, "boat").getByRole("button", { name: "Save and replace" }).click();
   await expect(alert(page)).toHaveText("Boat refused these credentials. The connected key is unchanged.");
   expect((await post("/__test/state")).orgBoatKeys).toContain(ACME);
   await page.reload();
@@ -108,7 +122,8 @@ test("disconnecting one provider keeps its goldens and sandboxes; disconnecting 
   await signIn(page, "alice@example.com", "/environments");
   await expect(page.getByRole("button", { name: "Launch from shared-golden" })).toBeVisible();
   await page.goto("/settings");
-  await row(page, "boat").getByRole("button", { name: "Disconnect" }).click();
+  await openDetails(page, "boat");
+  await details(page, "boat").getByRole("button", { name: "Disconnect" }).click();
   const confirm = page.getByRole("alertdialog");
   await expect(confirm).toContainText("Disconnect Boat from Acme?");
   await confirm.getByRole("button", { name: "Disconnect Boat" }).click();
@@ -134,7 +149,8 @@ test("disconnecting one provider keeps its goldens and sandboxes; disconnecting 
   await expect(page.locator('[data-capacity-provider="modal"]')).toBeVisible();
 
   await page.goto("/settings");
-  await row(page, "modal").getByRole("button", { name: "Disconnect" }).click();
+  await openDetails(page, "modal");
+  await details(page, "modal").getByRole("button", { name: "Disconnect" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect Modal" }).click();
   await expect(row(page, "modal")).toHaveAttribute("data-provider-state", "not-connected");
   // Goldens to manage: no redirect, no new build; running sandboxes stay listed.
@@ -150,9 +166,11 @@ test("disconnecting one provider keeps its goldens and sandboxes; disconnecting 
 
 test("a member sees the status and whom to ask, with no credential field or action", async ({ page }) => {
   await signIn(page, "bob@example.com", "/settings");
-  await expect(providers(page)).toContainText("Only an admin changes them.");
+  await expect(providers(page)).toContainText("Only administrators change cloud connections.");
   await expect(row(page, "boat")).toHaveAttribute("data-provider-state", "connected");
-  await expect(providers(page).getByRole("button")).toHaveCount(0);
+  await openDetails(page, "boat");
+  await expect(details(page, "boat").getByRole("button", { name: /^(Connect|Replace|Disconnect)/ })).toHaveCount(0);
+  await details(page, "boat").getByRole("button", { name: "Close details", exact: true }).click();
   await expect(providers(page).locator('input[type="password"]')).toHaveCount(0);
 
   await page.getByLabel("Active organization").selectOption(ORION);
@@ -168,21 +186,24 @@ test("a form left open for another org, or forged for one, is refused before it 
   context,
 }) => {
   await signIn(page, "alice@example.com", "/settings");
-  await row(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
+  await openDetails(page, "modal");
+  await details(page, "modal").getByRole("button", { name: "Connect", exact: true }).click();
   // Another tab switches the active organization; this tab's form still names Acme.
   const other = await context.newPage();
   await other.goto("/settings");
   await other.getByLabel("Active organization").selectOption(ZENITH);
   await expect(other.locator('[data-settings="providers"]')).toContainText("Zenith");
   await other.close();
-  await row(page, "modal").getByLabel("Token ID").fill(MODAL_ID);
-  await row(page, "modal").getByLabel("Token secret").fill(MODAL_SECRET);
-  await row(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
+  await details(page, "modal").getByLabel("Token ID").fill(MODAL_ID);
+  await details(page, "modal").getByLabel("Token secret").fill(MODAL_SECRET);
+  await details(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
   await expect(alert(page)).toHaveText("Switch to that organization first.");
 
   // Zenith is now active, where Alice is a member: a forged admin post is refused too.
   await page.goto("/settings");
-  await expect(providers(page).getByRole("button")).toHaveCount(0);
+  await openDetails(page, "boat");
+  await expect(details(page, "boat").getByRole("button", { name: /^(Connect|Replace|Disconnect)/ })).toHaveCount(0);
+  await details(page, "boat").getByRole("button", { name: "Close details", exact: true }).click();
   expect(await writes()).toHaveLength(0);
 });
 
@@ -205,7 +226,9 @@ test("an unavailable status is a retryable error: never unconfigured, never retr
   await signIn(page, "alice@example.com", "/settings");
   await expect(providers(page).locator('[data-setup-state="unavailable"]').first()).toContainText("Try again soon.");
   await expect(row(page, "boat")).toHaveAttribute("data-provider-state", "unavailable");
-  await expect(providers(page).getByRole("button")).toHaveCount(0);
+  await openDetails(page, "boat");
+  await expect(details(page, "boat").getByRole("button", { name: /^(Connect|Replace|Disconnect)/ })).toHaveCount(0);
+  await details(page, "boat").getByRole("button", { name: "Close details", exact: true }).click();
   await expect(providers(page).getByRole("link", { name: "Check again" })).toBeVisible();
 
   await page.goto("/environments");
@@ -282,30 +305,32 @@ test("a build the page tracks keeps its form while the org has no provider", asy
 
 test("keyboard: open, cancel and confirm with the keyboard; focus returns to the opener", async ({ page }) => {
   await signIn(page, "alice@example.com", "/settings");
-  const open = row(page, "modal").getByRole("button", { name: "Connect Modal" });
+  await openDetails(page, "modal");
+  const open = details(page, "modal").getByRole("button", { name: "Connect", exact: true });
   await open.focus();
   await page.keyboard.press("Enter");
-  await expect(row(page, "modal").getByLabel("Token ID")).toBeFocused();
+  await expect(details(page, "modal").getByLabel("Token ID")).toBeFocused();
   await page.keyboard.press("Tab");
-  await expect(row(page, "modal").getByLabel("Token secret")).toBeFocused();
-  await row(page, "modal").getByRole("button", { name: "Cancel" }).focus();
+  await expect(details(page, "modal").getByLabel("Token secret")).toBeFocused();
+  await details(page, "modal").getByRole("button", { name: "Cancel" }).focus();
   await page.keyboard.press("Enter");
   await expect(open).toBeFocused();
 
-  await row(page, "boat").getByRole("button", { name: "Disconnect" }).focus();
+  await openDetails(page, "boat");
+  await details(page, "boat").getByRole("button", { name: "Disconnect" }).focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("alertdialog")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("alertdialog")).toBeHidden();
-  await expect(row(page, "boat").getByRole("button", { name: "Disconnect" })).toBeFocused();
+  await expect(details(page, "boat").getByRole("button", { name: "Disconnect" })).toBeFocused();
   expect(await writes()).toHaveLength(0);
 
   // Confirmed from the keyboard: the dialog leaves with its button, so focus lands on the row's Connect button.
   await page.keyboard.press("Enter");
   await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect Boat" }).focus();
   await page.keyboard.press("Enter");
-  await expect(row(page, "boat").getByRole("status")).toHaveText("Boat disconnected.");
-  await expect(row(page, "boat").getByRole("button", { name: "Connect Boat" })).toBeFocused();
+  await expect(details(page, "boat").getByRole("status")).toHaveText("Boat disconnected.");
+  await expect(details(page, "boat").getByRole("button", { name: "Connect", exact: true })).toBeFocused();
 });
 
 test("a row's message never outlives a later change: no stale success after disconnect, no stale error on reopen", async ({
@@ -314,22 +339,24 @@ test("a row's message never outlives a later change: no stale success after disc
   await signIn(page, "carol@example.com", "/settings");
   await page.getByLabel("Active organization").selectOption(ORION);
   await expect(providers(page)).toContainText("Orion");
-  await row(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
-  await row(page, "modal").getByLabel("Token ID").fill(`${MODAL_ID}rejected`);
-  await row(page, "modal").getByLabel("Token secret").fill(MODAL_SECRET);
-  await row(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
-  await expect(row(page, "modal").getByRole("alert")).toHaveText("Modal refused these credentials.");
-  await row(page, "modal").getByRole("button", { name: "Cancel" }).click();
-  await row(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
-  await expect(row(page, "modal").getByRole("alert")).toHaveCount(0);
-  await row(page, "modal").getByRole("button", { name: "Cancel" }).click();
+  await openDetails(page, "modal");
+  await details(page, "modal").getByRole("button", { name: "Connect", exact: true }).click();
+  await details(page, "modal").getByLabel("Token ID").fill(`${MODAL_ID}rejected`);
+  await details(page, "modal").getByLabel("Token secret").fill(MODAL_SECRET);
+  await details(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
+  await expect(details(page, "modal").getByRole("alert")).toHaveText("Modal refused these credentials.");
+  await details(page, "modal").getByRole("button", { name: "Cancel" }).click();
+  await details(page, "modal").getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(details(page, "modal").getByRole("alert")).toHaveCount(0);
+  await details(page, "modal").getByRole("button", { name: "Cancel" }).click();
 
   await connectModal(page);
-  await expect(row(page, "modal").getByRole("status")).toHaveText("Modal connected.");
-  await row(page, "modal").getByRole("button", { name: "Disconnect" }).click();
+  await expect(details(page, "modal").getByRole("status")).toHaveText("Modal connected.");
+  await openDetails(page, "modal");
+  await details(page, "modal").getByRole("button", { name: "Disconnect" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect Modal" }).click();
   await expect(row(page, "modal")).toHaveAttribute("data-provider-state", "not-connected");
-  await expect(row(page, "modal").getByRole("status")).toHaveText("Modal disconnected.");
+  await expect(details(page, "modal").getByRole("status")).toHaveText("Modal disconnected.");
 });
 
 for (const mobile of [false, true]) {
@@ -337,7 +364,8 @@ for (const mobile of [false, true]) {
     if (mobile) await page.setViewportSize({ width: 390, height: 844 });
     const name = mobile ? "mobile" : "desktop";
     await signIn(page, "alice@example.com", "/settings");
-    await row(page, "modal").getByRole("button", { name: "Connect Modal" }).click();
+    await openDetails(page, "modal");
+    await details(page, "modal").getByRole("button", { name: "Connect", exact: true }).click();
     await page.screenshot({ path: `test-results/providers-admin-${name}.png`, fullPage: true });
     await page.context().clearCookies();
     await signIn(page, "carol@example.com", "/settings");
