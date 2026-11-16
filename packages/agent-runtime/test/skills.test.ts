@@ -219,7 +219,21 @@ test.skipIf(process.platform !== "linux" || !["x64", "arm64"].includes(process.a
             expect(url.pathname).toContain("/The-Vibe-Company/skillpack/releases/download/runtime-v");
             expect(options.credentials).toBe("omit");
             expect(JSON.stringify(options)).not.toContain(key);
-            return new Response(new Uint8Array(SKILLPACK_RUNTIME.archives[process.arch as "x64" | "arm64"].bytes));
+            let remaining = SKILLPACK_RUNTIME.archives[process.arch as "x64" | "arm64"].bytes;
+            const zeros = new Uint8Array(65536);
+            return new Response(
+              new ReadableStream<Uint8Array>(
+                {
+                  pull(controller) {
+                    if (!remaining) return controller.close();
+                    const size = Math.min(remaining, zeros.byteLength);
+                    remaining -= size;
+                    controller.enqueue(zeros.subarray(0, size));
+                  },
+                },
+                { highWaterMark: 0 },
+              ),
+            );
           },
         ),
       ).rejects.toThrow("skillpack_download_unavailable");

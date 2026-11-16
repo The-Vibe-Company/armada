@@ -32,17 +32,26 @@ test("runtime refuses streaming overflow without draining or waiting on cancella
 test("runtime accepts an exact byte-limit body with UTF-8 split across chunks", async () => {
   const json = JSON.stringify({ version: 1, sandboxId: "logical", requestId: "é🙂", op: "health" });
   const encoder = new TextEncoder();
-  const bytes = encoder.encode(json + " ".repeat(1048576 - encoder.encode(json).byteLength));
+  const bytes = encoder.encode(json);
   const split = encoder.encode(json.slice(0, json.indexOf("🙂"))).byteLength + 1;
+  const prefix = [bytes.subarray(0, split), bytes.subarray(split)];
+  const spaces = new Uint8Array(65536).fill(32);
+  let remaining = 1048576 - bytes.byteLength;
   const request = new Request("https://runtime.test/v1", {
     method: "POST",
-    body: new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(bytes.slice(0, split));
-        controller.enqueue(bytes.slice(split));
-        controller.close();
+    body: new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          const part = prefix.shift();
+          if (part) return controller.enqueue(part);
+          if (!remaining) return controller.close();
+          const size = Math.min(remaining, spaces.byteLength);
+          remaining -= size;
+          controller.enqueue(spaces.subarray(0, size));
+        },
       },
-    }),
+      { highWaterMark: 0 },
+    ),
   });
   expect(await readRuntimeJson(request)).toEqual(JSON.parse(json));
   expect(request.body?.locked).toBe(false);
