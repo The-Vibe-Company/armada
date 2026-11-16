@@ -234,7 +234,9 @@ async function main(args: string[]) {
       try {
         await tick(store, api, runtime);
       } catch {
-        console.error("Docker host iteration failed; local TTL sweep continues.");
+        console.error(
+          "Docker host iteration failed; local TTL sweep continues. If membership was removed or the host revoked, ask an organization admin to request cleanup; preserve daemon state until cleanup is confirmed.",
+        );
       }
       if (!stopping) await Bun.sleep(20_000);
     }

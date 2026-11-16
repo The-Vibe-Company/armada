@@ -1147,3 +1147,14 @@ locally and are refused safely. No privileged fallback, prune or unrelated
 resource deletion is performed. Deploy the additive schema/server support before
 upgrading daemons; older servers can still receive retention and capacity data
 without the new disk field.
+
+### Cleanup after registrant removal or host revocation
+
+Removing the registrant's membership or revoking a host blocks new launch work,
+not physical reconciliation. The existing credential remains bound to the host
+and installation for already-bound physical facts and authorized stop/delete jobs.
+Keep the daemon and its state directory until TTL/retention cleanup reports reach
+the server. A remaining organization admin can request stop/delete of retained
+allocations. Unregister waits for physical cleanup; it is not proof of removal.
+If polling is denied, ask an organization admin to restore membership for normal
+operation or request cleanup of retained allocations; do not erase daemon state.
