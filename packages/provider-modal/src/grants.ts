@@ -4,7 +4,7 @@ import type { IngestGrantClaims, Machine, Scope } from "./ports.ts";
 import { scopeKey } from "./store.ts";
 export function createGenerationGrants(key: Uint8Array, scope: Scope) {
   if (key.length < 32)
-    throw refusal("provider_not_configured", "Runner signing key must contain at least 32 random bytes.");
+    throw refusal("provider_routing_unavailable", "Runner signing key must contain at least 32 random bytes.");
   const binding = scopeKey(scope);
   const mac = (body: string) => createHmac("sha256", key).update(body).digest();
   return {

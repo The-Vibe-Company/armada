@@ -477,6 +477,8 @@ export type ProviderErrorCode =
   | "forbidden"
   | "not_found"
   | "invalid_request"
+  /** The server provider setup is incomplete; an Armada administrator must fix it. */
+  | "provider_routing_unavailable"
   /** The harness has no key or subscription on the provider's account: only its owner can fix it. */
   | "provider_not_configured"
   /** A steer when no turn runs. */
@@ -550,6 +552,7 @@ export function isNonMutatingProviderRefusal(error: unknown): boolean {
       "payment_required",
       "host_full",
       "provider_not_configured",
+      "provider_routing_unavailable",
     ].includes(error.code) ||
       isProviderStartRateLimit(error))
   );

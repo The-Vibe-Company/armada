@@ -185,12 +185,12 @@ test("registry and active/historical SQL resolvers preserve immutable runtime ch
   await factory.resolve(nativeTarget, { userId: people.owner });
   expect(calls.at(-1)).toBe("native");
   await expect(providerRegistry(base).resolve(target, { userId: people.owner })).rejects.toMatchObject({
-    code: "provider_not_configured",
+    code: "provider_routing_unavailable",
   });
   const { id: hint, ...noIdentity } = target;
   void hint;
   await expect(factory.resolve(noIdentity, { userId: people.owner })).rejects.toMatchObject({
-    code: "provider_not_configured",
+    code: "provider_routing_unavailable",
   });
   expect(calls.filter((value) => value === "native")).toHaveLength(1);
   const caller = {

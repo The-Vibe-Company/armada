@@ -67,7 +67,7 @@ export async function createGoldenRoute(options: GoldenControlOptions, caller: C
     ? await options.goldenTarget(targetInput, caller)
     : { ...targetInput, modal: null };
   if (target.provider === "modal" && !target.modal)
-    throw new ProviderRoutingError("provider_not_configured", "modal", "Modal is not configured.");
+    throw new ProviderRoutingError("provider_routing_unavailable", "modal", "Modal is not configured.");
   const name = required(body, "name");
   const config = body.config === undefined ? undefined : normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
   const repos = config ? [] : requiredRepos(body);
@@ -75,7 +75,11 @@ export async function createGoldenRoute(options: GoldenControlOptions, caller: C
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   assertGoldenMutation(actor, { orgId: org.id, visibility, ownerId: caller.userId, name });
   if (target.provider === "modal" && !options.providers)
-    throw new ProviderRoutingError("provider_not_configured", "modal", "Modal resource routing is not configured.");
+    throw new ProviderRoutingError(
+      "provider_routing_unavailable",
+      "modal",
+      "Modal resource routing is not configured.",
+    );
   const provider = options.providers
     ? await options.providers.resolve(target, caller)
     : options.providerFor!(
@@ -202,7 +206,7 @@ export async function providerForGolden(
 ): Promise<Provider> {
   if (options.providers) return options.providers.resolve(golden, caller);
   if (golden.provider !== "boat")
-    throw new ProviderRoutingError("provider_not_configured", "modal", "Modal is not configured.");
+    throw new ProviderRoutingError("provider_routing_unavailable", "modal", "Modal is not configured.");
   const key = await resolveBoatKey(options.store, options.encryptionKey, {
     userId: caller.userId,
     orgId: golden.orgId,

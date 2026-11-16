@@ -47,14 +47,21 @@ export class ControlError extends Error {
   readonly retryAfterSeconds: number | undefined;
   /** The request may have reached the server: no answer came back (deadline passed, or the connection failed). */
   readonly outcomeUnknown: boolean;
+  readonly details: unknown;
   constructor(
     message: string,
     status?: number,
     code?: string,
-    detail?: { reason?: string | undefined; retryAfterSeconds?: number | undefined; outcomeUnknown?: boolean },
+    detail?: {
+      details?: unknown;
+      reason?: string | undefined;
+      retryAfterSeconds?: number | undefined;
+      outcomeUnknown?: boolean;
+    },
   ) {
     super(message);
     this.status = status;
+    this.details = detail?.details;
     this.code = code;
     this.reason = detail?.reason;
     this.retryAfterSeconds = detail?.retryAfterSeconds;
@@ -357,6 +364,7 @@ function failure(status: number, payload: Record<string, unknown> | null, featur
   const message = typeof error?.message === "string" ? error.message.slice(0, 300) : null;
   const code = typeof error?.code === "string" ? error.code : undefined;
   const detail = {
+    details: error?.details,
     reason: typeof error?.reason === "string" ? error.reason : undefined,
     retryAfterSeconds:
       typeof error?.retryAfterSeconds === "number" && Number.isFinite(error.retryAfterSeconds)

@@ -4,6 +4,8 @@ import {
   type GitHubHydrationPhase,
   githubHydrationPhase,
   type LaunchError,
+  type ProviderRateLimitDetails,
+  providerRateLimitDetails,
   VERSION,
 } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
@@ -13,7 +15,7 @@ type LaunchDetails = {
   action?: LaunchError["action"];
   stage?: LaunchError["stage"];
 };
-type ToolErrorDetails = LaunchDetails | { phase: GitHubHydrationPhase };
+type ToolErrorDetails = LaunchDetails | ProviderRateLimitDetails | { phase: GitHubHydrationPhase };
 
 const launchDetails = z.object({
   reason: z
@@ -51,7 +53,10 @@ export class ToolApiError extends Error {
   }
   get status(): number {
     if (Object.hasOwn(API_FAILURE_STATUS, this.code)) return API_FAILURE_STATUS[this.code as ApiFailureCode];
-    if (this.code === "unknown") return 502;
+    if (["unknown", "start_failed", "init_failed", "prompt_failed"].includes(this.code)) return 502;
+    if (this.code === "rate_limited") return 429;
+    if (this.code === "payment_required") return 402;
+    if (this.code === "host_full") return 409;
     if (this.code === "not_found") return 404;
     if (this.code === "forbidden") return 403;
     if (
@@ -65,7 +70,8 @@ export class ToolApiError extends Error {
       ].includes(this.code)
     )
       return 409;
-    if (["provider_not_configured", "unavailable", "internal"].includes(this.code)) return 503;
+    if (["provider_routing_unavailable", "provider_not_configured", "unavailable", "internal"].includes(this.code))
+      return 503;
     return 400;
   }
 }
@@ -106,11 +112,14 @@ export async function callSharedTool(context: ToolContext, name: string, args: R
       const phase =
         code === "github_hydration_failed" ? githubHydrationPhase(metadata?.error?.details?.phase) : undefined;
       const decoded = launchDetails.safeParse(structured?.details);
-      const details = phase
-        ? { phase }
-        : decoded.success && Object.keys(decoded.data).length
-          ? decoded.data
-          : undefined;
+      const details =
+        code === "rate_limited"
+          ? providerRateLimitDetails(structured?.details)
+          : phase
+            ? { phase }
+            : decoded.success && Object.keys(decoded.data).length
+              ? decoded.data
+              : undefined;
       throw new ToolApiError(code, structured?.message ?? block?.text ?? "Operation failed.", details);
     }
     return result.structuredContent;

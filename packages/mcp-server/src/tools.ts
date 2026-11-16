@@ -3,9 +3,11 @@ import {
   goldenForSettings,
   goldenResponse,
   idlePauseMessage,
+  launchFailureHelp,
   launchResponse,
   MACHINE_SIZES,
   parseMachineSizePolicy,
+  providerRateLimitDetails,
   SANDBOX_PLACEMENT_PROVIDERS,
   USAGE_UNAVAILABLE_CODES,
 } from "@armada/core";
@@ -2387,6 +2389,17 @@ function errorResult(error: unknown, tool: string, logError: (line: string) => v
           },
         }
       : {}),
+    ...(error instanceof ProviderError && code === "rate_limited"
+      ? {
+          structuredContent: {
+            error: {
+              code,
+              message,
+              details: providerRateLimitDetails({ ...error.details, retryAfterSeconds: error.retryAfterSeconds }),
+            },
+          },
+        }
+      : {}),
     ...(error instanceof GitHubHydrationError ? { _meta: { error: { code, message, details: error.details } } } : {}),
     content: [
       { type: "text", text: message },
@@ -2404,15 +2417,24 @@ function describe(error: unknown): { code: string; message: string } {
   if (error instanceof ToolError) return { code: error.code, message: error.message };
   if (error instanceof LaunchError) {
     const tail = error.sandboxId ? ` Sandbox ${error.sandboxId} is recorded as failed and its machine is stopped.` : "";
-    return { code: error.code, message: `${error.message}${tail}` };
+    return {
+      code: error.code,
+      message: `${launchFailureHelp(error.code, undefined, error.message) ?? error.message}${tail}`,
+    };
   }
   if (error instanceof GoldenError) return { code: error.code, message: error.message };
-  if (error instanceof ProviderRoutingError) return { code: error.code, message: error.message };
+  if (error instanceof ProviderRoutingError)
+    return { code: error.code, message: launchFailureHelp(error.code, undefined, error.message) ?? error.message };
   if (error instanceof ProviderError) {
     if (error.code === "no_running_turn") {
       return { code: error.code, message: "No turn is running. Use send to start one." };
     }
-    return { code: error.code, message: error.message };
+    return {
+      code: error.code,
+      message:
+        launchFailureHelp(error.code, { ...error.details, retryAfterSeconds: error.retryAfterSeconds }) ??
+        error.message,
+    };
   }
   if (error instanceof VaultError)
     return {
