@@ -293,7 +293,7 @@ export function ResourceBrowser({
           ) : (
             <ul
               aria-label={label}
-              className="grid grid-cols-1 gap-x-4 divide-y overflow-hidden rounded-xl border bg-card shadow-xs @xl:grid-cols-[minmax(0,1fr)_10rem_auto] @3xl:grid-cols-[minmax(0,1.4fr)_10rem_minmax(0,1fr)_auto]"
+              className="grid grid-cols-1 gap-x-4 divide-y overflow-hidden rounded-xl border bg-card shadow-xs @xl:grid-cols-[minmax(0,1fr)_10rem_auto] @3xl:grid-cols-[minmax(0,1fr)_10rem_fit-content(12rem)_auto]"
             >
               {shown.map((row) => (
                 <Row
@@ -448,7 +448,7 @@ function Row({
     >
       <div className="flex min-w-0 items-center gap-3">
         {row.mark}
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Button
               variant="ghost"
@@ -465,12 +465,19 @@ function Row({
               className="h-auto min-w-0 shrink justify-start rounded-none p-0 text-left font-medium hover:bg-transparent dark:hover:bg-transparent motion-safe:active:not-disabled:scale-none focus-visible:ring-0 after:absolute after:inset-0 after:content-['']"
             >
               <a href={`?${selectionQuery ? `${selectionQuery}&` : ""}item=${encodeURIComponent(row.key)}`}>
-                <span className="min-w-0 whitespace-normal break-words sm:truncate">{row.name}</span>
+                <span title={row.name} className="min-w-0 whitespace-normal break-words sm:truncate">
+                  {row.name}
+                </span>
               </a>
             </Button>
             {row.tags}
           </div>
-          <div className="truncate text-xs text-muted-foreground">{row.meta}</div>
+          <div
+            title={typeof row.meta === "string" ? row.meta : undefined}
+            className="truncate text-xs text-muted-foreground"
+          >
+            {row.meta}
+          </div>
         </div>
       </div>
       <div className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto">{row.state}</div>

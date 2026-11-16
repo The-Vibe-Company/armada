@@ -93,7 +93,7 @@ export async function openCreate(page: Page): Promise<Locator> {
   if (!(await createDialog(page).isVisible())) {
     const detail = page.getByRole("dialog").filter({ has: page.locator("[data-resource-panel]") });
     if (await detail.isVisible()) await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "New", exact: true }).click();
+    await page.getByRole("button", { name: "New snapshot", exact: true }).click();
   }
   await expect(createDialog(page)).toBeVisible();
   if (!(await form.isVisible())) await page.getByText("Show the create form").click();

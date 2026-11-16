@@ -396,7 +396,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
         {item.scope === "personal" ? "Personal" : "Org"}
       </RowTag>
     ),
-    meta: <span className="block whitespace-normal leading-relaxed">{meta}</span>,
+    meta,
     subtitle: `Version ${item.currentRevision} · ${templateAudience(item.scope, org.name)}`,
     state: <StateCell tone={state.tone} label={state.label} data-template-state={state.label} />,
     fact: templateAudience(item.scope, org.name),
