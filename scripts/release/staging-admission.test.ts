@@ -1,30 +1,26 @@
 import { expect, test } from "bun:test";
-import { type ReleaseReservation, shouldDeferStaging } from "./staging-admission.ts";
+import { readFileSync } from "node:fs";
 
-const repository = "example/armada";
-const reservation = (status: string): ReleaseReservation => ({
-  status,
-  path: ".github/workflows/release.yml",
-  head_repository: { full_name: repository },
-});
+interface Workflow {
+  on: { push: { branches: string[] }; workflow_run: { workflows: string[]; types: string[] } };
+  concurrency: { group: string; queue?: string; "cancel-in-progress": boolean };
+  jobs: { staging: { concurrency: Workflow["concurrency"]; steps: { id?: string; run?: string; if?: string }[] } };
+}
 
-test("ordinary staging yields to every unfinished release and resumes after any terminal result", () => {
-  for (const status of ["queued", "pending", "requested", "waiting", "in_progress"]) {
-    expect(shouldDeferStaging([reservation("completed"), reservation(status)], repository)).toBe(true);
-  }
-  expect(shouldDeferStaging([reservation("completed")], repository)).toBe(false);
-  expect(shouldDeferStaging([], repository)).toBe(false);
-});
+const release = Bun.YAML.parse(readFileSync(".github/workflows/release.yml", "utf8")) as Workflow;
+const staging = Bun.YAML.parse(readFileSync(".github/workflows/staging-gated-production.yml", "utf8")) as Workflow;
 
-test("only this repository's Release workflow can reserve staging", () => {
-  expect(
-    shouldDeferStaging(
-      [
-        { ...reservation("in_progress"), path: ".github/workflows/ci.yml" },
-        { ...reservation("queued"), head_repository: { full_name: "other/repository" } },
-        { ...reservation("queued"), head_repository: null },
-      ],
-      repository,
-    ),
-  ).toBe(false);
+test("push, quick Release and completion wakeup retain serialized newest-main admission", () => {
+  // Scheduler contract: both events coalesce, completion always wakes, and an
+  // admitted job cannot turn stale API queue rows into a terminal no-op.
+  expect(staging.on.push.branches).toEqual(["main"]);
+  expect(staging.on.workflow_run).toEqual({ workflows: ["Release"], types: ["completed"] });
+  expect(staging.concurrency["cancel-in-progress"]).toBe(false);
+  expect(staging.concurrency.group).toContain("staging-main-latest");
+  expect(release.concurrency).toEqual({ group: "release-production", queue: "max", "cancel-in-progress": false });
+  expect(staging.jobs.staging.concurrency.group).toContain("'release-production'");
+  expect(staging.jobs.staging.concurrency["cancel-in-progress"]).toBe(false);
+  const admission = staging.jobs.staging.steps.find((step) => step.id === "admission");
+  expect(admission?.run).not.toContain("staging-admission.ts");
+  expect(staging.jobs.staging.steps.some((step) => step.if?.includes("outputs.deferred"))).toBe(false);
 });
