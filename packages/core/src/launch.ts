@@ -704,7 +704,7 @@ export async function launchSandbox(
       if (runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
       if (runtimeWorkspace) await options.beforeStart?.(provider, record);
       try {
-        console.info(
+        console.error(
           JSON.stringify({
             event: "launch_github_prepared",
             sandboxId: record.id,
@@ -1044,7 +1044,7 @@ async function run(
       else retry = "exit_nonzero";
     } finally {
       try {
-        console.info(
+        console.error(
           JSON.stringify({
             event: "launch_repository_ownership_retry",
             sandboxId: repository.sandboxId,

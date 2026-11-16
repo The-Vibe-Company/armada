@@ -464,7 +464,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
         ? connection.accessExpiresAt.getTime() - now.getTime()
         : null,
     };
-    console.info(JSON.stringify({ event: "github_token_refresh_started", ...audit }));
+    console.error(JSON.stringify({ event: "github_token_refresh_started", ...audit }));
     let tokens: GitHubTokenSet;
     try {
       tokens = await refreshGitHubToken(deps.app, refreshToken, request);
@@ -473,7 +473,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
       if (error.code !== "revoked")
         return { status: "unavailable", message: `${error.message} GitHub was not set up in this sandbox.` };
       if (await store.markGitHubRevoked(userId, connection.refreshTokenEnc))
-        console.info(
+        console.error(
           JSON.stringify({
             event: "github_connection_revoked",
             caller: deps.caller ?? "unspecified",
@@ -484,7 +484,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
       return { status: "revoked", message: GITHUB_REVOKED };
     }
     // Record the remote rotation even if local publication loses to a reconnect.
-    console.info(
+    console.error(
       JSON.stringify({
         event: "github_token_rotated",
         ...audit,

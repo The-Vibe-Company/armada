@@ -178,7 +178,7 @@ export class GoldenCreateService {
     const enter = async (next: string) => {
       await this.deps.execution?.phase(next);
       phase = next;
-      console.info(JSON.stringify({ event: "golden_build_phase", buildId, phase, elapsedMs: Date.now() - startedAt }));
+      console.error(JSON.stringify({ event: "golden_build_phase", buildId, phase, elapsedMs: Date.now() - startedAt }));
     };
     try {
       await enter("builder");
