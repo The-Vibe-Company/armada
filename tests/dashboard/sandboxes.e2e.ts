@@ -42,8 +42,8 @@ for (const organization of [
     browser,
   }) => {
     await app.open("/sandboxes");
-    for (const tab of ["Need you", "Working", "All"]) {
-      await screen.getByRole("link", new RegExp(`^${tab} ·`)).tap();
+    for (const tab of ["Mine", "Working", "Waiting for you", "Stopped", "Failed", "All"]) {
+      await screen.getByRole("link", new RegExp(`^${tab} `)).tap();
       await expect(screen.getByRole("region", tab)).toBeVisible();
     }
     await browser.locator(`a[href="/sandboxes/${organization.id}"]`).tap();
