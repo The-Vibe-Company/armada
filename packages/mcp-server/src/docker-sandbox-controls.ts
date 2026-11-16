@@ -11,6 +11,10 @@ import {
   idlePauseMessage,
   PROMPT_STATUSES,
   ProviderError,
+  planLimitData,
+  planLimitFromMessage,
+  planLimitMessage,
+  promptFailureReason,
   type SandboxRecord,
   type SandboxUsage,
   withUsageTotals,
@@ -74,7 +78,7 @@ function reason(row: Row) {
   return row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ||
     Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((message) => message === row.status_reason)
     ? row.status_reason
-    : "Docker sandbox failed.";
+    : DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
 }
 function usage(value: unknown): SandboxUsage | null {
   if (!value || typeof value !== "object" || !("turnCount" in value) || !("turns" in value)) return null;
@@ -322,11 +326,15 @@ export function createDockerSandboxControls(
       let state: NonNullable<DockerSandboxStatus["prompt"]>["state"] =
         event.status === "queued" || event.status === "running" ? "running" : event.status;
       if (state === "running" && terminal(row)) state = row.status === "failed" ? "failed" : "interrupted";
+      const limit =
+        event.reason?.split(":")[0] === "authentication_failed"
+          ? undefined
+          : (planLimitData(event.limit) ?? planLimitFromMessage(event.reason));
       prompt = {
         promptId: event.promptId,
         conversationId: event.conversationId ?? null,
         state,
-        reason: state === "failed" ? "The agent failed." : null,
+        reason: state === "failed" ? (limit ? planLimitMessage(limit) : promptFailureReason(event.reason)) : null,
       };
     }
     if (!prompt && admitted.receipt && (!promptId || promptId === admitted.receipt.promptId)) {
@@ -335,7 +343,7 @@ export function createDockerSandboxControls(
         promptId: admitted.receipt.promptId,
         conversationId: admitted.receipt.conversationId,
         state,
-        reason: state === "failed" ? "The agent failed." : null,
+        reason: state === "failed" ? promptFailureReason() : null,
       };
     }
     if (queueOnly) {
@@ -478,7 +486,12 @@ export function createDockerSandboxControls(
         ? { queuedPrompt: summary.prompt }
         : {}),
       ...(summary.status === "failed"
-        ? { runtimeFailure: { status: "failed" as const, reason: summary.statusReason ?? "Docker sandbox failed." } }
+        ? {
+            runtimeFailure: {
+              status: "failed" as const,
+              reason: summary.statusReason ?? DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
+            },
+          }
         : {}),
     };
   }

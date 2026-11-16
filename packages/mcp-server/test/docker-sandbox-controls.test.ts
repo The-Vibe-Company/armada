@@ -452,7 +452,7 @@ test("failed/expired cleanup preserves failure facts and unfinished prompt outco
     providerState: null,
     statusReason: "expired",
     settled: true,
-    prompt: { state: "failed", reason: "The agent failed." },
+    prompt: { state: "failed", reason: "Agent failed. Check the agent configuration before retrying." },
   });
   let now = 0,
     outcome: "completed" | "failed" = "failed";
@@ -931,4 +931,19 @@ test("Docker mutations reuse the fenced runtime mailbox and reconcile identical 
     invoke(caller(f.actor), "interrupt", { id: f.sandbox.id, request_id: randomUUID() }, controller),
   ).rejects.toMatchObject({ code: "conflict" });
   expect(delivered).toBe(4);
+});
+
+test("Docker status preserves safe native prompt diagnoses instead of replacing them", async () => {
+  const f = await fixture(),
+    session = await ready(f),
+    promptId = randomUUID();
+  await publish(f, session, [
+    { id: "failed", at: 1, kind: "prompt", text: "begin", status: "failed", promptId, reason: "model_unavailable" },
+  ]);
+  expect(await invoke(caller(f.actor), "status", { id: f.sandbox.id })).toMatchObject({
+    prompt: {
+      state: "failed",
+      reason: "Model unavailable. Choose a model available to this account, then send the prompt again.",
+    },
+  });
 });
