@@ -938,7 +938,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
         />
         <p className="text-xs text-muted-foreground">
           {readiness.kind === "ready"
-            ? directories.join(", ") || "No repository"
+            ? "Ready to launch"
             : state.action === "snapshot"
               ? "Build it once; launches then start from it."
               : state.detail}

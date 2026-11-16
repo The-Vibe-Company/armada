@@ -39,7 +39,7 @@ export function environmentState({
       bucket: "action",
       tone: "warning",
       label: `${label} not connected`,
-      detail: `An org admin connects ${label} in Providers → Overview to build and launch it.`,
+      detail: `An org admin connects ${label} in Machines → Overview to build and launch it.`,
       action: "connect",
     };
   if (readiness.kind === "no-snapshot")

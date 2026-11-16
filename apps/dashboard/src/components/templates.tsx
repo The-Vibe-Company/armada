@@ -12,7 +12,18 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, type RefObject, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  Children,
+  isValidElement,
+  type ReactNode,
+  type RefObject,
+  useActionState,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import {
   createTemplate,
   deleteTemplate,
@@ -160,7 +171,7 @@ export function CreateTemplateDialog(props: {
     <CreateDialog
       label="New template"
       title="New template"
-      description="A preset agents start from: a snapshot, tools, a model and variables."
+      description="A saved launch setup."
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
@@ -287,7 +298,7 @@ function TemplateForm({
           {editing ? (
             <span>{scope === "personal" ? "only you" : `everyone in ${orgName}`}</span>
           ) : (
-            <NativeSelect
+            <SentenceChoice
               aria-label="Who can use it"
               value={scope}
               onChange={(event) => {
@@ -300,7 +311,7 @@ function TemplateForm({
               <option value="org" disabled={!isAdmin}>
                 everyone in {orgName}
               </option>
-            </NativeSelect>
+            </SentenceChoice>
           )}
           .
         </div>
@@ -309,7 +320,7 @@ function TemplateForm({
         </p>
         <div>
           It launches{" "}
-          <NativeSelect
+          <SentenceChoice
             aria-label="Agent"
             name="harness"
             value={harness}
@@ -327,9 +338,9 @@ function TemplateForm({
                 {HARNESS_LABELS[value]}
               </option>
             ))}
-          </NativeSelect>{" "}
+          </SentenceChoice>{" "}
           running{" "}
-          <NativeSelect
+          <SentenceChoice
             aria-label="Model"
             name="model"
             value={modelEntry.models.some((entry) => entry.id === model) ? model : "other"}
@@ -345,7 +356,7 @@ function TemplateForm({
               </option>
             ))}
             <option value="other">Other model id</option>
-          </NativeSelect>
+          </SentenceChoice>
           {!modelEntry.models.some((entry) => entry.id === model) && (
             <Input
               aria-label="Other model id"
@@ -357,7 +368,7 @@ function TemplateForm({
             />
           )}
           , reasoning effort{" "}
-          <NativeSelect
+          <SentenceChoice
             aria-label="Reasoning effort"
             name="reasoning_effort"
             value={effort}
@@ -369,12 +380,12 @@ function TemplateForm({
                 {value}
               </option>
             ))}
-          </NativeSelect>
+          </SentenceChoice>
           , paid by{" "}
           {keepingPinnedAccount ? (
             <span>its pinned account</span>
           ) : (
-            <NativeSelect
+            <SentenceChoice
               aria-label="Model account"
               name="credential"
               value={credential}
@@ -396,13 +407,13 @@ function TemplateForm({
                       {account.name}
                     </option>
                   ))}
-            </NativeSelect>
+            </SentenceChoice>
           )}
           .
         </div>
         <div className="text-sm">
           It starts from{" "}
-          <NativeSelect
+          <SentenceChoice
             aria-label="Snapshot"
             name={placement ? undefined : "golden"}
             value={placement || golden}
@@ -442,7 +453,7 @@ function TemplateForm({
                   ))}
               </optgroup>
             ))}
-          </NativeSelect>
+          </SentenceChoice>
           {placement
             ? ", using this exact snapshot or the official image on that server."
             : ", and picks up each rebuild of it automatically."}
@@ -520,7 +531,21 @@ function TemplateForm({
             .map((row) => ({
               id: row.id,
               label: row.name,
-              note: row.status === "connected" ? (row.scope === "org" ? "Org" : "Personal") : "Not connected",
+              note:
+                row.status === "connected" ? (
+                  row.scope === "org" ? (
+                    "Org"
+                  ) : (
+                    "Personal"
+                  )
+                ) : (
+                  <>
+                    Not connected ·{" "}
+                    <Link href="/tools" className="underline" target="_blank" rel="noopener noreferrer">
+                      Connect
+                    </Link>
+                  </>
+                ),
               disabled: row.status !== "connected",
             }))}
           initial={editing?.definition.connections ?? []}
@@ -555,7 +580,7 @@ function TemplateForm({
               return { id: row.id, label: row.name, note: aliased ? `as ${keys.join(", ")}` : scopeLabel };
             })}
           initial={editing?.definition.variables.map((binding) => binding.variableId) ?? []}
-          hint="Each value is copied into the sandbox at launch, under its own name unless the version named it otherwise. Publishing uses its current version."
+          hint="Non-secret values such as SENTRY_ORG. Anyone in the sandbox can read them."
         />
         <PickList
           legend="Secrets"
@@ -593,7 +618,7 @@ function TemplateForm({
               .map((b) => ({ id: b.secretId, label: b.key, note: "Unavailable — remove to publish" })),
           ]}
           initial={editing?.definition.secrets?.map((b) => b.secretId) ?? []}
-          hint="Only names and scope are shown. Values are delivered as environment variables to the selected agent."
+          hint="API keys and passwords. Stored encrypted."
         />
         <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
         {lost && (
@@ -628,7 +653,7 @@ function PickList({
   legend: string;
   name: string;
   icon: ReactNode;
-  options: { id: string; label: string; note: string; disabled?: boolean }[];
+  options: { id: string; label: string; note: ReactNode; disabled?: boolean }[];
   initial: readonly string[];
   empty: ReactNode;
   hint?: string;
@@ -966,5 +991,49 @@ export function TemplateManage({
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+function SentenceChoice({
+  children,
+  value,
+  name,
+  onChange,
+  "aria-label": label,
+}: {
+  children: ReactNode;
+  value: string;
+  name?: string | undefined;
+  onChange: (event: { target: { value: string } }) => void;
+  "aria-label": string;
+  className?: string;
+  required?: boolean;
+}) {
+  const options: { value: string; label: string; group?: string; reason?: string }[] = [];
+  function collect(nodes: ReactNode, group?: string) {
+    Children.forEach(nodes, (child) => {
+      if (!isValidElement<{ children?: ReactNode; value?: string; label?: string; disabled?: boolean }>(child)) return;
+      if (child.type === "optgroup") collect(child.props.children, child.props.label);
+      else if (child.type === "option")
+        options.push({
+          value: child.props.value ?? "",
+          label: Children.toArray(child.props.children).join(""),
+          ...(group ? { group } : {}),
+          ...(child.props.disabled ? { reason: "Not available" } : {}),
+        });
+    });
+  }
+  collect(children);
+  return (
+    <>
+      <LaunchChoice
+        inline
+        label={label}
+        value={value}
+        options={options}
+        onChange={(next) => onChange({ target: { value: next } })}
+      />
+      {name && <input type="hidden" name={name} value={value} />}
+    </>
   );
 }

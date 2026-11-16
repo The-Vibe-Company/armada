@@ -33,7 +33,7 @@ export function LaunchDialogContent({ children }: { children: ReactNode }) {
 
 export function LaunchDialogHeader({ title, description }: { title: ReactNode; description: ReactNode }) {
   return (
-    <DialogHeader className="px-6 pt-6 pb-4 pr-12">
+    <DialogHeader className="px-6 pt-6 pb-4 pr-12 text-left">
       <DialogTitle className="break-words">{title}</DialogTitle>
       <DialogDescription>{description}</DialogDescription>
     </DialogHeader>
@@ -91,7 +91,7 @@ export function LaunchAdvanced({
         <Button
           type="button"
           variant="ghost"
-          className="flex h-auto w-full items-center justify-start gap-3 whitespace-normal rounded-md px-3 py-2.5 text-sm"
+          className="flex h-auto w-full items-center justify-start gap-3 text-left whitespace-normal rounded-md px-3 py-2.5 text-sm"
         >
           <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-3">
             <span className="font-medium">More options</span>
@@ -308,10 +308,7 @@ export function LaunchLocation({
             <LaunchChoice
               label="Folder"
               value={project}
-              options={[
-                { value: "", label: "Default directory" },
-                ...repositories.map((value) => ({ value, label: value })),
-              ]}
+              options={[{ value: "", label: "default" }, ...repositories.map((value) => ({ value, label: value }))]}
               onChange={(value) => onProject?.(value)}
             />
             <span className="max-sm:hidden"> folder</span>

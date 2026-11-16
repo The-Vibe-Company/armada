@@ -829,6 +829,7 @@ function useLaunchAccess(connections: LaunchConnections) {
     // Only a listed selection the person changed is sent; otherwise the server snapshots the defaults.
     explicit: picked !== null && "connections" in connections,
     selected,
+    selectedName: list.find((connection) => chosen.includes(connection.id) && launchBlocker(connection) === null)?.name,
     held: unready.length > 0,
     unavailable: "unavailable" in connections,
     alerts,
@@ -857,7 +858,7 @@ function ConnectionOption({
       connection.transport === "stdio"
         ? "Starts inside the sandbox"
         : connection.toolCount !== undefined
-          ? `${connection.toolCount} tools`
+          ? `${connection.toolCount} ${connection.toolCount === 1 ? "tool" : "tools"}`
           : null,
     ]
       .filter(Boolean)
@@ -897,9 +898,10 @@ function ConnectionOption({
 }
 
 /** The Tools the agent can call a launch gets, as one summary fact. */
-function mcpFact(access: { unavailable: boolean; selected: number }): string {
+function mcpFact(access: { unavailable: boolean; selected: number; selectedName?: string | undefined }): string {
   if (access.unavailable) return "Tools unavailable";
-  return access.selected === 0 ? "No tools" : `${access.selected} tools`;
+  if (access.selected === 1 && access.selectedName) return `${access.selectedName} connected`;
+  return access.selected === 0 ? "No tools" : `${access.selected} ${access.selected === 1 ? "tool" : "tools"}`;
 }
 
 /** The machine size a launch requests, as one summary fact named apart from effort; without one the provider decides. */

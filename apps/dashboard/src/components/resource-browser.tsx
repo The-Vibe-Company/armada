@@ -465,7 +465,7 @@ function Row({
               className="h-auto min-w-0 shrink justify-start rounded-none p-0 text-left font-medium hover:bg-transparent dark:hover:bg-transparent motion-safe:active:not-disabled:scale-none focus-visible:ring-0 after:absolute after:inset-0 after:content-['']"
             >
               <a href={`?${selectionQuery ? `${selectionQuery}&` : ""}item=${encodeURIComponent(row.key)}`}>
-                <span className="truncate">{row.name}</span>
+                <span className="min-w-0 whitespace-normal break-words sm:truncate">{row.name}</span>
               </a>
             </Button>
             {row.tags}
