@@ -26,6 +26,9 @@ therefore does not establish a CLI `launch --json` regression. Keep its strict
 single-JSON assertion. Send diagnostic audit events to stderr. The same defect
 exists in ownership retry, GitHub refresh/revocation and golden build phase
 logging; all core `console.info` audit sites move together, retaining their data.
+GitHub connection replacement/disconnection events in the dashboard and account
+API follow the same stderr contract; the shared audit capture helper and its
+existing payload/security assertions cover these producers too.
 
 ## Test files excluded from ordinary unit discovery
 

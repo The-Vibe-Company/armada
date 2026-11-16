@@ -11,7 +11,7 @@ export async function disconnectGitHub(): Promise<ActionResult> {
   const supabase = await createClient();
   const { error } = await supabase.from("github_connections").delete().eq("user_id", viewer.id);
   if (error) return fail(explainDbError(error));
-  console.info(
+  console.error(
     JSON.stringify({
       event: "github_connection_disconnected",
       caller: "dashboard_disconnect",
