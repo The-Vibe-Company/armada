@@ -57,6 +57,7 @@ export interface ExecEnvironment {
   GIT_TERMINAL_PROMPT?: "0";
 }
 export interface RunnerExecutionOptions {
+  workspaceHost?: import("./workspace-exec.ts").WorkspaceExecutionHost;
   prepareWorkspace?: () => Promise<void>;
   /** Set by enrolled main after checkpoint/native verification. Null conversation means a verified empty journal. */
   restoredFrom?: { epoch: string; watermark: number; conversationId: string | null };
