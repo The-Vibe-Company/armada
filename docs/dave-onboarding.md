@@ -567,6 +567,11 @@ missing configuration, and `3` means authentication is required. For example, an
 command exits `2`, including when `--json` is requested. A pipeline's final
 parser status alone does not prove that Armada succeeded.
 
+If a stdout consumer closes its pipe early (for example, `head`), Armada
+terminates quietly with exit `0` and stops streaming/polling. This pipeline
+termination does not confirm or cancel an already-submitted mutation; inspect
+its state before retrying. Other output errors remain failures.
+
 Commands that support `--json` describe their response in leaf help. Common
 typed failures emit `{"error":{"code":"...","message":"..."}}` on **stderr**,
 not stdout; some API errors may additionally include `legacyCode`. Successful

@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 import { run } from "./run.ts";
 import { printSkillHint } from "./skill-hint.ts";
+import { createStdoutWriter } from "./stdout.ts";
 
 process.exitCode = await run(process.argv.slice(2), {
-  out: (text) => process.stdout.write(text),
+  out: createStdoutWriter(process.stdout, (code) => process.exit(code)),
   err: (text) => process.stderr.write(text),
 });
 
