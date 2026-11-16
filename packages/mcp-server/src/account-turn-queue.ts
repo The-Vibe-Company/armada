@@ -19,6 +19,7 @@ const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
   or exists(select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id and j.request_id=q.request_id))`;
 const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
 type Entry = {
+  model: string | null;
   sequence: string;
   queued_generation: string;
   failure_reason: string | null;
@@ -43,29 +44,34 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   const pending = new Set<Promise<unknown>>();
   let scanAfter = "0";
   let dispatch: ((caller: Caller, input: RuntimeFollowupInput) => Promise<unknown>) | undefined;
-  async function waitingMessage(accountId: string, sandboxId: string) {
+  async function waitingMessage(accountId: string, sandboxId: string, requestId: string) {
     const row = (
       await sql.query<{
         name: string;
         max_agents: number | null;
+        model: string | null;
+        model_limit: number | null;
+        model_working: string;
         working: string;
         busy: boolean;
         has_slot: boolean;
       }>(
-        `select c.name,c.max_agents,${accountWorkingCountSql("c.id")} as working,
+        `select c.name,c.max_agents,coalesce(q.model,s.model) as model,(c.model_limits->>coalesce(q.model,s.model))::integer as model_limit,${accountWorkingCountSql("c.id", "$2", "q.model")} as model_working,${accountWorkingCountSql("c.id")} as working,
           (s.reconcile_lease_until>now() or s.activity_lease_id is not null
             or (s.task_prompt_id is not null and s.status='running' and not exists(
               select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled))
             or exists(select 1 from public.account_turn_queue active where active.sandbox_id=s.id and active.state='dispatching')) as busy,
           ((${ACCOUNT_WORKING_PREDICATE}) or exists(
             select 1 from public.account_agent_reservations r where r.sandbox_id=s.id and r.account_id=c.id)) as has_slot
-          from public.credentials c join public.sandboxes s on s.credential_id=c.id where c.id=$1 and s.id=$2`,
-        [accountId, sandboxId],
+          from public.credentials c join public.sandboxes s on s.credential_id=c.id left join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$3::uuid where c.id=$1 and s.id=$2`,
+        [accountId, sandboxId, requestId],
       )
     ).rows[0];
     if (row?.busy) return "Prompt accepted; waiting for the current sandbox turn or dispatch to finish.";
     if (row && row.max_agents !== null && !row.has_slot && Number(row.working) >= row.max_agents)
       return `Waiting for a free agent slot on account ${row.name} (${row.working}/${row.max_agents}).`;
+    if (row && row.model_limit != null && !row.has_slot && Number(row.model_working) >= row.model_limit)
+      return `Waiting for a free agent slot for model ${row.model} on account ${row.name} (${row.model_working}/${row.model_limit}).`;
     return "Prompt accepted; waiting for sandbox dispatch, not an account slot.";
   }
   async function accept(caller: Caller, input: RuntimeFollowupInput) {
@@ -165,8 +171,8 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         if (!sandbox.rows.length) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
         saved = (
           await tx.query<Entry>(
-            `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,queued_generation)
-           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,(select lifecycle_generation from public.sandboxes where id=$1)) returning *`,
+            `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,model,queued_generation)
+           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,(select lifecycle_generation from public.sandboxes where id=$1)) returning *`,
             [
               input.id,
               requestId,
@@ -178,6 +184,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               hash,
               sealed,
               input.conversation_id ?? target.conversation_ids.at(-1) ?? `first_${requestId}`,
+              input.model ?? target.model,
             ],
           )
         ).rows[0]!;
@@ -194,7 +201,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       promptId: requestId,
       conversationId: entry.conversation_id,
       status: "queued" as const,
-      statusMessage: await waitingMessage(entry.account_id, input.id),
+      statusMessage: await waitingMessage(entry.account_id, input.id, entry.request_id),
     };
   }
   return {
@@ -271,7 +278,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             ? (row.failure_reason ?? "Queued prompt was cancelled.")
             : row.state === "dispatching"
               ? "Prompt dispatch is pending; inspect status before sending another request."
-              : await waitingMessage(row.account_id, row.sandbox_id),
+              : await waitingMessage(row.account_id, row.sandbox_id, row.request_id),
       };
     },
     setDispatch(value: NonNullable<typeof dispatch>) {
@@ -303,7 +310,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
              where (q.state='queued' or (q.state='dispatching' and q.dispatch_until<=now() and q.dispatch_generation is not null and ((${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE}) or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false)))))
-           and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null) or not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.sequence<q.sequence))
+           and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null) or not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.model is not distinct from q.model and earlier.sequence<q.sequence))
            order by case when q.sequence>$1::bigint then 0 else 1 end,q.sequence limit 20`,
             [scanAfter],
           )
@@ -323,7 +330,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             const current = await tx.query(
               `select q.request_id from public.account_turn_queue q where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
               and (q.state='queued' or q.dispatch_until<=now())
-              and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null) or not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.sequence<q.sequence)) for update of q`,
+              and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null) or not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.model is not distinct from q.model and earlier.sequence<q.sequence)) for update of q`,
               [candidate.sandbox_id, candidate.request_id, candidate.state],
             );
             if (!current.rows.length) return null;
@@ -384,11 +391,17 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             );
             if (!recovering && busy.rows.length) return null;
             try {
-              if (!recovering) await admitAccountCapacity(tx, candidate.account_id, candidate.sandbox_id);
+              if (!recovering)
+                await admitAccountCapacity(
+                  tx,
+                  candidate.account_id,
+                  candidate.sandbox_id,
+                  candidate.model ?? undefined,
+                );
               else
                 await tx.query(
-                  "insert into public.account_agent_reservations(sandbox_id,account_id) values($1,$2) on conflict(sandbox_id) do nothing",
-                  [candidate.sandbox_id, candidate.account_id],
+                  "insert into public.account_agent_reservations(sandbox_id,account_id,model) values($1,$2,$3) on conflict(sandbox_id) do nothing",
+                  [candidate.sandbox_id, candidate.account_id, candidate.model],
                 );
             } catch (error) {
               if (error instanceof VaultError && error.code === "conflict") return null;

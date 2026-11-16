@@ -21,7 +21,7 @@ import {
   VaultError,
 } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { armadaApiUrl } from "./armada-api.ts";
+import { resolveArmadaOrigin } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { invitationCommand } from "./invitation-commands.ts";
@@ -41,7 +41,7 @@ export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<
     case "use":
     case "current": {
       const args = parseArgs(rest);
-      const origin = armadaApiUrl(io.auth.env.ARMADA_URL);
+      const origin = await resolveArmadaOrigin(io.auth);
       const preferences = io.auth.preferences;
       if (!preferences) throw usage("Organization preferences are not available.");
       if (sub === "current") {
@@ -507,7 +507,14 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
     case "limits": {
       const id = one(args.positionals, "armada creds limits <account-id> --max-agents N | --unlimited");
       if (maxAgents === undefined) throw usage("Choose --max-agents N or --unlimited.");
-      const result = await control(io.auth, "creds/accounts/limits", { scope, org, id, maxAgents });
+      const model = single(args, "--model");
+      const result = await control(io.auth, "creds/accounts/limits", {
+        scope,
+        org,
+        id,
+        maxAgents,
+        ...(model ? { model } : {}),
+      });
       io.auth.out(`${JSON.stringify(result)}\n`);
       return 0;
     }
@@ -562,7 +569,14 @@ function section(title: string, rows: CredentialInfo[]): string {
   if (rows.length === 0) return `${title}: none`;
   const lines = rows.map(
     (row) =>
-      `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.id ? `  ${row.runningAgents ?? 0} working / ${row.waitingAgents ?? 0} waiting-for-slot / ${row.maxAgents ?? "unlimited"} max` : ""}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`,
+      `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.id ? `  ${row.runningAgents ?? 0} working / ${row.waitingAgents ?? 0} waiting-for-slot / ${row.maxAgents ?? "unlimited"} max` : ""}${Object.entries(
+        row.modelCounts ?? {},
+      )
+        .map(
+          ([model, counts]) =>
+            `\n    ${model}: ${counts.runningAgents} working / ${counts.waitingAgents} waiting / ${row.modelLimits?.[model] ?? "unlimited"} max`,
+        )
+        .join("")}${row.createdAt ? `  ${row.createdAt.slice(0, 10)}` : ""}`,
   );
   return `${title}:\n${lines.join("\n")}`;
 }

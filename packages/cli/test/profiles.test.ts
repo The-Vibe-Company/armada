@@ -132,3 +132,40 @@ test("a malformed profile session can be cleared or replaced through explicit-se
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("default profile organization preferences use the saved login origin", async () => {
+  const auth = productionAuthIo({ out: () => {}, err: () => {} }, {});
+  const { memorySessionStore } = await import("../src/session.ts");
+  auth.session = memorySessionStore({
+    armadaUrl: "https://custom.example",
+    accessToken: "saved_access",
+    refreshToken: "saved_refresh",
+    expiresAt: "2099-01-01",
+  });
+  const origins: string[] = [];
+  auth.preferences = {
+    read: async (origin) => {
+      origins.push(origin);
+      return "chosen_org";
+    },
+    write: async () => {},
+  };
+  let output = "";
+  auth.out = (s) => {
+    output += s;
+  };
+  expect(
+    await run(
+      ["org", "current"],
+      {
+        out: (s) => {
+          output += s;
+        },
+        err: () => {},
+      },
+      { auth },
+    ),
+  ).toBe(0);
+  expect(origins).toEqual(["https://custom.example"]);
+  expect(JSON.parse(output)).toEqual({ org: "chosen_org" });
+});

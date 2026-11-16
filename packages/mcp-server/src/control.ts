@@ -767,6 +767,7 @@ export async function dispatchControlCommand(
         userId,
         {
           action,
+          ...(body.model !== undefined ? { model: required(body, "model") } : {}),
           ...(body.maxAgents === undefined
             ? {}
             : { maxAgents: body.maxAgents === null ? null : requiredNumber(body, "maxAgents") }),

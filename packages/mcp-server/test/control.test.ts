@@ -558,6 +558,7 @@ describe("armada org and armada creds against the control API", () => {
         now: () => new Date(),
         open: () => undefined,
         session: memorySessionStore({
+          armadaUrl: "https://armada.test",
           userId: STAN,
           accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
           refreshToken: "r",
@@ -1496,6 +1497,7 @@ async function withServer(
                     accessToken:
                       opts.token ??
                       `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
+                    armadaUrl: opts.armadaUrl === false ? "https://missing.armada.test" : "https://armada.test",
                     refreshToken: "refresh",
                     expiresAt: "2099-01-01T00:00:00.000Z",
                     supabaseUrl: "https://supabase.test",

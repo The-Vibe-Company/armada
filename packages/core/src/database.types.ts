@@ -11,16 +11,19 @@ export type Database = {
           sandbox_id: string;
           account_id: string;
           created_at: string;
+          model: string | null;
         };
         Insert: {
           sandbox_id: string;
           account_id: string;
           created_at?: string;
+          model?: string | null;
         };
         Update: {
           sandbox_id?: string;
           account_id?: string;
           created_at?: string;
+          model?: string | null;
         };
         Relationships: [
           {
@@ -51,6 +54,7 @@ export type Database = {
           result_enc: string | null;
           failure_reason: string | null;
           queued_generation: number;
+          model: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -70,6 +74,7 @@ export type Database = {
           result_enc?: string | null;
           failure_reason?: string | null;
           queued_generation: number;
+          model?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -89,6 +94,7 @@ export type Database = {
           result_enc?: string | null;
           failure_reason?: string | null;
           queued_generation?: number;
+          model?: string | null;
         };
         Relationships: [
           {
@@ -410,6 +416,7 @@ export type Database = {
           updated_at: string;
           version: number;
           max_agents: number | null;
+          model_limits: Json;
         };
         Insert: {
           id?: string;
@@ -425,6 +432,7 @@ export type Database = {
           updated_at?: string;
           version?: number;
           max_agents?: number | null;
+          model_limits?: Json;
         };
         Update: {
           id?: string;
@@ -440,6 +448,7 @@ export type Database = {
           updated_at?: string;
           version?: number;
           max_agents?: number | null;
+          model_limits?: Json;
         };
         Relationships: [];
       };

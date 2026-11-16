@@ -386,6 +386,84 @@ describe("Skillpack registry credentials", () => {
 });
 
 describe("named model accounts", () => {
+  test("Morph model limits preserve exact native and OpenCode launch identities", async () => {
+    await withVault(async ({ store, people }) => {
+      const account = await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "user",
+        kind: "morph",
+        value: "morph_account_placeholder",
+      });
+      for (const [model, maxAgents] of [
+        ["morph-kimik31", 2],
+        ["armada/morph-kimik31", 1],
+      ] as const) {
+        const saved = await mutateCredentialAccount(store, KEY, people.stan, {
+          action: "limits",
+          scope: "user",
+          id: account.id!,
+          model,
+          maxAgents,
+        });
+        expect(saved.modelLimits?.[model]).toBe(maxAgents);
+      }
+      const saved = (await store.listCredentials("user", people.stan)).find((row) => row.id === account.id)!;
+      expect(saved.modelLimits).toEqual({ "morph-kimik31": 2, "armada/morph-kimik31": 1 });
+      await expect(
+        mutateCredentialAccount(store, KEY, people.stan, {
+          action: "limits",
+          scope: "user",
+          id: account.id!,
+          model: "armada/opus",
+          maxAgents: 1,
+        }),
+      ).rejects.toThrow("Account cannot serve model armada/opus");
+    });
+  });
+
+  test("plain OpenCode accounts limit native catalog identifiers rather than connection deployments", async () => {
+    await withVault(async ({ store, people }) => {
+      const first = await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "user",
+        kind: "opencode",
+        value: "opencode_account_placeholder",
+      });
+      await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "user",
+        kind: "opencode",
+        value: "second_account_placeholder",
+      });
+      for (const model of ["opencode/model-a", "opencode-go/model-b"]) {
+        const saved = await mutateCredentialAccount(store, KEY, people.stan, {
+          action: "limits",
+          scope: "user",
+          id: first.id!,
+          model,
+          maxAgents: 1,
+        });
+        expect(saved.modelLimits?.[model]).toBe(1);
+      }
+      expect((await store.listCredentials("user", people.stan)).map((row) => row.modelCounts)).toEqual([
+        {
+          "opencode/model-a": { runningAgents: 0, waitingAgents: 0 },
+          "opencode-go/model-b": { runningAgents: 0, waitingAgents: 0 },
+        },
+        {},
+      ]);
+      await expect(
+        mutateCredentialAccount(store, KEY, people.stan, {
+          action: "limits",
+          scope: "user",
+          id: first.id!,
+          model: "armada/deepseek-flash",
+          maxAgents: 1,
+        }),
+      ).rejects.toThrow("Account cannot serve model");
+    });
+  });
+
   test("legacy kind-set requires an ID when another compatible kind has duplicate accounts", async () => {
     await withVault(async ({ store, people }) => {
       for (const kind of ["openai", "anthropic"] as const) {
