@@ -408,7 +408,9 @@ export function createDockerMachineExecutor(options: {
 
   async function stopIfExpired(request: DockerMachineRequest): Promise<boolean> {
     const state = await owned(request);
-    if (!state.container || state.expiresAt === undefined || state.expiresAt > now()) return false;
+    if (state.expiresAt === undefined || state.expiresAt > now()) return false;
+    // A successful inventory proving no container also proves physical execution ended.
+    if (!state.container) return true;
     await checked(["container", "stop", "--time", "10", state.containerName]);
     return true;
   }
@@ -429,6 +431,10 @@ export function createDockerMachineExecutor(options: {
     async isRunning(request: DockerMachineRequest): Promise<boolean> {
       const state = await owned(request);
       return !!state.container && object(state.container.State).Running === true;
+    },
+    async isAbsent(request: DockerMachineRequest): Promise<boolean> {
+      const state = await owned(request);
+      return !state.container && !state.volume;
     },
     async isStopped(request: DockerMachineRequest): Promise<boolean> {
       const state = await owned(request);

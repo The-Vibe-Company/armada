@@ -19,6 +19,7 @@ export type Receipt = {
   reason?: DockerJobFailureReason;
   /** Durable positive local stop proof, separate from the original job outcome. */
   expired?: true;
+  cleaned?: true;
   expiryReported?: true;
 } & (
   | { operation: "create" | "stop" | "delete" }
@@ -80,6 +81,7 @@ export interface Executor {
   stopIfExpired(request: DockerMachineRequest): Promise<unknown>;
   deleteStopped?(request: DockerMachineRequest): Promise<void>;
   isRunning?(request: DockerMachineRequest): Promise<boolean>;
+  isAbsent?(request: DockerMachineRequest): Promise<boolean>;
   isStopped?(request: DockerMachineRequest): Promise<boolean>;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -116,6 +118,7 @@ function updateActiveTtl(state: State, receipt: Receipt): void {
     );
   };
   if (
+    receipt.cleaned ||
     receipt.expired ||
     ((receipt.operation === "stop" || receipt.operation === "delete") && receipt.outcome === "completed")
   ) {
@@ -163,10 +166,12 @@ export async function tick(
   if (executor.isStopped) {
     const candidates = new Map<string, Receipt>();
     for (const receipt of state.receipts) {
-      if (receipt.operation === "buildSnapshot" || receipt.operation === "delete") continue;
+      if (receipt.cleaned || receipt.operation === "buildSnapshot" || receipt.operation === "delete") continue;
       candidates.set(generationKey(receipt.request), receipt);
     }
-    const values = [...candidates.values()];
+    // An admitted but unfinished operation may still be recovered below. Absence
+    // before its first execution is not loss of a completed allocation.
+    const values = [...candidates.values()].filter((receipt) => receipt.outcome);
     const after = values.findIndex((receipt) => receipt.requestId === state.retentionScanAfter);
     const receipt = values[(after + 1) % values.length];
     if (receipt) {
@@ -174,7 +179,9 @@ export async function tick(
       const key = generationKey(receipt.request);
       const scheduled = state.retention.find((entry) => generationKey(entry.request) === key);
       try {
-        const stopped = await executor.isStopped(receipt.request);
+        const absent = (await executor.isAbsent?.(receipt.request)) === true;
+        const stopped = absent || (await executor.isStopped(receipt.request));
+        if (absent && scheduled) scheduled.deleted = true;
         if (!stopped && scheduled && !scheduled.deleted && (await executor.isRunning?.(receipt.request)) === true) {
           state.retention = state.retention.filter((entry) => entry !== scheduled);
           await store.save(state);
@@ -184,6 +191,7 @@ export async function tick(
             request: receipt.request,
             requestId: receipt.requestId,
             deadline: now() + retentionSeconds * 1000,
+            ...(absent ? { deleted: true as const } : {}),
           });
           await store.save(state);
         }
@@ -271,6 +279,12 @@ export async function tick(
       state.retentionReportAfter = cleaned.requestId;
       await store.save(state);
       await api.cleaned(state, cleaned.requestId);
+      for (const receipt of state.receipts) {
+        if (generationKey(receipt.request) === generationKey(cleaned.request)) receipt.cleaned = true;
+      }
+      state.activeTtl = state.activeTtl?.filter(
+        (id) => !state.receipts.some((receipt) => receipt.requestId === id && receipt.cleaned),
+      );
       state.retention = state.retention.filter((entry) => entry !== cleaned);
       await store.save(state);
     } catch {
@@ -281,7 +295,7 @@ export async function tick(
   // One bounded HTTP attempt per tick, round-robin even across process restart.
   const after = state.receipts.findIndex((receipt) => receipt.requestId === state.expiryReportAfter);
   const report = [...state.receipts.slice(after + 1), ...state.receipts.slice(0, after + 1)].find(
-    (receipt) => receipt.expired && !receipt.expiryReported,
+    (receipt) => receipt.expired && !receipt.expiryReported && !receipt.cleaned,
   );
   if (report) {
     try {
@@ -464,6 +478,7 @@ export function compactReceipts(state: State): void {
   state.receipts = state.receipts.filter((receipt) => {
     if (!receipt.outcome || retired.length >= state.cleanupLimit!) return true;
     const closed =
+      receipt.cleaned ||
       receipt.operation === "stop" ||
       receipt.operation === "delete" ||
       receipt.operation === "buildSnapshot" ||
