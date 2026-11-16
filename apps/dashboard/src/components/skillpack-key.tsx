@@ -50,6 +50,13 @@ export function SkillpackKeyView({ title, orgId, orgName, isAdmin, keys }: Props
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
+  const shown = SCOPES.filter(
+    (item) =>
+      (filter === "all" || filter === item) &&
+      (item === "user" ? "Your Skillpack key Personal" : "The organization’s key Organization")
+        .toLowerCase()
+        .includes(query.toLowerCase()),
+  );
   const [scope, setScope] = useState<SkillpackScope>("user");
   const [generation, setGeneration] = useState(0);
   const toast = useToast();
@@ -135,17 +142,16 @@ export function SkillpackKeyView({ title, orgId, orgName, isAdmin, keys }: Props
         />
       </div>
       <div className="space-y-3">
+        {shown.length === 0 && (
+          <p className="rounded-[10px] border border-dashed p-12 text-center text-sm text-muted-foreground">
+            Nothing matches
+          </p>
+        )}
         <ul
           aria-label="Skillpack keys"
           className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,310px),1fr))] gap-3"
         >
-          {SCOPES.filter(
-            (item) =>
-              (filter === "all" || filter === item) &&
-              (item === "user" ? "Your Skillpack key Personal" : "The organization’s key Organization")
-                .toLowerCase()
-                .includes(query.toLowerCase()),
-          ).map((item) => (
+          {shown.map((item) => (
             <KeyRow
               key={item}
               scope={item}

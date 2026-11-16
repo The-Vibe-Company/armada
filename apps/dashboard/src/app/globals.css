@@ -312,3 +312,10 @@
   font-family: var(--font-geist-mono);
   font-size: 13px;
 }
+
+[data-variable-table] [data-resource-columns] {
+  margin-bottom: 0;
+}
+[data-variable-table] section > div > ul {
+  margin-top: 0;
+}

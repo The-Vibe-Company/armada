@@ -1513,7 +1513,7 @@ export function AddAccountDialog({
   isAdmin,
   capabilities: _capabilities,
   initialKind = "claude_oauth",
-  triggerLabel = "Add account",
+  triggerLabel = "Add an account",
   triggerVariant = "default",
 }: {
   orgId: string;
