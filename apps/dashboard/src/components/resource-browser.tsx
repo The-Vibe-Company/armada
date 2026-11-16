@@ -4,11 +4,8 @@ import { ChevronDownIcon, ChevronUpIcon, SearchIcon, TriangleAlertIcon, XIcon } 
 import Link from "next/link";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import {
-  Children,
   type ComponentProps,
   createContext,
-  Fragment,
-  isValidElement,
   type ReactNode,
   useCallback,
   useContext,
@@ -471,10 +468,7 @@ function Row({
                 <span className="min-w-0 whitespace-normal break-words sm:truncate">{row.name}</span>
               </a>
             </Button>
-            {/* RSC can unwrap server fragments into unkeyed arrays. Own their list identity here. */}
-            {Children.toArray(row.tags).map((tag, index) => (
-              <Fragment key={isValidElement(tag) ? tag.key : index}>{tag}</Fragment>
-            ))}
+            {row.tags}
           </div>
           <div className="truncate text-xs text-muted-foreground">{row.meta}</div>
         </div>

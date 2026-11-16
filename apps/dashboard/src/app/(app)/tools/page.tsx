@@ -4,6 +4,7 @@ import Link from "next/link";
 import { AddServerDialog, ServiceCatalog, ServiceMark, ToolPanel, ToolRowAction } from "@/components/connections";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
+import { ResourceTags } from "@/components/resource-tags";
 import { RowTag, StateCell } from "@/components/state-cell";
 import { TemplateUsage } from "@/components/template-usage";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -217,7 +218,11 @@ function connectionRow(
         className={cn(!serviceLabel && "font-normal", !remote && "font-mono")}
       />
     ),
-    tags: <ScopeTag scope={connection.scope} />,
+    tags: (
+      <ResourceTags>
+        <ScopeTag scope={connection.scope} />
+      </ResourceTags>
+    ),
     meta,
     subtitle: meta,
     state: (
