@@ -1,7 +1,7 @@
 "use client";
 
 import { PlusIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -35,9 +35,12 @@ export function CreateDialog({
   onCloseAutoFocus,
   dismissible = true,
   triggerVariant = "default",
+  fixedActions = false,
 }: {
   /** The header button's text, beside a plus. */
   triggerVariant?: "default" | "outline";
+  /** Keep the header and actions visible while CreateDialogBody scrolls inside a form. */
+  fixedActions?: boolean;
   label: string;
   /** The dialog's accessible name. */
   title: string;
@@ -62,7 +65,11 @@ export function CreateDialog({
         </Button>
       </DialogTrigger>
       <DialogContent
-        className={cn("max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl", className)}
+        className={cn(
+          "max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl",
+          fixedActions && "flex flex-col overflow-hidden [&>form]:flex [&>form]:min-h-0 [&>form]:flex-col",
+          className,
+        )}
         {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})}
         {...(dismissible
           ? {}
@@ -79,4 +86,13 @@ export function CreateDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/** The shrinking scroll region of a fixed-actions create form. */
+export function CreateDialogBody({ className, ...props }: ComponentProps<"div">) {
+  return <div className={cn("min-h-0 overflow-y-auto overscroll-contain", className)} {...props} />;
+}
+
+export function CreateDialogFooter({ className, ...props }: ComponentProps<"div">) {
+  return <div className={cn("shrink-0 border-t pt-4", className)} {...props} />;
 }

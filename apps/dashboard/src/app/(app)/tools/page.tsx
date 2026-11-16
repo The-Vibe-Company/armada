@@ -184,9 +184,7 @@ function connectionRow(
   templates: TemplateList,
 ): ResourceRow & { bucket: Bucket } {
   const remote = connection.transport !== "stdio";
-  const where =
-    serviceLabel ??
-    (remote ? (connection.url ? hostOf(connection.url) : "URL hidden") : "a command inside the sandbox");
+  const where = serviceLabel ?? (remote ? (connection.url ? hostOf(connection.url) : "URL hidden") : undefined);
   const meta = [where, remote ? authLabel(connection.authType) : transportLabel(connection.transport)]
     .filter(Boolean)
     .join(" · ");

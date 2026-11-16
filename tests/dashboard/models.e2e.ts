@@ -14,6 +14,17 @@ for (const session of ["alice", "large"]) {
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await screen.getByRole("button", "Add account", { exact: true }).first().tap();
     const dialog = screen.getByRole("dialog", "Add provider");
+    // Check before tapping: tap would scroll a clipped primary action into view.
+    const clipped = await browser.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]')!;
+      const action = [...dialog.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("Continue with Claude"),
+      )!;
+      const bounds = dialog.getBoundingClientRect();
+      const rect = action.getBoundingClientRect();
+      return rect.top < bounds.top || rect.bottom > bounds.bottom || rect.bottom > innerHeight;
+    });
+    expect(clipped).toBe(false);
     await dialog.getByRole("button", "OpenAI API key").tap();
     await dialog.getByRole("button", "Continue", { exact: true }).tap();
     await dialog.getByLabel("Name", { exact: true }).fill("Journey model connection");
