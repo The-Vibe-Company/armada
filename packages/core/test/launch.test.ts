@@ -1911,7 +1911,7 @@ test("generated refresh uses the installed caller helper without writing its tok
     git() {
       while [ "$1" = -c ]; do if [ "$2" = credential.helper= ]; then helper=''; fi; shift 2; done
       case "$1" in
-        config) if [ "$2" = --global ] && [ "$3" = --add ] && [ "$4" = credential.https://github.com.helper ]; then helper="$5"; fi ;;
+        config) printf 'config:%s:%s:%s\\n' "$3" "$4" "\${5-}"; if [ "$2" = --global ] && [ "$3" = --add ] && [ "$4" = credential.https://github.com.helper ]; then helper="$5"; fi ;;
         pull|fetch)
           [ -n "$helper" ] || return 128
           local credential
@@ -1921,13 +1921,17 @@ test("generated refresh uses the installed caller helper without writing its tok
         *) return 93 ;;
       esac
     }
-    ${gitSetupCommand(IDENTITY)}
+    ${gitSetupCommand({ ...IDENTITY, name: 'The "Octo\'cat"' })}
     ${spec.command}
     printf '%s\\n' "$helper"`,
     ],
     { env: { PATH: process.env.PATH ?? "", GH_TOKEN: secret }, encoding: "utf8" },
   );
   expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain('config:user.name:The "Octo\'cat":\n');
+  expect(result.stdout).toContain("config:user.email:583231+octocat@users.noreply.github.com:\n");
+  expect(result.stdout).toContain("config:--replace-all:url.https://github.com/.insteadOf:git@github.com:\n");
+  expect(result.stdout).toContain("config:--add:url.https://github.com/.insteadOf:ssh://git@github.com/\n");
   expect(result.stdout).toContain("fetch-authorized");
   expect(result.stdout).toContain("merge-authorized");
   expect(spec.command + result.stdout + result.stderr).not.toContain(secret);
