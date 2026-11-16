@@ -5,6 +5,7 @@ import {
   harnessForCredential,
   type MachineSizePolicy,
   MODEL_CREDENTIAL_KINDS,
+  parseDockerSnapshotRecord,
   ROUTINE_REASON_HELP,
   resolveMachineSize,
 } from "@armada/core";
@@ -29,6 +30,11 @@ const ALICE = id(1);
 const BOB = id(2);
 const ACME = id(10);
 const ORION = id(13);
+const LARGE = id(14);
+const LARGE_HOST = id(9000);
+// Conservative 8 KiB request-target budget (Kong/Nginx buffer default); not a verified hosted gateway setting.
+// Measure encoded bytes, so large in() filters cannot silently pass the fixture.
+const MAX_REQUEST_TARGET_BYTES = 8192;
 
 const users = new Map<string, { id: string; email: string }>([
   [ALICE, { id: ALICE, email: "alice@example.com" }],
@@ -473,7 +479,189 @@ function seed(): State {
       reason: "usage_limit",
     },
   ]);
+  seedLarge(state);
   return state;
+}
+
+/** Fixed arithmetic and fixed timestamps keep every reset and dev boot reproducible. */
+function seedLarge(target: State): void {
+  const now = "2026-11-16T10:00:00.000Z";
+  target.orgs.push({ id: LARGE, name: "Large", created_at: now, boat_api_key_enc: "\\x0102" });
+  const owners = [ALICE, BOB, ...Array.from({ length: 6 }, (_, i) => id(9100 + i))];
+  owners.forEach((owner, i) => {
+    if (!users.has(owner)) users.set(owner, { id: owner, email: `large_member_${i}@example.com` });
+    // Alice is deliberately a member: other owners’ interiors must remain unreadable.
+    target.members.push({ org_id: LARGE, user_id: owner, role: i === 1 ? "admin" : "member", created_at: now });
+  });
+  const name = (kind: string, i: number) =>
+    i % 4 === 0
+      ? `${kind}-${i}-international-platform-observability-and-release-engineering-with-a-very-long-unbroken-suffix`
+      : `${kind}-${String(i).padStart(3, "0")}`;
+  for (let i = 0; i < 36; i++) {
+    const provider = i % 3 === 0 ? "modal" : "boat";
+    const snapshot = i % 5 === 0 ? null : `large_snapshot_${i}`;
+    target.goldens.push({
+      ...golden(id(10000 + i), name("snapshot", i), i % 7 === 0 ? "private" : "org", owners[i % 8]!, snapshot),
+      org_id: LARGE,
+      provider,
+      boat_snapshot_id: provider === "boat" ? snapshot : null,
+      config: largeGoldenConfig(),
+    });
+  }
+  for (let i = 0; i < 600; i++) {
+    const variant = i % 10;
+    const provider = ["boat", "modal", "docker"][i % 3]!;
+    const sid = id(11000 + i);
+    const status = [
+      "starting",
+      "running",
+      "ready",
+      "ready",
+      "stopped",
+      "stopped",
+      "failed",
+      "ready",
+      "running",
+      "stopping",
+    ][variant]!;
+    target.sandboxes.push({
+      ...sandbox(
+        sid,
+        name("sandbox", i),
+        id(10000 + (i % 36)),
+        owners[Math.floor(i / 10) % 8]!,
+        ["claude", "codex", "opencode"][i % 3]!,
+        status,
+        new Date(Date.parse(now) - i * 60000).toISOString(),
+      ),
+      org_id: LARGE,
+      provider,
+      docker_host_id: provider === "docker" ? LARGE_HOST : null,
+      status_reason: variant === 4 ? "idle_paused" : null,
+      stopped_at: [4, 5, 6].includes(variant) ? now : null,
+      expires_at: variant === 8 ? "2026-11-15T10:00:00.000Z" : "2026-11-17T12:00:00.000Z",
+      conversation_ids: [`large_conversation_${i}`],
+      task_prompt_id: variant === 3 ? `large_prompt_${i}` : null,
+      task_outcome:
+        variant === 3
+          ? i % 20 === 3
+            ? { state: "ready", prNumber: 100 + i, prUrl: `https://github.com/example/fixture/pull/${100 + i}` }
+            : { state: "blocked", reason: "The fixture needs an owner decision about the integration contract." }
+          : null,
+      visibility: i % 5 === 0 ? "private" : "org",
+      credential_id: id(12000 + (i % 12)),
+      credential_version: 1,
+      runtime_transport: "dialout",
+    });
+    target.events.set(sid, [
+      {
+        id: `large_prompt_${i}`,
+        promptId: `large_prompt_${i}`,
+        conversationId: `large_conversation_${i}`,
+        at: Date.parse(now),
+        kind: "prompt",
+        text: name("Review", i),
+        status: [
+          "queued",
+          "running",
+          "finished",
+          "finished",
+          "finished",
+          "finished",
+          "failed",
+          "queued",
+          "running",
+          "running",
+        ][variant],
+        ...(variant === 6 ? { reason: "usage_limit" } : {}),
+      },
+    ]);
+    if (variant === 2) target.events.set(sid, []);
+  }
+  for (let i = 0; i < 12; i++)
+    target.credentials.push({
+      id: id(12000 + i),
+      scope: "org",
+      owner_id: LARGE,
+      kind: MODEL_CREDENTIAL_KINDS[i % MODEL_CREDENTIAL_KINDS.length],
+      name: name("model-account", i),
+      value_enc: "\\x0102",
+      created_at: now,
+      updated_at: now,
+      status: "active",
+      is_default: i === 0,
+      version: 1,
+      expires_at: i === 1 ? "2026-01-01T00:00:00.000Z" : null,
+      ...(i === 0 ? { rateLimited: true, runningAgents: 4, maxAgents: 4 } : {}),
+    });
+  for (let i = 0; i < 25; i++) {
+    const tid = id(13000 + i);
+    target.templates.push({
+      ...templateRow(tid, i % 5 === 0 ? "personal" : "org", owners[i % 8]!, name("template", i), 1),
+      orgId: LARGE,
+    });
+    target.templateRevisions.push({
+      id: id(14000 + i),
+      templateId: tid,
+      revision: 1,
+      definition: {
+        goldenId: id(10000 + (i % 36)),
+        provider: i % 3 === 0 ? "modal" : "boat",
+        harness: "claude",
+        model: "claude-opus-5-5",
+        reasoningEffort: "high",
+        connections: [],
+        variables: [],
+        skills: [],
+      },
+    });
+  }
+  for (let i = 0; i < 15; i++) {
+    const rid = id(15000 + i);
+    target.routines.push({
+      ...routineRow(
+        rid,
+        "org",
+        owners[i % 8]!,
+        name("routine", i),
+        i % 3 === 0 ? "paused" : "enabled",
+        id(13000 + i),
+        1,
+      ),
+      orgId: LARGE,
+      nextDueAt: i % 3 === 0 ? null : "2026-11-17T10:00:00.000Z",
+    });
+    for (let run = 0; run < 3; run++)
+      target.routineHistory.push({
+        ...target.routineHistory[run],
+        id: id(16000 + i * 3 + run),
+        routineId: rid,
+        sandboxId: run === 0 ? id(11000 + i) : null,
+      });
+  }
+  for (let i = 0; i < 20; i++) {
+    target.connections.push(
+      mcpConnection(id(17000 + i), name("tool", i), LARGE, i % 5 === 0 ? "personal" : "org", owners[i % 8]!, {
+        url: `https://tool-${i}.example.test/mcp`,
+        authType: "none",
+        status: ["connected", "not_connected", "unavailable", "needs_reconnect"][i % 4],
+        toolCount: i + 1,
+        resourceCount: 2,
+        promptCount: 1,
+      }),
+    );
+    target.vault.push({
+      ...vaultItem(
+        id(18000 + i),
+        i % 2 === 0 ? "variable" : "secret",
+        "org",
+        owners[i % 8]!,
+        `LARGE_CONFIGURATION_${i}`,
+        i % 2 === 0 ? { value: `large_fixture_value_${i}` } : { sealed: "large_fixture_secret" },
+      ),
+      org_id: LARGE,
+    });
+  }
 }
 
 function mcpConnection(
@@ -528,6 +716,51 @@ function sandbox(
     stopped_at: null,
     deleted_at: null,
   };
+}
+
+/** These hosts belong only to Large; an explicit test override still takes precedence. */
+function largeHosts(): Row[] {
+  return [0, 1].map((i) => ({
+    id: id(9000 + i),
+    name:
+      i === 0
+        ? "Large platform engineering workstation — release builds and integration workloads"
+        : "Offline spare workstation",
+    state: i === 0 ? "online" : "offline",
+    createdAt: "2026-11-16T10:00:00.000Z",
+    lastSeenAt: "2026-11-16T10:00:00.000Z",
+    revokedAt: null,
+    sandboxes: i === 0 ? 200 : 0,
+    version: null,
+  }));
+}
+
+function largeGoldenConfig() {
+  return { repos: [{ url: "https://github.com/example/fixture.git", branch: "main", dir: "fixture" }], init: [] };
+}
+
+function largeHostSnapshots(): Row[] {
+  return ["ready", "building", "failed", "ready"]
+    .map((status, i) => ({
+      id: id(19000 + i),
+      orgId: LARGE,
+      ownerId: ALICE,
+      name: `host-snapshot-${i}-platform-integration-environment`,
+      provider: "docker",
+      visibility: "org",
+      hostId: id(9000 + (i === 3 ? 1 : 0)),
+      installationId: id(9200 + i),
+      hostName: i === 3 ? "Offline spare workstation" : "Large platform engineering workstation",
+      hostAvailable: i !== 3,
+      definitionHash: "a".repeat(64),
+      status,
+      image: status === "ready" ? `sha256:${"b".repeat(64)}` : null,
+      builtOnVersion: "2.46.4",
+      failureReason: status === "failed" ? "Fixture build failed: repository checkout unavailable." : null,
+      config: largeGoldenConfig(),
+      createdAt: "2026-11-16T10:00:00.000Z",
+    }))
+    .map((row) => ({ ...parseDockerSnapshotRecord(row) }));
 }
 
 let state = seed();
@@ -724,13 +957,34 @@ function matches(row: Row, params: URLSearchParams): boolean {
     const actual = String(row[key]);
     if (op === "eq" && actual !== operand) return false;
     if (op === "neq" && actual === operand) return false;
-    if (op === "in" && !operand.slice(1, -1).split(",").includes(actual)) return false;
+    if (op === "in" && !inValues(operand).includes(actual)) return false;
     if (op === "is" && operand === "null" && row[key] !== null && row[key] !== undefined) return false;
     if (op === "not" && operand === "is.null" && (row[key] === null || row[key] === undefined)) return false;
     if (op === "gte" && !atLeast(row[key], operand)) return false;
     if (key === "or" && !orAny(row, expression)) return false;
   }
   return true;
+}
+
+/** PostgREST quotes values containing commas, parentheses or quotes inside an in() list. */
+function inValues(operand: string): string[] {
+  const values: string[] = [];
+  let value = "",
+    quoted = false,
+    escaped = false;
+  for (const char of operand.slice(1, -1)) {
+    if (escaped) {
+      value += char;
+      escaped = false;
+    } else if (char === "\\" && quoted) escaped = true;
+    else if (char === '"') quoted = !quoted;
+    else if (char === "," && !quoted) {
+      values.push(value);
+      value = "";
+    } else value += char;
+  }
+  values.push(value);
+  return values;
 }
 
 /** PostgREST's `gte` on a timestamp column: a null never matches. */
@@ -769,6 +1023,11 @@ async function rest(request: Request, url: URL): Promise<Response> {
   const userId = viewer(request);
   if (!userId) return json({ message: "JWT required", code: "PGRST301" }, 401);
   const path = url.pathname.replace("/rest/v1/", "");
+  const range = request.headers.get("range")?.match(/^(\d+)-(\d*)$/);
+  if (range && !url.searchParams.has("offset") && !url.searchParams.has("limit")) {
+    url.searchParams.set("offset", range[1]!);
+    if (range[2]) url.searchParams.set("limit", String(Number(range[2]) - Number(range[1]) + 1));
+  }
 
   // A set-returning function is filtered, ordered, counted and paged by PostgREST like a table.
   if (path === "rpc/sandbox_list_metadata") return page(sandboxListMetadata(userId), url);
@@ -3403,6 +3662,8 @@ const server = Bun.serve({
   hostname: "127.0.0.1",
   async fetch(request) {
     const url = new URL(request.url);
+    if (Buffer.byteLength(url.pathname + url.search, "utf8") > MAX_REQUEST_TARGET_BYTES)
+      return new Response("Bad Request", { status: 400 });
     const hasBody = request.method !== "GET" && request.method !== "HEAD" && request.method !== "DELETE";
     if (url.pathname.startsWith("/rest/v1/")) return rest(request, url);
     const text = hasBody ? await request.text() : "";
@@ -3446,11 +3707,11 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/oauth/")) return oauth(url);
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
-      if (route === "docker/hosts/list" && dockerHosts !== null) {
+      if (route === "docker/hosts/list" && (dockerHosts !== null || body.org === LARGE)) {
         const caller = viewer(request);
         if (!caller || !isMember(body.org, caller))
           return controlFail(403, "forbidden", "Only organization members can list hosts.");
-        return json({ placement: true, hosts: dockerHosts });
+        return json({ placement: true, hosts: dockerHosts ?? largeHosts() });
       }
       if (route === "docker/snapshots/create" && dockerSnapshotCreateFailure) {
         const caller = viewer(request);
@@ -3458,20 +3719,22 @@ const server = Bun.serve({
           return controlFail(403, "forbidden", "Only organization members can build snapshots.");
         return controlFail(503, "unavailable", dockerSnapshotCreateFailure);
       }
-      if (route === "docker/snapshots/list" && dockerHosts !== null) {
+      if (route === "docker/snapshots/list" && (dockerHosts !== null || body.org === LARGE)) {
         const caller = viewer(request);
         if (!caller || !isMember(body.org, caller))
           return controlFail(403, "forbidden", "Only organization members can list snapshots.");
-        return snapshotListFailure ? controlFail(503, "unavailable", snapshotListFailure) : json({ snapshots: [] });
+        return snapshotListFailure
+          ? controlFail(503, "unavailable", snapshotListFailure)
+          : json({ snapshots: body.org === LARGE ? largeHostSnapshots() : [] });
       }
-      if (route === "launch/options" && dockerHosts !== null) {
+      if (route === "launch/options" && (dockerHosts !== null || isMember(LARGE, viewer(request) ?? ""))) {
         if (!viewer(request)) return controlFail(401, "unauthorized", "Sign in again.");
         return json({
           providers: [
             {
               id: "docker",
               enabled: true,
-              launchSources: dockerSnapshotCreateFailure ? ["image", "golden"] : ["image"],
+              launchSources: dockerSnapshotCreateFailure || dockerHosts === null ? ["image", "golden"] : ["image"],
               harnesses: ["claude", "codex"],
               capabilities: {
                 launch: true,
@@ -3480,7 +3743,7 @@ const server = Bun.serve({
                 delete: true,
                 status: true,
                 logs: true,
-                ...(dockerSnapshotCreateFailure ? { goldens: true } : {}),
+                ...(dockerSnapshotCreateFailure || dockerHosts === null ? { goldens: true } : {}),
               },
               unsupportedReasons: {},
             },
