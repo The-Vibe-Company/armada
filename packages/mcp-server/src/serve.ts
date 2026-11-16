@@ -118,7 +118,6 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
-  await repairHistoricalTurnModels(sql, config.encryptionKey);
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands, {
@@ -175,6 +174,7 @@ export async function startServer(
   try {
     await retryDatabaseBoot(async () => {
       await requireDatabaseSchema(sql);
+      await repairHistoricalTurnModels(sql, config.encryptionKey);
       await mcp.drainInvalidations();
     }, options.logError ?? console.error);
   } catch (error) {
