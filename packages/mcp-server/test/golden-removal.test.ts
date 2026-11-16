@@ -1,14 +1,32 @@
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createSqlGoldenStore, launchSandbox, ProviderError } from "@armada/core/server";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
 import { database, fakeBoat } from "./support.ts";
 
+function isolatedFixture() {
+  let fixture: Awaited<ReturnType<typeof database>> | undefined;
+  beforeAll(async () => {
+    fixture = await database();
+  });
+  afterAll(async () => {
+    const current = fixture;
+    fixture = undefined;
+    await current?.db.close();
+  });
+  return () => {
+    if (!fixture) throw new Error("Missing golden removal database fixture");
+    return fixture;
+  };
+}
+
 // Owning SQL boundary: protects authorization, retained provenance and durable admission
 // from regressions that a provider-only mock or UI test cannot detect.
-test("removal preserves child access and bindings, hides selection, and checks live authority", async () => {
-  const { db, people } = await database();
-  try {
+describe("golden removal authority", () => {
+  const getFixture = isolatedFixture();
+
+  test("removal preserves child access and bindings, hides selection, and checks live authority", async () => {
+    const { db, people } = getFixture();
     const caller = (userId: string, orgId = people.org): Caller => ({
       userId,
       orgs: [{ orgId, role: "admin" }],
@@ -82,14 +100,14 @@ test("removal preserves child access and bindings, hides selection, and checks l
     } finally {
       await db.exec("reset role");
     }
-  } finally {
-    await db.close();
-  }
+  });
 });
 
-test("actual launch admission blocks removal during fork; lost provider outcomes never retire artifacts", async () => {
-  const { db, people } = await database();
-  try {
+describe("golden removal during launch", () => {
+  const getFixture = isolatedFixture();
+
+  test("actual launch admission blocks removal during fork; lost provider outcomes never retire artifacts", async () => {
+    const { db, people } = getFixture();
     const caller: Caller = { userId: people.admin, orgs: [{ orgId: people.org, role: "admin" }], via: "supabase" };
     const data = createSqlData(db)(caller);
     const golden = (await data.goldens.findByName(people.org, "shared"))[0]!;
@@ -176,14 +194,14 @@ test("actual launch admission blocks removal during fork; lost provider outcomes
     await db.query("update golden_operation_fences set created_at='2000-01-01' where golden_id=$1", [privateGolden.id]);
     await db.query("select set_config('request.jwt.claim.sub',$1,false)", [people.owner]);
     await expect(db.query("select remove_golden($1)", [privateGolden.id])).rejects.toThrow("unresolved");
-  } finally {
-    await db.close();
-  }
+  });
 });
 
-test("known non-mutating launch refusal releases admission", async () => {
-  const { db, people } = await database();
-  try {
+describe("known launch refusal", () => {
+  const getFixture = isolatedFixture();
+
+  test("known non-mutating launch refusal releases admission", async () => {
+    const { db, people } = getFixture();
     const actor = { userId: people.admin, orgId: people.org, role: "admin" as const };
     const data = createSqlData(db)({
       userId: people.admin,
@@ -210,14 +228,14 @@ test("known non-mutating launch refusal releases admission", async () => {
       }),
     ).rejects.toMatchObject({ code: "payment_required" });
     expect((await db.query("select id from golden_operation_fences")).rows).toEqual([]);
-  } finally {
-    await db.close();
-  }
+  });
 });
 
-test("JWTs cannot forge or release service fences, including after revocation or demotion", async () => {
-  const { db, people } = await database();
-  try {
+describe("JWT fence authority", () => {
+  const getFixture = isolatedFixture();
+
+  test("JWTs cannot forge or release service fences, including after revocation or demotion", async () => {
+    const { db, people } = getFixture();
     const actor = { userId: people.admin, orgId: people.org, role: "admin" as const };
     const data = createSqlData(db)({
       userId: people.admin,
@@ -301,7 +319,5 @@ test("JWTs cannot forge or release service fences, including after revocation or
       await db.exec("reset role");
     }
     await expect(data.removeGolden!(golden.id)).rejects.toMatchObject({ code: "conflict" });
-  } finally {
-    await db.close();
-  }
+  });
 });
