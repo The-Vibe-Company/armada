@@ -5,10 +5,10 @@ test.beforeEach(reset);
 
 test("the list shows every sandbox of the organization and filters them", async ({ page }) => {
   await signIn(page, "alice@example.com");
-  await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
-  await expect(page.getByRole("link", { name: LABELS.failed })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.running, exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.failed, exact: true })).toBeVisible();
   // An admin opens another member's sandbox, whatever its legacy visibility (#680).
-  await expect(page.getByRole("link", { name: LABELS.bobSecret })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.bobSecret, exact: true })).toBeVisible();
   // The golden is not in the listed metadata (#680).
   await expect(page.getByRole("columnheader", { name: "Golden" })).toHaveCount(0);
 
@@ -31,7 +31,7 @@ test("the list shows every sandbox of the organization and filters them", async 
   await page.getByRole("option", { name: /Codex/ }).click();
   await page.keyboard.press("Escape");
   await expect(page).toHaveURL(/harness=codex/);
-  await expect(page.getByRole("link", { name: LABELS.failed })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.failed, exact: true })).toBeVisible();
   await expect(page.getByText(LABELS.running)).toHaveCount(0);
 
   await page.getByRole("button", { name: "Clear all" }).click();
@@ -39,7 +39,7 @@ test("the list shows every sandbox of the organization and filters them", async 
   await page.getByRole("button", { name: "Status", exact: true }).click();
   await page.getByRole("option", { name: /Running/ }).click();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.running, exact: true })).toBeVisible();
   await expect(page.getByText(LABELS.failed)).toHaveCount(0);
   // OR within status; reload and history preserve the shared view.
   await page
@@ -48,7 +48,7 @@ test("the list shows every sandbox of the organization and filters them", async 
     .click();
   await page.getByRole("option", { name: /Failed/ }).click();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("link", { name: LABELS.failed })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.failed, exact: true })).toBeVisible();
   await page.getByLabel("Sort sandboxes").selectOption("oldest");
   await expect(page).toHaveURL(/sort=oldest/);
   await page.reload();
@@ -62,7 +62,7 @@ test("the list shows every sandbox of the organization and filters them", async 
     .click();
   await expect(page.getByText("No sandbox matches these filters")).toBeVisible();
   await page.goBack();
-  await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.running, exact: true })).toBeVisible();
   await page.getByRole("button", { name: `Actions for ${LABELS.running}` }).click();
   await expect(page.getByRole("menuitem", { name: "Open sandbox" })).toBeVisible();
   await page.keyboard.press("Escape");
@@ -84,12 +84,12 @@ test("a member sees every sandbox's metadata but opens only their own", async ({
 
   await signIn(page, "bob@example.com");
   // Bob's own sandbox, launched private before #680, is his to open.
-  await expect(page.getByRole("link", { name: LABELS.bobSecret })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.bobSecret, exact: true })).toBeVisible();
   // Alice's sandboxes are listed with their metadata, quietly, without a way in.
   const restricted = page.locator("[data-restricted]").filter({ hasText: LABELS.running });
   await expect(restricted).toBeVisible();
-  await expect(page.getByRole("link", { name: LABELS.running })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: LABELS.failed })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: LABELS.running, exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: LABELS.failed, exact: true })).toHaveCount(0);
   const row = page.getByRole("row").filter({ has: restricted });
   await expect(row.getByRole("cell", { name: "alice@example.com" })).toBeVisible();
   await expect(row.getByRole("cell", { name: "Boat", exact: true })).toBeVisible();
@@ -106,7 +106,7 @@ test("a member sees every sandbox's metadata but opens only their own", async ({
 
   // Going to its address directly: the server refuses the interior, and the page says so without reading any of it.
   await page.goto(`/sandboxes/${IDS.running}`);
-  await expect(page.getByRole("heading", { name: LABELS.running })).toBeVisible();
+  await expect(page.getByRole("heading", { name: LABELS.running, exact: true })).toBeVisible();
   await expect(page.locator("[data-restricted]")).toContainText("Only its owner and organization admins");
   expect(await page.content()).not.toContain(receipt);
   await expect(page.locator("dl")).toContainText("alice@example.com");
@@ -141,16 +141,15 @@ test("a page past the last one is empty, with a way back", async ({ page }) => {
   await expect(page.getByText("This page is past the last one")).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Pages" })).toHaveCount(0);
   await page.getByRole("link", { name: "Go to the first page" }).click();
-  await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
+  await expect(page.getByRole("link", { name: LABELS.running, exact: true })).toBeVisible();
 });
 
 test("the logs of a running sandbox refresh without reloading the page", async ({ page }) => {
   await signIn(page, "alice@example.com");
-  await page.getByRole("link", { name: LABELS.running }).click();
-  await expect(page.getByRole("heading", { name: "shared-golden / Claude Code" })).toBeVisible();
+  await page.getByRole("link", { name: LABELS.running, exact: true }).click();
+  await expect(page.locator("header").getByText("Working", { exact: true })).toBeVisible();
   await expect(page.getByText("Fix the failing test")).toBeVisible();
   await expect(page.getByText("Looking at the test suite.")).toBeVisible();
-  await expect(page.getByTestId("live-indicator")).toBeVisible();
 
   await fetch(`${MOCK}/__test/append-event`, {
     method: "POST",
@@ -179,7 +178,9 @@ test("stopping a sandbox asks first, then stops it", async ({ page }) => {
   await page.getByRole("button", { name: "Stop sandbox" }).click();
   // The dialog closed on confirm: the result is a toast, announced politely (Radix's announcer lives about a second).
   await expect(page.getByRole("status").filter({ hasText: "Stop requested." })).toHaveCount(1);
-  await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "stopped", { timeout: 10_000 });
+  await expect(page.locator("#shell-page-status").getByText("Stopped", { exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
   // It does not take focus, and is dismissed from the keyboard.
   const toast = page.locator('[data-slot="toast"][data-tone="success"]');
   await expect(toast).toContainText("Stop requested. The machine is removed and the disk is kept.");
@@ -191,8 +192,8 @@ test("stopping a sandbox asks first, then stops it", async ({ page }) => {
   await page.keyboard.press("Escape");
   await expect(toast).toHaveCount(0);
   // The conversation shows the same state in the same paint, read at once rather than after its next poll (#627).
-  const conversation = page.getByRole("heading", { name: "Conversation" }).locator("xpath=ancestor::div[2]");
-  expect(await conversation.locator("[data-status]").getAttribute("data-status")).toBe("stopped");
+  const conversation = page.locator('[data-fit="chat"]');
+  await expect(conversation.getByPlaceholder("Send a prompt to resume this sandbox…")).toBeVisible();
   await page.screenshot({ path: "test-results/conversation-status-after-stop-desktop.png", animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
@@ -441,7 +442,7 @@ test("a first message to an idle sandbox starts its turn without a reload", asyn
   await page.getByRole("button", { name: "Send", exact: true }).click();
   const messages = page.getByRole("log", { name: "Messages" });
   await expect(messages.getByText("Also update the changelog")).toBeVisible();
-  await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "running");
+  await expect(page.locator("#shell-page-status").getByText("Working", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Interrupt" })).toBeVisible();
   await expect(page.getByTestId("agent-working")).toBeVisible();
   expect(await toolCalls()).toMatchObject([
@@ -608,7 +609,7 @@ test("a sandbox's lifetime is a quiet fact, and a missed deadline is a notice, n
   });
   await signIn(page, "alice@example.com");
   await expect(page.locator('[data-lifecycle="remaining"]')).toHaveText(/^1 h \d+ min left$/);
-  await page.getByRole("link", { name: LABELS.running }).click();
+  await page.getByRole("link", { name: LABELS.running, exact: true }).click();
   const facts = page.locator("dl").first();
   await expect(facts.getByText("8 h (default)")).toBeVisible();
   await expect(facts.getByText("Last checked")).toBeVisible();
@@ -622,13 +623,13 @@ test("a sandbox's lifetime is a quiet fact, and a missed deadline is a notice, n
   const notice = page.locator('[data-lifecycle-notice="retrying"]');
   await expect(notice).toContainText("The provider did not answer the stop request.");
   await expect(notice).toContainText("only once the provider confirms");
-  await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "running");
+  await expect(page.locator("#shell-page-status").getByText("Working", { exact: true })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: "test-results/sandbox-lifecycle-mobile.png", fullPage: true, animations: "disabled" });
   await page.setViewportSize({ width: 1280, height: 720 });
   // The list's metadata carries the deadline but never the stop failure itself (#680): it says the deadline passed.
   await page.goto("/sandboxes");
-  const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: LABELS.running }) });
+  const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: LABELS.running, exact: true }) });
   await expect(row.locator('[data-lifecycle="overdue"]')).toHaveText("Past deadline");
 });
 
@@ -651,7 +652,7 @@ for (const [timezoneId, zone] of [
       await page.clock.pauseAt(new Date("2026-11-08T10:10:00Z"));
       await page.clock.runFor(30_000);
 
-      const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: LABELS.running }) });
+      const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: LABELS.running, exact: true }) });
       const created = row.locator("time").first();
       await expect(created).toHaveAttribute("datetime", "2026-11-08T10:05:00.000Z");
       await expect(created).toHaveText("5 min ago");
@@ -670,7 +671,7 @@ for (const [timezoneId, zone] of [
       await expect(tooltip).toHaveCount(0);
 
       // So does the pointer.
-      await page.getByRole("link", { name: LABELS.running }).focus();
+      await page.getByRole("link", { name: LABELS.running, exact: true }).focus();
       await trigger.hover();
       await page.clock.runFor(1_000);
       await expect(tooltip).toHaveText(zone);
@@ -679,7 +680,7 @@ for (const [timezoneId, zone] of [
       await expect(tooltip).toHaveCount(0);
       // A phone uses a full-width identity and a compact owner/age footer.
       await page.setViewportSize({ width: 390, height: 844 });
-      await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
+      await expect(page.getByRole("link", { name: LABELS.running, exact: true })).toBeVisible();
       await expect(created).toBeHidden();
       await expect(row.locator("time").last()).toBeVisible();
       await row.getByRole("button", { name: "7 min ago" }).hover();

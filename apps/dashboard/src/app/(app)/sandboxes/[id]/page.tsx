@@ -181,21 +181,10 @@ export default async function SandboxPage({ params }: Props) {
 
   return (
     <div data-fit-viewport className="space-y-3 md:space-y-4">
-      <div className="border-b pb-3">
+      <ShellPageActions>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            {/* On a phone the navigation above already leads back to the sandboxes; the conversation needs the room. */}
-            <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
-              <Link href="/sandboxes">
-                <LinkPendingIcon>
-                  <ArrowLeftIcon />
-                </LinkPendingIcon>
-                Sandboxes <span aria-hidden>/</span>
-                <span className="font-mono text-xs">{sandbox.id.slice(0, 8)}</span>
-              </Link>
-            </Button>
-            {/* One row on every width: a long name wraps inside its heading, the machine's action stays on the right. */}
-            <ShellPageActions>
+            <ShellPageActions slot="status">
               <SandboxState
                 viewerOwns={owner}
                 status={sandbox.status}
@@ -214,7 +203,6 @@ export default async function SandboxPage({ params }: Props) {
             </span>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            <span id="sandbox-details-toggle" />
             {configured &&
               (sandbox.status === "ready" || sandbox.status === "running") &&
               (owner || org?.role === "admin") &&
@@ -222,7 +210,7 @@ export default async function SandboxPage({ params }: Props) {
             {configured && isActiveStatus(sandbox.status) && <StopButton sandboxId={sandbox.id} size="sm" />}
           </div>
         </div>
-      </div>
+      </ShellPageActions>
 
       {life.notice && (
         <p className="text-sm text-muted-foreground">
@@ -236,15 +224,6 @@ export default async function SandboxPage({ params }: Props) {
         className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
       >
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
-          <div className="mx-auto w-full max-w-[780px] space-y-1 px-4 pt-4 sm:px-7">
-            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
-              {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {golden?.name ?? "snapshot"}
-            </h1>
-            <p className="w-full text-sm break-words text-muted-foreground">
-              running {sandbox.model ?? "the provider default model"} on {account.name} ·{" "}
-              {sandbox.provider === "boat" ? "Boat cloud" : "Modal cloud"}
-            </p>
-          </div>
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
@@ -451,19 +430,10 @@ function DockerSandbox({
   ];
   return (
     <div data-fit-viewport data-docker-sandbox className="space-y-3 md:space-y-4">
-      <div className="border-b pb-3">
+      <ShellPageActions>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
-              <Link href="/sandboxes">
-                <LinkPendingIcon>
-                  <ArrowLeftIcon />
-                </LinkPendingIcon>
-                Sandboxes <span aria-hidden>/</span>
-                <span className="font-mono text-xs">{sandbox.id.slice(0, 8)}</span>
-              </Link>
-            </Button>
-            <ShellPageActions>
+            <ShellPageActions slot="status">
               <SandboxState
                 viewerOwns={sandbox.owner_id === viewer.id}
                 status={sandbox.status}
@@ -477,7 +447,6 @@ function DockerSandbox({
           <span className="text-xs text-muted-foreground">
             <RowCost cost={cost} />
           </span>
-          <span id="sandbox-details-toggle" />
           {configured && (
             <SandboxActions
               sandboxId={sandbox.id}
@@ -488,7 +457,7 @@ function DockerSandbox({
             />
           )}
         </div>
-      </div>
+      </ShellPageActions>
 
       {life.notice && (
         <p className="text-sm text-muted-foreground">
@@ -505,14 +474,6 @@ function DockerSandbox({
         className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
       >
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
-          <div className="mx-auto w-full max-w-[780px] space-y-1 px-4 pt-4 sm:px-7">
-            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
-              {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {host}
-            </h1>
-            <p className="w-full text-sm break-words text-muted-foreground">
-              running {sandbox.model ?? "the provider default model"} on {billing.name} · your server {host}
-            </p>
-          </div>
           {ownerCanChange && (sandbox.status === "ready" || sandbox.status === "stopped") && (
             <SandboxAccountChoice
               sandboxId={sandbox.id}
@@ -715,9 +676,12 @@ function Facts({ facts }: { facts: Fact[] }) {
   return (
     <dl className="divide-y divide-border/70 text-[13px]">
       {facts.map(([label, value, detail]) => (
-        <div key={label} className="flex min-w-0 items-baseline justify-between gap-4 py-2 first:pt-0 last:pb-0">
+        <div
+          key={label}
+          className="grid min-w-0 grid-cols-[5.5rem_minmax(0,1fr)] items-baseline gap-3 py-2 first:pt-0 last:pb-0"
+        >
           <dt className="shrink-0 text-muted-foreground">{label}</dt>
-          <dd className="min-w-0 text-right break-words" title={detail}>
+          <dd className="min-w-0 break-words" title={detail}>
             {value}
           </dd>
         </div>

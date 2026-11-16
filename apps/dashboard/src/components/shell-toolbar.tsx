@@ -39,9 +39,12 @@ export function ShellBreadcrumb({ organization }: { organization: string }) {
       {pathname.startsWith("/sandboxes/") && (
         <>
           <span className="text-[var(--faint)]">/</span>
-          <span className="truncate font-mono text-xs">{pathname.split("/")[2]}</span>
+          <span className="truncate font-mono text-xs" title={pathname.split("/")[2]}>
+            {pathname.split("/")[2]?.slice(0, 8)}
+          </span>
         </>
       )}
+      <div id="shell-page-status" className="flex items-center gap-2" />
       <div id="shell-page-actions" className="ml-auto flex shrink-0 flex-wrap justify-end gap-2" />
     </header>
   );
