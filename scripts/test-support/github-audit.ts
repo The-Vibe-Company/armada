@@ -6,8 +6,8 @@ export function captureGitHubAuditLogs(): Record<string, unknown>[] {
   let restore: (() => void) | undefined;
   beforeEach(() => {
     events.length = 0;
-    const original = console.info;
-    const log = spyOn(console, "info").mockImplementation((...args) => {
+    const original = console.error;
+    const log = spyOn(console, "error").mockImplementation((...args) => {
       if (typeof args[0] === "string") {
         try {
           const event = JSON.parse(args[0]);
