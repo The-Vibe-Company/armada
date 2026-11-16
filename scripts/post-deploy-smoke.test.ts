@@ -97,7 +97,15 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
     io,
     calls,
     lines,
-    receipts: () => lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line)),
+    // Protocol assertions below ignore additive per-step telemetry; timing has its own contract test.
+    receipts: () =>
+      lines
+        .filter((line) => line !== boatNotice)
+        .map((line) => {
+          const receipt = JSON.parse(line);
+          if (!receipt.step.endsWith("_summary") && receipt.step !== "time_to_ready") delete receipt.elapsedMs;
+          return receipt;
+        }),
     advance: (ms: number) => {
       clock += ms;
     },

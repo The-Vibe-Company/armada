@@ -141,7 +141,7 @@ test("Modal expires through the ordinary stop lane without a manual stop or mode
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
   expect(fake.calls.some((call) => ["sandbox/stop", "sandbox/send"].includes(call.path))).toBe(false);
   for (const step of ["expiry_launch", "expiry_ready", "expiry_deadline", "expiry_as_stop"])
-    expect(fake.reports).toContainEqual({ case: 0, step, pass: true });
+    expect(fake.reports).toContainEqual({ case: 0, step, pass: true, elapsedMs: expect.any(Number) });
   expect(fake.reports).toContainEqual({
     case: 0,
     step: "expiry_time_to_ready",
