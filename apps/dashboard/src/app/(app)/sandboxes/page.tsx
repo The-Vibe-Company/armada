@@ -446,7 +446,7 @@ function capitalize(value: string): string {
 
 function ProviderPlacement({ sandbox, hostName }: { sandbox: SandboxListMetadata; hostName: string | undefined }) {
   return (
-    <span title={sandbox.canOpen ? hostName : undefined} className="inline-flex min-w-0 flex-col gap-0.5">
+    <span title={sandbox.canOpen ? hostName : undefined} className="inline-flex min-w-0 max-w-full flex-col gap-0.5">
       <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
         <ProviderMark provider={sandbox.provider} />
         <span className="min-w-0 truncate">

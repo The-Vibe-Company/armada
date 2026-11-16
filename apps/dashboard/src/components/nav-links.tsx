@@ -88,7 +88,9 @@ export function NavLinks({
   className,
   optIns,
   sandboxes = [],
+  organizationId = null,
 }: {
+  organizationId?: string | null;
   className?: string;
   optIns: NavOptIns;
   sandboxes?: { id: string; label: string; status: SandboxStatus }[];
@@ -139,7 +141,9 @@ export function NavLinks({
                         )}
                       >
                         <Link
-                          href={href}
+                          href={
+                            href === "/orgs" && organizationId ? `/orgs/${encodeURIComponent(organizationId)}` : href
+                          }
                           prefetch={false}
                           onClick={() => setOpenMobile(false)}
                           aria-current={active ? "page" : undefined}
