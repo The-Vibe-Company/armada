@@ -4,7 +4,7 @@ import { memorySessionStore } from "../src/session.ts";
 
 const org = "11111111-1111-4111-8111-111111111111";
 const id = "22222222-2222-4222-8222-222222222222";
-const golden = { id, name: "web", provider: "boat", orgId: org };
+const golden = { id, name: "web", provider: "boat", orgId: org, config: { repos: [], init: [] } };
 
 test.each([
   { label: "unique name", rows: [golden], flags: [], removed: id },

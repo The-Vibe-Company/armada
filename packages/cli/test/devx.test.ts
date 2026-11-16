@@ -139,12 +139,12 @@ test.each(["bash", "zsh", "fish"])(
 test("guided launch fills missing choices from visible API catalogs and persists nonsecret selections", async () => {
   const org = "11111111-1111-4111-8111-111111111111";
   const f = fixture({
-    "/api/v1/org/list": { orgs: [{ id: org, name: "Team" }] },
+    "/api/v1/org/list": { orgs: [{ id: org, name: "Team", role: "admin" }] },
     "/api/v1/launch/options": {
       providers: [{ id: "modal", enabled: true, capabilities: { launch: true }, harnesses: ["codex"] }],
       harnesses: [{ id: "codex", credentialKinds: ["openai"] }],
     },
-    "/api/v1/golden/list": { goldens: [{ name: "app", provider: "modal" }] },
+    "/api/v1/golden/list": { goldens: [{ name: "app", provider: "modal", config: { repos: [], init: [] } }] },
     "/api/v1/creds/list": { user: [{ id: "account", kind: "openai", name: "Work", status: "active" }], orgs: [] },
   });
   const remembered = new Map<string, string>();

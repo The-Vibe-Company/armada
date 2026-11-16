@@ -84,7 +84,8 @@ async function invoke(
         fetch: async (input, init) => {
           const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
           requests.push(request);
-          if (request.url.endsWith("/org/list")) return Response.json({ orgs: [{ id: org, name: "Example" }] });
+          if (request.url.endsWith("/org/list"))
+            return Response.json({ orgs: [{ id: org, name: "Example", role: "admin" }] });
           if (request.url.endsWith("/routines/get") && options.getReply !== undefined)
             return Response.json(options.getReply);
           if (request.url.endsWith("/routines/list")) return Response.json({ items: options.items ?? [routine] });
