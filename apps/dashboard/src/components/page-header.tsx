@@ -7,8 +7,10 @@ export function PageHeader({
   description,
   meta,
   children,
+  inlineActions = false,
 }: {
   title: string;
+  inlineActions?: boolean;
   description?: ReactNode;
   /** A quiet fact beside the title, such as how many items the page holds. */
   meta?: ReactNode;
@@ -23,7 +25,12 @@ export function PageHeader({
         </div>
         {description && <p className="text-sm text-pretty text-muted-foreground">{description}</p>}
       </div>
-      {children && <ShellPageActions>{children}</ShellPageActions>}
+      {children &&
+        (inlineActions ? (
+          <div className="flex shrink-0 items-center gap-2">{children}</div>
+        ) : (
+          <ShellPageActions>{children}</ShellPageActions>
+        ))}
     </div>
   );
 }

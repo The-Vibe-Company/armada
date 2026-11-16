@@ -166,7 +166,7 @@ export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; 
 export function AddServerDialog({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
   return (
     <CreateDialog
-      label="Add a tool"
+      label="Add an MCP server"
       title="Add a tool"
       description="A service your agents can call, or a command inside the sandbox."
       triggerAttrs={{ "data-add-server": "" }}

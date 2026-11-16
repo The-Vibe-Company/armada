@@ -497,7 +497,7 @@ export function AccountRow({
             {account.name}
           </span>
           <span className="block text-xs text-muted-foreground">
-            {state.label === "Ready" ? "Connected" : state.label} · {info.label}
+            {info.label} · {account.scope === "user" ? "Only you" : orgName}
           </span>
         </span>
         <span className={cn("shrink-0 text-xs", STATE_TONE[state.tone])}>
@@ -2049,15 +2049,69 @@ export function ModelsOverview({
 }) {
   const router = useRouter();
   const [refreshing, startRefresh] = useTransition();
+  const [filter, setFilter] = useState("all");
+  const [query, setQuery] = useState("");
+  const shown = orderAccounts(accounts, now).filter(
+    (account) =>
+      (filter === "all" || accountsFor([account], filter as Harness).length > 0) &&
+      `${account.name} ${KIND_INFO[account.kind].label}`.toLowerCase().includes(query.toLowerCase()),
+  );
   return (
-    <div className="space-y-8">
+    <div className="space-y-[18px]">
+      <section
+        aria-labelledby="launch-defaults"
+        className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-[10px] border bg-card px-4 py-3 [&>div]:border-0 [&>div]:py-0 [&_p]:text-[13px]"
+      >
+        <h2 id="launch-defaults" className="sr-only">
+          When you launch
+        </h2>
+        {HARNESS_ORDER.map((harness) => (
+          <PersonalDefaultSentence
+            key={harness}
+            harness={harness}
+            accounts={accounts}
+            defaults={defaults}
+            now={now}
+            orgId={orgId}
+            isAdmin={isAdmin}
+            emptyAction={emptyAction}
+          />
+        ))}
+      </section>
       <section aria-labelledby="all-accounts" className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 [&_button]:size-7 [&_button]:p-0 [&_button]:text-[0px] [&_svg]:size-4">
-            <h2 id="all-accounts" className="text-base font-semibold">
-              Providers
-            </h2>
-            {emptyAction}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <fieldset aria-label="Filter accounts" className="inline-flex flex-wrap gap-0.5 rounded-lg bg-muted p-[3px]">
+            {[{ key: "all", label: "All" }, ...HARNESS_ORDER.map((key) => ({ key, label: HARNESS_LABELS[key] }))].map(
+              (item) => (
+                <Button
+                  key={item.key}
+                  variant="ghost"
+                  size="sm"
+                  aria-pressed={filter === item.key}
+                  onClick={() => setFilter(item.key)}
+                  className={cn("h-7 gap-1.5 px-2.5 text-[13px]", filter === item.key && "bg-card shadow-xs")}
+                >
+                  {item.label}
+                  <span className="font-mono text-[11px] text-muted-foreground">
+                    {
+                      accounts.filter(
+                        (account) => item.key === "all" || accountsFor([account], item.key as Harness).length > 0,
+                      ).length
+                    }
+                  </span>
+                </Button>
+              ),
+            )}
+          </fieldset>
+          <div className="ml-auto">
+            <Input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search accounts"
+              aria-label="Search accounts"
+              className="h-[34px] w-[260px] max-w-full text-[13px]"
+            />
           </div>
           <Button
             type="button"
@@ -2071,9 +2125,17 @@ export function ModelsOverview({
             <span className="text-xs text-muted-foreground">{refreshing ? "Refreshing…" : "Refresh accounts"}</span>
           </Button>
         </div>
+        <h2 id="all-accounts" className="sr-only">
+          Accounts
+        </h2>
         {accounts.length ? (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,310px),1fr))] gap-3">
-            {orderAccounts(accounts, now).map((account) => (
+            {shown.length === 0 && (
+              <p className="col-span-full rounded-[10px] border border-dashed p-12 text-center text-sm text-muted-foreground">
+                Nothing matches
+              </p>
+            )}
+            {shown.map((account) => (
               <AccountRow
                 key={account.id}
                 account={account}
@@ -2098,23 +2160,6 @@ export function ModelsOverview({
             A subscription you already pay for, an API key, or your own endpoint. One is enough to launch.
           </Empty>
         )}
-      </section>
-      <section aria-labelledby="launch-defaults" className="rounded-lg border px-5 py-2">
-        <h2 id="launch-defaults" className="pt-3 text-sm font-medium text-muted-foreground">
-          When you launch
-        </h2>
-        {HARNESS_ORDER.map((harness) => (
-          <PersonalDefaultSentence
-            key={harness}
-            harness={harness}
-            accounts={accounts}
-            defaults={defaults}
-            now={now}
-            orgId={orgId}
-            isAdmin={isAdmin}
-            emptyAction={emptyAction}
-          />
-        ))}
       </section>
     </div>
   );

@@ -5,13 +5,16 @@ import { expect } from "e2e";
 for (const session of ["alice", "large"]) {
   test(`${session}: inspect a provider and configure an API account`, { session }, async ({ app, screen, browser }) => {
     await app.open("/harness");
+    await screen.getByPlaceholder("Search accounts").fill("no_matching_account");
+    await expect(screen.getByText("Nothing matches", { exact: true })).toBeVisible();
+    await screen.getByPlaceholder("Search accounts").fill("");
     const toggle = browser.locator("[data-account] button[aria-expanded]").first();
     await toggle.tap();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(screen.getByRole("dialog").getByText("Status", { exact: true })).toBeVisible();
     await screen.getByRole("button", "Close details", { exact: true }).tap();
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await screen.getByRole("button", "Add account", { exact: true }).first().tap();
+    await screen.getByRole("button", "Add an account", { exact: true }).first().tap();
     const dialog = screen.getByRole("dialog", "Add provider");
     // Check before tapping: tap would scroll a clipped primary action into view.
     const clipped = await browser.evaluate(() => {
@@ -79,7 +82,7 @@ test("long account names and subscription fallback fit a phone", { session: "ali
     expect(overflow).toBe(false);
   };
   await app.open("/harness");
-  await screen.getByRole("button", "Add account", { exact: true }).first().tap();
+  await screen.getByRole("button", "Add an account", { exact: true }).first().tap();
   let dialog = screen.getByRole("dialog", "Add provider");
   await dialog.getByRole("button", "OpenAI API key").tap();
   await dialog.getByRole("button", "Continue", { exact: true }).tap();
@@ -103,7 +106,7 @@ test("long account names and subscription fallback fit a phone", { session: "ali
   }
   await screen.getByRole("button", "Close details", { exact: true }).tap();
   for (const provider of ["Claude", "ChatGPT"]) {
-    await screen.getByRole("button", "Add account", { exact: true }).first().tap();
+    await screen.getByRole("button", "Add an account", { exact: true }).first().tap();
     dialog = screen.getByRole("dialog", "Add provider");
     await dialog.getByRole("button", new RegExp(`^${provider} Subscription`)).tap();
     await dialog.getByRole("button", `Continue with ${provider}`, { exact: true }).tap();

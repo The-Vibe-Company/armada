@@ -1,13 +1,13 @@
 import { CircleAlertIcon, InfoIcon, UserIcon, UsersIcon, VariableIcon } from "lucide-react";
 import Link from "next/link";
-import { CatalogBrowser } from "@/components/catalog-browser";
 import { Empty, PageHeader } from "@/components/page-header";
 import type { ResourceRow } from "@/components/resource-browser";
+import { ResourceBrowser } from "@/components/resource-browser";
 import { RowTag, StateCell } from "@/components/state-cell";
 import { TemplateUsage } from "@/components/template-usage";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { AddVaultDialog, VaultMark, VaultPanel } from "@/components/variables";
+import { AddVaultDialog, VaultPanel } from "@/components/variables";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listSelectedTemplates, type TemplateList } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
@@ -101,30 +101,32 @@ export default async function VariablesContent({ searchParams }: Props) {
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
 
   return (
-    <CatalogBrowser
-      title={TITLE}
-      description={DESCRIPTION}
-      meta={rows.length > 0 ? rows.length : undefined}
-      label="Settings and secrets"
-      rows={rows}
-      blockers={[]}
-      initial={requested}
-      actions={<AddVaultDialog orgId={selected.org.id} orgName={orgName} isAdmin={isAdmin} />}
-      footer={
-        <p className="text-xs text-pretty text-muted-foreground">
-          Personal entries are visible only to you in Armada. Org entries are shared with every member of {orgName};{" "}
-          {isAdmin ? "you manage them." : "only an admin changes them."} Settings are readable configuration, not
-          secrets. Stored secret values cannot be read back from this page. Attach entries to a template. Revoke stops
-          handing a value out; Delete removes the entry. Delivered values can be inspected by people or agents with
-          access to the sandbox; changing or revoking an entry does not erase copies already delivered.
-        </p>
-      }
-      empty={
-        <Empty title="No settings or secrets yet" icon={<VariableIcon />}>
-          Add a setting or a secret, then attach it to a template.
-        </Empty>
-      }
-    />
+    <div data-variable-table>
+      <ResourceBrowser
+        title={TITLE}
+        description={DESCRIPTION}
+        columns={["Name", "Value", "Kind", "Shared with", "Updated", "Status"]}
+        label="Settings and secrets"
+        rows={rows}
+        blockers={[]}
+        initial={requested}
+        actions={<AddVaultDialog orgId={selected.org.id} orgName={orgName} isAdmin={isAdmin} />}
+        footer={
+          <p className="text-xs text-pretty text-muted-foreground">
+            Personal entries are visible only to you in Armada. Org entries are shared with every member of {orgName};{" "}
+            {isAdmin ? "you manage them." : "only an admin changes them."} Settings are readable configuration, not
+            secrets. Stored secret values cannot be read back from this page. Attach entries to a template. Revoke stops
+            handing a value out; Delete removes the entry. Delivered values can be inspected by people or agents with
+            access to the sandbox; changing or revoking an entry does not erase copies already delivered.
+          </p>
+        }
+        empty={
+          <Empty title="No settings or secrets yet" icon={<VariableIcon />}>
+            Add a setting or a secret, then attach it to a template.
+          </Empty>
+        }
+      />
+    </div>
   );
 }
 
@@ -140,11 +142,25 @@ function row(
   const meta = item.kind === "secret" ? "Secret · never shown again" : "Setting · anyone who can use it can read it";
   return {
     key: itemKey(item),
+    columns: [
+      { key: "value", content: "Not shown" },
+      { key: "kind", content: item.kind === "secret" ? "Secret" : "Variable" },
+      { key: "scope", content: audience(item, orgName) },
+      {
+        key: "updated",
+        content: (
+          <time dateTime={item.updatedAt}>
+            {new Date(item.updatedAt).toLocaleDateString("en", { month: "short", day: "numeric", timeZone: "UTC" })}
+          </time>
+        ),
+      },
+      { key: "status", content: <StateCell tone={state.tone} label={state.label} /> },
+    ],
     name: item.name,
     tie: item.kind,
     bucket: state.bucket,
     search: [item.name, item.kind, item.kind === "variable" ? "setting" : "secret", item.scope, item.status].join(" "),
-    mark: <VaultMark kind={item.kind} />,
+
     tags: (
       <RowTag>
         {item.scope === "personal" ? <UserIcon aria-hidden /> : <UsersIcon aria-hidden />}

@@ -35,10 +35,7 @@ export default async function HarnessPage() {
 
   return (
     <>
-      <PageHeader
-        title="Models"
-        description="Subscriptions, API keys and model connections for your coding agents. Each launch names its account."
-      >
+      <PageHeader title="Models" inlineActions>
         {selected && accounts.state === "ready" && (
           <AddAccountDialog
             orgId={selected.org.id}

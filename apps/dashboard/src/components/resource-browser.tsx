@@ -49,6 +49,8 @@ export type ResourceRow = {
   /** Everything the filter matches: name, provider, repositories, URL… */
   search: string;
   mark?: ReactNode;
+  filters?: string[];
+  columns?: { key: string; content: ReactNode }[];
   /** Small tags beside the name (Personal, Org, Private). */
   tags?: ReactNode;
   /** One line under the name: provider · scope · age. */
@@ -98,9 +100,15 @@ export function ResourceBrowser({
   empty,
   initial,
   selectionQuery = "",
+  filters,
+  searchPlaceholder,
+  columns,
 }: {
   title: string;
   description: string;
+  filters?: { key: string; label: string }[];
+  searchPlaceholder?: string;
+  columns?: string[];
   meta?: ReactNode;
   /** The list's accessible name. */
   label: string;
@@ -124,6 +132,7 @@ export function ResourceBrowser({
   // A row removed by an action, or a stale link, closes the panel rather than showing nothing.
   const selected = chosen !== null && valid(chosen) ? chosen : null;
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
   const browserId = useId();
   const panelId = `${browserId}-panel`;
   const titleId = `${browserId}-panel-title`;
@@ -243,7 +252,9 @@ export function ResourceBrowser({
     };
   }, []);
 
-  const shown = query ? rows.filter((row) => matchesQuery(row.search, query)) : rows;
+  const shown = rows.filter(
+    (row) => (!query || matchesQuery(row.search, query)) && (filter === "all" || row.filters?.includes(filter)),
+  );
   const current = rows.find((row) => row.key === selected) ?? null;
   const currentIndex = shown.findIndex((row) => row.key === selected);
   const move = (delta: number) => {
@@ -258,30 +269,69 @@ export function ResourceBrowser({
 
   return (
     <Context.Provider value={context}>
-      <PageHeader title={title} description={description} meta={meta}>
+      <PageHeader
+        title={title}
+        description={filters || columns ? undefined : description}
+        meta={meta}
+        inlineActions={Boolean(filters || columns)}
+      >
         {actions}
       </PageHeader>
       {blockers.length > 0 && <ReadinessStrip blockers={blockers} />}
       {notices}
       <section ref={rootRef} aria-label={label} tabIndex={-1} className="grid items-start gap-4">
         <div className="@container min-w-0 space-y-3">
-          {rows.length >= FILTER_FROM && (
-            <div className="relative max-w-sm">
-              <SearchIcon
-                aria-hidden
-                className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-              />
-              <label htmlFor={filterId} className="sr-only">
-                Filter {label.toLowerCase()}
-              </label>
-              <Input
-                id={filterId}
-                type="search"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Filter by name, provider, repository…"
-                className="pl-8"
-              />
+          {(searchPlaceholder || rows.length >= FILTER_FROM) && (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              {filters && (
+                <fieldset
+                  aria-label={`Filter ${label.toLowerCase()}`}
+                  className="inline-flex flex-wrap gap-0.5 rounded-lg bg-muted p-[3px]"
+                >
+                  {[{ key: "all", label: "All" }, ...filters].map((item) => (
+                    <Button
+                      key={item.key}
+                      variant="ghost"
+                      size="sm"
+                      aria-pressed={filter === item.key}
+                      onClick={() => setFilter(item.key)}
+                      className={cn("h-7 gap-1.5 px-2.5 text-[13px]", filter === item.key && "bg-card shadow-xs")}
+                    >
+                      {item.label}
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        {rows.filter((row) => item.key === "all" || row.filters?.includes(item.key)).length}
+                      </span>
+                    </Button>
+                  ))}
+                </fieldset>
+              )}
+              <div className="relative max-w-sm">
+                <SearchIcon
+                  aria-hidden
+                  className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+                />
+                <label htmlFor={filterId} className="sr-only">
+                  Filter {label.toLowerCase()}
+                </label>
+                <Input
+                  id={filterId}
+                  type="search"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={searchPlaceholder ?? "Filter by name, provider, repository…"}
+                  className="h-[34px] pl-8 text-[13px]"
+                />
+              </div>
+            </div>
+          )}
+          {columns && rows.length > 0 && (
+            <div
+              data-resource-columns
+              className="grid grid-cols-6 gap-4 rounded-t-[10px] border bg-muted px-4 py-2 text-xs text-muted-foreground"
+            >
+              {columns.map((column) => (
+                <span key={column}>{column}</span>
+              ))}
             </div>
           )}
           {rows.length === 0 ? (
@@ -480,11 +530,21 @@ function Row({
           </div>
         </div>
       </div>
-      <div className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto">{row.state}</div>
-      <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{row.fact}</div>
-      <div className="relative z-10 col-start-1 row-start-3 flex justify-start @sm:col-start-2 @sm:row-span-2 @sm:row-start-1 @sm:justify-end @xl:col-start-auto @xl:row-span-1 @xl:row-start-auto">
-        {row.action}
-      </div>
+      {row.columns ? (
+        row.columns.map((cell) => (
+          <div key={cell.key} className="min-w-0 text-[13px] text-muted-foreground">
+            {cell.content}
+          </div>
+        ))
+      ) : (
+        <>
+          <div className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto">{row.state}</div>
+          <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{row.fact}</div>
+          <div className="relative z-10 col-start-1 row-start-3 flex justify-start @sm:col-start-2 @sm:row-span-2 @sm:row-start-1 @sm:justify-end @xl:col-start-auto @xl:row-span-1 @xl:row-start-auto">
+            {row.action}
+          </div>
+        </>
+      )}
     </li>
   );
 }

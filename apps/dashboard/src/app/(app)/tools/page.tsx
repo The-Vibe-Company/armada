@@ -25,7 +25,7 @@ import { listSelectedCatalog, listSelectedConnections, viewerControl } from "@/l
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listSelectedTemplates, type TemplateList } from "@/lib/data/templates";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
-import { type ToolState, toolBlockers, toolFact, toolState } from "@/lib/tools";
+import { type ToolState, toolFact, toolState } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Tools" };
@@ -114,7 +114,7 @@ export default async function ToolsPage({ searchParams }: Props) {
     return { ...connectionRow(connection, state, canManage, serviceLabel, templates), status: state, connection };
   });
   const rows = sortResources<ResourceRow & { bucket: Bucket }>(connectionRows);
-  const blockers = toolBlockers(connectionRows.map((row) => ({ ...row, state: row.status })));
+
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
   // OAuth returns carry an explicit item too; notices alone must not reopen
   // a dismissed panel when the list is reloaded.
@@ -125,10 +125,14 @@ export default async function ToolsPage({ searchParams }: Props) {
       <CatalogBrowser
         title={TITLE}
         description={DESCRIPTION}
-        meta={list.connections.length > 0 ? list.connections.length : undefined}
         label="Tools"
         rows={rows}
-        blockers={blockers}
+        blockers={[]}
+        searchPlaceholder="Search tools"
+        filters={[
+          { key: "connected", label: "Connected" },
+          { key: "attention", label: "Needs attention" },
+        ]}
         notices={notice}
         initial={initial}
         actions={<AddServerDialog {...org} />}
@@ -199,6 +203,7 @@ function connectionRow(
           : toolFact(connection);
   return {
     key: connection.id,
+    filters: [connection.status === "connected" ? "connected" : "attention"],
     name: connection.name,
     bucket: state.bucket,
     search: [

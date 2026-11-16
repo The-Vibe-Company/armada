@@ -279,3 +279,36 @@
     }
   }
 }
+
+/* Variables are metadata in a compact table; values remain in the authorized reveal flow. */
+[data-variable-table] {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+[data-variable-table] > section > div:first-child {
+  overflow-x: auto;
+}
+[data-variable-table] [data-resource-columns],
+[data-variable-table] section > div > ul {
+  min-width: 760px;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.8fr) 84px minmax(0, 1fr) minmax(0, 1.2fr) 80px;
+}
+[data-variable-table] section > div > ul {
+  gap: 0;
+  border-radius: 0 0 10px 10px;
+}
+[data-variable-table] section > div > ul > li {
+  display: grid;
+  grid-template-columns: subgrid;
+  padding: 9px 16px;
+}
+[data-variable-table] section > div > ul > li > div:first-child > div > div:last-child,
+[data-variable-table] section > div > ul > li > div:first-child [data-slot="badge"] {
+  display: none;
+}
+[data-variable-table] section > div > ul > li [data-select-item] {
+  font-family: var(--font-geist-mono);
+  font-size: 13px;
+}

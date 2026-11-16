@@ -46,8 +46,10 @@ const SCOPES: readonly SkillpackScope[] = ["user", "org"];
  * The key is an uncontrolled password field: sent once, emptied by React after the submission, and the dialog closes
  * on success, so it is kept nowhere in the page.
  */
-export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, keys }: Props) {
+export function SkillpackKeyView({ title, orgId, orgName, isAdmin, keys }: Props) {
   const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("all");
+  const [query, setQuery] = useState("");
   const [scope, setScope] = useState<SkillpackScope>("user");
   const [generation, setGeneration] = useState(0);
   const toast = useToast();
@@ -69,7 +71,7 @@ export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, 
 
   return (
     <>
-      <PageHeader title={title} description={description}>
+      <PageHeader title={title} inlineActions>
         <CreateDialog
           label="Add a key"
           title="Add a Skillpack key"
@@ -100,12 +102,50 @@ export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, 
         </CreateDialog>
       </PageHeader>
 
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <fieldset
+          aria-label="Filter Skillpack keys"
+          className="inline-flex flex-wrap gap-0.5 rounded-lg bg-muted p-[3px]"
+        >
+          {[
+            { key: "all", label: "All" },
+            { key: "org", label: "Organization" },
+            { key: "user", label: "Personal" },
+          ].map((item) => (
+            <Button
+              key={item.key}
+              variant="ghost"
+              size="sm"
+              aria-pressed={filter === item.key}
+              onClick={() => setFilter(item.key)}
+              className={filter === item.key ? "h-7 bg-card shadow-xs" : "h-7"}
+            >
+              {item.label}
+              <span className="font-mono text-[11px] text-muted-foreground">{item.key === "all" ? 2 : 1}</span>
+            </Button>
+          ))}
+        </fieldset>
+        <Input
+          aria-label="Search Skillpack keys"
+          placeholder="Search keys"
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          className="h-[34px] w-[260px] max-w-full text-[13px]"
+        />
+      </div>
       <div className="space-y-3">
         <ul
           aria-label="Skillpack keys"
           className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,310px),1fr))] gap-3"
         >
-          {SCOPES.map((item) => (
+          {SCOPES.filter(
+            (item) =>
+              (filter === "all" || filter === item) &&
+              (item === "user" ? "Your Skillpack key Personal" : "The organization’s key Organization")
+                .toLowerCase()
+                .includes(query.toLowerCase()),
+          ).map((item) => (
             <KeyRow
               key={item}
               scope={item}
