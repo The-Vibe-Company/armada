@@ -8,6 +8,24 @@ export interface ReceiptRun {
   status?: string;
 }
 
+export function authenticateReleaseCompletion(run: ReceiptRun, repository: string): boolean {
+  return (
+    run.head_repository?.full_name === repository &&
+    (run.head_branch === "main" || /^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$/.test(run.head_branch)) &&
+    run.path === ".github/workflows/release.yml" &&
+    run.status === "completed" &&
+    ["push", "workflow_dispatch"].includes(run.event)
+  );
+}
+
+export function authenticateSmokeReceiptProducer(run: ReceiptRun, repository: string): boolean {
+  if (run.head_repository?.full_name !== repository) return false;
+  if (run.event === "workflow_run") {
+    return run.path === ".github/workflows/staging-gated-production.yml" && run.head_branch === "main";
+  }
+  return authenticateSmokeReceipt(run, repository);
+}
+
 export function authenticateSmokeReceipt(run: ReceiptRun, repository: string, release?: ReceiptRun): boolean {
   const trusted = (candidate: ReceiptRun) =>
     candidate.head_repository?.full_name === repository &&
@@ -18,10 +36,7 @@ export function authenticateSmokeReceipt(run: ReceiptRun, repository: string, re
       run.path === ".github/workflows/staging-gated-production.yml" &&
       run.head_branch === "main" &&
       release !== undefined &&
-      trusted(release) &&
-      release.path === ".github/workflows/release.yml" &&
-      release.status === "completed" &&
-      ["push", "workflow_dispatch"].includes(release.event)
+      authenticateReleaseCompletion(release, repository)
     );
   }
   return (
@@ -35,11 +50,25 @@ export function authenticateSmokeReceipt(run: ReceiptRun, repository: string, re
 }
 
 if (import.meta.main) {
-  const [runFile, repository, releaseFile] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  if (args[0] === "--release-completion") {
+    const event = await Bun.file(args[1]!).json();
+    if (!authenticateReleaseCompletion(event.workflow_run, args[2]!)) {
+      throw new Error("Untrusted Release completion wakeup");
+    }
+    process.exit(0);
+  }
+  const producerOnly = args[0] === "--producer-only";
+  if (producerOnly) args.shift();
+  const [runFile, repository, releaseFile] = args;
   if (!runFile || !repository) throw new Error("Receipt run and repository required");
   const run = await Bun.file(runFile).json();
   const release = releaseFile ? await Bun.file(releaseFile).json() : undefined;
-  if (!authenticateSmokeReceipt(run, repository, release)) {
+  if (
+    !(producerOnly
+      ? authenticateSmokeReceiptProducer(run, repository)
+      : authenticateSmokeReceipt(run, repository, release))
+  ) {
     throw new Error("Untrusted staging smoke receipt provenance");
   }
 }

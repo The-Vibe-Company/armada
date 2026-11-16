@@ -90,6 +90,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
+            bun scripts/release/smoke-receipt.ts --release-completion "$GITHUB_EVENT_PATH" "$GH_REPO"
+          fi
           bun scripts/release/staging-admission.ts
           echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       # Historical source evidence cannot prove the release's exact SQL inventory.
@@ -161,6 +164,7 @@ jobs:
             run=$(jq -r '.artifacts[0].workflow_run.id' "$RUNNER_TEMP/smoke-candidates.json")
             # Artifacts from arbitrary PR workflows must never authorize deletion.
             gh api "repos/$GH_REPO/actions/runs/$run" > "$RUNNER_TEMP/receipt-run.json"
+            bun .release-tools/scripts/release/smoke-receipt.ts --producer-only "$RUNNER_TEMP/receipt-run.json" "$GH_REPO"
             gh api "repos/$GH_REPO/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/smoke-journal.zip"
             release_args=()
             if [[ "$(jq -r .event "$RUNNER_TEMP/receipt-run.json")" == workflow_run ]]; then

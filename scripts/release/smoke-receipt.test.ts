@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { authenticateSmokeReceipt, type ReceiptRun } from "./smoke-receipt.ts";
+import {
+  authenticateReleaseCompletion,
+  authenticateSmokeReceipt,
+  authenticateSmokeReceiptProducer,
+  type ReceiptRun,
+} from "./smoke-receipt.ts";
 
 const repository = "example/armada";
 const wakeup: ReceiptRun = {
@@ -53,4 +58,29 @@ test("wakeup cleanup uploads retain provenance even when restoration or smoke fa
   const upload = steps.find((step) => step.uses?.startsWith("actions/upload-artifact@"));
   expect(upload?.with?.path?.split("\n")).toContain(".smoke/release-trigger.json");
   expect(upload?.with?.path?.split("\n")).toContain(".smoke/sandboxes.json");
+});
+
+test("only trusted producers may supply an archive before completion provenance is inspected", () => {
+  expect(authenticateSmokeReceiptProducer(wakeup, repository)).toBe(true);
+  expect(authenticateSmokeReceiptProducer({ ...wakeup, event: "push" }, repository)).toBe(true);
+  for (const invalid of [
+    { ...wakeup, event: "pull_request" },
+    { ...wakeup, head_branch: "feature" },
+    { ...wakeup, path: ".github/workflows/other.yml" },
+    { ...wakeup, head_repository: { full_name: "fork/armada" } },
+  ])
+    expect(authenticateSmokeReceiptProducer(invalid, repository)).toBe(false);
+});
+
+test("completion wakeup admission uses the same Release trust boundary as later receipt restoration", () => {
+  expect(authenticateReleaseCompletion(release, repository)).toBe(true);
+  expect(authenticateReleaseCompletion({ ...release, head_branch: "v2.49.4" }, repository)).toBe(true);
+  for (const invalid of [
+    { ...release, head_branch: "feature" },
+    { ...release, head_repository: { full_name: "fork/armada" } },
+    { ...release, status: "in_progress" },
+    { ...release, event: "pull_request" },
+    { ...release, path: ".github/workflows/other.yml" },
+  ])
+    expect(authenticateReleaseCompletion(invalid, repository)).toBe(false);
 });
