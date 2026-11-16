@@ -543,6 +543,9 @@ export type Database = {
           resource_policy_version: number | null;
           available_cpus: number | null;
           available_memory_bytes: number | null;
+          retention_seconds: number | null;
+          reported_retention_seconds: number | null;
+          next_cleanup_at: string | null;
         };
         Insert: {
           id: string;
@@ -566,6 +569,9 @@ export type Database = {
           resource_policy_version?: number | null;
           available_cpus?: number | null;
           available_memory_bytes?: number | null;
+          retention_seconds?: number | null;
+          reported_retention_seconds?: number | null;
+          next_cleanup_at?: string | null;
         };
         Update: {
           id?: string;
@@ -589,6 +595,9 @@ export type Database = {
           resource_policy_version?: number | null;
           available_cpus?: number | null;
           available_memory_bytes?: number | null;
+          retention_seconds?: number | null;
+          reported_retention_seconds?: number | null;
+          next_cleanup_at?: string | null;
         };
         Relationships: [
           {

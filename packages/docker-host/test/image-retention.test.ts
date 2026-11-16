@@ -21,3 +21,12 @@ test("keeps two newest official generations and all container, snapshot and fore
   expect(supersededOfficialImages(images, [id(1)])).toEqual([id(4), id(3)]);
   expect(supersededOfficialImages([image(1), image(2)], [])).toEqual([]);
 });
+
+test("foreign tags and missing registry provenance never authorize image deletion", () => {
+  expect(
+    supersededOfficialImages(
+      [{ ...image(1), RepoTags: ["someone/important:latest"] }, { ...image(2), RepoDigests: [] }, image(3), image(4)],
+      [],
+    ),
+  ).toEqual([]);
+});

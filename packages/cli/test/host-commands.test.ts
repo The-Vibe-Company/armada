@@ -208,3 +208,21 @@ test("host limits sends validated partial overrides or an exclusive automatic re
     expect(result.code).not.toBe(0);
   }
 });
+
+test("host retention sends a duration to the owner API and show prints reported cleanup", async () => {
+  const saved = await capture(["host", "retention", hostId, "--retention", "24h"], async (request) => {
+    expect(new URL(request.url).pathname).toBe("/api/v1/docker/hosts/retention");
+    expect(await request.json()).toEqual({ org, hostId, retentionSeconds: 86400 });
+    return Response.json({ retentionSeconds: 86400 });
+  });
+  expect(saved.code).toBe(0);
+  const shown = await capture(["host", "show", hostId], async () =>
+    Response.json({
+      placement: true,
+      hosts: [{ ...summary, retentionSeconds: 86400, nextCleanupAt: "2026-11-20T00:00:00Z" }],
+    }),
+  );
+  expect(shown.code).toBe(0);
+  expect(shown.out).toContain("Retention: 86400s");
+  expect(shown.out).toContain("Next cleanup: 2026-11-20T00:00:00Z");
+});

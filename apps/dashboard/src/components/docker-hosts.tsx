@@ -8,6 +8,7 @@ import {
   registerDockerHost,
   revokeDockerHost,
   updateDockerHostLimits,
+  updateDockerHostRetention,
 } from "@/app/actions/docker-hosts";
 import { ConfirmedAction } from "@/components/confirmed-action";
 import { CreateDialog } from "@/components/create-dialog";
@@ -435,5 +436,52 @@ function HostLimitsForm({ orgId, host, onSaved }: { orgId: string; host: DockerH
         </Button>
       </div>
     </form>
+  );
+}
+
+export function HostRetention({ orgId, host }: { orgId: string; host: DockerHost }) {
+  const [state, action, pending] = useActionState(updateDockerHostRetention, null);
+  return (
+    <div className="space-y-3 text-sm">
+      <p>
+        Retention:{" "}
+        {host.retentionSeconds == null ? "Unknown — update the server daemon" : `${host.retentionSeconds} seconds`}
+      </p>
+      <p>Next cleanup: {host.nextCleanupAt ? new Date(host.nextCleanupAt).toISOString() : "None reported"}</p>
+      <p className="text-xs text-muted-foreground">
+        As of last check-in: {host.lastSeenAt ?? "Never"}. Offline servers enforce their last saved policy.
+      </p>
+      {host.retentionOverrideSeconds != null && host.retentionOverrideSeconds !== host.retentionSeconds && (
+        <p>Requested: {host.retentionOverrideSeconds} seconds; waiting for check-in.</p>
+      )}
+      {host.canManageLimits && host.state !== "revoked" ? (
+        <form action={action} className="space-y-2">
+          <input type="hidden" name="org" value={orgId} />
+          <input type="hidden" name="hostId" value={host.id} />
+          <label htmlFor={`retention-${host.id}`}>
+            Retention in seconds (0 removes stopped sandboxes on the next sweep)
+          </label>
+          <Input
+            id={`retention-${host.id}`}
+            name="retentionSeconds"
+            type="number"
+            min="0"
+            max="31536000"
+            step="1"
+            required
+            defaultValue={host.retentionOverrideSeconds ?? host.retentionSeconds ?? 86400}
+          />
+          <p className="text-xs text-muted-foreground">
+            24 hours is 86400 seconds. Changes also adjust existing cleanup deadlines.
+          </p>
+          <Button type="submit" disabled={pending}>
+            Save retention
+          </Button>
+          {state && <p role="status">{state.ok ? state.message : state.error}</p>}
+        </form>
+      ) : (
+        <p className="text-muted-foreground">Only the member who added this server can change retention.</p>
+      )}
+    </div>
   );
 }

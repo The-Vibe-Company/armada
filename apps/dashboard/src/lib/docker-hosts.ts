@@ -21,6 +21,7 @@ export const DOCKER_HOST_ROUTES = {
   registerToken: "docker/hosts/register-token",
   revoke: "docker/hosts/revoke",
   limits: "docker/hosts/limits",
+  retention: "docker/hosts/retention",
 } as const;
 
 export const HOSTS_PATH = "/providers/cloud";
@@ -57,6 +58,17 @@ function parseHost(value: unknown): DockerHost | null {
     typeof sandboxes !== "number" ||
     !Number.isInteger(sandboxes) ||
     sandboxes < 0 ||
+    (value.retentionSeconds !== undefined &&
+      value.retentionSeconds !== null &&
+      (!Number.isInteger(value.retentionSeconds) ||
+        Number(value.retentionSeconds) < 0 ||
+        Number(value.retentionSeconds) > 31536000)) ||
+    (value.nextCleanupAt !== undefined && !optionalDate(value.nextCleanupAt)) ||
+    (value.retentionOverrideSeconds !== undefined &&
+      value.retentionOverrideSeconds !== null &&
+      (!Number.isInteger(value.retentionOverrideSeconds) ||
+        Number(value.retentionOverrideSeconds) < 0 ||
+        Number(value.retentionOverrideSeconds) > 31536000)) ||
     (value.canManageLimits !== undefined && typeof value.canManageLimits !== "boolean") ||
     (value.limitsSupported !== undefined && typeof value.limitsSupported !== "boolean") ||
     (value.running !== undefined && (!Number.isSafeInteger(value.running) || Number(value.running) < 0)) ||
@@ -71,6 +83,9 @@ function parseHost(value: unknown): DockerHost | null {
     lastSeenAt,
     revokedAt,
     sandboxes,
+    retentionSeconds: (value.retentionSeconds ?? null) as number | null,
+    retentionOverrideSeconds: (value.retentionOverrideSeconds ?? null) as number | null,
+    nextCleanupAt: (value.nextCleanupAt ?? null) as string | null,
     ...(value.canManageLimits === undefined ? {} : { canManageLimits: value.canManageLimits as boolean }),
     ...(value.limitsSupported === undefined ? {} : { limitsSupported: value.limitsSupported as boolean }),
     ...(value.running === undefined ? {} : { running: value.running as number }),
