@@ -4,7 +4,7 @@
  * Requires explicit compute consent as well as BOAT_API_KEY; a key alone never enables this test.
  * With BOAT_API_KEY already exported, opt in to billed compute and model usage:
  *
- *   ARMADA_RUN_LIVE_BOAT_TESTS=1 bun test packages/provider-boat/test/integration.test.ts
+ *   ARMADA_RUN_LIVE_BOAT_TESTS=1 bun test packages/provider-boat/test/integration.coordinator.ts
  *
  * Needs Claude Code configured on the boat account (dashboard, Agents & Proxying).
  * BOAT_TEST_SNAPSHOT names an existing saved snapshot to fork; without it the test builds a throwaway one from a

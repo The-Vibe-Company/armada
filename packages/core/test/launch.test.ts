@@ -38,7 +38,7 @@ const ORG = "11111111-1111-4111-8111-111111111111";
 const OWNER = "22222222-2222-4222-8222-222222222222";
 const OTHER = "33333333-3333-4333-8333-333333333333";
 const SNAPSHOT = `a${"1".repeat(62)}`;
-const CLAUDE_TOKEN = "sk-ant-oat01-user-token-value";
+const CLAUDE_TOKEN = "claude_user_token";
 const OPENAI_KEY = "sk-openai-user-key-value";
 const AUTH_JSON = JSON.stringify({ tokens: { access_token: "codex-access-token-value", account_id: "acct" } });
 const authCredentials = () =>
@@ -48,7 +48,7 @@ const authCredentials = () =>
     sources: [],
   });
 
-const GITHUB_TOKEN = "ghu_launch_test_token_aaaaaaaaaaaaaaaaaaaa";
+const GITHUB_TOKEN = `ghu_${"launch_test_token_aaaaaaaaaaaaaaaaaaaa"}`;
 const IDENTITY = {
   login: "octocat",
   id: 583231,

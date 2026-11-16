@@ -1,3 +1,5 @@
+import { NAV_GROUPS } from "./navigation";
+
 /**
  * The command menu (⌘K, #757): every page of the signed-in app and the actions people reach for, found by typing.
  * Pure, so the ranking is tested without a browser.
@@ -12,7 +14,7 @@ export type Command = {
   keywords?: readonly string[];
 };
 
-export const COMMANDS: readonly Command[] = [
+const CATALOG: readonly Command[] = [
   {
     id: "launch",
     label: "Launch a sandbox",
@@ -82,6 +84,22 @@ export const COMMANDS: readonly Command[] = [
   },
   { id: "settings", label: "Settings", href: "/settings", group: "Go to", keywords: ["github", "account"] },
 ];
+
+// Navigation owns visible destination names; keep historical command names searchable.
+export const COMMANDS: readonly Command[] = CATALOG.map((command) => {
+  const destination = NAV_GROUPS.flatMap((group) => group.links).find((link) => link.href === command.href);
+  return command.group === "Go to" && destination
+    ? {
+        ...command,
+        label: destination.label,
+        keywords: [
+          ...(command.keywords ?? []),
+          command.label.toLowerCase(),
+          ...command.label.toLowerCase().split(/\s+/),
+        ],
+      }
+    : command;
+});
 
 /**
  * The commands that match `query`, best first: a label that starts with it, then a word of the label that does, then

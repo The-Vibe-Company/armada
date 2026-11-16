@@ -1,3 +1,6 @@
+// This contract must never silently skip in release validation.
+if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
+
 import { expect, test } from "bun:test";
 import { SQL } from "bun";
 import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
@@ -5,7 +8,7 @@ import { sqlOver } from "../src/sql.ts";
 
 // CI supplies an already migrated disposable database. Never use a production database.
 const url = process.env.ARMADA_TEST_POSTGRES_URL;
-test.skipIf(!url)("PostgreSQL membership revocation cannot deadlock behind runtime admission", async () => {
+test("PostgreSQL membership revocation cannot deadlock behind runtime admission", async () => {
   const admin = new SQL(url ?? "", { max: 1 });
   const remover = new SQL(url ?? "", { max: 1 });
   const runtime = new SQL(url ?? "", { max: 1 });

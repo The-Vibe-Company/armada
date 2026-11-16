@@ -30,6 +30,14 @@ describe("sidebar navigation", () => {
   });
 });
 
+test("host bookmarks share the Machines active destination without matching similarly named routes", () => {
+  for (const path of ["/hosts", "/hosts/host_one"]) {
+    expect(isActiveLink(path, "/providers/cloud")).toBe(true);
+    expect(isActiveLink(path, "/sandboxes")).toBe(false);
+  }
+  expect(isActiveLink("/hostsx", "/providers/cloud")).toBe(false);
+});
+
 describe("organization switch destination", () => {
   test.each([
     ["/routines", "/routines"],

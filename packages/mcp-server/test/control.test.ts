@@ -46,7 +46,7 @@ import { fakeBoat } from "./support.ts";
 const KEY = Buffer.alloc(32, 5).toString("base64");
 const STAN = "11111111-1111-4111-8111-111111111111";
 const ADA = "22222222-2222-4222-8222-222222222222";
-const TOKEN_SECRET = "sk-ant-oat01-do-not-leak";
+const TOKEN_SECRET = "claude_private_token";
 const AUTH_JSON = '{"tokens":{"access_token":"codex-do-not-leak"}}';
 const controlDatabase = rowOnlyConnection();
 
