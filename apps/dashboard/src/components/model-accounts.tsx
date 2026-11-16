@@ -11,7 +11,6 @@ import {
   shellQuote,
 } from "@armada/core";
 import {
-  CheckIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleHelpIcon,
@@ -489,7 +488,7 @@ export function AccountRow({
         aria-expanded={expanded}
         aria-controls={`${headingId}-detail`}
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-start gap-3 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring"
+        className="flex min-h-[84px] w-full items-start gap-3 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring"
       >
         <ProviderMark kind={account.kind} />
         <span className="min-w-0 flex-1">
@@ -497,7 +496,7 @@ export function AccountRow({
             {account.name}
           </span>
           <span className="block text-xs text-muted-foreground">
-            {state.label === "Ready" ? "Connected" : state.label} · {info.label}
+            {info.label} · {account.scope === "user" ? "Only you" : orgName}
           </span>
         </span>
         <span className={cn("shrink-0 text-xs", STATE_TONE[state.tone])}>
@@ -507,7 +506,7 @@ export function AccountRow({
       <button
         type="button"
         onClick={() => setExpanded(true)}
-        className="flex w-full flex-wrap items-center justify-between gap-2 border-t bg-muted/20 px-4 py-2.5 text-left text-xs text-muted-foreground hover:bg-muted/40"
+        className="flex min-h-[46px] w-full flex-wrap items-center justify-between gap-2 border-t bg-muted/20 px-4 py-2.5 text-left text-xs text-muted-foreground hover:bg-muted/40"
         aria-label={`View ${account.name} details`}
       >
         <span>
@@ -1513,7 +1512,7 @@ export function AddAccountDialog({
   isAdmin,
   capabilities: _capabilities,
   initialKind = "claude_oauth",
-  triggerLabel = "Add account",
+  triggerLabel = "Add an account",
   triggerVariant = "default",
 }: {
   orgId: string;
@@ -1527,9 +1526,7 @@ export function AddAccountDialog({
   const formRef = usePreservedActionForm();
   const wizardRef = useRef<HTMLFormElement>(null);
   const [open, setOpen] = useState(false);
-  const [step, setStep] = useState(0);
-  const [showMore, setShowMore] = useState(false);
-  const [pasteOpen, setPasteOpen] = useState(false);
+  const step = 2;
   const [generation, setGeneration] = useState(0);
   const [state, formAction] = useMutationState(addAccount);
   const [choice, setChoice] = useState<AddChoice>(initialKind);
@@ -1543,7 +1540,7 @@ export function AddAccountDialog({
           ? preset.kind
           : (choice as AccountKind);
   const [scope, setScope] = useState<"user" | "org">("user");
-  const [name, setName] = useState(KIND_INFO[initialKind].label);
+  const [name, setName] = useState("");
   const [maxAgents, setMaxAgents] = useState(initialKind === "morph" ? "2" : "");
   const router = useRouter();
   const id = useId();
@@ -1596,7 +1593,7 @@ export function AddAccountDialog({
       stopped = true;
       clearTimeout(timer);
     };
-  }, [open, subscription, step, orgId, kind, name, scope, info.label, router]);
+  }, [open, subscription, orgId, kind, name, scope, info.label, router]);
 
   useEffect(() => {
     if (open)
@@ -1605,7 +1602,7 @@ export function AddAccountDialog({
           `[data-wizard-panel="${step}"] button, [data-wizard-panel="${step}"] input:not([type="hidden"]), [data-wizard-panel="${step}"] textarea`,
         )
         ?.focus();
-  }, [open, step]);
+  }, [open]);
 
   const endpoint = choice === "your-endpoint" || choice === "your-endpoint-claude";
   const secretFields = endpoint ? (
@@ -1633,7 +1630,6 @@ export function AddAccountDialog({
     </>
   );
   const choose = (next: AddChoice) => {
-    setPasteOpen(false);
     const nextPreset = connectionPreset(next);
     const nextKind =
       next === "your-endpoint-claude"
@@ -1642,32 +1638,20 @@ export function AddAccountDialog({
           ? "openai"
           : (nextPreset?.kind ?? (next as AccountKind));
     setChoice(next);
-    setName(
-      next === "your-endpoint" || next === "your-endpoint-claude"
-        ? "Your endpoint"
-        : (nextPreset?.label ?? KIND_INFO[nextKind].label),
-    );
+    setName("");
     setMaxAgents(nextKind === "morph" ? "2" : "");
-  };
-  const advance = () => {
-    const fields = wizardRef.current?.querySelectorAll<HTMLInputElement>(`[data-wizard-panel="${step}"] input`);
-    if (fields && [...fields].some((field) => !field.reportValidity())) return;
-    setStep(step + 1);
   };
   return (
     <CreateDialog
       fixedActions
       triggerVariant={triggerVariant}
       label={triggerLabel}
-      title="Add provider"
-      description="A subscription, an API key, or your own endpoint. Choose what you have."
+      title="Add an account"
+      description="Agents run on this account. Credentials are encrypted and never shown again."
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
         if (next) {
-          setStep(0);
-          setShowMore(false);
-          setPasteOpen(false);
           choose(initialKind);
           setScope("user");
           setGeneration((value) => value + 1);
@@ -1682,174 +1666,75 @@ export function AddAccountDialog({
         key={generation}
         action={formAction}
         className="min-w-0 gap-4"
-        onKeyDown={(event) => {
-          if (event.key !== "Enter" || step === 2 || !(event.target instanceof HTMLInputElement)) return;
-          event.preventDefault();
-          advance();
-        }}
       >
         <input type="hidden" name="org" value={orgId} />
         <input type="hidden" name="kind" value={kind} />
         {preset?.models === "choose" && <input type="hidden" name="preset" value={preset.id} />}
         <input type="hidden" name="scope" value={scope} />
         <CreateDialogBody className="space-y-4">
-          <ol aria-label="Connection steps" className="flex items-center justify-between gap-2 border-b pb-4 text-xs">
-            {["Provider", "Identity", "Config"].map((label, index) => (
-              <li
-                key={label}
-                aria-current={step === index ? "step" : undefined}
-                className={cn(
-                  "flex items-center gap-2",
-                  step === index ? "font-medium text-foreground" : "text-muted-foreground",
-                )}
-              >
-                <span
-                  className={cn(
-                    "grid size-6 place-items-center rounded-full border",
-                    step === index && "border-primary bg-primary text-primary-foreground",
-                  )}
-                >
-                  {index + 1}
-                </span>
-                {label}
-              </li>
-            ))}
-          </ol>
-          <div data-wizard-panel="0" hidden={step !== 0} className="space-y-4">
-            <fieldset className="grid grid-cols-2 gap-2" aria-label="Account provider">
-              {SUBSCRIPTION_KINDS.map((value) => (
-                <button
+          <fieldset className="space-y-2">
+            <legend className="mb-2 text-sm font-medium">Kind</legend>
+            <div className="overflow-hidden rounded-lg border divide-y">
+              {(["claude_oauth", "anthropic", "codex_auth", "openai", "morph"] as const).map((value) => (
+                <label
                   key={value}
-                  type="button"
-                  aria-pressed={choice === value}
-                  onClick={() => choose(value)}
                   className={cn(
-                    "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
-                    choice === value && "border-primary bg-accent",
+                    "flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm",
+                    choice === value && "bg-primary/15",
                   )}
                 >
-                  <span className="mb-2 block">
-                    <ProviderMark kind={value} />
-                  </span>
-                  {choice === value && <CheckIcon aria-hidden className="float-right size-4" />}
-                  {value === "claude_oauth" ? "Claude" : "ChatGPT"}
-                  <span className="block text-xs text-muted-foreground">Subscription</span>
-                </button>
-              ))}
-              <button
-                hidden={!showMore && !endpoint}
-                type="button"
-                aria-pressed={
-                  endpoint ||
-                  (!!preset &&
-                    !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))
-                }
-                onClick={() => choose("your-endpoint")}
-                className={cn(
-                  "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
-                  (endpoint ||
-                    (!!preset &&
-                      !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(
-                        preset.id,
-                      ))) &&
-                    "border-primary bg-accent",
-                )}
-              >
-                <KeyRoundIcon aria-hidden className="mb-3 size-6" />
-                {endpoint && <CheckIcon aria-hidden className="float-right size-4" />}
-                Your endpoint
-                <span className="block text-xs text-muted-foreground">Azure, OpenRouter, DeepSeek, other</span>
-              </button>
-              {CONNECTION_PRESETS.filter((option) => ["anthropic", "openai", "morph"].includes(option.id)).map(
-                (option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    aria-pressed={choice === option.id || choice === `opencode-${option.id}`}
-                    onClick={() => choose(option.id)}
-                    className={cn(
-                      "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
-                      (choice === option.id || choice === `opencode-${option.id}`) && "border-primary bg-accent",
-                    )}
-                  >
-                    <span className="mb-2 block">
-                      <ProviderMark kind={option.kind} />
+                  <input
+                    type="radio"
+                    name="account-kind-choice"
+                    aria-label={KIND_INFO[value].label}
+                    value={value}
+                    checked={choice === value}
+                    onChange={() => choose(value)}
+                    className="accent-primary"
+                  />
+                  <ProviderMark kind={value} />
+                  <span>
+                    <span className="block font-medium">{KIND_INFO[value].label}</span>
+                    <span className="block text-xs text-muted-foreground">
+                      {value === "claude_oauth"
+                        ? "The token from claude setup-token"
+                        : value === "codex_auth"
+                          ? "The contents of ~/.codex/auth.json"
+                          : value === "morph"
+                            ? "Morph models for Claude Code, Codex and OpenCode"
+                            : "Billed per token"}
                     </span>
-                    {(choice === option.id || choice === `opencode-${option.id}`) && (
-                      <CheckIcon aria-hidden className="float-right size-4" />
-                    )}
-                    {option.id === "anthropic" ? "Anthropic" : option.id === "openai" ? "OpenAI" : option.label}
-                    <span className="block text-xs text-muted-foreground">API key</span>
-                  </button>
-                ),
-              )}
-            </fieldset>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setShowMore(!showMore)}>
-              {showMore ? "Show less" : "Show more"}
-            </Button>
-            <p className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
-              Connect an existing subscription or API key. Armada stores credentials encrypted and never displays them
-              again.
-            </p>
-          </div>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <Disclosure summary="Other providers and custom endpoints" defaultOpen={false}>
+              <Label htmlFor={`${id}-kind`}>Provider</Label>
+              <NativeSelect
+                id={`${id}-kind`}
+                value={choice}
+                onChange={(event) => choose(event.target.value as AddChoice)}
+              >
+                {SUBSCRIPTION_KINDS.map((value) => (
+                  <option key={value} value={value}>
+                    {KIND_INFO[value].label}
+                  </option>
+                ))}
+                {CONNECTION_PRESETS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+                <option value="your-endpoint">Custom endpoint for Codex</option>
+                <option value="your-endpoint-claude">Custom endpoint for Claude Code</option>
+              </NativeSelect>
+            </Disclosure>
+          </fieldset>
           <div
             key={choice}
             className="space-y-4 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-150"
           >
-            <div hidden={step !== 0} className="space-y-4">
-              {(endpoint ||
-                (preset &&
-                  !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))) && (
-                <div className="space-y-2">
-                  <Label htmlFor={`${id}-provider`}>Provider</Label>
-                  <NativeSelect
-                    id={`${id}-provider`}
-                    value={choice}
-                    onChange={(event) => choose(event.target.value as AddChoice)}
-                  >
-                    <option value="your-endpoint">Custom endpoint for Codex</option>
-                    <option value="your-endpoint-claude">Custom endpoint for Claude Code</option>
-                    {CONNECTION_PRESETS.filter(
-                      (option) =>
-                        !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(option.id),
-                    ).map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                </div>
-              )}
-              {["anthropic", "openai", "opencode-openai", "opencode-anthropic"].includes(choice) && (
-                <div className="space-y-2">
-                  <Label htmlFor={`${id}-agents`}>Which agents will use it?</Label>
-                  <NativeSelect
-                    id={`${id}-agents`}
-                    value={choice}
-                    onChange={(event) => choose(event.target.value as AddChoice)}
-                  >
-                    {choice.includes("anthropic") ? (
-                      <>
-                        <option value="anthropic">Claude Code</option>
-                        <option value="opencode-anthropic">OpenCode</option>
-                      </>
-                    ) : (
-                      <>
-                        <option value="openai">Codex</option>
-                        <option value="opencode-openai">OpenCode</option>
-                      </>
-                    )}
-                  </NativeSelect>
-                </div>
-              )}
-              <p className="text-xs text-muted-foreground" data-connection-availability>
-                Works with {info.harnessLabel}.{" "}
-                {kind === "morph"
-                  ? "One Morph key for Claude Code, Codex and OpenCode."
-                  : "Stored encrypted, never shown again."}
-              </p>
-            </div>
-            <div data-wizard-panel="1" hidden={step !== 1} className="space-y-4">
+            <div data-wizard-panel="1" className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor={`${id}-name`}>Name</Label>
                 <Input
@@ -1862,26 +1747,12 @@ export function AddAccountDialog({
                   autoComplete="off"
                 />
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                {isAdmin && (
-                  <div className="space-y-2">
-                    <Label htmlFor={`${id}-scope`}>Who uses it</Label>
-                    <NativeSelect
-                      id={`${id}-scope`}
-                      value={scope}
-                      onChange={(event) => setScope(event.target.value as "user" | "org")}
-                    >
-                      <option value="user">Only you</option>
-                      <option value="org">{orgName}</option>
-                    </NativeSelect>
-                  </div>
-                )}
-                <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
-              </div>
             </div>
-            <div data-wizard-panel="2" hidden={step !== 2} className="space-y-4">
-              {command ? (
-                <>
+            <div data-wizard-panel="2" className="space-y-4">
+              {saveFields}
+              {command && (
+                <Disclosure summary="Sign-in instructions and terminal login" defaultOpen={false}>
+                  {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
                   <TerminalSignIn
                     command={command}
                     onDone={() => {
@@ -1889,23 +1760,34 @@ export function AddAccountDialog({
                       router.refresh();
                     }}
                   />
-                  <Disclosure
-                    summary="No terminal here, or on a phone? Paste a sign-in token instead"
-                    defaultOpen={false}
-                    open={pasteOpen}
-                    onOpenChange={setPasteOpen}
-                  >
-                    <div className="space-y-4">
-                      {pasteSignIn && (
-                        <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />
-                      )}
-                      {saveFields}
-                    </div>
-                  </Disclosure>
-                </>
-              ) : (
-                saveFields
+                </Disclosure>
               )}
+              <div className="space-y-4">
+                {isAdmin && (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium">Shared with</p>
+                    <fieldset aria-label="Shared with" className="inline-flex gap-0.5 rounded-lg bg-muted p-[3px]">
+                      {[
+                        { value: "user", label: "Only you" },
+                        { value: "org", label: orgName },
+                      ].map((option) => (
+                        <Button
+                          key={option.value}
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          aria-pressed={scope === option.value}
+                          className={scope === option.value ? "h-7 bg-card shadow-xs" : "h-7"}
+                          onClick={() => setScope(option.value as "user" | "org")}
+                        >
+                          {option.label}
+                        </Button>
+                      ))}
+                    </fieldset>
+                  </div>
+                )}
+                <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
+              </div>
             </div>
           </div>
         </CreateDialogBody>
@@ -1914,35 +1796,7 @@ export function AddAccountDialog({
             Cancel
           </Button>
           <div className="flex flex-wrap gap-2">
-            {step === 0 && subscription && (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setPasteOpen(true);
-                  advance();
-                }}
-              >
-                Configure manually
-              </Button>
-            )}
-            {step > 0 && (
-              <Button type="button" variant="outline" onClick={() => setStep(step - 1)}>
-                Back
-              </Button>
-            )}
-            {step === 2 && (!command || pasteOpen) && (
-              <SubmitButton>{preset?.deploymentNames ? "Test and add account" : "Add account"}</SubmitButton>
-            )}
-            {step < 2 && (
-              <Button type="button" onClick={advance}>
-                {subscription
-                  ? `Continue with ${kind === "claude_oauth" ? "Claude" : "ChatGPT"}`
-                  : step === 0
-                    ? "Continue"
-                    : "Continue to configuration"}
-              </Button>
-            )}
+            {<SubmitButton>{preset?.deploymentNames ? "Test and add account" : "Add account"}</SubmitButton>}
           </div>
         </CreateDialogFooter>
       </form>
@@ -2049,15 +1903,69 @@ export function ModelsOverview({
 }) {
   const router = useRouter();
   const [refreshing, startRefresh] = useTransition();
+  const [filter, setFilter] = useState("all");
+  const [query, setQuery] = useState("");
+  const shown = orderAccounts(accounts, now).filter(
+    (account) =>
+      (filter === "all" || accountsFor([account], filter as Harness).length > 0) &&
+      `${account.name} ${KIND_INFO[account.kind].label}`.toLowerCase().includes(query.toLowerCase()),
+  );
   return (
-    <div className="space-y-8">
+    <div className="space-y-[18px]">
+      <section
+        aria-labelledby="launch-defaults"
+        className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-[10px] border bg-card px-4 py-3 [&>div]:border-0 [&>div]:py-0 [&_p]:text-[13px]"
+      >
+        <h2 id="launch-defaults" className="sr-only">
+          When you launch
+        </h2>
+        {HARNESS_ORDER.map((harness) => (
+          <PersonalDefaultSentence
+            key={harness}
+            harness={harness}
+            accounts={accounts}
+            defaults={defaults}
+            now={now}
+            orgId={orgId}
+            isAdmin={isAdmin}
+            emptyAction={emptyAction}
+          />
+        ))}
+      </section>
       <section aria-labelledby="all-accounts" className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 [&_button]:size-7 [&_button]:p-0 [&_button]:text-[0px] [&_svg]:size-4">
-            <h2 id="all-accounts" className="text-base font-semibold">
-              Providers
-            </h2>
-            {emptyAction}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <fieldset aria-label="Filter accounts" className="inline-flex flex-wrap gap-0.5 rounded-lg bg-muted p-[3px]">
+            {[{ key: "all", label: "All" }, ...HARNESS_ORDER.map((key) => ({ key, label: HARNESS_LABELS[key] }))].map(
+              (item) => (
+                <Button
+                  key={item.key}
+                  variant="ghost"
+                  size="sm"
+                  aria-pressed={filter === item.key}
+                  onClick={() => setFilter(item.key)}
+                  className={cn("h-7 gap-1.5 px-2.5 text-[13px]", filter === item.key && "bg-card shadow-xs")}
+                >
+                  {item.label}
+                  <span className="font-mono text-[11px] text-muted-foreground">
+                    {
+                      accounts.filter(
+                        (account) => item.key === "all" || accountsFor([account], item.key as Harness).length > 0,
+                      ).length
+                    }
+                  </span>
+                </Button>
+              ),
+            )}
+          </fieldset>
+          <div className="ml-auto">
+            <Input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search accounts"
+              aria-label="Search accounts"
+              className="h-[34px] w-[260px] max-w-full text-[13px]"
+            />
           </div>
           <Button
             type="button"
@@ -2071,9 +1979,17 @@ export function ModelsOverview({
             <span className="text-xs text-muted-foreground">{refreshing ? "Refreshing…" : "Refresh accounts"}</span>
           </Button>
         </div>
+        <h2 id="all-accounts" className="sr-only">
+          Accounts
+        </h2>
         {accounts.length ? (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,310px),1fr))] gap-3">
-            {orderAccounts(accounts, now).map((account) => (
+            {shown.length === 0 && (
+              <p className="col-span-full rounded-[10px] border border-dashed p-12 text-center text-sm text-muted-foreground">
+                Nothing matches
+              </p>
+            )}
+            {shown.map((account) => (
               <AccountRow
                 key={account.id}
                 account={account}
@@ -2098,23 +2014,6 @@ export function ModelsOverview({
             A subscription you already pay for, an API key, or your own endpoint. One is enough to launch.
           </Empty>
         )}
-      </section>
-      <section aria-labelledby="launch-defaults" className="rounded-lg border px-5 py-2">
-        <h2 id="launch-defaults" className="pt-3 text-sm font-medium text-muted-foreground">
-          When you launch
-        </h2>
-        {HARNESS_ORDER.map((harness) => (
-          <PersonalDefaultSentence
-            key={harness}
-            harness={harness}
-            accounts={accounts}
-            defaults={defaults}
-            now={now}
-            orgId={orgId}
-            isAdmin={isAdmin}
-            emptyAction={emptyAction}
-          />
-        ))}
       </section>
     </div>
   );
@@ -2179,11 +2078,10 @@ function PersonalDefaultSentence({
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b py-4 last:border-0">
       <div className="min-w-0">
-        <p className="text-lg">
-          {HARNESS_LABELS[harness]}{" "}
+        <p className="flex flex-col gap-0.5 text-[13px]">
+          <span className="text-xs text-muted-foreground">{HARNESS_LABELS[harness]}</span>
           {account ? (
             <>
-              runs{" "}
               <button
                 type="button"
                 className={cn(
@@ -2191,7 +2089,7 @@ function PersonalDefaultSentence({
                   !HARNESS_CATALOG[harness].models.some(
                     (model) => model.id === (current.model ?? modelsPageModel(account, harness)),
                   ) && "font-mono",
-                  "text-base",
+                  "text-[13px]",
                 )}
                 onClick={(event) => {
                   opener.current = event.currentTarget;
@@ -2205,18 +2103,6 @@ function PersonalDefaultSentence({
                   current.model ??
                   modelsPageModel(account, harness)}
               </button>{" "}
-              on{" "}
-              <button
-                type="button"
-                className={word}
-                onClick={(event) => {
-                  opener.current = event.currentTarget;
-                  setOpen(true);
-                }}
-                aria-label={`Change default account for ${HARNESS_LABELS[harness]}`}
-              >
-                {account.name}
-              </button>
             </>
           ) : resolved.state === "missing" ? (
             "has an unavailable default account"

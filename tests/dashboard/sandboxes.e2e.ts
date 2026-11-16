@@ -15,8 +15,8 @@ test.setup(
   async ({ app, screen, browser, session }) => {
     await reset();
     await app.open("/login");
-    await screen.getByLabel("Email").fill("alice@example.com");
-    await screen.getByRole("button", "Email me a sign-in link").tap();
+    await screen.getByLabel("Work email").fill("alice@example.com");
+    await screen.getByRole("button", "Email me a code").tap();
     await screen.getByLabel("Code").fill("123456");
     await screen.getByRole("button", "Sign in").tap();
     await expect(browser).toHaveURL("/sandboxes");

@@ -9,6 +9,7 @@ export function CatalogBrowser(props: ComponentProps<typeof ResourceBrowser>) {
   return (
     <div
       className={styles.catalog}
+      data-catalog={props.title}
       data-fidelity={props.title === "Snapshots" || props.title === "Templates" || undefined}
     >
       <ResourceBrowser

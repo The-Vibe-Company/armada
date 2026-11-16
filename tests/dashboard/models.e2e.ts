@@ -1,41 +1,27 @@
 import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 
-// Protects the provider disclosure and wizard navigation at their user-facing boundary.
+// Protects the account drawers and compact create form at their user-facing boundary.
 for (const session of ["alice", "large"]) {
   test(`${session}: inspect a provider and configure an API account`, { session }, async ({ app, screen, browser }) => {
     await app.open("/harness");
+    await screen.getByPlaceholder("Search accounts").fill("no_matching_account");
+    await expect(screen.getByText("Nothing matches", { exact: true })).toBeVisible();
+    await screen.getByPlaceholder("Search accounts").fill("");
     const toggle = browser.locator("[data-account] button[aria-expanded]").first();
     await toggle.tap();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(screen.getByRole("dialog").getByText("Status", { exact: true })).toBeVisible();
     await screen.getByRole("button", "Close details", { exact: true }).tap();
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await screen.getByRole("button", "Add account", { exact: true }).first().tap();
-    const dialog = screen.getByRole("dialog", "Add provider");
-    // Check before tapping: tap would scroll a clipped primary action into view.
-    const clipped = await browser.evaluate(() => {
-      const dialog = document.querySelector('[role="dialog"]')!;
-      const action = [...dialog.querySelectorAll("button")].find((button) =>
-        button.textContent?.includes("Continue with Claude"),
-      )!;
-      const bounds = dialog.getBoundingClientRect();
-      const rect = action.getBoundingClientRect();
-      return rect.top < bounds.top || rect.bottom > bounds.bottom || rect.bottom > innerHeight;
-    });
-    expect(clipped).toBe(false);
-    await dialog.getByRole("button", "OpenAI API key").tap();
-    await dialog.getByRole("button", "Continue", { exact: true }).tap();
+    await screen.getByRole("button", "Add an account", { exact: true }).first().tap();
+    const dialog = screen.getByRole("dialog", "Add an account");
+    await dialog.getByRole("radio", "OpenAI API key", { exact: true }).check();
     await dialog.getByLabel("Name", { exact: true }).fill("Journey model connection");
     await dialog.getByLabel("Maximum agents running at the same time").fill("0");
-    await dialog.getByRole("button", "Continue to configuration").tap();
+    await dialog.getByRole("button", "Add account", { exact: true }).tap();
     await expect(dialog.getByLabel("Name", { exact: true })).toBeVisible();
     await dialog.getByLabel("Maximum agents running at the same time").fill("2");
-    await dialog.getByRole("button", "Continue to configuration").tap();
-    await expect(dialog.getByLabel("API key", { exact: true })).toBeVisible();
-    await dialog.getByRole("button", "Back", { exact: true }).tap();
-    await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue("Journey model connection");
-    await dialog.getByRole("button", "Continue to configuration").tap();
     await dialog.getByLabel("API key", { exact: true }).fill("example_api_key");
     await dialog.getByRole("button", "Add account", { exact: true }).tap();
     await expect(dialog).toBeHidden();
@@ -79,12 +65,10 @@ test("long account names and subscription fallback fit a phone", { session: "ali
     expect(overflow).toBe(false);
   };
   await app.open("/harness");
-  await screen.getByRole("button", "Add account", { exact: true }).first().tap();
-  let dialog = screen.getByRole("dialog", "Add provider");
-  await dialog.getByRole("button", "OpenAI API key").tap();
-  await dialog.getByRole("button", "Continue", { exact: true }).tap();
+  await screen.getByRole("button", "Add an account", { exact: true }).first().tap();
+  let dialog = screen.getByRole("dialog", "Add an account");
+  await dialog.getByRole("radio", "OpenAI API key", { exact: true }).check();
   await dialog.getByLabel("Name", { exact: true }).fill(name);
-  await dialog.getByRole("button", "Continue to configuration").tap();
   await dialog.getByLabel("API key", { exact: true }).fill("example_api_key");
   await dialog.getByRole("button", "Add account", { exact: true }).tap();
   await expect(dialog).toBeHidden();
@@ -102,13 +86,13 @@ test("long account names and subscription fallback fit a phone", { session: "ali
     else await screen.getByRole("button", "Close", { exact: true }).tap();
   }
   await screen.getByRole("button", "Close details", { exact: true }).tap();
-  for (const provider of ["Claude", "ChatGPT"]) {
-    await screen.getByRole("button", "Add account", { exact: true }).first().tap();
-    dialog = screen.getByRole("dialog", "Add provider");
-    await dialog.getByRole("button", new RegExp(`^${provider} Subscription`)).tap();
-    await dialog.getByRole("button", `Continue with ${provider}`, { exact: true }).tap();
-    await dialog.getByRole("button", `Continue with ${provider}`, { exact: true }).tap();
-    const fallback = dialog.getByRole("button", /No terminal here, or on a phone/);
+  for (const provider of ["claude_oauth", "codex_auth"]) {
+    await screen.getByRole("button", "Add an account", { exact: true }).first().tap();
+    dialog = screen.getByRole("dialog", "Add an account");
+    await dialog
+      .getByRole("radio", provider === "claude_oauth" ? "Claude subscription" : "ChatGPT subscription", { exact: true })
+      .check();
+    const fallback = dialog.getByRole("button", "Sign-in instructions and terminal login");
     await expect(fallback).toBeVisible();
     await fits();
     const box = await fallback.boundingBox();

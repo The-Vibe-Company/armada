@@ -135,7 +135,7 @@ export function AddVaultDialog({ orgId, orgName, isAdmin }: { orgId: string; org
   );
   return (
     <CreateDialog
-      label="Add a setting or a secret"
+      label="Add a variable"
       title="Add a setting or a secret"
       description="Values your agents will read from their environment."
       open={open}

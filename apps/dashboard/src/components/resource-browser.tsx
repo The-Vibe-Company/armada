@@ -50,6 +50,8 @@ export type ResourceRow = {
   search: string;
   mark?: ReactNode;
   catalog?: { group?: string | undefined; attention?: boolean; version?: string; body?: ReactNode; footer?: ReactNode };
+  filters?: string[];
+  columns?: { key: string; content: ReactNode }[];
   /** Small tags beside the name (Personal, Org, Private). */
   tags?: ReactNode;
   /** One line under the name: provider · scope · age. */
@@ -59,6 +61,7 @@ export type ResourceRow = {
   fact?: ReactNode;
   /** The one expected action, as a button. Stays above the row's select target. */
   action?: ReactNode;
+  foot?: ReactNode;
   /** The panel's subtitle under the name. */
   subtitle?: ReactNode;
   detail: ReactNode;
@@ -99,11 +102,17 @@ export function ResourceBrowser({
   empty,
   initial,
   selectionQuery = "",
+  filters,
   catalogFilters,
+  searchPlaceholder,
+  columns,
 }: {
-  catalogFilters?: { key: string; label: string }[] | undefined;
   title: string;
   description: string;
+  catalogFilters?: { key: string; label: string }[] | undefined;
+  filters?: { key: string; label: string }[];
+  searchPlaceholder?: string;
+  columns?: string[];
   meta?: ReactNode;
   /** The list's accessible name. */
   label: string;
@@ -127,7 +136,7 @@ export function ResourceBrowser({
   // A row removed by an action, or a stale link, closes the panel rather than showing nothing.
   const selected = chosen !== null && valid(chosen) ? chosen : null;
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("all");
+  const [filter, setFilter] = useState("all");
   const browserId = useId();
   const panelId = `${browserId}-panel`;
   const titleId = `${browserId}-panel-title`;
@@ -249,7 +258,10 @@ export function ResourceBrowser({
 
   const inCategory = (row: ResourceRow, key: string) =>
     key === "all" || (key === "attention" ? row.catalog?.attention : row.catalog?.group === key);
-  const shown = rows.filter((row) => inCategory(row, category) && (!query || matchesQuery(row.search, query)));
+  const tabs = catalogFilters ?? (filters ? [{ key: "all", label: "All" }, ...filters] : undefined);
+  const matchesFilter = (row: ResourceRow, key: string) =>
+    catalogFilters ? inCategory(row, key) : key === "all" || row.filters?.includes(key);
+  const shown = rows.filter((row) => (!query || matchesQuery(row.search, query)) && matchesFilter(row, filter));
   const current = rows.find((row) => row.key === selected) ?? null;
   const currentIndex = shown.findIndex((row) => row.key === selected);
   const move = (delta: number) => {
@@ -264,41 +276,43 @@ export function ResourceBrowser({
 
   return (
     <Context.Provider value={context}>
-      <PageHeader inlineActions={!!catalogFilters} title={title} description={description} meta={meta}>
+      <PageHeader
+        title={title}
+        description={filters || columns ? undefined : description}
+        meta={meta}
+        inlineActions={Boolean(tabs || columns)}
+      >
         {actions}
       </PageHeader>
       {blockers.length > 0 && <ReadinessStrip blockers={blockers} />}
       {notices}
       <section ref={rootRef} aria-label={label} tabIndex={-1} className="grid items-start gap-4">
         <div className="@container min-w-0 space-y-3">
-          {(catalogFilters || rows.length >= FILTER_FROM) && (
-            <div className={catalogFilters ? "flex flex-wrap items-center justify-between gap-3" : "relative max-w-sm"}>
-              {catalogFilters && (
+          {(tabs || searchPlaceholder || rows.length >= FILTER_FROM) && (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              {tabs && (
                 <fieldset
                   aria-label={`Filter ${label.toLowerCase()}`}
-                  className="flex flex-wrap gap-0.5 rounded-lg bg-muted p-0.5"
+                  className="inline-flex flex-wrap gap-0.5 rounded-lg bg-muted p-[3px]"
                 >
-                  {catalogFilters.map((filter) => (
+                  {tabs.map((item) => (
                     <Button
-                      key={filter.key}
+                      key={item.key}
                       variant="ghost"
                       size="sm"
-                      aria-pressed={category === filter.key}
-                      onClick={() => setCategory(filter.key)}
-                      className={cn(
-                        "h-7 gap-1.5 rounded-md px-2.5 text-[13px]",
-                        category === filter.key && "bg-card shadow-xs",
-                      )}
+                      aria-pressed={filter === item.key}
+                      onClick={() => setFilter(item.key)}
+                      className={cn("h-7 gap-1.5 px-2.5 text-[13px]", filter === item.key && "bg-card shadow-xs")}
                     >
-                      {filter.label}
+                      {item.label}
                       <span className="font-mono text-[11px] text-muted-foreground">
-                        {rows.filter((row) => inCategory(row, filter.key)).length}
+                        {rows.filter((row) => matchesFilter(row, item.key)).length}
                       </span>
                     </Button>
                   ))}
                 </fieldset>
               )}
-              <div className={catalogFilters ? "relative w-[260px] max-w-full" : "relative"}>
+              <div className="relative max-w-sm">
                 <SearchIcon
                   aria-hidden
                   className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
@@ -312,13 +326,14 @@ export function ResourceBrowser({
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder={
-                    catalogFilters
+                    searchPlaceholder ??
+                    (catalogFilters
                       ? title === "Snapshots"
                         ? "Search snapshots or repositories"
                         : "Search templates"
-                      : "Filter by name, provider, repository…"
+                      : "Filter by name, provider, repository…")
                   }
-                  className="pl-8"
+                  className="h-[34px] pl-8 text-[13px]"
                 />
               </div>
             </div>
@@ -327,21 +342,47 @@ export function ResourceBrowser({
             empty
           ) : shown.length === 0 ? (
             <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-              Nothing matches{!catalogFilters && ` “${query}”`}.
-              {catalogFilters && (
+              Nothing matches “{query}”.
+              {tabs && (
                 <Button
                   variant="outline"
                   size="sm"
                   className="mx-auto mt-3 block"
                   onClick={() => {
                     setQuery("");
-                    setCategory("all");
+                    setFilter("all");
                   }}
                 >
                   Clear filters
                 </Button>
               )}
             </p>
+          ) : columns ? (
+            <div className="overflow-x-auto rounded-[10px] border bg-card">
+              <table aria-label={label} className="w-full min-w-[760px] table-fixed text-left">
+                <thead className="bg-muted text-xs text-muted-foreground">
+                  <tr>
+                    {columns.map((column) => (
+                      <th key={column} scope="col" className="px-4 py-2 font-normal">
+                        {column}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map((row) => (
+                    <Row
+                      key={row.key}
+                      row={row}
+                      panelId={panelId}
+                      selected={selected === row.key}
+                      onSelect={() => select(row.key)}
+                      table
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
           ) : (
             <ul
               aria-label={label}
@@ -351,9 +392,9 @@ export function ResourceBrowser({
                 <Row
                   key={row.key}
                   row={row}
+                  catalog={!!catalogFilters}
                   panelId={panelId}
                   selected={selected === row.key}
-                  catalog={!!catalogFilters}
                   onSelect={() => select(row.key)}
                 />
               ))}
@@ -373,10 +414,7 @@ export function ResourceBrowser({
             <DialogPrimitive.Content
               aria-labelledby={titleId}
               aria-describedby={undefined}
-              className={cn(
-                "fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right motion-reduce:animate-none",
-                catalogFilters && "sm:max-w-[460px]",
-              )}
+              className="fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right motion-reduce:animate-none"
               ref={(node) => {
                 if (node && host) node.appendChild(host);
               }}
@@ -395,8 +433,8 @@ export function ResourceBrowser({
           createPortal(
             <aside
               id={panelId}
-              data-resource-panel
               data-catalog-panel={!!catalogFilters || undefined}
+              data-resource-panel
               onKeyDown={(event) => {
                 if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
                 const target = event.target as HTMLElement;
@@ -481,21 +519,25 @@ export function ResourceBrowser({
 }
 
 function Row({
-  catalog,
+  table = false,
+  catalog = false,
   row,
   selected,
   onSelect,
   panelId,
 }: {
-  catalog?: boolean;
   row: ResourceRow;
+  table?: boolean;
+  catalog?: boolean;
   selected: boolean;
   onSelect: () => void;
   panelId: string;
 }) {
   const { selectionQuery } = useBrowser();
+  const Container = table ? "tr" : "li";
+  const Cell = table ? "td" : "div";
   return (
-    <li
+    <Container
       {...row.attrs}
       data-selected={selected || undefined}
       className={cn(
@@ -503,10 +545,11 @@ function Row({
         // row does not shift the state and fact columns of the others (a row without one keeps that column empty).
         // On phones actions follow the name and state; wider rows can share space without squeezing long names.
         "relative col-span-full grid grid-cols-1 items-center @sm:grid-cols-[minmax(0,1fr)_auto] @xl:grid-cols-subgrid gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-accent/50 has-[[data-select-item]:focus-visible]:bg-accent/60 has-[[data-select-item]:focus-visible]:ring-[3px] has-[[data-select-item]:focus-visible]:ring-ring/50 has-[[data-select-item]:focus-visible]:ring-inset",
+        table && "!table-row border-t",
         selected && "bg-accent/70 shadow-[inset_3px_0_0_var(--color-primary)] hover:bg-accent/70",
       )}
     >
-      <div className="flex min-w-0 items-center gap-3">
+      <Cell className={cn("min-w-0", table ? "px-4 py-[9px]" : "flex items-center gap-3")}>
         {row.mark}
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -542,32 +585,44 @@ function Row({
             {row.meta}
           </div>
         </div>
-      </div>
-      <div
-        data-catalog-status={catalog || undefined}
-        className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto"
-      >
-        {row.state}
-      </div>
-      {catalog && (
-        <div data-catalog-body className="space-y-3">
-          {row.catalog?.body}
-          {row.fact}
-        </div>
+      </Cell>
+      {row.columns ? (
+        row.columns.map((cell) => (
+          <Cell key={cell.key} className="min-w-0 px-4 py-[9px] text-[13px] text-muted-foreground">
+            {cell.content}
+          </Cell>
+        ))
+      ) : (
+        <>
+          <div
+            data-catalog-status={catalog || undefined}
+            className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto"
+          >
+            {row.state}
+          </div>
+          {catalog && (
+            <div data-catalog-body className="space-y-3">
+              {row.catalog?.body}
+              {row.fact}
+            </div>
+          )}
+          <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{!catalog && row.fact}</div>
+          <div className="relative z-10 col-start-1 row-start-3 flex justify-start @sm:col-start-2 @sm:row-span-2 @sm:row-start-1 @sm:justify-end @xl:col-start-auto @xl:row-span-1 @xl:row-start-auto">
+            {(row.foot || row.catalog?.footer) && (
+              <span className="mr-auto min-w-0 truncate text-xs text-muted-foreground">
+                {row.foot ?? row.catalog?.footer}
+              </span>
+            )}
+            {row.action ??
+              (catalog && (
+                <Button variant="outline" size="sm" onClick={onSelect}>
+                  {row.catalog?.attention ? "See why" : "Details"}
+                </Button>
+              ))}
+          </div>
+        </>
       )}
-      <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{!catalog && row.fact}</div>
-      <div className="relative z-10 col-start-1 row-start-3 flex justify-start @sm:col-start-2 @sm:row-span-2 @sm:row-start-1 @sm:justify-end @xl:col-start-auto @xl:row-span-1 @xl:row-start-auto">
-        {catalog && (
-          <span className="mr-auto min-w-0 truncate text-xs text-muted-foreground">{row.catalog?.footer}</span>
-        )}
-        {row.action ??
-          (catalog && (
-            <Button variant="outline" size="sm" onClick={onSelect}>
-              {row.catalog?.attention ? "See why" : "Details"}
-            </Button>
-          ))}
-      </div>
-    </li>
+    </Container>
   );
 }
 

@@ -166,7 +166,7 @@ export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; 
 export function AddServerDialog({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
   return (
     <CreateDialog
-      label="Add a tool"
+      label="Add an MCP server"
       title="Add a tool"
       description="A service your agents can call, or a command inside the sandbox."
       triggerAttrs={{ "data-add-server": "" }}
@@ -994,18 +994,27 @@ type RowDialog = "rename" | "edit" | "revoke" | "delete" | null;
  * A connection's one expected action on its row of the Tools list (#808): sign in for the first time, sign in
  * again, try again or configure. Its outcome is said under it. Everything else is in {@link ToolPanel}.
  */
-export function ToolRowAction({ connection, canManage = true }: { connection: McpConnection; canManage?: boolean }) {
+export function ToolRowAction({
+  connection,
+  canManage = true,
+  showDefault = true,
+}: {
+  connection: McpConnection;
+  canManage?: boolean;
+  showDefault?: boolean;
+}) {
   const [result, setResult] = useState<ActionResult | null>(null);
   const primary = connectAction(connection);
   return (
     <div className="flex max-w-40 flex-wrap items-center justify-end gap-3 sm:max-w-none">
-      {canManage ? (
-        <DefaultSwitch connection={connection} onResult={setResult} />
-      ) : (
-        <span className="text-xs text-muted-foreground">
-          {connection.defaultForLaunch ? "Pre-selected" : "Not pre-selected"}
-        </span>
-      )}
+      {showDefault &&
+        (canManage ? (
+          <DefaultSwitch connection={connection} onResult={setResult} />
+        ) : (
+          <span className="text-xs text-muted-foreground">
+            {connection.defaultForLaunch ? "Pre-selected" : "Not pre-selected"}
+          </span>
+        ))}
       <div className="flex flex-col items-end gap-1">
         {/* Stays mounted when it no longer applies, so the result of the connect it just ran is still shown. */}
         <RowAction
