@@ -16,9 +16,9 @@ import {
 } from "../src/index.ts";
 
 // Validation owns input classes; one HTTP refusal proves admission blocks drivers and prompt storage.
-test("private prompt cwd validates absolute normalized existing directory and persists under the same sandbox grant", async () => {
+test("private prompt cwd validates absolute normalized existing directory and records it under the same sandbox grant", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-cwd-protocol-"));
-  const journal = new Journal(join(root, "journal.sqlite"), (s) => s);
+  const journal = new Journal(":memory:", (s) => s);
   let seen: RuntimePromptRequest | undefined;
   const driver: Driver = {
     start(c) {
@@ -69,7 +69,14 @@ test("private prompt cwd validates absolute normalized existing directory and pe
     expect(seen?.cwd).toBe(root);
     expect(journal.prompts()[0]?.request.cwd).toBe(root);
   } finally {
-    await new Promise<void>((r) => setImmediate(r));
+    await runner.handle(
+      new Request("https://runner", {
+        method: "POST",
+        headers: { [AUTH_HEADER]: grant.token },
+        body: JSON.stringify({ version: 1, requestId: "cleanup", sandboxId: "s", op: "interrupt" }),
+      }),
+    );
+    await runner.close();
     journal.close();
     await rm(root, { recursive: true, force: true });
   }
