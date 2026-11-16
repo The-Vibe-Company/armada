@@ -17,8 +17,8 @@ import {
   VariableIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { type ReactNode, Suspense, use } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { type ReactNode, Suspense, startTransition, use, useEffect } from "react";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { StatusDot } from "@/components/status-badge";
 import {
@@ -95,6 +95,19 @@ export function NavLinks({
 }) {
   const pathname = usePathname();
   const { setOpenMobile } = useSidebar();
+  const router = useRouter();
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") startTransition(() => router.refresh());
+    };
+    const timer = setInterval(refresh, 30_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [router]);
+
   return (
     <SidebarContent className={cn("gap-0", className)}>
       <nav id="main-navigation-links" aria-label="Main">

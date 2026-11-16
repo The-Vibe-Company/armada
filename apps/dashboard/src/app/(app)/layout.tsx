@@ -1,5 +1,5 @@
 import { LogOutIcon } from "lucide-react";
-import type { CSSProperties, ReactNode } from "react";
+import { type CSSProperties, type ReactNode, Suspense } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandMenu } from "@/components/command-menu";
 import { NavLinks } from "@/components/nav-links";
@@ -70,7 +70,9 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </div>
         }
       >
-        <ShellNavigation sandboxes={liveSandboxes} />
+        <Suspense fallback={<NavLinks className="px-3 pb-4" optIns={{ dockerHosts: dockerHostsEnabled() }} />}>
+          <ShellNavigation sandboxes={liveSandboxes} />
+        </Suspense>
       </AppSidebar>
       <CommandMenu />
       <Toaster />

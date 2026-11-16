@@ -35,8 +35,7 @@ Shadows are exposed as `shadow-md` and `shadow-lg` utilities and `--elevation-md
 Reuse `Button`, `Badge`, `Card`, `Input`, `Textarea`, `Dialog`, `Sheet`, `Table`,
 `PageHeader`, `Empty`, `StatusBadge` and `StatusDot`; keep status meaning in `status-tone.ts`.
 The shell owns the 244px rail, organization scope, command search, launch entry,
-inline active sandboxes, grouped links, footer and breadcrumb. Page actions remain with
-page content so their existing forms and authorization stay intact.
+inline active sandboxes, grouped links, footer and breadcrumb. PageHeader actions render into the top bar through ShellPageActions; their forms and authorization remain page-owned.
 
 ## Tokens
 

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ShellPageActions } from "@/components/shell-page-actions";
 
 /** The title of a page, one line saying what it holds, and its primary action on the right. */
 export function PageHeader({
@@ -22,7 +23,7 @@ export function PageHeader({
         </div>
         {description && <p className="text-sm text-pretty text-muted-foreground">{description}</p>}
       </div>
-      {children && <div className="flex shrink-0 flex-wrap items-center gap-2">{children}</div>}
+      {children && <ShellPageActions>{children}</ShellPageActions>}
     </div>
   );
 }
