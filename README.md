@@ -74,6 +74,11 @@ For self-hosted compute instead of Boat/Modal, follow the [own-machine quickstar
 
 Installing is the first step; an agent also needs a sandbox provider, model credentials, GitHub access and a ready snapshot. Each step below also has a page in the [dashboard](https://armada.thevibecompany.co), which walks a new organization through the same setup.
 
+The dashboard sidebar has **Running**, **Launch from**, **What agents have** and
+**Setup**. Start with **Setup → Machines**, then **Models** and **Your connections**;
+build a workspace at **Launch from → Snapshots → New**. **Sandboxes → Launch a sandbox** opens the launch dialog. [Dashboard navigation and terminology](docs/dave-onboarding.md#find-your-way-around-the-dashboard)
+covers Tools, template versions and routines. CLI command names below are unchanged.
+
 **1. Sign in.** The browser opens (GitHub by default, `--provider google` for Google); `--email <address>` signs you in with a code from an email instead. Use `--url <armada-url>` (or `ARMADA_URL`) for another deployment.
 
 ```sh
