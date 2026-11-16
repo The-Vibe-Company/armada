@@ -1,4 +1,5 @@
 import {
+  AuthError,
   assertEmail,
   assertEmailCode,
   assertProvider,
@@ -56,6 +57,8 @@ export async function emailVerifyRoute(request: Request, options: PublicAuthOpti
     );
   } catch (error) {
     if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
+    if (error instanceof AuthError)
+      return fail(error.code === "unavailable" ? 503 : error.code === "usage" ? 400 : 401, error.code, error.message);
     return fail(401, "unauthorized", "Email code was refused.");
   }
 }
@@ -121,6 +124,8 @@ export async function exchangeRoute(request: Request, options: PublicAuthOptions
     return Response.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
+    if (error instanceof AuthError)
+      return fail(error.code === "unavailable" ? 503 : error.code === "usage" ? 400 : 401, error.code, error.message);
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(
@@ -188,6 +193,8 @@ export async function refreshRoute(request: Request, options: PublicAuthOptions)
     return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
+    if (error instanceof AuthError)
+      return fail(error.code === "unavailable" ? 503 : error.code === "usage" ? 400 : 401, error.code, error.message);
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError)
       return fail(

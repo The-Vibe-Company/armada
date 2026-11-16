@@ -510,3 +510,36 @@ test("refresh refuses a replacement unbound legacy login under the session lock"
   });
   await expect(client.request("/api/v1/example")).rejects.toThrow("saved login changed");
 });
+
+test("session renewal preserves typed auth failures and rejects malformed sessions as unavailable", async () => {
+  for (const [payload, status, code, message] of [
+    [
+      { error: { code: "unavailable", message: "Sign-in service is unavailable. Try again later." } },
+      503,
+      "unavailable",
+      "Sign-in service is unavailable. Try again later.",
+    ],
+    [
+      { error: { code: "unauthorized", message: "Session expired. Sign in again." } },
+      401,
+      "unauthorized",
+      "Session expired. Sign in again.",
+    ],
+    [
+      { internal: "private_diagnostic" },
+      200,
+      "unavailable",
+      "Session renewal could not finish because Armada returned an invalid session. Try signing in again; if this continues, contact the server operator.",
+    ],
+  ] as const) {
+    const state = io();
+    state.session = memorySessionStore({
+      accessToken: "old_access",
+      refreshToken: "old_refresh",
+      expiresAt: "2000-01-01",
+      armadaUrl: "https://saved.armada.test",
+    });
+    state.fetch = (async () => Response.json(payload, { status })) as unknown as typeof fetch;
+    await expect(createArmadaApiClient(state)).rejects.toMatchObject({ code, message });
+  }
+});

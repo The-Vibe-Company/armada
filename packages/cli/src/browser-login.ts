@@ -1,4 +1,4 @@
-import { createPkce } from "@armada/auth";
+import { AuthError, createPkce } from "@armada/auth";
 import { armadaApiUrl } from "./armada-api.ts";
 
 export interface SessionDto {
@@ -62,14 +62,33 @@ export async function browserLogin(options: {
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({ code: value, verifier: pkce.verifier }),
     });
-    const dto = (await response.json()) as Partial<SessionDto>;
+    let dto: Partial<SessionDto> & { error?: { code?: string; message?: string } };
+    try {
+      dto = (await response.json()) as typeof dto;
+    } catch {
+      throw new AuthError(
+        "Browser sign-in could not finish because Armada returned an unreadable response. Try signing in again; if this continues, contact the server operator.",
+        "unavailable",
+      );
+    }
     if (
+      !response.ok &&
+      dto?.error &&
+      typeof dto.error.message === "string" &&
+      ["usage", "unauthorized", "unavailable"].includes(dto.error.code ?? "")
+    )
+      throw new AuthError(dto.error.message, dto.error.code as "usage" | "unauthorized" | "unavailable");
+    if (
+      !dto ||
       !response.ok ||
       typeof dto.accessToken !== "string" ||
       typeof dto.refreshToken !== "string" ||
       typeof dto.expiresAt !== "string"
     )
-      throw new Error("Login exchange was refused.");
+      throw new AuthError(
+        "Browser sign-in could not finish because Armada returned an invalid session. Try signing in again; if this continues, contact the server operator.",
+        "unavailable",
+      );
     return dto as SessionDto;
   } finally {
     await server.stop(false);
