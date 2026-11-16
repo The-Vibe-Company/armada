@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.48.0](https://github.com/The-Vibe-Company/armada/compare/v2.47.0...v2.48.0) (2026-11-16)
+
+
+### Features
+
+* **docker-host:** report free disk and enforce a launch floor ([#2317](https://github.com/The-Vibe-Company/armada/issues/2317)) ([e991318](https://github.com/The-Vibe-Company/armada/commit/e991318f159649ec04f2b6c35191ee45c4585cb5))
+
+
+### Bug Fixes
+
+* **cli:** enforce command flags and JSON output contracts ([#2337](https://github.com/The-Vibe-Company/armada/issues/2337)) ([47bd0d9](https://github.com/The-Vibe-Company/armada/commit/47bd0d91c1180e2be188d025fb33891757f0385f))
+* **core:** preserve launch outcomes across admission cleanup failures ([#2349](https://github.com/The-Vibe-Company/armada/issues/2349)) ([2036ec7](https://github.com/The-Vibe-Company/armada/commit/2036ec72b795909573ae0f79088bc22c6a90f277))
+* **dashboard:** preserve forms after unconfirmed mutation requests ([#2368](https://github.com/The-Vibe-Company/armada/issues/2368)) ([b03562d](https://github.com/The-Vibe-Company/armada/commit/b03562dac53bafbb106f36e20e2bba5d5ffbfe16))
+* **dashboard:** preserve section when switching organizations ([#2367](https://github.com/The-Vibe-Company/armada/issues/2367)) ([c86b113](https://github.com/The-Vibe-Company/armada/commit/c86b11335cc8d5786730a2612f26d02bcf6d88f8))
+* **dashboard:** restore Docker launch tools and skill controls ([#2358](https://github.com/The-Vibe-Company/armada/issues/2358)) ([033a3c0](https://github.com/The-Vibe-Company/armada/commit/033a3c051a4b51790f5bc436f098a872c4939e2e))
+* **dashboard:** scope recovery sends to attention episodes ([#2336](https://github.com/The-Vibe-Company/armada/issues/2336)) ([108333f](https://github.com/The-Vibe-Company/armada/commit/108333fcec1f049a999a0f4991e20e58432bd77c))
+* **docker-host:** enforce physical expiry independently of mailbox work ([#2354](https://github.com/The-Vibe-Company/armada/issues/2354)) ([e0f994c](https://github.com/The-Vibe-Company/armada/commit/e0f994c3df42f71b658fdac8abd1289806bfcfe4))
+* **docker-host:** preserve retention discovery through compaction ([#2356](https://github.com/The-Vibe-Company/armada/issues/2356)) ([0251770](https://github.com/The-Vibe-Company/armada/commit/025177098beaaad19c79e11e7438a619f2325ad1))
+* **docker:** distinguish store outages from authorization denials ([#2350](https://github.com/The-Vibe-Company/armada/issues/2350)) ([722cc1d](https://github.com/The-Vibe-Company/armada/commit/722cc1d7e5e28e1a58452152a2d1b4f33c80dc0f))
+* **launch:** persist and replay known launch refusals ([#2352](https://github.com/The-Vibe-Company/armada/issues/2352)) ([ede34bf](https://github.com/The-Vibe-Company/armada/commit/ede34bf8087a51b18ce7cdc25bb61694b9cccf73))
+* **runtime:** diagnose Docker and Modal GitHub credential failures ([#2364](https://github.com/The-Vibe-Company/armada/issues/2364)) ([f4b4085](https://github.com/The-Vibe-Company/armada/commit/f4b40857b93e64ec6097c6c497b1c3486c799ea9))
+* **runtime:** preserve actionable native harness failure causes ([#2338](https://github.com/The-Vibe-Company/armada/issues/2338)) ([a72d91f](https://github.com/The-Vibe-Company/armada/commit/a72d91fdbc176b22a40725fb18680c43e41fe2c6))
+* **server:** report actual queued prompt waiting cause ([#2335](https://github.com/The-Vibe-Company/armada/issues/2335)) ([efa303c](https://github.com/The-Vibe-Company/armada/commit/efa303c61061111f3a5037dac04919722b5ae748))
+
 ## [2.47.0](https://github.com/The-Vibe-Company/armada/compare/v2.46.4...v2.47.0) (2026-11-16)
 
 
