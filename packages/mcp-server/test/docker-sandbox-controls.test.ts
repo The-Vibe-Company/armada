@@ -17,6 +17,7 @@ import {
 } from "@armada/core/server";
 import { parseSandboxListMetadata } from "../../../apps/dashboard/src/lib/sandbox-access.ts";
 import { sandboxListText } from "../../cli/src/sandbox-list.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -741,32 +742,7 @@ test("normal Docker send continues the saved native conversation and retries exa
   await rejected(invoke(caller(f.admin, "admin"), "send", args, controller), "conflict");
 });
 
-test("owner-stopped Docker compute refuses new sends and resume without host dispatch", async () => {
-  const f = await fixture();
-  await ready(f);
-  const requestId = randomUUID();
-  await reservations.stop(f.actor, f.sandbox.id, requestId);
-  await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
-  const controller = createDockerSandboxControls(sql, key, {
-    send: createDockerNormalSend(sql, key, { enabled: true }),
-  });
-  await database().query("update sandboxes set status_reason='idle_paused' where id=$1", [f.sandbox.id]);
-  await invoke(caller(f.actor), "stop", { id: f.sandbox.id }, controller);
-  expect((await database().query("select status_reason from sandboxes where id=$1", [f.sandbox.id])).rows[0]).toEqual({
-    status_reason: null,
-  });
-  await rejected(
-    invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller),
-    "conflict",
-  );
-  await rejected(
-    invoke(caller(f.actor), "send", { id: f.sandbox.id, request_id: randomUUID(), prompt: "late work" }, controller),
-    "conflict",
-  );
-  expect(await hosts.poll(f.hostToken, f.installationId, "2.28.0")).toBeNull();
-});
-
-test("retained external Docker stop resumes once and never wakes a stopped sandbox for a prior prompt UUID", async () => {
+test("ordinary Docker send resumes once and never wakes a stopped sandbox for a prior prompt UUID", async () => {
   const db = database();
   const f = await fixture();
   let session = await ready(f);
@@ -780,8 +756,6 @@ test("retained external Docker stop resumes once and never wakes a stopped sandb
     const requestId = randomUUID();
     await reservations.stop(f.actor, f.sandbox.id, requestId);
     await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
-    // External retained shutdown has no owner stop intent.
-    await db.query("update sandboxes set stop_requested_at=null where id=$1", [f.sandbox.id]);
   };
   await stop();
   let now = 0,
@@ -958,4 +932,21 @@ test("Docker mutations reuse the fenced runtime mailbox and reconcile identical 
     invoke(caller(f.actor), "interrupt", { id: f.sandbox.id, request_id: randomUUID() }, controller),
   ).rejects.toMatchObject({ code: "conflict" });
   expect(delivered).toBe(4);
+});
+
+test("cancelled account dispatch cannot admit a Docker prompt or resume", async () => {
+  const f = await fixture();
+  const session = await ready(f);
+  const requestId = randomUUID();
+  const queue = createAccountTurnQueue(sql, key);
+  await queue.accept(caller(f.actor), { id: f.sandbox.id, request_id: requestId, prompt: "old work" });
+  await database().query("update account_turn_queue set state='dispatching' where sandbox_id=$1", [f.sandbox.id]);
+  await queue.cancelQueued(caller(f.actor), f.sandbox.id);
+  await expect(service.prompt(f.actor, f.sandbox.id, { requestId, text: "old work" })).rejects.toThrow();
+  expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
+  const stopId = randomUUID();
+  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
+  await expect(bootstrap.resume(f.actor, f.sandbox.id, requestId)).rejects.toThrow("Docker bootstrap denied");
+  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
 });

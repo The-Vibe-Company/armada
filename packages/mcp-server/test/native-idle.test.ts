@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import type { Provider, SandboxInfo } from "@armada/core";
+import type { Provider, SandboxInfo, Sql } from "@armada/core";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
 import { nativeQuiescent } from "../src/native-idle.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
@@ -17,7 +18,7 @@ async function fixture(mode = "quiet") {
     via: "service" as const,
   };
   const data = createSqlData(sql)(caller);
-  const placement = mode === "modal-retry" ? "modal" : "boat";
+  const placement = mode === "modal-retry" || mode === "owner-modal" ? "modal" : "boat";
   const golden =
     placement === "boat"
       ? (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!
@@ -37,6 +38,7 @@ async function fixture(mode = "quiet") {
   let clock = at + 599_999,
     stopped = false,
     stops = 0,
+    promptCalls = 0,
     observations = 0;
   const credential = (
     await db.query<{ id: string }>(
@@ -123,6 +125,7 @@ async function fixture(mode = "quiet") {
       };
     },
     quiesce: async () => {
+      if (mode.startsWith("owner-")) return;
       throw Error("Idle policy must never interrupt/quiesce native work");
     },
     interrupt: async () => {
@@ -137,7 +140,7 @@ async function fixture(mode = "quiet") {
       stderr: "",
     }),
     stop: async (request: { requireRetention?: boolean }) => {
-      expect(request.requireRetention).toBe(true);
+      if (!mode.startsWith("owner-")) expect(request.requireRetention).toBe(true);
       stops++;
       if (mode === "modal-retry" && stops === 1) {
         phase = "checkpoint";
@@ -147,6 +150,7 @@ async function fixture(mode = "quiet") {
       phase = "stopped";
     },
     prompt: async () => {
+      promptCalls++;
       stopped = false;
       return { promptId: "next", conversationId: "conversation", status: "queued", resumed: true };
     },
@@ -158,6 +162,7 @@ async function fixture(mode = "quiet") {
   };
   return {
     db,
+    sql,
     data,
     caller,
     id,
@@ -166,6 +171,7 @@ async function fixture(mode = "quiet") {
     tick,
     worker,
     stops: () => stops,
+    promptCalls: () => promptCalls,
     nonactiveObservations: () => nonactiveObservations,
     setClock: (value: number) => {
       clock = value;
@@ -335,27 +341,63 @@ test("a provider-reported lost workspace is failed, never advertised as a resuma
   await f.worker.drain();
 });
 
-test("owner stop retires an idle pause so a later send cannot wake compute", async () => {
-  const f = await fixture();
-  await f.tick();
-  f.setClock(f.at + 600_000);
-  await f.tick();
+test.each(["boat", "modal"])("%s owner stop refuses old receipts but a fresh owner send resumes", async (provider) => {
+  const f = await fixture(`owner-${provider}`);
+  const key = btoa("x".repeat(32));
+  const sql: Sql = {
+    ...f.sql,
+    transaction: (work) => f.db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const queue = createAccountTurnQueue(sql, key);
   const context = {
     caller: f.caller,
     data: f.data,
     provider: async () => f.provider,
     launchCredentials: { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) },
     exposedSecrets: async () => [],
-    now: () => new Date(f.at + 600_000),
+    now: () => new Date(f.at),
     sleep: async () => {},
   };
-  expect(await callSharedTool(context, "stop", { id: f.id })).toMatchObject({ status: "stopped" });
-  const stopped = (await f.data.sandboxes.get(f.id))!;
-  expect(stopped.statusReason).toBeNull();
-  expect(stopped.stopRequestedAt).not.toBeNull();
-  await expect(
-    callSharedTool(context, "send", { id: f.id, prompt: "late receipt", request_id: crypto.randomUUID() }),
-  ).rejects.toThrow();
+  const oldRequest = crypto.randomUUID();
+  await f.db.query("update sandboxes set status='ready',task_prompt_id=null where id=$1", [f.id]);
+  await queue.accept(f.caller, { id: f.id, request_id: oldRequest, prompt: "old work" });
+  const picked = Promise.withResolvers<void>();
+  const proceed = Promise.withResolvers<void>();
+  const dispatched: string[] = [];
+  queue.setDispatch(async (_caller, input) => {
+    if (input.request_id === oldRequest) {
+      picked.resolve();
+      await proceed.promise;
+    }
+    const receipt = await callSharedTool(context, "send", { ...input });
+    dispatched.push(input.prompt);
+    return receipt;
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await picked.promise;
+  expect(await callSharedTool({ ...context, accountTurns: queue }, "stop", { id: f.id })).toMatchObject({
+    status: "stopped",
+  });
+  proceed.resolve();
+  await queue.drain();
+  expect(await queue.status(f.caller, f.id, oldRequest)).toMatchObject({ failed: true });
+  expect(dispatched).toEqual([]);
+  expect(f.promptCalls()).toBe(0);
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  const freshRequest = crypto.randomUUID();
+  expect(
+    await callSharedTool({ ...context, accountTurns: queue }, "send", {
+      id: f.id,
+      request_id: freshRequest,
+      prompt: "new owner work",
+    }),
+  ).toMatchObject({ status: "queued" });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  expect(dispatched).toEqual(["new owner work"]);
+  expect(await queue.status(f.caller, f.id, freshRequest)).toMatchObject({ nativePromptId: "next" });
+  expect((await f.data.sandboxes.get(f.id))?.status).toBe("running");
   expect(f.stops()).toBe(1);
+  expect(f.promptCalls()).toBe(1);
   await f.worker.drain();
 });

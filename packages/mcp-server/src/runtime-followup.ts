@@ -172,6 +172,7 @@ export function createRuntimeFollowup(
           status: "running",
           clearTaskOutcome: true,
           advanceGeneration: true,
+          queueRequestId: requestId,
           activityToken: requestId,
           expectedGeneration: current.lifecycleGeneration,
         });

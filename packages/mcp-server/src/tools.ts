@@ -1764,6 +1764,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       found,
       {
         clearTaskOutcome: true,
+        ...(args.request_id ? { queueRequestId: args.request_id } : {}),
         renewLifecycle: machine.state === "stopped" && found.statusReason !== "idle_paused",
         stopRequested: false,
         ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
@@ -2197,7 +2198,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       title: "Stop a sandbox",
       description:
         "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
-        "checkpoint_failed_disk_not_retained and cannot resume. Owner stops are final; launch a new sandbox for further work. Use it when the " +
+        "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
         "agent is done, so the sandbox stops costing.",
       input: { id, request_id: z.string().uuid().optional(), only_if_idle: z.boolean().optional() },
       output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
@@ -2217,16 +2218,8 @@ export function createArmadaServer(context: ToolContext, version: string, option
         );
       // A repeated stop observes the admitted request; it must not compete with
       // its activity/reconciliation lease or replay provider hooks on archiving compute.
-      if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status)) {
-        if (found.statusReason === "idle_paused" || (found.status === "stopped" && !found.stopRequestedAt))
-          await data.sandboxes.update(found.id, {
-            statusReason: null,
-            stopRequested: true,
-            advanceGeneration: true,
-            ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
-          });
+      if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
-      }
       const { provider } = await live(args.id, true);
       return sandboxActivity(
         data.sandboxes,
@@ -2235,7 +2228,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
           status: found.status === "failed" ? "failed" : "stopping",
           stoppedAt: null,
           stopRequested: true,
-          statusReason: found.statusReason === "expired" ? "expired" : null,
+          ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
         },
         async (signal) => {
           signal.throwIfAborted();
@@ -2278,7 +2271,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
             result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
             patch: {
               status,
-              stopRequested: true,
+              stopRequested: !terminal,
               ...(status === "failed" || found.statusReason === "expired" ? { statusReason: found.statusReason } : {}),
               ...(terminal
                 ? {

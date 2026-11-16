@@ -370,9 +370,6 @@ test.each(["codex", "claude", "opencode"] as const)(
     ]);
     const resumeId = randomUUID();
     await denied(service.resume(f.admin, f.sandbox.id, resumeId));
-    await denied(service.resume(f.actor, f.sandbox.id, resumeId));
-    // A retained external shutdown has no owner stop intent.
-    await db.query("update sandboxes set stop_requested_at=null where id=$1", [f.sandbox.id]);
     expect(await service.resume(f.actor, f.sandbox.id, resumeId)).toEqual({
       requestId: resumeId,
       operation: "resume",

@@ -669,7 +669,11 @@ export function createSqlData(
           fence += " and s.stop_requested_at is null";
         if (patch.advanceGeneration && patch.activityToken && patch.stopRequested === false)
           fence +=
-            " and s.stop_requested_at is null and s.status<>'stopping' and (s.status_reason is distinct from 'idle_paused' or s.expires_at>clock_timestamp())";
+            " and (s.status_reason is distinct from 'idle_paused' or (s.status<>'stopping' and s.expires_at>clock_timestamp()))";
+        if (patch.queueRequestId !== undefined) {
+          params.push(patch.queueRequestId);
+          fence += ` and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=s.id and q.request_id=$${params.length}::uuid and q.state<>'dispatching')`;
+        }
         if (patch.expectedGeneration !== undefined) {
           params.push(patch.expectedGeneration);
           fence += ` and s.lifecycle_generation = $${params.length}`;
@@ -698,11 +702,12 @@ export function createSqlData(
           patch.taskPromptId !== undefined ||
           (patch.stoppedAt !== undefined && patch.stoppedAt !== null) ||
           patch.status === "deleted";
-        const wrapped = releaseReservation;
+        const cancelTurns = patch.stopRequested === true;
+        const wrapped = releaseReservation || cancelTurns;
         const result = await sql.query<{ id: string }>(
           `${wrapped ? "with updated as (" : ""}update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
-             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
+             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
           params,
         );
         if (!result.rows[0])

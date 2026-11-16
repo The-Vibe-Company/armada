@@ -11,8 +11,13 @@ export function sandboxControlRefusal(
   now: Date,
 ): string | null {
   const expired = !!sandbox.expiresAt && new Date(sandbox.expiresAt).getTime() <= now.getTime();
-  // Idle suspension is an intentional retained-compute wake path, not a finished sandbox.
-  if (sandbox.status === "stopped" && sandbox.statusReason === "idle_paused" && !expired) return null;
+  // Boat/Modal sends may resume retained compute; runtime admission still verifies checkpoint safety.
+  if (
+    sandbox.status === "stopped" &&
+    !expired &&
+    (sandbox.statusReason === "idle_paused" || sandbox.provider === "boat" || sandbox.provider === "modal")
+  )
+    return null;
   if (!expired && !["stopped", "failed", "expired", "deleted", "removed"].includes(sandbox.status)) return null;
   const reason = expired ? "expired" : sandbox.status;
   const prefix = `Cannot control ${sandbox.provider} sandbox: ${reason}. `;

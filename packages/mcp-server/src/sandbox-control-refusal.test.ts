@@ -5,13 +5,14 @@ const now = new Date("2026-11-16T00:00:00Z");
 test("terminal controls refuse with provider recovery guidance", () => {
   for (const status of ["stopped", "failed", "expired", "deleted", "removed"]) {
     for (const provider of ["docker", "boat", "modal"]) {
+      if (status === "stopped" && provider !== "docker") continue;
       const result = sandboxControlRefusal({ status, provider }, now);
       expect(result).toContain(status);
       expect(result).toContain(provider);
       expect(result).toContain("same branch");
     }
   }
-  expect(sandboxControlRefusal({ status: "stopped", provider: "modal", runtimeTransport: "dialout" }, now)).toContain(
+  expect(sandboxControlRefusal({ status: "failed", provider: "modal", runtimeTransport: "dialout" }, now)).toContain(
     "runtime_resume",
   );
 });

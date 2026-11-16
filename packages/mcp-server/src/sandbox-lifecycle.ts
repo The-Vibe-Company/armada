@@ -327,7 +327,7 @@ export function createSandboxLifecycle(
         -- A failed launch keeps its diagnostic even after its machine is confirmed stopped.
         status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status else status end,
         status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(nullif(status_reason,'idle_paused'),'Provider confirmed physical exit without a new verified recovery checkpoint.') when $4 and $10 and status<>'failed' then 'expired' else status_reason end,
-        stop_requested_at=case when $4 and status_reason='idle_paused' then null when status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
+        stop_requested_at=case when $4 then null when status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
         stopped_at=case when $4 then coalesce(stopped_at,$9::timestamptz,now()) else stopped_at end,
         last_observed_at=case when $5::text is null then now() else last_observed_at end,
         activity_lease_id=case when $11 and not $4 then activity_lease_id else null end,
