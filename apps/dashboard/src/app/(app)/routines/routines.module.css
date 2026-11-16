@@ -1,0 +1,95 @@
+.page {
+  width: 100%;
+  max-width: 1200px;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.page ul[aria-label="Routines"] {
+  border-radius: 10px;
+  box-shadow: none;
+}
+.page [data-routine] {
+  padding-block: 10px;
+}
+.page [data-routine]:hover {
+  background: var(--raised);
+}
+.page [data-routine] > :nth-child(3) {
+  display: block;
+  grid-column: 1;
+  grid-row: 3;
+  white-space: normal;
+}
+.page [data-routine] > :nth-child(4) {
+  grid-row: 4;
+}
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.columns {
+  display: none;
+}
+@media (min-width: 1100px) {
+  .page section[aria-label="Routines"] > div:first-child {
+    display: flex;
+    flex-direction: column;
+  }
+  .page section[aria-label="Routines"] > div:first-child > * {
+    margin-block: 0;
+  }
+  .page section[aria-label="Routines"] > div:first-child > div:not(.columns) {
+    order: 0;
+    margin-bottom: 12px;
+  }
+  .page section[aria-label="Routines"] > div:first-child:has(> ul) > .columns {
+    display: grid;
+    order: 1;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) minmax(0, 1.3fr) minmax(0, 1.3fr) 44px 92px;
+    gap: 16px;
+    padding: 9px 16px;
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-radius: 10px 10px 0 0;
+    background: var(--sunken);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .page ul[aria-label="Routines"] {
+    order: 2;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) minmax(0, 1.3fr) minmax(0, 1.3fr) 44px 92px;
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+  }
+  .page [data-routine] {
+    grid-template-columns: subgrid;
+  }
+  .page [data-routine] > :nth-child(3),
+  .page [data-routine] > :nth-child(4),
+  .page [data-routine] > :nth-child(4) > div,
+  .facts {
+    display: contents;
+  }
+  .page section[aria-label="Routines"] > div:first-child > .footer {
+    order: 3;
+    margin-top: 12px;
+  }
+  .page [data-routine] > :nth-child(4) > div > * {
+    position: relative;
+    z-index: 10;
+  }
+  .facts > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    position: relative;
+    z-index: 1;
+  }
+  .mobileLabel {
+    display: none;
+  }
+}

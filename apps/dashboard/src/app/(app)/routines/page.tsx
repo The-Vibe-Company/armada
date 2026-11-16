@@ -14,9 +14,11 @@ import { viewerTemplates } from "@/lib/data/templates";
 import { canManageRoutine, type RoutineItem, scheduleLabel } from "@/lib/routines";
 import type { TemplateHeader } from "@/lib/templates";
 
+import styles from "./routines.module.css";
+
 export const metadata: Metadata = { title: "Routines" };
 export const dynamic = "force-dynamic";
-const DESCRIPTION = "Templates launched by themselves, on a schedule.";
+const DESCRIPTION = "";
 export default async function RoutinesPage({
   searchParams,
 }: {
@@ -103,15 +105,20 @@ export default async function RoutinesPage({
               </p>
             </>
           ) : (
-            <>
-              <p>
-                {scheduleLabel(item)}, launches {template?.name ?? "an unavailable template"}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {item.nextDueAt ? `Next run ${dueLabel(item)}` : "Switched off"}
-              </p>
-            </>
+            <p>{scheduleLabel(item)}</p>
           )}
+        </div>
+      ),
+      fact: (
+        <div className={styles.facts}>
+          <span>
+            <span className={styles.mobileLabel}>Template: </span>
+            {template?.name ?? "Unavailable template"}
+          </span>
+          <span className="text-xs">
+            <span className={styles.mobileLabel}>Next: </span>
+            {dueLabel(item)}
+          </span>
         </div>
       ),
       action: (
@@ -178,53 +185,67 @@ export default async function RoutinesPage({
     };
   });
   return (
-    <ResourceBrowser
-      title="Routines"
-      description={DESCRIPTION}
-      label="Routines"
-      meta={rows.length || undefined}
-      rows={rows}
-      blockers={[]}
-      initial={typeof query.item === "string" ? query.item : null}
-      actions={
-        templatesUnavailable ? (
-          <Button asChild variant="outline">
-            <a href="/routines">Reload Routines</a>
-          </Button>
-        ) : templates.length > 0 ? (
-          <CreateRoutineDialog orgId={orgId} isAdmin={admin} templates={templates} />
-        ) : (
-          <Button asChild>
-            <Link href="/templates">Create a template</Link>
-          </Button>
-        )
-      }
-      notices={
-        templatesUnavailable ? (
-          <Alert>
-            <AlertDescription>
-              Templates could not be loaded. Existing schedules remain unchanged; use Reload Routines before creating a
-              schedule.
-            </AlertDescription>
-          </Alert>
-        ) : undefined
-      }
-      empty={
-        <Empty title="No routines yet" icon={<Clock3Icon />}>
-          {templatesUnavailable
-            ? "Reload Routines to check templates before creating a schedule."
-            : templates.length === 0
-              ? "Create a template first, then return here to schedule it. New routines stay paused until you enable them."
-              : "Choose New routine to schedule a template with a task. New routines stay paused until you enable them."}
-        </Empty>
-      }
-      footer={
-        <p className="text-xs text-muted-foreground">
-          Personal routines are yours alone; organization routines are managed by admins. New routines start paused so
-          you can check them before enabling. Later template changes do not apply.
-        </p>
-      }
-    />
+    <div className={styles.page}>
+      <ResourceBrowser
+        title="Routines"
+        description={DESCRIPTION}
+        label="Routines"
+        meta={rows.length || undefined}
+        rows={rows}
+        blockers={[]}
+        initial={typeof query.item === "string" ? query.item : null}
+        actions={
+          templatesUnavailable ? (
+            <Button asChild variant="outline">
+              <a href="/routines">Reload Routines</a>
+            </Button>
+          ) : templates.length > 0 ? (
+            <CreateRoutineDialog orgId={orgId} isAdmin={admin} templates={templates} />
+          ) : (
+            <Button asChild>
+              <Link href="/templates">Create a template</Link>
+            </Button>
+          )
+        }
+        notices={
+          templatesUnavailable ? (
+            <Alert>
+              <AlertDescription>
+                Templates could not be loaded. Existing schedules remain unchanged; use Reload Routines before creating
+                a schedule.
+              </AlertDescription>
+            </Alert>
+          ) : null
+        }
+        empty={
+          <Empty title="No routines yet" icon={<Clock3Icon />}>
+            {templatesUnavailable
+              ? "Reload Routines to check templates before creating a schedule."
+              : templates.length === 0
+                ? "Create a template first, then return here to schedule it. New routines stay paused until you enable them."
+                : "Choose New routine to schedule a template with a task. New routines stay paused until you enable them."}
+          </Empty>
+        }
+        footer={
+          <>
+            {rows.length > 0 && (
+              <div className={styles.columns} aria-hidden="true">
+                <span>Routine</span>
+                <span>When</span>
+                <span>Template</span>
+                <span>Next (UTC)</span>
+                <span>On</span>
+                <span className="text-right">Runs</span>
+              </div>
+            )}
+            <p className={`${styles.footer} text-xs text-muted-foreground`}>
+              Personal routines are yours alone; organization routines are managed by admins. New routines start paused
+              so you can check them before enabling. Later template changes do not apply.
+            </p>
+          </>
+        }
+      />
+    </div>
   );
 }
 function dueLabel(item: RoutineItem) {

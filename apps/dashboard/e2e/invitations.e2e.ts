@@ -22,11 +22,14 @@ const mockState = async () =>
 async function openAcme(page: Page) {
   await signIn(page, "alice@example.com", "/orgs");
   await page.getByRole("link", { name: /Acme/ }).click();
-  await expect(page.getByRole("heading", { name: "Invite a teammate" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Invite a member", exact: true })).toBeVisible();
 }
 
 async function invite(page: Page, email: string, role: "member" | "admin" = "member") {
-  await page.getByLabel("Email").fill(email);
+  if (!(await page.getByRole("dialog", { name: "Invite a member" }).isVisible())) {
+    await page.getByRole("button", { name: "Invite a member", exact: true }).click();
+  }
+  await page.getByLabel("Email", { exact: true }).fill(email);
   await page.getByLabel("Role", { exact: true }).selectOption(role);
   await page.getByRole("button", { name: "Send invitation" }).click();
 }
@@ -88,7 +91,7 @@ test("the recipient signs in from the link, sees the org and joins only by accep
   await expect(page).toHaveURL(/\/login\?next=%2Finvitations%2Faccept$/);
   await expect(page.getByText("Use the address your invitation was sent to.")).toBeVisible();
   await page.getByLabel("Email").fill("carol@example.com");
-  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
+  await page.getByRole("button", { name: "Email me a code" }).click();
   await page.getByLabel("Code").fill("123456");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.waitForURL("**/invitations/accept");
@@ -181,6 +184,7 @@ test("an unconfirmed invitation change hides diagnostics and offers observation 
   await invite(page, "carol@example.com");
   await expect(alert(page)).toContainText("Reload this organization");
   await expect(alert(page)).not.toContainText(diagnostic);
+  await page.keyboard.press("Escape");
   await expect(page.locator('[data-member="bob@example.com"]')).toBeVisible();
   for (const [name, width] of [
     ["desktop", 1280],

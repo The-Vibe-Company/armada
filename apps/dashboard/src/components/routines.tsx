@@ -243,11 +243,10 @@ export function RoutineToggle({ item, orgId }: { item: RoutineItem; orgId: strin
       >
         <span
           aria-hidden
-          className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 ${enabled ? "bg-emerald-600" : "bg-muted"}`}
+          className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 ${enabled ? "bg-primary" : "bg-muted"}`}
         >
           <span className={`size-4 rounded-full bg-background ${enabled ? "translate-x-4" : ""}`} />
         </span>
-        {enabled ? "On" : "Off"}
       </SubmitButton>
     </ActionForm>
   );
