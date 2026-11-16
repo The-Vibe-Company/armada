@@ -58,10 +58,11 @@ struct ArmadaKitServices: SandboxService {
         }
     }
 
-    func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStatus {
+    func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStopOutcome {
         try await requireOrganization(orgID)
         do {
-            return SandboxStatus(rawValue: try await client.stopSandbox(id: id).status)
+            let receipt = try await client.stopSandbox(id: id)
+            return SandboxStopOutcome(status: SandboxStatus(rawValue: receipt.status), preservationWarning: receipt.preservationWarning)
         } catch {
             throw Self.sandboxMutationFailure(error, refused: "Armada refused to stop this sandbox. Its latest state is shown.")
         }
@@ -188,6 +189,8 @@ struct ArmadaKitServices: SandboxService {
         case .failed: .failed
         case .deleted: .deleted
         case .unknownStatus: .unknownStatus
+        case .expired: .expired
+        case .cannotResume: .cannotResume
         }
         return SandboxState(
             status: SandboxStatus(rawValue: value.status),
@@ -197,7 +200,10 @@ struct ArmadaKitServices: SandboxService {
             }) },
             admission: admission,
             canStop: value.canStop,
-            isWorking: value.isWorking
+            isWorking: value.isWorking,
+            expiresAt: value.expiresAt.flatMap { try? date($0) },
+            preservationWarning: SandboxStopReceipt.preservationWarning(value.preservationNote),
+            failureExplanation: SandboxPresentation.sandboxFailure(value.statusReason)
         )
     }
 

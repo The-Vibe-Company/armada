@@ -111,3 +111,10 @@ offered: `/api/v1` has no delete route for a sandbox.
 Stored sessions remain origin-bound and preserve their selected organization.
 Unknown persisted command fields are ignored and never replayed. Removing the local
 client does not stop or delete server-side compute.
+
+Sandbox failure presentation is generated from core's closed diagnosis mapping (the same
+mapping the dashboard uses). After changing that vocabulary, run
+`bun apps/ios/scripts/generate-presentation.ts` from the repository root; use `--check`
+to verify the committed output. Unknown codes use public recovery guidance rather
+than exposing internal text. The existing wire fixture and harness generator were
+current when the expiry, stop receipt, and interruption presentation were aligned.
