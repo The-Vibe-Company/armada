@@ -2,7 +2,7 @@
 
 Current-session Playwright Chromium 1254 captures of prototype `Armada.dc.html`, served with `python3 -m http.server 8091 --directory docs/design/refonte-2026-11-16`, and fixture dashboard `bun run dev`. Source: `6eba3b417b3d788bb2a4d3808897939364fac7db`. Linux libraries/fonts were supplied locally under `/tmp`. No deployed service or provider was used.
 
-The default organization is Acme, signed in as Alice. Working uses the default recorded events. Waiting/stopped/failed use the existing fixture lifecycle/event endpoints, with completed or failed prompt outcomes and retained tool results. Starting retains queued/previous history. The diff captures use recorded Edit old/new payloads and Bash command/result events. Large captures use its existing seeded owner-visible sandboxes. An expired deadline is a lifecycle notice, not an invented `expired` sandbox status. Its prototype cell is empty because the prototype offers no dedicated expired thread.
+The default organization is Acme, signed in as Alice. Working uses the default recorded events. Waiting/stopped/failed use the existing fixture lifecycle/event endpoints, with completed or failed prompt outcomes and retained tool results. Starting retains queued/previous history. The diff and command-results captures use recorded Edit old/new payloads and Bash command/result events. The command-results captures expand successful test/push output and retain a running PR command. Large captures use its existing seeded owner-visible sandboxes. An expired deadline is a lifecycle notice, not an invented `expired` sandbox status. Its prototype cell is empty because the prototype offers no dedicated expired thread.
 
 These compare layout and supported controls across different task content; they do not assert identical business data. Prototype phone rows were selected by dispatching click events because its fixed-width overlay intercepts pointer input. The prototype itself clips horizontally at 390px; the fixture retains a usable phone layout.
 
@@ -61,6 +61,11 @@ These compare layout and supported controls across different task content; they 
 | Large / expired / 390×844 / dark | No dedicated prototype state | ![Fixture Large expired-phone-dark](fixture-large-expired-phone-dark.png) |
 | Large / expired / 390×844 / light | No dedicated prototype state | ![Fixture Large expired-phone-light](fixture-large-expired-phone-light.png) |
 
+| Acme / command results, push and running / 1440×900 / dark | ![Prototype command-results-desktop-dark](prototype-command-results-desktop-dark.png) | ![Fixture command-results-desktop-dark](fixture-command-results-desktop-dark.png) |
+| Acme / command results, push and running / 1440×900 / light | ![Prototype command-results-desktop-light](prototype-command-results-desktop-light.png) | ![Fixture command-results-desktop-light](fixture-command-results-desktop-light.png) |
+| Acme / command results, push and running / 390×844 / dark | ![Prototype command-results-phone-dark](prototype-command-results-phone-dark.png) | ![Fixture command-results-phone-dark](fixture-command-results-phone-dark.png) |
+| Acme / command results, push and running / 390×844 / light | ![Prototype command-results-phone-light](prototype-command-results-phone-light.png) | ![Fixture command-results-phone-light](fixture-command-results-phone-light.png) |
+
 ## Delivered
 
 - One shell breadcrumb with adjacent status; full UUID available as a tooltip. Page-owned controls retain their existing authorization checks.
@@ -87,3 +92,5 @@ These compare layout and supported controls across different task content; they 
 - Full dashboard journeys were not run. The relevant thread-control and viewport journeys above were run. These captures document remaining visual differences and are not a claim of coordinator acceptance.
 
 Migration files: none. Deployment prerequisites: none added. No deployments, production operations, or migrations performed.
+
+The coordinator merged the source slices as #2514 (header/details approved) and #2517 (composer pickers approved; phone layout not yet viewed). The remaining evidence PR adds captures; those comments are not claimed as full visual acceptance.
