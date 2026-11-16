@@ -8,11 +8,9 @@ export function PageHeader({
   description,
   meta,
   children,
-  inlineActions = false,
 }: {
   inlineActions?: boolean;
   title: string;
-  inlineActions?: boolean;
   description?: ReactNode;
   /** A quiet fact beside the title, such as how many items the page holds. */
   meta?: ReactNode;

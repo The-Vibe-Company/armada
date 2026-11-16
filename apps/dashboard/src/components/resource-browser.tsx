@@ -261,9 +261,7 @@ export function ResourceBrowser({
   const tabs = catalogFilters ?? (filters ? [{ key: "all", label: "All" }, ...filters] : undefined);
   const matchesFilter = (row: ResourceRow, key: string) =>
     catalogFilters ? inCategory(row, key) : key === "all" || row.filters?.includes(key);
-  const shown = rows.filter(
-    (row) => (!query || matchesQuery(row.search, query)) && matchesFilter(row, filter),
-  );
+  const shown = rows.filter((row) => (!query || matchesQuery(row.search, query)) && matchesFilter(row, filter));
   const current = rows.find((row) => row.key === selected) ?? null;
   const currentIndex = shown.findIndex((row) => row.key === selected);
   const move = (delta: number) => {
@@ -327,7 +325,14 @@ export function ResourceBrowser({
                   type="search"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder={searchPlaceholder ?? (catalogFilters ? title === "Snapshots" ? "Search snapshots or repositories" : "Search templates" : "Filter by name, provider, repository…")}
+                  placeholder={
+                    searchPlaceholder ??
+                    (catalogFilters
+                      ? title === "Snapshots"
+                        ? "Search snapshots or repositories"
+                        : "Search templates"
+                      : "Filter by name, provider, repository…")
+                  }
                   className="h-[34px] pl-8 text-[13px]"
                 />
               </div>
@@ -338,7 +343,19 @@ export function ResourceBrowser({
           ) : shown.length === 0 ? (
             <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
               Nothing matches “{query}”.
-              {tabs && <Button variant="outline" size="sm" className="mx-auto mt-3 block" onClick={() => { setQuery(""); setFilter("all"); }}>Clear filters</Button>}
+              {tabs && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mx-auto mt-3 block"
+                  onClick={() => {
+                    setQuery("");
+                    setFilter("all");
+                  }}
+                >
+                  Clear filters
+                </Button>
+              )}
             </p>
           ) : columns ? (
             <div className="overflow-x-auto rounded-[10px] border bg-card">
@@ -447,11 +464,11 @@ export function ResourceBrowser({
               className="flex h-dvh flex-col overflow-hidden border-l bg-background shadow-2xl"
             >
               <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
+                {catalogFilters && current?.mark}
                 <div className="min-w-0 space-y-0.5">
                   <h2
                     id={titleId}
-                    data-catalog-panel={!!catalogFilters || undefined}
-              data-resource-panel-title
+                    data-resource-panel-title
                     ref={titleRef}
                     tabIndex={-1}
                     className="break-words text-base font-semibold tracking-tight outline-none"
@@ -556,7 +573,10 @@ function Row({
                 </span>
               </a>
             </Button>
-            {row.tags}
+            {catalog && row.catalog?.version && (
+              <span className="font-mono text-xs text-muted-foreground">{row.catalog.version}</span>
+            )}
+            {!catalog && row.tags}
           </div>
           <div
             title={typeof row.meta === "string" ? row.meta : undefined}
@@ -574,12 +594,31 @@ function Row({
         ))
       ) : (
         <>
-          <div data-catalog-status={catalog || undefined} className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto">{row.state}</div>
-          {catalog && <div data-catalog-body className="space-y-3">{row.catalog?.body}{row.fact}</div>}
+          <div
+            data-catalog-status={catalog || undefined}
+            className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto"
+          >
+            {row.state}
+          </div>
+          {catalog && (
+            <div data-catalog-body className="space-y-3">
+              {row.catalog?.body}
+              {row.fact}
+            </div>
+          )}
           <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{!catalog && row.fact}</div>
           <div className="relative z-10 col-start-1 row-start-3 flex justify-start @sm:col-start-2 @sm:row-span-2 @sm:row-start-1 @sm:justify-end @xl:col-start-auto @xl:row-span-1 @xl:row-start-auto">
-            {(row.foot || row.catalog?.footer) && <span className="mr-auto min-w-0 truncate text-xs text-muted-foreground">{row.foot ?? row.catalog?.footer}</span>}
-            {row.action ?? (catalog && <Button variant="outline" size="sm" onClick={onSelect}>{row.catalog?.attention ? "See why" : "Details"}</Button>)}
+            {(row.foot || row.catalog?.footer) && (
+              <span className="mr-auto min-w-0 truncate text-xs text-muted-foreground">
+                {row.foot ?? row.catalog?.footer}
+              </span>
+            )}
+            {row.action ??
+              (catalog && (
+                <Button variant="outline" size="sm" onClick={onSelect}>
+                  {row.catalog?.attention ? "See why" : "Details"}
+                </Button>
+              ))}
           </div>
         </>
       )}
