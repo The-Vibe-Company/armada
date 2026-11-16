@@ -28,7 +28,8 @@ export async function dockerDiskFreeBytes(cli: DockerMachineCli): Promise<number
   }
 }
 
-/** Fresh local proof closes the heartbeat-to-dispatch race. Cleanup is never gated. */
+/** Fresh local proof closes the heartbeat-to-dispatch race for allocations/builds.
+ * Retained resume and cleanup reuse owned resources and never require new disk proof. */
 export function withDiskFloor(executor: Executor, sample: () => Promise<number | null>): Executor {
   return {
     ...executor,
@@ -36,14 +37,6 @@ export function withDiskFloor(executor: Executor, sample: () => Promise<number |
       requireDockerDiskSpace(await sample());
       return executor.create(request);
     },
-    ...(executor.resume
-      ? {
-          async resume(request) {
-            requireDockerDiskSpace(await sample());
-            return executor.resume!(request);
-          },
-        }
-      : {}),
     ...(executor.buildSnapshot
       ? {
           async buildSnapshot(job, recoverOnly) {

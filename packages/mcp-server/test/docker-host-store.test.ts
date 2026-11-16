@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, type Sql } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
-import { admitDockerCapacity } from "../src/docker-capacity.ts";
+import { admitDockerDisk } from "../src/docker-capacity.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, selfFinishToken } from "../src/sandbox-finish.ts";
@@ -921,9 +921,9 @@ test("reported Docker filesystem bytes gate new reservations below 10 GB and unk
   for (const diskFreeBytes of [null, 10_000_000_000, 0, 9_999_999_999]) {
     await store.poll(a.hostToken, a.installationId, "2.48.0", false, undefined, undefined, diskFreeBytes);
     expect((await store.list(a.actor))[0]?.diskFreeBytes).toBe(diskFreeBytes);
-    const admission = admitDockerCapacity(sql, a.hostId);
+    const admission = admitDockerDisk(sql, a.hostId);
     if (diskFreeBytes !== null && diskFreeBytes < 10_000_000_000)
-      await expect(admission).rejects.toThrow("less than 10 GB free");
+      await expect(admission).rejects.toThrow("10 GB floor");
     else await expect(admission).resolves.toBeUndefined();
   }
 });

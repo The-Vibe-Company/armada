@@ -350,6 +350,11 @@ test.each(["codex", "claude", "opencode"] as const)(
     const stopId = randomUUID();
     await reservations.stop(f.actor, f.sandbox.id, stopId);
     await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
+    // Resuming a retained allocation never pulls an image or creates another home volume.
+    await db.query("update public.docker_hosts set disk_free_bytes=$2 where id=$1", [
+      f.hostId,
+      harness === "claude" ? null : 0,
+    ]);
     const resumeId = randomUUID();
     await denied(service.resume(f.admin, f.sandbox.id, resumeId));
     expect(await service.resume(f.actor, f.sandbox.id, resumeId)).toEqual({

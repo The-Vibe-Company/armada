@@ -1131,10 +1131,12 @@ is shown as unknown, never as zero or invented free space. Reports are as fresh
 as the host's last check-in, not a reservation or a guarantee of launch success.
 
 Server admission refuses known-below-floor hosts before dispatch. The daemon
-also takes a fresh measurement before create, resume and new snapshot builds,
+also takes a fresh measurement before create and new snapshot builds,
 before image pulls/builds can consume space. Unknown measurements fail closed
 locally with a safe disk-space diagnostic; stop/delete/expiry and retention
-cleanup remain available. A pending snapshot build recovery does not allocate
+cleanup remain available. Retained resume starts the existing container without
+pulling an image or allocating a new home and remains available below the floor.
+A pending snapshot build recovery does not allocate
 new space and is not gated. The floor is a preflight, not a disk quota or a
 prediction of how much an arbitrary image/build will consume.
 

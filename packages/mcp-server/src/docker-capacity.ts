@@ -1,5 +1,5 @@
 import { ProviderError, type Sql } from "@armada/core";
-import { DOCKER_DISK_FLOOR_BYTES } from "../../core/src/docker-disk-policy.ts";
+import { DOCKER_DISK_FLOOR_BYTES, DOCKER_DISK_FLOOR_MESSAGE } from "../../core/src/docker-disk-policy.ts";
 import { dockerResourcePolicy } from "../../core/src/docker-resources.ts";
 
 export type DockerPolicyRow = {
@@ -8,7 +8,6 @@ export type DockerPolicyRow = {
   sandbox_cpus: number | null;
   sandbox_memory_bytes: number | string | null;
   max_sandboxes: number | null;
-  disk_free_bytes?: number | string | null;
   available_cpus?: number | null;
   available_memory_bytes?: number | string | null;
 };
@@ -57,6 +56,19 @@ export class DockerHostFull extends ProviderError {
   }
 }
 
+/** New reservations may allocate/pull; retained resume is CPU/memory admission only.
+ * Missing telemetry retains older-daemon compatibility; the daemon always checks fresh proof locally. */
+export async function admitDockerDisk(tx: Sql, hostId: string): Promise<void> {
+  const host = (
+    await tx.query<{ disk_free_bytes: number | string | null }>(
+      "select disk_free_bytes from public.docker_hosts where id=$1",
+      [hostId],
+    )
+  ).rows[0];
+  if (host?.disk_free_bytes != null && Number(host.disk_free_bytes) < DOCKER_DISK_FLOOR_BYTES)
+    throw new DockerLimitsRefused("conflict", DOCKER_DISK_FLOOR_MESSAGE);
+}
+
 /** Caller must hold the host row FOR UPDATE. Pending starts reserve capacity too:
  * releasing only after a physical stop/delete ACK prevents concurrent over-admission.
  * Failed/expired logical state alone is not proof the container stopped.
@@ -64,15 +76,10 @@ export class DockerHostFull extends ProviderError {
 export async function admitDockerCapacity(tx: Sql, hostId: string): Promise<void> {
   const host = (
     await tx.query<DockerPolicyRow & { name: string | null }>(
-      "select name,disk_free_bytes,machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,available_cpus,available_memory_bytes from public.docker_hosts where id=$1",
+      "select name,machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,available_cpus,available_memory_bytes from public.docker_hosts where id=$1",
       [hostId],
     )
   ).rows[0];
-  if (host?.disk_free_bytes != null && Number(host.disk_free_bytes) < DOCKER_DISK_FLOOR_BYTES)
-    throw new DockerLimitsRefused(
-      "conflict",
-      `Host ${host.name ?? hostId} has less than 10 GB free on its Docker data filesystem; free space and retry.`,
-    );
   if (!host || host.machine_cpus == null || host.machine_memory_bytes == null) return;
   const { rows } = await tx.query<{ running: string | number }>(
     `select (${DOCKER_CAPACITY_USAGE_SQL}) as running from public.docker_hosts h where h.id=$1`,

@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerHostSummary,
   type DockerJobFailureReason,
   type Sql,
@@ -318,7 +319,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       [
         row.id,
         reason === "disk_full"
-          ? "Host disk free space is below the required 10 GB floor or unavailable; free space and retry."
+          ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
           : reason === "image_unavailable" && operation === "create"
             ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
             : "Docker sandbox startup failed.",
@@ -1120,7 +1121,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                   : result.outcome === "completed"
                     ? "Snapshot build authorization is no longer valid."
                     : result.reason === "disk_full"
-                      ? "Host disk free space is below the required 10 GB floor or unavailable; free space and retry."
+                      ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
                       : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
               ],
             );

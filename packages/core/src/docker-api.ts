@@ -1,5 +1,6 @@
 import type { Harness } from "./contract.ts";
 import type { CredentialKind } from "./database.types.ts";
+import { DOCKER_DISK_FLOOR_MESSAGE } from "./docker-disk-policy.ts";
 import { GITHUB_CALLER_NOT_CONNECTED } from "./github.ts";
 import type { GitHubLaunchInfo } from "./launch.ts";
 import type { MachineSize, MachineSizeEvidence } from "./machine-size.ts";
@@ -141,6 +142,7 @@ export const DOCKER_IMAGE_UNAVAILABLE_MESSAGE =
   "Your host could not fetch the image. Check that the image exists and that the host can reach its registry, then launch again.";
 /** Public diagnostics for admitted launch preparation; never derive these from command output. */
 export const DOCKER_LAUNCH_FAILURE_MESSAGES = {
+  disk: DOCKER_DISK_FLOOR_MESSAGE,
   startup: "Docker sandbox startup failed. Check the host and retry with a new request.",
   github:
     "Repository authorization failed. Connect GitHub and grant access to the requested repositories, then launch again.",
