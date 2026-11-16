@@ -50,7 +50,14 @@ export interface ServerSandboxStore extends SandboxStore {
     id: string,
   ): Promise<Pick<
     SandboxView,
-    "provider" | "status" | "statusReason" | "expiresAt" | "boatRuntime" | "runtimeTransport" | "preservationNote"
+    | "provider"
+    | "status"
+    | "statusReason"
+    | "expiresAt"
+    | "boatRuntime"
+    | "runtimeTransport"
+    | "preservationNote"
+    | "credentialId"
   > | null>;
   recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
   assertExtensionAllowed?(id: string): Promise<void>;
@@ -735,9 +742,10 @@ export function createSqlData(
             | "boatRuntime"
             | "runtimeTransport"
             | "preservationNote"
+            | "credentialId"
           >
         >(
-          `select s.provider,s.status,s.preservation_note as "preservationNote",s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport"
+          `select s.credential_id as "credentialId",s.provider,s.status,s.preservation_note as "preservationNote",s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport"
            from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3`,
           [...scope, id],
         );

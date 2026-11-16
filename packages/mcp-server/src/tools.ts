@@ -441,6 +441,14 @@ export function createArmadaServer(context: ToolContext, version: string, option
               ? await data.sandboxes.controlState(input.id as string)
               : await visible(input.id as string);
             if (!found) throw new ToolError("not_found", `No sandbox with id '${input.id}' that you can see.`);
+            // A retained legacy Modal workspace needs its owner's explicit account binding
+            // before any control, including controls that require running compute.
+            if (
+              found.provider === "modal" &&
+              !found.credentialId &&
+              !sandboxControlRefusal(found, context.now(), "send")
+            )
+              throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
             const refusal = sandboxControlRefusal(found, context.now(), name);
             if (refusal) throw new ToolError("sandbox_terminal", refusal);
           }
