@@ -21,3 +21,17 @@ export function accountWorkingCountSql(account: string, exclude = "null::uuid"):
             and q.state='dispatching' and q.dispatch_generation=ended.lifecycle_generation))
   ) account_work)`;
 }
+
+/** A queue receipt is not itself evidence of waiting for account capacity. */
+export function accountWaitingCountSql(account: string, limit: string): string {
+  return `(select count(*) from public.account_turn_queue q join public.sandboxes waiting on waiting.id=q.sandbox_id
+    where q.account_id=${account} and q.state='queued' and ${limit} is not null
+    and ${accountWorkingCountSql(account)}>=${limit}
+    and waiting.credential_id=q.account_id and waiting.credential_version=q.credential_version
+    and not exists(select 1 from public.account_agent_reservations own_slot where own_slot.sandbox_id=waiting.id and own_slot.account_id=q.account_id)
+    and not (${ACCOUNT_WORKING_PREDICATE.replaceAll("s.", "waiting.")})
+    and not exists(select 1 from public.account_turn_queue active where active.sandbox_id=waiting.id and active.state='dispatching')
+    and waiting.deleted_at is null and waiting.expires_at>now() and waiting.stop_requested_at is null
+    and waiting.status in ('ready','running','stopped')
+    and (waiting.status<>'stopped' or waiting.lifecycle_generation=q.queued_generation))`;
+}

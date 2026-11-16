@@ -1,12 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { AUTH_HEADER, type Driver, Journal, Runner } from "../src/index.ts";
 
 // Exercises read-only transport against the test machine's /proc. This is NOT provider isolation evidence.
 test("resource observation requires auth, rejects extra inputs and bypasses replay/event/process persistence", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "armada-resource-reading-"));
   const grant = {
     token: "fixture-private-resource-grant",
     sandboxId: "logical",
@@ -19,7 +15,7 @@ test("resource observation requires auth, rejects extra inputs and bypasses repl
     },
     async close() {},
   };
-  const journal = new Journal(join(dir, "journal"), (text) => text);
+  const journal = new Journal(":memory:", (text) => text);
   const runner = new Runner(journal, grant, { claude: unused, codex: unused });
   const request = (token: string, extra: object = {}) =>
     runner.handle(
@@ -53,7 +49,7 @@ test("resource observation requires auth, rejects extra inputs and bypasses repl
     expect(journal.events(0, 100)).toHaveLength(0);
     expect(journal.db.query("SELECT count(*) as count FROM processes").get()).toEqual({ count: 0 });
   } finally {
+    await runner.close();
     journal.close();
-    rmSync(dir, { recursive: true, force: true });
   }
 });
