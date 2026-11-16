@@ -438,7 +438,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
             const found = data.sandboxes.controlState
               ? await data.sandboxes.controlState(input.id as string)
               : await visible(input.id as string);
-            if (!found) throw new ToolError("not_found", "Sandbox not found.");
+            if (!found) throw new ToolError("not_found", `No sandbox with id '${input.id}' that you can see.`);
             const refusal = sandboxControlRefusal(found, context.now());
             if (refusal) throw new ToolError("sandbox_terminal", refusal);
           }
