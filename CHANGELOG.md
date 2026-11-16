@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.49.4](https://github.com/The-Vibe-Company/armada/compare/v2.49.3...v2.49.4) (2026-11-16)
+
+
+### Bug Fixes
+
+* **control:** resume preserved stopped cloud sandboxes on send ([#2469](https://github.com/The-Vibe-Company/armada/issues/2469)) ([e1a3e69](https://github.com/The-Vibe-Company/armada/commit/e1a3e69b2ba4ac3820853857c0126614981b5053))
+* **github:** propagate managed authority lookup failures ([#2462](https://github.com/The-Vibe-Company/armada/issues/2462)) ([f9947c5](https://github.com/The-Vibe-Company/armada/commit/f9947c59df5b1120968fa48fab919816295dd627))
+* **launch:** preserve definitive refusal causes across clients ([#2454](https://github.com/The-Vibe-Company/armada/issues/2454)) ([45ceace](https://github.com/The-Vibe-Company/armada/commit/45ceacef9f80f46b19f5780b62605972c2947568))
+* **runtime:** preserve public sandbox and prompt failure diagnoses ([#2463](https://github.com/The-Vibe-Company/armada/issues/2463)) ([fc24f96](https://github.com/The-Vibe-Company/armada/commit/fc24f96fa9829de3d8cbe1a869dc669f253911d7))
+
 ## [2.49.3](https://github.com/The-Vibe-Company/armada/compare/v2.49.2...v2.49.3) (2026-11-16)
 
 
