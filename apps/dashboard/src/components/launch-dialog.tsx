@@ -250,6 +250,9 @@ export function LaunchStart(
           hostId={target.hostId}
           hostName={target.group.replace(/ · your own server.*$/, "")}
           accounts={options?.accounts ?? props.accounts}
+          connections={
+            options?.connections ?? (!host ? props.connections : { unavailable: "Still loading connections." })
+          }
           unavailable={host ? props.unavailable : []}
           harnesses={target.harnesses ?? ["codex"]}
           initialHarness={target.initialHarness ?? "codex"}
@@ -266,7 +269,9 @@ export function LaunchStart(
           {...(target.sizing ? { sizing: target.sizing } : {})}
           accounts={options?.accounts ?? props.accounts}
           catalog={options?.catalog ?? (!host ? props.catalog : MODEL_CATALOG)}
-          connections={options?.connections ?? (!host ? props.connections : { connections: [] })}
+          connections={
+            options?.connections ?? (!host ? props.connections : { unavailable: "Still loading connections." })
+          }
           boatOpenCodeAvailable={options?.boatOpenCodeAvailable ?? (!host && props.boatOpenCodeAvailable === true)}
           templateChooser={chooser}
           {...common}
@@ -308,7 +313,7 @@ function LaunchForm({
       (account) => account.id === value && accountProblem(account, accounts.now) === null,
     );
   const canDelegate = provider !== "docker" && harness === "codex" && usableCodexAccount(credential);
-  const access = useLaunchAccess(provider === "docker" ? { connections: [] } : connections);
+  const access = useLaunchAccess(connections);
   const root = useRef<HTMLDivElement>(null);
   const launchKey = useRef<LaunchKey | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -478,7 +483,7 @@ function LaunchForm({
               </span>
             }
           >
-            {provider !== "docker" && <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />}
+            <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
             {provider !== "docker" && sizing && (
               <MachineSizeField
                 idPrefix={id}
@@ -488,7 +493,7 @@ function LaunchForm({
                 onSize={setSize}
               />
             )}
-            {provider !== "docker" && access.fields(id)}
+            {access.fields(id)}
             {provider !== "docker" && (
               <div className="space-y-1.5">
                 <Label htmlFor={`${id}-armada-access`} className="flex min-h-11 items-center gap-2">
@@ -719,7 +724,7 @@ export function RepositoryField({
  *
  * The alerts render outside the collapsed Advanced area, so nothing that holds or limits a launch is hidden.
  */
-function useLaunchAccess(connections: LaunchConnections) {
+export function useLaunchAccess(connections: LaunchConnections) {
   // Null until the person changes the selection: the defaults apply until then.
   const [picked, setPicked] = useState<string[] | null>(null);
   // A requested default that is not connected holds the launch until the person reconnects it or explicitly goes
@@ -898,7 +903,7 @@ function ConnectionOption({
 }
 
 /** The Tools the agent can call a launch gets, as one summary fact. */
-function mcpFact(access: { unavailable: boolean; selected: number; selectedName?: string | undefined }): string {
+export function mcpFact(access: { unavailable: boolean; selected: number; selectedName?: string | undefined }): string {
   if (access.unavailable) return "Tools unavailable";
   if (access.selected === 1 && access.selectedName) return `${access.selectedName} connected`;
   return access.selected === 0 ? "No tools" : `${access.selected} ${access.selected === 1 ? "tool" : "tools"}`;
