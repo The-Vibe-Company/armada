@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { accountWorkingCountSql } from "./account-work-sql.ts";
+import { accountWaitingCountSql, accountWorkingCountSql } from "./account-work-sql.ts";
 import { type AgentDefault, HARNESS_KINDS } from "./credentials.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore, GitHubUser, StoredGitHubConnection } from "./github.ts";
@@ -318,7 +318,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         kind: string;
         created_at: string | Date;
       }>(
-        `select id,name,max_agents,${accountWorkingCountSql("credentials.id")} as running_agents,(select count(*) from public.account_turn_queue q where q.account_id=credentials.id and q.state='queued') as waiting_agents,is_default,status,expires_at,updated_at,version,kind::text as kind, created_at from public.credentials
+        `select id,name,max_agents,${accountWorkingCountSql("credentials.id")} as running_agents,${accountWaitingCountSql("credentials.id", "credentials.max_agents")} as waiting_agents,is_default,status,expires_at,updated_at,version,kind::text as kind, created_at from public.credentials
          where scope = $1::public.credential_scope and owner_id = $2
          order by kind`,
         [scope, ownerId],

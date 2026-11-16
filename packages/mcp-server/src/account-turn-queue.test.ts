@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import type { Sql } from "@armada/core/server";
+import { accountWaitingCountSql, type Sql, VaultError } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
@@ -345,7 +345,7 @@ test("a proven pre-dispatch rejection requeues without leaking the account reser
     calls++;
     if (calls === 1) {
       await db.query("insert into runtime_commands values($1,1,'readonly_get_prompt')", [input.id]);
-      throw Error("reconcile lease won admission after getPrompt probe");
+      throw new VaultError("conflict", "reconcile lease won admission after getPrompt probe");
     }
     return { promptId: "accepted_after_retry", conversationId: "history", status: "running" };
   });
@@ -552,4 +552,42 @@ test("forward repair fails historical stopped rows and preserves live queued wor
   queue.setDispatch(async (_caller, input) => ({ promptId: input.request_id, status: "running" }));
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
+});
+
+test("stranded receipts settle without replay while safe unlimited and paused work dispatches", async () => {
+  for (const id of ids) await queue.accept(caller, { id, request_id: requests[0]!, prompt: "historical" });
+  await db.query("update sandboxes set activity_lease_id=$2 where id=$1", [ids[0], requests[0]]);
+  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
+  await db.query("update sandboxes set status='running',task_prompt_id='busy_turn' where id=$1", [ids[2]]);
+  const count = async () =>
+    Number(
+      (
+        await db.query<{ n: string }>(
+          `select ${accountWaitingCountSql("'" + account + "'::uuid", "(select max_agents from credentials limit 1)")} as n`,
+        )
+      ).rows[0]!.n,
+    );
+  expect(await count()).toBe(1); // Only paused work needs a new slot; busy targets already own one.
+  await db.exec("update credentials set max_agents=null");
+  expect(await count()).toBe(0);
+  await db.query("update sandboxes set status='ready',task_prompt_id=null where id=$1", [ids[2]]);
+  const waiting = await db.query<{ n: string }>(
+    `select ${accountWaitingCountSql("'" + account + "'::uuid", "null::int")} as n`,
+  );
+  expect(Number(waiting.rows[0]!.n)).toBe(0);
+  await db.exec(
+    await Bun.file(
+      new URL("../../../supabase/migrations/20261116072000_settle_stranded_account_queue.sql", import.meta.url),
+    ).text(),
+  );
+  expect(await queue.status(caller, ids[0]!, requests[0])).toMatchObject({ failed: true });
+  const sent: string[] = [];
+  queue.setDispatch(async (_caller, input) => {
+    sent.push(input.id);
+    if (input.id === ids[2]) throw new VaultError("invalid", "Invalid historical input");
+    return { promptId: input.request_id, status: "running" };
+  });
+  while (await queue.reconcileOne(new AbortController().signal)) await queue.drain();
+  expect(sent).toEqual([ids[1]!, ids[2]!]);
+  expect(await queue.status(caller, ids[2]!, requests[0])).toMatchObject({ failed: true });
 });

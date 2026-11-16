@@ -270,6 +270,12 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       if (!dispatch || pending.size >= 32 || signal.aborted) return false;
       if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
       const picked = await (async () => {
+        // Older replicas could leave a queued receipt after publishing its request.
+        // Never replay it (especially on native providers without idempotency).
+        await sql.query(`update public.account_turn_queue q set state='failed',
+          failure_reason='Queued receipt already has dispatch evidence; inspect sandbox history before resending.'
+          from public.sandboxes s where q.sandbox_id=s.id and q.state='queued'
+          and (s.task_prompt_id=q.request_id::text or ${RUNTIME_REQUEST_EVIDENCE})`);
         await sql.query(`update public.account_turn_queue q set state='failed',
           failure_reason='Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.'
           from public.sandboxes s where q.sandbox_id=s.id and q.state='queued'
@@ -380,7 +386,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
                delete from public.account_agent_reservations r using admitted a where r.sandbox_id=a.sandbox_id`,
             [input.id, picked.entry.request_id, await encryptSecret(JSON.stringify(result), key)],
           );
-        } catch {
+        } catch (error) {
           // Retry only when durable evidence proves no model mutation began. Generation/lease
           // fences native and runtime sends; journals and host jobs additionally fence Docker.
           await sql.transaction!(async (tx) => {
@@ -398,11 +404,19 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               [picked.entry.sandbox_id, picked.entry.request_id],
             );
             if (unchanged.rows.length) {
+              const retry = error instanceof VaultError && (error.code === "conflict" || error.code === "unavailable");
               await tx.query(
-                `with retried as (update public.account_turn_queue set state='queued',failure_reason=null,dispatch_generation=null,dispatch_until=null
+                `with retried as (update public.account_turn_queue set state=$3,failure_reason=$4,dispatch_generation=null,dispatch_until=null
                 where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
                 delete from public.account_agent_reservations r using retried q where r.sandbox_id=q.sandbox_id`,
-                [picked.entry.sandbox_id, picked.entry.request_id],
+                [
+                  picked.entry.sandbox_id,
+                  picked.entry.request_id,
+                  retry ? "queued" : "failed",
+                  retry
+                    ? null
+                    : "Queued prompt rejected before dispatch; inspect sandbox and account settings before resending.",
+                ],
               );
             } else {
               // No raw exception text: provider diagnostics may contain credentials.
