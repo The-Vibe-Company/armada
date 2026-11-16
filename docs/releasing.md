@@ -273,12 +273,20 @@ running their deployment. An already admitted ordinary deployment finishes safel
 Reservation is conservative: Release preparation and dry runs also briefly defer
 ordinary staging; they still do not read production configuration.
 
-A `workflow_run` completion wakeup (success or failure) resolves current main,
+A `workflow_run` completion wakeup (success, failure or cancellation) resolves current main,
 not the release SHA, and uses the ordinary staging path. Intermediate wakeups
 yield if another Release remains; push/completion wakeups coalesce in the same
 latest-main group. There is no manual merge pause. API or main-resolution failure
 fails closed. Schema-changing merges flow normally; their staging migrations wait
 until the release relinquishes its reservation. Never cancel live smoke blindly.
+Completion journals carry the triggering Release run ID. The shared ordinary and
+pinned receipt consumer authenticates the producer repository, branch and workflow,
+then fetches that Release and requires trusted repository/branch, Release workflow,
+push/manual event and completed status. Missing or invalid provenance fails closed;
+cleanup receipts are preserved rather than discarded. A cancelled Release therefore
+still wakes newest main; a later active Release can defer it again. Continuous
+queued releases do not guarantee ordinary staging progress.
+
 Already-running old workflow revisions are not changed by this source update.
 
 Owner proof: updated PR/queue/release-please deployment events create no smoke

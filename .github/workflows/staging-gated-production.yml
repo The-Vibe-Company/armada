@@ -139,6 +139,11 @@ jobs:
         run: bash .release-tools/scripts/release/deploy-production.sh
       - run: bun install --frozen-lockfile
         if: steps.admission.outputs.deferred != 'true' && (steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true')
+      - name: Record Release completion provenance
+        if: github.event_name == 'workflow_run' && steps.admission.outputs.deferred != 'true'
+        run: |
+          mkdir -p .smoke
+          jq '{id: .workflow_run.id}' "$GITHUB_EVENT_PATH" > .smoke/release-trigger.json
       - name: Restore staging smoke receipts across branches and tags
         if: steps.admission.outputs.deferred != 'true' && (steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true')
         env:
@@ -155,14 +160,16 @@ jobs:
           if [[ -n "$artifact" ]]; then
             run=$(jq -r '.artifacts[0].workflow_run.id' "$RUNNER_TEMP/smoke-candidates.json")
             # Artifacts from arbitrary PR workflows must never authorize deletion.
-            gh api "repos/$GH_REPO/actions/runs/$run" | jq -e --arg repo "$GH_REPO" '
-              .head_repository.full_name == $repo and
-              (.event == "push" or .event == "workflow_dispatch" or .event == "deployment_status") and
-              (.head_branch == "main" or (.head_branch | test("^v[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$"))) and
-              (.path == ".github/workflows/post-deploy-smoke.yml" or
-               .path == ".github/workflows/staging-gated-production.yml" or
-               .path == ".github/workflows/release.yml")' > /dev/null
+            gh api "repos/$GH_REPO/actions/runs/$run" > "$RUNNER_TEMP/receipt-run.json"
             gh api "repos/$GH_REPO/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/smoke-journal.zip"
+            release_args=()
+            if [[ "$(jq -r .event "$RUNNER_TEMP/receipt-run.json")" == workflow_run ]]; then
+              # This file is uploaded by the authenticated wakeup workflow itself.
+              trigger=$(unzip -p "$RUNNER_TEMP/smoke-journal.zip" release-trigger.json | jq -er '.id | select(type == "number" and . > 0)')
+              gh api "repos/$GH_REPO/actions/runs/$trigger" > "$RUNNER_TEMP/receipt-release.json"
+              release_args=("$RUNNER_TEMP/receipt-release.json")
+            fi
+            bun .release-tools/scripts/release/smoke-receipt.ts "$RUNNER_TEMP/receipt-run.json" "$GH_REPO" "${release_args[@]}"
             unzip -p "$RUNNER_TEMP/smoke-journal.zip" sandboxes.json > .smoke/sandboxes.json
           fi
       - name: Smoke pinned staging
@@ -185,7 +192,9 @@ jobs:
         if: steps.admission.outputs.deferred != 'true' && (steps.evidence.outputs.reused != 'true' && always() && hashFiles('.smoke/sandboxes.json') != '')
         with:
           name: armada-staging-smoke-journal
-          path: .smoke/sandboxes.json
+          path: |
+            .smoke/sandboxes.json
+            .smoke/release-trigger.json
           include-hidden-files: true
           retention-days: 30
       - name: Report blocked production
