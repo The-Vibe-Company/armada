@@ -24,7 +24,8 @@ function setup(drivers = { claude: unused, codex: unused }) {
     dir,
     journal,
     runner,
-    close() {
+    async close() {
+      await runner.close();
       journal.close();
       rmSync(dir, { recursive: true, force: true });
     },
@@ -88,6 +89,7 @@ test.skipIf(process.platform !== "linux")(
     // Exec recovery reuses one SQL connection; disk-reopen durability belongs to staging.
     const journal = new Journal(":memory:", (text) => text);
     const runner = new Runner(journal, grant, { claude: unused, codex: unused });
+    let resumed: Runner | undefined;
     try {
       const response = await call(runner, {
         op: "exec",
@@ -105,7 +107,7 @@ test.skipIf(process.platform !== "linux")(
       }
       const restarted = new Runner(journal, grant, { claude: unused, codex: unused });
       expect((await call(restarted, { op: "checkpoint" })).status).toBe(200);
-      const resumed = new Runner(journal, { ...grant, generation: "g2" }, { claude: unused, codex: unused });
+      resumed = new Runner(journal, { ...grant, generation: "g2" }, { claude: unused, codex: unused });
       const detached = await (
         await call(resumed, { op: "exec", input: { sandboxId: "logical", command: "printf done", detached: true } })
       )
@@ -121,6 +123,8 @@ test.skipIf(process.platform !== "linux")(
       }
       expect(state?.result).toMatchObject({ status: "exited", exitCode: 0, stdout: "done" });
     } finally {
+      await resumed?.close();
+      await runner.close();
       journal.close();
     }
   },
@@ -236,12 +240,7 @@ test.skipIf(process.platform !== "linux")(
         try {
           process.kill(-pid, "SIGKILL");
         } catch {}
-      for (let attempt = 0; attempt < 10000 && pid; attempt++) {
-        const row = s.journal.db.query("SELECT body FROM processes WHERE pid=?").get(pid) as { body: string };
-        if (JSON.parse(row.body).status === "exited") break;
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
-      s.close();
+      await s.close();
     }
   },
 );
@@ -276,7 +275,7 @@ test("revoking a dial-out request kills its synchronous exec before returning", 
   } finally {
     watcher.close();
     stop.abort();
-    s.close();
+    await s.close();
   }
 });
 
