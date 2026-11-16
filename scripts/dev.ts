@@ -1,3 +1,5 @@
+import { assertLocalPortsAvailable } from "./local-ports.ts";
+
 /** Local fixture-only dashboard. Never point this command at a real Armada deployment. */
 const dashboardPort = 3100;
 const mockPort = 54399;
@@ -20,16 +22,7 @@ const env = {
   NODE_OPTIONS: "--require=./e2e/github-fetch.cjs",
 };
 
-// Refuse occupied ports rather than silently reusing an unrelated server.
-for (const port of [mockPort, dashboardPort]) {
-  try {
-    const probe = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
-    probe.stop(true);
-  } catch {
-    console.error(`Port ${port} is occupied. Stop the existing process before running bun run dev.`);
-    process.exit(1);
-  }
-}
+assertLocalPortsAvailable([mockPort, dashboardPort]);
 const children = [
   Bun.spawn(["bun", "e2e/mock-supabase.ts"], { cwd: "apps/dashboard", env, stdout: "inherit", stderr: "inherit" }),
   Bun.spawn(["bun", "--bun", "next", "dev", "-p", String(dashboardPort), "-H", "127.0.0.1"], {
@@ -54,5 +47,3 @@ try {
   stop();
   await Promise.all(children.map((child) => child.exited));
 }
-
-export {};

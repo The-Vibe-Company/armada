@@ -32,7 +32,7 @@ test("staging checker status and stop preserve CLI public-proxy routes, identity
           async (input: string | URL | Request, init?: RequestInit) => {
             const upstream = new Request(input, init);
             forwarded.push({ url: upstream.url, body: await upstream.json() });
-            return Response.json({ id, status: "stopped" });
+            return Response.json({ id, status: "stopped", settled: true, prompt: null });
           },
           { preconnect: fetch.preconnect },
         ),

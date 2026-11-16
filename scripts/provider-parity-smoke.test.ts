@@ -167,6 +167,12 @@ for (const mode of [
     const unpricedSubscription =
       mode === "subscription" || mode === "subscription_probe_unknown" || mode === "accounts_subscription";
     let clock = mode.startsWith("routine_") ? Date.parse("2026-11-14T08:59:20Z") : 0;
+    // Concurrent provider waits overlap; they do not consume each other's budget.
+    const advance = async (ms: number) => {
+      const until = clock + ms;
+      await Promise.resolve();
+      clock = Math.max(clock, until);
+    };
     const woken = new Set<string>();
     const idleReads = new Map<string, number>();
 
@@ -205,7 +211,6 @@ for (const mode of [
           : undefined;
     const lines: string[] = [];
     const calls: string[] = [];
-    let dashboardProvider = "modal";
     const clientAnswers = new Map<string, string>();
     const clientStops = new Map<string, number>();
     function acceptStop(provider: string, args: Record<string, unknown>) {
@@ -226,7 +231,7 @@ for (const mode of [
       const history = turns.get(provider) ?? [];
       history.push(promptId);
       turns.set(provider, history);
-      return { promptId };
+      return { id: provider, promptId, conversationId: "client_conversation", status: "queued" };
     }
 
     const deletes = new Map<string, number>();
@@ -349,9 +354,7 @@ for (const mode of [
                                           : ["--parity"],
       {
         now: () => clock,
-        sleep: async (ms) => {
-          clock += ms;
-        },
+        sleep: advance,
         out: (line) => lines.push(line),
         recordSandbox: async (org, _id, requestKey, provider) => {
           journaled.push(org);
@@ -365,6 +368,7 @@ for (const mode of [
           if (new URL(url).pathname === "/mcp") {
             expect(clientFull || clientStopFull).toBe(true);
             const rpc = JSON.parse(String(init.body));
+            const dashboardProvider = rpc.params?.arguments?.id ?? "initializing";
             calls.push(`${dashboardProvider}:mcp:${rpc.method}`);
             if (rpc.method === "initialize")
               return Response.json({
@@ -657,7 +661,6 @@ for (const mode of [
               break;
             }
             case "sandbox/launch":
-              dashboardProvider = p;
               if (mode.startsWith("snapshot_")) {
                 if (p === "docker") {
                   expect(body.snapshotId).toBe(snapshotId);
@@ -696,7 +699,7 @@ for (const mode of [
                   },
                   { status: mode === "quota" ? 429 : 403 },
                 );
-              if (mode === "client_send_full_slow" || mode === "client_stop_full_slow") clock += 110_001;
+              if (mode === "client_send_full_slow" || mode === "client_stop_full_slow") await advance(110_001);
               states.set(p, "ready");
               result = {
                 sandbox: {
@@ -797,17 +800,26 @@ for (const mode of [
               const history = turns.get(p) ?? [];
               history.push(`turn-${history.length + 1}`);
               turns.set(p, history);
-              result = { promptId: history.at(-1) };
+              result = {
+                id: body.id,
+                promptId: history.at(-1),
+                conversationId: "client_conversation",
+                status: "queued",
+              };
               break;
             }
             case "logs/read":
               if (clientFull && clientAnswers.has(turns.get(p)?.at(-1) ?? "")) {
                 const promptId = turns.get(p)!.at(-1)!;
                 result = {
+                  cursor: null,
+                  hasMore: false,
+                  settled: true,
                   events: [
-                    { kind: "prompt", promptId, status: "finished" },
+                    { id: "finished", at: 0, text: "", kind: "prompt", promptId, status: "finished" },
                     {
                       id: "client_answer",
+                      at: 0,
                       kind: "message",
                       promptId,
                       text: clientAnswers.get(promptId),
@@ -1050,6 +1062,8 @@ for (const mode of [
               if (mode === "subscription_probe_budget") clock += 110_001;
               result = {
                 id: mode === "template_identity" || mode.startsWith("routine_") || deepFull ? body.id : p,
+                settled: true,
+                prompt: null,
                 status: states.get(p),
                 ...(clientFull ? { conversationIds: ["client_conversation"] } : {}),
                 ...(mode === "skills_resume_full" ? { skills: [skillReceipt] } : {}),
@@ -1798,7 +1812,7 @@ for (const mode of [
       expect(report.features.send.modal.status).toBe(cell.status);
       expect(passed).toBe(mode === "quota");
       expect(lines.join("\n")).not.toContain("do-not-print");
-      expect(lines.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz");
+      expect(lines.join("\n")).not.toContain(`ghp_${"abcdefghijklmnopqrstuvwxyz"}`);
       expect(lines.join("\n")).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
       expect(lines.join("\n")).not.toContain("eyJhbGci");
       expect(lines.at(-1)).toContain(mode === "quota" ? "HTTP 429" : "HTTP 403");

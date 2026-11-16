@@ -7,6 +7,7 @@ import {
   SandboxAttentionActions,
   SandboxAttentionRefresh,
 } from "@/components/sandbox-attention-actions";
+import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
 import { viewerGateway } from "@/lib/data/gateway";
 import { listMemberships, type Viewer } from "@/lib/data/viewer";
@@ -123,6 +124,12 @@ export async function SandboxAttention({ sandbox, viewer }: { sandbox: Sandbox; 
           <div className="min-w-0 flex-1">
             <p className="font-medium">{title}</p>
             {detail && <p className="mt-1 text-xs text-muted-foreground">{detail}</p>}
+            {sandbox.status === "failed" && view.state.outcome && (
+              <div className="mt-2 space-y-1">
+                <OutcomeBadge outcome={view.state.outcome} />
+                <OutcomeDetail outcome={view.state.outcome} />
+              </div>
+            )}
           </div>
           {action}
         </section>

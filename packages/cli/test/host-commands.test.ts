@@ -36,7 +36,7 @@ async function capture(args: string[], fetcher: (request: Request) => Promise<Re
       auth: {
         out: () => {},
         err: () => {},
-        env: { ARMADA_TOKEN: "armada_sk_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO12" },
+        env: { ARMADA_TOKEN: "armada_sk_fixture_token" },
         session: memorySessionStore(),
         now: () => new Date(now),
         open: () => {},
@@ -219,10 +219,32 @@ test("host retention sends a duration to the owner API and show prints reported 
   const shown = await capture(["host", "show", hostId], async () =>
     Response.json({
       placement: true,
-      hosts: [{ ...summary, retentionSeconds: 86400, nextCleanupAt: "2026-11-20T00:00:00Z" }],
+      hosts: [
+        { ...summary, diskFreeBytes: 12345678900, retentionSeconds: 86400, nextCleanupAt: "2026-11-20T00:00:00Z" },
+      ],
     }),
   );
   expect(shown.code).toBe(0);
+  expect(shown.out).toContain("Docker disk free: 12.35 GB (12345678900 bytes); launch floor: 10 GB");
   expect(shown.out).toContain("Retention: 86400s");
   expect(shown.out).toContain("Next cleanup: 2026-11-20T00:00:00Z");
+});
+
+test("host mutation JSON is a single receipt without prose or registration polling", async () => {
+  for (const [argv, response, expected] of [
+    [["add"], ticket(), ticket()],
+    [["revoke", hostId], { revoked: true }, { hostId, revoked: true }],
+    [["limits", hostId, "--auto"], {}, { hostId, auto: true }],
+    [["retention", hostId, "--retention", "24h"], {}, { hostId, retentionSeconds: 86400 }],
+  ] as const) {
+    let calls = 0;
+    const result = await capture(["host", ...argv, "--json"], async () => {
+      calls++;
+      return Response.json(response);
+    });
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.out)).toEqual(expected);
+    expect(calls).toBe(1);
+    expect(result.slept).toBe(0);
+  }
 });

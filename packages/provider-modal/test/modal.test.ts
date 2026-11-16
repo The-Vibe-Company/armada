@@ -2511,7 +2511,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("configureMcp serializes transient authority with turn admission, returns only revision and never persists config", async () => {
     const db = database();
-    const f = fixture();
+    const configured = deferred();
+    const f = fixture(scope, db, undefined, undefined, undefined, async () => {
+      await configured.promise;
+    });
     const row = await runningFork(f);
     const entered = deferred(),
       release = deferred();
@@ -2539,17 +2542,26 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         f.provider.prompt({ sandboxId: row.id, harness, text: "queued behind authoritative config" }),
       ),
     );
-    await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "conflict" });
-    expect(f.log.at(-1)).toBe("configureMcp");
-    release.resolve();
-    expect(await configuring).toEqual({ revision: configuration.revision });
-    const receipts = await prompts;
-    expect(new Set(receipts.map((x) => x.promptId)).size).toBe(2);
-    expect(f.log.indexOf("configureMcp")).toBeLessThan(f.log.indexOf("prompt"));
-    const stored = JSON.stringify((await db.query("select record from public.modal_machines")).rows);
-    expect(stored).not.toContain(configuration.revision);
-    expect(stored).not.toContain("synthetic-private-auth");
-    expect(stored).not.toContain("private.example");
+    void prompts.catch(() => {});
+    try {
+      await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "conflict" });
+      expect(f.log.at(-1)).toBe("configureMcp");
+      release.resolve();
+      expect(await configuring).toEqual({ revision: configuration.revision });
+      configured.resolve();
+      const receipts = await prompts;
+      expect(new Set(receipts.map((x) => x.promptId)).size).toBe(2);
+      expect(f.log.indexOf("configureMcp")).toBeLessThan(f.log.indexOf("prompt"));
+      const stored = JSON.stringify((await db.query("select record from public.modal_machines")).rows);
+      expect(stored).not.toContain(configuration.revision);
+      expect(stored).not.toContain("synthetic-private-auth");
+      expect(stored).not.toContain("private.example");
+    } finally {
+      release.resolve();
+      await configuring.catch(() => {});
+      configured.resolve();
+      await prompts.catch(() => {});
+    }
   });
   test("configureMcp resumes under the new generation lease, supports empty servers, rejects bad receipts and sealed goldens", async () => {
     const f = fixture();

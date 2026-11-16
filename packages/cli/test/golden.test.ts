@@ -206,7 +206,7 @@ describe("golden command", () => {
     const auth = loggedIn("22222222-2222-4222-8222-222222222222", fetch, { SUPABASE_ANON_KEY: "anon" });
     await auth.session.clear();
     const result = await capture(["golden", "list"], { auth });
-    expect(result.code).toBe(1);
+    expect(result.code).toBe(3);
     expect(result.err).toContain("You are not signed in. Run armada login.");
   });
 });
@@ -270,6 +270,7 @@ async function asUser<T>(db: PGlite, userId: string, run: () => Promise<T>): Pro
 
 function loggedIn(userId: string, fetchImpl: AuthIo["fetch"], env: Record<string, string>): AuthIo {
   const session = memorySessionStore({
+    ...(env.ARMADA_URL ? { armadaUrl: env.ARMADA_URL } : {}),
     userId,
     accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
     refreshToken: "refresh",

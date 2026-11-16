@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { resolveSkillpackCredential } from "../src/credentials.ts";
 import { decryptSecret, encryptSecret } from "../src/crypto.ts";
 import { resolveGitHubAccess } from "../src/github.ts";
@@ -31,8 +30,8 @@ import { migratedDatabase } from "./support/database.ts";
 const database = migratedDatabase();
 
 const KEY = Buffer.alloc(32, 9).toString("base64");
-const CLAUDE = "sk-ant-oat01-user-token";
-const ORG_CLAUDE = "sk-ant-oat01-org-token";
+const CLAUDE = "claude_user_token";
+const ORG_CLAUDE = "claude_org_token";
 const AUTH_JSON = '{"OPENAI_API_KEY":null,"tokens":{"access_token":"at-secret"}}';
 
 describe("orgs and members", () => {
@@ -386,6 +385,172 @@ describe("Skillpack registry credentials", () => {
 });
 
 describe("named model accounts", () => {
+  test("account creation defaults agree across legacy and named paths without resetting overrides", async () => {
+    await withVault(async ({ store, people }) => {
+      const org = await createOrg(store, people.stan, "Defaults");
+      for (const scope of ["user", "org"] as const) {
+        const owner = scope === "user" ? people.stan : org.id;
+        for (const kind of ["morph", "openai"] as const) {
+          const expected = kind === "morph" ? 2 : null;
+          const write = () => store.upsertCredential(scope, owner, kind, new Uint8Array([1]), people.stan);
+          const current = async () =>
+            (await store.listCredentials(scope, owner)).find((row) => row.kind === kind && row.status !== "deleted")!;
+          await write();
+          expect((await current()).maxAgents).toBe(expected);
+          for (const maxAgents of [5, null]) {
+            await store.mutateAccount!(
+              people.stan,
+              {
+                action: "limits",
+                scope,
+                org: org.id,
+                id: (await current()).id!,
+                maxAgents,
+              },
+              undefined,
+              KEY,
+            );
+            await write();
+            expect((await current()).maxAgents).toBe(maxAgents);
+          }
+          await store.mutateAccount!(
+            people.stan,
+            {
+              action: "remove",
+              scope,
+              org: org.id,
+              id: (await current()).id!,
+            },
+            undefined,
+            KEY,
+          );
+          await write();
+          expect((await current()).maxAgents).toBe(expected);
+          await store.mutateAccount!(
+            people.stan,
+            {
+              action: "remove",
+              scope,
+              org: org.id,
+              id: (await current()).id!,
+            },
+            undefined,
+            KEY,
+          );
+          const named = await store.mutateAccount!(
+            people.stan,
+            {
+              action: "set",
+              scope,
+              org: org.id,
+              kind,
+            },
+            new Uint8Array([1]),
+            KEY,
+          );
+          expect(named.maxAgents).toBe(expected);
+          const unlimited = await store.mutateAccount!(
+            people.stan,
+            {
+              action: "set",
+              scope,
+              org: org.id,
+              kind,
+              maxAgents: null,
+            },
+            new Uint8Array([1]),
+            KEY,
+          );
+          expect(unlimited.maxAgents).toBeNull();
+          for (const id of [named.id!, unlimited.id!])
+            await store.mutateAccount!(people.stan, { action: "remove", scope, org: org.id, id }, undefined, KEY);
+        }
+      }
+    });
+  });
+
+  test("Morph model limits preserve exact native and OpenCode launch identities", async () => {
+    await withVault(async ({ store, people }) => {
+      const account = await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "user",
+        kind: "morph",
+        value: "morph_account_placeholder",
+        model: "morph-kimik31",
+        maxAgents: 1,
+      });
+      expect(account.maxAgents).toBe(2);
+      expect(account.modelLimits).toEqual({ "morph-kimik31": 1 });
+      for (const [model, maxAgents] of [
+        ["morph-kimik31", 2],
+        ["armada/morph-kimik31", 1],
+      ] as const) {
+        const saved = await mutateCredentialAccount(store, KEY, people.stan, {
+          action: "limits",
+          scope: "user",
+          id: account.id!,
+          model,
+          maxAgents,
+        });
+        expect(saved.modelLimits?.[model]).toBe(maxAgents);
+      }
+      const saved = (await store.listCredentials("user", people.stan)).find((row) => row.id === account.id)!;
+      expect(saved.modelLimits).toEqual({ "morph-kimik31": 2, "armada/morph-kimik31": 1 });
+      await expect(
+        mutateCredentialAccount(store, KEY, people.stan, {
+          action: "limits",
+          scope: "user",
+          id: account.id!,
+          model: "armada/opus",
+          maxAgents: 1,
+        }),
+      ).rejects.toThrow("Account cannot serve model armada/opus");
+    });
+  });
+
+  test("plain OpenCode accounts limit native catalog identifiers rather than connection deployments", async () => {
+    await withVault(async ({ store, people }) => {
+      const first = await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "user",
+        kind: "opencode",
+        value: "opencode_account_placeholder",
+      });
+      await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "user",
+        kind: "opencode",
+        value: "second_account_placeholder",
+      });
+      for (const model of ["opencode/model-a", "opencode-go/model-b"]) {
+        const saved = await mutateCredentialAccount(store, KEY, people.stan, {
+          action: "limits",
+          scope: "user",
+          id: first.id!,
+          model,
+          maxAgents: 1,
+        });
+        expect(saved.modelLimits?.[model]).toBe(1);
+      }
+      expect((await store.listCredentials("user", people.stan)).map((row) => row.modelCounts)).toEqual([
+        {
+          "opencode/model-a": { runningAgents: 0, waitingAgents: 0 },
+          "opencode-go/model-b": { runningAgents: 0, waitingAgents: 0 },
+        },
+        {},
+      ]);
+      await expect(
+        mutateCredentialAccount(store, KEY, people.stan, {
+          action: "limits",
+          scope: "user",
+          id: first.id!,
+          model: "armada/deepseek-flash",
+          maxAgents: 1,
+        }),
+      ).rejects.toThrow("Account cannot serve model");
+    });
+  });
+
   test("legacy kind-set requires an ID when another compatible kind has duplicate accounts", async () => {
     await withVault(async ({ store, people }) => {
       for (const kind of ["openai", "anthropic"] as const) {
@@ -409,7 +574,7 @@ describe("named model accounts", () => {
     });
   });
   test("ID mutations authorize owners/admins, preserve secret revisions and pin selection across default changes", async () => {
-    await withIsolatedVault(async ({ store, people, db }) => {
+    await withVault(async ({ store, people, db }) => {
       const org = await createOrg(store, people.stan, "Accounts");
       await addMember(store, people.stan, { org: org.id, email: "ada@example.com", role: "member" });
       // Canonical account operations, including explicit CAS, run as the real service role.
@@ -617,7 +782,7 @@ interface People {
 
 describe("GitHub connections", () => {
   test("reconnecting B discards cached A and the next launch resolves B", async () => {
-    await withIsolatedVault(async ({ store, db, people }) => {
+    await withVault(async ({ store, db, people }) => {
       await db.query(
         `insert into github_connections (user_id, github_id, login, refresh_token_enc, access_token_enc, access_expires_at)
          values ($1, 1, 'account-a', $2, $3, '2099-01-01')`,
@@ -652,7 +817,7 @@ describe("GitHub connections", () => {
   });
 
   test("a failed best-effort profile write does not roll back consumed token rotation", async () => {
-    await withIsolatedVault(async ({ store, db, people }) => {
+    await withVault(async ({ store, db, people }) => {
       await db.query(
         "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 1, 'before', $2)",
         [people.stan, await encryptSecret("refresh-before", KEY)],
@@ -811,16 +976,12 @@ async function withVault(run: VaultRun, db = database()): Promise<void> {
     "insert into auth.users (id, email) values ($1, 'stan@example.com'), ($2, 'ada@example.com'), ($3, 'bob@example.com')",
     [people.stan, people.ada, people.bob],
   );
-  await run({ db, store: createSqlVaultStore(db), people });
-}
-
-// Schema, session-role and JWT-setting tests need independent databases.
-async function withIsolatedVault(run: VaultRun): Promise<void> {
-  const db = await openMigratedDatabase();
   try {
-    await withVault(run, db);
+    await run({ db, store: createSqlVaultStore(db), people });
   } finally {
-    await db.close();
+    await db.exec(
+      "reset role; reset all; set search_path=public; drop trigger if exists refuse_profile on github_connections; drop function if exists refuse_profile()",
+    );
   }
 }
 
@@ -829,7 +990,7 @@ captureGitHubAuditLogs();
 
 // Real migrated vault is the owner of credential grouping, encrypted delivery and user-JWT fences.
 test("OpenCode accounts keep independent defaults, sealed endpoints and the model-account RLS fence", async () => {
-  await withIsolatedVault(async ({ store, people, db }) => {
+  await withVault(async ({ store, people, db }) => {
     const org = await createOrg(store, people.stan, "OpenCode accounts");
     const apiKey = crypto.randomUUID();
     const codex = await mutateCredentialAccount(store, KEY, people.stan, {

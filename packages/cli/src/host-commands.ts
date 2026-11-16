@@ -7,7 +7,7 @@ import {
   isRecord as record,
   validDockerHostResources,
 } from "@armada/core";
-import { parseArgs, single } from "./args.ts";
+import { flag, parseArgs, single } from "./args.ts";
 import { type ArmadaApiClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 
@@ -41,6 +41,9 @@ export async function listHosts(client: ArmadaApiClient, org: string): Promise<D
       !(host.version === undefined || host.version === null || typeof host.version === "string") ||
       (host.running !== undefined && (!Number.isSafeInteger(host.running) || Number(host.running) < 0)) ||
       (host.resources !== undefined && host.resources !== null && !validDockerHostResources(host.resources)) ||
+      (host.diskFreeBytes !== undefined &&
+        host.diskFreeBytes !== null &&
+        (!Number.isSafeInteger(host.diskFreeBytes) || Number(host.diskFreeBytes) < 0)) ||
       !Number.isSafeInteger(host.sandboxes) ||
       Number(host.sandboxes) < 0
     )
@@ -82,7 +85,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
               : [];
   if (
     !allowed.length ||
-    [...args.options.keys()].some((key) => !allowed.includes(key)) ||
+    [...args.options.keys()].some((key) => !["--json", ...allowed].includes(key)) ||
     args.positionals.length !== (["revoke", "show", "limits", "retention"].includes(operation) ? 1 : 0)
   )
     return invalid(HELP.trim());
@@ -115,6 +118,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
         if (operation === "show")
           auth.out(`Retention: ${host.retentionSeconds == null ? "unknown (upgrade host)" : `${host.retentionSeconds}s`}
 Requested retention: ${host.retentionOverrideSeconds == null ? "host default" : `${host.retentionOverrideSeconds}s`}
+Docker disk free: ${host.diskFreeBytes == null ? "unknown (upgrade/check host)" : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB (${host.diskFreeBytes} bytes)`}; launch floor: 10 GB
 Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.lastSeenAt ?? "never"})
 `);
       }
@@ -132,7 +136,11 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
       method: "POST",
       body: JSON.stringify({ org, hostId: resolved, retentionSeconds: seconds }),
     });
-    auth.out("Retention saved. The host applies it on its next check-in; inspect with armada host show.\n");
+    auth.out(
+      flag(args, "--json")
+        ? `${JSON.stringify({ hostId: resolved, retentionSeconds: seconds })}\n`
+        : "Retention saved. The host applies it on its next check-in; inspect with armada host show.\n",
+    );
     return 0;
   }
   if (operation === "limits") {
@@ -169,7 +177,9 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
       body: JSON.stringify({ org, hostId: resolved, ...patch }),
     });
     auth.out(
-      "Host limits updated. Use armada host show to inspect the policy. Container changes apply on the next start or resume.\n",
+      flag(args, "--json")
+        ? `${JSON.stringify({ hostId: resolved, ...patch })}\n`
+        : "Host limits updated. Use armada host show to inspect the policy. Container changes apply on the next start or resume.\n",
     );
     return 0;
   }
@@ -179,7 +189,9 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
       body: JSON.stringify({ org, hostId }),
     });
     if (result?.revoked !== true) return invalid("The server did not confirm host revocation.");
-    auth.out(`Revoked Docker host ${hostId}.\n`);
+    auth.out(
+      flag(args, "--json") ? `${JSON.stringify({ hostId, revoked: true })}\n` : `Revoked Docker host ${hostId}.\n`,
+    );
     return 0;
   }
   const ticket = await client.request<DockerHostRegistrationResponse & { command: string; expiresAt: string }>(
@@ -199,6 +211,10 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
     !Number.isFinite(Date.parse(ticket.expiresAt))
   )
     return invalid("The server returned an invalid host registration. Do not reissue until its outcome is reconciled.");
+  if (flag(args, "--json")) {
+    auth.out(`${JSON.stringify(ticket)}\n`);
+    return 0;
+  }
   auth.out(
     `Run this command on the Docker machine (one-use registration):\n${ticket.command}\nHost: ${ticket.hostId}\nExpires: ${ticket.expiresAt}\n`,
   );

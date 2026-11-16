@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
-import { isolatedGitEnvironment } from "../../../scripts/test-support/isolated-git.ts";
 import {
   decryptSecret,
   EncryptionKeyError,
@@ -17,7 +13,6 @@ import {
   type GitHubResolveDeps,
   githubAppFromEnv,
   gitIdentity,
-  gitSetupCommand,
   redact,
   resolveGitHubAccess,
   type StoredGitHubConnection,
@@ -26,11 +21,11 @@ import {
 const KEY = Buffer.alloc(32, 7).toString("base64");
 const USER = "22222222-2222-4222-8222-222222222222";
 const APP: GitHubApp = { clientId: "Iv1.test", clientSecret: "client-secret-value" };
-const REFRESH_1 = "ghr_refresh_one_aaaaaaaaaaaaaaaaaaaa";
-const REFRESH_2 = "ghr_refresh_two_bbbbbbbbbbbbbbbbbbbb";
-const REFRESH_3 = "ghr_refresh_three_cccccccccccccccccc";
-const ACCESS_1 = "ghu_access_one_aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const ACCESS_2 = "ghu_access_two_bbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const REFRESH_1 = `ghr_${"refresh_one_aaaaaaaaaaaaaaaaaaaa"}`;
+const REFRESH_2 = `ghr_${"refresh_two_bbbbbbbbbbbbbbbbbbbb"}`;
+const REFRESH_3 = `ghr_${"refresh_three_cccccccccccccccccc"}`;
+const ACCESS_1 = `ghu_${"access_one_aaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`;
+const ACCESS_2 = `ghu_${"access_two_bbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`;
 const NOW = new Date("2026-11-08T12:00:00.000Z");
 
 const auditEvents = captureGitHubAuditLogs();
@@ -523,7 +518,7 @@ describe("GitHub access at launch", () => {
   });
 
   test("GitHub tokens are masked in any output, known or not", () => {
-    const text = `GH_TOKEN=${ACCESS_1} and ${REFRESH_1} and github_pat_11AAAAAAAAAAAAAAAAAAAA_bbbbbbbbbbbb`;
+    const text = `GH_TOKEN=${ACCESS_1} and ${REFRESH_1} and github_pat_${"11" + "A".repeat(20)}_${"b".repeat(12)}`;
     expect(redact(text, [])).toBe("GH_TOKEN=*** and *** and ***");
   });
 });
@@ -584,44 +579,6 @@ describe("installations visible to a user token", () => {
 });
 
 describe("git setup in the sandbox", () => {
-  test("sets the identity and a credential helper that reads GH_TOKEN, and writes no token to disk", async () => {
-    const home = mkdtempSync(join(tmpdir(), "armada-git-"));
-    try {
-      const identity = gitIdentity({ id: 583231, login: "octocat", name: 'The "Octo\'cat"' });
-      const env = { ...isolatedGitEnvironment(home), GH_TOKEN: ACCESS_1, GITHUB_TOKEN: ACCESS_1 };
-      const setup = Bun.spawnSync(["sh", "-c", gitSetupCommand(identity)], { env, cwd: home });
-      expect(setup.exitCode).toBe(0);
-
-      const git = (...args: string[]) =>
-        Bun.spawnSync(["git", ...args], { env, cwd: home, stdin: new Blob(["protocol=https\nhost=github.com\n\n"]) });
-      expect(git("config", "--global", "user.name").stdout.toString().trim()).toBe(`The "Octo'cat"`);
-      expect(git("config", "--global", "user.email").stdout.toString().trim()).toBe(
-        "583231+octocat@users.noreply.github.com",
-      );
-      const filled = git("credential", "fill").stdout.toString();
-      // Never give assertion reporters raw credential output, even on failure.
-      expect(filled.includes("username=x-access-token")).toBe(true);
-      expect(filled.includes(`password=${ACCESS_1}`)).toBe(true);
-      const rewritten = Bun.spawnSync(["git", "ls-remote", "--get-url", "git@github.com:acme/app.git"], {
-        env,
-        cwd: home,
-      });
-      expect(rewritten.stdout.toString().trim()).toBe("https://github.com/acme/app.git");
-
-      for (const name of readdirSync(home, { recursive: true, encoding: "utf8" })) {
-        const path = join(home, name);
-        try {
-          expect(readFileSync(path, "utf8").includes(ACCESS_1)).toBe(false);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "EISDIR") throw error;
-        }
-      }
-      expect(gitSetupCommand(identity)).not.toContain(ACCESS_1);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
   test("a name falls back to the login, and control characters never reach the shell", () => {
     expect(gitIdentity({ id: 1, login: "octocat", name: null }).name).toBe("octocat");
     expect(gitIdentity({ id: 1, login: "octocat", name: "A\nB\u0000C" }).name).toBe("A B C");

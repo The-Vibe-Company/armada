@@ -39,6 +39,7 @@ jobs:
           version="$(gh api "repos/$GH_REPO/contents/packages/core/package.json?ref=$DEPLOYMENT_SHA" --jq .content | base64 --decode | jq -er .version)"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.+-]+)?$ ]] || { echo "::error::Deployment version invalid"; exit 1; }
           echo "ARMADA_EXPECTED_VERSION=$version" >> "$GITHUB_ENV"
+          echo "ARMADA_EXPECTED_COMMIT=${DEPLOYMENT_SHA,,}" >> "$GITHUB_ENV"
       - name: Probe public production server (no staging or credentials)
         env:
           ARMADA_PRODUCTION_ORIGIN: ${{ vars.ARMADA_PRODUCTION_ORIGIN || 'https://armada-mcp-production.up.railway.app' }}

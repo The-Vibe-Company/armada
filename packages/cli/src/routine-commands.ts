@@ -1,6 +1,6 @@
 import { type OrgSummary, type Routine, routineReasonHelp, VaultError } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { armadaApiUrl } from "./armada-api.ts";
+import { resolveArmadaOrigin } from "./armada-api.ts";
 import { control } from "./control.ts";
 import { parseTtl } from "./operations.ts";
 import type { VaultIo } from "./vault-commands.ts";
@@ -146,7 +146,7 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
     if (!scheduleUpdate) validate(config, action === "update");
     Object.assign(body, config);
   }
-  const selected = org ?? (await io.auth.preferences?.read(armadaApiUrl(io.auth.env.ARMADA_URL)));
+  const selected = org ?? (await io.auth.preferences?.read(await resolveArmadaOrigin(io.auth)));
   if (!selected) throw invalid("Select an organization with --org NAME|UUID or armada org use.");
   if (UUID.test(selected)) body.org = selected;
   else {

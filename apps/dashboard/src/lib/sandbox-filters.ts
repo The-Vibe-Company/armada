@@ -1,5 +1,6 @@
 import { HARNESSES, MACHINE_SIZES, SANDBOX_PLACEMENT_PROVIDERS, type SandboxListMetadata } from "@armada/core";
 
+import { sandboxListAttention } from "./sandbox-activity.ts";
 import { sandboxListName } from "./sandbox-list-name.ts";
 
 export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"] as const;
@@ -80,20 +81,16 @@ export function filterSandboxes(
 export function sortSandboxes(
   rows: readonly SandboxListMetadata[],
   sort: SandboxFilters["sort"],
+  now = new Date(),
 ): SandboxListMetadata[] {
   const names = sort === "name" ? new Map(rows.map((row) => [row.id, sandboxListName(row)] as const)) : null;
-  const priority = { failed: 0, ready: 1, stopped: 2, running: 3, starting: 4, stopping: 5, deleted: 6 };
+  const priority = { failed: 0, blocked: 0, ready: 1, interrupted: 2, unconcluded: 2, expiring: 3 };
+  const attention = (row: SandboxListMetadata) => {
+    const value = sandboxListAttention(row, now);
+    return value === null ? 4 : priority[value];
+  };
   return [...rows].sort((a, b) => {
     const age = b.createdAt.localeCompare(a.createdAt);
-    const attention = (row: SandboxListMetadata) => {
-      if (
-        row.status === "failed" ||
-        ((row.status === "ready" || row.status === "stopped") && row.taskOutcome?.state === "blocked")
-      )
-        return 0;
-      if ((row.status === "ready" || row.status === "stopped") && row.taskOutcome?.state === "ready") return 1;
-      return priority[row.status] + 2;
-    };
     const order =
       sort === "attention"
         ? attention(a) - attention(b) || age

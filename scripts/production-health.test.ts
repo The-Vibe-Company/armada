@@ -24,3 +24,14 @@ test("production probe rejects downtime, redirects, unrelated 200 pages, and mis
   request.mockResolvedValueOnce(Response.json({ ok: true, version: "2.1.0" }));
   await checkProductionHealth("https://production.example", "2.1.0");
 });
+
+test("deployment-triggered production probe proves source identity even at the same version", async () => {
+  const request = spyOn(globalThis, "fetch");
+  const commit = "a".repeat(40);
+  for (const reported of [undefined, "b".repeat(40)]) {
+    request.mockResolvedValueOnce(Response.json({ ok: true, version: "2.1.0", commit: reported }));
+    await expect(checkProductionHealth("https://production.example", "2.1.0", commit)).rejects.toThrow("commit");
+  }
+  request.mockResolvedValueOnce(Response.json({ ok: true, version: "2.1.0", commit }));
+  await checkProductionHealth("https://production.example", "2.1.0", commit);
+});

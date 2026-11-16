@@ -20,7 +20,9 @@ function deploy(failure = "", missing = "", pinVersion?: string, source = "") {
     writeFileSync(join(dir, "package.json"), '{"version":"1.2.3"}');
     mkdirSync(join(dir, "packages/core/src"), { recursive: true });
     writeFileSync(join(dir, "packages/core/src/official-sandbox-image.json"), "null");
-    run(["git", "add", "package.json", "packages/core/src/official-sandbox-image.json"]);
+    mkdirSync(join(dir, "packages/mcp-server/src"), { recursive: true });
+    writeFileSync(join(dir, "packages/mcp-server/src/source-identity.json"), '{"commit":null}');
+    run(["git", "add", "package.json", "packages"]);
     run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture"]);
     const sha = run(["git", "rev-parse", "HEAD"]);
     if (pinVersion)
@@ -46,6 +48,7 @@ function deploy(failure = "", missing = "", pinVersion?: string, source = "") {
       "railway",
       `echo "railway $*" >> "$CALLS"
 if [[ "$1" == up ]]; then
+  jq -e --arg sha "$RELEASE_SHA" ' .commit == $sha' packages/mcp-server/src/source-identity.json >/dev/null
   if [[ -n "$PIN_VERSION" ]]; then
     jq -e '.version == "1.2.3" and (.image | endswith("${"a".repeat(64)}"))' packages/core/src/official-sandbox-image.json >/dev/null
   fi
@@ -59,7 +62,7 @@ fi`,
     executable(
       "curl",
       `echo curl >> "$CALLS"
-if [[ "$FAILURE" == health ]]; then echo '{"ok":true,"version":"0.0.0"}'; else printf '{"ok":true,"version":"1.2.3","commit":"%s"}' "$RELEASE_SHA"; fi`,
+if [[ "$FAILURE" == wrong-commit ]]; then printf '{"ok":true,"version":"1.2.3","commit":"%s"}' "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; elif [[ "$FAILURE" == health ]]; then echo '{"ok":true,"version":"0.0.0"}'; else printf '{"ok":true,"version":"1.2.3","commit":"%s"}' "$RELEASE_SHA"; fi`,
     );
     executable("vercel", 'echo "vercel $*" >> "$CALLS"; [[ "$FAILURE" != "dashboard-$1" ]]');
     executable("sleep", ":");
@@ -138,7 +141,7 @@ test("release uploads and gates providers in migration/server/health/dashboard o
   expect(result.calls).not.toContain("--token");
 });
 
-test.each(["migrations", "server", "health", "dashboard-pull", "dashboard-build", "dashboard-deploy"])(
+test.each(["migrations", "server", "health", "wrong-commit", "dashboard-pull", "dashboard-build", "dashboard-deploy"])(
   "%s failure stops later release stages",
   (failure) => {
     const result = deploy(failure);

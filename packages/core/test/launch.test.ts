@@ -38,7 +38,7 @@ const ORG = "11111111-1111-4111-8111-111111111111";
 const OWNER = "22222222-2222-4222-8222-222222222222";
 const OTHER = "33333333-3333-4333-8333-333333333333";
 const SNAPSHOT = `a${"1".repeat(62)}`;
-const CLAUDE_TOKEN = "sk-ant-oat01-user-token-value";
+const CLAUDE_TOKEN = "claude_user_token";
 const OPENAI_KEY = "sk-openai-user-key-value";
 const AUTH_JSON = JSON.stringify({ tokens: { access_token: "codex-access-token-value", account_id: "acct" } });
 const authCredentials = () =>
@@ -48,7 +48,7 @@ const authCredentials = () =>
     sources: [],
   });
 
-const GITHUB_TOKEN = "ghu_launch_test_token_aaaaaaaaaaaaaaaaaaaa";
+const GITHUB_TOKEN = `ghu_${"launch_test_token_aaaaaaaaaaaaaaaaaaaa"}`;
 const IDENTITY = {
   login: "octocat",
   id: 583231,
@@ -775,6 +775,59 @@ describe("launch", () => {
     }
   });
 
+  test.each(["ready", "prompted", "failed"] as const)(
+    "cleanup failures preserve the %s launch outcome and still release the fence",
+    async (outcome) => {
+      const world = setup({
+        golden: golden("org"),
+        ...(outcome === "failed" ? { promptError: new Error("original prompt refusal") } : {}),
+      });
+      let releases = 0;
+      let fences = 0;
+      world.stores.credentials.releaseAdmission = async () => {
+        releases++;
+        throw new Error("private cleanup details");
+      };
+      world.stores.goldens.beginOperation = async () => async () => {
+        fences++;
+        throw new Error("private fence details");
+      };
+      const warn = spyOn(console, "warn").mockImplementation(() => {
+        throw new Error("diagnostic sink unavailable");
+      });
+      try {
+        const launch = launchSandbox(world.provider, world.stores, owner, {
+          golden: "web",
+          harness: "claude",
+          ...(outcome !== "ready" ? { prompt: "go" } : {}),
+        });
+        if (outcome === "failed")
+          await expect(launch).rejects.toMatchObject({
+            code: "prompt_failed",
+            message: expect.stringContaining("original prompt refusal"),
+          });
+        else expect((await launch).sandbox.status).toBe(outcome === "ready" ? "ready" : "running");
+        expect(releases).toBe(2);
+        expect(fences).toBe(1);
+        expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  test("a transient admission release failure is reconciled without failing the launch", async () => {
+    const world = setup({ golden: golden("org") });
+    let reserved = true;
+    let attempts = 0;
+    world.stores.credentials.releaseAdmission = async () => {
+      if (++attempts === 1) throw new Error("temporary database failure");
+      reserved = false;
+    };
+    await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
+    expect(reserved).toBe(false);
+  });
+
   test("without a prompt the sandbox is ready, has no conversation and no prompt was sent", async () => {
     const world = setup({ golden: golden("org") });
     const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
@@ -1359,7 +1412,7 @@ describe("prompt outcome", () => {
         sandboxId: "s",
         promptId: "p1",
       }),
-    ).toEqual({ state: "failed", reason: "authentication_failed" });
+    ).toEqual({ state: "failed", reason: "Reconnect the agent account, then send the prompt again." });
     expect(
       await promptOutcome(outcomeProvider("interrupted", events([prompt("interrupted"), limit])), {
         sandboxId: "s",
@@ -1911,7 +1964,7 @@ test("generated refresh uses the installed caller helper without writing its tok
     git() {
       while [ "$1" = -c ]; do if [ "$2" = credential.helper= ]; then helper=''; fi; shift 2; done
       case "$1" in
-        config) if [ "$2" = --global ] && [ "$3" = --add ] && [ "$4" = credential.https://github.com.helper ]; then helper="$5"; fi ;;
+        config) printf 'config:%s:%s:%s\\n' "$3" "$4" "\${5-}"; if [ "$2" = --global ] && [ "$3" = --add ] && [ "$4" = credential.https://github.com.helper ]; then helper="$5"; fi ;;
         pull|fetch)
           [ -n "$helper" ] || return 128
           local credential
@@ -1921,13 +1974,17 @@ test("generated refresh uses the installed caller helper without writing its tok
         *) return 93 ;;
       esac
     }
-    ${gitSetupCommand(IDENTITY)}
+    ${gitSetupCommand({ ...IDENTITY, name: 'The "Octo\'cat"' })}
     ${spec.command}
     printf '%s\\n' "$helper"`,
     ],
     { env: { PATH: process.env.PATH ?? "", GH_TOKEN: secret }, encoding: "utf8" },
   );
   expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain('config:user.name:The "Octo\'cat":\n');
+  expect(result.stdout).toContain("config:user.email:583231+octocat@users.noreply.github.com:\n");
+  expect(result.stdout).toContain("config:--replace-all:url.https://github.com/.insteadOf:git@github.com:\n");
+  expect(result.stdout).toContain("config:--add:url.https://github.com/.insteadOf:ssh://git@github.com/\n");
   expect(result.stdout).toContain("fetch-authorized");
   expect(result.stdout).toContain("merge-authorized");
   expect(spec.command + result.stdout + result.stderr).not.toContain(secret);

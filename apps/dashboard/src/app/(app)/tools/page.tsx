@@ -4,6 +4,7 @@ import Link from "next/link";
 import { AddServerDialog, ServiceCatalog, ServiceMark, ToolPanel, ToolRowAction } from "@/components/connections";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
+import { ResourceTags } from "@/components/resource-tags";
 import { RowTag, StateCell } from "@/components/state-cell";
 import { TemplateUsage } from "@/components/template-usage";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -133,8 +134,8 @@ export default async function ToolsPage({ searchParams }: Props) {
         footer={
           <>
             <p className="text-xs text-muted-foreground">
-              A switched-on tool is pre-selected in the launch dialog; you can still remove it for one launch. Sandboxes
-              on your own server (Docker hosts) do not get tools yet.
+              A switched-on tool is pre-selected in the launch dialog; you can still remove it for one launch, including
+              on your own server (Docker hosts).
             </p>
             <section aria-labelledby="services-title" className="space-y-3 pt-5">
               <div className="space-y-0.5">
@@ -218,9 +219,9 @@ function connectionRow(
       />
     ),
     tags: (
-      <>
+      <ResourceTags>
         <ScopeTag scope={connection.scope} />
-      </>
+      </ResourceTags>
     ),
     meta,
     subtitle: meta,

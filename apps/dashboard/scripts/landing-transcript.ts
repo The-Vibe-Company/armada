@@ -63,7 +63,7 @@ const API: Record<string, unknown> = {
       "Pushed fix/checkout-clock and opened pull request #52.",
     ].map((text, k) => ({
       id: `event-${k + 1}`,
-      at: `2026-11-09T09:3${k}:00.000Z`,
+      at: Date.parse(`2026-11-09T09:3${k}:00.000Z`),
       ...(k === 0
         ? { kind: "prompt", text, status: "finished" }
         : { kind: "message", text, partial: false, tools: [] }),

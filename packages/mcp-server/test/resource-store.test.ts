@@ -16,18 +16,25 @@ const machineSize = {
   repositoryDir: "web",
   capacity: machineCapacity("boat", "medium"),
 };
-let db: Awaited<ReturnType<typeof migratedDatabase>>;
+let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const sql: Sql = {
-  query: (query, params) => db.query(query, params),
-  transaction: (work) => db.transaction((tx) => work({ query: (query, params) => tx.query(query, params) })),
+  query: (query, params) => database().query(query, params),
+  transaction: (work) => database().transaction((tx) => work({ query: (query, params) => tx.query(query, params) })),
 };
 beforeAll(async () => {
-  db = await migratedDatabase();
+  connection = await migratedDatabase();
 });
 afterAll(async () => {
-  await db.close();
+  const db = connection;
+  connection = undefined;
+  await db?.close();
 });
 async function fixture() {
+  const db = database();
   const org = crypto.randomUUID(),
     owner = crypto.randomUUID(),
     other = crypto.randomUUID(),
@@ -160,6 +167,7 @@ test("observations persist once per admission and reject chronology, capacity an
 });
 
 test("last ten comparable launch identities do not widen owner/project/provider/workload/capacity scope", async () => {
+  const db = database();
   const f = await fixture(),
     matching: string[] = [];
   for (let i = 0; i < 12; i++)
@@ -189,6 +197,7 @@ test("last ten comparable launch identities do not widen owner/project/provider/
 });
 
 test("current owner/admin interior gates apply to resource SQL regardless legacy visibility; JWTs cannot ingest telemetry", async () => {
+  const db = database();
   const f = await fixture(),
     privateId = await f.sandbox({ visibility: "private" });
   const other = createResourceStore(sql, { userId: f.other, orgs: [{ orgId: f.org, role: "admin" }], via: "service" });
@@ -221,6 +230,7 @@ test("current owner/admin interior gates apply to resource SQL regardless legacy
 });
 
 test("retention prunes elapsed and excess samples while malformed payloads cannot consume storage", async () => {
+  const db = database();
   const f = await fixture(),
     id = await f.sandbox();
   const seed = f.reading(id);
@@ -260,6 +270,7 @@ test("retention prunes elapsed and excess samples while malformed payloads canno
 });
 
 test("vault purge failure cannot skip expired resource evidence pruning or leak its cause", async () => {
+  const db = database();
   const f = await fixture(),
     id = await f.sandbox();
   const token = await f.admit(id, now);
@@ -339,6 +350,7 @@ test("aggregation excludes actual-capacity mismatches, resets, boot crossings, g
 });
 
 test("sampling admission is atomic, expires, and fences delayed unseen generations and lifecycle changes", async () => {
+  const db = database();
   const f = await fixture(),
     id = await f.sandbox();
   const concurrent = await Promise.all([f.store.claim(id, now), f.store.claim(id, now)]);
@@ -375,6 +387,7 @@ test("sampling admission is atomic, expires, and fences delayed unseen generatio
 });
 
 test("sampling does not admit or persist while a lifecycle operation owns the sandbox", async () => {
+  const db = database();
   const f = await fixture(),
     id = await f.sandbox();
   await db.query("update public.sandboxes set activity_until=$2::timestamptz where id=$1", [
@@ -393,6 +406,7 @@ test("sampling does not admit or persist while a lifecycle operation owns the sa
 });
 
 test("normal resource history and admission exclude managed orchestrator parents", async () => {
+  const db = database();
   const f = await fixture();
   const ordinary = await f.sandbox({ visibility: "private" }),
     parent = await f.sandbox({ visibility: "private" });

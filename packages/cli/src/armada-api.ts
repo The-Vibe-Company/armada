@@ -9,11 +9,16 @@ import {
   providerRateLimitMessage,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
+import { validApiReceipt } from "./api-receipts.ts";
 import { sandboxFailure } from "./sandbox-errors.ts";
-import type { SessionStore } from "./session.ts";
+import type { Session, SessionStore } from "./session.ts";
 
 export const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
 const DEFAULT_TIMEOUT_MS = 10_000;
+function isSandboxLaunchPath(path: string): boolean {
+  return /^\/api\/v1\/sandbox\/launch(?:-sized-v1|-access-v1)?$/.test(path);
+}
+
 const TEMPLATE_LAUNCH_UNKNOWN =
   "Template launch outcome unknown. Retry with the same template ID, request key and body; never use a new key while the outcome is unknown.";
 
@@ -70,7 +75,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
   // An explicit environment token needs no HOME/session read and never inherits a stale session origin.
   const environmentToken = io.env.ARMADA_TOKEN;
   let saved = environmentToken ? null : await io.session.read();
-  const origin = armadaApiUrl(options.url ?? io.env.ARMADA_URL);
+  const origin = await resolveArmadaOrigin(io, options.url, saved);
   let token = environmentToken || saved?.accessToken;
   if (!token) throw new AuthError("Set ARMADA_TOKEN or run armada login.", "unauthorized");
   const timeoutMs = io.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -105,9 +110,9 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
               ? TEMPLATE_LAUNCH_UNKNOWN
               : signal.aborted || (error instanceof Error && error.name === "TimeoutError")
                 ? `The server did not answer in time; the operation may have been accepted.${
-                    path === "/api/v1/sandbox/launch" ? " Run armada list to check before retrying." : ""
+                    isSandboxLaunchPath(path) ? " Run armada list to check before retrying." : ""
                   }`
-                : path === "/api/v1/sandbox/launch"
+                : isSandboxLaunchPath(path)
                   ? "Launch outcome unknown. Run armada list to check before retrying."
                   : "Armada could not reach the server.",
             "unavailable",
@@ -128,7 +133,15 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         (!payload || typeof payload !== "object" || Array.isArray(payload))
       )
         throw new ArmadaApiError("unavailable", response.status, TEMPLATE_LAUNCH_UNKNOWN);
-      if (response.ok) return normalizeProviderDto(path, payload) as T;
+      if (response.ok) {
+        if (!validApiReceipt(path, payload))
+          throw new ArmadaApiError(
+            "unavailable",
+            response.status,
+            "Armada returned an invalid success receipt. The operation may have been accepted; inspect its state before retrying. For sandbox operations, run armada status <id> or armada list. Do not replay a mutation blindly.",
+          );
+        return normalizeProviderDto(path, payload) as T;
+      }
       const failureCode =
         payload && typeof payload === "object" && "error" in payload
           ? (payload as { error?: { code?: string } }).error?.code
@@ -269,7 +282,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           phase ? { phase } : undefined,
         );
       }
-      if (/^\/api\/v1\/sandbox\/launch(?:-sized-v1|-access-v1)?$/.test(path)) {
+      if (isSandboxLaunchPath(path)) {
         if (response.status === 400 && failureCode === "no_credentials")
           throw new ArmadaApiError(
             "no_credentials",
@@ -295,7 +308,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
             "The provider account cannot create machines. Check billing or credits on the selected provider account before retrying.",
           );
       }
-      if (path === "/api/v1/sandbox/launch" && response.status >= 500)
+      if (isSandboxLaunchPath(path) && response.status >= 500)
         throw new AuthError("Launch outcome unknown. Run armada list to check before retrying.", "unavailable");
       const sandboxError = sandboxFailure(path, response.status, failureCode, apiMessage(payload, ""));
       if (sandboxError)
@@ -377,7 +390,7 @@ async function refresh(
     if (
       !current ||
       current.loginId !== saved.loginId ||
-      armadaApiUrl(current.armadaUrl ?? origin) !== armadaApiUrl(saved.armadaUrl ?? origin)
+      armadaApiUrl(current.armadaUrl) !== armadaApiUrl(saved.armadaUrl)
     )
       throw new AuthError("The saved login changed; retry this command with the intended Armada URL.", "unauthorized");
     if (
@@ -431,6 +444,28 @@ async function refreshLocked(
   };
   await store.write(updated);
   return updated;
+}
+
+/**
+ * Resolve all saved-login consumers against the same server binding.
+ * Legacy logins without a binding belong only to the historical default server.
+ * Environment tokens are independent of saved logins.
+ */
+export async function resolveArmadaOrigin(
+  io: Pick<ArmadaApiIo, "env" | "session">,
+  url?: string,
+  saved?: Session | null,
+): Promise<string> {
+  const explicit = url ?? io.env.ARMADA_URL;
+  if (io.env.ARMADA_TOKEN) return armadaApiUrl(explicit);
+  const login = saved === undefined ? await io.session.read() : saved;
+  const bound = armadaApiUrl(login?.armadaUrl);
+  if (login && explicit !== undefined && armadaApiUrl(explicit) !== bound)
+    throw new AuthError(
+      "Saved login belongs to another server. Choose its server or run armada login --url <server-origin>.",
+      "usage",
+    );
+  return login ? bound : armadaApiUrl(explicit);
 }
 
 /** Accept only an HTTP(S) origin; this prevents provider URLs from becoming API targets. */

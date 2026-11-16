@@ -439,8 +439,7 @@ resources are safe to retry. Authenticated physical-cleanup reports reconcile th
 server to `deleted` after reconnection. Deploy the server support before upgrading
 hosts; old servers reject the additive report and the daemon retries it safely.
 
-Retention controls and cleanup-deadline display are described below. Disk floors
-remain separate follow-up work for #2154.
+Retention controls, cleanup-deadline display and the disk floor are described below.
 To uninstall, first confirm every retained sandbox for this host is deleted; then
 revoke `POST /api/v1/docker/hosts/revoke` with `{"org":"<org>","hostId":"<HOST_ID>"}`
 using normal private bearer delivery. Verify the saved PID belongs to the exact
@@ -578,7 +577,8 @@ a trusted confirmation arrives. Local TTL enforcement continues even while offli
 
 ## Host-list/discovery acceptance on a retained host
 
-After deploying this server revision on staging with the existing opt-ins, start
+After deploying on staging with all three staging inputs above and a valid runtime
+manifest from that deployed build, start
 the stopped daemon on the same host. No new registration or sandbox is needed.
 Use Bash and the same SSH configuration and staging org from the passed check.
 A live or stale daemon lock must be inspected, never deleted automatically.
@@ -606,13 +606,15 @@ def post(path, body):
         return json.load(response)
 options = post('launch/options', {})
 docker = next(p for p in options['providers'] if p['id'] == 'docker')
-assert docker['enabled'] and not docker['capabilities']['launch']
-assert docker['unsupportedReasons']['resume']
+assert docker['enabled']
+for capability in ('launch', 'followupPrompts', 'resume'):
+    assert docker['capabilities'][capability], (capability, docker['unsupportedReasons'])
+    assert capability not in docker['unsupportedReasons']
 for attempt in range(31):
     listing = post('docker/hosts/list', {'org':os.environ['ARMADA_ORG']})
     host = next(h for h in listing['hosts'] if h['id']==os.environ['DOCKER_HOST_ID'])
-    assert set(host)=={'id','name','state','createdAt','lastSeenAt','revokedAt','sandboxes'}
-    assert not listing['placement']  # until normal API/CLI integration lands
+    assert {'id','name','state','createdAt','lastSeenAt','revokedAt','sandboxes'} <= set(host)
+    assert listing['placement']
     if host['state']=='online': break
     if attempt==30: raise SystemExit('Host heartbeat not online within 60 seconds; inspect private daemon log')
     time.sleep(2)
@@ -622,12 +624,16 @@ unset ARMADA_TOKEN
 ```
 
 Expect the retained HOST_ID online with the existing inventory/count and no
-credential fields. Admin register/revoke behavior is unchanged; members can list
-but cannot mutate hosts. The daemon may be stopped by the coordinator afterward.
-At this stage, placement=false and capabilities.launch=false are intentional.
-Normal-launch acceptance requires its separately implemented backend; this
-read/discovery check does not enable it.
-No worker staging access, SSH, deployment, inference or remote migration was used.
+credential fields. Members can list; register/revoke remain admin-only.
+Host owners can manage limits and retention through their respective controls. The daemon may be stopped by the coordinator afterward.
+This checks the enabled normal-launch configuration: placement, launch, follow-up
+and resume must be true. With host support alone (placement disabled),
+placement and those capabilities are false; that is a separate configuration, not
+a pass for this check. Enabling placement without a valid runtime manifest fails
+server startup; it is not a disabled-capability fallback. Discovery describes installed support,
+not user authorization, capacity or runtime readiness. This read-only API check
+does not launch a sandbox or prove lifecycle acceptance; use the normal lifecycle
+procedure for that evidence. Coordinator-only: workers must not run this procedure.
 
 ### Normal follow-up and stop/resume (#1422)
 
@@ -1122,3 +1128,52 @@ Once a server-requested retention policy has been received, it takes precedence
 over the installer/environment default even across daemon restarts. Before any
 server override, changing the environment default shifts existing deadlines by
 the policy delta, preserving their original stopped age.
+
+### Disk visibility and launch floor
+
+Hosts report unprivileged available bytes on the Docker data filesystem at each
+check-in. `armada host show` and Machines → server panel show that observation
+and the default **10 GB** floor (10,000,000,000 bytes). An unavailable observation
+is shown as unknown, never as zero or invented free space. Reports are as fresh
+as the host's last check-in, not a reservation or a guarantee of launch success.
+
+Server admission refuses known-below-floor hosts before dispatch. The daemon
+also takes a fresh measurement before create and new snapshot builds,
+before image pulls/builds can consume space. Unknown measurements fail closed
+locally with a safe disk-space diagnostic; stop/delete/expiry and retention
+cleanup remain available. Retained resume starts the existing container without
+pulling an image or allocating a new home and remains available below the floor.
+A pending snapshot build recovery does not allocate
+new space and is not gated. The floor is a preflight, not a disk quota or a
+prediction of how much an arbitrary image/build will consume.
+
+Measurement uses `docker info`'s DockerRootDir and filesystem available blocks,
+not HOME's filesystem or total unallocated blocks. The daemon must have access
+to that path on the same host; remote TCP/SSH Docker contexts cannot be measured
+locally and are refused safely. No privileged fallback, prune or unrelated
+resource deletion is performed. Deploy the additive schema/server support before
+upgrading daemons; older servers can still receive retention and capacity data
+without the new disk field.
+
+### Cleanup after registrant removal or host revocation
+
+Removing the registrant's membership or revoking a host blocks new launch work,
+not physical reconciliation. The existing credential remains bound to the host
+and installation for already-bound physical facts and authorized stop/delete jobs.
+Keep the daemon and its state directory until TTL/retention cleanup reports reach
+the server. A remaining organization admin can request stop/delete of retained
+allocations. Unregister waits for physical cleanup; it is not proof of removal.
+If polling is denied, ask an organization admin to restore membership for normal
+operation or request cleanup of retained allocations; do not erase daemon state.
+
+### Independent physical expiry
+
+The run process starts a physical-only sweep immediately and every ten seconds,
+independent of mailbox execution, image pulls, runtime installation and hourly
+image cleanup. Sweeps do not overlap. Each sweep checks all durable active
+generation identities concurrently through the executor's exact ownership and
+expiry checks; a failed inspection never authorizes a stop. Docker command
+latency and host/daemon downtime still bound enforcement, not a hard real-time
+deadline. This lane never writes the state file or contacts the server. The
+serialized mailbox subsequently observes the stop and persists/reports its proof;
+server acknowledgement can therefore lag physical enforcement during slow work.

@@ -16,7 +16,7 @@ import type { TurnStartResponse } from "./codex-schema/v2/TurnStartResponse.ts";
 import { codexTurnUsage } from "./codex-turn-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
-import { HarnessError } from "./errors.ts";
+import { HarnessError, nativeHarnessError } from "./errors.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 /** One app-server per conversation isolates credentials, process failure and notifications. */
 export class CodexDriver implements Driver {
@@ -89,7 +89,12 @@ export class CodexDriver implements Driver {
     let rateLimitsRevision = 0;
     const pending = new Map<
       number,
-      { resolve: (x: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
+      {
+        method: string;
+        resolve: (x: unknown) => void;
+        reject: (e: Error) => void;
+        timer: ReturnType<typeof setTimeout>;
+      }
     >();
     let next = 0;
     let threadId = "",
@@ -137,7 +142,7 @@ export class CodexDriver implements Driver {
           reject(new HarnessError("harness_timeout"));
           if (fatal) child.kill("SIGKILL");
         }, timeoutMs);
-        pending.set(id, { resolve: (x) => resolve(x as T), reject, timer });
+        pending.set(id, { method, resolve: (x) => resolve(x as T), reject, timer });
         child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
       });
     let retryWait: AbortController | undefined;
@@ -163,7 +168,7 @@ export class CodexDriver implements Driver {
           if (p) {
             clearTimeout(p.timer);
             pending.delete(m.id);
-            if (m.error) p.reject(Error("codex_rpc_error"));
+            if (m.error) p.reject(nativeHarnessError(m.error, p.method));
             else p.resolve(m.result);
           }
           return;

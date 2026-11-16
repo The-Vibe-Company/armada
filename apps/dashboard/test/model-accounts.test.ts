@@ -164,7 +164,14 @@ describe("creds/list as accounts", () => {
   test("scope is where a row sits; another org, hosting singletons and stray fields are left out", () => {
     const { accounts, legacy } = accountsFromList(
       {
-        user: [row(1, { scope: "org", value_enc: "\\x0102" })],
+        user: [
+          row(1, {
+            scope: "org",
+            value_enc: "\\x0102",
+            modelLimits: { "morph-kimik3": 2 },
+            modelCounts: { "morph-kimik3": { runningAgents: 1, waitingAgents: 3 } },
+          }),
+        ],
         orgs: [
           { id: uuid(10), credentials: [row(2), { kind: "boat", createdAt: null }] },
           { id: uuid(11), credentials: [row(3)] },
@@ -176,6 +183,8 @@ describe("creds/list as accounts", () => {
       [uuid(1), "user"],
       [uuid(2), "org"],
     ]);
+    expect(accounts[0]?.modelLimits).toEqual({ "morph-kimik3": 2 });
+    expect(accounts[0]?.modelCounts).toEqual({ "morph-kimik3": { runningAgents: 1, waitingAgents: 3 } });
     expect(Object.keys(accounts[0] ?? {})).not.toContain("value_enc");
     expect(legacy).toBe(false);
   });
@@ -398,7 +407,7 @@ test("the terminal sign-in is only the command the server reports, with the name
     codex: { login: "armada creds login codex --name <name>" },
   });
   expect(reported?.hostedOAuth).toBe(false);
-  expect(terminalLogin(reported, "codex_auth", "Work")).toBe("armada creds login codex --name Work");
+  expect(terminalLogin(reported, "codex_auth", "Work")).toBe("armada creds login codex --name 'Work'");
   expect(terminalLogin(reported, "codex_auth", `Bob's $HOME`)).toBe(
     `armada creds login codex --name 'Bob'\\''s $HOME'`,
   );

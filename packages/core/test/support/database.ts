@@ -5,8 +5,8 @@ import { openMigratedDatabase, resetMigratedDatabaseRows } from "../../../../scr
 /**
  * One real migrated database per serial test file, with empty application rows
  * before each case. Schema bytes are shared, never live connections between files.
- * Use only for row-mutating tests: schema, roles, settings and
- * migration tests still need their own database. Native transactions stay real.
+ * Temporary schema changes must be restored by their case; migration tests
+ * need their own database. Session identity is reset between cases. Native transactions stay real.
  */
 export function migratedDatabase(): () => PGlite {
   let db: PGlite | undefined;
@@ -17,9 +17,32 @@ export function migratedDatabase(): () => PGlite {
       `select format('%I.%I', schemaname, tablename) as name
        from pg_tables where schemaname in ('public', 'auth')`,
     );
-    reset = `truncate table ${tables.rows.map((row) => row.name).join(", ")} restart identity cascade`;
+    const sequences = await db.query<{ name: string }>(`
+      select distinct format('%I.%I', sn.nspname, s.relname) as name
+      from pg_class s
+      join pg_namespace sn on sn.oid=s.relnamespace
+      join pg_depend d on d.classid='pg_class'::regclass and d.objid=s.oid
+        and d.refclassid='pg_class'::regclass and d.deptype in ('a','i')
+      join pg_class t on t.oid=d.refobjid
+      join pg_namespace tn on tn.oid=t.relnamespace
+      where s.relkind='S' and tn.nspname in ('public','auth')
+    `);
+    // Repeated TRUNCATE recreates every relation and grows PGlite's catalog/VFS.
+    // Cleanup is transactional: bypass row/FK triggers only here, never in test actions.
+    const statements = [
+      "set local session_replication_role=replica",
+      ...tables.rows.map((row) => `delete from ${row.name}`),
+      ...sequences.rows.map((row) => `alter sequence ${row.name} restart`),
+    ];
+    // One server-side block avoids returning an unused command result per table.
+    reset = (
+      await db.query<{ command: string }>("select format('do %L', $1::text) as command", [
+        `begin\n${statements.join(";\n")};\nend;`,
+      ])
+    ).rows[0]!.command;
   });
   beforeEach(async () => {
+    await db!.exec("reset role; reset all; set search_path=public");
     await resetMigratedDatabaseRows(db!, reset);
   });
   afterAll(async () => {

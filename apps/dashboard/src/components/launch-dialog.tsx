@@ -2,7 +2,7 @@
 
 import type { Harness, MachineSize, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
 import { MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
-import { CircleAlertIcon, PlugIcon, RocketIcon, ServerIcon, WalletIcon } from "lucide-react";
+import { CircleAlertIcon, PlugIcon, RocketIcon, ServerIcon } from "lucide-react";
 import Link from "next/link";
 import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
@@ -29,8 +29,6 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { NativeSelect } from "@/components/ui/native-select";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   CONNECTION_CHOICE_FIELD,
   launchBlocker,
@@ -38,19 +36,10 @@ import {
   type McpConnection,
   unreadyDefaults,
 } from "@/lib/connections";
-import { HARNESS_LABELS } from "@/lib/labels";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
 import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
-import {
-  accountProblem,
-  accountsFor,
-  HARNESS_PATH,
-  kindNote,
-  type LaunchAccounts,
-  launchDefault,
-  type ModelAccount,
-} from "@/lib/model-accounts";
+import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
 
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import { cn } from "@/lib/utils";
@@ -250,6 +239,9 @@ export function LaunchStart(
           hostId={target.hostId}
           hostName={target.group.replace(/ · your own server.*$/, "")}
           accounts={options?.accounts ?? props.accounts}
+          connections={
+            options?.connections ?? (!host ? props.connections : { unavailable: "Still loading connections." })
+          }
           unavailable={host ? props.unavailable : []}
           harnesses={target.harnesses ?? ["codex"]}
           initialHarness={target.initialHarness ?? "codex"}
@@ -266,7 +258,9 @@ export function LaunchStart(
           {...(target.sizing ? { sizing: target.sizing } : {})}
           accounts={options?.accounts ?? props.accounts}
           catalog={options?.catalog ?? (!host ? props.catalog : MODEL_CATALOG)}
-          connections={options?.connections ?? (!host ? props.connections : { connections: [] })}
+          connections={
+            options?.connections ?? (!host ? props.connections : { unavailable: "Still loading connections." })
+          }
           boatOpenCodeAvailable={options?.boatOpenCodeAvailable ?? (!host && props.boatOpenCodeAvailable === true)}
           templateChooser={chooser}
           {...common}
@@ -308,7 +302,7 @@ function LaunchForm({
       (account) => account.id === value && accountProblem(account, accounts.now) === null,
     );
   const canDelegate = provider !== "docker" && harness === "codex" && usableCodexAccount(credential);
-  const access = useLaunchAccess(provider === "docker" ? { connections: [] } : connections);
+  const access = useLaunchAccess(connections);
   const root = useRef<HTMLDivElement>(null);
   const launchKey = useRef<LaunchKey | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -478,7 +472,7 @@ function LaunchForm({
               </span>
             }
           >
-            {provider !== "docker" && <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />}
+            <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
             {provider !== "docker" && sizing && (
               <MachineSizeField
                 idPrefix={id}
@@ -488,7 +482,7 @@ function LaunchForm({
                 onSize={setSize}
               />
             )}
-            {provider !== "docker" && access.fields(id)}
+            {access.fields(id)}
             {provider !== "docker" && (
               <div className="space-y-1.5">
                 <Label htmlFor={`${id}-armada-access`} className="flex min-h-11 items-center gap-2">
@@ -517,201 +511,6 @@ function LaunchForm({
 }
 
 /**
- * Which account the agent runs on, and so who is billed. The resolved default is preselected and sent as an
- * explicit id, so what the person saw is what runs; with several accounts and no default the person chooses.
- * The sandbox keeps this account for every later message, whatever the defaults become. The launch form is never
- * reset after a refused launch, so a retry bills the account the person picked.
- */
-export function AccountField({
-  idPrefix,
-  harness,
-  accounts,
-  onChange,
-  value,
-}: {
-  idPrefix: string;
-  harness: Harness;
-  accounts: LaunchAccounts;
-  onChange: (id: string) => void;
-  /** When set, the select follows it: choosing a connection model also chooses its account (#1483). */
-  value?: string;
-}) {
-  const label = HARNESS_LABELS[harness];
-  if (accounts.state === "legacy") return null;
-  if (accounts.state === "unavailable")
-    return (
-      <p
-        id={`${idPrefix}-account-unavailable`}
-        role="alert"
-        className="rounded-md border border-destructive/40 p-3 text-sm text-destructive"
-      >
-        {accounts.reason}
-      </p>
-    );
-  const compatible = accountsFor(accounts.accounts, harness);
-  if (compatible.length === 0)
-    return (
-      <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground" data-account-field="none">
-        No {label} account.{" "}
-        <Link href={HARNESS_PATH} className="underline">
-          Add one
-        </Link>
-      </p>
-    );
-  const resolved = launchDefault(accounts.accounts, harness, accounts.now);
-  const preset = resolved.state === "resolved" ? resolved.account.id : "";
-  const groups: [string, ModelAccount[]][] = [
-    ["Yours", compatible.filter((account) => account.scope === "user")],
-    [accounts.orgName, compatible.filter((account) => account.scope === "org")],
-  ];
-  return (
-    // Its own row, apart from the run settings: the choice of who pays is read before Launch, never assumed.
-    <div data-account-row className="flex gap-3 rounded-lg border bg-muted/40 p-3 dark:bg-input/20">
-      <span
-        aria-hidden="true"
-        className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground shadow-xs [&_svg]:size-4"
-      >
-        <WalletIcon />
-      </span>
-      <div className="min-w-0 flex-1 space-y-2">
-        <div className="space-y-1">
-          <Label htmlFor={`${idPrefix}-account`}>Account</Label>
-          <p
-            id={`${idPrefix}-account-hint`}
-            className={cn(
-              "text-xs text-pretty",
-              resolved.state === "unusable" ? "text-warning" : "text-muted-foreground",
-            )}
-            data-account-field={resolved.state}
-          >
-            {resolved.state === "unusable"
-              ? `${resolved.account.name} would be used, but it is ${accountProblem(resolved.account, accounts.now)}. Choose another account.`
-              : resolved.state === "ambiguous"
-                ? "No default for this agent: choose who is billed."
-                : "Billed for this sandbox, now and for every later message."}
-          </p>
-        </div>
-        <NativeSelect
-          id={`${idPrefix}-account`}
-          name="credential"
-          {...(value === undefined ? { defaultValue: preset } : { value })}
-          onChange={(event) => onChange(event.target.value)}
-          required
-          aria-describedby={`${idPrefix}-account-hint`}
-          className="w-full bg-background"
-        >
-          {preset === "" && (
-            <option value="" disabled>
-              Choose an account
-            </option>
-          )}
-          {groups.map(([group, rows]) =>
-            rows.length === 0 ? null : (
-              <optgroup key={group} label={group}>
-                {rows.map((account) => (
-                  <option key={account.id} value={account.id} disabled={accountProblem(account, accounts.now) !== null}>
-                    {optionLabel(account, accounts.now, accounts.orgName)}
-                  </option>
-                ))}
-              </optgroup>
-            ),
-          )}
-        </NativeSelect>
-      </div>
-    </div>
-  );
-}
-
-/**
- * "Work (Claude subscription, default)": the name, then only the notes that add something. An org account names
- * its org, so the closed select still says who is billed when a personal and an org account share a name.
- */
-function optionLabel(account: ModelAccount, now: number, orgName: string): string {
-  const owner = account.scope === "org" ? orgName : null;
-  const notes = [owner, kindNote(account), account.isDefault ? "default" : null, accountProblem(account, now)].filter(
-    Boolean,
-  );
-  return notes.length ? `${account.name} (${notes.join(", ")})` : account.name;
-}
-
-/** A compact radio group: every option visible, one choice, arrow keys move between them. */
-export function Segmented<T extends string>({
-  legend,
-  describedBy,
-  name,
-  value,
-  options,
-  onChange,
-}: {
-  legend: string;
-  describedBy?: string;
-  name: string;
-  value: T;
-  options: { value: T; label: string; disabled?: boolean }[];
-  onChange: (value: T) => void;
-}) {
-  const id = useId();
-  return (
-    <fieldset className="min-w-0 space-y-2">
-      <legend className="text-sm leading-none font-medium">{legend}</legend>
-      <RadioGroup
-        name={name}
-        value={value}
-        onValueChange={(next) => onChange(next as T)}
-        aria-label={legend}
-        aria-describedby={describedBy}
-        className="h-9 auto-cols-fr grid-flow-col gap-0.5 rounded-md border border-input p-0.5 dark:bg-input/30"
-      >
-        {options.map((option) => (
-          <RadioGroupItem
-            key={option.value}
-            id={`${id}-${option.value}`}
-            value={option.value}
-            disabled={option.disabled}
-            className="flex h-full w-full min-w-0 items-center justify-center rounded-sm border-0 bg-transparent px-2 text-sm whitespace-nowrap text-muted-foreground shadow-none hover:text-foreground data-[state=checked]:bg-accent data-[state=checked]:font-medium data-[state=checked]:text-foreground"
-          >
-            {option.label}
-          </RadioGroupItem>
-        ))}
-      </RadioGroup>
-    </fieldset>
-  );
-}
-
-/**
- * The configured checkout the agent starts in. A golden with one repository starts there; with several, in the
- * default directory until one is chosen. Every repository stays available either way.
- */
-export function RepositoryField({
-  idPrefix,
-  repositories,
-  onChange,
-}: {
-  idPrefix: string;
-  repositories: readonly string[];
-  onChange?: (dir: string) => void;
-}) {
-  return (
-    <div className="min-w-0 space-y-2">
-      <Label htmlFor={`${idPrefix}-repo`}>Project</Label>
-      <NativeSelect
-        id={`${idPrefix}-repo`}
-        name="repo"
-        defaultValue={repositories.length === 1 ? repositories[0] : ""}
-        onChange={(event) => onChange?.(event.target.value)}
-      >
-        <option value="">Default directory</option>
-        {repositories.map((dir) => (
-          <option key={dir} value={dir}>
-            {dir}
-          </option>
-        ))}
-      </NativeSelect>
-    </div>
-  );
-}
-
-/**
  * Connections, by the #681 selection. It starts with every enabled include-by-default connection, personal and org,
  * whatever the golden; from the person's first change it is exactly what they ticked, and an empty selection launches
  * with none. A default that is not connected is never dropped silently: it holds the launch until it is reconnected
@@ -719,7 +518,7 @@ export function RepositoryField({
  *
  * The alerts render outside the collapsed Advanced area, so nothing that holds or limits a launch is hidden.
  */
-function useLaunchAccess(connections: LaunchConnections) {
+export function useLaunchAccess(connections: LaunchConnections) {
   // Null until the person changes the selection: the defaults apply until then.
   const [picked, setPicked] = useState<string[] | null>(null);
   // A requested default that is not connected holds the launch until the person reconnects it or explicitly goes
@@ -898,7 +697,7 @@ function ConnectionOption({
 }
 
 /** The Tools the agent can call a launch gets, as one summary fact. */
-function mcpFact(access: { unavailable: boolean; selected: number; selectedName?: string | undefined }): string {
+export function mcpFact(access: { unavailable: boolean; selected: number; selectedName?: string | undefined }): string {
   if (access.unavailable) return "Tools unavailable";
   if (access.selected === 1 && access.selectedName) return `${access.selectedName} connected`;
   return access.selected === 0 ? "No tools" : `${access.selected} ${access.selected === 1 ? "tool" : "tools"}`;

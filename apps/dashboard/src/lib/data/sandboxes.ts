@@ -5,64 +5,12 @@ import { boundedEnrichment } from "@/lib/bounded-enrichment";
 import type { DockerHostList } from "@/lib/docker-hosts";
 import { parseSandboxListMetadata, type SkippedSandboxRow } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
-import {
-  type Facet,
-  filterSandboxes,
-  PAGE_SIZE,
-  type SandboxFilters,
-  sandboxFacetCounts,
-  sortSandboxes,
-} from "@/lib/sandbox-filters";
 import type { Supabase } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 
-export type SandboxPage = {
-  rows: SandboxListMetadata[];
-  total: number;
-  inventoryTotal: number;
-  /** Rows the server listed that do not match the contract, left out of the page (#1398). */
-  skipped: number;
-  facets: Record<Facet, Map<string, number>>;
-};
-
-/** Read the existing RLS-protected metadata port in stable pages, then filter the whole organization inventory.
- * No interior rows or new server capability are needed for search and cross-facet counts.
- */
-export async function listSandboxes(
-  supabase: Supabase,
-  filters: SandboxFilters,
-  viewerId: string,
-): Promise<SandboxPage> {
-  const selected = await selectedOrganization();
-  const inventory: SandboxListMetadata[] = [];
-  let skipped = 0;
-  if (selected) {
-    const batch = 500;
-    for (let from = 0; ; from += batch) {
-      const { data, error } = await supabase
-        .rpc("sandbox_list_metadata")
-        .eq("orgId", selected.org.id)
-        .order("id")
-        .range(from, from + batch - 1);
-      if (error?.code === "PGRST103") break;
-      if (error) throw new Error(error.message);
-      const parsed = parseSandboxListMetadata(data);
-      inventory.push(...parsed.rows);
-      skipped += parsed.skipped.length;
-      logSkipped(parsed.skipped);
-      if (parsed.rows.length + parsed.skipped.length < batch) break;
-    }
-  }
-  const matching = sortSandboxes(filterSandboxes(inventory, filters, viewerId), filters.sort);
-  const from = (filters.page - 1) * PAGE_SIZE;
-  return {
-    rows: matching.slice(from, from + PAGE_SIZE),
-    total: matching.length,
-    inventoryTotal: inventory.filter((row) => row.status !== "deleted").length,
-    skipped,
-    facets: sandboxFacetCounts(inventory, filters, viewerId),
-  };
-}
+// Explicit JWT projection: schema additions must be reviewed before becoming dashboard data.
+const SANDBOXES_COLUMNS =
+  "id,boat_id,golden_id,org_id,owner_id,harness,status,conversation_ids,created_at,stopped_at,deleted_at,status_reason,model,reasoning_effort,provider,provider_sandbox_id,visibility,source_golden_visibility,access_owner_id,mcp_generation,repository_dir,requested_ttl_seconds,effective_ttl_seconds,expires_at,lifecycle_generation,last_observed_at,lifecycle_error,reconcile_after,stop_requested_at,activity_lease_id,activity_until,reconcile_lease,reconcile_lease_until,credential_id,credential_version,machine_size,resource_project,resource_sampling_claim_id,resource_sampling_after,resource_sampling_generation,orchestrator_native_generation,task_outcome,task_prompt_id,preservation_note,usage_runtime_seconds,usage_running_since,usage_turns,skills,stop_generation,preservation_stop_generation,application_secret_tainted,boat_runtime,docker_host_id,docker_installation_id,docker_generation,docker_image,runtime_transport,docker_snapshot_id";
 
 /** The listed metadata of one sandbox of the selected organization, or null when the server lists no such sandbox. */
 export async function getSandboxMetadata(supabase: Supabase, id: string): Promise<SandboxListMetadata | null> {
@@ -92,7 +40,7 @@ export async function getSandbox(supabase: Supabase, id: string): Promise<Sandbo
   if (!selected) return null;
   const { data, error } = await supabase
     .from("sandboxes")
-    .select("*")
+    .select(SANDBOXES_COLUMNS)
     .eq("id", id)
     .eq("org_id", selected.org.id)
     .maybeSingle();

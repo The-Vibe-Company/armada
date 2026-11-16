@@ -172,8 +172,8 @@ export function launchCredentials(
       if (credentials.codexAuthJson && ownership?.broker && credentials.binding)
         await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
     },
-    async admit(actor, credentials, sandboxId) {
-      if (credentials.binding) await ownership?.admitCapacity(credentials.binding.credentialId, sandboxId);
+    async admit(actor, credentials, sandboxId, model) {
+      if (credentials.binding) await ownership?.admitCapacity(credentials.binding.credentialId, sandboxId, model);
       if (credentials.codexAuthJson && ownership?.broker && credentials.binding)
         await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
     },

@@ -16,7 +16,7 @@ import {
   UserIcon,
   UsersIcon,
 } from "lucide-react";
-import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
 import {
   addConnection,
   addServiceConnection,
@@ -60,8 +60,10 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { useMutationState } from "@/components/use-mutation-state";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
+import { clientMutation } from "@/lib/client-mutation";
 import {
   authLabel,
   type ConnectionAuthType,
@@ -143,7 +145,7 @@ type HeaderRow = { key: number; name: string };
  */
 export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
   const formRef = usePreservedActionForm();
-  const [state, formAction] = useActionState(addConnection, null);
+  const [state, formAction] = useMutationState(addConnection);
   const [generation, setGeneration] = useState(0);
   useEffect(() => {
     if (state?.ok) setGeneration((value) => value + 1);
@@ -780,7 +782,8 @@ function ConnectServiceForm({
   orgName: string;
   isAdmin: boolean;
 }) {
-  const [state, formAction] = useActionState(addServiceConnection, null);
+  const preserve = usePreservedActionForm();
+  const [state, formAction] = useMutationState(addServiceConnection);
   const [scope, setScope] = useState<ConnectionScope>("personal");
   const id = useId();
   if (state?.created) {
@@ -796,7 +799,7 @@ function ConnectServiceForm({
     );
   }
   return (
-    <form action={formAction} className="space-y-4">
+    <form ref={preserve} action={formAction} className="space-y-4">
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="service" value={service.id} />
       <input type="hidden" name="scope" value={scope} />
@@ -924,7 +927,7 @@ function RowAction({
   label?: string;
   hidden?: boolean;
 }) {
-  const [state, formAction] = useActionState(action, null);
+  const [state, formAction] = useMutationState(action);
   useEffect(() => {
     if (state) onResult(state);
   }, [state, onResult]);
@@ -951,7 +954,7 @@ function DefaultSwitch({
   connection: McpConnection;
   onResult: (result: ActionResult) => void;
 }) {
-  const [state, formAction, pending] = useActionState(updateConnectionMetadata, null);
+  const [state, formAction, pending] = useMutationState(updateConnectionMetadata);
   useEffect(() => {
     if (state) onResult(state);
   }, [state, onResult]);
@@ -1069,7 +1072,7 @@ export function ToolPanel({
     for (const [key, value] of Object.entries(fields)) data.set(key, value);
     setBusy(pendingText);
     startTransition(async () => {
-      const outcome = await action(null, data);
+      const outcome = await clientMutation(() => action(null, data));
       setBusy(null);
       setResult(outcome);
     });
@@ -1282,7 +1285,7 @@ function ConfirmAction({
   description: string;
   confirm: string;
 }) {
-  const [state, formAction] = useActionState(action, null);
+  const [state, formAction] = useMutationState(action);
   useEffect(() => {
     if (!state) return;
     onResult(state);
@@ -1318,7 +1321,8 @@ function RenameDialog({
   onCloseAutoFocus,
   onResult,
 }: ControlledDialog & { connection: McpConnection; onResult: (result: ActionResult) => void }) {
-  const [state, formAction] = useActionState(updateConnectionMetadata, null);
+  const preserve = usePreservedActionForm();
+  const [state, formAction] = useMutationState(updateConnectionMetadata);
   const id = useId();
   useEffect(() => {
     if (!state) return;
@@ -1334,7 +1338,7 @@ function RenameDialog({
           <DialogTitle>Rename {connection.name}</DialogTitle>
           <DialogDescription>Only the name changes. Sign-in and running sandboxes are kept.</DialogDescription>
         </DialogHeader>
-        <form action={formAction} className="space-y-4">
+        <form ref={preserve} action={formAction} className="space-y-4">
           <input type="hidden" name="org" value={connection.orgId} />
           <input type="hidden" name="id" value={connection.id} />
           <div className="space-y-2">
@@ -1369,7 +1373,8 @@ function EditConnectionDialog({
   onCloseAutoFocus,
   onResult,
 }: ControlledDialog & { connection: McpConnection; onResult: (result: ActionResult) => void }) {
-  const [state, formAction] = useActionState(editConnection, null);
+  const preserve = usePreservedActionForm();
+  const [state, formAction] = useMutationState(editConnection);
   const [generation, setGeneration] = useState(0);
   const [authType, setAuthType] = useState<ConnectionAuthType>(connection.authType);
   const id = useId();
@@ -1392,7 +1397,7 @@ function EditConnectionDialog({
           <DialogTitle>Edit {connection.name}</DialogTitle>
           <DialogDescription>{scopeLabel(connection.scope)} connection. Who uses it cannot change.</DialogDescription>
         </DialogHeader>
-        <form key={generation} action={formAction} className="space-y-4">
+        <form ref={preserve} key={generation} action={formAction} className="space-y-4">
           <input type="hidden" name="org" value={connection.orgId} />
           <input type="hidden" name="id" value={connection.id} />
           <p className="flex gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-foreground">

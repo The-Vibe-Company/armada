@@ -9,6 +9,7 @@ required=(SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID
 for key in "${required[@]}"; do
   [[ -n "${!key:-}" ]] || fail "Missing deployment environment secret/configuration: $key. See docs/releasing.md."
 done
+[[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || fail 'Invalid release SHA.'
 [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || fail 'Checkout does not match validated release SHA.'
 [[ "$ARMADA_SERVER_URL" == https://* ]] || fail 'ARMADA_SERVER_URL must use HTTPS.'
 # Ordinary main runs supersede queued older sources before the first mutation.
@@ -40,6 +41,9 @@ if [[ -f "$pin" ]] && jq -e 'type == "object"' "$pin" >/dev/null; then
     || fail 'Official sandbox image pin does not match this release.'
   cp "$pin" "$source_dir/$pin"
 fi
+# Bundle the archive's identity, independent of Railway's optional/stale Git metadata.
+jq -n --arg commit "$RELEASE_SHA" '{commit: $commit}' > "$source_dir/packages/mcp-server/src/source-identity.json"
+health_tool="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployment-health.ts"
 cd "$source_dir"
 
 supabase link --project-ref "$SUPABASE_PROJECT_ID"
@@ -86,11 +90,11 @@ while (( SECONDS < deadline )); do
   sleep 10
 done
 [[ "${status:-}" == SUCCESS ]] || fail "Timed out waiting for Railway deployment $deployment_id."
-# The configured public server must actually serve this version, not just pass a generic health check.
+# Prove the public route serves this exact source, not another same-version deployment.
 healthy=false
 for _ in {1..12}; do
   if curl --fail --silent --show-error --max-time 15 "${ARMADA_SERVER_URL%/}/healthz" \
-    | jq -e --arg version "$RELEASE_VERSION" '.ok == true and .version == $version' >/dev/null; then
+    | bun "$health_tool" "$RELEASE_VERSION" "$RELEASE_SHA"; then
     healthy=true
     break
   fi

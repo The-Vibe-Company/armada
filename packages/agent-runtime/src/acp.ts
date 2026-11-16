@@ -2,7 +2,7 @@ import { VERSION } from "@armada/core";
 import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
-import { HarnessError } from "./errors.ts";
+import { HarnessError, nativeHarnessError } from "./errors.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 
 type ObjectValue = Record<string, unknown>;
@@ -69,7 +69,12 @@ export class AcpDriver implements Driver {
       steering = false;
     const pending = new Map<
       number,
-      { resolve(value: ObjectValue): void; reject(error: Error): void; timer?: ReturnType<typeof setTimeout> }
+      {
+        method: string;
+        resolve(value: ObjectValue): void;
+        reject(error: Error): void;
+        timer?: ReturnType<typeof setTimeout>;
+      }
     >();
     const failure = (code: "harness_process_lost" | "invalid_harness_protocol" = "harness_process_lost") => {
       stopped = true;
@@ -87,7 +92,7 @@ export class AcpDriver implements Driver {
           return;
         }
         const id = ++sequence;
-        const entry: typeof pending extends Map<number, infer T> ? T : never = { resolve, reject };
+        const entry: typeof pending extends Map<number, infer T> ? T : never = { method, resolve, reject };
         if (deadline)
           entry.timer = setTimeout(() => {
             pending.delete(id);
@@ -125,7 +130,8 @@ export class AcpDriver implements Driver {
             if (!entry) continue;
             clearTimeout(entry.timer);
             pending.delete(m.id);
-            if (m.error !== undefined || !object(m.result)) entry.reject(new HarnessError("harness_failed"));
+            if (m.error !== undefined) entry.reject(nativeHarnessError(m.error, entry.method, "acp"));
+            else if (!object(m.result)) entry.reject(new HarnessError("invalid_harness_protocol"));
             else entry.resolve(m.result);
           } else if (m.id !== undefined && typeof m.method === "string") {
             // ACP tools execute inside the admitted sandbox. Choose only an explicit one-shot allow option.

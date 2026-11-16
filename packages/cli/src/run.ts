@@ -27,8 +27,8 @@ import {
 } from "@armada/core";
 import { accountCommand } from "./account-commands.ts";
 import { applicationVaultCommand } from "./application-vault-commands.ts";
-import { flag, parseArgs, providerFlag, single, values } from "./args.ts";
-import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
+import { acceptedOptions, flag, parseArgs, providerFlag, single, values } from "./args.ts";
+import { ArmadaApiError, createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import {
   type AuthIo,
   loginCommand,
@@ -81,7 +81,7 @@ ARMADA_TOKEN is not isolated by profiles: it still overrides every saved login.
 Use a matching ARMADA_URL for token-authenticated scripts; never put tokens in arguments.
 Example: armada --profile staging login --url https://staging.example.com --provider github
 
-Exit codes: 0 success; 1 authentication/server/operation failure; 2 invalid usage or missing configuration.
+Exit codes: 0 success; 1 server/operation failure; 2 invalid usage or missing configuration; 3 authentication failure.
 Scripts: check exit status before consuming stdout; failed operations may have partial output.
 Common typed errors with --json use {error:{code,message}} on stderr, not stdout.
 Progress/warnings can also use stderr; do not assume the entire stream is one JSON document.
@@ -248,7 +248,7 @@ Usage:
                                            Keep this terminal open; Ctrl-C/shell exit cancels.
   armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
-  armada creds limits <account-id> --max-agents N | --unlimited [--org <name>]
+  armada creds limits <account-id> [--model <model-id>] --max-agents N | --unlimited [--org <name>]
                                            Set the maximum simultaneous running agents for a model account
   armada creds presets [--json]             List the same model connection providers as the dashboard
   armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
@@ -372,17 +372,9 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         const login = argv[0] === "login";
         const explicitLoginOrigin = login && argv.some((arg) => arg === "--url" || arg.startsWith("--url="));
         const saved = explicitLoginOrigin ? null : await stores.session.read();
-        if (
-          !login &&
-          env.ARMADA_URL &&
-          saved?.armadaUrl &&
-          armadaApiUrl(env.ARMADA_URL) !== armadaApiUrl(saved.armadaUrl)
-        )
-          throw new AuthError(
-            "Profile login belongs to another server. Choose its server or log in to a different profile.",
-            "usage",
-          );
-        env.ARMADA_URL ??= saved?.armadaUrl;
+        if (login) env.ARMADA_URL ??= saved?.armadaUrl;
+        else if (saved || env.ARMADA_URL)
+          env.ARMADA_URL = await resolveArmadaOrigin({ env, session: stores.session }, undefined, saved);
         if (!env.ARMADA_URL && !(login && argv.some((arg) => arg === "--url" || arg.startsWith("--url="))))
           throw new AuthError(
             `Configure this profile first: armada --profile ${env.ARMADA_PROFILE} login --url <server-origin>.`,
@@ -421,7 +413,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       if (argv.length === 0) {
         io.err("You are not signed in. Run armada login.\n");
         io.out(HELP);
-        return 1;
+        return 3;
       }
       throw new AuthError("You are not signed in. Run armada login.", "unauthorized");
     }
@@ -442,7 +434,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       io.err(
         `${JSON.stringify({ error: { code: error instanceof ArmadaApiError ? error.serverCode : error.code, message: snapshotText(error.message), ...(error instanceof ArmadaApiError && error.legacyCode ? { legacyCode: error.legacyCode } : {}) } })}\n`,
       );
-      return ["invalid_config", "invalid_request", "invalid", "usage", "no_credentials"].includes(error.code) ? 2 : 1;
+      return failureExitCode(error);
     }
     const printFailure = (message: string) =>
       io.err(
@@ -471,10 +463,16 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     }
     if (error instanceof AuthError) {
       printFailure(error.message);
-      return error.code === "usage" ? 2 : 1;
+      return failureExitCode(error);
     }
     throw error;
   }
+}
+
+/** Stable script contract, shared by human and JSON diagnostics. */
+function failureExitCode(error: { code: string }): number {
+  if (["invalid_config", "invalid_request", "invalid", "usage", "no_credentials"].includes(error.code)) return 2;
+  return error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401) ? 3 : 1;
 }
 
 async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
@@ -554,7 +552,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     !optionArgs.some((arg) => arg === "--org" || arg.startsWith("--org="))
   ) {
     const auth = authOf(io, deps);
-    const selected = await auth.preferences?.read(armadaApiUrl(auth.env.ARMADA_URL));
+    const selected = await auth.preferences?.read(await resolveArmadaOrigin(auth));
     if (selected) {
       const split = rest.indexOf("--");
       rest =
@@ -665,6 +663,31 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       subcommand === "create" ? await readConfig(args, deps) : undefined,
     );
   }
+  const snapshotOptions: Record<string, readonly string[]> = {
+    capabilities: ["--provider"],
+    retirement: ["--limit", ...(args.positionals[0] === "reconcile" ? ["--file"] : [])],
+    remove: ["--provider"],
+    visibility: ["--visibility"],
+    "build-cancel": [],
+    "build-find": ["--provider"],
+    "build-status": ["--idempotency-key"],
+    create: ["--provider", "--private", "--config", "--repo", "--init", "--setup", "--idempotency-key", "--timeout"],
+    update: [
+      "--provider",
+      "--replace",
+      "--add-repo",
+      "--config",
+      "--repo",
+      "--init",
+      "--setup",
+      "--idempotency-key",
+      "--timeout",
+    ],
+    connect: ["--provider"],
+    snapshot: ["--provider"],
+    list: ["--provider"],
+  };
+  acceptedOptions(args, `snapshot ${subcommand}`, ["--org", "--json", ...(snapshotOptions[subcommand] ?? [])]);
   const provider = providerFlag(args);
   switch (subcommand) {
     case "capabilities": {
@@ -1508,22 +1531,27 @@ function oneName(positionals: string[]): string {
 
 async function login(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const parsed = parseAuth(argv);
-  rejectUnknown(parsed.flags, ["provider", "email", "url"]);
+  rejectUnknown(parsed.flags, ["provider", "email", "url", "json"]);
   if (parsed.position.length > 0) throw new AuthError("Run armada login --help.", "usage");
   if (parsed.flags.has("provider") && parsed.flags.has("email")) {
     throw new AuthError("Use --provider or --email, not both.", "usage");
   }
   const provider = parsed.flags.has("provider") ? assertProvider(authFlag(parsed.flags, "provider")) : undefined;
   const email = parsed.flags.has("email") ? authFlag(parsed.flags, "email") : undefined;
-  await loginCommand(authOf(io, deps), { provider, email, url: parsed.flags.get("url") });
+  await loginCommand(authOf(io, deps), {
+    provider,
+    email,
+    url: parsed.flags.get("url"),
+    json: parsed.flags.has("json"),
+  });
   return 0;
 }
 
 async function logout(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const parsed = parseAuth(argv);
-  rejectUnknown(parsed.flags, []);
+  rejectUnknown(parsed.flags, ["json"]);
   if (parsed.position.length > 0) throw new AuthError("Run armada logout.", "usage");
-  await logoutCommand(authOf(io, deps));
+  await logoutCommand(authOf(io, deps), parsed.flags.has("json"));
   return 0;
 }
 

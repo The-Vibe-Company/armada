@@ -2,7 +2,7 @@ import type { ApplicationVaultActor } from "./application-vault.ts";
 import type { Sql } from "./golden-store.ts";
 import { cronForLegacyInterval } from "./routine-legacy-schedule.ts";
 import { nextRoutineDates, parseRoutineSchedule } from "./routine-schedule.ts";
-import { type Routine, routineReasonHelp } from "./routines.ts";
+import { type Routine, routineLaunchRefusal, routineReasonHelp } from "./routines.ts";
 import { VaultError } from "./vault-error.ts";
 
 type Row = {
@@ -154,6 +154,7 @@ export function createRoutineService(sql: Sql) {
               configuration_version: number;
               state: string;
               reason: string | null;
+              launch_refusal: string | null;
               missed_intervals: number;
               created_at: string | Date;
               updated_at: string | Date;
@@ -163,7 +164,7 @@ export function createRoutineService(sql: Sql) {
               task_checked_at: string | Date | null;
               missed_count_capped: boolean;
             }>(
-              `select r.id,r.scheduled_due_at,r.configuration_version,r.state,r.reason,r.template_request_id,r.task_state,r.task_checked_at,r.missed_count_capped,
+              `select r.id,r.scheduled_due_at,r.configuration_version,r.state,r.reason,r.launch_refusal,r.template_request_id,r.task_state,r.task_checked_at,r.missed_count_capped,
                 r.missed_intervals,r.created_at,r.updated_at,
                 case when exists(select 1 from public.sandboxes s where s.id=r.sandbox_id
                   and s.org_id=$2 and s.owner_id=$3) then r.sandbox_id else null end as sandbox_id
@@ -179,6 +180,7 @@ export function createRoutineService(sql: Sql) {
                 state: r.state,
                 reason: r.reason,
                 reasonHelp: routineReasonHelp(r.reason),
+                launchRefusal: routineLaunchRefusal(r.launch_refusal),
                 missedIntervals: r.missed_intervals,
                 missedCountCapped: r.missed_count_capped,
                 createdAt: r.created_at,

@@ -35,10 +35,14 @@ import { callSharedTool } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
-let db: Awaited<ReturnType<typeof migratedDatabase>>;
+let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const sql: Sql = {
-  query: (q, v) => db.query(q, v),
-  transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  query: (q, v) => database().query(q, v),
+  transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
 };
 const controls = createDockerSandboxControls(sql, Buffer.alloc(32, 13).toString("base64"));
 const key = Buffer.alloc(32, 13).toString("base64");
@@ -62,12 +66,15 @@ const bootstrap = createDockerBootstrapService(sql, key, {
   credentials: launchCredentials(createSqlVaultStore(sql), key),
 });
 beforeAll(async () => {
-  db = await migratedDatabase();
+  connection = await migratedDatabase();
 });
 afterAll(async () => {
-  await db.close();
+  const db = connection;
+  connection = undefined;
+  await db?.close();
 });
 async function fixture() {
+  const db = database();
   const orgId = randomUUID(),
     userId = randomUUID(),
     adminId = randomUUID(),
@@ -176,6 +183,7 @@ async function rejected(work: Promise<unknown>, code: string) {
 // The SQL boundary owns visibility, archive paging and machine acknowledgement;
 // transport/schema coverage below can reuse this same real allocation fixture.
 test("normal Docker reads authorize owner/admin with live membership, preserve native outcomes/usage, and retain archives", async () => {
+  const db = database();
   const f = await fixture(),
     session = await ready(f),
     who = caller(f.actor),
@@ -375,6 +383,7 @@ test("normal logs preserve raw cursors through private diagnostics and conversat
 });
 
 test("cleanup waits outside transactions for physical ACK; timeout retries reuse one bound intent", async () => {
+  const db = database();
   const f = await fixture(),
     who = caller(f.actor),
     admin = caller(f.admin, "admin");
@@ -428,6 +437,7 @@ test("cleanup waits outside transactions for physical ACK; timeout retries reuse
 });
 
 test("failed/expired cleanup preserves failure facts and unfinished prompt outcome, with safe normal retry after a known failed host job", async () => {
+  const db = database();
   const f = await fixture(),
     session = await ready(f),
     who = caller(f.actor),
@@ -475,7 +485,11 @@ test("failed/expired cleanup preserves failure facts and unfinished prompt outco
   expect(row?.stopped_at).not.toBeNull();
   await hosts.revoke(f.admin, f.hostId);
   expect(await invoke(who, "stop", { id: f.sandbox.id })).toEqual({ id: f.sandbox.id, status: "failed" });
-  await rejected(invoke(who, "delete", { id: f.sandbox.id }, controller), "conflict");
+  // Revocation fences new work, not authorized physical cleanup of a bound allocation.
+  expect(await invoke(who, "delete", { id: f.sandbox.id }, controller)).toEqual({
+    id: f.sandbox.id,
+    status: "deleted",
+  });
 });
 
 // Actual producer -> MCP output validator -> dashboard parser/CLI formatter. No duplicated DTO fixture.
@@ -635,6 +649,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
 
 // Merge integration: normal Docker cleanup obeys the shared delegated-child fence too.
 test("Docker child deletion requires permanent delegated parent deletion before mailbox admission", async () => {
+  const db = database();
   const f = await fixture(),
     who = caller(f.actor);
   const parent = await reservations.reserve(f.actor, {
@@ -727,6 +742,7 @@ test("normal Docker send continues the saved native conversation and retries exa
 });
 
 test("ordinary Docker send resumes once and never wakes a stopped sandbox for a prior prompt UUID", async () => {
+  const db = database();
   const f = await fixture();
   let session = await ready(f);
   const conversationId = randomUUID();
@@ -805,6 +821,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
 });
 
 test("Docker mutations reuse the fenced runtime mailbox and reconcile identical request IDs", async () => {
+  const db = database();
   const f = await fixture();
   const session = await ready(f);
   const conversationId = randomUUID(),

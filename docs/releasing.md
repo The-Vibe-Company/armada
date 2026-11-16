@@ -251,7 +251,10 @@ RELEASE_SHA/RELEASE_VERSION are workflow outputs, not owner-managed secrets.
 
 Railway CLI 5.71.0 uploads clean pinned source, then the workflow waits for the
 **exact returned deployment ID** to reach SUCCESS and public /healthz to report
-the source version. Only then does it build/upload the dashboard. Vercel waits
+both the source version and full release SHA. The clean upload archive carries
+`packages/mcp-server/src/source-identity.json`, bundled into the server binary;
+this identity takes precedence over provider Git metadata. Missing or wrong
+commit evidence (including a same-version older server) fails closed. Only then does it build/upload the dashboard. Vercel waits
 for Ready. npm only follows successful production for publishing releases.
 No deploy hook or moving main checkout substitutes for the validated source.
 
@@ -419,3 +422,53 @@ An online host with placement enabled is not runtime readiness. For #2239 the
 specific missing production dependency remains unverified without the new
 phase-coded refusal; the coordinator must capture that reason and re-run the
 owner's normal launch after release. Do not infer a production pass from CI.
+
+## Release latency investigation (#2394)
+
+Baseline: [release 43817524703](https://github.com/The-Vibe-Company/armada/actions/runs/43817524703)
+(2026-11-16, 2.46.4), from the Actions jobs/steps API and timestamped logs:
+
+| Phase | Elapsed |
+| --- | ---: |
+| Release checks | 6m 23s |
+| Official image | 1m 46s |
+| Slowest binary runner | 2m 12s |
+| Staging admission after configuration | 45s |
+| Staging job setup through client installation | 26s |
+| Migrations, server and dashboard | 3m 38s |
+| Dependencies and journal restoration | 2s |
+| Smoke (including cleanup) | 13m 49s |
+| Production | 4m 31s |
+| npm | 9m 28s |
+
+Within smoke, logs place the clean lifecycle at 121405ms and the preservation
+lifecycle at 47925ms. The final journal cleanup runs from approximately 06:56:07
+to 07:03:07 UTC (7m). Repeated `sandbox_not_ready` delete acknowledgements dominate
+that interval. This is not evidence of redundant golden creation. Cleanup already
+runs independent receipts concurrently in two authority-ordered waves; do not
+parallelize delegated children with their parent fence or drop cleanup coverage.
+
+Probe receipts now include individual `elapsedMs` for default-skill reads, vault,
+templates, expiry and lifecycle steps, including failed steps. These durations
+measure actions directly, not gaps between unrelated interleaved log lines. No
+credentials, action return values or error messages are added to logs.
+
+Current source already uses `queue: max` on `release-production` and the shared
+staging job lock; pinned staging calls have run-specific outer groups. The
+cancelled [2.46.2 run](https://github.com/The-Vibe-Company/armada/actions/runs/43799989064)
+is historical evidence of cancellation, not sufficient evidence that today's
+FIFO configuration still evicts releases. Confirm the cancellation reason and
+executing workflow revision before replacing these controls.
+
+### #2394 acceptance ledger (investigation, not completion)
+
+| Criterion | Evidence / outstanding work |
+| --- | --- |
+| Merge-safe pinned release | FIFO and separate pinned outer group already present; coordinator must record a release concurrent with ordinary main and schema-changing merges |
+| Exact production SQL equals smoked SQL | Forward-history staging policy above permits smoke against newer SQL; this does **not** establish schema equality. A release-schema isolation design remains required before claiming this stronger guarantee |
+| Faster Modal/Docker probes, no lost coverage | Baseline measured above; current ordinary smoke validates Modal cases only. Confirm the owner-enabled Docker parity entry point before changing scheduling; independent provider scheduling and authenticated golden reuse remain outstanding |
+| Before/after timings | Baseline above; per-step instrumentation implemented. Coordinator must collect an authorized post-merge staging run; no after measurement or speedup is claimed |
+
+No new configuration, CI job, required check or deployment prerequisite is added
+by timing instrumentation. Boat remains outside the release gate. This ledger
+must not be read as release-path acceptance or permission to deploy.

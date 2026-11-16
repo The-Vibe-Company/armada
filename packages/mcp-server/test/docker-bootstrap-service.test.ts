@@ -14,10 +14,14 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
-let db: Awaited<ReturnType<typeof migratedDatabase>>;
+let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const sql: Sql = {
-  query: (q, v) => db.query(q, v),
-  transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  query: (q, v) => database().query(q, v),
+  transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
 };
 const key = Buffer.alloc(32, 9).toString("base64");
 const manifest = {
@@ -40,12 +44,15 @@ const service = createDockerBootstrapService(sql, key, options);
 const hosts = createDockerHostStore(sql, key);
 const reservations = createDockerSandboxService(sql, key, { enabled: true });
 beforeAll(async () => {
-  db = await migratedDatabase();
+  connection = await migratedDatabase();
 });
 afterAll(async () => {
-  await db.close();
+  const db = connection;
+  connection = undefined;
+  await db?.close();
 });
 async function fixture(ack = true, harness: Harness = "codex") {
+  const db = database();
   const orgId = randomUUID(),
     userId = randomUUID(),
     adminId = randomUUID();
@@ -86,6 +93,7 @@ async function denied(work: Promise<unknown>) {
   await expect(work).rejects.toThrow("Docker bootstrap denied");
 }
 async function pending(sandboxId: string) {
+  const db = database();
   return (
     await db.query<{
       enrolment_hash: string | null;
@@ -101,6 +109,7 @@ async function pending(sandboxId: string) {
 
 // Service composition owns admission ordering and atomic delivery. Auth selection itself is tested elsewhere.
 test("bootstrap is literal opt-in, owner-only and waits for create ACK before resolving credentials", async () => {
+  const db = database();
   const acknowledged = await fixture();
   let disabledResolutions = 0;
   const disabledTracked = {
@@ -176,6 +185,7 @@ test("sealed account configuration is delivered only by enrolment, host gets tic
 });
 
 test("lost commit response retries retain original encrypted job and do not rotate an enrolled runtime", async () => {
+  const db = database();
   const f = await fixture();
   let lose = true;
   const lostResponse: Sql = {
@@ -250,6 +260,7 @@ test("lost commit response retries retain original encrypted job and do not rota
 });
 
 test("queue failure rolls back runtime ticket issuance and redacts private dependency errors", async () => {
+  const db = database();
   const f = await fixture();
   await db.exec(`create function public.reject_bootstrap_job() returns trigger language plpgsql as $$
     begin if new.bound_operation='bootstrap' then raise exception 'private queue detail'; end if; return new; end $$;
@@ -279,6 +290,7 @@ test("queue failure rolls back runtime ticket issuance and redacts private depen
 });
 
 test("new issuance rechecks current pin, lifecycle, host authority and original reservation actor epoch without replacing unknown grants", async () => {
+  const db = database();
   for (const change of ["pin", "stop", "host", "rejoin", "race"] as const) {
     const f = await fixture();
     let resolver = credentials;
@@ -325,6 +337,7 @@ test("new issuance rechecks current pin, lifecycle, host authority and original 
 test.each(["codex", "claude", "opencode"] as const)(
   "%s resume retains allocation and conversation, fences old epoch and issues fresh enrolment",
   async (harness) => {
+    const db = database();
     const f = await fixture(true, harness);
     await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
     const first = await hosts.poll(f.hostToken, f.installationId);
@@ -350,6 +363,11 @@ test.each(["codex", "claude", "opencode"] as const)(
     const stopId = randomUUID();
     await reservations.stop(f.actor, f.sandbox.id, stopId);
     await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
+    // Resuming a retained allocation never pulls an image or creates another home volume.
+    await db.query("update public.docker_hosts set disk_free_bytes=$2 where id=$1", [
+      f.hostId,
+      harness === "claude" ? null : 0,
+    ]);
     const resumeId = randomUUID();
     await denied(service.resume(f.admin, f.sandbox.id, resumeId));
     expect(await service.resume(f.actor, f.sandbox.id, resumeId)).toEqual({
@@ -412,6 +430,7 @@ test.each(["codex", "claude", "opencode"] as const)(
 );
 
 test("idle checkpoint precedes Docker stop and its restore proof gates readiness without extending expiry", async () => {
+  const db = database();
   const f = await fixture();
   const authority = createRuntimeEnrolments(sql, key);
   await service.bootstrap(f.actor, f.sandbox.id, f.requestId);

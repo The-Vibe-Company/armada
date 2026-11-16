@@ -1,15 +1,17 @@
 # Explicit provider probes
 
-`.probe.ts` files are excluded from ordinary unit discovery. An explicit
+`.probe.ts`, `.release.ts` and `.coordinator.ts` files are excluded from ordinary
+unit discovery. An explicit
 `bun test ./path/to/file.probe.ts` executes them. A skipped probe is not acceptance.
 
 ## Existing automatic publishing proof
 
-`packages/provider-modal/test/artifact.probe.ts` retains the exact compiled-runtime
-bootstrap/RPC/checkpoint/restore assertions. The existing publishing validation
+`packages/provider-modal/test/artifact.release.ts` retains the exact compiled-runtime
+bootstrap/RPC/checkpoint/restore assertions. The existing
+`scripts/validate-release-contracts.py` publishing selector
 runs it explicitly after the ordinary unit process with the same prepared native
-Codex binary. Its existing exact-name/no-skip guard reads both reports and requires
-this case, plus the unchanged native Codex contracts, exactly once successfully.
+Codex binary. Its existing per-file guard requires a nonempty report with no
+failures, errors or skips, including the unchanged native Codex contracts.
 There is no new job/check, timeout, retry, image build or provider allocation.
 This is offline native distribution conformance, not deployed Modal acceptance.
 
@@ -21,7 +23,7 @@ This is offline native distribution conformance, not deployed Modal acceptance.
 - `packages/provider-boat/test/native-cwd.probe.ts` exercises the actual local TLS
   private-refresh bridge. No exact automatic replacement is claimed. It does not
   allocate a Boat sandbox, but opens local TLS sockets and runs guest scripts.
-- `packages/provider-boat/test/integration.probe.ts` talks to Boat, starts billed
+- `packages/provider-boat/test/integration.coordinator.ts` talks to Boat, starts billed
   sandboxes and spends model credits. It retains the separate
   `ARMADA_RUN_LIVE_BOAT_TESTS=1` compute-consent guard; a key alone is insufficient.
   It is coordinator-only/on-demand, never workers or CI/release acceptance. Any

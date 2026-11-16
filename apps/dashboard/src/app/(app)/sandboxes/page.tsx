@@ -36,7 +36,7 @@ import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycl
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
 import { machineSizeLabel, parseSandboxListMetadata, skippedRowsNote } from "@/lib/sandbox-access";
-import { sandboxActivityPage } from "@/lib/sandbox-activity";
+import { sandboxActivityPage, sandboxNeedsViewer } from "@/lib/sandbox-activity";
 import {
   FACETS,
   type Facet,
@@ -260,15 +260,8 @@ async function SandboxesContent({ searchParams }: Props) {
           search={filtersToSearch(filters)}
           rows={rows.map((sandbox) => {
             const life = lifecycleView(sandbox.status, readLifecycle(sandbox), now);
-            const paused = Boolean(idlePauseMessage(sandbox, now));
             const working = sandbox.status === "running" || sandbox.status === "starting";
-            const need =
-              sandbox.ownerId === viewer.id &&
-              !paused &&
-              (sandbox.status === "ready" ||
-                sandbox.status === "failed" ||
-                Boolean(life.notice) ||
-                (working && Date.parse(sandbox.expiresAt ?? "") - now.getTime() < 30 * 60_000));
+            const need = sandboxNeedsViewer(sandbox, viewer.id, now);
             return {
               id: sandbox.id,
               need,
