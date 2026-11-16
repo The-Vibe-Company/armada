@@ -18,6 +18,11 @@ mismatch. Do not infer one from the old wrapper's `request: invalid_response`.
   its first prompt. Snapshot repositories take the separate refresh path.
   A hard-coded null repositoryDir in Docker response projections is not proof
   that checkout did not run. Do not diagnose missing files from that field.
+- Docker prompt admission previously hard-coded /home/user even after explicit
+  repository checkout. It now starts initial and later prompts in the first
+  explicit launch repository. No-repository launches retain /home/user.
+  The golden-only immutable repository_dir database column remains unchanged;
+  Docker derives prompt cwd from its encrypted, normalized launch manifest.
 - Without configured repositories the Docker launch advertises GitHub as
   unavailable; it does not grant unrestricted GitHub access.
 - Modal uses the same wrapper and broker, so it receives these diagnostics too.
@@ -30,12 +35,19 @@ mismatch. Do not infer one from the old wrapper's `request: invalid_response`.
 On staging, use the official image and matching server release. Launch Docker
 with an explicit repository and with no repository, both with and without an
 initial prompt. Retain the launch JSON (including github/statusReason), server
-version and image digest. Do not collect capabilities, tokens, environment or
+version, image digest and account kind (Codex subscription versus
+OpenAI-compatible account). The owner also reported a Boat Morph-account failure
+while Codex subscription launches worked; that account/runtime-path comparison
+remains necessary and is not explained by the Docker cwd repair.
+Do not collect capabilities, tokens, environment or
 upstream response bodies.
 
 For the explicit-repository sandbox run, through Armada exec:
 
-1. `test -d /home/user/<configured-dir>/.git` and
+1. Ask the agent to report its initial working directory; it should be
+   /home/user/<configured-dir> for explicit Docker repositories. Repeat after
+   a later send. For exec use explicit cwd: its default remains /home/user.
+   Run `test -d /home/user/<configured-dir>/.git` and
    `git -C /home/user/<configured-dir> rev-parse --show-toplevel`.
 2. From that checkout, `gh repo view --json nameWithOwner`; separately
    `gh api repos/<owner>/<repo> --jq .full_name` to test an explicit selector.
