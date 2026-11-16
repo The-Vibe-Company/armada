@@ -373,7 +373,10 @@ export function ResourceBrowser({
             <DialogPrimitive.Content
               aria-labelledby={titleId}
               aria-describedby={undefined}
-              className="fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right motion-reduce:animate-none"
+              className={cn(
+                "fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right motion-reduce:animate-none",
+                catalogFilters && "sm:max-w-[460px]",
+              )}
               ref={(node) => {
                 if (node && host) node.appendChild(host);
               }}
@@ -393,6 +396,7 @@ export function ResourceBrowser({
             <aside
               id={panelId}
               data-resource-panel
+              data-catalog-panel={!!catalogFilters || undefined}
               onKeyDown={(event) => {
                 if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
                 const target = event.target as HTMLElement;
@@ -422,6 +426,7 @@ export function ResourceBrowser({
               className="flex h-dvh flex-col overflow-hidden border-l bg-background shadow-2xl"
             >
               <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
+                {catalogFilters && current?.mark}
                 <div className="min-w-0 space-y-0.5">
                   <h2
                     id={titleId}

@@ -171,7 +171,7 @@ export function CreateTemplateDialog(props: {
     <CreateDialog
       label="New template"
       title="New template"
-      description="A saved launch setup."
+      description="A saved launch you can start in a click or run on a routine."
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
@@ -276,9 +276,9 @@ function TemplateForm({
         </>
       )}
       <ResultLine result={state} />
-      <div className="space-y-3 text-[17px] leading-loose sm:[&_[data-slot=native-select-wrapper]]:inline-block sm:[&_[data-slot=native-select-wrapper]]:w-auto [&_[data-slot=native-select-wrapper]]:max-w-full">
+      <div className="space-y-4 text-sm">
         <div>
-          A template named{" "}
+          <span className="mb-2 block font-medium">Name</span>
           {editing ? (
             <strong>{editing.name}</strong>
           ) : (
@@ -291,10 +291,10 @@ function TemplateForm({
               required
               autoComplete="off"
               placeholder="review-pr"
-              className="inline-block h-9 w-44 rounded-none border-0 border-b border-dashed px-1 text-base shadow-none"
+              className="h-[38px]"
             />
           )}
-          , usable by{" "}
+          <span className="mt-4 mb-2 block font-medium">Visible to</span>
           {editing ? (
             <span>{scope === "personal" ? "only you" : `everyone in ${orgName}`}</span>
           ) : (
@@ -313,106 +313,12 @@ function TemplateForm({
               </option>
             </SentenceChoice>
           )}
-          .
         </div>
         <p className="flex items-center gap-2 text-xs leading-normal text-foreground">
           <LockIcon className="size-3 shrink-0" aria-hidden /> The name and who can use it are permanent.
         </p>
-        <div>
-          It launches{" "}
-          <SentenceChoice
-            aria-label="Agent"
-            name="harness"
-            value={harness}
-            className={word}
-            onChange={(event) => {
-              const next = event.target.value as Harness;
-              setHarness(next);
-              setCredential("");
-              setModel(catalog[next].defaultModel);
-              setEffort(catalog[next].defaultReasoningEffort);
-            }}
-          >
-            {(Object.keys(catalog) as Harness[]).map((value) => (
-              <option key={value} value={value}>
-                {HARNESS_LABELS[value]}
-              </option>
-            ))}
-          </SentenceChoice>{" "}
-          running{" "}
-          <SentenceChoice
-            aria-label="Model"
-            name="model"
-            value={modelEntry.models.some((entry) => entry.id === model) ? model : "other"}
-            className={word}
-            onChange={(event) => {
-              setModel(event.target.value === "other" ? "" : event.target.value);
-              setEffort(modelEntry.defaultReasoningEffort);
-            }}
-          >
-            {modelEntry.models.map((entry) => (
-              <option key={entry.id} value={entry.id}>
-                {entry.label}
-              </option>
-            ))}
-            <option value="other">Other model id</option>
-          </SentenceChoice>
-          {!modelEntry.models.some((entry) => entry.id === model) && (
-            <Input
-              aria-label="Other model id"
-              name="other_model"
-              required
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              className="mt-2"
-            />
-          )}
-          , reasoning effort{" "}
-          <SentenceChoice
-            aria-label="Reasoning effort"
-            name="reasoning_effort"
-            value={effort}
-            className={word}
-            onChange={(event) => setEffort(event.target.value)}
-          >
-            {efforts.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </SentenceChoice>
-          , paid by{" "}
-          {keepingPinnedAccount ? (
-            <span>its pinned account</span>
-          ) : (
-            <SentenceChoice
-              aria-label="Model account"
-              name="credential"
-              value={credential}
-              className={word}
-              onChange={(event) => setCredential(event.target.value)}
-            >
-              <option value="">each person's own account</option>
-              {lookups.accounts?.state === "ready" &&
-                accountsFor(lookups.accounts.accounts, harness)
-                  .filter((account) => scope === "personal" || account.scope === "org")
-                  .map((account) => (
-                    <option
-                      key={account.id}
-                      value={account.id}
-                      disabled={
-                        accountProblem(account, lookups.accounts?.state === "ready" ? lookups.accounts.now : 0) !== null
-                      }
-                    >
-                      {account.name}
-                    </option>
-                  ))}
-            </SentenceChoice>
-          )}
-          .
-        </div>
         <div className="text-sm">
-          It starts from{" "}
+          <span className="mb-2 block font-medium">Snapshot</span>
           <SentenceChoice
             aria-label="Snapshot"
             name={placement ? undefined : "golden"}
@@ -457,6 +363,98 @@ function TemplateForm({
           {placement
             ? ", using this exact snapshot or the official image on that server."
             : ", and picks up each rebuild of it automatically."}
+        </div>
+        <div>
+          <span className="mb-2 block font-medium">Agent</span>
+          <SentenceChoice
+            aria-label="Agent"
+            name="harness"
+            value={harness}
+            className={word}
+            onChange={(event) => {
+              const next = event.target.value as Harness;
+              setHarness(next);
+              setCredential("");
+              setModel(catalog[next].defaultModel);
+              setEffort(catalog[next].defaultReasoningEffort);
+            }}
+          >
+            {(Object.keys(catalog) as Harness[]).map((value) => (
+              <option key={value} value={value}>
+                {HARNESS_LABELS[value]}
+              </option>
+            ))}
+          </SentenceChoice>{" "}
+          <span className="mt-4 mb-2 block font-medium">Model</span>
+          <SentenceChoice
+            aria-label="Model"
+            name="model"
+            value={modelEntry.models.some((entry) => entry.id === model) ? model : "other"}
+            className={word}
+            onChange={(event) => {
+              setModel(event.target.value === "other" ? "" : event.target.value);
+              setEffort(modelEntry.defaultReasoningEffort);
+            }}
+          >
+            {modelEntry.models.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.label}
+              </option>
+            ))}
+            <option value="other">Other model id</option>
+          </SentenceChoice>
+          {!modelEntry.models.some((entry) => entry.id === model) && (
+            <Input
+              aria-label="Other model id"
+              name="other_model"
+              required
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              className="mt-2"
+            />
+          )}
+          <span className="mt-4 mb-2 block font-medium">Reasoning effort</span>
+          <SentenceChoice
+            aria-label="Reasoning effort"
+            name="reasoning_effort"
+            value={effort}
+            className={word}
+            onChange={(event) => setEffort(event.target.value)}
+          >
+            {efforts.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </SentenceChoice>
+          <span className="mt-4 mb-2 block font-medium">Model account</span>
+          {keepingPinnedAccount ? (
+            <span>its pinned account</span>
+          ) : (
+            <SentenceChoice
+              aria-label="Model account"
+              name="credential"
+              value={credential}
+              className={word}
+              onChange={(event) => setCredential(event.target.value)}
+            >
+              <option value="">each person's own account</option>
+              {lookups.accounts?.state === "ready" &&
+                accountsFor(lookups.accounts.accounts, harness)
+                  .filter((account) => scope === "personal" || account.scope === "org")
+                  .map((account) => (
+                    <option
+                      key={account.id}
+                      value={account.id}
+                      disabled={
+                        accountProblem(account, lookups.accounts?.state === "ready" ? lookups.accounts.now : 0) !== null
+                      }
+                    >
+                      {account.name}
+                    </option>
+                  ))}
+            </SentenceChoice>
+          )}
         </div>
         {goldenProblem && (
           <p role="alert" className="text-sm text-destructive">

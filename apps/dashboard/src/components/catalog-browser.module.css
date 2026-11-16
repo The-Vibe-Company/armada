@@ -66,6 +66,18 @@ body:has(.catalog) [role="dialog"][aria-labelledby$="-panel-title"] aside {
   background: var(--card);
 }
 
+.catalog[data-fidelity] [data-catalog-body] > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.catalog[data-fidelity] > div:first-child {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .catalog[data-fidelity] section > div > ul > li {
   position: relative;
   gap: 0;
@@ -119,14 +131,30 @@ body:has(.catalog) [role="dialog"][aria-labelledby$="-panel-title"] aside {
   fill: currentColor;
 }
 
-.catalog[data-fidelity] [data-catalog-body] > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+body:has(.catalog[data-fidelity]) [data-catalog-panel] > div:first-child {
+  padding: 18px 20px;
 }
 
-.catalog[data-fidelity] > div:first-child {
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
+body:has(.catalog[data-fidelity]) [data-catalog-panel] > div:first-child > div:first-of-type {
+  flex: 1;
+}
+
+body:has(.catalog[data-fidelity]) [data-catalog-panel] > div:last-child {
+  padding: 16px 20px;
+}
+
+body:has(.catalog[data-fidelity]) [role="dialog"]:not([aria-labelledby$="-panel-title"]) {
+  border-radius: 12px;
+  background: var(--card);
+  padding: 18px;
+}
+
+body:has(.catalog[data-fidelity]) [data-catalog-panel] [data-panel] section {
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
+body:has(.catalog[data-fidelity]) [data-catalog-panel] [data-panel] h3 {
+  margin-bottom: 10px;
+  font-weight: 500;
 }
