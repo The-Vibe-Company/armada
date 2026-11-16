@@ -221,14 +221,8 @@ async function SandboxesContent({ searchParams }: Props) {
         </p>
       )}
 
-      {rows.length === 0 ? (
-        total > 0 ? (
-          <Empty title="This page is past the last one" icon={<SearchXIcon />}>
-            <Link href={`/sandboxes${filtersToSearch({ ...filters, page: 1 })}`} className="underline">
-              Go to the first page
-            </Link>
-          </Empty>
-        ) : skipped > 0 ? (
+      {total === 0 ? (
+        skipped > 0 ? (
           <Empty
             title="Sandboxes are not fully loaded"
             icon={<SearchXIcon />}
