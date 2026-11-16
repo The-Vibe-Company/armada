@@ -39,16 +39,17 @@ case "$1" in
     if [ "$MODE" = independent-delay ]; then
       countfile="$TEST_ROOT/count-$file"
       count=0
-      if [ -f "$countfile" ]; then count=$(cat "$countfile"); fi
+      if [ -f "$countfile" ]; then IFS= read -r count < "$countfile"; fi
       count=$((count + 1))
       echo "$count" > "$countfile"
       if [ "$count" -le 5 ]; then exit 1; fi
     fi
     if [ "$MODE" = delayed ] && [ ! -f "$TEST_ROOT/retried-$file" ]; then
-      touch "$TEST_ROOT/retried-$file"
+      : > "$TEST_ROOT/retried-$file"
       exit 1
     fi
-    cp "$TEST_ROOT/dist/tarballs/$file" "$destination/$file"
+    # Fixtures contain one package name without a trailing newline.
+    printf '%s' "$(< "$TEST_ROOT/dist/tarballs/$file")" > "$destination/$file"
     if [ "$MODE" = corrupt ] || [ "$MODE" = already-present ]; then echo original-release >> "$destination/$file"; fi
     echo "$file"
     ;;
