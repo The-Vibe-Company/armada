@@ -1,7 +1,4 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { type DialoutIo, enrolRuntime, RuntimeChannelRevoked, RuntimeDialout } from "../src/dialout.ts";
 import { type Driver, Journal, Runner } from "../src/index.ts";
 import type { RunnerRequest } from "../src/protocol.ts";
@@ -154,8 +151,7 @@ test("WebSocket heartbeat stays below 30s and missing pong falls back to credent
 });
 
 test("lost result ACK is retried before polling and replayed command uses the real Runner receipt, not a second native turn", async () => {
-  const root = await mkdtemp(join(tmpdir(), "dialout-journal-"));
-  const journal = new Journal(join(root, "journal"), (value) => value.replaceAll(session.runtimeToken, "***"));
+  const journal = new Journal(":memory:", (value) => value.replaceAll(session.runtimeToken, "***"));
   const socket = new Socket(),
     stop = new AbortController(),
     time = clock();
@@ -228,8 +224,8 @@ test("lost result ACK is retried before polling and replayed command uses the re
     expect(time.timers.size).toBe(0);
   } finally {
     stop.abort();
+    await runner.close();
     journal.close();
-    await rm(root, { recursive: true, force: true });
   }
 });
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_HEADER, type Driver, HarnessState, Journal, Runner } from "../src/index.ts";
@@ -29,61 +29,52 @@ async function boot(path: string) {
     throw error;
   }
 }
-// Unknown owner is not an empty-store alias. These are real copied SQL/FS states, with no mock ownership check.
-test.each(["prompts", "sessions", "events", "legacy-other-generation", "native-files-only"])(
-  "copied unbound %s cannot be adopted by a fresh HTTP runner",
-  async (kind) => {
-    const root = await mkdtemp(join(tmpdir(), "armada-unbound-")),
-      source = join(root, "source"),
-      target = join(root, "target");
-    await mkdir(source);
-    const journal = new Journal(join(source, "journal.sqlite"), (s) => s);
-    if (kind === "prompts")
-      journal.transition(
-        {
-          promptId: "legacy-prompt",
-          conversationId: "legacy-conversation",
-          status: "finished",
-          request: { sandboxId: "legacy-owner", harness: "claude", text: "private legacy history" },
-        },
-        "finished",
-      );
-    if (kind === "sessions") journal.saveSession("legacy-conversation", "claude", "legacy-native-session");
-    if (kind === "events")
-      journal.append({ id: "legacy-event", at: 1, kind: "other", type: "legacy", data: { private: "history" } });
-    if (kind === "legacy-other-generation")
-      journal.db.query("INSERT INTO metadata VALUES(?,?)").run("checkpoint:999", "complete");
-    if (kind === "native-files-only") {
-      await mkdir(join(source, "codex/sessions/test"), { recursive: true });
-      await writeFile(
-        join(source, "codex/sessions/test/session.jsonl"),
-        JSON.stringify({ type: "session_meta", payload: { id: "legacy-native-session" } }),
-      );
-    }
-    journal.flush();
-    journal.close();
-    await cp(source, target, { recursive: true });
-    let adopted: Awaited<ReturnType<typeof boot>> | undefined;
+// Startup rejects ambiguous journal ownership before restoring native state or admitting HTTP work.
+test.each(["prompts", "sessions", "events", "legacy-other-generation"])(
+  "unbound %s refuse restore-source adoption",
+  (kind) => {
+    const journal = new Journal(":memory:", (s) => s);
     try {
-      await expect(
-        (async () => {
-          adopted = await boot(target);
-          const health = await adopted.runner.handle(
-            new Request("https://runner", {
-              method: "POST",
-              headers: { [AUTH_HEADER]: grant.token },
-              body: JSON.stringify({ version: 1, requestId: "health", sandboxId: grant.sandboxId, op: "health" }),
-            }),
-          );
-          return health.status;
-        })(),
-      ).rejects.toThrow("checkpoint_identity_ambiguous");
+      if (kind === "prompts")
+        journal.transition(
+          {
+            promptId: "legacy-prompt",
+            conversationId: "legacy-conversation",
+            status: "finished",
+            request: { sandboxId: "legacy-owner", harness: "claude", text: "private legacy history" },
+          },
+          "finished",
+        );
+      if (kind === "sessions") journal.saveSession("legacy-conversation", "claude", "legacy-native-session");
+      if (kind === "events")
+        journal.append({ id: "legacy-event", at: 1, kind: "other", type: "legacy", data: { private: "history" } });
+      if (kind === "legacy-other-generation")
+        journal.db.query("INSERT INTO metadata VALUES(?,?)").run("checkpoint:999", "complete");
+      expect(() => journal.assertRestoreSource(grant)).toThrow("checkpoint_identity_ambiguous");
     } finally {
-      adopted?.journal.close();
-      await rm(root, { recursive: true, force: true });
+      journal.close();
     }
   },
 );
+
+test("unbound native files refuse restoration even when the journal is pristine", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-unbound-native-"));
+  const journal = new Journal(":memory:", (s) => s);
+  try {
+    await mkdir(join(root, "codex/sessions/test"), { recursive: true });
+    await writeFile(
+      join(root, "codex/sessions/test/session.jsonl"),
+      JSON.stringify({ type: "session_meta", payload: { id: "legacy-native-session" } }),
+    );
+    const sourceIdentity = journal.assertRestoreSource(grant);
+    await expect(new HarnessState(root, journal.redact).restore(grant, sourceIdentity)).rejects.toThrow(
+      "checkpoint_identity_ambiguous",
+    );
+  } finally {
+    journal.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("truly pristine stores still boot and admit their first prompt", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-pristine-"));

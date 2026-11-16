@@ -29,16 +29,14 @@ export function rowOnlyConnection() {
     reset = `truncate table ${tables.rows.map((row) => row.name).join(", ")} restart identity cascade`;
   });
   afterAll(async () => {
-    try {
-      await db?.close();
-    } finally {
-      // Bun retains suite hook closures after the file finishes. Release the
-      // closed PGlite instance too, so its WASM heap can be collected.
-      db = undefined;
-    }
+    // Bun retains hook closures across files. Closing PGlite does not release
+    // its WASM heap while the instance is still reachable from this closure.
+    const connection = db;
+    db = undefined;
+    await connection?.close();
   });
   return async () => {
-    if (!db) throw new Error("row-only database is not open");
+    if (!db) throw new Error("Row-only database is not open");
     await resetMigratedDatabaseRows(db, reset);
     return db;
   };

@@ -854,7 +854,7 @@ test.skipIf(process.platform !== "linux")(
   async () => {
     const f = await fixture();
     const root = await mkdtemp(join(tmpdir(), "template-restore-"));
-    const generations: { driver: CodexDriver; journal: Journal }[] = [];
+    const generations: { runner: Runner; journal: Journal }[] = [];
     try {
       const generation = async (name: string) => {
         const cwd = join(root, name);
@@ -865,7 +865,7 @@ test.skipIf(process.platform !== "linux")(
           cwd,
           env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_READABLE_INSPECTION: proof },
         });
-        const journal = new Journal(join(cwd, "journal"), (s) => s);
+        const journal = new Journal(":memory:", (s) => s);
         const grant = {
           token: crypto.randomUUID(),
           sandboxId: "runtime",
@@ -873,7 +873,7 @@ test.skipIf(process.platform !== "linux")(
           expiresAt: Date.now() + 60000,
         };
         const runner = new Runner(journal, grant, { claude: driver, codex: driver });
-        generations.push({ driver, journal });
+        generations.push({ runner, journal });
         const inspect = async () => {
           const turn = driver.start({
             request: { sandboxId: "runtime", harness: "codex", text: "message-semantics" },
@@ -924,7 +924,7 @@ test.skipIf(process.platform !== "linux")(
       expect(await active.inspect()).toEqual({ region: "europe\n$(not-a-command)" });
     } finally {
       for (const g of generations) {
-        await g.driver.close();
+        await g.runner.close();
         g.journal.close();
       }
       await f.close();

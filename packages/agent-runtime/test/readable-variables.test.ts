@@ -9,7 +9,7 @@ test.skipIf(process.platform !== "linux")(
   "readable bootstrap reaches only intended native harness, not init/exec or request journal",
   async () => {
     const root = await mkdtemp(join(tmpdir(), "armada-readable-"));
-    const journal = new Journal(join(root, "journal"), (s) => s);
+    const journal = new Journal(":memory:", (s) => s);
     const proof = join(root, "proof.json");
     const driver = new CodexDriver({
       executable: join(import.meta.dir, "fixtures/app-server.ts"),
@@ -83,7 +83,7 @@ test.skipIf(process.platform !== "linux")(
       );
       expect(denied.status).toBe(409);
     } finally {
-      await driver.close();
+      await runner.close();
       journal.close();
       await rm(root, { recursive: true, force: true });
     }

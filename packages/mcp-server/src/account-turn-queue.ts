@@ -19,6 +19,8 @@ const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
 const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
 type Entry = {
   sequence: string;
+  queued_generation: string;
+  failure_reason: string | null;
   sandbox_id: string;
   request_id: string;
   account_id: string;
@@ -47,6 +49,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         [accountId],
       )
     ).rows[0];
+    if (row?.max_agents === null) return "Prompt accepted; waiting for sandbox dispatch, not an account slot.";
     return row
       ? `Waiting for a free agent slot on account ${row.name} (${row.working}/${row.max_agents ?? "unlimited"}).`
       : "Waiting for a free agent slot.";
@@ -148,8 +151,8 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         if (!sandbox.rows.length) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
         saved = (
           await tx.query<Entry>(
-            `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id)
-           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *`,
+            `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,queued_generation)
+           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,(select lifecycle_generation from public.sandboxes where id=$1)) returning *`,
             [
               input.id,
               requestId,
@@ -251,7 +254,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         failed: row.state === "failed",
         message:
           row.state === "failed"
-            ? "Queued prompt was cancelled."
+            ? (row.failure_reason ?? "Queued prompt was cancelled.")
             : row.state === "dispatching"
               ? "Prompt dispatch is pending; inspect status before sending another request."
               : await waitingMessage(row.account_id),
@@ -264,9 +267,15 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       await Promise.allSettled([...pending]);
     },
     async reconcileOne(signal: AbortSignal) {
-      if (!dispatch || pending.size || signal.aborted) return false;
+      if (!dispatch || pending.size >= 32 || signal.aborted) return false;
       if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
       const picked = await (async () => {
+        await sql.query(`update public.account_turn_queue q set state='failed',
+          failure_reason='Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.'
+          from public.sandboxes s where q.sandbox_id=s.id and q.state='queued'
+          and (s.deleted_at is not null or s.expires_at<=now() or s.stop_requested_at is not null
+            or s.status not in ('ready','running','stopped')
+            or (s.status='stopped' and s.lifecycle_generation<>q.queued_generation))`);
         await sql.query(`update public.account_turn_queue q set state='failed',failure_reason='Dispatch cancelled by confirmed stop.'
           from public.sandboxes s where q.sandbox_id=s.id and q.state='dispatching'
           and s.activity_lease_id is null and s.status in ('stopped','deleted') and s.lifecycle_generation>q.dispatch_generation`);
@@ -274,7 +283,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
              where (q.state='queued' or (q.state='dispatching' and q.dispatch_until<=now() and q.dispatch_generation is not null and ${RUNTIME_LANE} and (${RUNTIME_REQUEST_EVIDENCE} or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null))))
-           and not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.sequence<q.sequence)
+           and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null) or not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.sequence<q.sequence))
            order by case when q.sequence>$1::bigint then 0 else 1 end,q.sequence limit 20`,
             [scanAfter],
           )
@@ -294,7 +303,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             const current = await tx.query(
               `select q.request_id from public.account_turn_queue q where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
               and (q.state='queued' or q.dispatch_until<=now())
-              and not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.sequence<q.sequence) for update of q`,
+              and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null) or not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.sequence<q.sequence)) for update of q`,
               [candidate.sandbox_id, candidate.request_id, candidate.state],
             );
             if (!current.rows.length) return null;
@@ -304,6 +313,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
              and c.version=$5 and c.status='active' and (c.expires_at is null or c.expires_at>now())
              and ((c.scope='user' and c.owner_id=$2) or (c.scope='org' and c.owner_id=$3))
              and s.deleted_at is null and s.stop_requested_at is null and s.expires_at>now()
+             and ($6::boolean or s.status<>'stopped' or s.lifecycle_generation=$7::bigint)
              and (s.status in ('ready','running','stopped') or ($6::boolean and s.status='starting')) for update of s`,
               [
                 candidate.sandbox_id,
@@ -312,6 +322,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
                 candidate.account_id,
                 candidate.credential_version,
                 recovering,
+                candidate.queued_generation,
               ],
             );
             if (!member || member.epoch !== String(candidate.actor_epoch) || !valid.rows.length) {

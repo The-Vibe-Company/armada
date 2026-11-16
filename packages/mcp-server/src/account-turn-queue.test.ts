@@ -36,6 +36,12 @@ beforeAll(async () => {
   ).text();
   // Role grants are outside the admission contract and these roles do not exist in PGlite.
   await db.exec(migration.split("alter table")[0]!);
+  await db.exec("create role anon; create role authenticated");
+  await db.exec(
+    await Bun.file(
+      new URL("../../../supabase/migrations/20261116060000_repair_account_turn_queue.sql", import.meta.url),
+    ).text(),
+  );
   await db.query("insert into credentials values($1,'Shared account',1,1,'active',null,'user',$2)", [account, owner]);
   await db.query("insert into orgs values($1)", [org]);
   await db.query("insert into members values($1,$2,'member')", [org, owner]);
@@ -49,7 +55,7 @@ beforeAll(async () => {
 afterAll(() => db.close());
 beforeEach(async () => {
   await db.exec(
-    "delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',task_prompt_id=null,stopped_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1; delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',task_prompt_id=null,stopped_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -490,4 +496,60 @@ test("explicit owner stop cancels waiting prompts before Docker no-op routing, b
   });
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
   expect(dispatched).toBe(false);
+});
+
+test("unlimited accounts dispatch three turns without waiting for another dispatch receipt", async () => {
+  await db.exec("update credentials set max_agents=null");
+  const releases: (() => void)[] = [];
+  const started: string[] = [];
+  let entered: () => void = () => {};
+  queue.setDispatch(async (_caller, input) => {
+    started.push(input.id);
+    entered();
+    await new Promise<void>((resolve) => releases.push(resolve));
+    return { promptId: input.request_id, conversationId: "history", status: "running" };
+  });
+  for (const id of ids) {
+    expect((await queue.accept(caller, { id, prompt: "next" }))?.status).toBe("queued");
+    const dispatched = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await dispatched;
+    if (id === ids[0]) await queue.accept(caller, { id, prompt: "behind the busy sandbox" });
+  }
+  expect(started).toEqual(ids);
+  for (const release of releases) release();
+  await queue.drain();
+});
+
+test("a stop after acceptance fails waiting work instead of resurrecting it", async () => {
+  await queue.accept(caller, { id: ids[0]!, prompt: "next" });
+  await db.query("update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=1 where id=$1", [ids[0]]);
+  queue.setDispatch(async () => {
+    throw new Error("must not dispatch");
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(await queue.status(caller, ids[0]!)).toMatchObject({
+    failed: true,
+    message: "Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.",
+  });
+});
+
+test("forward repair fails historical stopped rows and preserves live queued work for dispatch", async () => {
+  for (const id of ids.slice(0, 2)) await queue.accept(caller, { id, prompt: "historical" });
+  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[0]]);
+  await db.exec(
+    "drop trigger set_account_turn_queue_generation on account_turn_queue; drop function set_account_turn_queue_generation(); alter table account_turn_queue drop column queued_generation",
+  );
+  await db.exec(
+    await Bun.file(
+      new URL("../../../supabase/migrations/20261116060000_repair_account_turn_queue.sql", import.meta.url),
+    ).text(),
+  );
+  expect(await queue.status(caller, ids[0]!)).toMatchObject({ failed: true });
+  expect(await queue.status(caller, ids[1]!)).toMatchObject({ failed: false });
+  queue.setDispatch(async (_caller, input) => ({ promptId: input.request_id, status: "running" }));
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
 });
