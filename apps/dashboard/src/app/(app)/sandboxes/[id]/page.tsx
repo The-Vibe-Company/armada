@@ -231,6 +231,8 @@ export default async function SandboxPage({ params }: Props) {
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
+            provider={sandbox.provider}
+            preservationNote={sandbox.preservation_note}
             pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
             initialIdlePaused={sandbox.status_reason === "idle_paused"}
             expiresAt={sandbox.expires_at}
@@ -449,6 +451,8 @@ function DockerSandbox({
             <SandboxChat
               sandboxId={sandbox.id}
               initialStatus={sandbox.status}
+              provider={sandbox.provider}
+              preservationNote={sandbox.preservation_note}
               initialIdlePaused={sandbox.status_reason === "idle_paused"}
               expiresAt={sandbox.expires_at}
               initialUsageRevision={usageRevision(sandbox.usage_turns)}

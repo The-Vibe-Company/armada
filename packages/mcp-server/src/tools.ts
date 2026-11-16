@@ -441,7 +441,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
               ? await data.sandboxes.controlState(input.id as string)
               : await visible(input.id as string);
             if (!found) throw new ToolError("not_found", `No sandbox with id '${input.id}' that you can see.`);
-            const refusal = sandboxControlRefusal(found, context.now());
+            const refusal = sandboxControlRefusal(found, context.now(), name);
             if (refusal) throw new ToolError("sandbox_terminal", refusal);
           }
           if (
@@ -1825,7 +1825,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         "sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is " +
         "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
         "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
-        "an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Other terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch.",
+        "an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch.",
       input: {
         id,
         request_id: z
@@ -2265,7 +2265,12 @@ export function createArmadaServer(context: ToolContext, version: string, option
             terminal = true;
           }
           signal.throwIfAborted();
-          const status: SandboxStatus = found.status === "failed" ? "failed" : terminal ? "stopped" : "stopping";
+          const status: SandboxStatus =
+            found.status === "failed" || preservationNote === "checkpoint_failed_disk_not_retained"
+              ? "failed"
+              : terminal
+                ? "stopped"
+                : "stopping";
           return {
             result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
             patch: {

@@ -1,6 +1,6 @@
 "use client";
 
-import { type Harness, idlePauseMessage, type SandboxStatus } from "@armada/core";
+import { type Harness, idlePauseMessage, type SandboxStatus, sandboxControlRefusal } from "@armada/core";
 import {
   AlertTriangleIcon,
   ArrowDownIcon,
@@ -83,6 +83,8 @@ const CLOSED_COMPOSER: Record<Exclude<SandboxStatus, (typeof CAN_SEND)[number]>,
 type Props = {
   sandboxId: string;
   initialStatus: SandboxStatus;
+  provider?: string;
+  preservationNote?: string | null;
   initialIdlePaused?: boolean;
   expiresAt?: string | null;
   initialUsageRevision: string;
@@ -960,6 +962,9 @@ function Composer({
   running,
   onDone,
   idlePaused,
+  provider,
+  preservationNote,
+  expiresAt,
 }: Props & {
   status: SandboxStatus;
   conversation: string | null;
@@ -981,7 +986,11 @@ function Composer({
    */
   const sendKey = useRef<LaunchKey | null>(null);
   const fieldId = useId();
-  const enabled = (CAN_SEND as readonly SandboxStatus[]).includes(status);
+  const refusal = sandboxControlRefusal(
+    { provider: provider ?? "boat", status, preservationNote: preservationNote ?? null, expiresAt: expiresAt ?? null },
+    new Date(),
+  );
+  const enabled = !refusal && (CAN_SEND as readonly SandboxStatus[]).includes(status);
   const restarts = STEER_RESTARTS_TURN[harness];
   /** The highlighted button, which Ctrl/Cmd+Enter presses: steering while a turn runs, unless the model changes. */
   const primary: Intent = running && !override ? "steer" : "send";
@@ -1059,7 +1068,7 @@ function Composer({
   if (!enabled) {
     return (
       <p className="border-t bg-muted/30 px-4 py-3 text-sm text-muted-foreground sm:px-6">
-        {CLOSED_COMPOSER[status as Exclude<SandboxStatus, (typeof CAN_SEND)[number]>]}
+        {refusal ?? CLOSED_COMPOSER[status as Exclude<SandboxStatus, (typeof CAN_SEND)[number]>]}
       </p>
     );
   }

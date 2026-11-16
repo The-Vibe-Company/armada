@@ -50,7 +50,7 @@ export interface ServerSandboxStore extends SandboxStore {
     id: string,
   ): Promise<Pick<
     SandboxView,
-    "provider" | "status" | "statusReason" | "expiresAt" | "boatRuntime" | "runtimeTransport"
+    "provider" | "status" | "statusReason" | "expiresAt" | "boatRuntime" | "runtimeTransport" | "preservationNote"
   > | null>;
   recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
   assertExtensionAllowed?(id: string): Promise<void>;
@@ -726,9 +726,18 @@ export function createSqlData(
       async controlState(id) {
         if (!UUID.test(id)) return null;
         const result = await sql.query<
-          Pick<SandboxView, "provider" | "status" | "statusReason" | "expiresAt" | "boatRuntime" | "runtimeTransport">
+          Pick<
+            SandboxView,
+            | "provider"
+            | "status"
+            | "statusReason"
+            | "expiresAt"
+            | "boatRuntime"
+            | "runtimeTransport"
+            | "preservationNote"
+          >
         >(
-          `select s.provider,s.status,s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport"
+          `select s.provider,s.status,s.preservation_note as "preservationNote",s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport"
            from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3`,
           [...scope, id],
         );
