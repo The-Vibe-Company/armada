@@ -217,11 +217,7 @@ function connectionRow(
         className={cn(!serviceLabel && "font-normal", !remote && "font-mono")}
       />
     ),
-    tags: (
-      <>
-        <ScopeTag scope={connection.scope} />
-      </>
-    ),
+    tags: <ScopeTag scope={connection.scope} />,
     meta,
     subtitle: meta,
     state: (

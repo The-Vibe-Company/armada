@@ -910,7 +910,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
       </span>
     ),
     tags: (
-      <>
+      <Fragment key="tags">
         <RowTag>
           {golden.visibility === "private" ? <LockIcon aria-hidden /> : <GlobeIcon aria-hidden />}
           {golden.visibility === "private" ? "Private" : "Org"}
@@ -925,7 +925,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
             <TriangleAlertIcon aria-hidden /> Name shared by another snapshot
           </RowTag>
         )}
-      </>
+      </Fragment>
     ),
     meta,
     subtitle: meta,
@@ -1059,13 +1059,13 @@ function dockerSnapshotRow(
       </span>
     ),
     tags: (
-      <>
+      <Fragment key="tags">
         <RowTag>
           {snapshot.visibility === "private" ? <LockIcon aria-hidden /> : <GlobeIcon aria-hidden />}
           {snapshot.visibility === "private" ? "Private" : "Org"}
         </RowTag>
         {canRebuild && <RowTag>New Armada version available</RowTag>}
-      </>
+      </Fragment>
     ),
     meta,
     subtitle: meta,
