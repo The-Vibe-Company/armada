@@ -7,12 +7,13 @@ import {
   SandboxAttentionActions,
   SandboxAttentionRefresh,
 } from "@/components/sandbox-attention-actions";
+import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
 import { viewerGateway } from "@/lib/data/gateway";
 import { listMemberships, type Viewer } from "@/lib/data/viewer";
 import { parseEventPage } from "@/lib/events";
 import { GatewayError } from "@/lib/gateway";
-import { preservationView } from "@/lib/outcome";
+import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
 import { sandboxAttention, summarizeEvents, type TurnSummary } from "@/lib/sandbox-attention";
 import { createClient } from "@/lib/supabase/server";
 
@@ -29,6 +30,8 @@ export async function SandboxAttention({ sandbox, viewer }: { sandbox: Sandbox; 
     }
   }
   const view = sandboxAttention(sandbox, turn, new Date());
+  const failedOutcome =
+    sandbox.status === "failed" ? settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome)) : null;
   const preserved = preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true);
   let title: string | null = null;
   let detail: string | null = null;
@@ -123,6 +126,12 @@ export async function SandboxAttention({ sandbox, viewer }: { sandbox: Sandbox; 
           <div className="min-w-0 flex-1">
             <p className="font-medium">{title}</p>
             {detail && <p className="mt-1 text-xs text-muted-foreground">{detail}</p>}
+            {failedOutcome && (
+              <div className="mt-2 space-y-1">
+                <OutcomeBadge outcome={failedOutcome} />
+                <OutcomeDetail outcome={failedOutcome} />
+              </div>
+            )}
           </div>
           {action}
         </section>

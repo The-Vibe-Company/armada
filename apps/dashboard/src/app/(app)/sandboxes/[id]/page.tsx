@@ -22,7 +22,7 @@ import { SandboxChat } from "@/components/sandbox-chat";
 import { RowCost, SandboxCostCard } from "@/components/sandbox-cost";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
 import { SandboxState } from "@/components/sandbox-state";
-import { OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
+import { OutcomeBadge, OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -279,7 +279,10 @@ export default async function SandboxPage({ params }: Props) {
             <div className="pt-4">
               <Facts facts={facts} />
               {settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome)) && (
-                <OutcomeDetail outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+                <div className="mt-2 space-y-1">
+                  <OutcomeBadge outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+                  <OutcomeDetail outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+                </div>
               )}
               {preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true) && (
                 <PreservationNotice
@@ -478,7 +481,10 @@ function DockerSandbox({
             <div className="pt-4">
               <Facts facts={facts} />
               {settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome)) && (
-                <OutcomeDetail outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+                <div className="mt-2 space-y-1">
+                  <OutcomeBadge outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+                  <OutcomeDetail outcome={settledOutcome(sandbox.status, parseTaskOutcome(sandbox.task_outcome))!} />
+                </div>
               )}
               {preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true) && (
                 <PreservationNotice
