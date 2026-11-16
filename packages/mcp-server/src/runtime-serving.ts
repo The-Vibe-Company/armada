@@ -217,17 +217,17 @@ export function createRuntimeServing(sql: Sql, key: string) {
               : {}),
             interrupt(request) {
               authorize();
-              return agent.interrupt(request);
+              return agent.interrupt(request, request.requestId);
             },
             steer(request) {
               authorize();
               const conversationId = request.conversationId ?? sandbox.conversationIds.at(-1);
               if (!conversationId) throw new VaultError("invalid", "No runtime conversation.");
-              return agent.steer({ ...request, conversationId });
+              return agent.steer({ ...request, conversationId }, request.requestId);
             },
             exec(request) {
               authorize();
-              return agent.exec(request);
+              return agent.exec(request, request.requestId);
             },
           }
         : undefined,

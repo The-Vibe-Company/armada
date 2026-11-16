@@ -774,10 +774,10 @@ export function createArmadaServer(context: ToolContext, version: string, option
   const prepareConnections = (provider: Provider, found: SandboxView, role: MemberRole) =>
     context.connections?.prepare?.(provider, found, { userId: caller.userId, orgId: found.orgId, role });
   const liveControl = async (args: { id: string; request_id?: unknown }) => {
-    if (args.request_id !== undefined)
-      throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
     const target = await live(args.id, false, undefined, true);
     const enrolled = Boolean(target.sandbox.boatRuntime || target.sandbox.runtimeTransport === "dialout");
+    if (args.request_id !== undefined && !enrolled)
+      throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
     if (enrolled && target.sandbox.ownerId !== caller.userId)
       throw new ToolError("forbidden", "Only the runtime owner may control this sandbox.");
     return { ...target, enrolled };
@@ -1857,7 +1857,9 @@ export function createArmadaServer(context: ToolContext, version: string, option
           .string()
           .uuid()
           .optional()
-          .describe("Optional durable runtime request ID; reuse identical input after uncertain delivery."),
+          .describe(
+            "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
+          ),
       },
       output: {
         id: z.string(),
@@ -1876,6 +1878,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         provider
           .steer({
             sandboxId: found.providerSandboxId,
+            ...(args.request_id ? { requestId: args.request_id } : {}),
             text: args.text,
             ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
           })
@@ -1948,7 +1951,9 @@ export function createArmadaServer(context: ToolContext, version: string, option
           .string()
           .uuid()
           .optional()
-          .describe("Optional durable runtime request ID; reuse identical input after uncertain delivery."),
+          .describe(
+            "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
+          ),
       },
       output: { id: z.string(), interrupted: z.boolean() },
     },
@@ -1960,6 +1965,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       await provider
         .interrupt({
           sandboxId: found.providerSandboxId,
+          ...(args.request_id ? { requestId: args.request_id } : {}),
           ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
         })
         .catch(unknownMutationOutcome);
@@ -1980,7 +1986,9 @@ export function createArmadaServer(context: ToolContext, version: string, option
           .string()
           .uuid()
           .optional()
-          .describe("Optional durable runtime request ID; reuse identical input after uncertain delivery."),
+          .describe(
+            "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
+          ),
         command: z.string().min(1),
         cwd: z.string().min(1).optional(),
         timeout_seconds: z.number().int().min(1).max(600).optional().describe("Default 120."),
@@ -2017,6 +2025,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         const result = await provider
           .exec({
             sandboxId: found.providerSandboxId,
+            ...(args.request_id ? { requestId: args.request_id } : {}),
             command: args.command,
             cwd: args.cwd ?? "/home/user",
             timeoutSeconds: args.timeout_seconds ?? 120,
