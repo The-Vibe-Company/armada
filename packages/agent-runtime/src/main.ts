@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { CODEX_ENDPOINT_ENV, OPENCODE_ENDPOINT_ENV, parseCodexEndpoint, parseOpenCodeEndpoint } from "@armada/core";
+import { runtimeStartupFailure } from "../../core/src/runtime-startup-failure.ts";
 import { runArtifactInstallMode } from "./artifact-cache.ts";
 import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
@@ -20,6 +21,7 @@ import { prepareOpenCode } from "./opencode-install.ts";
 import type { ExecEnvironment } from "./protocol.ts";
 import { createRedactor, HarnessState } from "./state.ts";
 
+let startupReason: import("../../core/src/runtime-startup-failure.ts").RuntimeStartupFailure = "runtime_configuration";
 let reportRuntimeFailure: (() => Promise<void>) | undefined;
 async function main(dialout = false) {
   // Bootstrap is delivered through a private stdin pipe, never argv or a golden file.
@@ -27,7 +29,7 @@ async function main(dialout = false) {
   const enrolled = dialout ? await enrolRuntime(input) : undefined;
   const channel = enrolled ? new RuntimeDialout(input.serverUrl, enrolled) : undefined;
   if (channel) {
-    reportRuntimeFailure = () => channel.progress("runtime_failed");
+    reportRuntimeFailure = () => channel.progress("runtime_failed", startupReason);
     await channel.progress("enrolled").catch(() => {});
   }
   const config = (enrolled ? enrolled.configuration : input) as {
@@ -64,6 +66,7 @@ async function main(dialout = false) {
   if (enrolled) {
     // Enrolment owns selection and credentials. Never trust a preinstalled CLI
     // path from the image, or install/change harness versions during commands.
+    startupReason = "artifact_preparation";
     Object.assign(config, await prepareEnrolledHarness(input.serverUrl, config));
     config.grant = {
       token: enrolled.runtimeToken,
@@ -72,6 +75,7 @@ async function main(dialout = false) {
       expiresAt: config.grant.expiresAt,
     };
   }
+  startupReason = "credential_projection";
   const opencodeEnv = config.opencodeEnv ?? {};
   if (config.credentialFreeBuilder !== undefined && typeof config.credentialFreeBuilder !== "boolean")
     throw Error("invalid_exec_environment");
@@ -90,12 +94,14 @@ async function main(dialout = false) {
   )
     throw Error("invalid_runtime_subscription");
   if (config.subscription && config.codexAuthJson) throw Error("subscription_auth_modes_conflict");
+  startupReason = "model_routing";
   const codexEndpoint = config.codexEnv[CODEX_ENDPOINT_ENV]
     ? parseCodexEndpoint(JSON.parse(config.codexEnv[CODEX_ENDPOINT_ENV]!))
     : undefined;
   delete config.codexEnv[CODEX_ENDPOINT_ENV];
   if (codexEndpoint) config.codexEnv.ARMADA_CUSTOM_CODEX_ENDPOINT = "1";
   configureClaudeEndpoint(config.claudeEnv);
+  startupReason = "runtime_configuration";
   const execEnv = validateExecEnvironment(config.execEnv, config.credentialFreeBuilder);
   const readableVariables = validateExecReadables(config.readableVariables, config.credentialFreeBuilder);
   if (
@@ -597,7 +603,8 @@ void (
       : process.argv[2] === "install-harness"
         ? runHarnessInstallMode()
         : main(process.argv[2] === "dialout")
-).catch(async () => {
+).catch(async (error: unknown) => {
+  startupReason = runtimeStartupFailure(error, startupReason);
   await reportRuntimeFailure?.().catch(() => {});
   process.stderr.write("runner_boot_failed\n");
   process.exitCode = 1;
