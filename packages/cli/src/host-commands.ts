@@ -41,6 +41,9 @@ export async function listHosts(client: ArmadaApiClient, org: string): Promise<D
       !(host.version === undefined || host.version === null || typeof host.version === "string") ||
       (host.running !== undefined && (!Number.isSafeInteger(host.running) || Number(host.running) < 0)) ||
       (host.resources !== undefined && host.resources !== null && !validDockerHostResources(host.resources)) ||
+      (host.diskFreeBytes !== undefined &&
+        host.diskFreeBytes !== null &&
+        (!Number.isSafeInteger(host.diskFreeBytes) || Number(host.diskFreeBytes) < 0)) ||
       !Number.isSafeInteger(host.sandboxes) ||
       Number(host.sandboxes) < 0
     )
@@ -115,6 +118,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
         if (operation === "show")
           auth.out(`Retention: ${host.retentionSeconds == null ? "unknown (upgrade host)" : `${host.retentionSeconds}s`}
 Requested retention: ${host.retentionOverrideSeconds == null ? "host default" : `${host.retentionOverrideSeconds}s`}
+Docker disk free: ${host.diskFreeBytes == null ? "unknown (upgrade/check host)" : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB (${host.diskFreeBytes} bytes)`}; launch floor: 10 GB
 Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.lastSeenAt ?? "never"})
 `);
       }

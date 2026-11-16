@@ -30,13 +30,13 @@ import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { createArmadaServer } from "../src/tools.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
 // Primary contract owner: real migrations + service-role authorization/admission, fake physical provider only.
-async function fixture({ isolated = false } = {}) {
-  const { db, people } = await (isolated ? database() : sharedDatabase());
+async function fixture() {
+  const { db, people } = await sharedDatabase();
   const queries: string[] = [];
   const sql: Sql = {
     query: (s, p) => {
@@ -112,10 +112,9 @@ async function fixture({ isolated = false } = {}) {
       runtime,
     );
   return {
-    // The row-only helper owns its connection until afterAll; only isolated
-    // fixtures close here. Every fixture still constructs fresh service/provider state.
+    // The file owns the engine; every fixture restores its session identity.
     close: async () => {
-      if (isolated) await db.close();
+      await db.exec("reset role; reset all; set search_path=public");
     },
     queries,
     db,
@@ -175,8 +174,8 @@ test("Modal template placement retains the real golden snapshot fence and provid
 });
 
 test("immutable revisions enforce personal/org ownership, optimistic publication, tombstones and JWT grants", async () => {
-  // SET ROLE and the session JWT claim must never contaminate a row-only fixture.
-  const f = await fixture({ isolated: true });
+  // Session identity is restored before the next fixture is seeded.
+  const f = await fixture();
   try {
     const created = await f.create();
     const t = created.item as LaunchTemplate;

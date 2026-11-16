@@ -154,6 +154,7 @@ class HostRequestDenied extends Error {
 export function httpApi(
   request: typeof fetch = fetch,
   resources?: (state: State) => Promise<DockerHostResources>,
+  diskFreeBytes?: () => Promise<number | null>,
 ): Api & {
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
@@ -246,17 +247,32 @@ export function httpApi(
             return next === null || at < next ? at : next;
           }, null),
       };
+      const disk = diskFreeBytes ? { diskFreeBytes: await diskFreeBytes() } : {};
       const sampledResources = resources ? await resources(state) : dockerHostResources();
       try {
         return (await post(state.server, "poll", state.hostToken, {
           ...body,
           ...retention,
+          ...disk,
           resources: sampledResources,
           resourcePolicyVersion: 1,
         })) as Awaited<ReturnType<Api["poll"]>>;
       } catch (error) {
         // Older servers reject the additive resource field before claiming a job.
         if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
+        if (diskFreeBytes) {
+          try {
+            return (await post(state.server, "poll", state.hostToken, {
+              ...body,
+              ...retention,
+              resources: sampledResources,
+              resourcePolicyVersion: 1,
+            })) as Awaited<ReturnType<Api["poll"]>>;
+          } catch (diskCompatibilityError) {
+            if (!(diskCompatibilityError instanceof HostRequestDenied) || diskCompatibilityError.status !== 400)
+              throw diskCompatibilityError;
+          }
+        }
         try {
           return (await post(state.server, "poll", state.hostToken, {
             ...body,

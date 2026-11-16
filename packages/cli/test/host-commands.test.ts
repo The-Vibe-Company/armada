@@ -219,10 +219,13 @@ test("host retention sends a duration to the owner API and show prints reported 
   const shown = await capture(["host", "show", hostId], async () =>
     Response.json({
       placement: true,
-      hosts: [{ ...summary, retentionSeconds: 86400, nextCleanupAt: "2026-11-20T00:00:00Z" }],
+      hosts: [
+        { ...summary, diskFreeBytes: 12345678900, retentionSeconds: 86400, nextCleanupAt: "2026-11-20T00:00:00Z" },
+      ],
     }),
   );
   expect(shown.code).toBe(0);
+  expect(shown.out).toContain("Docker disk free: 12.35 GB (12345678900 bytes); launch floor: 10 GB");
   expect(shown.out).toContain("Retention: 86400s");
   expect(shown.out).toContain("Next cleanup: 2026-11-20T00:00:00Z");
 });

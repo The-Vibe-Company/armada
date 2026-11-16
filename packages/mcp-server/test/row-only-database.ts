@@ -3,8 +3,8 @@ import { openMigratedDatabase, resetMigratedDatabaseRows } from "../../../script
 import { seedDatabase } from "./support.ts";
 
 /**
- * One database per serial, row-only suite. Do not use for schema/role/settings
- * mutations or overlapping fixtures. Drain async work before the next call.
+ * One database per serial, row-only suite. Restore any temporary schema mutations before the next fixture.
+ * Do not use for overlapping fixtures. Drain async work before the next call.
  * Reset per fixture, not per test: a single test can build several fixtures.
  */
 export function rowOnlyDatabase() {
@@ -15,8 +15,8 @@ export function rowOnlyDatabase() {
 /**
  * One raw database connection per serial row-only suite. Callers own fixture
  * seeding; this helper only resets rows before each fixture and closes the
- * connection from the suite's afterAll hook. The same no-schema/settings-mutation
- * and no-overlapping-fixture restrictions apply.
+ * connection from the suite's afterAll hook. Restore temporary schema mutations before resetting rows; the same
+ * no-overlapping-fixture restriction applies.
  */
 export function rowOnlyConnection() {
   let db: Awaited<ReturnType<typeof openMigratedDatabase>> | undefined;
@@ -37,6 +37,10 @@ export function rowOnlyConnection() {
   });
   return async () => {
     if (!db) throw new Error("Row-only database is not open");
+    // Tests may exercise JWT grants, but each fixture starts with service identity
+    // and default session settings before resetting rows. PGlite defaults its search
+    // path to pg_catalog, so restore the fixture's public schema explicitly.
+    await db.exec("reset role; reset all; set search_path=public");
     await resetMigratedDatabaseRows(db, reset);
     return db;
   };

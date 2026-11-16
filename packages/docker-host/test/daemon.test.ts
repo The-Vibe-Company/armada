@@ -9,6 +9,7 @@ import {
   type Api,
   compactReceipts,
   type Executor,
+  enforcePhysicalExpiry,
   type Job,
   register,
   type State,
@@ -1200,4 +1201,76 @@ test("server retention override persists and shifts pending deadlines without re
   expect((await f.store.load()).retentionSeconds).toBe(3600);
   expect((await f.store.load()).retentionPolicyFromServer).toBe(true);
   expect((await f.store.load()).retention?.[0]?.deadline).toBe(17200000);
+});
+
+test("a pre-disk server keeps retention and availability when refusing only disk telemetry", async () => {
+  const f = fixture();
+  const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
+  let calls = 0;
+  const api = httpApi(
+    Object.assign(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        calls++;
+        const body = JSON.parse(String(init?.body));
+        expect(body.resources).toEqual(resources);
+        expect(body.retentionSeconds).toBe(86400);
+        if ("diskFreeBytes" in body) {
+          expect(body.diskFreeBytes).toBe(123);
+          return new Response(null, { status: 400 });
+        }
+        return Response.json({ job: null, retentionSeconds: 3600 });
+      },
+      { preconnect: fetch.preconnect },
+    ),
+    async () => resources,
+    async () => 123,
+  );
+  expect(await api.poll(await f.store.load())).toEqual({ job: null, retentionSeconds: 3600 });
+  expect(calls).toBe(2);
+});
+
+test("physical expiry stops every generation while create is stalled without racing state persistence", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  const second = fixture();
+  await f.store.save({
+    ...f.state(),
+    activeTtl: [f.job.requestId, second.job.requestId],
+    receipts: [
+      ...f.state().receipts,
+      { requestId: second.job.requestId, request: second.job.request, operation: "create", outcome: "completed" },
+    ],
+  });
+  const started = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const slowInspection = Promise.withResolvers<void>();
+  const blocked = fixture();
+  f.api.poll = async () => ({ job: blocked.job });
+  f.executor.create = async () => {
+    started.resolve();
+    await finish.promise;
+  };
+  const pending = tick(f.store, f.api, f.executor);
+  await started.promise;
+  const before = structuredClone(f.state());
+  const stopped: string[] = [];
+  const observed = Promise.withResolvers<void>();
+  f.executor.stopIfExpired = async (request) => {
+    if (request.generation === blocked.job.request.generation) await slowInspection.promise;
+    stopped.push(request.generation);
+    if (request.generation === second.job.request.generation) observed.resolve();
+    return true;
+  };
+  const sweeping = enforcePhysicalExpiry(f.store, f.executor);
+  await observed.promise;
+  expect(stopped).toContain(f.job.request.generation);
+  expect(stopped).toContain(second.job.request.generation);
+  expect(f.state()).toEqual(before);
+  slowInspection.resolve();
+  await sweeping;
+  finish.resolve();
+  await pending;
+  // Only the serialized mailbox persists and publishes the physical proof.
+  await tick(f.store, f.api, f.executor);
+  expect(f.state().receipts.find((r) => r.requestId === second.job.requestId)?.expired).toBe(true);
 });

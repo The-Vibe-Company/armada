@@ -8,7 +8,10 @@ import {
   type Sql,
 } from "@armada/core/server";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
+
+const database = rowOnlyDatabase();
 
 // Primary owner for routine CRUD/admission and grants: real services over the real migrations.
 async function fixture() {
@@ -108,7 +111,7 @@ test("routine CRUD pins revisions, preserves prompt bytes, uses optimistic versi
       (await f.db.query<{ status: string }>("select status from routines where id=$1", [created.id])).rows[0]!.status,
     ).toBe("deleted");
   } finally {
-    await f.db.close();
+    await f.db.exec("reset role; reset all; set search_path=public");
   }
 });
 
@@ -150,7 +153,7 @@ test("routine authorization isolates personal definitions and confines shared wr
     await f.db.query("delete from members where user_id=$1 and org_id=$2", [f.people.owner, f.people.org]);
     await expect(f.command("list", {})).rejects.toMatchObject({ code: "forbidden" });
   } finally {
-    await f.db.close();
+    await f.db.exec("reset role; reset all; set search_path=public");
   }
 });
 
@@ -169,7 +172,7 @@ test("routine JWT grants deny direct writes and hide personal prompts including 
     await expect(f.db.query("delete from routines")).rejects.toThrow("permission denied");
     await f.db.exec("reset role");
   } finally {
-    await f.db.close();
+    await f.db.exec("reset role; reset all; set search_path=public");
   }
 });
 
@@ -211,7 +214,7 @@ test("routine HTTP routes authenticate, reject query parameters, and persist str
       status: "paused",
     });
   } finally {
-    await f.db.close();
+    await f.db.exec("reset role; reset all; set search_path=public");
   }
 });
 
@@ -252,7 +255,7 @@ test("routine lifecycle enables, pauses and preserves accessible history after d
     expect((await f.command("history", { id: row.id })).items).toHaveLength(1);
     await expect(f.command("enable", { id: row.id, expectedVersion: 4 })).rejects.toMatchObject({ code: "not_found" });
   } finally {
-    await f.db.close();
+    await f.db.exec("reset role; reset all; set search_path=public");
   }
 });
 
@@ -310,6 +313,6 @@ test("cron API validates schedules, previews three instants from the database cl
     expect(updated).toMatchObject({ cron: "30 10 * * *", timezone: "UTC", version: 3, status: "enabled" });
     expect(new Date(updated.nextDueAt!).getUTCMinutes()).toBe(30);
   } finally {
-    await f.db.close();
+    await f.db.exec("reset role; reset all; set search_path=public");
   }
 });

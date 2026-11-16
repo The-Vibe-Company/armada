@@ -9,15 +9,7 @@ import { Button } from "@/components/ui/button";
 import { type Attention, CONTINUE_PROMPT } from "@/lib/sandbox-attention";
 
 /** The existing shortcuts; reply/steer, stop, PR/recovery links already live in this sandbox's conversation/header. */
-export function SandboxAttentionActions({
-  sandboxId,
-  name,
-  status,
-  configured,
-  busy,
-  attention,
-  resend,
-}: {
+type AttentionActionProps = {
   sandboxId: string;
   name: string;
   status: SandboxStatus;
@@ -27,7 +19,22 @@ export function SandboxAttentionActions({
   resend: { text: string; conversationId: string | null } | null;
   ackKey: string;
   dismissed: boolean;
-}) {
+};
+
+export function SandboxAttentionActions(props: AttentionActionProps) {
+  // Reset both the request identity and its result when the recovery instruction changes.
+  // Keep them stable across refreshes and uncertain retries of that same instruction.
+  const identity = JSON.stringify([
+    props.sandboxId,
+    props.ackKey,
+    props.attention,
+    props.attention === "interrupted" ? props.resend?.text : CONTINUE_PROMPT,
+    props.attention === "interrupted" ? props.resend?.conversationId : null,
+  ]);
+  return <RecoverySend key={identity} {...props} />;
+}
+
+function RecoverySend({ sandboxId, name, status, configured, busy, attention, resend }: AttentionActionProps) {
   const [state, action, pending] = useActionState(sendToSandbox, null);
   const [requestId] = useState(() => crypto.randomUUID());
   const canSend = configured && !busy && ["ready", "running", "stopped"].includes(status);

@@ -3,11 +3,14 @@ import { createSqlVaultStore, encryptSecret, type GitHubRuntimeConfiguration } f
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
+const sharedDatabase = rowOnlyDatabase();
+
 async function fixture(provider: "boat" | "modal" = "boat") {
-  const f = await runtimeFixture(undefined, provider);
+  const f = await runtimeFixture(await sharedDatabase(), provider);
   await f.db.query("update goldens set provider_snapshot_id='offline-snapshot',config=$2::jsonb where id=$1", [
     f.row.goldenId,
     JSON.stringify({ repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] }),

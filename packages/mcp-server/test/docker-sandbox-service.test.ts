@@ -6,21 +6,28 @@ import type { dockerRuntimeConfiguration } from "../src/docker-runtime-configura
 import { createDockerSandboxService, DockerSandboxDenied } from "../src/docker-sandbox-service.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
-let db: Awaited<ReturnType<typeof migratedDatabase>>;
+let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const sql: Sql = {
-  query: (q, v) => db.query(q, v),
-  transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  query: (q, v) => database().query(q, v),
+  transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
 };
 const key = Buffer.alloc(32, 7).toString("base64");
 const hosts = createDockerHostStore(sql, key);
 const service = createDockerSandboxService(sql, key, { enabled: true });
 beforeAll(async () => {
-  db = await migratedDatabase();
+  connection = await migratedDatabase();
 });
 afterAll(async () => {
-  await db.close();
+  const db = connection;
+  connection = undefined;
+  await db?.close();
 });
 async function fixture(ttlSeconds?: number) {
+  const db = database();
   const orgId = randomUUID(),
     issuerId = randomUUID(),
     userId = randomUUID(),
@@ -60,6 +67,7 @@ async function denied(work: Promise<unknown>) {
 
 // This owner boundary protects allocation opt-in, not the model resolver's catalog matrix.
 test("reservation is literal opt-in and accepts only pinned, narrow metadata", async () => {
+  const db = database();
   const f = await fixture();
   for (const enabled of [undefined, false, "true", 1]) {
     await denied(createDockerSandboxService(sql, key, { enabled } as never).reserve(f.actor, f.input));
@@ -79,6 +87,7 @@ test("reservation is literal opt-in and accepts only pinned, narrow metadata", a
 });
 
 test("member allocation and lost-commit-response retry retain one SQL-derived bound create", async () => {
+  const db = database();
   const f = await fixture();
   let lost = true;
   const lostResponse: Sql = {
@@ -146,6 +155,7 @@ test("member allocation and lost-commit-response retry retain one SQL-derived bo
 });
 
 test("first allocation validates account scope/version/status; retries reject changed claims and current authority", async () => {
+  const db = database();
   const f = await fixture();
   await denied(service.reserve(f.other, f.input)); // User-scoped account is not the other member's account.
   await denied(service.reserve(f.actor, { ...f.input, credentialVersion: 2 }));
@@ -186,6 +196,7 @@ test("first allocation validates account scope/version/status; retries reject ch
 });
 
 test("bound job insert failure rolls back both reservation and machine claim", async () => {
+  const db = database();
   const f = await fixture();
   await db.exec(`create function public.reject_reservation_job() returns trigger language plpgsql as $$
     begin raise exception 'private failure detail'; end $$;
@@ -218,6 +229,7 @@ test("bound job insert failure rolls back both reservation and machine claim", a
 });
 
 test("retained owner/admin diagnostics and delegated cleanup are independent of allocation flag", async () => {
+  const db = database();
   const f = await fixture(300),
     saved = await service.reserve(f.actor, f.input);
   expect(
@@ -265,6 +277,7 @@ test("retained owner/admin diagnostics and delegated cleanup are independent of 
 });
 
 test("host capacity reserves pending starts, preserves retries, and releases only confirmed physical stops", async () => {
+  const db = database();
   const f = await fixture();
   // Heartbeat observations, not user-supplied launch choices, establish capacity.
   await hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });

@@ -9,21 +9,21 @@ import {
 } from "@armada/core";
 import { createSqlData } from "../src/data.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
-async function fixture({ isolated = false } = {}) {
-  const data = await (isolated ? database() : sharedDatabase());
+async function fixture() {
+  const data = await sharedDatabase();
   return {
     ...data,
     close: async () => {
-      if (isolated) await data.db.close();
+      await data.db.exec("reset role; reset all; set search_path=public");
     },
   };
 }
 
 test("registry separates personal grants, fences leases on revoke, and refuses shared impersonation", async () => {
-  const { close, db, people: p } = await fixture({ isolated: true });
+  const { close, db, people: p } = await fixture();
   try {
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
     const input = {
@@ -301,7 +301,7 @@ test("MCP resource queries survive unchanged, while credentials remain encrypted
 });
 
 test("pending OAuth take is actor-bound, single-use and fenced by reconnect, expiry and membership", async () => {
-  const { close, db, people: p } = await fixture({ isolated: true });
+  const { close, db, people: p } = await fixture();
   try {
     const { createSqlMcpPendingOAuthPort } = await import("@armada/core");
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
@@ -373,7 +373,7 @@ test("pending OAuth take is actor-bound, single-use and fenced by reconnect, exp
 });
 
 test("durable invalidations reach every replica independently and roll back with revocation", async () => {
-  const { close, db, people: p } = await fixture({ isolated: true });
+  const { close, db, people: p } = await fixture();
   try {
     const { createSqlMcpInvalidationPort } = await import("@armada/core");
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);

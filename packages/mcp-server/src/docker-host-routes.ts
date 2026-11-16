@@ -144,6 +144,7 @@ export function createDockerHostRoutes(
                 ...("resourcePolicyVersion" in body ? ["resourcePolicyVersion"] : []),
                 ...("skipSnapshots" in body ? ["skipSnapshots"] : []),
                 ...("retentionSeconds" in body ? ["retentionSeconds", "nextCleanupAt"] : []),
+                ...("diskFreeBytes" in body ? ["diskFreeBytes"] : []),
               ]
             : ["installationId"],
       );
@@ -183,6 +184,12 @@ export function createDockerHostRoutes(
             ))
         )
           throw new InvalidInput();
+        if (
+          body.diskFreeBytes !== undefined &&
+          body.diskFreeBytes !== null &&
+          (!Number.isSafeInteger(body.diskFreeBytes) || Number(body.diskFreeBytes) < 0)
+        )
+          throw new InvalidInput();
         const retentionSeconds = await store.retentionForHost(
           token,
           installationId,
@@ -200,6 +207,7 @@ export function createDockerHostRoutes(
               body.skipSnapshots === true,
               body.resources as DockerHostResources | undefined,
               body.resourcePolicyVersion as 1 | undefined,
+              body.diskFreeBytes as number | null | undefined,
             ),
             ...(body.resourcePolicyVersion === 1 ? { limits: await store.limitsForHost(token, installationId) } : {}),
           },

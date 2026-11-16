@@ -148,7 +148,7 @@ test("opt-in host HTTP routes separate user and host capabilities and never cach
   ).toBe(401);
   for (const body of [
     { ...unknownJob, outcome: "completed", reason: "image_unavailable" },
-    { ...unknownJob, reason: "disk_full" },
+    { ...unknownJob, reason: "unknown_failure" },
     { ...unknownJob, reason: 1 },
     { ...expiry, reason: "image_unavailable" },
   ])
@@ -244,6 +244,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
   expect(byId.has(expiredPending.hostId)).toBe(false);
   expect(byId.get(revokedPending.hostId)?.state).toBe("revoked");
   expect(byId.get(pending.hostId)).toEqual({
+    diskFreeBytes: null,
     retentionSeconds: null,
     retentionOverrideSeconds: null,
     nextCleanupAt: null,
@@ -272,6 +273,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     expect(Object.keys(host).sort()).toEqual([
       "canManageLimits",
       "createdAt",
+      "diskFreeBytes",
       "id",
       "lastSeenAt",
       "limitsSupported",
@@ -406,17 +408,21 @@ test("heartbeat availability is validated and drives the public busy-capacity su
   const installationId = randomUUID();
   const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
   const resources = { cpus: 16, memoryBytes: 38 * 1024 ** 3, availableCpus: 8, availableMemoryBytes: 30 * 1024 ** 3 };
-  const poll = (value: unknown) =>
+  const poll = (value: unknown, diskFreeBytes: unknown = 20_000_000_000) =>
     post("/api/docker-host/poll", host.hostToken, {
       installationId,
       version: "2.33.0",
       resourcePolicyVersion: 1,
       resources: value,
+      diskFreeBytes,
     });
   expect((await poll(resources)).status).toBe(200);
   const listed = await post("/api/v1/docker/hosts/list", "fixture-user-token", { org: orgId });
   const list = (await listed.json()) as DockerHostListResponse;
-  expect(list.hosts[0]).toMatchObject({ resources: { capacity: 7, heldBack: 2 } });
+  expect(list.hosts[0]).toMatchObject({ diskFreeBytes: 20_000_000_000, resources: { capacity: 7, heldBack: 2 } });
+  for (const invalid of [-1, 0.5, "lots", Number.MAX_SAFE_INTEGER + 1])
+    expect((await poll(resources, invalid)).status).toBe(400);
+  expect((await poll(resources, null)).status).toBe(200);
   for (const invalid of [
     { ...resources, availableCpus: 17 },
     { ...resources, availableMemoryBytes: -1 },

@@ -16,8 +16,8 @@ const driver: Driver = {
   },
   async close() {},
 };
-async function boot(path: string) {
-  const journal = new Journal(join(path, "journal.sqlite"), (s) => s);
+async function boot(path: string, journalPath = join(path, "journal.sqlite")) {
+  const journal = new Journal(journalPath, (s) => s);
   try {
     const state = new HarnessState(path, journal.redact);
     const sourceIdentity = journal.assertRestoreSource(grant);
@@ -78,7 +78,7 @@ test("unbound native files refuse restoration even when the journal is pristine"
 
 test("truly pristine stores still boot and admit their first prompt", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-pristine-"));
-  const live = await boot(root);
+  const live = await boot(root, ":memory:");
   try {
     const response = await live.runner.handle(
       new Request("https://runner", {

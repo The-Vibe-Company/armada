@@ -4,7 +4,9 @@ import type { Sql } from "@armada/core";
 import { createSqlSandboxStore } from "@armada/core";
 import { DelegatedAuthority, newDelegatedEpochSecret } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
-import { database } from "./support.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+
+const database = rowOnlyDatabase();
 
 test("managed parent is hidden from generic service/JWT reads; identities cannot drift", async () => {
   const { db, people: p } = await database();
@@ -64,7 +66,7 @@ test("managed parent is hidden from generic service/JWT reads; identities cannot
     );
     await expect(db.query("update orchestrators set owner_id=$1", [p.admin])).rejects.toThrow("immutable orchestrator");
   } finally {
-    await db.close();
+    await db.exec("reset role; reset all; set search_path=public");
   }
 });
 
@@ -287,6 +289,6 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
     await authority.revoke(id);
     await expect(read()).rejects.toThrow("denied");
   } finally {
-    await db.close();
+    await db.exec("reset role; reset all; set search_path=public");
   }
 });

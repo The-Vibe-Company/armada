@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DockerJobFailureReason } from "../../core/src/docker-api.ts";
+import { DockerDiskFloorError } from "../../core/src/docker-disk-policy.ts";
 import {
   type BootstrapDescriptor,
   canonicalDockerHostJob,
@@ -146,6 +147,34 @@ export async function register(store: Store, api: Api, server: string, token: st
     receipts: [],
   });
 }
+/**
+ * Physical-only expiry lane: never writes state or calls the server. The mailbox
+ * subsequently observes stops and persists/reports proof through its normal path.
+ * Check every durable launch identity concurrently so one slow Docker inspection
+ * cannot postpone the other generations. Exact ownership remains the executor's
+ * responsibility, including legacy requests without a persisted expiresAt.
+ */
+export async function enforcePhysicalExpiry(store: Store, executor: Executor): Promise<void> {
+  const state = await store.load();
+  const candidates = new Map<string, DockerMachineRequest>();
+  const active = state.activeTtl ? new Set(state.activeTtl) : undefined;
+  for (const receipt of state.receipts) {
+    if (active && !active.has(receipt.requestId)) continue;
+    if (receipt.operation === "create" || receipt.operation === "bootstrap" || receipt.operation === "resume") {
+      if (!receipt.expired) candidates.set(generationKey(receipt.request), receipt.request);
+    }
+  }
+  await Promise.all(
+    [...candidates.values()].map(async (request) => {
+      try {
+        await executor.stopIfExpired(request);
+      } catch {
+        // Failed inspection is not absence or ownership proof. Retry next sweep.
+      }
+    }),
+  );
+}
+
 /** One serialized production iteration. Durable receipts precede all machine operations. */
 export async function tick(
   store: Store,
@@ -324,7 +353,8 @@ export async function tick(
       receipt.outcome = "completed";
     } catch (error) {
       receipt.outcome = "failed";
-      if (receipt.operation === "buildSnapshot") {
+      if (error instanceof DockerDiskFloorError) receipt.reason = "disk_full";
+      else if (receipt.operation === "buildSnapshot") {
         receipt.reason = "snapshot_build_failed";
         // Do not log exception text: build output and init commands can contain credentials.
         console.error(
@@ -332,7 +362,7 @@ export async function tick(
         );
       } else if (error instanceof DockerMachineError && error.code === "image_unavailable") receipt.reason = error.code;
     } // Uncertain native failure is terminal for this request identity.
-    // A long build continues ordinary mailbox/TTL work; merge its receipt into the latest durable state.
+    // Reload durable state before completing the receipt.
     const latest = await store.load();
     const saved = latest.receipts.find((item) => item.requestId === receipt.requestId);
     if (!saved) throw Error("Missing durable receipt");
