@@ -9,8 +9,11 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
+
+const database = rowOnlyDatabase();
 
 function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
   let stopped = false,
@@ -42,7 +45,7 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
 const args = (id: string) => ({ id, request_id: crypto.randomUUID(), runtimeVersion: 1 as const });
 
 test("checkpoint interrupts, flushes and seals a real Runner before stop; receipt and history survive stopped reads", async () => {
-  const f = await runtimeFixture();
+  const f = await runtimeFixture(await database());
   try {
     const done = Promise.withResolvers<"interrupted">();
     f.hold(done.promise, () => done.resolve("interrupted"));
@@ -126,7 +129,7 @@ test("checkpoint interrupts, flushes and seals a real Runner before stop; receip
 });
 
 test("undelivered checkpoint intent and a lost response reconcile after stop without waking the guest", async () => {
-  const f = await runtimeFixture();
+  const f = await runtimeFixture(await database());
   try {
     const input = args(f.row.id);
     const unavailable = {
@@ -174,7 +177,7 @@ test("undelivered checkpoint intent and a lost response reconcile after stop wit
 test.each(["generation", "prefix", "ack"] as const)(
   "authenticated but invalid durable checkpoint proof fails closed (%s)",
   async (mode) => {
-    const f = await runtimeFixture();
+    const f = await runtimeFixture(await database());
     try {
       f.tamper(mode);
       await expect(
@@ -191,7 +194,7 @@ test.each(["generation", "prefix", "ack"] as const)(
 );
 
 test("a late journal tail or application-secret exposure invalidates checkpoint reuse", async () => {
-  const f = await runtimeFixture();
+  const f = await runtimeFixture(await database());
   try {
     const input = args(f.row.id),
       checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
