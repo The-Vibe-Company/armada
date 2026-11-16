@@ -128,3 +128,13 @@ test.each([{ args: ["launch", "web", "--agent", "codex", "hello"] }, { args: ["s
     expect(failure.message).not.toContain("outcome unknown");
   },
 );
+
+test("terminal send reports the exact shared recovery reason and rejects appended guest text", async () => {
+  const message =
+    "Cannot control docker sandbox: stopped. Its container is removed after finish/stop; start a new sandbox on the same branch.";
+  for (const code of ["sandbox_terminal", "invalid_request"])
+    for (const suffix of ["", canary]) {
+      const result = await capture(["send", id, "hello", "--json"], 409, code, message + suffix);
+      expect(JSON.parse(result.err).error.message.startsWith(message)).toBe(suffix === "");
+    }
+});
