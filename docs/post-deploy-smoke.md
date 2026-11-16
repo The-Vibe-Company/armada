@@ -1845,3 +1845,38 @@ critical path; it does not change the ordinary Modal-only staging invocation.
 Coordinator acceptance still needs an authorized full Modal/Docker parity run
 with step timings before/after. No measured speedup is claimed from unit tests,
 and no Docker host/account is registered implicitly. Boat is not part of the gate.
+
+## First-login journey (#2446)
+
+Run against the staging **dashboard origin**, separately from the server-origin
+compute probes above. Record the tested SHA, origin and each result; this journey
+has not passed merely because the server-origin smoke passed.
+
+1. Use a disposable CLI configuration directory and unset `ARMADA_TOKEN`. Run
+   `armada login --url https://<staging-dashboard>` in a terminal. Discovery must
+   offer the enabled methods, with no discovery error. Anonymous
+   `GET /api/v1/auth/methods` on that same origin must return 200 JSON and no-store.
+2. With the staging test account, complete each enabled GitHub/Google provider
+   using `armada login --provider github --url https://<staging-dashboard>` (then
+   google). Confirm the loopback callback exchanges the code and saves a session.
+3. Log out and complete email login, including code verification. Confirm a
+   subsequent `armada org list --url https://<staging-dashboard>` succeeds. Log
+   out and remove the disposable configuration directory. Never record codes,
+   tokens or callback query strings in evidence.
+
+The discovery regression began in **v2.28.0**, which first shipped #1505
+(`fb2fc624`): the CLI began requesting auth/methods while the dashboard retained
+its POST-only public allowlist. The route audit also found the server's public
+GitHub account OAuth callback missing from the catch-all proxy; it now shares
+method admission and redirect forwarding with the other public routes. The
+separate dashboard `/github/callback` web flow remains intact.
+
+The authenticated control audit also repaired missing `creds/accounts/models`,
+`creds/defaults/set` and `skillpack/connection` forwarding, plus `golden/adopt`,
+`github/runtime-status`, `sandbox/resume` and the authenticated `sandbox/delete`
+control alias. Retired
+`launch/resolve` stays blocked. Explicit experimental runtime launch/preflight
+routes (`sandbox/launch-runtime-v1`, `sandbox/launch-modal-runtime-v1`,
+`sandbox/mcp-preflight-v1`, `sandbox/github-preflight-v1`) remain server-only;
+`sandbox/checkpoint-runtime-v1` and `sandbox/resume-runtime-v1` also remain
+experimental server-only routes; normal launch uses `sandbox/launch`. Runner secret callbacks remain excluded.

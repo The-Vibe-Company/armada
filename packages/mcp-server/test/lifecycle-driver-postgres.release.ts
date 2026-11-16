@@ -97,8 +97,10 @@ test("real Bun.SQL bigint reads complete shared send and stop through the Boat S
       expect(lease.activity_until).toBeNull();
       expect(requests.filter((r) => r.endsWith("/prompt"))).toHaveLength(1);
       expect(requests.filter((r) => r.endsWith("/stop"))).toHaveLength(1);
+      // Exercise counter exhaustion on a controllable row: a stopped row must refuse
+      // at terminal-state preflight before reaching the generation guard.
       // Counter exhaustion must fail before admission/provider mutation, not round a CAS.
-      await sql.query("update sandboxes set lifecycle_generation=$2 where id=$1", [
+      await sql.query("update sandboxes set status='ready',stopped_at=null,lifecycle_generation=$2 where id=$1", [
         id,
         String(Number.MAX_SAFE_INTEGER),
       ]);
