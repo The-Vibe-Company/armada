@@ -32,13 +32,14 @@ test("both providers enter independently and settle into one failing report with
         throw new Error("unexpected_poll");
       },
       out: (line) => lines.push(line),
-      fetch: async (_url, init) => {
+      fetch: async (url, init) => {
+        if (url.endsWith("/healthz")) return Response.json({});
         entered.add(JSON.parse(String(init.body)).org);
         await barrier;
         return Response.json({ error: { code: "forbidden" } }, { status: 403 });
       },
     },
-    ["--feature", "exec"],
+    [],
   );
   try {
     // Flush promise continuations, not wall-clock time. A serial runner remains

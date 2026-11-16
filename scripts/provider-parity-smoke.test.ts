@@ -1050,7 +1050,7 @@ for (const mode of [
                   { error: { code: "rate_limited", message: "Read quota reached." } },
                   { status: 429 },
                 );
-              if (mode === "subscription_probe_budget") await advance(110_001);
+              if (mode === "subscription_probe_budget") clock += 110_001;
               result = {
                 id: mode === "template_identity" || mode.startsWith("routine_") || deepFull ? body.id : p,
                 status: states.get(p),
@@ -1385,7 +1385,6 @@ for (const mode of [
         const cell = report.features["subscription-account"][provider];
         expect(cell.status).toBe(
           mode === "subscription_probe_missing" ||
-            (mode === "subscription_probe_budget" && provider === "docker") ||
             refused ||
             ["subscription_probe_echo", "subscription_probe_later_answer"].includes(mode)
             ? "not-run"
@@ -1692,23 +1691,20 @@ for (const mode of [
         if (mode === "template_missing")
           expect(report.features.templates[provider].reason).toBe("template_revision_not_configured");
         else {
-          if (mode === "template_unknown" || mode === "template_transport_unknown") {
-            // The elapsed-time limit can win before the attempt cap when probes overlap.
-            expect(templateCalls.get(provider)).toBeGreaterThan(0);
-            expect(templateCalls.get(provider)).toBeLessThanOrEqual(600);
-          } else
-            expect(templateCalls.get(provider)).toBe(
-              [
-                "template_pending",
-                "template_identity",
-                "template_final_missing",
-                "template_transport_recovery",
-                "template_timeout_recovery",
-                "template_lost_identity",
-              ].includes(mode)
+          expect(templateCalls.get(provider)).toBe(
+            mode === "template_unknown" || mode === "template_transport_unknown"
+              ? 600
+              : [
+                    "template_pending",
+                    "template_identity",
+                    "template_final_missing",
+                    "template_transport_recovery",
+                    "template_timeout_recovery",
+                    "template_lost_identity",
+                  ].includes(mode)
                 ? 2
                 : 1,
-            );
+          );
           if (
             ![
               "template_transport_unknown",

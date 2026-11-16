@@ -1830,8 +1830,8 @@ Modal/Docker acceptance is coordinator-owned. Boat remains coordinator-only via
 Full `--parity` runs validate the entire configuration first, then run the Modal
 and Docker observations concurrently. Each provider keeps its own poll deadlines,
 request state and ordered lifecycle/cleanup; one provider's failure does not
-short-circuit the other. Provider-filtered calls and coordinator-only production
-Boat verification keep their existing single-provider behavior. Account-matrix
+short-circuit the other. Provider/feature-filtered calls and coordinator-only production
+Boat verification keep their existing scheduling. Account-matrix
 runs still sequence accounts to respect shared model-account admission limits.
 
 Only the selected provider column from each worker contributes to the one final

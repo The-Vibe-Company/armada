@@ -309,7 +309,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     return false;
   }
   const deadline = Math.min(io.deadline ?? Number.POSITIVE_INFINITY, io.now() + 35 * 60_000);
-  if (!only && !productionBoat) {
+  if (!only && !feature && !productionBoat) {
     // Each provider gets its own request/poll deadlines and cleanup state. Never
     // parallelize the steps within a provider's lifecycle or authority fences.
     const combined: Record<string, Partial<Record<Provider, Cell>>> = {};
@@ -338,7 +338,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               for (const [name, providers] of Object.entries(value.features ?? {})) {
                 combined[name] ??= { boat: { status: "not-run", reason: "not_part_of_release_gate" } };
                 // A child marks its sibling filtered; only carry the selected column.
-                if (providers[c.provider]) combined[name][c.provider] = providers[c.provider];
+                const cell = providers[c.provider];
+                if (cell) combined[name][c.provider] = cell;
               }
             },
           },
