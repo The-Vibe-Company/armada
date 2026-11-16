@@ -13,8 +13,8 @@ protocol SandboxService: Sendable {
     /// `POST /api/v1/sandbox/send`: sent exactly once. `.uncertain` means it may have been
     /// delivered; it is never resent automatically because the route has no idempotency key.
     func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance
-    /// `POST /api/v1/sandbox/stop`: the disk and conversations are kept. Safe to repeat.
-    func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStatus
+    /// `POST /api/v1/sandbox/stop`: reports whether work retention needs attention.
+    func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStopOutcome
 }
 
 /// Concise, safe failure categories. No raw response body or transport error reaches a view.
@@ -84,7 +84,7 @@ struct UnavailableServices: SandboxService {
         throw .unavailable(reason)
     }
 
-    func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStatus {
+    func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStopOutcome {
         throw .unavailable(reason)
     }
 }

@@ -69,12 +69,17 @@ final class SandboxConversationModel {
         if pending.contains(where: { $0.status == .unconfirmed }) {
             return "Check whether your last prompt arrived, then dismiss it to write again."
         }
+        if let expiry = state.expiresAt, expiry <= .now {
+            return "This sandbox expired. Launch a new sandbox on the same branch to continue."
+        }
         switch state.admission {
         case .open: return nil
         case .turnRunning: return "The agent is working. You can write when this turn ends, or stop the sandbox."
         case .starting: return "Starting. You can write once it is ready."
         case .stopping: return "Stopping…"
-        case .failed: return state.statusReason.map { "This sandbox failed: \($0)" } ?? "This sandbox failed."
+        case .failed: return state.failureExplanation ?? "This sandbox failed. Launch a new sandbox to continue."
+        case .expired: return "This sandbox expired. Launch a new sandbox on the same branch to continue."
+        case .cannotResume: return "This sandbox cannot resume. Launch a new sandbox on the same branch to continue."
         case .deleted: return "This sandbox was deleted. Its conversation is no longer available."
         case .unknownStatus: return "This app does not know this sandbox's state yet."
         }
@@ -236,7 +241,7 @@ final class SandboxConversationModel {
         }
     }
 
-    /// Called after confirmation. Stopping keeps the disk and conversations and is safe to repeat.
+    /// Called after confirmation. Surface retention warnings even when the request succeeds.
     func stop() {
         guard canStop else { return }
         stopping = true
@@ -244,7 +249,8 @@ final class SandboxConversationModel {
         Task {
             defer { stopping = false }
             do throws(ServiceFailure) {
-                _ = try await service.stopSandbox(id: sandboxID, orgID: orgID)
+                let receipt = try await service.stopSandbox(id: sandboxID, orgID: orgID)
+                if let warning = receipt.preservationWarning { notice = (warning, true) }
             } catch {
                 switch error.category {
                 case .signedOut: onSignedOut()

@@ -51,6 +51,8 @@ struct SandboxState: Hashable, Sendable {
         case failed
         case deleted
         case unknownStatus
+        case expired
+        case cannotResume
     }
 
     let status: SandboxStatus
@@ -61,6 +63,9 @@ struct SandboxState: Hashable, Sendable {
     let admission: Admission
     let canStop: Bool
     let isWorking: Bool
+    var expiresAt: Date? = nil
+    var preservationWarning: String? = nil
+    var failureExplanation: String? = nil
 }
 
 struct SandboxTurnState: Hashable, Sendable {
@@ -91,4 +96,9 @@ struct SandboxRateLimitState: Hashable, Sendable {
 struct SandboxPromptAcceptance: Hashable, Sendable {
     let promptID: String
     let status: PromptStatus
+}
+
+struct SandboxStopOutcome: Sendable {
+    let status: SandboxStatus
+    var preservationWarning: String? = nil
 }

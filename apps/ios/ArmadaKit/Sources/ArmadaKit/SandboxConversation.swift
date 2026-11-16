@@ -18,11 +18,7 @@ public struct SandboxTurn: Decodable, Sendable, Equatable {
     /// Closed interruption reasons are safe to offer as a manual resend, never an automatic replay.
     public var resendHint: String? {
         guard state == "interrupted" else { return nil }
-        switch reason {
-        case "interrupted_by_provider_move": return "The sandbox moved to a new machine. Send the prompt again."
-        case "interrupted_by_harness_exit": return "Send the prompt again to start a fresh agent process."
-        default: return nil
-        }
+        return SandboxPresentation.interruption(reason)
     }
 }
 
@@ -50,13 +46,27 @@ public struct SandboxDetail: Decodable, Sendable, Equatable {
     public let statusReason: String?
     public let conversationIds: [String]
     public let expiresAt: String?
+    public let provider: String?
+    public let preservationNote: String?
     public let prompt: SandboxTurn?
     /// True when the agent is not working.
     public let settled: Bool
 
     /// Whether a new prompt can be offered now. The server reauthorizes and may still refuse.
     public var admission: SandboxPromptAdmission {
-        switch status {
+        admission(at: .now)
+    }
+
+    public func admission(at now: Date) -> SandboxPromptAdmission {
+        if let expiresAt,
+           let expiry = (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(expiresAt))
+                ?? (try? Date.ISO8601FormatStyle().parse(expiresAt)), expiry <= now,
+           ["ready", "running", "stopped"].contains(status) { return .expired }
+        if status == "stopped" && (preservationNote == "checkpoint_failed_disk_not_retained"
+            || !(["boat", "modal"].contains(provider ?? "") || statusReason == "idle_paused")) {
+            return .cannotResume
+        }
+        return switch status {
         case "deleted": .deleted
         case "failed": .failed
         case "starting": .starting
@@ -76,7 +86,7 @@ public struct SandboxDetail: Decodable, Sendable, Equatable {
 }
 
 public enum SandboxPromptAdmission: Sendable, Equatable {
-    case open, turnRunning, starting, stopping, failed, deleted, unknownStatus
+    case open, turnRunning, starting, stopping, failed, deleted, unknownStatus, expired, cannotResume
 }
 
 /// One page of a sandbox's `AgentEvent`s, oldest first: `POST /api/v1/logs/read` (`armada logs`).
@@ -97,10 +107,23 @@ public struct SandboxPromptReceipt: Decodable, Sendable, Equatable {
     public let status: String
 }
 
-/// `POST /api/v1/sandbox/stop` (`armada stop`): the disk and conversations are kept.
+/// `POST /api/v1/sandbox/stop` (`armada stop`): retention is reported by the server.
 public struct SandboxStopReceipt: Decodable, Sendable, Equatable {
     public let id: String
     public let status: String
+    public let preservationNote: String?
+
+    public var preservationWarning: String? {
+        Self.preservationWarning(preservationNote)
+    }
+
+    public static func preservationWarning(_ note: String?) -> String? {
+        guard let note else { return nil }
+        if note == "checkpoint_failed_disk_not_retained" {
+            return "The disk could not be retained. This sandbox cannot resume. Start a new sandbox on the same branch."
+        }
+        return "Work preservation needs attention. Check the sandbox's work recovery status before continuing."
+    }
 }
 
 /// How a failed sandbox mutation must be presented. `sandbox/send` carries no idempotency key, so
@@ -222,7 +245,7 @@ extension ArmadaClient {
         try saveSandboxPrompts(pendingSandboxPrompts.filter { $0.id != id })
     }
 
-    /// Stops the machine; its disk and conversations are kept and a later prompt resumes it.
+    /// Stops the machine and reports its preservation outcome.
     public func stopSandbox(id: String) async throws -> SandboxStopReceipt {
         struct Stop: Encodable, Sendable { let id: String; let org: String }
         let result: SandboxStopReceipt = try await post("sandbox/stop", Stop(id: try sandboxID(id), org: try sandboxOrganization()))
