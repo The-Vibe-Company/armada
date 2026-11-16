@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  ACCOUNT_WORKING_PREDICATE,
   accountWorkingCountSql,
   decryptSecret,
   encryptSecret,
@@ -42,17 +43,30 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   const pending = new Set<Promise<unknown>>();
   let scanAfter = "0";
   let dispatch: ((caller: Caller, input: RuntimeFollowupInput) => Promise<unknown>) | undefined;
-  async function waitingMessage(accountId: string) {
+  async function waitingMessage(accountId: string, sandboxId: string) {
     const row = (
-      await sql.query<{ name: string; max_agents: number | null; working: string }>(
-        `select c.name,c.max_agents,${accountWorkingCountSql("c.id")} as working from public.credentials c where c.id=$1`,
-        [accountId],
+      await sql.query<{
+        name: string;
+        max_agents: number | null;
+        working: string;
+        busy: boolean;
+        has_slot: boolean;
+      }>(
+        `select c.name,c.max_agents,${accountWorkingCountSql("c.id")} as working,
+          (s.reconcile_lease_until>now() or s.activity_lease_id is not null
+            or (s.task_prompt_id is not null and s.status='running' and not exists(
+              select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled))
+            or exists(select 1 from public.account_turn_queue active where active.sandbox_id=s.id and active.state='dispatching')) as busy,
+          ((${ACCOUNT_WORKING_PREDICATE}) or exists(
+            select 1 from public.account_agent_reservations r where r.sandbox_id=s.id and r.account_id=c.id)) as has_slot
+          from public.credentials c join public.sandboxes s on s.credential_id=c.id where c.id=$1 and s.id=$2`,
+        [accountId, sandboxId],
       )
     ).rows[0];
-    if (row?.max_agents === null) return "Prompt accepted; waiting for sandbox dispatch, not an account slot.";
-    return row
-      ? `Waiting for a free agent slot on account ${row.name} (${row.working}/${row.max_agents ?? "unlimited"}).`
-      : "Waiting for a free agent slot.";
+    if (row?.busy) return "Prompt accepted; waiting for the current sandbox turn or dispatch to finish.";
+    if (row && row.max_agents !== null && !row.has_slot && Number(row.working) >= row.max_agents)
+      return `Waiting for a free agent slot on account ${row.name} (${row.working}/${row.max_agents}).`;
+    return "Prompt accepted; waiting for sandbox dispatch, not an account slot.";
   }
   async function accept(caller: Caller, input: RuntimeFollowupInput) {
     if (!input.prompt.trim()) throw new VaultError("invalid", "The prompt is empty.");
@@ -180,7 +194,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       promptId: requestId,
       conversationId: entry.conversation_id,
       status: "queued" as const,
-      statusMessage: await waitingMessage(entry.account_id),
+      statusMessage: await waitingMessage(entry.account_id, input.id),
     };
   }
   return {
@@ -257,7 +271,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             ? (row.failure_reason ?? "Queued prompt was cancelled.")
             : row.state === "dispatching"
               ? "Prompt dispatch is pending; inspect status before sending another request."
-              : await waitingMessage(row.account_id),
+              : await waitingMessage(row.account_id, row.sandbox_id),
       };
     },
     setDispatch(value: NonNullable<typeof dispatch>) {
