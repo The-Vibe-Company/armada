@@ -12,22 +12,29 @@ const row = {
   credential_version: 3,
   provider: "modal",
   status: "ready",
+  stop_requested_at: null,
 };
 
 test("Models check accepts only the selected account/version in the viewer's running organization sandbox", () => {
   expect(matchesConnectionTestSandbox(row, expected)).toBe(true);
+  expect(matchesConnectionTestSandbox({ ...row, provider: "boat", boat_runtime: true }, expected)).toBe(true);
   for (const changed of [
     { owner_id: "other" },
     { org_id: "other" },
     { credential_id: "other" },
     { credential_version: 2 },
     { provider: "boat" },
+    { provider: "boat", boat_runtime: false },
+    { provider: "boat", boat_runtime: "true" },
+    { provider: "docker", boat_runtime: true },
+    { stop_requested_at: "2026-11-16T00:00:00Z" },
     { status: "stopped" },
     { status: ["ready"] },
     { id: "other" },
   ])
     expect(matchesConnectionTestSandbox({ ...row, ...changed }, expected)).toBe(false);
   expect(matchesConnectionTestSandbox(null, expected)).toBe(false);
+  expect(matchesConnectionTestSandbox({ ...row, stop_requested_at: undefined }, expected)).toBe(false);
 });
 
 test("account check client sends no secret/config and closes untrusted result fields", async () => {

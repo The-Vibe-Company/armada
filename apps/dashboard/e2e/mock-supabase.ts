@@ -746,6 +746,7 @@ function orAny(row: Row, expression: string): boolean {
     .some((term) => {
       const [column = "", op, ...rest] = term.split(".");
       if (op === "not" && rest.join(".") === "is.null") return row[column] !== null && row[column] !== undefined;
+      if (op === "eq") return String(row[column]) === rest.join(".");
       return op === "gte" && atLeast(row[column], rest.join("."));
     });
 }
@@ -3514,8 +3515,9 @@ const server = Bun.serve({
           return controlFail(403, "forbidden", "Only the sandbox owner may test.");
         const account = state.credentials.find((row) => row.id === machine.credential_id);
         if (
-          machine.provider !== "modal" ||
+          !(machine.provider === "modal" || (machine.provider === "boat" && machine.boat_runtime === true)) ||
           !["ready", "running"].includes(String(machine.status)) ||
+          machine.stop_requested_at != null ||
           !account ||
           account.status !== "active" ||
           account.version !== machine.credential_version

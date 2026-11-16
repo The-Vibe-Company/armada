@@ -139,8 +139,8 @@ function ConnectionTestDialog({
         <DialogHeader>
           <DialogTitle>Test {account.name}</DialogTitle>
           <DialogDescription>
-            Launch an idle Modal sandbox with this API-key account first. This sends one tiny billable request through
-            its runtime, without starting or resuming a machine.
+            Use an idle, running Modal or Boat shared-runtime sandbox with this API-key account. This sends one tiny
+            billable request through its runtime, without starting or resuming a machine.
           </DialogDescription>
         </DialogHeader>
         <ConnectionTestForm
@@ -186,7 +186,7 @@ function ConnectionTestForm({
           <NativeSelect id={`${id}-sandbox`} name="sandboxId" required defaultValue={candidates[0]?.id}>
             {candidates.map((sandbox) => (
               <option key={sandbox.id} value={sandbox.id}>
-                {HARNESS_LABELS[sandbox.harness]} —{" "}
+                {HARNESS_LABELS[sandbox.harness]} · {sandbox.provider === "boat" ? "Boat runtime" : "Modal"} —{" "}
                 {new Date(sandbox.createdAt).toLocaleString("en", {
                   dateStyle: "medium",
                   timeStyle: "short",
@@ -202,7 +202,7 @@ function ConnectionTestForm({
           <p>
             {choices.state === "unavailable"
               ? "Available sandboxes could not be loaded. Reload Models to check again."
-              : "No matching sandbox is running. Launch a Modal sandbox with this account, then reload Models to test it."}
+              : "No matching sandbox is running. Launch a Modal or Boat shared-runtime sandbox with this account, then reload Models."}
           </p>
           <Button asChild variant="outline" size="sm">
             {choices.state === "unavailable" ? (
@@ -236,8 +236,9 @@ function ConnectionTestForm({
         ) : null}
       </div>
       <p className="text-xs text-muted-foreground">
-        Only your recent running Modal sandboxes using this account are listed. No machine is started or resumed. A
-        successful check does not prove streaming or tool compatibility.
+        Only your recent running Modal or Boat shared-runtime sandboxes using this account are listed. Native Boat and
+        Docker are not supported for checks. No machine is started or resumed. A successful check does not prove
+        streaming or tool compatibility.
       </p>
       {pending ? (
         <p role="status" className="text-sm text-muted-foreground">

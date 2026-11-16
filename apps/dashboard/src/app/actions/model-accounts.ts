@@ -232,7 +232,7 @@ export async function testAccountConnection(_previous: ActionResult | null, data
   const supabase = await createClient();
   const { data: sandbox, error } = await supabase
     .from("sandboxes")
-    .select("id,owner_id,org_id,provider,status,credential_id,credential_version")
+    .select("id,owner_id,org_id,provider,boat_runtime,status,stop_requested_at,credential_id,credential_version")
     .eq("id", sandboxId)
     .eq("owner_id", viewer.id)
     .eq("org_id", context.org)

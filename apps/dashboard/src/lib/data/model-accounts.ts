@@ -9,7 +9,7 @@ import {
   KIND_INFO,
   type ModelAccount,
 } from "@/lib/model-accounts";
-import type { ConnectionTestChoices } from "@/lib/model-connection-check";
+import { type ConnectionTestChoices, matchesConnectionTestSandbox } from "@/lib/model-connection-check";
 import { createClient } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 import { requireViewer } from "./viewer";
@@ -119,10 +119,14 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
     eligible.map((account) =>
       supabase
         .from("sandboxes")
-        .select("id,credential_id,credential_version,harness,created_at")
+        .select(
+          "id,owner_id,org_id,provider,boat_runtime,status,stop_requested_at,credential_id,credential_version,harness,created_at",
+        )
         .eq("owner_id", viewer.id)
         .eq("org_id", selected.org.id)
-        .eq("provider", "modal")
+        .in("provider", ["modal", "boat"])
+        .or("provider.eq.modal,boat_runtime.eq.true")
+        .is("stop_requested_at", null)
         .eq("credential_id", account.id)
         .eq("credential_version", account.version)
         .in("status", ["ready", "running"])
@@ -133,14 +137,21 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
   if (reads.some((read) => read.error)) return { state: "unavailable" };
   return {
     state: "ready",
-    sandboxes: reads.flatMap(({ data }) =>
+    sandboxes: reads.flatMap(({ data }, index) =>
       (data ?? []).flatMap((row) =>
-        row.credential_id !== null && row.credential_version !== null
+        matchesConnectionTestSandbox(row, {
+          id: row.id,
+          ownerId: viewer.id,
+          orgId: selected.org.id,
+          accountId: eligible[index]!.id,
+          version: eligible[index]!.version,
+        })
           ? [
               {
                 id: row.id,
-                accountId: row.credential_id,
-                version: row.credential_version,
+                accountId: eligible[index]!.id,
+                version: eligible[index]!.version,
+                provider: row.provider === "boat" ? ("boat" as const) : ("modal" as const),
                 harness: row.harness,
                 createdAt: row.created_at,
               },
