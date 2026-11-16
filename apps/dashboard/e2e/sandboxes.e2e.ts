@@ -401,7 +401,6 @@ test("steer, interrupt and send go to the chosen conversation, and a refused mes
   ).toBeVisible();
 
   // A model change is a new turn: it cannot ride on a steer.
-  await page.getByRole("button", { name: "Model", exact: true }).click();
   await page.getByLabel("Reasoning effort").selectOption("high");
   await expect(page.getByRole("button", { name: "Steer", exact: true })).toBeDisabled();
   await box.fill("Then add a regression test");
@@ -544,7 +543,6 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
   const facts = page.locator("dl").first();
   await expect(facts.getByText("Repository context")).toBeVisible();
   await expect(facts.getByText("api", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Model", exact: true }).click();
   await page.getByRole("textbox", { name: "Message" }).fill("Now the docs");
   await page.getByLabel("Reasoning effort").selectOption("low");
   await page.getByRole("button", { name: "Send", exact: true }).click();

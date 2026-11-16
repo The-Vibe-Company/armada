@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { NavMobileTrigger } from "@/components/nav-links";
 import { Sidebar, SidebarFooter, SidebarHeader, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
@@ -15,20 +16,21 @@ export function AppSidebar({
   children: ReactNode;
 }) {
   const { isMobile, state } = useSidebar();
+  const thread = usePathname().startsWith("/sandboxes/");
   return (
     <>
       {isMobile && (
         <div className="border-b bg-sidebar pb-2 md:hidden">
-          {header}
+          {!thread && header}
           <div className="px-3">
             <NavMobileTrigger />
           </div>
         </div>
       )}
       <Sidebar collapsible="icon" className="md:sticky md:top-0 md:h-dvh md:shrink-0">
-        {isMobile === false && (
+        {(isMobile === false || thread) && (
           <SidebarHeader className="gap-0 p-0">
-            {state === "collapsed" ? (
+            {state === "collapsed" && !isMobile ? (
               <SidebarTrigger className="mx-auto my-3" aria-label="Expand navigation" />
             ) : (
               header
@@ -42,4 +44,10 @@ export function AppSidebar({
       </Sidebar>
     </>
   );
+}
+
+/** Keep the desktop opener out of the mobile drawer so it cannot replace the drawer's focus-return target. */
+export function DesktopSidebarTrigger() {
+  const { isMobile } = useSidebar();
+  return isMobile ? null : <SidebarTrigger className="hidden md:flex" aria-label="Collapse navigation" />;
 }

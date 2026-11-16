@@ -1021,7 +1021,6 @@ function Composer({
   const [pending, setPending] = useState<Intent | null>(null);
   const [waking, setWaking] = useState(false);
   const [, startTransition] = useTransition();
-  const [showModel, setShowModel] = useState(false);
   const [override, setOverride] = useState(false);
   /**
    * The Docker request key of the message not yet accepted: kept only while the same text is sent again unchanged, so
@@ -1067,7 +1066,6 @@ function Composer({
       return;
     }
     if (intent === "send" && change(data) === "incomplete") {
-      setShowModel(true);
       setResult({ ok: false, error: INCOMPLETE_MODEL });
       return;
     }
@@ -1155,11 +1153,21 @@ function Composer({
         }
         className="max-h-60 min-h-14 resize-y rounded-none border-0 bg-transparent px-1.5 py-1.5 shadow-none focus-visible:ring-0 sm:min-h-20 dark:bg-transparent"
       />
-      <Collapsible open={showModel} onOpenChange={setShowModel} className="space-y-3">
-        {!pinnedModel && (
-          <CollapsibleContent forceMount className="data-[state=closed]:hidden">
-            <fieldset disabled={pending !== null}>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+          <span className="px-1 text-xs font-medium">
+            {harness === "claude" ? "Claude Code" : harness === "codex" ? "Codex" : "OpenCode"}
+          </span>
+          {pinnedModel ? (
+            <p className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground" title={PINNED_MODEL}>
+              <SlidersHorizontalIcon className="size-3.5" aria-hidden />
+              <span>Model as launched</span>
+              <span className="sr-only">: {PINNED_MODEL}</span>
+            </p>
+          ) : (
+            <fieldset disabled={pending !== null} className="min-w-0">
               <ModelFields
+                compact
                 idPrefix={`send-${sandboxId}`}
                 harness={harness}
                 catalog={catalog}
@@ -1167,47 +1175,13 @@ function Composer({
                 launchedModel={launchedModel}
               />
             </fieldset>
-          </CollapsibleContent>
-        )}
-        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-          <span className="px-1 text-xs font-medium">
-            {harness === "claude" ? "Claude Code" : harness === "codex" ? "Codex" : "OpenCode"}
-          </span>
-          {pinnedModel ? (
-            // No model picker on Docker: the launch model serves every message, said plainly instead of refused.
-            <p className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground" title={PINNED_MODEL}>
-              <SlidersHorizontalIcon className="size-3.5" aria-hidden />
-              {/* Words at every width: a title never shows on a touch screen. */}
-              <span>Model as launched</span>
-              <span className="sr-only">: {PINNED_MODEL}</span>
-            </p>
-          ) : (
-            <CollapsibleTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className={cn("relative text-muted-foreground max-sm:px-2", override && "text-foreground")}
-              >
-                <SlidersHorizontalIcon />
-                {/* A changed model is marked by more than colour: a dot, and the word where there is room. */}
-                {override && (
-                  <span
-                    className="absolute top-1 right-1 size-1.5 rounded-full bg-primary sm:hidden"
-                    aria-hidden="true"
-                  />
-                )}
-                {/* Keep the label visible on phones as well as the model-settings icon. */}
-                <span>{override ? "Model changed" : "Model"}</span>
-              </Button>
-            </CollapsibleTrigger>
           )}
           {steerHint ? (
             // Why Steer is unavailable, visible on a touch screen too (a title never shows there); one line, never a row.
             // It takes the place of an earlier success message, never of an error.
             <p
               id={`${fieldId}-steer-hint`}
-              className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground sm:text-xs"
+              className="basis-full text-[11px] text-muted-foreground sm:min-w-0 sm:basis-auto sm:flex-1 sm:truncate sm:text-xs"
             >
               <span className="sr-only">Model change: </span>
               New turn only
@@ -1292,7 +1266,7 @@ function Composer({
             </Button>
           </div>
         </div>
-      </Collapsible>
+      </div>
     </form>
   );
 }

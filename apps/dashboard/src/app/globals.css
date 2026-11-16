@@ -238,6 +238,28 @@
      * position), the header and composer stay where they were, and the details scroll in the space it left.
      */
     @media (max-width: 63.99rem) {
+      /* The phone details portal lives inside the chat card, beside its history and composer. */
+      [data-fit="body"]:has([data-fit="side"][data-state="open"]) [data-fit="history"] {
+        flex: 0 0 0;
+        min-height: 0;
+        overflow: hidden;
+        visibility: hidden;
+      }
+      [id="sandbox-mobile-about"]:has(> [data-fit="side"][data-state="open"]) {
+        display: flex;
+        flex: 1 1 0;
+        min-height: 0;
+      }
+      [id="sandbox-mobile-about"] > [data-fit="side"] {
+        flex: 1 1 0;
+        min-height: 0;
+      }
+      [id="sandbox-mobile-about"] [data-fit="side-content"] {
+        flex: 1 1 0;
+        min-height: 0;
+        max-height: none;
+        overflow-y: auto;
+      }
       [data-fit="body"]:has(> section[data-fit="side"][data-state="open"]) > [data-fit="column"] {
         flex: none;
       }

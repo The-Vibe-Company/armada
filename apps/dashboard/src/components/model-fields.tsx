@@ -38,7 +38,9 @@ export function ModelFields({
   connections,
   onConnection,
   account,
+  compact = false,
 }: {
+  compact?: boolean;
   idPrefix: string;
   harness: Harness;
   catalog: ModelCatalog;
@@ -120,9 +122,11 @@ export function ModelFields({
   }
 
   return (
-    <div ref={group} className="grid gap-3 sm:grid-cols-2">
-      <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-model`}>Model</Label>
+    <div ref={group} className={compact ? "flex min-w-0 flex-wrap items-start gap-1" : "grid gap-3 sm:grid-cols-2"}>
+      <div className={compact ? "min-w-0 max-w-40" : "space-y-2"}>
+        <Label className={compact ? "sr-only" : undefined} htmlFor={`${idPrefix}-model`}>
+          Model
+        </Label>
         {groups && (
           <Input
             type="search"
@@ -141,6 +145,7 @@ export function ModelFields({
         )}
         <NativeSelect
           id={`${idPrefix}-model`}
+          className={compact ? "h-7 border-0 bg-transparent text-xs shadow-none" : undefined}
           name="model"
           value={model}
           onChange={(event) => chooseModel(event.target.value)}
@@ -179,10 +184,13 @@ export function ModelFields({
           />
         )}
       </div>
-      <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-effort`}>Reasoning effort</Label>
+      <div className={compact ? "min-w-0 max-w-40" : "space-y-2"}>
+        <Label className={compact ? "sr-only" : undefined} htmlFor={`${idPrefix}-effort`}>
+          Reasoning effort
+        </Label>
         <NativeSelect
           id={`${idPrefix}-effort`}
+          className={compact ? "h-7 border-0 bg-transparent text-xs shadow-none" : undefined}
           name="reasoning_effort"
           value={effort}
           onChange={(event) => setEffort(event.target.value)}
