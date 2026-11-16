@@ -13,16 +13,15 @@ import {
   sandboxActivity,
 } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
-import { createDockerHostStore } from "./docker-host-store.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
-import { scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { launchSandboxChild } from "./sandbox-access-child-launch.ts";
 import type { SandboxChildExecutor } from "./sandbox-access-children.ts";
 import { createSandboxChildren } from "./sandbox-access-children.ts";
 import { createSandboxScopedGateway } from "./sandbox-access-scoped-gateway.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
-import { preserveBeforeStop, recordStopDispatch, runtimePreservationNote } from "./work-preservation.ts";
+import { createRuntimeSelfFinish, requestSandboxFinish } from "./sandbox-finish.ts";
+import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 class DelegatedAccessError extends Error {
   constructor(readonly code: string) {
@@ -217,33 +216,17 @@ export function createSandboxAccessServices(input: {
   async function finish(token: string) {
     return authority.admit(token, { method: "finish" }, async (tx, principal) => {
       const row = (
-        await tx.query<{ id: string; provider: string }>(
-          `select s.id,s.provider::text from public.sandboxes s
-         join public.armada_access_parents p on p.sandbox_id=s.id
-         where p.id=$1 and p.kind='sandbox' and s.status in ('ready','running')`,
+        await tx.query<{ sandbox_id: string }>(
+          "select sandbox_id from public.armada_access_parents where id=$1 and kind='sandbox'",
           [principal.orchestratorId],
         )
       ).rows[0];
       if (!row) throw new DelegatedAccessError("not_found");
-      let preservationNote: string | undefined;
-      if (row.provider === "docker") {
-        preservationNote = `${await runtimePreservationNote(tx, row.id, null)} Unpushed Git work is not preserved; agent-declared completion permanently removes the Docker home volume.`;
-        await tx.query("update public.sandboxes set preservation_note=$2 where id=$1", [row.id, preservationNote]);
-        await createDockerHostStore(scopedRuntimeSql(tx), input.encryptionKey).enqueueSandbox(
-          { userId: principal.ownerId, orgId: principal.orgId },
-          row.id,
-          { requestId: crypto.randomUUID(), operation: "stop" },
-        );
-      }
-      await tx.query(
-        `update public.sandboxes set status='stopping',status_reason='agent_finished',
-         stop_requested_at=coalesce(stop_requested_at,clock_timestamp()),
-         stop_generation=case when stop_requested_at is null then stop_generation+1 else stop_generation end,
-         reconcile_after=now() where id=$1`,
-        [row.id],
-      );
-      return { id: row.id, status: "stopping", ...(preservationNote ? { preservationNote } : {}) };
+      return requestSandboxFinish(tx, input.encryptionKey, row.sandbox_id, principal.ownerId);
     });
   }
-  return { scopedToolsRoute: createSandboxScopedGateway(children, finish), childWorker: children };
+  return {
+    scopedToolsRoute: createSandboxScopedGateway(children, finish, createRuntimeSelfFinish(sql, input.encryptionKey)),
+    childWorker: children,
+  };
 }

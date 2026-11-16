@@ -12,6 +12,7 @@ import { createSqlData } from "./data.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { selfFinishToken } from "./sandbox-finish.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const deny = (): never => {
@@ -134,6 +135,18 @@ export function createRuntimeMcp(options: {
         headers: { Authorization: `Bearer ${token}` },
       };
     }
+    servers.armada_self = {
+      type: "http",
+      url: new URL("/api/v1/orchestrator-tools/mcp", options.origin).href,
+      headers: {
+        Authorization: `Bearer ${selfFinishToken(key, {
+          sandboxId: s.id,
+          ownerId: s.ownerId,
+          epoch,
+          generation: current.mcp_generation,
+        })}`,
+      },
+    };
     const configuration = { revision: hash(JSON.stringify([epoch, current.mcp_generation, servers])), servers };
     return { configuration, grants, expiresAt: new Date(current.expires_at) };
   }
@@ -168,15 +181,16 @@ export function createRuntimeMcp(options: {
           [s.id],
         )
       ).rows[0];
-      // Untouched model-only workers do not need a new guest capability or RPC.
-      if (!selection.length && !previous) return undefined;
       const p = await plan(tx, caller, s, live.epoch, selection);
       let cached =
         previous?.configured === true &&
         previous.physical_generation === `runtime:${live.epoch}` &&
         previous.revision === p.configuration.revision;
-      for (const server of Object.values(p.configuration.servers))
-        if (!(await createSqlMcpLeasePort(tx).validate(hash(server.headers.Authorization.slice(7)), "tools")))
+      for (const [name, server] of Object.entries(p.configuration.servers))
+        if (
+          name !== "armada_self" &&
+          !(await createSqlMcpLeasePort(tx).validate(hash(server.headers.Authorization.slice(7)), "tools"))
+        )
           cached = false;
       return { epoch: live.epoch, selection, cached: cached ? receipt(s, live.epoch, p, selection) : undefined };
     });
@@ -203,6 +217,7 @@ export function createRuntimeMcp(options: {
       const p = await plan(tx, caller, s, live.epoch, initial.selection),
         leases = createSqlMcpLeasePort(tx);
       for (const [name, server] of Object.entries(p.configuration.servers)) {
+        if (name === "armada_self") continue;
         const tokenHash = hash(server.headers.Authorization.slice(7)),
           connectionId = name.slice(7).replaceAll("_", "-");
         const existing = (await tx.query("select id from public.mcp_leases where hash=$1", [tokenHash])).rows.length;
@@ -262,8 +277,11 @@ export function createRuntimeMcp(options: {
       const p = await plan(tx, caller, s, live.epoch, initial.selection);
       if (live.epoch !== prepared.epoch || JSON.stringify(p.configuration) !== JSON.stringify(prepared.configuration))
         return deny();
-      for (const server of Object.values(p.configuration.servers))
-        if (!(await createSqlMcpLeasePort(tx).validate(hash(server.headers.Authorization.slice(7)), "tools")))
+      for (const [name, server] of Object.entries(p.configuration.servers))
+        if (
+          name !== "armada_self" &&
+          !(await createSqlMcpLeasePort(tx).validate(hash(server.headers.Authorization.slice(7)), "tools"))
+        )
           return deny();
       const written = await tx.query(
         "update public.mcp_bootstraps set configured=true where sandbox_id=$1 and physical_generation=$2 and revision=$3 returning sandbox_id",
