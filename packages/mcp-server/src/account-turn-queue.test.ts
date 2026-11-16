@@ -591,3 +591,36 @@ test("stranded receipts settle without replay while safe unlimited and paused wo
   expect(sent).toEqual([ids[1]!, ids[2]!]);
   expect(await queue.status(caller, ids[2]!, requests[0])).toMatchObject({ failed: true });
 });
+
+test.each(["boat", "modal"])("native %s restart releases only proven pre-dispatch claims", async (provider) => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "recover abandoned claim" };
+  await db.query("update sandboxes set provider=$2 where id=$1", [input.id, provider]);
+  await queue.accept(caller, input);
+  await db.query(
+    "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
+    [input.id],
+  );
+  await db.query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
+  const restarted = createAccountTurnQueue(sql, btoa("x".repeat(32)));
+  let calls = 0;
+  restarted.setDispatch(async () => {
+    calls++;
+    return { promptId: "recovered_native" };
+  });
+  // An expired lease is not enough: durable provider admission must remain fenced.
+  await db.query("update sandboxes set lifecycle_generation=1 where id=$1", [input.id]);
+  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
+  expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(1);
+  await db.query("update sandboxes set lifecycle_generation=0 where id=$1", [input.id]);
+  await db.query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
+  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(calls).toBe(0);
+  await db.exec("delete from runtime_commands");
+  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
+  expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(0);
+  expect((await restarted.status(caller, input.id, input.request_id))?.message).toContain("Waiting");
+  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(true);
+  await restarted.drain();
+  expect(calls).toBe(1);
+  expect(await restarted.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "recovered_native" });
+});
