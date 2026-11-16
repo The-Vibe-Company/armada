@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { createMemoryAuthStore } from "@armada/auth";
 import { encryptSecret } from "@armada/core";
 import { createSqlMcpRegistry, createSqlVaultStore } from "@armada/core/server";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
 import { createSqlData } from "../../mcp-server/src/data.ts";
+import { rowOnlyConnection } from "../../mcp-server/test/row-only-database.ts";
 import { fakeBoat } from "../../mcp-server/test/support.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { filePreferences } from "../src/preferences.ts";
@@ -28,8 +28,10 @@ const golden = "33333333-3333-4333-8333-333333333333",
 const key = Buffer.alloc(32, 6).toString("base64");
 const sid = (n: number) => `99999999-9999-4999-8999-${String(n).padStart(12, "0")}`;
 
+const database = rowOnlyConnection();
+
 async function fixture() {
-  const db = await openMigratedDatabase();
+  const db = await database();
   const directory = await mkdtemp(join(tmpdir(), "armada-web-parity-"));
   await db.query("insert into auth.users(id) values ($1),($2)", [me, other]);
   await db.query("insert into orgs(id,name) values ($1,'Selected'),($2,'Other'),($3,'Alien')", [
@@ -177,7 +179,6 @@ async function fixture() {
       return { code, out, err };
     },
     async close() {
-      await db.close();
       await rm(directory, { recursive: true, force: true });
     },
   };
