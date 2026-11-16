@@ -72,8 +72,12 @@ output; provider-side Git autodeploy still requires the owner cutover.
 Production SQL applies only from the validated release deployment path; the
 standalone migration workflow retains manual previews/history/owner repair,
 never per-commit production applies.
-Ordinary queued staging-main sources are superseded before mutation when newer
-main exists; started deployments and explicit pinned release smoke are never cancelled.
+Ordinary staging deployments (including migrations) defer automatically while Release
+work is queued or active. Release completion or failure wakes newest main once;
+merges continue without a manual pause. Started deployments are never cancelled.
+Pinned release staging rejects migrations outside its exact source inventory; never
+use forward-schema staging acceptance to authorize production. Ordinary queued
+staging-main sources are superseded before mutation when newer main exists.
 Publishing releases first validate required staging/production configuration,
 including before Release Please announces/tags or image/npm/host publication;
 ordinary preparation/dry runs do not access production secrets.
