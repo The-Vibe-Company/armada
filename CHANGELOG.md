@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.49.5](https://github.com/The-Vibe-Company/armada/compare/v2.49.4...v2.49.5) (2026-11-16)
+
+
+### Bug Fixes
+
+* **agent-runtime:** drain shutdown callbacks before releasing journal ([#2475](https://github.com/The-Vibe-Company/armada/issues/2475)) ([02f9958](https://github.com/The-Vibe-Company/armada/commit/02f9958f7a338657624c076480a52e6b3d18d704))
+* **cli:** unify discovery and actionable error guidance ([#2460](https://github.com/The-Vibe-Company/armada/issues/2460)) ([1d5e033](https://github.com/The-Vibe-Company/armada/commit/1d5e03305e4cc3ae67b1ce5492277a54f71b9d0f))
+* **control:** align Docker idle wake admission and recovery guidance ([#2471](https://github.com/The-Vibe-Company/armada/issues/2471)) ([5adf01b](https://github.com/The-Vibe-Company/armada/commit/5adf01b5ab33db766bdf2fe874a8410d6692c091))
+* **core:** keep launch audit diagnostics off stdout ([#2474](https://github.com/The-Vibe-Company/armada/issues/2474)) ([16937c9](https://github.com/The-Vibe-Company/armada/commit/16937c9b196738949433f420b33e775cf422403e))
+* **dashboard:** rebalance shared resource rows and snapshot actions ([#2476](https://github.com/The-Vibe-Company/armada/issues/2476)) ([f635256](https://github.com/The-Vibe-Company/armada/commit/f63525651218be3676fceaf861fcdb3bc701a2b5))
+* **errors:** preserve safe refusal and service failure diagnoses ([#2461](https://github.com/The-Vibe-Company/armada/issues/2461)) ([22d8e66](https://github.com/The-Vibe-Company/armada/commit/22d8e66e456ac113c2d959d9f250a13f06e3eee4))
+* **server:** fence unsolicited dispatches while preserving owner resumes ([#2468](https://github.com/The-Vibe-Company/armada/issues/2468)) ([c991bec](https://github.com/The-Vibe-Company/armada/commit/c991becff1598df0bba1c87171cfa1e74b4a20c1))
+
 ## [2.49.4](https://github.com/The-Vibe-Company/armada/compare/v2.49.3...v2.49.4) (2026-11-16)
 
 
