@@ -218,6 +218,8 @@ export interface SandboxInfo {
   stoppedAt?: Date;
   /** SDK-confirmed physical exit, without claiming a fresh resumable checkpoint. */
   physicalExitConfirmed?: boolean;
+  /** Definite provider evidence that the current workspace cannot be restored. */
+  nonRestorable?: "disk_expired" | "checkpoint_missing";
   /** Closed ordinary-stop receipt: current disk was not saved. */
   stopNote?: "checkpoint_failed_disk_not_retained";
   /** When the provider stops it by itself (the TTL). */
@@ -469,6 +471,7 @@ export type ProviderErrorCode =
   | "provider_not_configured"
   /** A steer when no turn runs. */
   | "no_running_turn"
+  | "sandbox_not_restorable"
   | "sandbox_not_ready"
   /** The selected Docker host has no free sandbox slots. */
   | "host_full"

@@ -98,7 +98,7 @@ function fixture(
       ) => {
         creates++;
         requestedRuntimes.push(params.runtime);
-        resourceRequests.push({ ...params });
+        resourceRequests.push({ ...params, imageId: (_image as Image).imageId });
         expect(params.env).toEqual({});
         expect(params.secrets).toEqual([]);
         const id = `sb_${crypto.randomUUID()}`;
@@ -1102,6 +1102,85 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(resumed.info.id).toBe(row.id);
     expect(resumed.generation).toBe(2);
     expect(resumed.physicalId).not.toBe(stopped.physicalId);
+  });
+  test("stopped Modal without a current checkpoint is terminally non-restorable", async () => {
+    const f = fixture();
+    const row = await runningFork(f);
+    f.failSnapshot(true);
+    await f.provider.stop({ sandboxId: row.id }).catch(() => {});
+    await f.provider.stop({ sandboxId: row.id });
+    expect("recoveryImageId" in (await f.store.get(row.id))).toBe(false);
+    const info = await f.provider.get(row.id);
+    expect(info).toMatchObject({
+      id: row.id,
+      name: row.id,
+      labels: {},
+      state: "stopped",
+      providerState: "stopped",
+      stopNote: "checkpoint_failed_disk_not_retained",
+      physicalGeneration: "1",
+      nonRestorable: "checkpoint_missing",
+    });
+    for (const value of [info.createdAt, info.expiresAt, info.stoppedAt]) {
+      expect(value).toBeInstanceOf(Date);
+      expect(Number.isFinite(value!.getTime())).toBe(true);
+    }
+    const creates = f.creates;
+    await expect(
+      f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "do not restore" }),
+    ).rejects.toMatchObject({
+      code: "sandbox_not_restorable",
+    });
+    expect(f.creates).toBe(creates);
+  });
+  test.each(["claude", "codex"] as const)(
+    "retained Modal %s send resumes its current checkpoint and exact prior conversation after external exit",
+    async (harness) => {
+      const f = fixture();
+      const row = await runningFork(f);
+      await f.provider.stop({ sandboxId: row.id });
+      const stopped = await f.store.get(row.id);
+      const physical = await f.client.sandboxes.fromId(stopped.physicalId!);
+      await physical.terminate();
+      expect(await f.provider.get(row.id)).not.toHaveProperty("nonRestorable");
+      let received: { input?: { conversationId?: string } } | undefined;
+      const fromId = f.client.sandboxes.fromId.bind(f.client.sandboxes);
+      f.client.sandboxes.fromId = async (id) => {
+        const sb = await fromId(id);
+        // A stale physical incarnation may exit without invalidating the current disk image.
+        if (id === stopped.physicalId) return Object.assign(Object.create(sb) as typeof sb, { poll: async () => 0 });
+        return sb;
+      };
+      f.onRpc(async (_row, op, input) => {
+        if (op === "prompt") {
+          received = input as typeof received;
+          return { promptId: "recovered-prompt", conversationId: "prior-conversation", status: "queued" };
+        }
+        return undefined;
+      });
+      expect(
+        await f.provider.prompt({ sandboxId: row.id, harness, text: "continue", conversationId: "prior-conversation" }),
+      ).toMatchObject({ conversationId: "prior-conversation" });
+      expect(received?.input?.conversationId).toBe("prior-conversation");
+      const restored = await f.store.get(row.id);
+      expect(restored.generation).toBe(stopped.generation + 1);
+      expect(restored.imageId).toBe(stopped.recoveryImageId);
+      expect(restored.physicalId).not.toBe(stopped.physicalId);
+      expect(f.resourceRequests.at(-1)?.imageId).toBe(stopped.recoveryImageId);
+    },
+  );
+  test("external Modal physical exit alone is not definite storage loss", async () => {
+    const f = fixture();
+    const row = await runningFork(f);
+    const active = await f.store.get(row.id);
+    const sb = await f.client.sandboxes.fromId(active.physicalId!);
+    await sb.terminate();
+    expect(await f.provider.get(row.id)).toMatchObject({ physicalExitConfirmed: true });
+    expect((await f.provider.get(row.id)).nonRestorable).toBeUndefined();
+    await expect(
+      f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "do not use an old checkpoint" }),
+    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect((await f.store.get(row.id)).generation).toBe(active.generation);
   });
   test("stopped prompt reads preserve durable outcomes without restoring compute", async () => {
     const f = fixture();

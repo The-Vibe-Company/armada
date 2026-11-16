@@ -49,6 +49,11 @@ const cases: Case[] = [
   ["create in flight", errorBody(409, "idempotency_in_progress", "In progress"), { code: "conflict", retryable: true }],
   ["key reused", errorBody(409, "idempotency_key_reused", "Reused"), { code: "conflict", retryable: false }],
   [
+    "expired stopped disk",
+    errorBody(409, "snapshot_data_expired", "Snapshot data expired"),
+    { code: "sandbox_not_restorable", providerCode: "snapshot_data_expired", retryable: false },
+  ],
+  [
     "start limit per minute",
     errorBody(429, "rate_limited", "Slow down", { window: "minute", limit: 12, retryAfter: 20 }),
     { code: "rate_limited", retryable: true, retryAfterSeconds: 20 },

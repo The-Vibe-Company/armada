@@ -1910,6 +1910,349 @@ test.each(["claude", "codex"] as const)(
   },
 );
 
+for (const [providerName, loss] of [
+  ["boat", "disk_expired"],
+  ["modal", "checkpoint_missing"],
+] as const) {
+  for (const harness of ["claude", "codex"] as const) {
+    for (const restorable of [true, false]) {
+      test(`${providerName} ${harness} control send ${restorable ? "renews its lifetime and exact conversation" : "closes lost storage with a safe recovery reference"}`, async () => {
+        await withServer(async ({ db, options, cli }) => {
+          const now = new Date("2026-11-15T12:00:00.000Z");
+          options.now = () => now;
+          const expiry = "2026-01-01T00:00:00.000Z";
+          const previousConversation = `previous-${providerName}-${harness}`;
+          const id = crypto.randomUUID();
+          const providerSandboxId = `native_${providerName}_${harness}`;
+          const preservationNote = `Unpushed work is preserved at work_recovery:${id}/recovery-${providerName}-${harness}.`;
+          const admin = cli(STAN);
+          expect((await admin.run(["org", "create", "Recovery matrix"])).code).toBe(0);
+          const org = (await options.store.memberships(STAN))[0]!;
+          options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+          const binding = { workspace: "ws", environment: "main", appId: "ap-recovery" };
+          const golden = (
+            await db.query<{ id: string }>(
+              `insert into goldens(org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+               values($1,$2,'recovery','org',$3,$4,$5,$6,$7,$8::jsonb) returning id`,
+              [
+                org.id,
+                STAN,
+                providerName,
+                providerName === "modal" ? "im-golden" : null,
+                ...(providerName === "modal" ? Object.values(binding) : [null, null, null]),
+                JSON.stringify({ repos: [], init: [] }),
+              ],
+            )
+          ).rows[0]!.id;
+          await db.query(
+            `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,stopped_at,conversation_ids,preservation_note,effective_ttl_seconds,expires_at)
+             values($1,$2,$3,$4,$5,$6,$7,'stopped','2026-11-15T11:00:00Z',ARRAY['older-conversation',$8],$9,120,$10)`,
+            [
+              id,
+              providerName,
+              providerSandboxId,
+              golden,
+              org.id,
+              STAN,
+              harness,
+              previousConversation,
+              preservationNote,
+              expiry,
+            ],
+          );
+          expect(
+            (
+              await admin.run(["creds", "set", harness === "claude" ? "anthropic" : "openai", "--name", "Recovery"], {
+                stdin: "synthetic-model-key",
+              })
+            ).code,
+          ).toBe(0);
+          const credentialId = (
+            JSON.parse((await admin.run(["creds", "list", "--json"])).out).user as { id: string }[]
+          )[0]!.id;
+          if (providerName === "modal") {
+            const scope: Scope = { orgId: org.id, userId: STAN, visibility: "org", binding };
+            const key = scopeKey(scope);
+            const machine: Machine = {
+              info: { id: providerSandboxId, name: "Recovery", state: "stopped", providerState: "stopped", labels: {} },
+              generation: 1,
+              golden: false,
+              phase: "stopped",
+              physicalId: "sb-old",
+              physicalName: "existing-work",
+              recoveryImageId: "im-existing-work",
+              ttlSeconds: 120,
+            };
+            await db.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
+              key,
+              JSON.stringify(scope),
+            ]);
+            await db.query(
+              "insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,'org',$4,'existing',$5::jsonb)",
+              [key, org.id, STAN, providerSandboxId, JSON.stringify(machine)],
+            );
+            await db.query("insert into modal_server_harnesses(scope,machine_id,harness) values($1,$2,$3)", [
+              key,
+              providerSandboxId,
+              harness,
+            ]);
+            await db.query("update sandboxes set credential_id=$2,credential_version=1 where id=$1", [
+              id,
+              credentialId,
+            ]);
+            await db.query(
+              "update modal_server_harnesses set credential_id=$3,credential_version=1 where scope=$1 and machine_id=$2",
+              [key, providerSandboxId, credentialId],
+            );
+          }
+          let prompts = 0;
+          let thrown: ProviderError | undefined;
+          const provider: Provider = {
+            id: providerName,
+            harnesses: ["claude", "codex"],
+            capabilities: {},
+            get: async () => ({
+              id: providerSandboxId,
+              name: "Recovery",
+              state: "stopped",
+              providerState: "stopped",
+              stoppedAt: new Date("2026-11-15T11:00:00.000Z"),
+              labels: { sandbox: id },
+              ...(!restorable ? { nonRestorable: loss } : {}),
+            }),
+            prompt: async (request: Parameters<Provider["prompt"]>[0]) => {
+              prompts++;
+              expect(request.conversationId).toBe(previousConversation);
+              if (thrown) throw thrown;
+              return { promptId: "new-prompt", conversationId: previousConversation, status: "queued" };
+            },
+          } as never as Provider;
+          options.providers = {
+            resolve: async (target) => {
+              expect(target).toMatchObject({
+                provider: providerName,
+                orgId: org.id,
+                visibility: "org",
+                modal: providerName === "modal" ? binding : null,
+              });
+              return provider;
+            },
+          };
+          const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+          const send = () =>
+            handleControlRequest(
+              new Request("https://armada.test/api/v1/sandbox/send", {
+                method: "POST",
+                headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+                body: JSON.stringify({ id, org: org.id, prompt: "continue the conversation" }),
+              }),
+              options,
+            );
+          expect(
+            Number(
+              (
+                await db.query<{ lifecycle_generation: number }>(
+                  "select lifecycle_generation from sandboxes where id=$1",
+                  [id],
+                )
+              ).rows[0]?.lifecycle_generation,
+            ),
+          ).toBe(1);
+          const response = (await send())!;
+          const body = (await response.json()) as {
+            id?: string;
+            conversationId?: string;
+            error?: { code: string; message: string };
+          };
+          if (!restorable)
+            expect((body as { error: { message: string } }).error.message).toContain(`work_recovery:${id}/`);
+          const after = (
+            await db.query<{
+              status: string;
+              status_reason: string | null;
+              conversation_ids: string[];
+              expires_at: Date;
+              lifecycle_generation: number;
+              activity_lease_id: string | null;
+              bounded_ttl: boolean;
+            }>(
+              "select status,status_reason,conversation_ids,expires_at,lifecycle_generation,activity_lease_id,effective_ttl_seconds=120 and expires_at>=now()+interval '119 seconds' and expires_at<=now()+interval '120 seconds' as bounded_ttl from sandboxes where id=$1",
+              [id],
+            )
+          ).rows[0]!;
+          if (restorable) {
+            expect(response.status).toBe(200);
+            expect(body).toMatchObject({ id, conversationId: previousConversation });
+            expect(prompts).toBe(1);
+            expect(after).toMatchObject({
+              status: "running",
+              conversation_ids: ["older-conversation", previousConversation],
+              activity_lease_id: null,
+              bounded_ttl: true,
+            });
+            expect(Number(after.lifecycle_generation)).toBe(3);
+            expect(after.expires_at.getTime()).toBeGreaterThan(Date.parse(expiry));
+          } else {
+            expect(response.status).toBe(409);
+            expect(body.error).toMatchObject({ code: "sandbox_not_restorable" });
+            expect(body.error?.message).toContain(`work_recovery:${id}/`);
+            expect(body.error?.message).not.toContain("continue the conversation");
+            expect(body.error?.message).not.toContain("private-archive-content");
+            expect(prompts).toBe(0);
+            expect(after).toMatchObject({ status: "failed", expires_at: new Date(expiry), activity_lease_id: null });
+            expect(after.status_reason).toBe("Expired sandbox storage is no longer restorable.");
+            expect(Number(after.lifecycle_generation)).toBe(1);
+          }
+          if (restorable) {
+            for (const [code, expected] of [
+              ["unavailable", "outcome_unknown"],
+              ["unknown", "outcome_unknown"],
+              ["sandbox_not_ready", "sandbox_not_ready"],
+            ] as const) {
+              await db.query(
+                "update sandboxes set status='stopped',stopped_at='2026-11-15T11:00:00Z',lifecycle_generation=1,activity_lease_id=null,activity_until=null,expires_at=$2 where id=$1",
+                [id, expiry],
+              );
+              thrown = new ProviderError({
+                provider: providerName,
+                code,
+                retryable: true,
+                message: "Private provider diagnostics",
+              });
+              const retry = (await send())!;
+              expect(retry.status).toBe(code === "sandbox_not_ready" ? 409 : 503);
+              expect(((await retry.json()) as { error: { code: string } }).error.code).toBe(expected);
+              expect(
+                (await db.query("select status,activity_lease_id from sandboxes where id=$1", [id])).rows[0],
+              ).toEqual({
+                status: "starting",
+                activity_lease_id: expect.any(String),
+              });
+              thrown = undefined;
+            }
+          }
+        });
+      });
+    }
+  }
+}
+
+test.each(["boat", "modal"] as const)(
+  "prompt-time %s non-restorable evidence closes only through the current activity lease",
+  async (providerName) => {
+    await withServer(async ({ db, options, cli }) => {
+      options.now = () => new Date("2026-11-15T12:00:00.000Z");
+      const org = await options.store.createOrg("Late recovery refusal", STAN);
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      const id = crypto.randomUUID();
+      const admin = cli(STAN);
+      expect(
+        (await admin.run(["creds", "set", "anthropic", "--name", "Recovery"], { stdin: "synthetic-model-key" })).code,
+      ).toBe(0);
+      const credentialId = (JSON.parse((await admin.run(["creds", "list", "--json"])).out).user as { id: string }[])[0]!
+        .id;
+      const golden = (
+        await db.query<{ id: string }>(
+          "insert into goldens(org_id,owner_id,name,visibility,provider,modal_workspace,modal_environment,modal_app_id,config) values($1,$2,'recovery','org',$3,$4,$5,$6,$7::jsonb) returning id",
+          [
+            org.id,
+            STAN,
+            providerName,
+            ...(providerName === "modal" ? ["ws", "main", "ap-recovery"] : [null, null, null]),
+            JSON.stringify({ repos: [], init: [] }),
+          ],
+        )
+      ).rows[0]!.id;
+      await db.query(
+        `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,conversation_ids,preservation_note,effective_ttl_seconds,credential_id,credential_version)
+         values($1,$2,$3,$4,$5,$6,'claude','running',ARRAY['prior-conversation'],$7,120,$8,1)`,
+        [
+          id,
+          providerName,
+          `native_${providerName}`,
+          golden,
+          org.id,
+          STAN,
+          `Unpushed work is preserved at work_recovery:${id}/recovery.`,
+          credentialId,
+        ],
+      );
+      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+      const send = () =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/sandbox/send", {
+            method: "POST",
+            headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+            body: JSON.stringify({ id, org: org.id, prompt: "continue" }),
+          }),
+          options,
+        );
+      let stale = false;
+      const provider = {
+        id: providerName,
+        harnesses: ["claude"],
+        capabilities: {},
+        get: async () => ({
+          id: `native_${providerName}`,
+          name: "Recovery",
+          state: "running",
+          providerState: "active",
+          labels: {},
+        }),
+        prompt: async () => {
+          if (stale) {
+            // Simulate another admitted lifecycle owner while this provider I/O is in flight.
+            await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+          }
+          throw new ProviderError({
+            provider: providerName,
+            code: "sandbox_not_restorable",
+            message: "Provider-specific evidence",
+            retryable: false,
+          });
+        },
+      } as never as Provider;
+      options.providers = { resolve: async () => provider };
+      let response = (await send())!;
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: { code: "sandbox_not_restorable", message: expect.stringContaining(`work_recovery:${id}/recovery`) },
+      });
+      expect(
+        await db.query(
+          "select status,status_reason,lifecycle_generation,activity_lease_id from sandboxes where id=$1",
+          [id],
+        ),
+      ).toMatchObject({
+        rows: [
+          {
+            status: "failed",
+            status_reason: "Expired sandbox storage is no longer restorable.",
+            lifecycle_generation: 3,
+            activity_lease_id: null,
+          },
+        ],
+      });
+      await db.query(
+        "update sandboxes set status='running',stopped_at=null,status_reason=null,lifecycle_generation=1 where id=$1",
+        [id],
+      );
+      stale = true;
+      response = (await send())!;
+      expect(response.status).not.toBe(200);
+      expect(JSON.stringify(await response.json())).not.toContain("sandbox_not_restorable");
+      expect(
+        (await db.query("select status,lifecycle_generation,activity_lease_id from sandboxes where id=$1", [id]))
+          .rows[0],
+      ).toEqual({
+        status: "running",
+        lifecycle_generation: 3,
+        activity_lease_id: expect.any(String),
+      });
+    });
+  },
+);
+
 test("HTTP launch keeps build-5 refusal code and adds the busy account reason", async () => {
   await withServer(async ({ options, db }) => {
     const org = await options.store.createOrg("Busy", STAN);

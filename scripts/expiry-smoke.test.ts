@@ -18,11 +18,24 @@ type Fault =
   | "cleanup_failed"
   | "ttl"
   | "list_missing"
-  | "list_identity";
+  | "list_identity"
+  | "launch_prompt_missing"
+  | "launch_conversation_missing"
+  | "initial_answer_missing"
+  | "initial_answer_failed"
+  | "recall_conversation_changed"
+  | "recall_prompt_missing"
+  | "recall_answer_missing"
+  | "recall_interrupted"
+  | "renewal_unchanged"
+  | "renewal_unbounded"
+  | "renewal_ttl";
 function fixture(provider: "modal", fault: Fault = "none") {
   let clock = 1_800_000_000_000;
-  let expiry = clock + 180_000;
+  let expiry = clock + 120_000;
   let manualStop = false;
+  let recovered = false;
+  let tokens: string[] = [];
   let statusCalls = 0;
   const calls: { path: string; body: Record<string, unknown> }[] = [];
   const reports: Record<string, unknown>[] = [];
@@ -41,23 +54,81 @@ function fixture(provider: "modal", fault: Fault = "none") {
       const body = JSON.parse(String(init.body));
       calls.push({ path, body });
       if (path === "sandbox/launch") {
-        expect(body.ttlSeconds).toBe(180);
+        expect(body.ttlSeconds).toBe(120);
         expect(body.skipSkillDefaults).toBe(true);
-        expect(body.prompt).toBeUndefined();
+        expect(typeof body.prompt).toBe("string");
         expect(body.connections).toEqual([]);
-        expiry = clock + (fault === "deadline" ? 3600_000 : 180_000);
+        tokens = String(body.prompt).match(/ARMADA_EXPIRY_[0-9a-f-]+/) ?? [];
+        expect(tokens).toHaveLength(1);
+        expiry = clock + (fault === "deadline" ? 3600_000 : 120_000);
         clock += 2000;
         if (fault === "lost_launch") throw new Error("secret transport detail");
         return Response.json({
-          sandbox: { id: "owned-worker", provider },
-          ...(fault === "invalid_launch_receipt" ? { promptId: "unexpected" } : {}),
+          sandbox: {
+            id: "owned-worker",
+            provider,
+            conversationIds: fault === "launch_conversation_missing" ? [] : ["native-conversation"],
+          },
+          promptId: fault === "launch_prompt_missing" ? null : "launch-prompt",
+          conversationId: "native-conversation",
+          ...(fault === "invalid_launch_receipt" ? { promptId: null } : {}),
+        });
+      }
+      if (path === "logs/read") {
+        const recalledTurn = recovered;
+        const promptId = recalledTurn ? "recovery-prompt" : "launch-prompt";
+        const initialAnswer =
+          fault === "initial_answer_missing"
+            ? "unrelated"
+            : fault === "initial_answer_failed"
+              ? "interrupted"
+              : "EXPIRY_ACK";
+        const recall = fault === "recall_answer_missing" ? "wrong" : tokens[0]!;
+        const promptFailed = ["initial_answer_failed", "recall_interrupted"].includes(fault);
+        return Response.json({
+          events: [
+            { kind: "prompt", promptId, id: `${promptId}-done`, status: promptFailed ? "interrupted" : "finished" },
+            ...(fault === "recall_interrupted" && !recalledTurn
+              ? []
+              : [
+                  {
+                    kind: "message",
+                    promptId,
+                    id: `${promptId}-answer`,
+                    text: recalledTurn ? recall : initialAnswer,
+                    partial: false,
+                  },
+                  {
+                    kind: "message",
+                    promptId,
+                    id: `${promptId}-tool`,
+                    text: recalledTurn ? recall : "wrong",
+                    responseKind: "tool_result",
+                    partial: false,
+                  },
+                ]),
+          ],
+          cursor: null,
+          hasMore: false,
+        });
+      }
+      if (path === "sandbox/send") {
+        expect(body.conversation_id).toBeUndefined();
+        expect(typeof body.prompt).toBe("string");
+        expect(body.prompt).toContain("ARMADA_EXPIRY_");
+        expect(body.prompt).toMatch(/ARMADA_RECOVERY_[0-9a-f-]+/);
+        recovered = true;
+        if (fault !== "renewal_unchanged") expiry = clock + (fault === "renewal_unbounded" ? 3600_000 : 120_000);
+        return Response.json({
+          promptId: fault === "recall_prompt_missing" ? null : "recovery-prompt",
+          conversationId: fault === "recall_conversation_changed" ? "different-conversation" : "native-conversation",
         });
       }
       if (path === "sandbox/list") {
         expect(body.owner).toBe("me");
         expect(body.harness).toBe("codex");
         if (body.page === 1) return Response.json({ sandboxes: [], page: 1, hasMore: true, nextPage: 2 });
-        const stopped = manualStop || clock >= expiry || (fault === "early" && statusCalls > 2);
+        const stopped = manualStop || (!recovered && clock >= expiry) || (fault === "early" && statusCalls > 2);
         return Response.json({
           sandboxes:
             fault === "list_missing"
@@ -73,7 +144,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
                         : stopped
                           ? "stopped"
                           : "ready",
-                    effectiveTtlSeconds: fault === "ttl" ? 3600 : 180,
+                    effectiveTtlSeconds: ["ttl", "renewal_ttl"].includes(fault) ? 3600 : 120,
                     stoppedAt: stopped && fault !== "failed_unconfirmed" ? new Date(clock).toISOString() : null,
                     expiresAt: new Date(expiry).toISOString(),
                   },
@@ -92,7 +163,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
       }
       if (path === "sandbox/status") {
         statusCalls++;
-        const due = clock >= expiry;
+        const due = !recovered && clock >= expiry;
         const naturallyStopped = due && !["never", "cleanup_lost", "cleanup_failed"].includes(fault);
         const early = fault === "early" && statusCalls > 2;
         const stopped = manualStop || naturallyStopped || early;
@@ -134,13 +205,24 @@ function fixture(provider: "modal", fault: Fault = "none") {
   return { calls, reports, io, env };
 }
 
-test("Modal expires through the ordinary stop lane without a manual stop or model turn", async () => {
+test("Modal recovers the launch conversation, recalls its token and renews for two minutes", async () => {
   const provider = "modal";
   const fake = fixture(provider);
   expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(true);
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
-  expect(fake.calls.some((call) => ["sandbox/stop", "sandbox/send"].includes(call.path))).toBe(false);
-  for (const step of ["expiry_launch", "expiry_ready", "expiry_deadline", "expiry_as_stop"])
+  expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.path === "logs/read")).toHaveLength(2);
+  for (const step of [
+    "expiry_launch",
+    "expiry_initial_recall",
+    "expiry_ready",
+    "expiry_deadline",
+    "expiry_as_stop",
+    "expiry_recovery",
+    "expiry_recovered_recall",
+    "expiry_cleanup_stop",
+  ])
     expect(fake.reports).toContainEqual({ case: 0, step, pass: true });
   expect(fake.reports).toContainEqual({
     case: 0,
@@ -172,6 +254,17 @@ test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manu
     "ttl",
     "list_missing",
     "list_identity",
+    "launch_prompt_missing",
+    "launch_conversation_missing",
+    "initial_answer_missing",
+    "initial_answer_failed",
+    "recall_conversation_changed",
+    "recall_prompt_missing",
+    "recall_answer_missing",
+    "recall_interrupted",
+    "renewal_unchanged",
+    "renewal_unbounded",
+    "renewal_ttl",
   ] as const) {
     const fake = fixture("modal", fault);
     expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(false);

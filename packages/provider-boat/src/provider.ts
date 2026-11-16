@@ -119,6 +119,8 @@ function sandboxInfo(sandbox: Sandbox): SandboxInfo {
   if (sandbox.error) info.error = sandbox.error;
   if (sandbox.createdAt) info.createdAt = sandbox.createdAt;
   if (sandbox.stoppedAt && Number.isFinite(sandbox.stoppedAt.getTime())) info.stoppedAt = sandbox.stoppedAt;
+  if (sandbox.dataExpiredAt && Number.isFinite(sandbox.dataExpiredAt.getTime()) && info.state === "stopped")
+    info.nonRestorable = "disk_expired";
   if (sandbox.archiveAfter) info.expiresAt = sandbox.archiveAfter;
   if (sandbox.sshEndpoint) info.sshEndpoint = sandbox.sshEndpoint;
   return info;
