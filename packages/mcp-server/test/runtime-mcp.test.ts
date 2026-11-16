@@ -15,11 +15,14 @@ import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { createRuntimeSelfFinish } from "../src/sandbox-finish.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
+const sharedDatabase = rowOnlyDatabase();
+
 async function fixture(provider: "boat" | "modal" = "boat") {
-  const f = await runtimeFixture(undefined, provider),
+  const f = await runtimeFixture(await sharedDatabase(), provider),
     registry = createSqlMcpRegistry(f.sql, ENCRYPTION_KEY);
   const secret = `upstream-private-${crypto.randomUUID()}`;
   const c = await registry.save(f.people.owner, f.people.org, {
@@ -99,14 +102,18 @@ async function fixture(provider: "boat" | "modal" = "boat") {
 }
 
 describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (provider) => {
-  let x: Awaited<ReturnType<typeof fixture>>;
+  let current: Awaited<ReturnType<typeof fixture>> | undefined;
   beforeAll(async () => {
-    x = await fixture(provider);
+    current = await fixture(provider);
   }, 20_000);
   afterAll(async () => {
+    const x = current;
+    current = undefined;
     await x?.f.close();
   });
   test("authenticated setup reaches the real Runner and real MCP gateway; only scoped leases reach the driver", async () => {
+    const x = current;
+    if (!x) throw new Error("Runtime fixture is not open");
     const { f } = x;
     expect(
       (await x.api("sandbox/mcp-preflight-v1", { runtimeVersion: 1, org: f.people.org, connections: [x.c.id] })).status,
@@ -343,15 +350,20 @@ test("old runtime health cannot receive newly enabled MCP capabilities", async (
 });
 
 describe("automatic MCP authority updates", () => {
-  let x: Awaited<ReturnType<typeof fixture>>;
+  let current: Awaited<ReturnType<typeof fixture>> | undefined;
   beforeAll(async () => {
-    x = await fixture();
+    const x = await fixture();
+    current = x;
     await x.send(x.f.caller, x.f.input());
   }, 20_000);
   afterAll(async () => {
+    const x = current;
+    current = undefined;
     await x?.f.close();
   });
   test("ordinary turns adopt reconnected grants and clear deleted bindings without a setup API", async () => {
+    const x = current;
+    if (!x) throw new Error("Runtime fixture is not open");
     const { f } = x,
       old = x.configuration();
     await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);
@@ -502,31 +514,29 @@ test("native Modal MCP leases stay epoch-free and usable without an enrolled run
 });
 
 describe("model-only runtime completion", () => {
-  let f: Awaited<ReturnType<typeof runtimeFixture>>;
-  beforeAll(async () => {
-    f = await runtimeFixture();
-  });
-  afterAll(async () => {
-    await f?.close();
-  });
   test("the first prompt receives only self completion when no remote MCP connections were selected", async () => {
-    const service = createRuntimeMcp({
-      sql: f.sql,
-      key: ENCRYPTION_KEY,
-      origin: "https://armada.test",
-      commands: f.bridge,
-    });
-    await createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare)(f.caller, f.input());
-    const snapshot = f.mcpSnapshots.at(-1);
-    expect(Object.keys(snapshot?.servers ?? {})).toEqual(["armada_self"]);
-    const self = snapshot?.servers.armada_self;
-    if (!self || self.type !== "http") throw Error("Missing private self capability");
-    expect(self.url).toBe("https://armada.test/api/v1/orchestrator-tools/mcp");
-    const token = self.headers!.Authorization!.slice(7);
-    expect(f.journal.redact(token).includes(token)).toBe(false);
-    expect(await createRuntimeSelfFinish(f.sql, ENCRYPTION_KEY)(token)).toMatchObject({
-      id: f.row.id,
-      status: "stopping",
-    });
+    const f = await runtimeFixture(await sharedDatabase());
+    try {
+      const service = createRuntimeMcp({
+        sql: f.sql,
+        key: ENCRYPTION_KEY,
+        origin: "https://armada.test",
+        commands: f.bridge,
+      });
+      await createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare)(f.caller, f.input());
+      const snapshot = f.mcpSnapshots.at(-1);
+      expect(Object.keys(snapshot?.servers ?? {})).toEqual(["armada_self"]);
+      const self = snapshot?.servers.armada_self;
+      if (!self || self.type !== "http") throw Error("Missing private self capability");
+      expect(self.url).toBe("https://armada.test/api/v1/orchestrator-tools/mcp");
+      const token = self.headers!.Authorization!.slice(7);
+      expect(f.journal.redact(token).includes(token)).toBe(false);
+      expect(await createRuntimeSelfFinish(f.sql, ENCRYPTION_KEY)(token)).toMatchObject({
+        id: f.row.id,
+        status: "stopping",
+      });
+    } finally {
+      await f.close();
+    }
   });
 });

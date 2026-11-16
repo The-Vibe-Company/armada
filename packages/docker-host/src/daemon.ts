@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DockerJobFailureReason } from "../../core/src/docker-api.ts";
+import { DockerDiskFloorError } from "../../core/src/docker-disk-policy.ts";
 import {
   type BootstrapDescriptor,
   canonicalDockerHostJob,
@@ -324,7 +325,8 @@ export async function tick(
       receipt.outcome = "completed";
     } catch (error) {
       receipt.outcome = "failed";
-      if (receipt.operation === "buildSnapshot") {
+      if (error instanceof DockerDiskFloorError) receipt.reason = "disk_full";
+      else if (receipt.operation === "buildSnapshot") {
         receipt.reason = "snapshot_build_failed";
         // Do not log exception text: build output and init commands can contain credentials.
         console.error(

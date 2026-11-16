@@ -439,8 +439,7 @@ resources are safe to retry. Authenticated physical-cleanup reports reconcile th
 server to `deleted` after reconnection. Deploy the server support before upgrading
 hosts; old servers reject the additive report and the daemon retries it safely.
 
-Retention controls and cleanup-deadline display are described below. Disk floors
-remain separate follow-up work for #2154.
+Retention controls, cleanup-deadline display and the disk floor are described below.
 To uninstall, first confirm every retained sandbox for this host is deleted; then
 revoke `POST /api/v1/docker/hosts/revoke` with `{"org":"<org>","hostId":"<HOST_ID>"}`
 using normal private bearer delivery. Verify the saved PID belongs to the exact
@@ -1122,3 +1121,29 @@ Once a server-requested retention policy has been received, it takes precedence
 over the installer/environment default even across daemon restarts. Before any
 server override, changing the environment default shifts existing deadlines by
 the policy delta, preserving their original stopped age.
+
+### Disk visibility and launch floor
+
+Hosts report unprivileged available bytes on the Docker data filesystem at each
+check-in. `armada host show` and Machines → server panel show that observation
+and the default **10 GB** floor (10,000,000,000 bytes). An unavailable observation
+is shown as unknown, never as zero or invented free space. Reports are as fresh
+as the host's last check-in, not a reservation or a guarantee of launch success.
+
+Server admission refuses known-below-floor hosts before dispatch. The daemon
+also takes a fresh measurement before create and new snapshot builds,
+before image pulls/builds can consume space. Unknown measurements fail closed
+locally with a safe disk-space diagnostic; stop/delete/expiry and retention
+cleanup remain available. Retained resume starts the existing container without
+pulling an image or allocating a new home and remains available below the floor.
+A pending snapshot build recovery does not allocate
+new space and is not gated. The floor is a preflight, not a disk quota or a
+prediction of how much an arbitrary image/build will consume.
+
+Measurement uses `docker info`'s DockerRootDir and filesystem available blocks,
+not HOME's filesystem or total unallocated blocks. The daemon must have access
+to that path on the same host; remote TCP/SSH Docker contexts cannot be measured
+locally and are refused safely. No privileged fallback, prune or unrelated
+resource deletion is performed. Deploy the additive schema/server support before
+upgrading daemons; older servers can still receive retention and capacity data
+without the new disk field.

@@ -16,11 +16,11 @@ import {
 import { callSharedTool } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture(seed = database) {
+async function fixture(seed = sharedDatabase) {
   const { db, people } = await seed();
   const golden = (
     await db.query<{ id: string }>("select id from goldens where owner_id=$1 and visibility='private' limit 1", [
@@ -124,7 +124,7 @@ test("SQL makes routing immutable, target-specific and user-JWT read-only", asyn
       await f.db.exec("reset role");
     }
   } finally {
-    await f.db.close();
+    await f.db.exec("reset role; reset all; set search_path=public");
   }
 });
 

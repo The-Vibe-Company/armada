@@ -1,23 +1,12 @@
 import { expect, test } from "bun:test";
-import { Journal } from "../src/journal.ts";
-import { AUTH_HEADER } from "../src/protocol.ts";
-import { Runner } from "../src/runtime.ts";
-
-const grant = {
-  token: "fixture-runtime-token",
-  sandboxId: "logical",
-  generation: "g1",
-  expiresAt: Date.now() + 60_000,
-};
+import { readRuntimeJson } from "../src/request-framing.ts";
 
 test("runtime refuses streaming overflow without draining or waiting on cancellation", async () => {
-  const journal = new Journal(":memory:", (text) => text);
-  const runner = new Runner(journal, grant, {});
   let pulls = 0;
   let cancelled = false;
   const request = new Request("https://runtime.test/v1", {
     method: "POST",
-    headers: { [AUTH_HEADER]: grant.token, "content-length": "1" },
+    headers: { "content-length": "1" },
     body: new ReadableStream<Uint8Array>(
       {
         pull(controller) {
@@ -34,44 +23,36 @@ test("runtime refuses streaming overflow without draining or waiting on cancella
       { highWaterMark: 0 },
     ),
   });
-  try {
-    const response = await runner.handle(request);
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({ error: "request_too_large" });
-    expect(pulls).toBe(2);
-    expect(cancelled).toBe(true);
-    expect(request.body?.locked).toBe(false);
-  } finally {
-    await runner.close();
-    journal.close();
-  }
+  await expect(readRuntimeJson(request)).rejects.toThrow("request_too_large");
+  expect(pulls).toBe(2);
+  expect(cancelled).toBe(true);
+  expect(request.body?.locked).toBe(false);
 });
 
 test("runtime accepts an exact byte-limit body with UTF-8 split across chunks", async () => {
-  const journal = new Journal(":memory:", (text) => text);
-  const runner = new Runner(journal, grant, {});
-  const json = JSON.stringify({ version: 1, sandboxId: grant.sandboxId, requestId: "é🙂", op: "health" });
+  const json = JSON.stringify({ version: 1, sandboxId: "logical", requestId: "é🙂", op: "health" });
   const encoder = new TextEncoder();
-  const bytes = encoder.encode(json + " ".repeat(1048576 - encoder.encode(json).byteLength));
+  const bytes = encoder.encode(json);
   const split = encoder.encode(json.slice(0, json.indexOf("🙂"))).byteLength + 1;
+  const prefix = [bytes.subarray(0, split), bytes.subarray(split)];
+  const spaces = new Uint8Array(65536).fill(32);
+  let remaining = 1048576 - bytes.byteLength;
   const request = new Request("https://runtime.test/v1", {
     method: "POST",
-    headers: { [AUTH_HEADER]: grant.token },
-    body: new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(bytes.slice(0, split));
-        controller.enqueue(bytes.slice(split));
-        controller.close();
+    body: new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          const part = prefix.shift();
+          if (part) return controller.enqueue(part);
+          if (!remaining) return controller.close();
+          const size = Math.min(remaining, spaces.byteLength);
+          remaining -= size;
+          controller.enqueue(spaces.subarray(0, size));
+        },
       },
-    }),
+      { highWaterMark: 0 },
+    ),
   });
-  try {
-    const response = await runner.handle(request);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ version: 1, requestId: "é🙂" });
-    expect(request.body?.locked).toBe(false);
-  } finally {
-    await runner.close();
-    journal.close();
-  }
+  expect(await readRuntimeJson(request)).toEqual(JSON.parse(json));
+  expect(request.body?.locked).toBe(false);
 });

@@ -8,18 +8,12 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
 import { sqlOver } from "../src/sql.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture({
-  isolated = false,
-  provider = "boat",
-}: {
-  isolated?: boolean;
-  provider?: "boat" | "modal";
-} = {}) {
-  const { db, people } = await (isolated ? database() : sharedDatabase());
+async function fixture({ provider = "boat" }: { provider?: "boat" | "modal" } = {}) {
+  const { db, people } = await sharedDatabase();
   const id = crypto.randomUUID();
   if (provider === "modal") {
     const golden = (
@@ -124,13 +118,15 @@ async function fixture({
     rows,
     aggregate,
     close: async () => {
-      if (isolated) await db.close();
+      await db.exec(
+        "reset role; reset all; set search_path=public; drop trigger if exists fail_runtime_usage on sandboxes; drop function if exists fail_runtime_usage()",
+      );
     },
   };
 }
 
 test("ACK follows contiguous encrypted persistence and shared usage projection; replay is immutable and atomic", async () => {
-  const f = await fixture({ isolated: true });
+  const f = await fixture();
   try {
     const active = await f.enrol(),
       first = { sequence: 1, event: f.other("first") },

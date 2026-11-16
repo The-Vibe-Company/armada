@@ -1,8 +1,5 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Journal, Runner, type RunnerRequest } from "../src/index.ts";
 import type { WorkspaceExecutionHost } from "../src/workspace-exec.ts";
 
@@ -69,10 +66,8 @@ function processHost() {
 }
 async function fixture() {
   const processes = processHost();
-  const root = await mkdtemp(join(tmpdir(), "runtime-workspace-")),
-    home = join(root, "home");
-  await mkdir(home);
-  const journal = new Journal(join(root, "journal"), (v) => v),
+  const home = import.meta.dir;
+  const journal = new Journal(":memory:", (v) => v),
     grant = { sandboxId: "workspace", generation: "1", token: "x".repeat(32), expiresAt: Date.now() + 60000 };
   let starts = 0;
   const runner = new Runner(
@@ -113,7 +108,6 @@ async function fixture() {
       signal,
     );
   return {
-    root,
     processes,
     home,
     journal,
@@ -121,9 +115,8 @@ async function fixture() {
     call,
     step,
     starts: () => starts,
-    async close() {
+    close() {
       journal.close();
-      await rm(root, { recursive: true, force: true });
     },
   };
 }
