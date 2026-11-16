@@ -5,6 +5,7 @@ const app = {
   url: "http://127.0.0.1:3100",
   command: {
     executable: "bun",
+    reuseExisting: false,
     args: ["scripts/dev.ts"],
     startupTimeout: 120_000,
     log: ".e2e/logs/dashboard.log",

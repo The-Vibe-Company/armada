@@ -39,14 +39,14 @@ export default defineConfig({
       command: "bun e2e/mock-supabase.ts",
       url: `${MOCK_URL}/health`,
       env,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
     },
     {
       command: `bunx next build && NODE_OPTIONS=--require=./e2e/github-fetch.cjs bunx next start -p ${APP_PORT} -H 127.0.0.1`,
       url: `http://127.0.0.1:${APP_PORT}/login`,
       env,
       timeout: 240_000,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
     },
   ],
 });
