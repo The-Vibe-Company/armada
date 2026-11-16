@@ -1026,6 +1026,7 @@ function SentenceChoice({
   return (
     <>
       <LaunchChoice
+        presentation={label === "Model account" ? "picker" : "chips"}
         inline
         label={label}
         value={value}

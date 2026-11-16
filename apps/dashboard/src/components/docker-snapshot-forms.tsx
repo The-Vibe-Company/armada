@@ -47,7 +47,7 @@ export function useSnapshotPlacement() {
 }
 export function SnapshotPlacementWord() {
   const placement = useSnapshotPlacement();
-  return placement ? <LaunchChoice inline label="Where to build" {...placement} /> : null;
+  return placement ? <LaunchChoice presentation="chips" inline label="Where to build" {...placement} /> : null;
 }
 
 /** One create dialog, with the same provider choice for cloud and host-local snapshots. */

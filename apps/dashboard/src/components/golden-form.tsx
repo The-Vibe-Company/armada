@@ -290,6 +290,7 @@ function ScopedGoldenForm({
         <LaunchChoice
           inline
           label="Where to build"
+          presentation="chips"
           value={chosenProvider}
           onChange={(value) => setChosenProvider(value as SandboxProviderId)}
           options={providers.map((value) => ({ value, label: `${PROVIDER_LABELS[value]} cloud` }))}
@@ -481,6 +482,7 @@ function ScopedGoldenForm({
             <LaunchChoice
               inline
               label="Who sees it"
+              presentation="chips"
               value={chosenVisibility}
               onChange={(value) => setChosenVisibility(value as "org" | "private")}
               options={[

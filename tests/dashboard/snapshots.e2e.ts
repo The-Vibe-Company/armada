@@ -54,13 +54,11 @@ for (const org of [
     await dialog.getByRole("textbox", "Repository 1").fill("example/fixture");
     await expect(dialog).toContainText("the limit is reached");
     await expect(dialog.getByRole("button", "Build snapshot", { exact: true })).toBeDisabled();
-    await dialog.getByRole("button", /^Where to build:/).tap();
-    await screen.getByRole("option", /^Modal cloud/).tap();
+    await dialog.getByRole("button", "Modal cloud", { exact: true }).tap();
     await expect(dialog.getByRole("textbox", "Snapshot name")).toHaveValue("capacity-check");
     if (org.session === "large") {
-      await dialog.getByRole("button", /^Where to build:/).tap();
-      await expect(screen.getByRole("option", /Offline spare workstation/)).toHaveAttribute("aria-disabled", "true");
-      await screen.getByRole("option", /^your server Large platform/).tap();
+      await expect(dialog.getByRole("button", /Offline spare workstation/)).toBeDisabled();
+      await dialog.getByRole("button", /^your server Large platform/).tap();
       const hostForm = browser
         .locator("form")
         .filter({ has: screen.getByRole("textbox", "Snapshot name", { visible: true }) });
@@ -80,11 +78,9 @@ for (const org of [
         await app.open("/snapshots");
         await screen.getByRole("button", "New snapshot", { exact: true }).tap();
         const dialog = screen.getByRole("dialog", "New snapshot");
-        await dialog.getByRole("button", /^Where to build:/).tap();
-        await screen.getByRole("option", new RegExp(`^${provider} cloud`)).tap();
+        await dialog.getByRole("button", `${provider} cloud`, { exact: true }).tap();
         await dialog.getByRole("textbox", "Snapshot name").fill(name);
-        await dialog.getByRole("button", /^Who sees it:/).tap();
-        await screen.getByRole("option", /^only you/).tap();
+        await dialog.getByRole("button", "only you", { exact: true }).tap();
         await dialog.getByRole("textbox", "Repository 1").fill("example/fixture");
         await dialog.getByRole("button", "Build snapshot", { exact: true }).tap();
         await expect(dialog).toContainText(`${name} is ready`);

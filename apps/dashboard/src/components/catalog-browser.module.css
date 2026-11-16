@@ -143,7 +143,7 @@ body:has(.catalog[data-fidelity]) [data-catalog-panel] > div:last-child {
   padding: 16px 20px;
 }
 
-body:has(.catalog[data-fidelity]) [role="dialog"]:not([aria-labelledby$="-panel-title"]) {
+body:has(.catalog[data-fidelity]) [data-create-dialog] {
   border-radius: 12px;
   background: var(--card);
   padding: 18px;
@@ -157,4 +157,33 @@ body:has(.catalog[data-fidelity]) [data-catalog-panel] [data-panel] section {
 body:has(.catalog[data-fidelity]) [data-catalog-panel] [data-panel] h3 {
   margin-bottom: 10px;
   font-weight: 500;
+}
+
+body:has(.catalog[data-fidelity]) [data-create-dialog] {
+  top: 9vh;
+  translate: -50% 0;
+  width: calc(100% - 40px);
+  max-width: 560px;
+  max-height: 84dvh;
+  gap: 18px;
+}
+
+body:has(.catalog[data-fidelity]) [data-create-dialog] > [data-slot="dialog-header"] {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+}
+
+.catalog[data-fidelity] li[data-golden-provider] > div:first-child > span {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px;
+  background: var(--muted);
+}
+
+.catalog[data-fidelity] li[data-golden-provider="boat"] > div:first-child > span {
+  background: #263fa9;
+}
+
+.catalog[data-fidelity] li[data-golden-provider="boat"] > div:first-child > span path {
+  fill: white;
 }

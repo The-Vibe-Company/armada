@@ -13,6 +13,7 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { isSubmitShortcut } from "@/lib/shortcut";
 import { ttlOptions } from "@/lib/templates";
+import { cn } from "@/lib/utils";
 
 /** One launch surface for cloud snapshots, Docker snapshots and owned machines. Controllers stay provider-specific. */
 export function LaunchDialogContent({ children }: { children: ReactNode }) {
@@ -165,6 +166,7 @@ export function useLaunchSurface(root: RefObject<HTMLElement | null>) {
 
 /** A boxed word, with a searchable phone sheet. Launch forms use full phone rows; compact sentences opt into inline. */
 export function LaunchChoice({
+  presentation = "picker",
   inline = false,
   label,
   value,
@@ -173,6 +175,7 @@ export function LaunchChoice({
   disabled = false,
   tone,
 }: {
+  presentation?: "picker" | "chips";
   inline?: boolean;
   label: string;
   value: string;
@@ -242,6 +245,26 @@ export function LaunchChoice({
       </CommandList>
     </Command>
   );
+  if (presentation === "chips" && options.length <= 8)
+    return (
+      <fieldset aria-label={label} className="flex flex-wrap gap-1.5">
+        {options.map((option) => (
+          <Button
+            key={option.value}
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-pressed={option.value === value}
+            disabled={disabled || !!option.reason}
+            title={option.reason}
+            onClick={() => onChange(option.value)}
+            className={cn("h-8 rounded-[7px] text-[13px]", option.value === value && "border-primary bg-primary/10")}
+          >
+            {option.label}
+          </Button>
+        ))}
+      </fieldset>
+    );
   if (phone)
     return (
       <>
