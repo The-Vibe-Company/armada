@@ -60,7 +60,10 @@ export interface Store {
 }
 export interface Api {
   register(server: string, token: string, installationId: string): Promise<{ hostId: string; hostToken: string }>;
-  poll(state: State, options?: { skipSnapshots?: boolean }): Promise<{ job: Job | null; limits?: DockerSandboxLimits }>;
+  poll(
+    state: State,
+    options?: { skipSnapshots?: boolean },
+  ): Promise<{ job: Job | null; limits?: DockerSandboxLimits; retentionSeconds?: number }>;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
   cleaned?(state: State, requestId: string): Promise<void>;
 }
@@ -343,6 +346,13 @@ export async function tick(
   }
   const polled = await api.poll(state, { skipSnapshots });
   executor.configureLimits?.(polled.limits);
+  if (polled.retentionSeconds !== undefined) {
+    const seconds = polled.retentionSeconds;
+    if (!Number.isSafeInteger(seconds) || seconds < 0) throw Error("Invalid retention policy");
+    const previous = state.retentionSeconds ?? 86400;
+    for (const entry of state.retention ?? []) if (!entry.deleted) entry.deadline += (seconds - previous) * 1000;
+    state.retentionSeconds = seconds;
+  }
   state.lastPollAt = new Date().toISOString();
   if (!polled.job) {
     await store.save(state);

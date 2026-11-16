@@ -237,9 +237,19 @@ export function httpApi(
         version: VERSION,
         ...(options?.skipSnapshots ? { skipSnapshots: true } : {}),
       };
+      const retention = {
+        retentionSeconds: state.retentionSeconds ?? 86400,
+        nextCleanupAt: (state.retention ?? [])
+          .filter((entry) => !entry.deleted)
+          .reduce<string | null>((next, entry) => {
+            const at = new Date(entry.deadline).toISOString();
+            return next === null || at < next ? at : next;
+          }, null),
+      };
       try {
         return (await post(state.server, "poll", state.hostToken, {
           ...body,
+          ...retention,
           resources: resources ? await resources(state) : dockerHostResources(),
           resourcePolicyVersion: 1,
         })) as Awaited<ReturnType<Api["poll"]>>;

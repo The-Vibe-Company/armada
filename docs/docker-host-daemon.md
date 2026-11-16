@@ -1054,3 +1054,16 @@ After release, the coordinator must retry the owner's normal CLI launch with
 its original body/request ID, inspect any retained reservation first, then verify
 host create, runtime enrolment/readiness and an actual harness reply. Neither
 unit tests nor passing staging probes establish that production is configured.
+
+### Official image retention
+
+The daemon performs an offline, hourly best-effort image sweep, removing at most
+one superseded official image per sweep. It keeps the two newest locally present
+official image generations (by Docker creation time), every container's image,
+and every image with a descendant (including user snapshots). Only images whose
+registry digests belong exclusively to `ghcr.io/the-vibe-company/armada-sandbox`
+are candidates; foreign tags and snapshot ownership labels exclude an image.
+Registry provenance identifies these shared release images, which do not carry
+per-registration container labels. Unproven dangling images are left alone.
+There is no global prune, forced removal, snapshot deletion or foreign-image
+cleanup. Docker's non-forced removal provides the final concurrent-use guard.

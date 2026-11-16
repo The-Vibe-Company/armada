@@ -11,6 +11,7 @@ import {
 import { VERSION } from "../../core/src/version.ts";
 import { createAvailabilitySampler } from "./availability.ts";
 import { register, serverOrigin, tick, validToken } from "./daemon.ts";
+import { cleanupOfficialImages } from "./image-retention.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
@@ -213,7 +214,16 @@ async function main(args: string[]) {
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
+    let nextImageCleanup = 0;
     while (!stopping) {
+      if (Date.now() >= nextImageCleanup) {
+        nextImageCleanup = Date.now() + 60 * 60_000;
+        try {
+          await cleanupOfficialImages(dockerCli);
+        } catch {
+          /* Fail closed; retry next hour. */
+        }
+      }
       try {
         await tick(store, api, runtime);
       } catch {

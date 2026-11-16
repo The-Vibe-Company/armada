@@ -1182,3 +1182,16 @@ test("retention rotates failed deletions and runs local TTL before bounded offli
   expect(order).toEqual([`delete:${secondId}`, `ttl:${secondId}`, "report"]);
   expect((await f.store.load()).retention?.[1]?.deleted).toBe(true);
 });
+
+test("server retention override persists and shifts pending deadlines without resetting their stopped age", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  const state = await f.store.load();
+  state.retentionSeconds = 86400;
+  state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 100000000 }];
+  await f.store.save(state);
+  f.api.poll = async () => ({ job: null, retentionSeconds: 3600 });
+  await tick(f.store, f.api, f.executor);
+  expect((await f.store.load()).retentionSeconds).toBe(3600);
+  expect((await f.store.load()).retention?.[0]?.deadline).toBe(17200000);
+});
