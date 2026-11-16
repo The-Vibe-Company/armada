@@ -83,9 +83,11 @@ function parseHost(value: unknown): DockerHost | null {
     lastSeenAt,
     revokedAt,
     sandboxes,
-    retentionSeconds: (value.retentionSeconds ?? null) as number | null,
-    retentionOverrideSeconds: (value.retentionOverrideSeconds ?? null) as number | null,
-    nextCleanupAt: (value.nextCleanupAt ?? null) as string | null,
+    ...(value.retentionSeconds === undefined ? {} : { retentionSeconds: value.retentionSeconds as number | null }),
+    ...(value.retentionOverrideSeconds === undefined
+      ? {}
+      : { retentionOverrideSeconds: value.retentionOverrideSeconds as number | null }),
+    ...(value.nextCleanupAt === undefined ? {} : { nextCleanupAt: value.nextCleanupAt as string | null }),
     ...(value.canManageLimits === undefined ? {} : { canManageLimits: value.canManageLimits as boolean }),
     ...(value.limitsSupported === undefined ? {} : { limitsSupported: value.limitsSupported as boolean }),
     ...(value.running === undefined ? {} : { running: value.running as number }),
