@@ -11,11 +11,17 @@ test("closed launch settings retain choices and submit a task with the pinned fo
   await dialog.getByRole("button", { name: "Options settings", exact: true }).click();
   await dialog.getByRole("button", { name: /^Stops after:/ }).click();
   await page.getByRole("option", { name: "1 hour", exact: true }).click();
+  await dialog.getByRole("button", { name: "Options settings", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Options settings", exact: true })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
   await dialog.getByLabel("Task", { exact: true }).fill("Review the parser");
-  await page.setViewportSize({ width: 390, height: 844 });
   const submit = dialog.getByRole("button", { name: "Launch", exact: true });
   await expect(submit).toBeInViewport({ ratio: 1 });
-  const payload = await dialog.locator("form").evaluate((form) => Object.fromEntries(new FormData(form)));
+  const payload = await dialog
+    .locator("form")
+    .evaluate((form) => Object.fromEntries(new FormData(form as HTMLFormElement)));
   expect(payload).toMatchObject({
     prompt: "Review the parser",
     ttl: "3600",

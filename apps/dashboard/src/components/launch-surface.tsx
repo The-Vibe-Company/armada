@@ -2,7 +2,6 @@
 
 import type { SandboxPlacementProviderId } from "@armada/core";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
-import { Popover as PopoverPrimitive } from "radix-ui";
 import { type ReactNode, type RefObject, useEffect, useState } from "react";
 import { ProviderMark } from "@/components/provider-mark";
 import { Button } from "@/components/ui/button";
@@ -22,6 +21,15 @@ export function LaunchDialogContent({ children }: { children: ReactNode }) {
   return (
     <DialogContent
       className="sm:max-w-[620px] flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden rounded-[14px] p-0"
+      onEscapeKeyDown={(event) => {
+        const root = (event.target as HTMLElement | null)?.closest('[data-slot="dialog-content"]');
+        const trigger = root?.querySelector<HTMLButtonElement>('[data-launch-disclosure][aria-expanded="true"]');
+        if (trigger) {
+          event.preventDefault();
+          trigger.click();
+          trigger.focus();
+        }
+      }}
       onOpenAutoFocus={(event) => {
         const task = (event.target as HTMLElement | null)?.querySelector<HTMLElement>('textarea[name="prompt"]');
         if (!task) return;
@@ -126,37 +134,34 @@ export function LaunchSetting({
   mark?: ReactNode;
   children: ReactNode;
 }) {
+  const [open, setOpen] = useState(false);
   return (
-    <PopoverPrimitive.Root>
-      <PopoverPrimitive.Trigger asChild>
-        <button
-          type="button"
-          aria-label={`${label} settings`}
-          className="grid min-h-[53px] w-full grid-cols-[84px_minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2 text-left text-[13px] hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="text-muted-foreground">{label}</span>
-          <span className="flex min-w-0 items-center gap-2.5">
-            {mark}
-            <span className="min-w-0">
-              <span className="block truncate font-medium">{value}</span>
-              <span className="block truncate text-xs text-muted-foreground">{description}</span>
-            </span>
-          </span>
-          <span aria-hidden className="flex items-center gap-1 text-xs text-muted-foreground">
-            Change <ChevronDownIcon className="size-3.5" />
-          </span>
-        </button>
-      </PopoverPrimitive.Trigger>
-      <PopoverPrimitive.Content
-        forceMount
-        align="start"
-        sideOffset={4}
-        collisionPadding={16}
-        className="z-50 max-h-[60dvh] w-[min(460px,calc(100vw-2rem))] overflow-y-auto rounded-[10px] border bg-popover p-3 text-popover-foreground shadow-lg data-[state=closed]:hidden"
+    <fieldset className="min-w-0" aria-label={`${label} settings`}>
+      <button
+        type="button"
+        data-launch-disclosure
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        aria-label={`${label} settings`}
+        className="grid min-h-[53px] w-full grid-cols-[84px_minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2 text-left text-[13px] hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
       >
+        <span className="text-muted-foreground">{label}</span>
+        <span className="flex min-w-0 items-center gap-2.5">
+          {mark}
+          <span className="min-w-0">
+            <span className="block truncate font-medium">{value}</span>
+            <span className="block truncate text-xs text-muted-foreground">{description}</span>
+          </span>
+        </span>
+        <span aria-hidden className="flex items-center gap-1 text-xs text-muted-foreground">
+          Change <ChevronDownIcon className="size-3.5" />
+        </span>
+      </button>
+
+      <div hidden={!open} className="max-h-[60dvh] overflow-y-auto border-t bg-popover p-3 text-popover-foreground">
         {children}
-      </PopoverPrimitive.Content>
-    </PopoverPrimitive.Root>
+      </div>
+    </fieldset>
   );
 }
 
