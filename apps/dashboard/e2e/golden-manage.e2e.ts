@@ -94,7 +94,7 @@ test("an admin builds a multi-repo golden: one locked request, a clear result, n
   // Boat is now full: New says so and offers to rebuild the existing environment instead.
   await page.keyboard.press("Escape");
   await expect(card).toBeHidden();
-  await page.getByRole("button", { name: "New", exact: true }).click();
+  await page.getByRole("button", { name: "New snapshot", exact: true }).click();
   const full = page.locator("[data-boat-full]");
   await expect(full).toContainText("Every Boat slot is used");
   await full.getByRole("button", { name: "Rebuild nova-web" }).click();

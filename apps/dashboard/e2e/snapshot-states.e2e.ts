@@ -26,7 +26,7 @@ test("Snapshots hides provider diagnostics and reloads a fresh provider observat
   await alert.getByRole("link", { name: "Reload Snapshots", exact: true }).click();
   await expect(alert).toHaveCount(0);
   await expect(page.getByRole("main")).not.toContainText("Self-hosted snapshots could not be loaded");
-  await expect(page.getByRole("button", { name: "New", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New snapshot", exact: true })).toBeVisible();
 });
 
 test("an unreadable self-hosted inventory stays unknown, even with no connected machines", async ({ page }) => {
@@ -56,7 +56,7 @@ test("Snapshots without an organization offers an organization choice first", as
   await expect(
     page.getByRole("main").getByRole("link", { name: "Choose an organization", exact: true }),
   ).toHaveAttribute("href", "/orgs");
-  await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New snapshot", exact: true })).toHaveCount(0);
 });
 
 test("unknown cloud provider status does not suggest an empty inventory or a missing connection", async ({ page }) => {
@@ -71,5 +71,5 @@ test("unknown cloud provider status does not suggest an empty inventory or a mis
   await expect(main).not.toContainText("No snapshots yet");
   await expect(main).not.toContainText("Connect a sandbox provider");
   await expect(main).not.toContainText(DIAGNOSTIC);
-  await expect(main.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+  await expect(main.getByRole("button", { name: "New snapshot", exact: true })).toHaveCount(0);
 });

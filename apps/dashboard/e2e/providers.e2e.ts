@@ -141,7 +141,7 @@ test("disconnecting one provider keeps its goldens and sandboxes; disconnecting 
   await page.goto("/environments");
   await expect(page).toHaveURL(/\/environments$/);
   await expect(page.locator('[data-blocker="provider"]')).toContainText("Connect a sandbox provider");
-  await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New snapshot", exact: true })).toHaveCount(0);
   await expect(card).toBeVisible();
   await page.goto("/sandboxes");
   await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
@@ -210,7 +210,7 @@ test("an unavailable status is a retryable error: never unconfigured, never retr
 
   await page.goto("/environments");
   await expect(page).toHaveURL(/\/environments$/);
-  await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New snapshot", exact: true })).toHaveCount(0);
   const card = goldenRow(page, "shared-golden");
   await expect(card.locator("[data-launch-paused]")).toHaveText("Launch paused. The provider status is unavailable.");
   await expect((await goldenPanel(page, "shared-golden")).locator("[data-rebuild-paused]")).toHaveText(

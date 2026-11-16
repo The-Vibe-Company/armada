@@ -26,7 +26,7 @@ test("a host snapshot refusal hides diagnostics while retaining the exact build 
     ).ok,
   ).toBe(true);
   await signIn(page, "alice@example.com", "/snapshots");
-  await page.getByRole("button", { name: "New", exact: true }).click();
+  await page.getByRole("button", { name: "New snapshot", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Create a snapshot" });
   await dialog.getByLabel("Build on", { exact: true }).selectOption("docker");
   await dialog.getByLabel("Name", { exact: true }).fill("host-example");

@@ -270,9 +270,9 @@ async function SandboxesContent({ searchParams }: Props) {
                 <article className="relative grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-4 sm:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <SandboxName sandbox={sandbox} snapshot={snapshots.get(sandbox.id)} />
-                    <p className="mt-1 text-xs text-muted-foreground">
+                    <p className="mt-1 flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
                       <ProviderPlacement sandbox={sandbox} hostName={hostNames.get(sandbox.id)} /> ·{" "}
-                      {displayUser(directory, sandbox.ownerId, viewer.id)}
+                      <span className="shrink-0">{displayUser(directory, sandbox.ownerId, viewer.id)}</span>
                     </p>
                   </div>
                   <div className="col-start-1 sm:col-auto">
@@ -410,10 +410,10 @@ function capitalize(value: string): string {
 
 function ProviderPlacement({ sandbox, hostName }: { sandbox: SandboxListMetadata; hostName: string | undefined }) {
   return (
-    <span className="inline-flex min-w-0 flex-col gap-0.5">
+    <span title={sandbox.canOpen ? hostName : undefined} className="inline-flex min-w-0 flex-col gap-0.5">
       <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
         <ProviderMark provider={sandbox.provider} />
-        <span className="min-w-0 break-words whitespace-normal">
+        <span className="min-w-0 truncate">
           {sandbox.provider === "docker"
             ? `your server${sandbox.canOpen && hostName ? ` ${hostName}` : ""}`
             : sandbox.provider === "modal"
