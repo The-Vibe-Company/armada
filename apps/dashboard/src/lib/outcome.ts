@@ -81,8 +81,9 @@ export function safeHref(value: string | undefined): string | null {
 }
 
 /**
- * The outcome a list row or a conversation header shows, by the board's rule: a deleted, starting or stopping
- * sandbox reads as that, never as the outcome of a turn before it.
+ * The outcome a list row or conversation header shows. Failure describes the machine, not the completed work:
+ * retain its reported outcome alongside the failure. The server clears outcomes when a new turn starts.
+ * Deleted, starting and stopping sandboxes do not show earlier outcomes.
  */
 export function settledOutcome(status: SandboxStatus, outcome: TaskOutcome | null | undefined): OutcomeView | null {
   return status === "deleted" || status === "starting" || status === "stopping" ? null : outcomeView(outcome);

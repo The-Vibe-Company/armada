@@ -79,8 +79,17 @@ describe("outcomeView", () => {
 });
 
 describe("settledOutcome", () => {
-  test("a deleted, starting or stopping sandbox reads as that, not as an earlier outcome", () => {
-    const ready = { state: "ready" } as const;
+  test("deleted, starting or stopping sandboxes hide earlier outcomes; failures retain completed work", () => {
+    const ready = { state: "ready", prNumber: 123, prUrl: "https://github.com/acme/web/pull/123" } as const;
+    expect(settledOutcome("failed", ready)).toMatchObject({
+      kind: "ready",
+      pr: { label: "PR #123", href: ready.prUrl },
+    });
+    expect(settledOutcome("failed", { state: "blocked", reason: "Needs review" })).toEqual({
+      kind: "blocked",
+      label: "Blocked",
+      reason: "Needs review",
+    });
     for (const status of ["ready", "running", "stopped", "failed"] as const)
       expect(settledOutcome(status, ready)?.kind).toBe("ready");
     for (const status of ["deleted", "starting", "stopping"] as const) expect(settledOutcome(status, ready)).toBeNull();
