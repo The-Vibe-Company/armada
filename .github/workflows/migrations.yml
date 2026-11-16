@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Operation (migrate preserves the dry_run switch)
+        description: Operation (migrate previews only; standalone SQL apply is prohibited)
         type: choice
         options: [migrate, history, repair]
         default: migrate
@@ -39,7 +39,7 @@ jobs:
     name: Production migrations
     # Production SQL applies only in the validated release deployment workflow.
     # Keep explicit operator history/repair and non-mutating migration previews.
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.mode == 'history' || inputs.mode == 'repair' || inputs.dry_run == true)
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
@@ -57,35 +57,18 @@ jobs:
         with:
           ref: main
           persist-credentials: false
-      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
-        with:
-          version: 2.75.0
-      - name: Validate operation before connecting
+      - name: Validate operation and configuration before connecting
         env:
-          MODE: ${{ inputs.mode || 'migrate' }}
+          MODE: ${{ inputs.mode }}
+          DRY_RUN: ${{ inputs.dry_run }}
           VERSIONS: ${{ inputs.versions }}
           STATUS: ${{ inputs.status }}
           CONFIRMATION: ${{ inputs.confirmation }}
-        shell: bash
-        run: |
-          case "$MODE" in
-            migrate|history) ;;
-            repair)
-              [[ "$CONFIRMATION" == 'REPAIR PRODUCTION MIGRATION HISTORY' ]] || exit 1
-              [[ "$STATUS" == applied || "$STATUS" == reverted ]] || exit 1
-              [[ "$VERSIONS" =~ ^[0-9]{14}(\ [0-9]{14})*$ ]] || exit 1
-              ;;
-            *) exit 1 ;;
-          esac
-      - name: Require history connection
-        if: inputs.mode == 'history' || inputs.mode == 'repair'
-        env:
-          PGDATABASE: ${{ secrets.SUPABASE_DB_URL }}
-        run: |
-          [[ -n "$PGDATABASE" && -n "$SUPABASE_DB_PASSWORD" ]] || {
-            echo "::error::Missing SUPABASE_DB_URL or SUPABASE_DB_PASSWORD"
-            exit 1
-          }
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python3 scripts/db/validate-dispatch.py
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        with:
+          version: 2.75.0
       - name: Read history and compare local files
         if: inputs.mode == 'history' || inputs.mode == 'repair'
         env:
@@ -136,16 +119,6 @@ jobs:
           psql --dbname "$PGDATABASE" -X --no-password -v ON_ERROR_STOP=1 -At \
             -c 'SELECT version, name FROM supabase_migrations.schema_migrations ORDER BY version' \
             | python3 -c 'import sys; print("After repair:", repr(sys.stdin.read()))'
-      - name: Require production configuration
-        if: inputs.mode != 'history' && inputs.mode != 'repair'
-        shell: bash
-        run: |
-          for key in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_ID; do
-            if [[ -z "${!key}" ]]; then
-              echo "::error::Missing production environment secret: $key"
-              exit 1
-            fi
-          done
       - name: Link production project
         if: inputs.mode != 'history' && inputs.mode != 'repair'
         run: supabase link --project-ref "$SUPABASE_PROJECT_ID"

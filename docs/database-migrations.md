@@ -131,7 +131,7 @@ an applied migration or reset production.
   initialize its migration-history metadata on first connection; this is not a
   read-only database credential and is never exposed to PR jobs.
 - To retry production applies, use the reviewed exact-tag Release recovery path.
-  Manual **mode=migrate**, **dry_run=false** skips the standalone production job;
+  Manual **mode=migrate**, **dry_run=false** fails validation explicitly before connecting;
   it cannot apply production SQL. Do not replay old workflow revisions as a bypass.
 - Production jobs share `production-supabase-migrations` with cancellation disabled.
   Standalone operator jobs inspect current main; release applies use the validated
@@ -156,6 +156,17 @@ SUPABASE_DB_PASSWORD supplies the password separately. TLS is required. These
 modes do not link the project; verify the URI targets the intended project.
 Never paste connection details into dispatch inputs or enable debug tracing.
 The runner needs psql (preinstalled on ubuntu-latest).
+
+The workflow reads both connection secrets from the GitHub **production**
+environment (repository/organization secrets may supply inherited values).
+Its earlier combined “Missing SUPABASE_DB_URL or SUPABASE_DB_PASSWORD” error
+did not identify which input was absent: having a password alone is insufficient.
+The wiring uses those exact secret names, not variables from the Variables tab.
+The owner must set the password-free **SUPABASE_DB_URL** and
+**SUPABASE_DB_PASSWORD** there. Validation now names each unavailable secret,
+never its value. An unavailable secret may be missing or inaccessible to that
+run; source inspection cannot establish the environment's actual secret state.
+
 
 1. Dispatch **Database migrations**, branch **main**, **mode=history**.
    This uses psql with a read-only transaction default and SELECT only, not the
