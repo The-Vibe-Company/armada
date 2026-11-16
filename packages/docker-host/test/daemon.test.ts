@@ -1201,3 +1201,29 @@ test("server retention override persists and shifts pending deadlines without re
   expect((await f.store.load()).retentionPolicyFromServer).toBe(true);
   expect((await f.store.load()).retention?.[0]?.deadline).toBe(17200000);
 });
+
+test("a pre-disk server keeps retention and availability when refusing only disk telemetry", async () => {
+  const f = fixture();
+  const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
+  let calls = 0;
+  const api = httpApi(
+    Object.assign(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        calls++;
+        const body = JSON.parse(String(init?.body));
+        expect(body.resources).toEqual(resources);
+        expect(body.retentionSeconds).toBe(86400);
+        if ("diskFreeBytes" in body) {
+          expect(body.diskFreeBytes).toBe(123);
+          return new Response(null, { status: 400 });
+        }
+        return Response.json({ job: null, retentionSeconds: 3600 });
+      },
+      { preconnect: fetch.preconnect },
+    ),
+    async () => resources,
+    async () => 123,
+  );
+  expect(await api.poll(await f.store.load())).toEqual({ job: null, retentionSeconds: 3600 });
+  expect(calls).toBe(2);
+});

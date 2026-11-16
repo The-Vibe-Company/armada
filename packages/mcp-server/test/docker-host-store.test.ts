@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, type Sql } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
+import { admitDockerCapacity } from "../src/docker-capacity.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, selfFinishToken } from "../src/sandbox-finish.ts";
@@ -770,6 +771,16 @@ test("a host that could not fetch the image fails the sandbox in plain words; a 
   }
 });
 
+test("a raced disk-floor refusal records an actionable startup failure", async () => {
+  const a = await boundStartup("create");
+  await store.complete(a.hostToken, a.installationId, {
+    requestId: a.startup.requestId,
+    outcome: "failed",
+    reason: "disk_full",
+  });
+  expect((await lifecycle(a.sandboxId))?.status_reason).toContain("10 GB floor");
+});
+
 // Real migrated mailbox/ACK flow protects drain order and lost-revocation-response recovery.
 test("uninstall drains bound machines through stop/delete ACKs before idempotent revocation", async () => {
   const a = await boundFixture();
@@ -903,4 +914,16 @@ test("retention belongs to the adding member and reports physical cleanup deadli
   await store.setRetention(a.actor, a.hostId, 3600);
   expect((await store.list(a.actor)).find((h) => h.id === a.hostId)!.nextCleanupAt).toBeNull();
   expect(() => store.setRetention(a.actor, a.hostId, -1)).toThrow();
+});
+
+test("reported Docker filesystem bytes gate new reservations below 10 GB and unknown older hosts stay compatible", async () => {
+  const a = await fixture();
+  for (const diskFreeBytes of [null, 10_000_000_000, 0, 9_999_999_999]) {
+    await store.poll(a.hostToken, a.installationId, "2.48.0", false, undefined, undefined, diskFreeBytes);
+    expect((await store.list(a.actor))[0]?.diskFreeBytes).toBe(diskFreeBytes);
+    const admission = admitDockerCapacity(sql, a.hostId);
+    if (diskFreeBytes !== null && diskFreeBytes < 10_000_000_000)
+      await expect(admission).rejects.toThrow("less than 10 GB free");
+    else await expect(admission).resolves.toBeUndefined();
+  }
 });

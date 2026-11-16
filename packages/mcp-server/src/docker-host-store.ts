@@ -317,9 +317,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
        lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
       [
         row.id,
-        reason === "image_unavailable" && operation === "create"
-          ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
-          : "Docker sandbox startup failed.",
+        reason === "disk_full"
+          ? "Host disk free space is below the required 10 GB floor or unavailable; free space and retry."
+          : reason === "image_unavailable" && operation === "create"
+            ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
+            : "Docker sandbox startup failed.",
       ],
     );
   }
@@ -356,6 +358,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           retention_seconds: number | null;
           reported_retention_seconds: number | null;
           next_cleanup_at: Date | string | null;
+          disk_free_bytes: number | string | null;
         }>(
           `select h.id,
             case when h.revoked_at is not null then 'revoked'
@@ -364,7 +367,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
+            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.disk_free_bytes,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -390,6 +393,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               throw error;
             }
           })(),
+          diskFreeBytes: host.disk_free_bytes == null ? null : Number(host.disk_free_bytes),
           retentionSeconds: host.reported_retention_seconds ?? null,
           retentionOverrideSeconds: host.retention_seconds ?? null,
           nextCleanupAt: host.next_cleanup_at == null ? null : new Date(host.next_cleanup_at).toISOString(),
@@ -859,6 +863,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       skipSnapshots = false,
       resources?: DockerHostResources,
       resourcePolicyVersion?: 1,
+      diskFreeBytes?: number | null,
     ): Promise<Job | null> {
       return transaction(async (tx) => {
         // Cleanup bypasses queued startup/snapshot work; already executing native work remains serial.
@@ -873,8 +878,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         ).rows[0];
         const host = await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
         await tx.query(
-          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null where id=$1`,
-          [host.id, version ?? null, resourcePolicyVersion ?? null],
+          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4 where id=$1`,
+          [host.id, version ?? null, resourcePolicyVersion ?? null, diskFreeBytes ?? null],
         );
         if (resources) {
           await tx.query(
@@ -1114,7 +1119,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
                   ? null
                   : result.outcome === "completed"
                     ? "Snapshot build authorization is no longer valid."
-                    : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
+                    : result.reason === "disk_full"
+                      ? "Host disk free space is below the required 10 GB floor or unavailable; free space and retry."
+                      : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
               ],
             );
           }

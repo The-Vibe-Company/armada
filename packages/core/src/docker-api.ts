@@ -38,6 +38,8 @@ export interface DockerHostSummary {
   retentionSeconds?: number | null;
   retentionOverrideSeconds?: number | null;
   nextCleanupAt?: string | null;
+  /** Available bytes on the Docker data filesystem; absent/null on older or unreadable hosts. */
+  diskFreeBytes?: number | null;
   limitsSupported?: boolean;
   /** Retained sandboxes, including stopped/failed, excluding deleted. */
   sandboxes: number;
@@ -132,7 +134,7 @@ export interface LaunchOptionsResponse {
 }
 
 /** Why a host reports a failed machine operation, when the person can act on it (#1507). */
-export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable", "snapshot_build_failed"] as const;
+export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable", "snapshot_build_failed", "disk_full"] as const;
 export type DockerJobFailureReason = (typeof DOCKER_JOB_FAILURE_REASONS)[number];
 /** What a sandbox and its launch say when its host could not fetch the image. */
 export const DOCKER_IMAGE_UNAVAILABLE_MESSAGE =
