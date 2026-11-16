@@ -94,8 +94,8 @@ enum PreviewData {
             throw .uncertain
         }
 
-        func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStatus {
-            .stopping
+        func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStopOutcome {
+            SandboxStopOutcome(status: .stopping)
         }
     }
 }

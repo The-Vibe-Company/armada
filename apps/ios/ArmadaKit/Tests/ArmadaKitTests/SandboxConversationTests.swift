@@ -49,7 +49,7 @@ private func body(_ request: URLRequest) throws -> [String: String] {
 
 private func detail(status: String, settled: Bool, prompt: String? = nil) -> String {
     let turn = prompt.map { #"{"promptId":"pr_1","conversationId":"c_1","state":"\#($0)","reason":null}"# } ?? "null"
-    return #"{"id":"\#(sandboxID)","golden":"web","visibility":"org","harness":"claude","repositoryDir":null,"model":"opus","reasoningEffort":"high","machineSize":null,"status":"\#(status)","statusReason":null,"providerState":"ready","conversationIds":["c_1"],"expiresAt":null,"prompt":\#(turn),"settled":\#(settled)}"#
+    return #"{"id":"\#(sandboxID)","golden":"web","visibility":"org","harness":"claude","repositoryDir":null,"model":"opus","reasoningEffort":"high","machineSize":null,"status":"\#(status)","statusReason":null,"provider":"modal","providerState":"ready","conversationIds":["c_1"],"expiresAt":null,"prompt":\#(turn),"settled":\#(settled)}"#
 }
 
 @Test func conversationReadsUseTheCliRoutesWithTheSelectedOrganizationAndOpaqueCursor() async throws {
@@ -208,7 +208,8 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
             .replacingOccurrences(of: #""reason":null"#, with: #""reason":"\#(reason)""#)
         let read = try JSONDecoder().decode(SandboxDetail.self, from: Data(json.utf8))
         #expect(read.admission == .open)
-        #expect((read.prompt?.resendHint != nil) == (reason != "future_reason"))
+        #expect(read.prompt?.resendHint?.contains("prompt again") == true)
+        #expect(read.prompt?.resendHint?.contains(reason) == false)
     }
 }
 
@@ -364,4 +365,33 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
             #expect(rateLimit.message == (expectedWaiting == true ? "Rate limited by the model provider, retrying in 20 s" : "Model provider rate-limit wait completed"))
         }
     }
+}
+
+@Test func expiryAndRetentionFencePromptAdmission() throws {
+    let now = try Date.ISO8601FormatStyle().parse("2026-11-16T00:00:00Z")
+    for status in ["ready", "running", "stopped"] {
+        let json = detail(status: status, settled: true).replacingOccurrences(of: "\"expiresAt\":null", with: "\"expiresAt\":\"2026-11-16T00:00:00Z\"")
+        let value = try JSONDecoder().decode(SandboxDetail.self, from: Data(json.utf8))
+        #expect(value.admission(at: now) == .expired)
+        #expect(value.admission(at: now.addingTimeInterval(-1)) == .open)
+    }
+    for (provider, reason, note, expected) in [
+        ("modal", "manual", "none", SandboxPromptAdmission.open),
+        ("boat", "manual", "checkpoint_failed_disk_not_retained", .cannotResume),
+        ("docker", "manual", "none", .cannotResume),
+        ("docker", "idle_paused", "none", .open)
+    ] {
+        let json = detail(status: "stopped", settled: true)
+            .replacingOccurrences(of: "\"provider\":\"modal\"", with: "\"provider\":\"\(provider)\",\"preservationNote\":\"\(note)\"")
+            .replacingOccurrences(of: "\"statusReason\":null", with: "\"statusReason\":\"\(reason)\"")
+        #expect(try JSONDecoder().decode(SandboxDetail.self, from: Data(json.utf8)).admission(at: now) == expected)
+    }
+}
+
+@Test func stopReceiptRetainsDiskLossWarning() throws {
+    let json = #"{"id":"fixture_id","status":"failed","preservationNote":"checkpoint_failed_disk_not_retained"}"#
+    let receipt = try JSONDecoder().decode(SandboxStopReceipt.self, from: Data(json.utf8))
+    #expect(receipt.preservationWarning?.contains("cannot resume") == true)
+    #expect(SandboxPresentation.sandboxFailure("expired").contains("deadline"))
+    #expect(!SandboxPresentation.sandboxFailure("future_internal_code").contains("future_internal_code"))
 }

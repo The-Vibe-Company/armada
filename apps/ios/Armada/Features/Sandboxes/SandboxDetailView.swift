@@ -194,8 +194,8 @@ struct SandboxConversationView: View {
             Button("Stop", role: .destructive) { model.stop() }
         } message: {
             Text(model.isWorking
-                ? "The running turn ends. The machine stops; its disk and conversation are kept, and the next prompt resumes it."
-                : "The machine stops; its disk and conversation are kept, and the next prompt resumes it.")
+                ? "The running turn ends. The machine stops. Resuming later requires a retained disk and an unexpired sandbox."
+                : "The machine stops. Resuming later requires a retained disk and an unexpired sandbox.")
         }
         // Restarts when a refresh revives a stopped follow, and ends once the sandbox is deleted.
         .task(id: "\(model.sandboxID):\(model.followGeneration):\(model.isDeleted)") { await model.follow() }
@@ -224,7 +224,10 @@ struct SandboxConversationView: View {
                 InlineBanner(text: "Live updates paused. Pull to refresh to resume.", style: .warning)
             }
             if model.stopping {
-                InlineBanner(text: "Stopping… The disk and conversation are kept.", style: .info)
+                InlineBanner(text: "Stopping… Checking work preservation.", style: .info)
+            }
+            if let warning = model.state?.preservationWarning {
+                InlineBanner(text: warning, style: .warning)
             }
             if let readIssue = model.readIssue {
                 InlineBanner(text: readIssue, style: .warning)
