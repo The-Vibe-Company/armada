@@ -106,3 +106,13 @@ Adding a CI job or a required check is the owner's decision, never an agent's. W
 - **Tests earn their place.** One test per behaviour at the cheapest boundary, no network, no wall-clock waits.
 - **English** in code, CLI output, docs and comments.
 - Pull request titles follow Commitizen, for example `feat(cli): launch an agent from a golden`.
+
+### Release-contract changes
+
+A PR changing release-test routing, required contract selection, or a required
+release fixture must include passing output from the exact affected workflow
+step command in its PR body, with the tested SHA and prerequisite setup. Reviewers
+must reject missing, skipped, stale or failing evidence. PR unit CI does not
+execute publishing-only contracts; making a suite mandatory is not evidence it
+has ever passed. Use disposable local PostgreSQL and native artifacts, never
+production, for this evidence. No additional PR check is authorized.
