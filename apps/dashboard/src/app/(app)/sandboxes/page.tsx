@@ -17,7 +17,7 @@ import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
 import { RowCost } from "@/components/sandbox-cost";
 import { SandboxLaunchAction } from "@/components/sandbox-launch-action";
-import { SandboxListTabs } from "@/components/sandbox-list-tabs";
+import { SandboxActivityTabs, SandboxListTabs } from "@/components/sandbox-list-tabs";
 import { SandboxRowMenu } from "@/components/sandbox-row-menu";
 import { SandboxState } from "@/components/sandbox-state";
 import { SandboxToolbar } from "@/components/sandbox-toolbar";
@@ -213,7 +213,9 @@ async function SandboxesContent({ searchParams }: Props) {
             }),
           ) as Record<Facet, FacetOption[]>
         }
-      />
+      >
+        <SandboxActivityTabs counts={counts} tab={activity} search={filtersToSearch(filters)} />
+      </SandboxToolbar>
 
       {skipped > 0 && (
         <p role="status" className="text-sm text-muted-foreground">
@@ -267,39 +269,65 @@ async function SandboxesContent({ searchParams }: Props) {
               need,
               working,
               content: (
-                <article className="relative grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-4 sm:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+                <article className="relative grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-3 px-4 py-[11px] hover:bg-muted/40 lg:grid-cols-[minmax(0,2.8fr)_minmax(0,1.3fr)_minmax(0,.8fr)_minmax(0,1fr)_minmax(0,.9fr)_64px] lg:items-center">
                   <div className="min-w-0">
                     <SandboxName sandbox={sandbox} snapshot={snapshots.get(sandbox.id)} />
-                    <p className="mt-1 flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-                      <ProviderPlacement sandbox={sandbox} hostName={hostNames.get(sandbox.id)} /> ·{" "}
-                      <span className="shrink-0">{displayUser(directory, sandbox.ownerId, viewer.id)}</span>
-                    </p>
-                  </div>
-                  <div className="col-start-1 sm:col-auto">
-                    <SandboxState
-                      viewerOwns={sandbox.ownerId === viewer.id}
-                      status={sandbox.status}
-                      idlePaused={sandbox.idlePaused}
-                      expiresAt={sandbox.expiresAt}
-                      statusMessage={sandbox.canOpen ? sandbox.statusMessage : null}
-                      readyLabel={sandbox.taskOutcome?.state === "ready" ? "Finished" : undefined}
-                    />
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <SandboxState
+                        viewerOwns={sandbox.ownerId === viewer.id}
+                        status={sandbox.status}
+                        idlePaused={sandbox.idlePaused}
+                        expiresAt={sandbox.expiresAt}
+                        statusMessage={sandbox.canOpen ? sandbox.statusMessage : null}
+                        readyLabel={sandbox.taskOutcome?.state === "ready" ? "Finished" : undefined}
+                      />
+                      <span aria-hidden="true">·</span>
+                      <span className="font-mono" title={sandbox.id}>
+                        {sandbox.id.slice(0, 8)}
+                      </span>
+                    </div>
                     <ConversationHint sandbox={sandbox} now={now} />
                     <OutcomeHint sandbox={sandbox} />
                     {sandbox.canOpen && sandbox.statusMessage && (
                       <p className="mt-1 text-xs text-muted-foreground">{sandbox.statusMessage}</p>
                     )}
                   </div>
-                  <p className="min-w-0 break-words text-sm text-muted-foreground max-sm:col-start-1">
-                    {sandbox.canOpen
-                      ? (sandbox.model ?? costs.get(sandbox.id)?.models.join(", ") ?? "Model not reported")
-                      : "–"}
-                  </p>
-                  <div className="text-xs text-muted-foreground max-sm:col-start-1">
+                  <div className="min-w-0 max-lg:col-start-1">
+                    <p className="text-[13px]">{HARNESS_LABELS[sandbox.harness]}</p>
+                    <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
+                      {sandbox.canOpen
+                        ? (sandbox.model ?? costs.get(sandbox.id)?.models.join(", ") ?? "Model not reported")
+                        : "–"}
+                      {sandbox.canOpen && sandbox.reasoningEffort ? ` · ${sandbox.reasoningEffort}` : ""}
+                    </p>
+                  </div>
+                  <div className="min-w-0 max-lg:col-start-1">
+                    <span className="mb-0.5 block text-xs text-muted-foreground lg:hidden">Snapshot</span>
+                    <p className="truncate font-mono text-[13px]" title={snapshots.get(sandbox.id)}>
+                      {snapshots.get(sandbox.id) ?? "–"}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      <ProviderPlacement sandbox={sandbox} hostName={hostNames.get(sandbox.id)} />
+                    </p>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-2 text-[13px] max-lg:col-start-1">
+                    <span
+                      aria-hidden="true"
+                      className="flex size-[22px] shrink-0 items-center justify-center rounded-full border bg-muted text-[9.5px] font-semibold text-muted-foreground"
+                    >
+                      {displayUser(directory, sandbox.ownerId, viewer.id).slice(0, 2).toUpperCase()}
+                    </span>
+                    <span className="truncate">{displayUser(directory, sandbox.ownerId, viewer.id)}</span>
+                  </div>
+                  <div className="min-w-0 text-[13px] text-muted-foreground max-lg:col-start-1">
+                    <p>
+                      <span className="lg:hidden">Lifetime: </span>
+                      {life.lifetime ?? "Not recorded"}
+                    </p>
                     <LifecycleHint view={life} />
                     <CostCell cost={sandbox.canOpen ? costs.get(sandbox.id) : undefined} />
                   </div>
-                  <div className="relative z-10 max-sm:col-start-2 max-sm:row-start-1">
+                  <div className="relative z-10 flex items-center justify-end gap-1 max-lg:col-start-2 max-lg:row-start-1">
                     <SandboxRowMenu id={sandbox.id} name={sandboxListName(sandbox)} canOpen={sandbox.canOpen} />
                   </div>
                 </article>
@@ -316,14 +344,14 @@ async function SandboxesContent({ searchParams }: Props) {
  * The sandbox's listed name. Its owner and the organization's admins open it; any other member sees the same metadata
  * without a link into its conversation, files or connections (#680). The server enforces that again on every read.
  */
-function SandboxName({ sandbox, snapshot }: { sandbox: SandboxListMetadata; snapshot?: string | undefined }) {
-  const name = `${HARNESS_LABELS[sandbox.harness]} on ${snapshot ?? (sandbox.provider === "docker" ? "your server" : "sandbox")}`;
+function SandboxName({ sandbox }: { sandbox: SandboxListMetadata; snapshot?: string | undefined }) {
+  const name = sandboxListName(sandbox);
   if (sandbox.canOpen)
     return (
       <Link
         href={`/sandboxes/${sandbox.id}`}
         // The link covers its whole row (the row is the target), and its focus ring is drawn around the row.
-        className="inline-flex max-w-full items-center gap-1.5 text-[13px] font-medium underline-offset-4 outline-none after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
+        className="inline-flex max-w-full items-center gap-1.5 text-sm font-medium underline-offset-4 outline-none after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
       >
         <span className="min-w-0 break-words whitespace-normal" title={name}>
           {name}
