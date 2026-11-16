@@ -111,6 +111,15 @@ export default async function VariablesContent({ searchParams }: Props) {
         blockers={[]}
         initial={requested}
         actions={<AddVaultDialog orgId={selected.org.id} orgName={orgName} isAdmin={isAdmin} />}
+        footer={
+          <p className="text-xs text-pretty text-muted-foreground">
+            Personal entries are visible only to you in Armada. Org entries are shared with every member of {orgName};{" "}
+            {isAdmin ? "you manage them." : "only an admin changes them."} Settings are readable configuration, not
+            secrets. Stored secret values cannot be read back from this page. Attach entries to a template. Revoke stops
+            handing a value out; Delete removes the entry. Delivered values can be inspected by people or agents with
+            access to the sandbox; changing or revoking an entry does not erase copies already delivered.
+          </p>
+        }
         empty={
           <Empty title="No settings or secrets yet" icon={<VariableIcon />}>
             Add a setting or a secret, then attach it to a template.

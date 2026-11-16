@@ -18,9 +18,7 @@ for (const width of [1280, 390])
         ["variables", "table", "Settings and secrets"],
       ] as const) {
         await page.goto(`/${route}`);
-        const list = page
-          .getByRole(role, { name: label, exact: true, includeHidden: true })
-          .filter({ visible: true });
+        const list = page.getByRole(role, { name: label, exact: true, includeHidden: true }).filter({ visible: true });
         await expect(list).toBeVisible();
         const before = await list.boundingBox();
         const select = list.locator("[data-select-item]").first();
@@ -101,7 +99,8 @@ test("a refused org secret keeps kind/scope for retry but clears its one-time va
   await expect(dialog).toBeHidden();
   const row = page.locator('[data-vault-item="RETRY_SCOPE_SECRET"]');
   await expect(row).toHaveAttribute("data-vault-kind", "secret");
-  await expect(row.getByText("Org", { exact: true })).toBeVisible();
+  // The table states the org scope in words, not as a bare "Org" tag.
+  await expect(row).toContainText("Everyone in Acme");
 });
 
 test("list rows share their columns, whatever the width of each row's action", async ({ page }) => {

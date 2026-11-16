@@ -162,16 +162,23 @@ function AddVaultForm({
   isAdmin: boolean;
   onDone: (message: string) => void;
 }) {
-  const [state, formAction] = useMutationState(addVaultItem);
+  // Confirm from inside the action, not from an effect on its state: the refresh that follows a write remounts
+  // this page, so a post-render effect would be discarded before it could show the toast.
+  const run = useCallback(
+    async (previous: ActionResult | null, data: FormData) => {
+      const next = await addVaultItem(previous, data);
+      if (next.ok) onDone(next.message);
+      return next;
+    },
+    [onDone],
+  );
+  const [state, formAction] = useMutationState(run);
   const formRef = usePreservedActionForm();
   const [kind, setKind] = useState<VaultKind>("variable");
   const [scope, setScope] = useState<VaultScope>("personal");
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const id = useId();
-  useEffect(() => {
-    if (state?.ok) onDone(state.message);
-  }, [state, onDone]);
 
   return (
     <form ref={formRef} action={formAction} className="space-y-4" data-add-vault-form>
@@ -470,7 +477,7 @@ export function VaultPanel({
               <KeyRoundIcon /> Replace value
             </Button>
           )}
-          {active && !inline && (
+          {active && (
             <Button variant="destructive-outline" size="sm" onClick={open("revoke")}>
               Revoke
             </Button>
