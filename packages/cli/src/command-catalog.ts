@@ -1,0 +1,263 @@
+import { HARNESSES, MODEL_CATALOG, VERSION } from "@armada/core";
+import { helpOptionWords } from "./onboarding-help.ts";
+
+export const HELP = `armada ${VERSION}: launch coding agents in provider-scoped sandboxes
+
+Bare command families print help on stdout and exit 0; unknown subcommands exit 2.
+
+Global: --profile NAME (or ARMADA_PROFILE) isolates saved login and preferences; login --url sets its server.
+--profile overrides ARMADA_PROFILE. Omit both for the existing default profile.
+Names: 1–64 letters/digits/underscores/hyphens, starting with a letter or digit.
+ARMADA_TOKEN is not isolated by profiles: it still overrides every saved login.
+Use a matching ARMADA_URL for token-authenticated scripts; never put tokens in arguments.
+Example: armada --profile staging login --url https://staging.example.com --provider github
+
+Exit codes: 0 success; 1 server/operation failure; 2 invalid usage or missing configuration; 3 authentication failure.
+Scripts: check exit status before consuming stdout; failed operations may have partial output.
+Common typed errors with --json use {error:{code,message}} on stderr, not stdout.
+Progress/warnings can also use stderr; do not assume the entire stream is one JSON document.
+See command --help for supported JSON output; keep captured values/tokens out of shared logs.
+
+Quick start / common examples:
+  armada login --email you@example.com
+  armada org list
+  armada org use my-team
+  armada doctor
+  armada host add --name my-workstation
+  armada launch
+  armada list
+  armada status SANDBOX_ID
+  armada send SANDBOX_ID "Continue the task"
+  armada logs SANDBOX_ID --tail 20
+  armada stop SANDBOX_ID
+  eval "$(armada completion bash)"
+
+Usage:
+  armada host install --server HTTPS_ORIGIN   Install on the Docker machine; one-use token on stdin, no login
+  armada host status|uninstall [--server HTTPS_ORIGIN]  Local host wrappers; no login
+  armada host add [--name NAME] [--org UUID]
+  armada host list [--json] [--org UUID]
+  armada host show HOST [--json] [--org UUID]
+  armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID]
+  armada host retention HOST --retention 24h [--org UUID]
+  armada host revoke UUID [--org UUID]
+  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] --org UUID [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
+                                           Docker launch through the normal Armada API using the official Armada environment.
+  armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
+  armada completion bash|zsh|fish           Print a shell completion script
+  armada --version                         Print the version
+  armada --help                            Show this help (also -h or help); no login required
+  armada skill install (--project <directory> | --global) --yes [--revision <commit>]
+                                           Public GitHub Armada tool-knowledge skill; no login. See skill --help.
+  armada snapshot create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
+                               [--setup <local-file>] [--provider boat|modal] [--private] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
+                                           Server-orchestrated: builds, scans and saves the snapshot on the
+                                           server over your own GitHub connection. No BOAT_API_KEY needed.
+                                           --setup reads a local script and sends its content to run after
+                                           cloning, before the scan.
+  armada snapshot update <name> (--add-repo <url>[@branch] ... | --replace --repo <url>[@branch] ... | --replace --config <file>) [--init <cmd> ...]
+                               [--setup <local-file>] [--provider boat|modal] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
+                                           Rebuild the existing snapshot in place. One snapshot may contain
+                                           many repositories; visibility and ownership stay unchanged.
+                                           Use --add-repo to append safely, preserving stored repositories and init commands.
+                                           --repo/--config require --replace: they replace the ENTIRE config, even if no repos are dropped.
+                                           Create/update admit a durable job, then poll for up to --timeout
+                                           seconds (default 60, max 600; 0 returns after admission).
+                                           Disconnecting never resubmits or cancels the job.
+  armada snapshot build-cancel <job-id> [--org <org>] [--json]  Cancel your queued, never-started build
+  armada snapshot build-find <name> [--provider boat|modal] [--org <org>] [--json]
+                                           Find the latest visible active build without a job ID or admission key.
+  armada snapshot build-status <job-id>      Read the authenticated durable build status
+  armada snapshot build-status --idempotency-key <key> --org <org>
+                                           Recover an uncertain admission using the saved key.
+  armada snapshot connect <name> [--provider boat|modal]
+                                           Open the canonical master for maintenance
+  armada snapshot snapshot <name> [--provider boat|modal]
+                                           Scan and freeze the master sandbox
+  armada snapshot capabilities [--provider boat|modal] [--org UUID] [--json]
+                                           Server-authoritative snapshot capacity; null means unbounded/unknown
+  armada snapshot size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
+                                           Inspect defaults, or replace the entire policy from a file/stdin.
+                                           Version 1: {"version":1,"golden":null,"repositories":{}}
+                                           Repository keys are configured directories. A null default and an empty map
+                                           clear defaults. Scoped to this provider snapshot, future launches only.
+  armada snapshot create <name> --provider docker --host UUID|NAME --org UUID
+                               (--config <file> | --repo <url>[@branch] ... [--init <cmd> ...]) [--private] [--request-id UUID] [--json]
+                                           Build a host-local snapshot from the official Armada image and your repos/setup.
+                                           No image input. Reuse --request-id with identical input after an unknown outcome.
+  armada snapshot list [--provider boat|modal|docker] [--org UUID] [--json]
+                                           Snapshots you can see; Docker requires --org.
+  armada snapshot get UUID --provider docker --org UUID [--json]
+                                           Read snapshot build state; launch ready snapshots with launch --provider docker --golden UUID.
+  armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
+                                           Build a new snapshot from saved repos/setup on its original host; keep the old one.
+  armada launch <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
+                                           [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
+                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
+                [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
+                Omit connections to request server defaults; --no-connections opts out.
+                                           Fork a snapshot into a sandbox. With a prompt the agent starts at once;
+                                           without one the sandbox waits, ready, for the first prompt. The model
+                                           and effort apply to every later turn too. --credential-id UUID selects a model account;
+                                           otherwise use your personal or organization default. --repo owner/repo selects a recorded
+                                           snapshot repository as the native agent's real initial cwd (also when idle);
+                                           omit it to keep legacy launch behavior. Size resolves on the server:
+                                           --size > selected repository default > snapshot default > legacy.
+                                           --size or --repo requires the versioned sizing server; --sized requires
+                                           default-policy resolution without overriding size. No downgrade/retry
+                                           to legacy launch on unsupported servers. Bare legacy launches keep their route.
+                                           Size labels do not promise equal performance/billing across providers.
+                                           Defaults:
+                                           ${modelDefaults()}
+                                           --repo prepares native agent cwd in the selected repository, including when idle; not confinement.
+  armada list [--status STATUS] [--agent|--harness ${HARNESSES.join("|")}] [--golden UUID] [--owner UUID|me]
+              [--page N] [--limit 1..200] [--org UUID] [--json] [--page-info]
+                                           Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
+  armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
+                                           Read actual bound connection metadata, never mutate bindings
+  armada advice <sandbox-id> [--org UUID] [--json]
+                                           Last-10 comparable-session resource evidence; collects one bounded sample.
+                                           Missing/partial evidence abstains. Never resizes or changes defaults.
+                                           Human launch guidance uses stderr only; --json launch never requests advice.
+  armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
+                                           Owner-only legacy Modal binding recovery; stop safely first; no restart
+  armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
+  armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
+                                           TTL is measured from now, not added to the old deadline; must extend it.
+  armada status <sandbox-id> [--live] [--org UUID] [--json]
+                                           Recorded state by default (no provider probe); --live reads provider/prompt details
+  armada detail|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
+  armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
+                                           Timeout is 0–600 seconds, default 60.
+  armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
+  armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
+                                           send accepts --request-id UUID to reuse an uncertain runtime instruction.
+                                           Full-account follow-up sends can queue FIFO; queued is not completed.
+  armada snapshot retirement dry-run|reconcile <snapshot-id> [--limit 1-50] [--org UUID]
+  armada snapshot remove <name|snapshot-id> [--provider boat|modal] [--org UUID] [--json]
+                                           Names must match one visible snapshot; use provider/org or snapshot list --json to disambiguate.
+                                           Remove from launch selection; retain children and provider artifacts
+  armada snapshot visibility <snapshot-id> --visibility private|org [--org UUID]
+  armada mcp catalog|rename ID NAME|default ID on|off [--org UUID]
+  armada mcp add NAME --service notion|linear [--scope personal|org] [--org UUID]
+  armada mcp add NAME URL [--scope personal|org] [--org UUID]
+                                           Public/OAuth URL shortcut; auto discovery, no secret argv
+  armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
+  armada logs <sandbox-id> [--tail [n]] [--all] [--follow] [--json]
+                                           Read agent events; --all drains available pages, --follow waits for new pages until settled
+  armada login [--url <url>] [--provider github|google | --email <address>]
+                                           Discovers enabled methods; prompts for email when available.
+                                           --email: open the emailed link on this machine, or type its code (use one, not both)
+  armada logout
+  armada token create [--org <name>] [--label <label>]
+  armada token list
+  armada token revoke <id>
+  armada org create <name>                 Create an org; you are its first admin
+  armada org list
+  armada org setup [--org <name>]          Show organization provider setup status
+  armada org connect boat|modal [--org <name>] [--file <path>]
+                                           Connect an org provider using hidden input, stdin or a file
+  armada org use <name|UUID|none>           Persist selection for this Armada server
+  armada org current                        Show selected organization
+  armada account status|logout              Account identity / revoke current login session
+  armada github status|connect|reconnect|disconnect|install|manage [installation-id]
+  armada github refresh <sandbox>
+                                           Browser authorization waits for real completion; --no-browser prints URL
+  armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
+  armada org invitations list [--org <name|UUID>] [--json]
+  armada org invitations resend|revoke <id> [--org <name|UUID>] [--json]
+                                           Admin invitation management; --org overrides org use selection.
+                                           Email sent means provider accepted, not confirmed inbox delivery.
+  armada org invitations accept [--file <path>] [--json]
+                                           Token from stdin/file only; log in personally with the matching
+                                           verified email first. Opening a link never joins an organization.
+  armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
+                                           Direct membership administration; add requires an existing account,
+                                           grants membership immediately and does not send an invitation.
+  armada creds login codex --name <name> [--org <name>]
+                                           Native local device login; up to 16 minutes after the device code.
+                                           Keep this terminal open; Ctrl-C/shell exit cancels.
+  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
+                                           Import a locally obtained native token/auth.json; never pass secrets as arguments
+  armada creds limits <account-id> [--model <model-id>] --max-agents N | --unlimited [--org <name>]
+                                           Set the maximum simultaneous running agents for a model account
+  armada creds presets [--json]             List the same model connection providers as the dashboard
+  armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
+                                           Provider key from hidden input, stdin/file; custom providers take --models and --base-url
+                                           Azure models are resource deployment names; official Azure addresses are tested
+                                           with a tiny billable request per deployment. A failed check saves nothing.
+  armada creds set <kind> [--org <name>] [--file <path>]
+                                           Store a credential, encrypted; hidden input in a terminal, or stdin/file
+                                           Model accounts: --max-agents N or --unlimited (Morph defaults to 2; others unlimited)
+                                           Model accounts: --name NAME creates; --id UUID --expected-version N replaces
+                                           Codex: --base-url URL --models deployment,model [--api-version VERSION]
+                                           Key from hidden input, stdin/file; Azure requires actual deployment names, not model catalog IDs
+                                           Codex endpoints require Modal and the Responses API, not chat completions
+                                           Claude: --base-url URL [--endpoint-auth bearer|api-key] (default bearer)
+                                           Claude gateways require Modal and support Claude models only; key from hidden input, stdin/file
+                                           Endpoint prices: --price-model ID --price-input USD --price-output USD
+                                           [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
+                                           Replacing a connection replaces its prices too; re-enter all rates to keep them
+  armada routine --help                    Create, inspect, enable, pause and manage scheduled template launches
+  armada template --help                   Create, publish, list, get, delete and launch immutable templates
+  armada vars --help                       Readable variables: set/list/read; stdin/file writes only
+  armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
+                                           Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
+  armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]
+                                           One tiny billable check of the bound custom connection in a running Modal sandbox
+  armada creds list [--org <name>]         Account IDs, names, defaults and safe metadata; never values
+  armada creds rename <id> <name> [--org <name>]
+  armada creds default|remove <id> [--org <name>]
+  armada creds rm <kind> [--org <name>]
+                                           kinds: claude-oauth, anthropic, openai, codex-auth, boat, modal, skillpack
+
+Every command after 'armada login' acts as the user who signed in. snapshot commands take --org <name>
+when you belong to more than one org.
+
+Environment:
+  ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
+                                           a saved login session.
+  ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
+`;
+
+export const LOGS_HELP = `Read agent events from a sandbox.
+
+Usage:
+  armada logs <sandbox-id> [--since <cursor>] [--all] [--follow] [--org <org>] [--json]
+  armada logs <sandbox-id> --tail [n] [--follow] [--org <org>] [--json]
+
+Options:
+  --since <cursor>  Resume after an opaque cursor returned by a JSON page.
+  --tail [n]        Last n events (1–1000; default 100). You cannot combine
+                    --tail with --all or --since. With --follow, tail is read once.
+  --all             Drain all currently available pages, without polling delays.
+  --follow          Drain pages, then poll while active until settled.
+                    Ctrl-C stops only this reader, not the agent.
+  --org <org>       Override the organization selected by armada org use.
+  --json            Stream page objects: events, cursor, hasMore, settled.
+                    Multiple pages are not one JSON array. Errors use stderr.
+
+Without --all, --follow or --tail, read one bounded page.
+Use armada list --json to find a visible sandbox ID.
+
+Examples:
+  armada logs SANDBOX_ID --tail 20
+  armada logs SANDBOX_ID --since CURSOR --follow
+  armada logs SANDBOX_ID --all --json | jq -c '.events[]'
+
+For other commands and authentication settings: armada --help.
+`;
+
+export const commandWords = [...new Set([...HELP.matchAll(/armada ([a-z][a-z-]*)/g)].map((match) => match[1]))];
+export const optionWords = [
+  ...new Set([
+    ...helpOptionWords,
+    ...[...`${HELP}\n${LOGS_HELP}`.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0]),
+  ]),
+];
+
+function modelDefaults(): string {
+  return Object.entries(MODEL_CATALOG)
+    .map(([h, e]) => `${h} ${e.defaultModel} ${e.defaultReasoningEffort}`)
+    .join(", ");
+}

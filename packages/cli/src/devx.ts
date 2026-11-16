@@ -9,21 +9,19 @@ import {
 import { flag, parseArgs, single } from "./args.ts";
 import { createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { commandWords, optionWords } from "./command-catalog.ts";
 import { control } from "./control.ts";
 import { listHosts } from "./host-commands.ts";
-
-const commands =
-  "login logout launch list detail status logs send steer stop wait exec snapshot host account creds org doctor completion template routine";
 export function completion(argv: readonly string[], auth: Pick<AuthIo, "out">): number {
   if (argv.length !== 1 || !["bash", "zsh", "fish"].includes(argv[0] ?? ""))
     throw new AuthError("Run armada completion bash|zsh|fish, then source the generated script.", "usage");
-  const words = `${commands} --help --version --json --org --provider --agent --credential-id --host --model --ttl`;
+  const words = [...commandWords, ...optionWords].join(" ");
   auth.out(
     argv[0] === "bash"
       ? `complete -W '${words}' armada\n`
       : argv[0] === "zsh"
         ? `#compdef armada\n_armada() { compadd -- ${words}; }\ncompdef _armada armada\n`
-        : `complete -c armada -f -a '${commands}'\n`,
+        : `complete -c armada -f -a '${commandWords.join(" ")}'\n${optionWords.map((word) => `complete -c armada -l '${word.slice(2)}'`).join("\n")}\n`,
   );
   return 0;
 }
@@ -163,7 +161,13 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
     );
     org ??= account.orgs.length === 1 ? account.orgs[0]?.orgId : undefined;
   } catch {
-    add("Session", "failed", "Run armada login; check ARMADA_URL and your network if already signed in.");
+    add(
+      "Session",
+      "failed",
+      auth.env.ARMADA_TOKEN
+        ? "Check or replace ARMADA_TOKEN; check ARMADA_URL and your network."
+        : "Run armada login; check ARMADA_URL and your network if already signed in.",
+    );
     add("Server", "unknown", "Could not read server version. Restore the session/connection and run armada doctor.");
   }
   try {
@@ -222,7 +226,9 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
     add(
       "GitHub",
       "unknown",
-      "Could not read GitHub connection. Unset ARMADA_TOKEN and sign in as a person with armada login (not a service token), then run armada github status; check the server connection if already signed in.",
+      auth.env.ARMADA_TOKEN
+        ? "Could not read GitHub connection. For a service token, unset ARMADA_TOKEN and run armada login as a person, then armada github status; otherwise check the token and server connection."
+        : "Could not read GitHub connection. Run armada github status; check the server connection and sign in with armada login if the session expired.",
     );
   }
   if (!org) {
