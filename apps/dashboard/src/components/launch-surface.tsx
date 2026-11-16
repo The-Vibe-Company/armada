@@ -18,7 +18,7 @@ import { ttlOptions } from "@/lib/templates";
 export function LaunchDialogContent({ children }: { children: ReactNode }) {
   return (
     <DialogContent
-      className="sm:max-w-[640px] flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0"
+      className="sm:max-w-[620px] flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden rounded-[14px] p-0"
       onOpenAutoFocus={(event) => {
         const task = (event.target as HTMLElement | null)?.querySelector<HTMLElement>('textarea[name="prompt"]');
         if (!task) return;
@@ -33,9 +33,9 @@ export function LaunchDialogContent({ children }: { children: ReactNode }) {
 
 export function LaunchDialogHeader({ title, description }: { title: ReactNode; description: ReactNode }) {
   return (
-    <DialogHeader className="px-6 pt-6 pb-4 pr-12 text-left">
-      <DialogTitle className="break-words">{title}</DialogTitle>
-      <DialogDescription>{description}</DialogDescription>
+    <DialogHeader className="border-b px-5 py-3.5 pr-12 text-left">
+      <DialogTitle className="break-words text-[15px] font-semibold">{title}</DialogTitle>
+      <DialogDescription className="sr-only">{description}</DialogDescription>
     </DialogHeader>
   );
 }
@@ -43,7 +43,7 @@ export function LaunchDialogHeader({ title, description }: { title: ReactNode; d
 /** Only the fields scroll; the form's action footer stays outside this region. */
 export function LaunchFields({ children }: { children: ReactNode }) {
   return (
-    <div data-launch-fields className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 pb-4">
+    <div data-launch-fields className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-[18px]">
       {children}
     </div>
   );
@@ -59,16 +59,18 @@ export function LaunchTaskField({
   onChange?: ((value: string) => void) | undefined;
 }) {
   return (
-    <div className="space-y-2 pt-1">
-      <Label htmlFor={`${idPrefix}-prompt`}>Task</Label>
+    <div className="space-y-2">
+      <Label className="text-[13px]" htmlFor={`${idPrefix}-prompt`}>
+        Task
+      </Label>
       <Textarea
         id={`${idPrefix}-prompt`}
         name="prompt"
         value={value}
         onChange={onChange ? (event) => onChange(event.target.value) : undefined}
         rows={2}
-        className="max-h-[40dvh] min-h-20"
-        placeholder="What should the agent do? Leave empty to start idle."
+        className="max-h-[40dvh] min-h-[72px] resize-y rounded-[10px] bg-background px-3.5 py-3 text-[14.5px] leading-[1.55]"
+        placeholder="What should the agent do? Leave it empty to start the sandbox idle."
       />
     </div>
   );
@@ -163,7 +165,7 @@ export function useLaunchSurface(root: RefObject<HTMLElement | null>) {
   }, [root]);
 }
 
-/** A boxed word, with a searchable phone sheet. Launch forms use full phone rows; compact sentences opt into inline. */
+/** A settings row with a searchable picker; compact catalog controls can opt into inline. */
 export function LaunchChoice({
   inline = false,
   label,
@@ -196,12 +198,14 @@ export function LaunchChoice({
       type="button"
       disabled={disabled}
       aria-label={`${label}: ${selected?.label ?? value}`}
-      className={`inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 align-baseline text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 ${inline ? "min-h-8" : "max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0"} ${tone === "destructive" ? "border-destructive text-destructive" : tone === "warning" ? "border-warning text-warning" : "text-foreground"}`}
+      className={`${inline ? "inline-flex max-w-full min-h-8 items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5" : "grid w-full min-h-[52px] grid-cols-[84px_minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2 text-left"} text-[13px] hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 ${tone === "destructive" ? "text-destructive" : tone === "warning" ? "text-warning" : "text-foreground"}`}
       onClick={() => setOpen(true)}
     >
-      {!inline && <span className="text-muted-foreground sm:hidden">{label}</span>}
-      <span className="truncate">
-        {selected?.label ?? value} <span aria-hidden="true">⌄</span>
+      {!inline && <span className="text-muted-foreground">{label}</span>}
+      <span className="min-w-0 truncate font-medium">{selected?.label ?? value}</span>
+      <span aria-hidden="true" className="flex items-center gap-1 text-xs text-muted-foreground">
+        {!inline && <span className="max-sm:sr-only">Change</span>}
+        <ChevronDownIcon className="size-3.5" />
       </span>
     </button>
   );
@@ -245,7 +249,7 @@ export function LaunchChoice({
   if (phone)
     return (
       <>
-        <span className={inline ? "inline" : "block"}>{trigger}</span>
+        <span className={inline ? "inline" : "block border-b last:border-b-0"}>{trigger}</span>
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent side="bottom" className="max-h-[85dvh] overflow-y-auto">
             <SheetTitle>{label}</SheetTitle>
@@ -289,42 +293,32 @@ export function LaunchLocation({
 }) {
   const [ttl, setTtl] = useState("");
   return (
-    <div className="space-y-2">
-      <div className="text-sm leading-loose text-muted-foreground">
-        <span className="max-sm:hidden">It starts from </span>
-        <span className="whitespace-nowrap max-sm:block">
-          <LaunchChoice
-            disabled={lockedStart}
-            label="Starts from"
-            value={start}
-            options={starts ?? [{ value: start, label: start }]}
-            onChange={(value) => onStart?.(value)}
-          />
-          <span className="max-sm:hidden">{provider !== "docker" ? "," : ""}</span>
-        </span>
+    <div data-launch-location className="space-y-2">
+      <div className="overflow-hidden rounded-[10px] border [&>button]:border-b [&>button:last-of-type]:border-b-0">
+        <LaunchChoice
+          disabled={lockedStart}
+          label="Starts from"
+          value={start}
+          options={starts ?? [{ value: start, label: start }]}
+          onChange={(value) => onStart?.(value)}
+        />
         {provider !== "docker" && (
           <>
-            <span className="max-sm:hidden"> works in the </span>
             <LaunchChoice
               label="Folder"
               value={project}
               options={[{ value: "", label: "default" }, ...repositories.map((value) => ({ value, label: value }))]}
               onChange={(value) => onProject?.(value)}
             />
-            <span className="max-sm:hidden"> folder</span>
             <input type="hidden" name="repo" value={project} />
           </>
         )}
-        <span className="max-sm:hidden"> and runs for up to </span>
-        <span className="whitespace-nowrap">
-          <LaunchChoice
-            label="Runs for up to"
-            value={ttl}
-            options={ttlOptions(provider).map((option) => (option.value ? option : { value: "", label: "4 hours" }))}
-            onChange={setTtl}
-          />
-          <span className="max-sm:hidden">.</span>
-        </span>
+        <LaunchChoice
+          label="Runs for up to"
+          value={ttl}
+          options={ttlOptions(provider).map((option) => (option.value ? option : { value: "", label: "4 hours" }))}
+          onChange={setTtl}
+        />
         <input type="hidden" name="ttl" value={ttl} />
       </div>
       <p className="text-xs text-muted-foreground">

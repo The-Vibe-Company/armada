@@ -192,13 +192,14 @@ export function LaunchStart(
   const template = templates.find((item) => item.id === templateId);
   const chooser = templates.length > 0 && (
     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-launch-start>
-      <span>Or use a template (a saved launch setup)</span>
+      <span>Or start from</span>
       {templates.map((item) => (
         <Button
           key={item.id}
           type="button"
           variant={templateId === item.id ? "secondary" : "outline"}
           size="xs"
+          className="rounded-full"
           onClick={() => setTemplateId(templateId === item.id ? "" : item.id)}
         >
           {item.name}
@@ -412,41 +413,64 @@ function LaunchForm({
         <LaunchFields>
           <LaunchTaskField idPrefix={id} value={task} onChange={onTask} />
           {templateChooser}
-          <LaunchSentence
-            idPrefix={id}
-            onBlocked={setAccountBlocked}
-            harness={harness}
-            onHarness={(next) => {
-              setHarness(next);
-              setArmadaAccess(false);
-            }}
-            account={credential}
-            onAccount={(next) => {
-              setCredential(next);
-              setArmadaAccess(false);
-            }}
-            accounts={accounts}
-            catalog={catalog}
-            boatOpenCodeDisabled={provider === "boat" && !boatOpenCodeAvailable}
-          />
-          <LaunchLocation
-            provider={provider}
-            start={
-              selectedStart ??
-              `${golden} · ${provider === "boat" ? "Boat cloud" : provider === "modal" ? "Modal cloud" : "your own server"}`
-            }
-            starts={starts?.map((item) => ({
-              value: item.id,
-              label: item.label,
-              group: item.group,
-              reason: item.reason,
-            }))}
-            onStart={onStart}
-            idleDelaySeconds={idleDelaySeconds}
-            repositories={repositories}
-            project={project}
-            onProject={setProject}
-          />
+          <div className="space-y-2">
+            <p className="text-[13px] font-medium">Settings</p>
+            <div className="divide-y overflow-hidden rounded-[10px] border [&_section]:border-0 [&_section>div]:rounded-none [&_section>div]:border-0 [&_[data-launch-location]>div]:rounded-none [&_[data-launch-location]>div]:border-0">
+              <LaunchSentence
+                idPrefix={id}
+                onBlocked={setAccountBlocked}
+                harness={harness}
+                onHarness={(next) => {
+                  setHarness(next);
+                  setArmadaAccess(false);
+                }}
+                account={credential}
+                onAccount={(next) => {
+                  setCredential(next);
+                  setArmadaAccess(false);
+                }}
+                accounts={accounts}
+                catalog={catalog}
+                boatOpenCodeDisabled={provider === "boat" && !boatOpenCodeAvailable}
+              />
+              <LaunchLocation
+                provider={provider}
+                start={
+                  selectedStart ??
+                  `${golden} · ${provider === "boat" ? "Boat cloud" : provider === "modal" ? "Modal cloud" : "your own server"}`
+                }
+                starts={starts?.map((item) => ({
+                  value: item.id,
+                  label: item.label,
+                  group: item.group,
+                  reason: item.reason,
+                }))}
+                onStart={onStart}
+                idleDelaySeconds={idleDelaySeconds}
+                repositories={repositories}
+                project={project}
+                onProject={setProject}
+              />
+              <div className="space-y-3 p-3.5">
+                {provider !== "docker" && sizing && (
+                  <MachineSizeField
+                    composer
+                    idPrefix={id}
+                    provider={provider}
+                    policy={sizing.policy}
+                    repositoryDir={project}
+                    onSize={setSize}
+                  />
+                )}
+                <details>
+                  <summary className="cursor-pointer py-2 text-[13px]">
+                    Tools <span className="ml-3 text-muted-foreground">{mcpFact(access)}</span>
+                  </summary>
+                  <div className="pt-2">{access.fields(id)}</div>
+                </details>
+              </div>
+            </div>
+          </div>
           <LaunchAdvanced
             open={advancedOpen}
             onOpenChange={setAdvancedOpen}
@@ -473,16 +497,7 @@ function LaunchForm({
             }
           >
             <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
-            {provider !== "docker" && sizing && (
-              <MachineSizeField
-                idPrefix={id}
-                provider={provider}
-                policy={sizing.policy}
-                repositoryDir={project}
-                onSize={setSize}
-              />
-            )}
-            {access.fields(id)}
+
             {provider !== "docker" && (
               <div className="space-y-1.5">
                 <Label htmlFor={`${id}-armada-access`} className="flex min-h-11 items-center gap-2">

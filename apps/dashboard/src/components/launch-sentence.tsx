@@ -1,6 +1,7 @@
 "use client";
 
 import type { Harness } from "@armada/core";
+import { ChevronDownIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { LaunchChoice } from "@/components/launch-surface";
@@ -24,6 +25,7 @@ export function LaunchSentence({
   catalog,
   boatOpenCodeDisabled,
   allowedHarnesses = ["claude", "codex", "opencode"],
+  showHeading = false,
 }: {
   idPrefix: string;
   onBlocked: (blocked: boolean) => void;
@@ -35,13 +37,16 @@ export function LaunchSentence({
   catalog: ModelCatalog;
   boatOpenCodeDisabled: boolean;
   allowedHarnesses?: readonly Harness[];
+  showHeading?: boolean;
 }) {
   const root = useRef<HTMLElement>(null);
   const [model, setModel] = useState(() => initialLaunchSelection(accounts, catalog, harness).model);
   const [effort, setEffort] = useState(catalog[harness].defaultReasoningEffort);
   const [other, setOther] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+  const [pickerSource, setPickerSource] = useState<"model" | "account">("model");
   const [phone, setPhone] = useState(false);
   useEffect(() => {
     const media = matchMedia("(max-width: 639px)");
@@ -220,32 +225,98 @@ export function LaunchSentence({
         name="reasoning_effort"
         value={efforts.includes(effort) ? effort : entry.defaultReasoningEffort}
       />
-      <div className="text-[17px] leading-loose">
-        <span className="max-sm:hidden">Launch </span>
-        <LaunchChoice
-          label="Agent"
-          value={harness}
-          tone={accounts.state === "unavailable" || (accounts.state === "ready" && !chosen) ? "destructive" : undefined}
-          options={allowedHarnesses.map((value) => ({
-            value,
-            label: HARNESS_LABELS[value],
-            reason:
-              value === "opencode" && boatOpenCodeDisabled ? "OpenCode is not available on this snapshot." : undefined,
-          }))}
-          onChange={(value) => changeAgent(value as Harness)}
-        />
-        <span className="max-sm:hidden"> running </span>
-        <Popover open={open && !phone} onOpenChange={setOpen}>
+      {showHeading && <p className="text-[13px] font-medium">Settings</p>}
+      <div className="overflow-hidden rounded-[10px] border [&>button]:border-b [&>span]:border-b [&>span:last-child]:border-b-0">
+        <button
+          type="button"
+          aria-label={`Agent settings: ${HARNESS_LABELS[harness]}`}
+          aria-expanded={agentOpen}
+          onClick={() => setAgentOpen(!agentOpen)}
+          className="grid min-h-[52px] w-full grid-cols-[84px_minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2 text-left text-[13px] hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="text-muted-foreground">Agent</span>
+          <span className="min-w-0">
+            <span className="block truncate font-medium">{HARNESS_LABELS[harness]}</span>
+            <span className="block truncate text-xs text-muted-foreground">
+              {model} · {EFFORT_LABEL[efforts.includes(effort) ? effort : entry.defaultReasoningEffort] ?? effort}{" "}
+              effort
+            </span>
+          </span>
+          <span aria-hidden="true" className="flex items-center gap-1 text-xs text-muted-foreground">
+            <span className="max-sm:sr-only">Change</span>
+            <ChevronDownIcon className={`size-3.5 ${agentOpen ? "rotate-180" : ""}`} />
+          </span>
+        </button>
+        <div hidden={!agentOpen} className="border-b bg-muted/30">
+          <LaunchChoice
+            label="Agent"
+            value={harness}
+            tone={
+              accounts.state === "unavailable" || (accounts.state === "ready" && !chosen) ? "destructive" : undefined
+            }
+            options={allowedHarnesses.map((value) => ({
+              value,
+              label: HARNESS_LABELS[value],
+              reason:
+                value === "opencode" && boatOpenCodeDisabled
+                  ? "OpenCode is not available on this snapshot."
+                  : undefined,
+            }))}
+            onChange={(value) => changeAgent(value as Harness)}
+          />
+          <Popover open={open && !phone && pickerSource === "model"} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                aria-label={`Model: ${entry.models.find((row) => row.id === model)?.label ?? model}`}
+                className="grid min-h-[52px] w-full grid-cols-[84px_minmax(0,1fr)_auto] items-center gap-3 border-b px-3.5 py-2 text-left text-[13px] hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => {
+                  setPickerSource("model");
+                  setOpen(true);
+                }}
+              >
+                <span className="text-muted-foreground">Model</span>
+                <span className="truncate font-medium">
+                  {entry.models.find((row) => row.id === model)?.label ?? <span className="font-mono">{model}</span>}
+                </span>
+                <span aria-hidden="true" className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <span className="max-sm:sr-only">Change</span>
+                  <ChevronDownIcon className="size-3.5" />
+                </span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[min(540px,calc(100vw-2rem))] p-0" align="start">
+              {picker}
+            </PopoverContent>
+          </Popover>
+          <span className="block">
+            <LaunchChoice
+              label="Effort"
+              value={efforts.includes(effort) ? effort : entry.defaultReasoningEffort}
+              options={efforts.map((value) => ({ value, label: EFFORT_LABEL[value] ?? value }))}
+              onChange={setEffort}
+            />
+          </span>
+        </div>
+        <Popover open={open && !phone && pickerSource === "account"} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
             <button
               type="button"
-              aria-label={`Model: ${entry.models.find((row) => row.id === model)?.label ?? model}`}
-              className="inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 text-sm hover:bg-accent max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0"
-              onClick={() => setOpen(true)}
+              aria-label={`Account: ${chosen?.name ?? "Choose an account"}`}
+              data-launch-account-picker
+              className={`grid min-h-[52px] w-full grid-cols-[84px_minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2 text-left text-[13px] hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring ${selectedProblem ? "text-warning" : ""}`}
+              onClick={() => {
+                setPickerSource("account");
+                setOpen(true);
+              }}
             >
-              <span className="text-muted-foreground sm:hidden">Model</span>
-              <span className="truncate">
-                {entry.models.find((row) => row.id === model)?.label ?? <span className="font-mono">{model}</span>} ⌄
+              <span className="text-muted-foreground">Account</span>
+              <span className={`min-w-0 truncate font-medium ${selectedProblem ? "text-warning" : ""}`}>
+                {chosen?.name ?? "Choose an account"}
+              </span>
+              <span aria-hidden="true" className="flex items-center gap-1 text-xs text-muted-foreground">
+                <span className="max-sm:sr-only">Change</span>
+                <ChevronDownIcon className="size-3.5" />
               </span>
             </button>
           </PopoverTrigger>
@@ -253,34 +324,6 @@ export function LaunchSentence({
             {picker}
           </PopoverContent>
         </Popover>
-        <span className="max-sm:hidden"> on </span>
-        <span className="max-w-full whitespace-nowrap max-sm:block">
-          <button
-            type="button"
-            aria-label={`Account: ${chosen?.name ?? "Choose an account"}`}
-            data-launch-account-picker
-            className={`inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 text-sm hover:bg-accent max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0 ${selectedProblem ? "border-warning text-warning" : ""}`}
-            onClick={() => setOpen(true)}
-          >
-            <span className="shrink-0 text-muted-foreground sm:hidden">Account</span>
-            <span
-              className={`min-w-0 whitespace-normal break-words text-right ${selectedProblem ? "text-warning" : ""}`}
-            >
-              {chosen?.name ?? "Choose an account"} ⌄
-            </span>
-          </button>
-          <span className="max-sm:hidden">,</span>
-        </span>
-        <span className="max-sm:hidden"> reasoning effort </span>
-        <span className="whitespace-nowrap">
-          <LaunchChoice
-            label="Effort"
-            value={efforts.includes(effort) ? effort : entry.defaultReasoningEffort}
-            options={efforts.map((value) => ({ value, label: EFFORT_LABEL[value] ?? value }))}
-            onChange={setEffort}
-          />
-          <span className="max-sm:hidden">.</span>
-        </span>
       </div>
       {other && (
         <Input
