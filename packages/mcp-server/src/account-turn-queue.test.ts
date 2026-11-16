@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import { accountWaitingCountSql, type Sql, VaultError } from "@armada/core/server";
+import { accountModelCountsSql, accountWaitingCountSql, type Sql, VaultError } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
@@ -43,6 +43,9 @@ beforeAll(async () => {
     ).text(),
   );
   await db.query("insert into credentials values($1,'Shared account',1,1,'active',null,'user',$2)", [account, owner]);
+  await db.exec(
+    "alter table credentials add column model_limits jsonb not null default '{}'::jsonb; alter table account_agent_reservations add column model text; alter table account_turn_queue add column model text",
+  );
   await db.query("insert into orgs values($1)", [org]);
   await db.query("insert into members values($1,$2,'member')", [org, owner]);
   await db.query("insert into mcp_actor_epochs values($1,$2,1)", [org, owner]);
@@ -55,7 +58,7 @@ beforeAll(async () => {
 afterAll(() => db.close());
 beforeEach(async () => {
   await db.exec(
-    "update credentials set max_agents=1; delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',task_prompt_id=null,stopped_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',task_prompt_id=null,stopped_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -665,4 +668,73 @@ test.each([
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "queued instruction" };
   expect(await queue.accept(caller, input)).toMatchObject({ statusMessage: expected });
   expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ message: expected });
+});
+
+test("a full model queues its override without blocking another model and reports the real limit", async () => {
+  await db.exec(
+    `update credentials set max_agents=4,model_limits='{"kimi":1,"deepseek":2}'; update sandboxes set model='deepseek';`,
+  );
+  await db.query("update sandboxes set model='kimi',status='running',task_prompt_id='active_model' where id=$1", [
+    ids[0],
+  ]);
+  const blocked = await queue.accept(caller, {
+    id: ids[1]!,
+    request_id: requests[0]!,
+    prompt: "kimi turn",
+    model: "kimi",
+  });
+  expect(blocked?.statusMessage).toContain("model kimi on account Shared account (1/1)");
+  const otherAccount = "10000000-0000-4000-8000-000000000099";
+  await db.query("insert into credentials(id,name,max_agents,model_limits) values($1,'Other account',1,'{}')", [
+    otherAccount,
+  ]);
+  const counts = await db.query<{
+    id: string;
+    model_counts: Record<string, { runningAgents: number; waitingAgents: number }>;
+  }>(
+    `select credentials.id,${accountModelCountsSql("credentials.id", "credentials.model_limits")} as model_counts from credentials`,
+  );
+  expect(counts.rows.find((row) => row.id === account)?.model_counts.kimi).toEqual({
+    runningAgents: 1,
+    waitingAgents: 1,
+  });
+  expect(counts.rows.find((row) => row.id === otherAccount)?.model_counts).toEqual({});
+  await db.query("delete from credentials where id=$1", [otherAccount]);
+
+  await queue.accept(caller, { id: ids[2]!, request_id: requests[1]!, prompt: "other model", model: "deepseek" });
+  const dispatched: string[] = [];
+  queue.setDispatch(async (_caller, input) => {
+    dispatched.push(input.model!);
+    return { promptId: input.request_id, status: "running" };
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  expect(dispatched).toEqual(["deepseek"]);
+  await db.query("insert into runtime_idle_turns values($1,'active_model',true)", [ids[0]]);
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  expect(dispatched).toEqual(["deepseek", "kimi"]);
+});
+
+test("queued status retains its own model when a newer request targets another model on the same sandbox", async () => {
+  await db.exec(
+    `update credentials set max_agents=4,model_limits='{"kimi":1}'; update sandboxes set model='deepseek';`,
+  );
+  await db.query("update sandboxes set model='kimi',status='running',task_prompt_id='active_model' where id=$1", [
+    ids[0],
+  ]);
+  const older = { id: ids[1]!, request_id: requests[0]!, prompt: "older kimi turn", model: "kimi" };
+  await queue.accept(caller, older);
+  await queue.accept(caller, {
+    id: ids[1]!,
+    request_id: requests[1]!,
+    prompt: "newer deepseek turn",
+    model: "deepseek",
+  });
+  expect(await queue.status(caller, older.id, older.request_id)).toMatchObject({
+    message: "Waiting for a free agent slot for model kimi on account Shared account (1/1).",
+  });
+  expect(await queue.accept(caller, older)).toMatchObject({
+    statusMessage: "Waiting for a free agent slot for model kimi on account Shared account (1/1).",
+  });
 });

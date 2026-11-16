@@ -880,11 +880,27 @@ function LimitsDialog({
       <DialogContent className="sm:max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Agent limit for {account.name}</DialogTitle>
-          <DialogDescription>New starts are refused at the limit. Existing agents are not stopped.</DialogDescription>
+          <DialogDescription>
+            Turns wait when an account or model limit is full. Existing agents are not stopped.
+          </DialogDescription>
         </DialogHeader>
         <form ref={preserve} key={generation} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
           <AgentLimitField id={id} defaultValue={account.maxAgents ?? ""} />
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-model`}>Model ID (optional)</Label>
+            <Input id={`${id}-model`} name="model" placeholder="Leave empty to change the account limit" />
+            <p className="text-xs text-muted-foreground">
+              Enter the exact launch model ID to change its limit instead. Empty maximum clears that model limit.
+            </p>
+          </div>
+          {Object.entries(account.modelCounts ?? {}).map(([model, counts]) => (
+            <p key={model} className="text-xs text-muted-foreground">
+              {model}: {counts.runningAgents} working / {counts.waitingAgents} waiting /{" "}
+              {account.modelLimits?.[model] ?? "unlimited"} max
+            </p>
+          ))}
+
           {state && !state.ok && <ResultLine result={state} />}
           <SubmitButton>Save limit</SubmitButton>
         </form>

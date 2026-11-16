@@ -23,6 +23,8 @@ export interface CredentialInfo {
   name?: string;
   isDefault?: boolean;
   maxAgents?: number | null;
+  modelLimits?: Record<string, number>;
+  modelCounts?: Record<string, { runningAgents: number; waitingAgents: number }>;
   runningAgents?: number;
   /** A live turn is currently waiting for a structured provider rate-limit retry. */
   rateLimited?: boolean;
@@ -48,6 +50,7 @@ export interface AccountMutation {
   expectedVersion?: number;
   expiresAt?: string | null;
   maxAgents?: number | null;
+  model?: string;
   action: "set" | "rename" | "default" | "remove" | "limits";
   scope: CredentialScope;
   org?: string;
@@ -58,7 +61,12 @@ export interface AccountMutation {
 }
 export interface VaultStore extends CredentialReader, GitHubConnectionStore {
   setAgentDefault?(userId: string, value: AgentDefault, orgId?: string): Promise<void>;
-  mutateAccount?(userId: string, input: AccountMutation, valueEnc?: Uint8Array): Promise<CredentialInfo>;
+  mutateAccount?(
+    userId: string,
+    input: AccountMutation,
+    valueEnc?: Uint8Array,
+    encryptionKey?: string,
+  ): Promise<CredentialInfo>;
 
   /** Inserts the org and its first admin together. This is the one way an org is created. */
   createOrg(name: string, adminUserId: string): Promise<{ id: string; name: string }>;
@@ -319,5 +327,5 @@ export async function mutateCredentialAccount(
     await validate?.(input.kind, value);
     valueEnc = await encryptSecret(value, key);
   }
-  return store.mutateAccount(userId, { ...input, ...(org ? { org: org.id } : {}) }, valueEnc);
+  return store.mutateAccount(userId, { ...input, ...(org ? { org: org.id } : {}) }, valueEnc, key);
 }

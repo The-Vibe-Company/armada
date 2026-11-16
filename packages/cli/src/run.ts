@@ -248,7 +248,7 @@ Usage:
                                            Keep this terminal open; Ctrl-C/shell exit cancels.
   armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
-  armada creds limits <account-id> --max-agents N | --unlimited [--org <name>]
+  armada creds limits <account-id> [--model <model-id>] --max-agents N | --unlimited [--org <name>]
                                            Set the maximum simultaneous running agents for a model account
   armada creds presets [--json]             List the same model connection providers as the dashboard
   armada creds connect <preset> --name NAME [--file PATH] [--org NAME]

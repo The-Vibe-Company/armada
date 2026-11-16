@@ -100,7 +100,8 @@ export function createAccountControl(options: ArmadaApiOptions) {
     set: (body: SetAccountRequest) => account(ACCOUNT_ROUTES.set, body),
     /** Only the name changes; #603 does not version names, so no `expectedVersion`. */
     rename: (target: AccountTarget & { name: string }) => account(ACCOUNT_ROUTES.rename, target),
-    limits: (target: AccountTarget & { maxAgents: number | null }) => account(ACCOUNT_ROUTES.limits, target),
+    limits: (target: AccountTarget & { maxAgents: number | null; model?: string }) =>
+      account(ACCOUNT_ROUTES.limits, target),
     makeDefault: (target: AccountTarget) => account(ACCOUNT_ROUTES.default, target),
     remove: (target: AccountTarget) => post(ACCOUNT_ROUTES.remove, target).then(() => undefined),
     /**

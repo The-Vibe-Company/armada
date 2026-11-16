@@ -69,8 +69,8 @@ export function createModelAuthOwnership(
   return {
     state,
     broker,
-    async admitCapacity(accountId: string, sandboxId: string) {
-      await sql.transaction!((tx) => admitAccountCapacity(tx, accountId, sandboxId));
+    async admitCapacity(accountId: string, sandboxId: string, model?: string) {
+      await sql.transaction!((tx) => admitAccountCapacity(tx, accountId, sandboxId, model));
     },
     async releaseProviderCapacity(provider: Provider, providerId: string) {
       await sql.query(
