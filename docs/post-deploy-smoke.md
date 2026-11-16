@@ -624,7 +624,8 @@ are never logged. Non-2xx, error states, malformed/skipped rows, incomplete
 pagination and slow answers fail, rather than silently disabling a probe.
 Docker host list routes must be enabled on staging.
 
-Sandboxes calls `sandbox/list` and imports the dashboard's own
+`dashboard_sandboxes` calls the server `/api/v1/sandbox/list` endpoint (not the
+dashboard page) and imports the dashboard's own
 `parseSandboxListMetadata`, rejecting skipped rows even though the UI tolerates
 them. Hosts and launch options use the same dashboard parsers.
 These are read-only API calls; no compute or account is created.

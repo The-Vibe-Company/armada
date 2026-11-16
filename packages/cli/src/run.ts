@@ -103,7 +103,7 @@ Quick start / common examples:
 
 Usage:
   armada host install --server HTTPS_ORIGIN   Install on the Docker machine; one-use token on stdin, no login
-  armada host status|uninstall                Local host binary wrappers; no login
+  armada host status|uninstall [--server HTTPS_ORIGIN]  Local host wrappers; no login
   armada host add [--name NAME] [--org UUID]
   armada host list [--json] [--org UUID]
   armada host show HOST [--json] [--org UUID]
@@ -191,6 +191,7 @@ Usage:
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
   armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
+                                           TTL is measured from now, not added to the old deadline; must extend it.
   armada status <sandbox-id> [--live] [--org UUID] [--json]
                                            Recorded state by default (no provider probe); --live reads provider/prompt details
   armada detail|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
@@ -199,6 +200,7 @@ Usage:
   armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
                                            send accepts --request-id UUID to reuse an uncertain runtime instruction.
+                                           Full-account follow-up sends can queue FIFO; queued is not completed.
   armada snapshot retirement dry-run|reconcile <snapshot-id> [--limit 1-50] [--org UUID]
   armada snapshot remove <name|snapshot-id> [--provider boat|modal] [--org UUID] [--json]
                                            Names must match one visible snapshot; use provider/org or snapshot list --json to disambiguate.

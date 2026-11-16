@@ -119,7 +119,9 @@ Obtain a one-use registration command with armada host add from your signed-in c
 The token is supplied on stdin, never as an argument. Protect token files and installer output.
 --server must be an HTTPS origin without credentials, path, query or fragment.
 Downloaded artifacts are digest-verified before execution. An already registered machine
-keeps its registration; do not blindly repeat registration after an uncertain failure.
+keeps its registration/name for the same server; another server gets a separate service.
+With multiple installations, status/uninstall list instances unless --server selects one.
+Do not blindly repeat registration after an uncertain failure.
 Inspect armada host status and Docker/systemd access before retrying.
 Example: armada host install --server https://armada.example < /private/registration-token
 `,
