@@ -23,6 +23,7 @@ import { SandboxCommand } from "@/components/sandbox-command";
 import { RowCost, SandboxCostCard } from "@/components/sandbox-cost";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
 import { SandboxState } from "@/components/sandbox-state";
+import { ShellPageActions } from "@/components/shell-page-actions";
 import { OutcomeBadge, OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -194,14 +195,14 @@ export default async function SandboxPage({ params }: Props) {
               </Link>
             </Button>
             {/* One row on every width: a long name wraps inside its heading, the machine's action stays on the right. */}
-            <SandboxState
+            <ShellPageActions><SandboxState
               viewerOwns={owner}
               status={sandbox.status}
               statusMessage={sandbox.status_reason}
               readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
               idlePaused={sandbox.status_reason === "idle_paused"}
               expiresAt={sandbox.expires_at}
-            />
+            /></ShellPageActions>
             {sandbox.status === "running" && sandbox.status_reason && sandbox.status_reason !== "idle_paused" && (
               <span className="text-sm text-muted-foreground">{sandbox.status_reason}</span>
             )}
@@ -452,14 +453,14 @@ function DockerSandbox({
                 <span className="font-mono text-xs">{sandbox.id.slice(0, 8)}</span>
               </Link>
             </Button>
-            <SandboxState
+            <ShellPageActions><SandboxState
               viewerOwns={sandbox.owner_id === viewer.id}
               status={sandbox.status}
               statusMessage={sandbox.status_reason}
               readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
               idlePaused={sandbox.status_reason === "idle_paused"}
               expiresAt={sandbox.expires_at}
-            />
+            /></ShellPageActions>
           </div>
           <span className="text-xs text-muted-foreground">
             <RowCost cost={cost} />
@@ -664,13 +665,15 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
           <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">
             {HARNESS_LABELS[sandbox.harness] ?? "Agent"} sandbox
           </h1>
-          <SandboxState
-            viewerOwns={false}
-            status={sandbox.status}
-            idlePaused={sandbox.idlePaused === true}
-            readyLabel="Waiting for you"
-            expiresAt={sandbox.expiresAt}
-          />
+          <ShellPageActions>
+            <SandboxState
+              viewerOwns={false}
+              status={sandbox.status}
+              idlePaused={sandbox.idlePaused === true}
+              readyLabel="Waiting for you"
+              expiresAt={sandbox.expiresAt}
+            />
+          </ShellPageActions>
         </div>
       </div>
       <Alert data-restricted role="status">

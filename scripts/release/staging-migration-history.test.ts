@@ -35,3 +35,9 @@ test("pinned CLI history table parsing rejects missing or unexpected output", ()
   for (const output of ["", "error", `${header}broken`, `${header} | | `])
     expect(() => parseMigrationHistory(output)).toThrow();
 });
+
+test("exact release staging rejects even known newer SQL while allowing its own pending migrations", () => {
+  expect(stagingMigrationDecision([a, b], [a], [a, b, c], true)).toBe("apply");
+  expect(stagingMigrationDecision([a, b], [a, b], [a, b, c], true)).toBe("apply");
+  expect(() => stagingMigrationDecision([a], [a, b], [a, b], true)).toThrow("outside the exact release");
+});

@@ -22,15 +22,16 @@ test("an org is created, and inviting someone does not make them a member", asyn
   await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue("");
   await dialog.getByLabel("Name", { exact: true }).fill("Side Project");
   await dialog.getByRole("button", { name: "Create org" }).click();
-  // A new org starts by connecting a sandbox provider in Settings; its members page stays reachable.
-  await expect(page).toHaveURL(/\/settings$/);
+  // A new org starts by connecting a sandbox provider on Machines; its members page stays reachable.
+  await expect(page).toHaveURL(/\/providers\/cloud$/);
   await expect(page.locator('[data-settings="providers"]')).toContainText("Side Project");
   await page.goto("/orgs");
   await page.getByRole("link", { name: /Side Project/ }).click();
   await expect(page.getByRole("heading", { name: "Side Project" })).toBeVisible();
   await expect(page.locator('[data-member="alice@example.com"]')).toBeVisible();
 
-  await page.getByLabel("Email").fill("carol@example.com");
+  await page.getByRole("button", { name: "Invite a member", exact: true }).click();
+  await page.getByLabel("Email", { exact: true }).fill("carol@example.com");
   await page.getByRole("button", { name: "Send invitation" }).click();
   await expect(page.getByText("Invitation emailed to carol@example.com.")).toBeVisible();
   await expect(page.locator('[data-invitation="carol@example.com"]')).toBeVisible();
@@ -72,7 +73,7 @@ test("a member sees the roster but no controls", async ({ page }) => {
   await page.getByRole("link", { name: /Acme/ }).click();
   await expect(page.locator('[data-member="alice@example.com"]')).toBeVisible();
   await expect(page.getByRole("button", { name: "Send invitation" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Invite a teammate" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Invite a member", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Remove/ })).toHaveCount(0);
 });
 
@@ -88,7 +89,7 @@ test("the last admin cannot be demoted", async ({ page }) => {
     .getByRole("alertdialog", { name: "Give up admin of Acme?" })
     .getByRole("button", { name: "Make me a member" })
     .click();
-  await expect(alert(page)).toContainText("keeps at least one admin");
+  await expect(alert(page)).toContainText("leave the org without an admin");
   // The refusal keeps the choice shown: saving again sends what is on screen, never a reset value.
   await expect(alice.getByLabel("Role of alice@example.com")).toHaveValue("member");
   await expect(alice.getByLabel("Role of alice@example.com")).toBeFocused();

@@ -14,9 +14,9 @@
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
+  --color-muted: var(--muted-fill);
   --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
+  --color-accent: var(--interaction);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
@@ -34,7 +34,8 @@
   --radius-xl: calc(var(--radius) + 4px);
   --shadow-xs: 0 1px 1px 0 oklch(0.2 0.01 265 / 4%);
   --shadow-sm: 0 1px 2px -1px oklch(0.2 0.01 265 / 8%), 0 1px 3px 0 oklch(0.2 0.01 265 / 5%);
-  --shadow-lg: 0 12px 32px -12px oklch(0.2 0.02 265 / 22%), 0 2px 6px -2px oklch(0.2 0.02 265 / 8%);
+  --shadow-lg: var(--elevation-lg);
+  --shadow-md: var(--elevation-md);
   /* Geist, the landing's face (#757): the app and the public pages speak with one voice on every platform. */
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -52,65 +53,77 @@
   }
 }
 
-/*
- * Tokens (#757, docs/dashboard-design.md). Cool graphite neutrals (hue 265, barely tinted), a page a shade off the
- * cards so groups read without heavy borders, and colour only for meaning: info (in flight), success (live and idle),
- * warning (in transition), destructive (failed). Every text colour holds AA (4.5:1) on the page, the card and the
- * muted fill. The brand is the landing's lime, on the mark only; focus is the landing's frontier blue.
- */
 :root {
+  --canvas: oklch(0.982 0.003 265);
+  --sidebar: oklch(0.962 0.004 265);
+  --surface: oklch(0.997 0.0015 265);
+  --raised: oklch(0.952 0.005 265);
+  --sunken: oklch(0.972 0.004 265);
+  --line: oklch(0.915 0.006 265);
+  --line-strong: oklch(0.86 0.008 265);
+  --fg: oklch(0.24 0.018 265);
+  --muted: oklch(0.47 0.016 265);
+  --faint: oklch(0.6 0.012 265);
+  --ok: oklch(0.55 0.13 156);
+  --warn: oklch(0.6 0.13 70);
+  --danger: oklch(0.56 0.19 25);
+  --info: oklch(0.56 0.13 250);
+  --scrim: oklch(0.2 0.02 265 / 0.35);
+  --elevation-md: 0 2px 6px oklch(0.27 0.02 265 / 0.06), 0 1px 2px oklch(0.27 0.02 265 / 0.05);
+  --elevation-lg: 0 18px 50px oklch(0.2 0.02 265 / 0.18), 0 2px 8px oklch(0.2 0.02 265 / 0.08);
+  --accent: oklch(0.88 0.19 127);
+  --accent-hover: oklch(0.84 0.19 127);
+  --accent-fg: oklch(0.26 0.07 127);
+  --accent-tint: oklch(0.955 0.05 127);
+  --accent-edge: oklch(0.62 0.17 132);
+  --accent-text: oklch(0.48 0.14 132);
+
   --radius: 0.625rem;
-  --background: oklch(0.985 0.002 265);
-  --foreground: oklch(0.2 0.012 265);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.2 0.012 265);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.2 0.012 265);
-  --primary: oklch(0.23 0.014 265);
-  --primary-foreground: oklch(0.985 0.002 265);
-  --secondary: oklch(0.955 0.004 265);
-  --secondary-foreground: oklch(0.23 0.014 265);
-  --muted: oklch(0.955 0.004 265);
-  --muted-foreground: oklch(0.47 0.014 265);
-  --accent: oklch(0.945 0.005 265);
-  --accent-foreground: oklch(0.2 0.012 265);
-  --destructive: oklch(0.53 0.2 27);
-  --border: oklch(0.91 0.005 265);
-  --input: oklch(0.88 0.006 265);
-  --ring: oklch(0.56 0.17 262);
-  --success: oklch(0.5 0.13 150);
-  --warning: oklch(0.52 0.12 65);
-  --info: oklch(0.5 0.17 262);
-  --sidebar: oklch(0.97 0.003 265);
-  --brand: oklch(0.89 0.19 128);
-  --brand-foreground: oklch(0.2 0.03 130);
+  --background: var(--canvas);
+  --foreground: var(--fg);
+  --card: var(--surface);
+  --card-foreground: var(--fg);
+  --popover: var(--surface);
+  --popover-foreground: var(--fg);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-fg);
+  --secondary: var(--raised);
+  --secondary-foreground: var(--fg);
+  --muted-fill: var(--raised);
+  --muted-foreground: var(--muted);
+  --interaction: var(--raised);
+  --accent-foreground: var(--fg);
+  --destructive: var(--danger);
+  --border: var(--line);
+  --input: var(--line-strong);
+  --ring: var(--accent-edge);
+  --success: var(--ok);
+  --warning: var(--warn);
+  --brand: var(--accent);
+  --brand-foreground: var(--accent-fg);
 }
 
 .dark {
-  --background: oklch(0.155 0.006 265);
-  --foreground: oklch(0.96 0.003 265);
-  --card: oklch(0.19 0.007 265);
-  --card-foreground: oklch(0.96 0.003 265);
-  --popover: oklch(0.21 0.008 265);
-  --popover-foreground: oklch(0.96 0.003 265);
-  --primary: oklch(0.95 0.004 265);
-  --primary-foreground: oklch(0.2 0.012 265);
-  --secondary: oklch(0.26 0.009 265);
-  --secondary-foreground: oklch(0.96 0.003 265);
-  --muted: oklch(0.24 0.008 265);
-  --muted-foreground: oklch(0.72 0.012 265);
-  --accent: oklch(0.27 0.01 265);
-  --accent-foreground: oklch(0.96 0.003 265);
-  --destructive: oklch(0.7 0.18 22);
-  --border: oklch(1 0 0 / 9%);
-  --input: oklch(1 0 0 / 14%);
-  --ring: oklch(0.72 0.13 262);
-  --success: oklch(0.8 0.17 135);
-  --warning: oklch(0.82 0.13 80);
-  --info: oklch(0.76 0.12 262);
-  --sidebar: oklch(0.135 0.006 265);
-  --brand: oklch(0.89 0.19 128);
-  --brand-foreground: oklch(0.2 0.03 130);
+  --canvas: oklch(0.172 0.006 265);
+  --sidebar: oklch(0.152 0.006 265);
+  --surface: oklch(0.2 0.007 265);
+  --raised: oklch(0.24 0.008 265);
+  --sunken: oklch(0.162 0.006 265);
+  --line: oklch(0.265 0.008 265);
+  --line-strong: oklch(0.33 0.01 265);
+  --fg: oklch(0.95 0.004 265);
+  --muted: oklch(0.74 0.01 265);
+  --faint: oklch(0.6 0.01 265);
+  --ok: oklch(0.76 0.14 152);
+  --warn: oklch(0.82 0.13 80);
+  --danger: oklch(0.71 0.17 25);
+  --info: oklch(0.74 0.12 250);
+  --scrim: oklch(0.08 0.01 265 / 0.6);
+  --elevation-md: 0 2px 8px oklch(0 0 0 / 0.3);
+  --elevation-lg: 0 24px 60px oklch(0 0 0 / 0.5), 0 2px 8px oklch(0 0 0 / 0.3);
+  --accent-tint: oklch(0.27 0.045 127);
+  --accent-edge: oklch(0.88 0.19 127);
+  --accent-text: oklch(0.88 0.19 127);
 }
 
 @layer base {

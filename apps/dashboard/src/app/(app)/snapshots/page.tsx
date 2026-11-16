@@ -20,6 +20,7 @@ import { redirect } from "next/navigation";
 import { Fragment, Suspense } from "react";
 import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { CatalogBrowser } from "@/components/catalog-browser";
 import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
 import { SnapshotBuildRefresh, SnapshotCreateChoice, SnapshotRebuildDialog } from "@/components/docker-snapshot-forms";
@@ -36,7 +37,7 @@ import { LaunchDialogContent, LaunchDialogHeader } from "@/components/launch-sur
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
 import { RemoveGolden } from "@/components/remove-golden";
-import { ResourceBrowser, type ResourceRow, SelectItem } from "@/components/resource-browser";
+import { type ResourceRow, SelectItem } from "@/components/resource-browser";
 import { ResourceTags } from "@/components/resource-tags";
 import { SizeDefaults } from "@/components/size-defaults";
 import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
@@ -535,8 +536,8 @@ export default async function GoldensPage({ searchParams }: Props) {
               <section key={group.key} aria-label={group.label} className="space-y-3">
                 <h2 className="text-sm font-medium text-muted-foreground">{group.label}</h2>
                 {/* Each group keeps the existing detail/history controller; its duplicate page heading is not needed. */}
-                <div className="space-y-3 [&>div:first-child]:hidden">
-                  <ResourceBrowser
+                <div className="space-y-3 [&>div>div:first-child]:hidden">
+                  <CatalogBrowser
                     title=""
                     description=""
                     label={group.label}
@@ -899,10 +900,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
       ...repos.map((r) => r.slug ?? r.url),
     ].join(" "),
     mark: (
-      <span
-        aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-background [&_svg]:size-4"
-      >
+      <span aria-hidden className="flex size-9 shrink-0 items-center justify-center [&_svg]:size-8">
         <ProviderMark provider={golden.provider} />
       </span>
     ),
@@ -1048,10 +1046,7 @@ function dockerSnapshotRow(
     bucket: state.bucket,
     search: [snapshot.name, meta, snapshot.visibility, ...repos.map((repo) => repo.url)].join(" "),
     mark: (
-      <span
-        aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-background [&_svg]:size-4"
-      >
+      <span aria-hidden className="flex size-9 shrink-0 items-center justify-center [&_svg]:size-8">
         <ProviderMark provider="docker" />
       </span>
     ),

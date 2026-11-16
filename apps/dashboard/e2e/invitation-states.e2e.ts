@@ -18,7 +18,7 @@ test("an invitation read failure hides diagnostics, preserves members and reload
   await expect(alert).not.toContainText(diagnostic);
   await expect(page.getByText("No pending invitations.", { exact: true })).toHaveCount(0);
   await expect(page.locator('[data-member="bob@example.com"]')).toBeVisible();
-  await expect(page.getByRole("button", { name: "Send invitation", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Invite a member", exact: true })).toBeVisible();
   for (const [name, width] of [
     ["desktop", 1280],
     ["mobile", 390],

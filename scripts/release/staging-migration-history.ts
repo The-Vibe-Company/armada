@@ -3,13 +3,19 @@ import { readFileSync } from "node:fs";
 const versionPattern = /^\d{14}$/;
 
 /** Only a complete release prefix plus known, strictly later main migrations is safe. */
-export function stagingMigrationDecision(local: string[], remote: string[], main: string[]): "apply" | "skip" {
+export function stagingMigrationDecision(
+  local: string[],
+  remote: string[],
+  main: string[],
+  exact = false,
+): "apply" | "skip" {
   for (const versions of [local, remote, main]) {
     if (versions.some((v) => !versionPattern.test(v)) || new Set(versions).size !== versions.length)
       throw new Error("Invalid or duplicate migration version");
   }
   const extras = remote.filter((v) => !local.includes(v));
   if (!extras.length) return "apply";
+  if (exact) throw new Error("Staging has migrations outside the exact release; production blocked");
   const newest = [...local].sort().at(-1);
   const remoteNewest = [...remote].sort().at(-1)!;
   if (
@@ -60,5 +66,5 @@ if (import.meta.main) {
       if (!match?.[1]) throw new Error("Invalid main migration filename");
       return match[1];
     });
-  console.log(stagingMigrationDecision(local, remote, main));
+  console.log(stagingMigrationDecision(local, remote, main, process.env.STAGING_EXACT_HISTORY === "true"));
 }

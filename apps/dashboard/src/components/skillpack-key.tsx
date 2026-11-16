@@ -4,6 +4,7 @@ import { KeyRoundIcon, UserIcon, UsersIcon } from "lucide-react";
 import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 import { removeSkillpackKey, saveSkillpackKey } from "@/app/actions/skillpack-key";
 import { SubmitButton } from "@/components/action-form";
+import { CatalogDrawer } from "@/components/catalog-drawer";
 import { ChoiceCard } from "@/components/connections";
 import { CreateDialog } from "@/components/create-dialog";
 import { PageHeader } from "@/components/page-header";
@@ -100,7 +101,10 @@ export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, 
       </PageHeader>
 
       <div className="space-y-3">
-        <ul aria-label="Skillpack keys" className="@container divide-y overflow-hidden rounded-xl border bg-card">
+        <ul
+          aria-label="Skillpack keys"
+          className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,310px),1fr))] gap-3"
+        >
           {SCOPES.map((item) => (
             <KeyRow
               key={item}
@@ -138,6 +142,8 @@ function KeyRow({
   canManage: boolean;
   onSet: (from: HTMLElement) => void;
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const detailsTrigger = useRef<HTMLButtonElement>(null);
   const name = scope === "user" ? "Your Skillpack key" : "The organization’s key";
   const state = !stored
     ? { tone: "neutral" as const, label: "Not set" }
@@ -146,14 +152,21 @@ function KeyRow({
       : { tone: "warning" as const, label: "Expired or revoked" };
   return (
     <li
-      className="grid gap-x-4 gap-y-2 px-4 py-3 @3xl:grid-cols-[minmax(0,1fr)_10rem_minmax(0,11rem)_11rem] @3xl:items-center"
+      className="min-w-0 overflow-hidden rounded-[10px] border bg-card transition-colors hover:border-foreground/25"
       data-skillpack-key={scope}
       data-skillpack-state={stored ? (stored.usable ? "active" : "unusable") : "not-set"}
     >
-      <div className="flex min-w-0 items-center gap-3">
+      <button
+        ref={detailsTrigger}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={detailsOpen}
+        onClick={() => setDetailsOpen(true)}
+        className="flex w-full min-w-0 items-start gap-3 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring"
+      >
         <span
           aria-hidden
-          className="flex size-8 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-primary [&_svg]:size-4"
+          className="flex size-8 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-[var(--accent-text)] [&_svg]:size-4"
         >
           <KeyRoundIcon />
         </span>
@@ -179,27 +192,45 @@ function KeyRow({
             )}
           </p>
         </div>
+      </button>
+      <div className="flex items-center justify-between gap-2 border-t bg-muted/20 px-4 py-2.5">
+        <StateCell tone={state.tone} label={state.label} />
+        <span className="text-xs text-muted-foreground">{skillpackAudience(scope, orgName)}</span>
       </div>
-      <StateCell tone={state.tone} label={state.label} className="ps-11 @3xl:ps-0" />
-      <p className="hidden truncate text-sm text-muted-foreground @3xl:block">{skillpackAudience(scope, orgName)}</p>
-      <div className="flex flex-wrap items-center gap-2 ps-11 @3xl:justify-end @3xl:ps-0">
-        {canManage ? (
-          <>
-            <Button
-              size="sm"
-              variant={stored ? "outline" : "default"}
-              onClick={(event) => onSet(event.currentTarget)}
-              data-skillpack-set
-              aria-label={`${stored ? "Replace" : "Add"} ${scope === "user" ? "your" : "the organization's"} Skillpack key`}
-            >
-              {stored ? "Replace" : "Add"}
-            </Button>
-            {stored && <RemoveKey scope={scope} orgId={orgId} />}
-          </>
-        ) : (
-          <span className="text-xs text-muted-foreground">Only an admin changes it.</span>
-        )}
-      </div>
+      <CatalogDrawer
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+        title={name}
+        subtitle={skillpackAudience(scope, orgName)}
+        mark={<KeyRoundIcon className="size-9" />}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          detailsTrigger.current?.focus();
+        }}
+      >
+        <StateCell tone={state.tone} label={state.label} />
+        <p className="text-sm text-muted-foreground">
+          Armada uses this key to install private skills. The stored value cannot be read back.
+        </p>
+        <div className="flex flex-wrap items-center gap-2" data-skillpack-key-detail={scope}>
+          {canManage ? (
+            <>
+              <Button
+                size="sm"
+                variant={stored ? "outline" : "default"}
+                onClick={(event) => onSet(event.currentTarget)}
+                data-skillpack-set
+                aria-label={`${stored ? "Replace" : "Add"} ${scope === "user" ? "your" : "the organization's"} Skillpack key`}
+              >
+                {stored ? "Replace" : "Add"}
+              </Button>
+              {stored && <RemoveKey scope={scope} orgId={orgId} />}
+            </>
+          ) : (
+            <span className="text-xs text-muted-foreground">Only an admin changes it.</span>
+          )}
+        </div>
+      </CatalogDrawer>
     </li>
   );
 }
@@ -327,7 +358,7 @@ function RemoveKey({ scope, orgId }: { scope: SkillpackScope; orgId: string }) {
         onCloseAutoFocus={(event) => {
           event.preventDefault();
           if (button.current?.isConnected) return button.current.focus();
-          document.querySelector<HTMLElement>(`[data-skillpack-key="${scope}"] [data-skillpack-set]`)?.focus();
+          document.querySelector<HTMLElement>(`[data-skillpack-key-detail="${scope}"] [data-skillpack-set]`)?.focus();
         }}
       >
         <AlertDialogHeader>

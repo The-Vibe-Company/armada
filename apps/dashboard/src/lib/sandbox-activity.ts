@@ -30,10 +30,22 @@ export function sandboxActivityPage(
 ) {
   const working = (row: SandboxListMetadata) => row.status === "running" || row.status === "starting";
   const need = (row: SandboxListMetadata) => sandboxNeedsViewer(row, viewerId, now);
-  const activity: "all" | "need" | "working" =
-    requestedActivity === "all" || requestedActivity === "working" ? requestedActivity : "need";
-  const counts = { all: rows.length, need: rows.filter(need).length, working: rows.filter(working).length };
-  const activeRows = rows.filter((row) => activity === "all" || (activity === "need" ? need(row) : working(row)));
+  const predicates = {
+    all: (_row: SandboxListMetadata) => true,
+    mine: (row: SandboxListMetadata) => row.ownerId === viewerId,
+    working,
+    need,
+    stopped: (row: SandboxListMetadata) => row.status === "stopped",
+    failed: (row: SandboxListMetadata) => row.status === "failed",
+  };
+  const activity =
+    typeof requestedActivity === "string" && Object.hasOwn(predicates, requestedActivity)
+      ? (requestedActivity as keyof typeof predicates)
+      : "all";
+  const counts = Object.fromEntries(
+    Object.entries(predicates).map(([key, matches]) => [key, rows.filter(matches).length]),
+  ) as Record<keyof typeof predicates, number>;
+  const activeRows = rows.filter(predicates[activity]);
   const page = Math.min(requestedPage, Math.max(1, Math.ceil(activeRows.length / 50)));
   return { rows: activeRows.slice((page - 1) * 50, page * 50), activity, counts, page };
 }

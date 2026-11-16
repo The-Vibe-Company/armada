@@ -102,7 +102,7 @@ export function TemplateMark() {
   return (
     <span
       aria-hidden
-      className="flex size-8 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-primary [&_svg]:size-4"
+      className="flex size-8 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-[var(--accent-text)] [&_svg]:size-4"
     >
       <LayoutTemplateIcon />
     </span>
@@ -753,8 +753,7 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
       <input type="hidden" name="request_key" value={requestKey} />
       <LaunchFields>
         <LaunchTaskField idPrefix={id} />
-        <div className="text-sm leading-loose text-muted-foreground">
-          <span className="max-sm:hidden">Launch </span>
+        <div className="overflow-hidden rounded-[10px] border">
           <LaunchChoice
             label="Agent"
             value={HARNESS_LABELS[target.definition.harness]}
@@ -762,7 +761,6 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
             disabled
             onChange={() => {}}
           />
-          <span className="max-sm:hidden"> running </span>
           <LaunchChoice
             label="Model"
             value={modelLabel(target.definition.harness, target.definition.model)}
@@ -770,7 +768,6 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
             disabled
             onChange={() => {}}
           />
-          <span className="max-sm:hidden">, reasoning effort </span>
           <LaunchChoice
             label="Effort"
             value={EFFORT_LABEL[target.definition.reasoningEffort] ?? target.definition.reasoningEffort}
@@ -827,6 +824,15 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
           Agent, model, effort and snapshot come from the template, with its tools and skills. The account is locked too
           when the template names one. Remove the template to change them.
         </p>
+        {target.sizing && target.definition.provider !== "docker" && (
+          <MachineSizeField
+            composer
+            idPrefix={id}
+            provider={target.definition.provider}
+            policy={target.sizing.policy}
+            repositoryDir={project}
+          />
+        )}
         <LaunchAdvanced
           summary={
             <span className="text-xs text-muted-foreground">
@@ -835,14 +841,6 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
             </span>
           }
         >
-          {target.sizing && target.definition.provider !== "docker" && (
-            <MachineSizeField
-              idPrefix={id}
-              provider={target.definition.provider}
-              policy={target.sizing.policy}
-              repositoryDir={project}
-            />
-          )}
           <p className="text-sm">Tools: {target.tools.join(", ") || "None"}</p>
           <p className="text-sm">Extra skills: {target.definition.skills.join(", ") || "None"}</p>
         </LaunchAdvanced>

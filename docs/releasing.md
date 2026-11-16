@@ -264,18 +264,30 @@ acceptance evidence](merge-queue.md#releases-do-not-freeze-merges-1850). The
 one-time provider cutover freeze above is separate.
 
 Ordinary main workflows retain only the latest pending main without cancelling
-active work. Pinned release/manual calls use separate outer groups; the shared
-staging deployment/smoke job lock retains waiters FIFO with queue:max, preserving
-queued release evidence. Immediately
-before the first mutation, an ordinary main run resolves current main over Git
-and skips migration/provider builds/deployment/smoke if a newer SHA superseded
-it. This avoids stale deployments without evicting a pending release. Resolution
-failure fails closed. After mutation starts, newer main never interrupts it.
-Explicit pinned release/manual calls are exempt, so a skipped stale main can
-never authorize production. Queued stale workflows may still perform runner/tool
-setup before this final admission guard; they do not build or deploy an app. Never cancel a live
-smoke blindly: it owns real compute and durable cleanup receipts. Already-running
-old workflow revisions/provider jobs are not stopped by a source change.
+active work. Release holds the shared `release-production` admission lock for its
+whole lifetime; ordinary staging jobs acquire that same lock. Pinned child smoke
+uses a distinct lock to avoid reacquiring its parent's reservation. At admission,
+ordinary jobs inspect active Release runs and yield before setup or mutation when
+a release is queued. This lets a queued release pass ordinary waiters without
+running their deployment. An already admitted ordinary deployment finishes safely.
+Reservation is conservative: Release preparation and dry runs also briefly defer
+ordinary staging; they still do not read production configuration.
+
+A `workflow_run` completion wakeup (success, failure or cancellation) resolves current main,
+not the release SHA, and uses the ordinary staging path. Intermediate wakeups
+yield if another Release remains; push/completion wakeups coalesce in the same
+latest-main group. There is no manual merge pause. API or main-resolution failure
+fails closed. Schema-changing merges flow normally; their staging migrations wait
+until the release relinquishes its reservation. Never cancel live smoke blindly.
+Completion journals carry the triggering Release run ID. The shared ordinary and
+pinned receipt consumer authenticates the producer repository, branch and workflow,
+then fetches that Release and requires trusted repository/branch, Release workflow,
+push/manual event and completed status. Missing or invalid provenance fails closed;
+cleanup receipts are preserved rather than discarded. A cancelled Release therefore
+still wakes newest main; a later active Release can defer it again. Continuous
+queued releases do not guarantee ordinary staging progress.
+
+Already-running old workflow revisions are not changed by this source update.
 
 Owner proof: updated PR/queue/release-please deployment events create no smoke
 workflow; ordinary main updates staging but not production or npm; a publishing
@@ -373,42 +385,28 @@ environments. `railway up` uploads source but does not apply IaC. Actions order,
 CLI pin and disabled Git autodeploy remain unchanged. Code and unit CI do not
 establish that the live environments have been migrated.
 
-## Staging ahead of an exact release (#2093)
+## Exact-release migration inventory (#2394)
 
-The staging deployment accepts a database ahead of the pinned release only when
-all release migration versions are already recorded and every remote-only version
-is strictly newer than the release maximum and exists in fetched `origin/main`.
-It then skips SQL apply, deploys the exact release source and runs the full staging
-smoke against that newer schema. This forward-only exception avoids changing the
-FIFO staging lock or starving ordinary main runs. Migration versions are compared,
-not SQL equivalence; applied migrations must remain immutable and backward compatible.
+Pinned release staging rejects any remote migration outside the release inventory,
+even if it belongs to newer main. Pending release migrations still apply normally.
+Production keeps its existing exact-source SQL path. Ordinary staging retains the
+known-forward-history check for its own deployment/recovery behavior. No history
+repair, rollback or newer-main SQL is allowed to make release staging pass.
 
-Unknown versions, older remote-only versions, missing release migrations in an
-otherwise ahead history, malformed history or failed main resolution block deployment.
-An ordinary non-ahead history still uses the CLI dry-run and apply checks. No history
-repair, rollback, newer SQL application or moving-main application checkout is used.
-Production never enables this staging-only exception: its migration apply remains
-exactly the validated release commit's set and still fails on remote-only history.
+Deferring ordinary staging for the whole release prevents newly merged migrations
+from entering staging between its pinned smoke and production. If staging was
+already ahead before the reservation, the release fails closed; recover with a
+forward release containing that history. This policy compares immutable migration
+versions, not arbitrary database objects or untracked manual SQL drift. The owner
+must keep independent database/provider writers disabled.
 
-Coordinator acceptance (not performed by agents): under the staging lock, verify
-an exact-release staging deployment against a known newer main migration skips
-SQL but completes pinned-source smoke; confirm unknown history blocks before any
-provider upload. Inspect the authorized release's production migration inventory
-against its tag; do not inject production drift or repair history to test this.
-No new configuration secrets, CI jobs or required checks are needed.
+### Exact-commit staging evidence
 
-### Reusing exact-commit staging evidence
-
-A pinned release call checks for a completed successful ordinary `main` push
-run of `staging-gated-production.yml` for the full release SHA. The check runs
-inside the existing staging deployment/smoke lock. It authenticates the source
-repository, workflow path, event, branch, SHA and current run attempt, and requires
-both deployment and smoke steps to have completed successfully. Superseded/no-op,
-skipped, failed, missing or unavailable evidence falls back to direct exact-SHA
-deployment and smoke. Tags created with `GITHUB_TOKEN` need no tag-triggered run.
-Official-image releases always use direct smoke because the generated image pin
-is not part of an ordinary source checkout. This reuses historical acceptance,
-not a claim that staging still serves that SHA after later main deployments.
+Pinned release calls always deploy and smoke directly under the reservation.
+Historical ordinary staging evidence cannot authorize the new exact-inventory
+policy: a successful old run may have accepted newer SQL under the former
+forward-history exception. Official-image releases also require the generated pin
+from their calling release. No historical smoke success bypasses this check.
 
 ### Docker normal-launch production prerequisite check
 
@@ -460,15 +458,29 @@ is historical evidence of cancellation, not sufficient evidence that today's
 FIFO configuration still evicts releases. Confirm the cancellation reason and
 executing workflow revision before replacing these controls.
 
-### #2394 acceptance ledger (investigation, not completion)
+### #2394 acceptance ledger (repository work and outstanding evidence)
 
 | Criterion | Evidence / outstanding work |
 | --- | --- |
-| Merge-safe pinned release | FIFO and separate pinned outer group already present; coordinator must record a release concurrent with ordinary main and schema-changing merges |
-| Exact production SQL equals smoked SQL | Forward-history staging policy above permits smoke against newer SQL; this does **not** establish schema equality. A release-schema isolation design remains required before claiming this stronger guarantee |
-| Faster Modal/Docker probes, no lost coverage | Baseline measured above; current ordinary smoke validates Modal cases only. Confirm the owner-enabled Docker parity entry point before changing scheduling; independent provider scheduling and authenticated golden reuse remain outstanding |
+| Merge-safe pinned release | Whole-release staging reservation, early ordinary admission yield and completion wakeup implemented; coordinator must record a release concurrent with ordinary main and schema-changing merges |
+| Exact production SQL equals smoked SQL | Pinned release staging rejects forward history; ordinary migrations defer for the entire release. Coordinator must compare smoked and production immutable migration inventories; no deployed proof claimed |
+| Faster Modal/Docker probes, no lost coverage | Baseline measured above; current ordinary smoke validates Modal cases only. Full parity provider scheduling landed in #2406. Existing release smoke remains Modal-only; parity gate wiring and authenticated same-commit golden reuse remain outstanding |
 | Before/after timings | Baseline above; per-step instrumentation implemented. Coordinator must collect an authorized post-merge staging run; no after measurement or speedup is claimed |
 
 No new configuration, CI job, required check or deployment prerequisite is added
 by timing instrumentation. Boat remains outside the release gate. This ledger
 must not be read as release-path acceptance or permission to deploy.
+
+The owner decision “Différer staging” (2026-11-16) supersedes FIFO fairness for
+ordinary queued staging. The reported 2.49.1 delay (pinned smoke pending after
+13:10Z behind ordinary smoke begun at 13:00Z, issue comment) is consistent with
+the shared job lock, not proof of pending replacement under current `queue: max`.
+The workflow source reserved staging only during the smoke job, leaving the rest
+of a release exposed to ordinary staging/schema writes; the whole-release lock
+addresses that cause. No new required PR check or provider setting is added.
+
+This repository change does not close #2394: gate wiring, any proven duplicate
+golden work and authorized before/after runtime evidence remain outstanding.
+The current smoke entrypoints launch authenticated existing goldens rather than
+building them; no duplicate build was found to remove. Do not infer a same-commit
+golden cache hit from a golden name or a successful historical smoke alone.

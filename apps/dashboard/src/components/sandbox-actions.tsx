@@ -4,6 +4,7 @@ import type { SandboxStatus } from "@armada/core";
 import { Loader2Icon, MoreHorizontalIcon, SquareIcon, Trash2Icon } from "lucide-react";
 import { useActionState, useCallback } from "react";
 import { deleteSandbox, stopSandbox } from "@/app/actions/sandboxes";
+import { ShellPageActions } from "@/components/shell-page-actions";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,21 +43,32 @@ export function SandboxActions({
 }) {
   if (canStop && CAN_STOP.includes(status))
     return (
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button size="icon" variant="ghost" aria-label="Sandbox actions">
-            <MoreHorizontalIcon />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="end" className="w-64 space-y-2">
-          <StopButton sandboxId={sandboxId} size="sm" {...(stopDescription ? { description: stopDescription } : {})} />
-          <p className="text-xs text-muted-foreground">
-            {stopDescription ?? "The machine is removed; disk and conversation are kept. A message starts it again."}
-          </p>
-        </PopoverContent>
-      </Popover>
+      <ShellPageActions>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button size="icon" variant="ghost" aria-label="Sandbox actions">
+              <MoreHorizontalIcon />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-64 space-y-2">
+            <StopButton
+              sandboxId={sandboxId}
+              size="sm"
+              {...(stopDescription ? { description: stopDescription } : {})}
+            />
+            <p className="text-xs text-muted-foreground">
+              {stopDescription ?? "The machine is removed; disk and conversation are kept. A message starts it again."}
+            </p>
+          </PopoverContent>
+        </Popover>
+      </ShellPageActions>
     );
-  if (canDelete && CAN_DELETE.includes(status)) return <DeleteButton sandboxId={sandboxId} />;
+  if (canDelete && CAN_DELETE.includes(status))
+    return (
+      <ShellPageActions>
+        <DeleteButton sandboxId={sandboxId} />
+      </ShellPageActions>
+    );
   return null;
 }
 

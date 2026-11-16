@@ -68,9 +68,14 @@ type ListProps = { org: string; invitations: InvitationView[]; now: Date; resend
 
 /** Pending invitations: an accepted one is a row in Members, a revoked or expired one is gone. */
 export function InvitationList({ org, invitations, now, resend, revoke }: ListProps) {
-  if (invitations.length === 0) return <p className="text-sm text-muted-foreground">No pending invitations.</p>;
+  if (invitations.length === 0)
+    return (
+      <p className="rounded-[10px] border bg-card px-4 py-3.5 text-[13px] text-muted-foreground">
+        No pending invitations.
+      </p>
+    );
   return (
-    <ul className="divide-y rounded-lg border">
+    <ul className="divide-y overflow-hidden rounded-[10px] border bg-card">
       {invitations.map((invitation) => {
         const delivery = deliveryLabel(invitation.delivery);
         const trouble = invitation.delivery === "failed" || invitation.delivery === "not_configured";

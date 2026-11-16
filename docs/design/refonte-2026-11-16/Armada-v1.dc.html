@@ -1,0 +1,1236 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+:root{--canvas:oklch(0.982 0.003 265);--sidebar:oklch(0.962 0.004 265);--surface:oklch(0.997 0.0015 265);--raised:oklch(0.952 0.005 265);--sunken:oklch(0.972 0.004 265);--line:oklch(0.915 0.006 265);--line-strong:oklch(0.86 0.008 265);--fg:oklch(0.24 0.018 265);--muted:oklch(0.47 0.016 265);--faint:oklch(0.6 0.012 265);--ok:oklch(0.55 0.13 156);--warn:oklch(0.6 0.13 70);--danger:oklch(0.56 0.19 25);--info:oklch(0.56 0.13 250);--scrim:oklch(0.2 0.02 265 / 0.35);--shadow-md:0 2px 6px oklch(0.27 0.02 265 / .06),0 1px 2px oklch(0.27 0.02 265 / .05);--shadow-lg:0 18px 50px oklch(0.2 0.02 265 / .18),0 2px 8px oklch(0.2 0.02 265 / .08);--accent:oklch(0.88 0.19 127);--accent-hover:oklch(0.84 0.19 127);--accent-fg:oklch(0.26 0.07 127);--accent-tint:oklch(0.955 0.05 127);--accent-edge:oklch(0.62 0.17 132);--accent-text:oklch(0.48 0.14 132)}
+:root[data-theme="dark"]{--canvas:oklch(0.172 0.006 265);--sidebar:oklch(0.152 0.006 265);--surface:oklch(0.2 0.007 265);--raised:oklch(0.24 0.008 265);--sunken:oklch(0.162 0.006 265);--line:oklch(0.265 0.008 265);--line-strong:oklch(0.33 0.01 265);--fg:oklch(0.95 0.004 265);--muted:oklch(0.74 0.01 265);--faint:oklch(0.6 0.01 265);--ok:oklch(0.76 0.14 152);--warn:oklch(0.82 0.13 80);--danger:oklch(0.71 0.17 25);--info:oklch(0.74 0.12 250);--scrim:oklch(0.08 0.01 265 / 0.6);--shadow-md:0 2px 8px oklch(0 0 0 / .3);--shadow-lg:0 24px 60px oklch(0 0 0 / .5),0 2px 8px oklch(0 0 0 / .3);--accent-tint:oklch(0.27 0.045 127);--accent-edge:oklch(0.88 0.19 127);--accent-text:oklch(0.88 0.19 127)}
+:root[data-accent="blue"]{--accent:oklch(0.62 0.15 250);--accent-hover:oklch(0.56 0.15 250);--accent-fg:oklch(0.99 0.01 250);--accent-tint:oklch(0.95 0.03 250);--accent-edge:oklch(0.62 0.15 250);--accent-text:oklch(0.5 0.15 250)}
+:root[data-theme="dark"][data-accent="blue"]{--accent-tint:oklch(0.28 0.06 250);--accent-edge:oklch(0.72 0.13 250);--accent-text:oklch(0.78 0.11 250)}
+:root[data-accent="coral"]{--accent:oklch(0.72 0.16 38);--accent-hover:oklch(0.67 0.16 38);--accent-fg:oklch(0.22 0.05 38);--accent-tint:oklch(0.955 0.035 38);--accent-edge:oklch(0.6 0.17 38);--accent-text:oklch(0.52 0.16 38)}
+:root[data-theme="dark"][data-accent="coral"]{--accent-tint:oklch(0.29 0.06 38);--accent-edge:oklch(0.76 0.15 38);--accent-text:oklch(0.8 0.13 38)}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--canvas);color:var(--fg);font-family:'Geist',ui-sans-serif,system-ui,sans-serif;font-size:14px;-webkit-font-smoothing:antialiased;font-feature-settings:'tnum' 1}
+button,input,textarea{font:inherit;color:inherit}
+a{color:var(--accent-text);text-decoration:none}
+a:hover{text-decoration:underline}
+::selection{background:var(--accent-tint)}
+@keyframes arm-pulse{0%,100%{opacity:1}50%{opacity:.3}}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+</helmet>
+
+<sc-if value="{{ isLogin }}" hint-placeholder-val="{{ false }}">
+<div style="min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:32px; background:var(--canvas)">
+  <div style="width:100%; max-width:360px; display:flex; flex-direction:column; gap:24px">
+    <div style="display:flex; flex-direction:column; gap:16px">
+      <span style="width:40px; height:40px; border-radius:10px; background:oklch(0.17 0.006 265); border:1px solid var(--line); display:inline-flex; align-items:center; justify-content:center">
+        <svg width="24" height="24" viewBox="0 0 32 32"><path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"></path><path d="M10 13L14 20H6Z" fill="#f0efec"></path><path d="M22 13L26 20H18Z" fill="#f0efec"></path><path d="M4 21.5L8 28.5H0Z" fill="#f0efec" fill-opacity="0.45"></path><path d="M28 21.5L32 28.5H24Z" fill="#f0efec" fill-opacity="0.45"></path></svg>
+      </span>
+      <div style="display:flex; flex-direction:column; gap:6px">
+        <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">Sign in to Armada</h1>
+        <p style="margin:0; font-size:14px; color:var(--muted); line-height:1.5">Run Claude Code and Codex in sandboxes built from your repositories.</p>
+      </div>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:8px">
+      <button onClick="{{ signIn }}" style="white-space:nowrap; flex-shrink:0; display:flex; align-items:center; justify-content:center; gap:8px; height:40px; border:0; border-radius:8px; background:var(--accent); color:var(--accent-fg); font-size:14px; font-weight:600; cursor:pointer" style-hover="background:var(--accent-hover)">Continue with GitHub</button>
+      <button onClick="{{ signIn }}" style="white-space:nowrap; flex-shrink:0; display:flex; align-items:center; justify-content:center; height:40px; border:1px solid var(--line-strong); border-radius:8px; background:var(--surface); font-size:14px; font-weight:500; cursor:pointer" style-hover="background:var(--raised)">Continue with Google</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:12px; color:var(--faint); font-size:12px"><span style="flex:1; height:1px; background:var(--line)"></span>or with a code by email<span style="flex:1; height:1px; background:var(--line)"></span></div>
+    <div style="display:flex; flex-direction:column; gap:8px">
+      <label style="font-size:13px; font-weight:500">Work email</label>
+      <input placeholder="you@company.com" style="height:40px; padding:0 12px; border:1px solid var(--line-strong); border-radius:8px; background:var(--surface); outline:none; font-size:14px">
+      <button onClick="{{ signIn }}" style="white-space:nowrap; flex-shrink:0; height:40px; border:1px solid var(--line-strong); border-radius:8px; background:var(--surface); font-size:14px; font-weight:500; cursor:pointer" style-hover="background:var(--raised)">Email me a code</button>
+    </div>
+    <div style="font-size:12px; color:var(--faint); line-height:1.6">Prefer the terminal? <span style="font-family:'Geist Mono',monospace; color:var(--muted)">npm i -g @the-vibe-company/armada &amp;&amp; armada login</span></div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isApp }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex; height:100vh; background:var(--canvas); overflow:hidden">
+
+  <aside style="width:244px; flex-shrink:0; display:flex; flex-direction:column; background:var(--sidebar); border-right:1px solid var(--line)">
+    <div style="padding:12px 12px 8px; display:flex; flex-direction:column; gap:8px">
+      <button style="white-space:nowrap; flex-shrink:0; display:flex; align-items:center; gap:10px; padding:6px; border:0; border-radius:8px; background:transparent; cursor:pointer; text-align:left" style-hover="background:var(--raised)">
+        <span style="width:30px; height:30px; flex-shrink:0; border-radius:8px; background:oklch(0.17 0.006 265); border:1px solid var(--line); display:inline-flex; align-items:center; justify-content:center">
+          <svg width="18" height="18" viewBox="0 0 32 32"><path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"></path><path d="M10 13L14 20H6Z" fill="#f0efec"></path><path d="M22 13L26 20H18Z" fill="#f0efec"></path><path d="M4 21.5L8 28.5H0Z" fill="#f0efec" fill-opacity="0.45"></path><path d="M28 21.5L32 28.5H24Z" fill="#f0efec" fill-opacity="0.45"></path></svg>
+        </span>
+        <span style="display:flex; flex-direction:column; min-width:0; flex:1">
+          <span style="font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">The Vibe Company</span>
+          <span style="font-size:12px; color:var(--muted)">Admin</span>
+        </span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint)"><path d="M7 15l5 5 5-5 M7 9l5-5 5 5"></path></svg>
+      </button>
+      <button onClick="{{ openCmd }}" style="white-space:nowrap; flex-shrink:0; display:flex; align-items:center; gap:8px; height:32px; padding:0 8px 0 10px; border:1px solid var(--line); border-radius:7px; background:var(--surface); color:var(--muted); font-size:13px; cursor:pointer" style-hover="border-color:var(--line-strong)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3"></path></svg>
+        <span style="flex:1; text-align:left">Search</span>
+        <span style="font-family:'Geist Mono',monospace; font-size:11px; color:var(--faint); border:1px solid var(--line); border-radius:4px; padding:0 5px">⌘K</span>
+      </button>
+      <button onClick="{{ openLaunch }}" style="white-space:nowrap; flex-shrink:0; display:flex; align-items:center; gap:8px; height:32px; padding:0 10px; border:0; border-radius:7px; background:transparent; color:var(--fg); font-size:13px; font-weight:500; cursor:pointer" style-hover="background:var(--raised)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14 M5 12h14"></path></svg>
+        <span style="flex:1; text-align:left">Launch a sandbox</span>
+        <span style="font-family:'Geist Mono',monospace; font-size:11px; color:var(--faint)">L</span>
+      </button>
+    </div>
+    <nav style="flex:1; overflow:auto; padding:4px 12px 16px; display:flex; flex-direction:column; gap:18px">
+      <sc-for list="{{ nav }}" as="g" hint-placeholder-count="4">
+        <div style="display:flex; flex-direction:column; gap:2px">
+          <div style="padding:0 8px 4px; font-size:12px; font-weight:500; color:var(--faint)">{{ g.label }}</div>
+          <sc-for list="{{ g.links }}" as="l" hint-placeholder-count="3">
+            <div style="display:flex; flex-direction:column; gap:1px">
+              <button onClick="{{ l.go }}" style="white-space:nowrap; flex-shrink:0; display:flex; align-items:center; gap:10px; height:32px; padding:0 8px; border:0; border-radius:7px; background:{{ l.bg }}; box-shadow:{{ l.ring }}; color:{{ l.color }}; font-size:13px; font-weight:500; cursor:pointer; text-align:left" style-hover="color:var(--fg)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="{{ l.icon }}"></path></svg>
+                <span style="flex:1">{{ l.label }}</span>
+                <span style="font-family:'Geist Mono',monospace; font-size:11px; color:var(--faint)">{{ l.count }}</span>
+              </button>
+              <sc-if value="{{ l.hasThreads }}">
+                <div style="display:flex; flex-direction:column; gap:1px; margin:2px 0 4px 15px; padding-left:8px; border-left:1px solid var(--line)">
+                  <sc-for list="{{ l.threads }}" as="th" hint-placeholder-count="3">
+                    <button onClick="{{ th.open }}" title="{{ th.title }}" style="white-space:nowrap; flex-shrink:0; display:flex; align-items:center; gap:8px; height:28px; padding:0 8px; border:0; border-radius:6px; background:{{ th.bg }}; color:{{ th.color }}; font-size:12.5px; cursor:pointer; text-align:left; min-width:0" style-hover="background:var(--raised); color:var(--fg)">
+                      {{ th.sDot }}
+                      <span style="flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ th.title }}</span>
+                    </button>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </sc-for>
+    </nav>
+    <div style="padding:10px 12px; border-top:1px solid var(--line); display:flex; align-items:center; gap:10px">
+      <span style="width:28px; height:28px; border-radius:999px; background:var(--raised); border:1px solid var(--line); display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:600; color:var(--muted)">AM</span>
+      <span style="flex:1; min-width:0; display:flex; flex-direction:column">
+        <span style="font-size:13px; font-weight:500">Alice Martin</span>
+        <span style="font-family:'Geist Mono',monospace; font-size:11px; color:var(--faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis">alice@example.com</span>
+      </span>
+      <button onClick="{{ toggleTheme }}" title="Switch theme" style="white-space:nowrap; flex-shrink:0; width:28px; height:28px; border:0; border-radius:6px; background:transparent; color:var(--muted); cursor:pointer; display:inline-flex; align-items:center; justify-content:center" style-hover="background:var(--raised); color:var(--fg)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"></path></svg>
+      </button>
+      <button onClick="{{ signOut }}" title="Log out" style="white-space:nowrap; flex-shrink:0; width:28px; height:28px; border:0; border-radius:6px; background:transparent; color:var(--muted); cursor:pointer; display:inline-flex; align-items:center; justify-content:center" style-hover="background:var(--raised); color:var(--fg)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9"></path></svg>
+      </button>
+    </div>
+  </aside>
+
+  <main style="flex:1; min-width:0; display:flex; flex-direction:column">
+    <header style="height:52px; flex-shrink:0; display:flex; align-items:center; gap:12px; padding:0 16px 0 24px; border-bottom:1px solid var(--line); background:var(--canvas)">
+      <div style="display:flex; align-items:center; gap:8px; min-width:0; flex:1; font-size:13px">
+        <span style="color:var(--muted); white-space:nowrap">The Vibe Company</span>
+        <span style="color:var(--faint)">/</span>
+        <button onClick="{{ crumbGo }}" style="border:0; background:transparent; padding:0; font-size:13px; color:{{ crumbColor }}; cursor:pointer; white-space:nowrap">{{ pageTitle }}</button>
+        <sc-if value="{{ isSandbox }}">
+          <span style="color:var(--faint)">/</span>
+          <span style="font-family:'Geist Mono',monospace; font-size:12.5px; white-space:nowrap">{{ sb.id }}</span>
+          <span style="display:inline-flex; align-items:center; gap:6px; height:22px; padding:0 8px; margin-left:4px; border-radius:4px; font-size:12px; font-weight:500; color:{{ sb.sColor }}; background:{{ sb.sTint }}; border:1px solid {{ sb.sLine }}; white-space:nowrap">{{ sb.sDot }}{{ sb.sLabel }}</span>
+        </sc-if>
+      </div>
+      <sc-if value="{{ isSandbox }}">
+        <div style="display:flex; align-items:center; gap:6px">
+          <sc-if value="{{ sb.canExtend }}">
+            <button onClick="{{ extend }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 10px; border:1px solid var(--line); border-radius:6px; background:transparent; font-size:13px; cursor:pointer" style-hover="background:var(--raised)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2"></path></svg>Extend
+            </button>
+          </sc-if>
+          <sc-if value="{{ sb.canStop }}">
+            <button onClick="{{ stopSb }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 10px; border:1px solid color-mix(in oklch, var(--danger) 35%, transparent); border-radius:6px; background:transparent; color:var(--danger); font-size:13px; cursor:pointer" style-hover="background:color-mix(in oklch, var(--danger) 10%, transparent)">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"></path></svg>Stop
+            </button>
+          </sc-if>
+          <button onClick="{{ toggleFacts }}" title="Sandbox details" style="white-space:nowrap; flex-shrink:0; width:30px; height:30px; border:1px solid var(--line); border-radius:6px; background:{{ factsBtnBg }}; display:inline-flex; align-items:center; justify-content:center; cursor:pointer" style-hover="background:var(--raised)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z M15 3v18"></path></svg>
+          </button>
+        </div>
+      </sc-if>
+      <sc-if value="{{ notSandbox }}">
+        <span style="display:inline-flex; align-items:center; gap:8px; font-family:'Geist Mono',monospace; font-size:12px; color:var(--faint)">{{ liveDot }}live · {{ clock }}</span>
+      </sc-if>
+    </header>
+
+    <sc-if value="{{ isSandbox }}">
+    <div style="flex:1; min-height:0; display:flex">
+      <section style="flex:1; min-width:0; display:flex; flex-direction:column">
+        <div ref="{{ chatRef }}" style="flex:1; overflow:auto">
+          <div style="max-width:780px; margin:0 auto; padding:32px 28px 24px; display:flex; flex-direction:column; gap:22px">
+            <div style="display:flex; flex-direction:column; gap:6px; padding-bottom:6px">
+              <h1 style="margin:0; font-size:20px; font-weight:600; letter-spacing:-0.015em; text-wrap:balance">{{ sb.title }}</h1>
+              <div style="font-size:13px; color:var(--muted)">Launched by {{ sb.owner }} from <span style="font-family:'Geist Mono',monospace">{{ sb.snapshot }}</span> on {{ sb.provider }} · {{ sb.launched }}</div>
+            </div>
+            <sc-for list="{{ thread }}" as="m" hint-placeholder-count="4">
+              <div style="display:flex; flex-direction:column">
+                <sc-if value="{{ m.isUser }}">
+                  <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px">
+                    <div style="max-width:82%; padding:10px 14px; border-radius:16px; background:var(--raised); border:1px solid var(--line); font-size:14px; line-height:1.55; white-space:pre-wrap; text-wrap:pretty">{{ m.text }}</div>
+                    <div style="font-size:12px; color:var(--faint); font-family:'Geist Mono',monospace">{{ m.meta }}</div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ m.isAgent }}">
+                  <p style="margin:0; font-size:14px; line-height:1.65; text-wrap:pretty"><sc-for list="{{ m.parts }}" as="pt" hint-placeholder-count="1"><sc-if value="{{ pt.isCode }}"><code style="font-family:'Geist Mono',monospace; font-size:12.5px; padding:1px 5px; border-radius:4px; background:var(--raised); border:1px solid var(--line)">{{ pt.text }}</code></sc-if><sc-if value="{{ pt.isText }}"><span>{{ pt.text }}</span></sc-if></sc-for></p>
+                </sc-if>
+                <sc-if value="{{ m.isWork }}">
+                  <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+                    <button onClick="{{ m.toggle }}" style="white-space:nowrap; flex-shrink:0; width:100%; display:flex; align-items:center; gap:8px; padding:9px 12px; border:0; background:transparent; font-size:13px; color:var(--muted); cursor:pointer; text-align:left" style-hover="color:var(--fg)">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:{{ m.chev }}; transition:transform 160ms cubic-bezier(0.22,1,0.36,1)"><path d="M9 18l6-6-6-6"></path></svg>
+                      <span style="color:var(--fg); font-weight:500">{{ m.summary }}</span>
+                      <span>· {{ m.count }}</span>
+                    </button>
+                    <sc-if value="{{ m.open }}">
+                      <div style="border-top:1px solid var(--line)">
+                        <sc-for list="{{ m.steps }}" as="st" hint-placeholder-count="3">
+                          <div style="display:flex; align-items:center; gap:10px; padding:7px 12px 7px 14px; font-size:13px; min-width:0" style-hover="background:var(--sunken)">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint); flex-shrink:0"><path d="{{ st.icon }}"></path></svg>
+                            <span style="color:var(--muted); width:64px; flex-shrink:0">{{ st.verb }}</span>
+                            <span style="flex:1; min-width:0; font-family:'Geist Mono',monospace; font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ st.target }}</span>
+                            <span style="font-family:'Geist Mono',monospace; font-size:12px; color:{{ st.rc }}; white-space:nowrap">{{ st.result }}</span>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ m.isEdit }}">
+                  <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+                    <div style="display:flex; align-items:center; gap:10px; padding:10px 12px; font-size:13px">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint)"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"></path></svg>
+                      <span style="font-weight:500">Edited {{ m.nFiles }} files</span>
+                      <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--ok)">+{{ m.add }}</span>
+                      <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--danger)">−{{ m.del }}</span>
+                      <span style="flex:1"></span>
+                      <button onClick="{{ m.toggle }}" style="white-space:nowrap; flex-shrink:0; height:26px; padding:0 8px; border:1px solid var(--line); border-radius:6px; background:transparent; font-size:12px; color:var(--muted); cursor:pointer" style-hover="color:var(--fg); background:var(--raised)">{{ m.diffLabel }}</button>
+                    </div>
+                    <sc-for list="{{ m.files }}" as="f" hint-placeholder-count="2">
+                      <div style="display:flex; align-items:center; gap:10px; padding:6px 12px 6px 36px; border-top:1px solid var(--line); font-size:12.5px">
+                        <span style="flex:1; min-width:0; font-family:'Geist Mono',monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ f.path }}</span>
+                        <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--ok)">+{{ f.add }}</span>
+                        <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--danger)">−{{ f.del }}</span>
+                      </div>
+                    </sc-for>
+                    <sc-if value="{{ m.open }}">
+                      <div style="border-top:1px solid var(--line); background:var(--sunken); padding:8px 0; font-family:'Geist Mono',monospace; font-size:12px; line-height:1.7; overflow:auto">
+                        <sc-for list="{{ m.diff }}" as="d" hint-placeholder-count="4">
+                          <div style="display:flex; gap:12px; padding:0 12px; background:{{ d.bg }}; white-space:pre">
+                            <span style="width:22px; text-align:right; color:var(--faint); flex-shrink:0">{{ d.n }}</span>
+                            <span style="width:10px; color:{{ d.c }}; flex-shrink:0">{{ d.sign }}</span>
+                            <span>{{ d.s }}</span>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ m.isLive }}">
+                  <div style="display:flex; flex-direction:column; gap:2px">
+                    <sc-for list="{{ m.steps }}" as="ls" hint-placeholder-count="1">
+                      <div style="display:flex; align-items:center; gap:10px; padding:5px 2px; font-size:13px; min-width:0">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint); flex-shrink:0"><path d="{{ ls.icon }}"></path></svg>
+                        <span style="color:var(--muted); width:64px; flex-shrink:0">{{ ls.verb }}</span>
+                        <span style="flex:1; min-width:0; font-family:'Geist Mono',monospace; font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ ls.target }}</span>
+                        <span style="font-family:'Geist Mono',monospace; font-size:12px; color:{{ ls.rc }}">{{ ls.result }}</span>
+                      </div>
+                    </sc-for>
+                    <div style="display:flex; align-items:center; gap:10px; padding:5px 2px; font-size:13px; min-width:0">
+                      <span style="width:14px; display:inline-flex; justify-content:center; flex-shrink:0">{{ m.dot }}</span>
+                      <span style="color:var(--fg); width:64px; flex-shrink:0; font-weight:500">{{ m.verb }}</span>
+                      <span style="flex:1; min-width:0; font-family:'Geist Mono',monospace; font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ m.current }}</span>
+                      <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--faint)">{{ m.elapsed }}</span>
+                    </div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ m.isError }}">
+                  <div style="border:1px solid color-mix(in oklch, var(--danger) 32%, transparent); background:color-mix(in oklch, var(--danger) 9%, transparent); border-radius:8px; padding:12px 14px; display:flex; flex-direction:column; gap:8px">
+                    <div style="font-size:13px; font-weight:600; color:var(--danger)">{{ m.title }}</div>
+                    <pre style="margin:0; font-family:'Geist Mono',monospace; font-size:12px; line-height:1.6; white-space:pre-wrap; color:var(--fg)">{{ m.text }}</pre>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ m.isNote }}">
+                  <div style="display:flex; align-items:center; gap:12px; font-size:12px; color:var(--faint)"><span style="flex:1; height:1px; background:var(--line)"></span>{{ m.text }}<span style="flex:1; height:1px; background:var(--line)"></span></div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="padding:0 28px 18px">
+          <div style="max-width:780px; margin:0 auto; display:flex; flex-direction:column; gap:8px">
+            <div style="border:1px solid var(--line-strong); border-radius:16px; background:var(--surface); box-shadow:var(--shadow-md)">
+              <textarea value="{{ composer }}" onChange="{{ onComposer }}" onKeyDown="{{ onComposerKey }}" placeholder="{{ composerPh }}" rows="2" style="display:block; width:100%; resize:none; border:0; outline:none; background:transparent; padding:14px 16px 4px; font-size:14px; line-height:1.55"></textarea>
+              <div style="display:flex; align-items:center; gap:4px; padding:6px 8px 8px 10px; flex-wrap:wrap">
+                <button onClick="{{ cycleTurnAgent }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:5px; height:28px; padding:0 8px; border:0; border-radius:6px; background:transparent; font-size:12.5px; font-weight:500; cursor:pointer" style-hover="background:var(--raised)">{{ sb.agent }}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint)"><path d="M6 9l6 6 6-6"></path></svg></button>
+                <span style="width:1px; height:14px; background:var(--line)"></span>
+                <button onClick="{{ cycleTurnModel }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:5px; height:28px; padding:0 8px; border:0; border-radius:6px; background:transparent; font-family:'Geist Mono',monospace; font-size:12px; color:var(--muted); cursor:pointer" style-hover="background:var(--raised); color:var(--fg)">{{ turnModel }}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint)"><path d="M6 9l6 6 6-6"></path></svg></button>
+                <button onClick="{{ cycleTurnEffort }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:5px; height:28px; padding:0 8px; border:0; border-radius:6px; background:transparent; font-size:12.5px; color:var(--muted); cursor:pointer" style-hover="background:var(--raised); color:var(--fg)">{{ turnEffort }} effort<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint)"><path d="M6 9l6 6 6-6"></path></svg></button>
+                <span style="display:inline-flex; align-items:center; gap:5px; height:28px; padding:0 8px; font-size:12.5px; color:var(--muted)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5 M9 8V2 M15 8V2 M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"></path></svg>{{ sb.toolsLabel }}
+                </span>
+                <span style="flex:1"></span>
+                <sc-if value="{{ sb.isWorking }}">
+                  <div style="display:inline-flex; padding:2px; border-radius:7px; background:var(--raised); gap:2px">
+                    <button onClick="{{ setSteer }}" style="white-space:nowrap; flex-shrink:0; height:24px; padding:0 9px; border:0; border-radius:5px; font-size:12px; font-weight:500; cursor:pointer; background:{{ steerBg }}; color:{{ steerColor }}; box-shadow:{{ steerShadow }}">Steer</button>
+                    <button onClick="{{ setQueue }}" style="white-space:nowrap; flex-shrink:0; height:24px; padding:0 9px; border:0; border-radius:5px; font-size:12px; font-weight:500; cursor:pointer; background:{{ queueBg }}; color:{{ queueColor }}; box-shadow:{{ queueShadow }}">Queue</button>
+                  </div>
+                  <button onClick="{{ interrupt }}" title="Interrupt the running turn" style="white-space:nowrap; flex-shrink:0; width:32px; height:32px; margin-left:4px; border:1px solid var(--line-strong); border-radius:999px; background:var(--surface); display:inline-flex; align-items:center; justify-content:center; cursor:pointer" style-hover="background:var(--raised)">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M5 5h14v14H5z"></path></svg>
+                  </button>
+                </sc-if>
+                <button onClick="{{ send }}" title="Send" style="white-space:nowrap; flex-shrink:0; width:32px; height:32px; border:0; border-radius:999px; background:var(--accent); color:var(--accent-fg); display:inline-flex; align-items:center; justify-content:center; cursor:pointer; opacity:{{ sendOpacity }}" style-hover="background:var(--accent-hover)">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5 M5 12l7-7 7 7"></path></svg>
+                </button>
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:14px; padding:0 6px; font-family:'Geist Mono',monospace; font-size:11.5px; color:var(--faint); flex-wrap:wrap; white-space:nowrap">
+              <span style="display:inline-flex; align-items:center; gap:5px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12 M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M18 9a9 9 0 0 1-9 9"></path></svg>{{ sb.branch }}</span>
+              <span>{{ sb.snapshot }} · {{ sb.provider }}</span>
+              <span>{{ sb.life }}</span>
+              <span style="flex:1"></span>
+              <span>{{ composerHint }}</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <sc-if value="{{ factsOpen }}">
+      <aside style="width:312px; flex-shrink:0; border-left:1px solid var(--line); background:var(--sidebar); overflow:auto; display:flex; flex-direction:column">
+        <sc-for list="{{ facts }}" as="fs" hint-placeholder-count="3">
+          <div style="padding:16px 18px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; gap:10px">
+            <div style="font-size:12px; font-weight:500; color:var(--faint)">{{ fs.label }}</div>
+            <sc-for list="{{ fs.rows }}" as="fr" hint-placeholder-count="3">
+              <div style="display:grid; grid-template-columns:92px minmax(0,1fr); gap:10px; font-size:13px; align-items:baseline">
+                <span style="color:var(--muted)">{{ fr.k }}</span>
+                <span style="font-family:{{ fr.font }}; font-size:{{ fr.size }}; overflow-wrap:anywhere; white-space:pre-line">{{ fr.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </sc-for>
+        <div style="padding:16px 18px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; gap:10px">
+          <div style="display:flex; align-items:center; justify-content:space-between"><span style="font-size:12px; font-weight:500; color:var(--faint)">Lifetime</span><span style="font-size:12px; font-family:'Geist Mono',monospace; color:var(--muted)">{{ sb.life }}</span></div>
+          <div style="height:4px; border-radius:999px; background:var(--raised); overflow:hidden"><div style="height:100%; width:{{ sb.lifePct }}; background:var(--fg); opacity:.55; border-radius:999px"></div></div>
+          <div style="font-size:12px; color:var(--muted); line-height:1.5">Stopping keeps the disk and the conversation. Send a prompt to resume.</div>
+        </div>
+        <div style="padding:16px 18px; display:flex; flex-direction:column; gap:10px">
+          <div style="font-size:12px; font-weight:500; color:var(--faint)">Run a command</div>
+          <div style="display:flex; align-items:center; gap:8px; height:34px; padding:0 10px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface); font-family:'Geist Mono',monospace; font-size:12.5px">
+            <span style="color:var(--faint)">$</span>
+            <input value="{{ execCmd }}" onChange="{{ onExec }}" onKeyDown="{{ onExecKey }}" placeholder="git status" style="flex:1; min-width:0; border:0; outline:none; background:transparent; font-family:'Geist Mono',monospace; font-size:12.5px">
+          </div>
+          <sc-if value="{{ hasExecOut }}">
+            <pre style="margin:0; padding:10px 12px; border-radius:7px; background:var(--sunken); border:1px solid var(--line); font-family:'Geist Mono',monospace; font-size:11.5px; line-height:1.6; white-space:pre-wrap; color:var(--muted)">{{ execOut }}</pre>
+          </sc-if>
+          <div style="font-size:12px; color:var(--faint); line-height:1.5">Runs beside the agent, in the same sandbox.</div>
+        </div>
+      </aside>
+      </sc-if>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ notSandbox }}">
+    <div ref="{{ mainRef }}" style="flex:1; overflow:auto">
+
+      <sc-if value="{{ isSandboxes }}">
+      <div style="padding:28px 32px 56px; max-width:1200px; margin:0 auto; display:flex; flex-direction:column; gap:18px">
+        <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap">
+          <div style="display:flex; flex-direction:column; gap:8px">
+            <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">Sandboxes</h1>
+            <div style="display:flex; align-items:center; gap:14px; font-size:13px; color:var(--muted); flex-wrap:wrap">
+              <sc-for list="{{ counts }}" as="c" hint-placeholder-count="4">
+                <span style="display:inline-flex; align-items:center; gap:6px">{{ c.dot }}<span style="font-family:'Geist Mono',monospace; color:var(--fg)">{{ c.n }}</span>{{ c.label }}</span>
+              </sc-for>
+            </div>
+          </div>
+          <button onClick="{{ openLaunch }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 14px; border:0; border-radius:7px; background:var(--accent); color:var(--accent-fg); font-size:13px; font-weight:600; cursor:pointer" style-hover="background:var(--accent-hover)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14 M5 12h14"></path></svg>Launch a sandbox
+          </button>
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap">
+          <div style="display:inline-flex; padding:3px; gap:2px; border-radius:8px; background:var(--raised); flex-wrap:wrap">
+            <sc-for list="{{ filters }}" as="fl" hint-placeholder-count="5">
+              <button onClick="{{ fl.go }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:6px; height:28px; padding:0 10px; border:0; border-radius:6px; font-size:13px; font-weight:500; cursor:pointer; background:{{ fl.bg }}; color:{{ fl.color }}; box-shadow:{{ fl.shadow }}">{{ fl.label }}<span style="font-family:'Geist Mono',monospace; font-size:11px; color:var(--faint)">{{ fl.n }}</span></button>
+            </sc-for>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; height:34px; width:280px; max-width:100%; padding:0 10px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint)"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3"></path></svg>
+            <input value="{{ query }}" onChange="{{ onQuery }}" placeholder="Filter by task, id or snapshot" style="flex:1; min-width:0; border:0; outline:none; background:transparent; font-size:13px">
+          </div>
+        </div>
+        <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+          <div style="display:grid; grid-template-columns:minmax(0,2.8fr) minmax(0,1.3fr) minmax(0,0.8fr) minmax(0,1fr) minmax(0,0.9fr) 64px; gap:16px; padding:9px 16px; font-size:12px; color:var(--muted); background:var(--sunken)">
+            <span>Task</span><span>Agent</span><span>Snapshot</span><span>Owner</span><span>Lifetime</span><span style="text-align:right">Upd.</span>
+          </div>
+          <sc-for list="{{ rows }}" as="r" hint-placeholder-count="6">
+            <div onClick="{{ r.open }}" style="display:grid; grid-template-columns:minmax(0,2.8fr) minmax(0,1.3fr) minmax(0,0.8fr) minmax(0,1fr) minmax(0,0.9fr) 64px; gap:16px; align-items:center; padding:11px 16px; border-top:1px solid var(--line); cursor:pointer" style-hover="background:var(--raised)">
+              <div style="display:flex; flex-direction:column; gap:4px; min-width:0">
+                <span style="font-size:14px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ r.title }}</span>
+                <span style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted)"><span style="display:inline-flex; align-items:center; gap:6px; color:{{ r.labelColor }}">{{ r.sDot }}{{ r.sLabel }}</span><span style="color:var(--faint)">·</span><span style="font-family:'Geist Mono',monospace; color:var(--faint)">{{ r.id }}</span></span>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:3px; min-width:0">
+                <span style="font-size:13px">{{ r.agent }}</span>
+                <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ r.model }} · {{ r.effort }}</span>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:3px; min-width:0">
+                <span style="font-family:'Geist Mono',monospace; font-size:13px">{{ r.snapshot }}</span>
+                <span style="font-size:12px; color:var(--muted)">{{ r.provider }}</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px; min-width:0">
+                <span style="width:22px; height:22px; flex-shrink:0; border-radius:999px; background:var(--raised); border:1px solid var(--line); display:inline-flex; align-items:center; justify-content:center; font-size:9.5px; font-weight:600; color:var(--muted)">{{ r.ini }}</span>
+                <span style="font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ r.owner }}</span>
+              </div>
+              <span style="font-size:13px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ r.life }}</span>
+              <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--faint); text-align:right">{{ r.updated }}</span>
+            </div>
+          </sc-for>
+          <sc-if value="{{ noRows }}">
+            <div style="padding:40px 16px; display:flex; flex-direction:column; align-items:center; gap:10px; border-top:1px solid var(--line)">
+              <div style="font-size:14px; font-weight:500">No sandboxes match</div>
+              <div style="font-size:13px; color:var(--muted)">Nothing in this view fits the filter.</div>
+              <button onClick="{{ clearFilters }}" style="white-space:nowrap; flex-shrink:0; height:30px; padding:0 12px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); font-size:13px; cursor:pointer" style-hover="background:var(--raised)">Clear filters</button>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ isRoutines }}">
+      <div style="padding:28px 32px 56px; max-width:1200px; margin:0 auto; display:flex; flex-direction:column; gap:18px">
+        <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap">
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">Routines</h1>
+            <div style="font-size:13px; color:var(--muted)">Launch a template on a schedule or when something happens on GitHub.</div>
+          </div>
+          <button style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 14px; border:0; border-radius:7px; background:var(--accent); color:var(--accent-fg); font-size:13px; font-weight:600; cursor:pointer" style-hover="background:var(--accent-hover)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14 M5 12h14"></path></svg>New routine</button>
+        </div>
+        <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+          <div style="display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1.6fr) minmax(0,1.3fr) minmax(0,1.3fr) 80px 52px; gap:16px; padding:9px 16px; font-size:12px; color:var(--muted); background:var(--sunken)">
+            <span>Routine</span><span>When</span><span>Template</span><span>Last run</span><span>Next</span><span></span>
+          </div>
+          <sc-for list="{{ routines }}" as="r" hint-placeholder-count="3">
+            <div style="display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1.6fr) minmax(0,1.3fr) minmax(0,1.3fr) 80px 52px; gap:16px; align-items:center; padding:12px 16px; border-top:1px solid var(--line); opacity:{{ r.opacity }}" style-hover="background:var(--raised)">
+              <span style="font-size:14px; font-weight:500">{{ r.name }}</span>
+              <div style="display:flex; flex-direction:column; gap:3px; min-width:0">
+                <span style="font-size:13px">{{ r.when }}</span>
+                <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--faint)">{{ r.cron }}</span>
+              </div>
+              <span style="font-size:13px; color:var(--muted)">{{ r.tpl }}</span>
+              <span style="display:inline-flex; align-items:center; gap:6px; font-size:13px">{{ r.sDot }}<span>{{ r.lastText }}</span></span>
+              <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--muted)">{{ r.next }}</span>
+              <button onClick="{{ r.toggle }}" title="Enabled" style="white-space:nowrap; flex-shrink:0; width:34px; height:20px; border:0; border-radius:999px; padding:2px; background:{{ r.trackBg }}; cursor:pointer; display:flex; justify-content:{{ r.justify }}">
+                <span style="width:16px; height:16px; border-radius:999px; background:var(--surface); box-shadow:0 1px 2px oklch(0 0 0 / .25)"></span>
+              </button>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ isTemplates }}">
+      <div style="padding:28px 32px 56px; max-width:1200px; margin:0 auto; display:flex; flex-direction:column; gap:18px">
+        <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap">
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">Templates</h1>
+            <div style="font-size:13px; color:var(--muted)">A saved launch: snapshot, agent, model, effort, tools and prompt. Versioned on every change.</div>
+          </div>
+          <button style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 12px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface); font-size:13px; font-weight:500; cursor:pointer" style-hover="background:var(--raised)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14 M5 12h14"></path></svg>New template</button>
+        </div>
+        <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap">
+          <div style="flex:1 1 520px; min-width:0; border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+            <div style="display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1.6fr) minmax(0,0.8fr) 60px; gap:16px; padding:9px 16px; font-size:12px; color:var(--muted); background:var(--sunken)"><span>Template</span><span>Runs</span><span>From</span><span style="text-align:right">Used</span></div>
+            <sc-for list="{{ templates }}" as="t" hint-placeholder-count="4">
+              <div onClick="{{ t.select }}" style="display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1.6fr) minmax(0,0.8fr) 60px; gap:16px; align-items:center; padding:12px 16px; border-top:1px solid var(--line); cursor:pointer; background:{{ t.bg }}; box-shadow:{{ t.edge }}" style-hover="background:var(--raised)">
+                <div style="display:flex; align-items:baseline; gap:8px; min-width:0"><span style="font-size:14px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ t.name }}</span><span style="font-family:'Geist Mono',monospace; font-size:11.5px; color:var(--faint)">{{ t.ver }}</span></div>
+                <span style="font-size:13px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ t.agent }} · <span style="font-family:'Geist Mono',monospace; font-size:12px">{{ t.model }}</span></span>
+                <span style="font-family:'Geist Mono',monospace; font-size:13px">{{ t.snapshot }}</span>
+                <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--muted); text-align:right">{{ t.used }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex:0 1 360px; min-width:280px; border:1px solid var(--line); border-radius:10px; background:var(--surface); display:flex; flex-direction:column">
+            <div style="padding:16px 18px; display:flex; flex-direction:column; gap:6px; border-bottom:1px solid var(--line)">
+              <div style="display:flex; align-items:baseline; gap:8px"><span style="font-size:16px; font-weight:600">{{ tpl.name }}</span><span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--faint)">{{ tpl.ver }}</span></div>
+              <div style="font-size:12.5px; color:var(--muted)">Updated {{ tpl.updated }} by {{ tpl.by }}</div>
+            </div>
+            <div style="padding:16px 18px; display:flex; flex-direction:column; gap:14px">
+              <div style="font-size:14px; line-height:1.9">Launch <span style="padding:2px 7px; border:1px solid var(--line); border-radius:5px; background:var(--sunken)">{{ tpl.agent }}</span> running <span style="padding:2px 7px; border:1px solid var(--line); border-radius:5px; background:var(--sunken); font-family:'Geist Mono',monospace; font-size:12.5px">{{ tpl.model }}</span> from <span style="padding:2px 7px; border:1px solid var(--line); border-radius:5px; background:var(--sunken); font-family:'Geist Mono',monospace; font-size:12.5px">{{ tpl.snapshot }}</span>, <span style="padding:2px 7px; border:1px solid var(--line); border-radius:5px; background:var(--sunken)">{{ tpl.effort }}</span> effort.</div>
+              <div style="display:flex; flex-direction:column; gap:6px">
+                <span style="font-size:12px; color:var(--faint); font-weight:500">Prompt</span>
+                <div style="padding:10px 12px; border-radius:8px; background:var(--sunken); border:1px solid var(--line); font-size:13px; line-height:1.55; color:var(--fg)">{{ tpl.prompt }}</div>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:6px">
+                <span style="font-size:12px; color:var(--faint); font-weight:500">Tools</span>
+                <div style="display:flex; gap:6px; flex-wrap:wrap"><sc-for list="{{ tpl.tools }}" as="tt" hint-placeholder-count="2"><span style="height:24px; display:inline-flex; align-items:center; padding:0 8px; border-radius:4px; background:var(--raised); font-size:12px; color:var(--muted)">{{ tt.name }}</span></sc-for></div>
+              </div>
+            </div>
+            <div style="padding:12px 18px; border-top:1px solid var(--line); display:flex; gap:8px">
+              <button onClick="{{ launchFromTemplate }}" style="white-space:nowrap; flex-shrink:0; flex:1; display:inline-flex; align-items:center; justify-content:center; gap:8px; height:34px; border:0; border-radius:7px; background:var(--accent); color:var(--accent-fg); font-size:13px; font-weight:600; cursor:pointer" style-hover="background:var(--accent-hover)">Launch</button>
+              <button style="white-space:nowrap; flex-shrink:0; height:34px; padding:0 12px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface); font-size:13px; cursor:pointer" style-hover="background:var(--raised)">Edit</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ isSnapshots }}">
+      <div style="padding:28px 32px 56px; max-width:1200px; margin:0 auto; display:flex; flex-direction:column; gap:18px">
+        <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap">
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">Snapshots</h1>
+            <div style="font-size:13px; color:var(--muted)">Your repositories and setup, saved once after a secret scan. Every launch forks one and pulls the latest commits.</div>
+          </div>
+          <button style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 12px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface); font-size:13px; font-weight:500; cursor:pointer" style-hover="background:var(--raised)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14 M5 12h14"></path></svg>New snapshot</button>
+        </div>
+        <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap">
+          <div style="flex:1 1 520px; min-width:0; border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+            <div style="display:grid; grid-template-columns:minmax(0,2.2fr) minmax(0,0.8fr) minmax(0,1fr) minmax(0,1fr); gap:16px; padding:9px 16px; font-size:12px; color:var(--muted); background:var(--sunken)"><span>Snapshot</span><span>Machine</span><span>Visibility</span><span>State</span></div>
+            <sc-for list="{{ snaps }}" as="s" hint-placeholder-count="5">
+              <div onClick="{{ s.select }}" style="display:grid; grid-template-columns:minmax(0,2.2fr) minmax(0,0.8fr) minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:center; padding:12px 16px; border-top:1px solid var(--line); cursor:pointer; background:{{ s.bg }}; box-shadow:{{ s.edge }}" style-hover="background:var(--raised)">
+                <div style="display:flex; flex-direction:column; gap:3px; min-width:0">
+                  <span style="display:flex; align-items:baseline; gap:8px"><span style="font-family:'Geist Mono',monospace; font-size:13.5px; font-weight:500">{{ s.id }}</span><span style="font-family:'Geist Mono',monospace; font-size:11.5px; color:var(--faint)">{{ s.ver }}</span></span>
+                  <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ s.repoLine }}</span>
+                </div>
+                <span style="font-size:13px">{{ s.provider }}</span>
+                <span style="font-size:13px; color:var(--muted)">{{ s.vis }}</span>
+                <span style="display:flex; flex-direction:column; gap:3px"><span style="display:inline-flex; align-items:center; gap:6px; font-size:13px">{{ s.sDot }}{{ s.sLabel }}</span><span style="font-size:12px; color:var(--faint)">{{ s.built }}</span></span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex:0 1 380px; min-width:280px; border:1px solid var(--line); border-radius:10px; background:var(--surface); display:flex; flex-direction:column">
+            <div style="padding:16px 18px; display:flex; align-items:center; gap:10px; border-bottom:1px solid var(--line)">
+              <span style="font-family:'Geist Mono',monospace; font-size:16px; font-weight:500">{{ snap.id }}</span>
+              <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--faint)">{{ snap.ver }}</span>
+              <span style="flex:1"></span>
+              <span style="display:inline-flex; align-items:center; gap:6px; height:22px; padding:0 8px; border-radius:4px; font-size:12px; font-weight:500; color:{{ snap.sColor }}; background:{{ snap.sTint }}; border:1px solid {{ snap.sLine }}">{{ snap.sDot }}{{ snap.sLabel }}</span>
+            </div>
+            <sc-if value="{{ snap.hasError }}">
+              <div style="margin:14px 18px 0; padding:10px 12px; border-radius:8px; border:1px solid color-mix(in oklch, var(--danger) 32%, transparent); background:color-mix(in oklch, var(--danger) 9%, transparent); font-size:12.5px; line-height:1.55">{{ snap.error }}</div>
+            </sc-if>
+            <div style="padding:16px 18px; display:flex; flex-direction:column; gap:12px; border-bottom:1px solid var(--line)">
+              <div style="display:grid; grid-template-columns:100px minmax(0,1fr); gap:10px; font-size:13px"><span style="color:var(--muted)">Repositories</span><span style="font-family:'Geist Mono',monospace; font-size:12.5px; white-space:pre-line; overflow-wrap:anywhere">{{ snap.repoList }}</span></div>
+              <div style="display:grid; grid-template-columns:100px minmax(0,1fr); gap:10px; font-size:13px"><span style="color:var(--muted)">Machine</span><span>{{ snap.provider }} · {{ snap.size }}</span></div>
+              <div style="display:grid; grid-template-columns:100px minmax(0,1fr); gap:10px; font-size:13px"><span style="color:var(--muted)">Visibility</span><span>{{ snap.vis }}</span></div>
+              <div style="display:grid; grid-template-columns:100px minmax(0,1fr); gap:10px; font-size:13px"><span style="color:var(--muted)">At launch</span><span style="font-family:'Geist Mono',monospace; font-size:12.5px">{{ snap.init }}</span></div>
+              <div style="display:flex; flex-direction:column; gap:6px"><span style="font-size:13px; color:var(--muted)">Setup script</span><pre style="margin:0; padding:10px 12px; border-radius:8px; background:var(--sunken); border:1px solid var(--line); font-family:'Geist Mono',monospace; font-size:12px; line-height:1.6; white-space:pre-wrap">{{ snap.setup }}</pre></div>
+            </div>
+            <div style="padding:16px 18px; display:flex; flex-direction:column; gap:4px; border-bottom:1px solid var(--line)">
+              <span style="font-size:12px; font-weight:500; color:var(--faint); padding-bottom:6px">Last build</span>
+              <sc-for list="{{ snap.steps }}" as="bs" hint-placeholder-count="4">
+                <div style="display:flex; align-items:center; gap:10px; height:26px; font-size:13px">
+                  <span style="width:14px; display:inline-flex; justify-content:center">{{ bs.sDot }}</span>
+                  <span style="flex:1; color:{{ bs.color }}">{{ bs.label }}</span>
+                  <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--faint)">{{ bs.time }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="padding:12px 18px; display:flex; gap:8px">
+              <button onClick="{{ launchFromSnap }}" style="white-space:nowrap; flex-shrink:0; flex:1; display:inline-flex; align-items:center; justify-content:center; height:34px; border:0; border-radius:7px; background:var(--accent); color:var(--accent-fg); font-size:13px; font-weight:600; cursor:pointer; opacity:{{ snap.launchOpacity }}" style-hover="background:var(--accent-hover)">Launch from {{ snap.id }}</button>
+              <button style="white-space:nowrap; flex-shrink:0; height:34px; padding:0 12px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface); font-size:13px; cursor:pointer" style-hover="background:var(--raised)">Rebuild</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ isModels }}">
+      <div style="padding:28px 32px 56px; max-width:1200px; margin:0 auto; display:flex; flex-direction:column; gap:18px">
+        <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap">
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">Models</h1>
+            <div style="font-size:13px; color:var(--muted)">Accounts agents run on. Yours win over the organization's. Keys are encrypted and never shown again.</div>
+          </div>
+          <button style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 14px; border:0; border-radius:7px; background:var(--accent); color:var(--accent-fg); font-size:13px; font-weight:600; cursor:pointer" style-hover="background:var(--accent-hover)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14 M5 12h14"></path></svg>Add an account</button>
+        </div>
+        <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+          <div style="display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1.6fr) minmax(0,1.3fr) minmax(0,1fr) minmax(0,1.2fr); gap:16px; padding:9px 16px; font-size:12px; color:var(--muted); background:var(--sunken)"><span>Account</span><span>Kind</span><span>Shared with</span><span>Agents</span><span>State</span></div>
+          <sc-for list="{{ models }}" as="a" hint-placeholder-count="5">
+            <div style="display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1.6fr) minmax(0,1.3fr) minmax(0,1fr) minmax(0,1.2fr); gap:16px; align-items:center; padding:12px 16px; border-top:1px solid var(--line)" style-hover="background:var(--raised)">
+              <span style="font-size:14px; font-weight:500">{{ a.name }}</span>
+              <div style="display:flex; flex-direction:column; gap:3px"><span style="font-size:13px">{{ a.kind }}</span><span style="font-size:12px; color:var(--muted)">{{ a.agentFor }}</span></div>
+              <span style="font-size:13px; color:var(--muted)">{{ a.scope }}</span>
+              <span style="font-family:'Geist Mono',monospace; font-size:12.5px">{{ a.cap }}</span>
+              <span style="display:flex; align-items:center; gap:10px"><span style="display:inline-flex; align-items:center; gap:6px; font-size:13px">{{ a.sDot }}{{ a.sLabel }}</span><sc-if value="{{ a.hasFix }}"><a href="#" style="font-size:12.5px">{{ a.fix }}</a></sc-if></span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="font-size:13px; color:var(--muted)">Without a choice, Claude Code runs <span style="font-family:'Geist Mono',monospace; color:var(--fg)">opus-5-5</span> and Codex <span style="font-family:'Geist Mono',monospace; color:var(--fg)">gpt-6.1-sol</span>, both at medium effort. Armada never swaps in another model.</div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ isTools }}">
+      <div style="padding:28px 32px 56px; max-width:1200px; margin:0 auto; display:flex; flex-direction:column; gap:18px">
+        <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap">
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">Tools</h1>
+            <div style="font-size:13px; color:var(--muted)">MCP servers you connected. Only connected servers can be attached to a sandbox.</div>
+          </div>
+          <button style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 14px; border:0; border-radius:7px; background:var(--accent); color:var(--accent-fg); font-size:13px; font-weight:600; cursor:pointer" style-hover="background:var(--accent-hover)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14 M5 12h14"></path></svg>Add an MCP server</button>
+        </div>
+        <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+          <div style="display:grid; grid-template-columns:minmax(0,2.4fr) minmax(0,1.2fr) minmax(0,1fr) minmax(0,1.3fr); gap:16px; padding:9px 16px; font-size:12px; color:var(--muted); background:var(--sunken)"><span>Server</span><span>Shared with</span><span>Attached to</span><span>State</span></div>
+          <sc-for list="{{ tools }}" as="t" hint-placeholder-count="5">
+            <div style="display:grid; grid-template-columns:minmax(0,2.4fr) minmax(0,1.2fr) minmax(0,1fr) minmax(0,1.3fr); gap:16px; align-items:center; padding:12px 16px; border-top:1px solid var(--line)" style-hover="background:var(--raised)">
+              <div style="display:flex; flex-direction:column; gap:3px; min-width:0"><span style="font-size:14px; font-weight:500">{{ t.name }}</span><span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ t.url }}</span></div>
+              <span style="font-size:13px; color:var(--muted)">{{ t.scope }}</span>
+              <span style="font-size:13px; color:var(--muted)">{{ t.used }}</span>
+              <span style="display:flex; align-items:center; gap:10px"><span style="display:inline-flex; align-items:center; gap:6px; font-size:13px">{{ t.sDot }}{{ t.sLabel }}</span><sc-if value="{{ t.hasFix }}"><a href="#" style="font-size:12.5px">{{ t.fix }}</a></sc-if></span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ isSkills }}">
+      <div style="padding:28px 32px 56px; max-width:1200px; margin:0 auto; display:flex; flex-direction:column; gap:18px">
+        <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap">
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">Skills</h1>
+            <div style="font-size:13px; color:var(--muted)">Installed from Skillpack into every new sandbox. Running sandboxes keep the version they started with.</div>
+          </div>
+          <button style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 12px; border:1px solid var(--line-strong); border-radius:7px; background:var(--surface); font-size:13px; font-weight:500; cursor:pointer" style-hover="background:var(--raised)">Open Skillpack<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7 M7 7h10v10"></path></svg></button>
+        </div>
+        <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+          <div style="display:grid; grid-template-columns:minmax(0,3fr) minmax(0,0.8fr) minmax(0,0.8fr) 60px 52px; gap:16px; padding:9px 16px; font-size:12px; color:var(--muted); background:var(--sunken)"><span>Skill</span><span>Version</span><span>Scope</span><span>Upd.</span><span></span></div>
+          <sc-for list="{{ skills }}" as="k" hint-placeholder-count="5">
+            <div style="display:grid; grid-template-columns:minmax(0,3fr) minmax(0,0.8fr) minmax(0,0.8fr) 60px 52px; gap:16px; align-items:center; padding:11px 16px; border-top:1px solid var(--line)" style-hover="background:var(--raised)">
+              <div style="display:flex; align-items:baseline; gap:10px; min-width:0"><span style="font-family:'Geist Mono',monospace; font-size:13.5px; font-weight:500; white-space:nowrap">{{ k.slug }}</span><span style="font-size:13px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ k.desc }}</span></div>
+              <span style="font-family:'Geist Mono',monospace; font-size:12.5px">{{ k.ver }}</span>
+              <span><span style="height:22px; display:inline-flex; align-items:center; padding:0 7px; border-radius:4px; background:var(--raised); font-family:'Geist Mono',monospace; font-size:11.5px; color:var(--muted)">{{ k.scope }}</span></span>
+              <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--faint)">{{ k.upd }}</span>
+              <button onClick="{{ k.toggle }}" title="Install in new sandboxes" style="white-space:nowrap; flex-shrink:0; width:34px; height:20px; border:0; border-radius:999px; padding:2px; background:{{ k.trackBg }}; cursor:pointer; display:flex; justify-content:{{ k.justify }}"><span style="width:16px; height:16px; border-radius:999px; background:var(--surface); box-shadow:0 1px 2px oklch(0 0 0 / .25)"></span></button>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ isVariables }}">
+      <div style="padding:28px 32px 56px; max-width:1200px; margin:0 auto; display:flex; flex-direction:column; gap:18px">
+        <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap">
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">Variables</h1>
+            <div style="font-size:13px; color:var(--muted)">Environment set in every sandbox. Secret values are write-only.</div>
+          </div>
+          <button style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 14px; border:0; border-radius:7px; background:var(--accent); color:var(--accent-fg); font-size:13px; font-weight:600; cursor:pointer" style-hover="background:var(--accent-hover)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14 M5 12h14"></path></svg>Add a variable</button>
+        </div>
+        <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+          <div style="display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,2fr) minmax(0,0.7fr) minmax(0,1fr) minmax(0,1fr); gap:16px; padding:9px 16px; font-size:12px; color:var(--muted); background:var(--sunken)"><span>Name</span><span>Value</span><span>Kind</span><span>Shared with</span><span>Updated</span></div>
+          <sc-for list="{{ vars }}" as="v" hint-placeholder-count="5">
+            <div style="display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,2fr) minmax(0,0.7fr) minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:center; padding:11px 16px; border-top:1px solid var(--line)" style-hover="background:var(--raised)">
+              <span style="font-family:'Geist Mono',monospace; font-size:13px; font-weight:500">{{ v.name }}</span>
+              <span style="font-family:'Geist Mono',monospace; font-size:12.5px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ v.value }}</span>
+              <span><span style="height:22px; display:inline-flex; align-items:center; padding:0 7px; border-radius:4px; font-size:12px; background:{{ v.kindBg }}; color:{{ v.kindColor }}">{{ v.kind }}</span></span>
+              <span style="font-size:13px; color:var(--muted)">{{ v.scope }}</span>
+              <span style="font-size:12.5px; color:var(--faint)">{{ v.upd }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ isMachines }}">
+      <div style="padding:28px 32px 56px; max-width:1200px; margin:0 auto; display:flex; flex-direction:column; gap:24px">
+        <div style="display:flex; flex-direction:column; gap:6px">
+          <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">Machines</h1>
+          <div style="font-size:13px; color:var(--muted)">Where sandboxes run. Cloud providers are connected once for the organization; Docker hosts are your own Linux machines.</div>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px">
+          <sc-for list="{{ providers }}" as="p" hint-placeholder-count="2">
+            <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); padding:16px 18px; display:flex; flex-direction:column; gap:12px">
+              <div style="display:flex; align-items:center; gap:10px">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="color:var(--muted)"><path d="M17.5 19H9a7 7 0 1 1 6.7-9h1.8a4.5 4.5 0 1 1 0 9z"></path></svg>
+                <span style="font-size:15px; font-weight:600; flex:1">{{ p.name }}</span>
+                <span style="display:inline-flex; align-items:center; gap:6px; height:22px; padding:0 8px; border-radius:4px; font-size:12px; font-weight:500; color:{{ p.sColor }}; background:{{ p.sTint }}; border:1px solid {{ p.sLine }}">{{ p.sDot }}{{ p.sLabel }}</span>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:6px; font-size:13px">
+                <span>{{ p.running }}</span>
+                <span style="color:var(--muted)">{{ p.size }}</span>
+                <span style="color:var(--faint); font-size:12.5px">{{ p.by }}</span>
+              </div>
+              <div style="display:flex; gap:8px; padding-top:4px">
+                <button style="white-space:nowrap; flex-shrink:0; height:30px; padding:0 10px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); font-size:12.5px; cursor:pointer" style-hover="background:var(--raised)">Replace key</button>
+                <button style="white-space:nowrap; flex-shrink:0; height:30px; padding:0 10px; border:0; border-radius:6px; background:transparent; font-size:12.5px; color:var(--muted); cursor:pointer" style-hover="background:var(--raised); color:var(--fg)">Machine sizes</button>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:12px">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:12px">
+            <h2 style="margin:0; font-size:16px; font-weight:600">Docker hosts</h2>
+            <button style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 10px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); font-size:12.5px; cursor:pointer" style-hover="background:var(--raised)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14 M5 12h14"></path></svg>Register a host</button>
+          </div>
+          <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+            <div style="display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr) 72px; gap:16px; padding:9px 16px; font-size:12px; color:var(--muted); background:var(--sunken)"><span>Host</span><span>Runtime</span><span>Capacity</span><span>State</span><span style="text-align:right">Seen</span></div>
+            <sc-for list="{{ hosts }}" as="h" hint-placeholder-count="2">
+              <div style="display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr) 72px; gap:16px; align-items:center; padding:12px 16px; border-top:1px solid var(--line)" style-hover="background:var(--raised)">
+                <span style="font-family:'Geist Mono',monospace; font-size:13px; font-weight:500">{{ h.name }}</span>
+                <span style="font-size:13px; color:var(--muted)">{{ h.docker }}</span>
+                <span style="font-family:'Geist Mono',monospace; font-size:12.5px">{{ h.slots }}</span>
+                <span style="display:inline-flex; align-items:center; gap:6px; font-size:13px">{{ h.sDot }}{{ h.sLabel }}</span>
+                <span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--faint); text-align:right">{{ h.seen }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ isOrg }}">
+      <div style="padding:28px 32px 56px; max-width:1200px; margin:0 auto; display:flex; flex-direction:column; gap:28px">
+        <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap">
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">The Vibe Company</h1>
+            <div style="font-size:13px; color:var(--muted)">You are an admin. Admins change organization snapshots, members and provider keys.</div>
+          </div>
+          <button style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 14px; border:0; border-radius:7px; background:var(--accent); color:var(--accent-fg); font-size:13px; font-weight:600; cursor:pointer" style-hover="background:var(--accent-hover)">Invite a member</button>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:12px">
+          <h2 style="margin:0; font-size:16px; font-weight:600">Members <span style="font-family:'Geist Mono',monospace; font-size:13px; color:var(--faint); font-weight:400">4</span></h2>
+          <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+            <sc-for list="{{ members }}" as="mb" hint-placeholder-count="4">
+              <div style="display:grid; grid-template-columns:minmax(0,2fr) minmax(0,2fr) minmax(0,1fr) 100px; gap:16px; align-items:center; padding:11px 16px; border-top:{{ mb.border }}" style-hover="background:var(--raised)">
+                <span style="display:flex; align-items:center; gap:10px; min-width:0"><span style="width:26px; height:26px; flex-shrink:0; border-radius:999px; background:var(--raised); border:1px solid var(--line); display:inline-flex; align-items:center; justify-content:center; font-size:10.5px; font-weight:600; color:var(--muted)">{{ mb.ini }}</span><span style="font-size:14px; font-weight:500">{{ mb.name }}</span><span style="font-size:12px; color:var(--faint)">{{ mb.you }}</span></span>
+                <span style="font-family:'Geist Mono',monospace; font-size:12.5px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ mb.email }}</span>
+                <span style="font-size:13px">{{ mb.role }}</span>
+                <span style="font-size:12.5px; color:var(--faint); text-align:right">{{ mb.last }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:12px">
+          <h2 style="margin:0; font-size:16px; font-weight:600">Pending invitations</h2>
+          <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1.4fr) auto; gap:16px; align-items:center; padding:11px 16px">
+            <span style="font-family:'Geist Mono',monospace; font-size:13px">sam@example.com</span>
+            <span style="font-size:13px">Member</span>
+            <span style="display:inline-flex; align-items:center; gap:6px; font-size:13px; color:var(--muted)">{{ pendingDot }}Expires in 6 days</span>
+            <span style="display:flex; gap:6px"><button style="white-space:nowrap; flex-shrink:0; height:28px; padding:0 10px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); font-size:12.5px; cursor:pointer" style-hover="background:var(--raised)">Copy link</button><button style="white-space:nowrap; flex-shrink:0; height:28px; padding:0 10px; border:0; border-radius:6px; background:transparent; font-size:12.5px; color:var(--danger); cursor:pointer" style-hover="background:color-mix(in oklch, var(--danger) 10%, transparent)">Revoke</button></span>
+          </div>
+          <div style="font-size:12.5px; color:var(--muted)">An invitation grants membership only once accepted from an account with the matching verified email.</div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:12px">
+          <div style="display:flex; align-items:center; justify-content:space-between"><h2 style="margin:0; font-size:16px; font-weight:600">Service tokens</h2><button style="white-space:nowrap; flex-shrink:0; height:30px; padding:0 10px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); font-size:12.5px; cursor:pointer" style-hover="background:var(--raised)">Create a token</button></div>
+          <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+            <sc-for list="{{ tokens }}" as="tk" hint-placeholder-count="2">
+              <div style="display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr) auto; gap:16px; align-items:center; padding:11px 16px; border-top:{{ tk.border }}">
+                <span style="font-family:'Geist Mono',monospace; font-size:13px; font-weight:500">{{ tk.label }}</span>
+                <span style="font-size:13px; color:var(--muted)">Created {{ tk.created }}</span>
+                <span style="font-size:13px; color:var(--muted)">Used {{ tk.last }}</span>
+                <button style="white-space:nowrap; flex-shrink:0; height:28px; padding:0 10px; border:0; border-radius:6px; background:transparent; font-size:12.5px; color:var(--danger); cursor:pointer" style-hover="background:color-mix(in oklch, var(--danger) 10%, transparent)">Revoke</button>
+              </div>
+            </sc-for>
+          </div>
+          <div style="font-size:12.5px; color:var(--muted)">For bots and CI. Bound to this organization; shown once, Armada keeps only its hash.</div>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ isConnections }}">
+      <div style="padding:28px 32px 56px; max-width:880px; margin:0 auto; display:flex; flex-direction:column; gap:28px">
+        <div style="display:flex; flex-direction:column; gap:6px">
+          <h1 style="margin:0; font-size:22px; font-weight:600; letter-spacing:-0.015em">Your connections</h1>
+          <div style="font-size:13px; color:var(--muted)">What sandboxes act as when they act as you, and how this dashboard looks.</div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:12px">
+          <h2 style="margin:0; font-size:16px; font-weight:600">GitHub</h2>
+          <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); padding:14px 16px; display:flex; align-items:center; gap:14px; flex-wrap:wrap">
+            <span style="width:32px; height:32px; border-radius:999px; background:var(--raised); border:1px solid var(--line); display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:600; color:var(--muted)">AM</span>
+            <div style="flex:1; min-width:200px; display:flex; flex-direction:column; gap:3px">
+              <span style="font-family:'Geist Mono',monospace; font-size:13.5px; font-weight:500">@alice-martin</span>
+              <span style="font-size:12.5px; color:var(--muted)">Snapshots clone over this connection. In sandboxes, git and gh commit and open pull requests as you.</span>
+            </div>
+            <span style="display:inline-flex; align-items:center; gap:6px; font-size:13px">{{ okDot }}Connected</span>
+            <button style="white-space:nowrap; flex-shrink:0; height:30px; padding:0 10px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); font-size:12.5px; cursor:pointer" style-hover="background:var(--raised)">Reconnect</button>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:12px">
+          <h2 style="margin:0; font-size:16px; font-weight:600">Sessions</h2>
+          <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface); overflow:hidden">
+            <sc-for list="{{ sessions }}" as="se" hint-placeholder-count="3">
+              <div style="display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr) auto; gap:16px; align-items:center; padding:11px 16px; border-top:{{ se.border }}">
+                <span style="display:flex; flex-direction:column; gap:3px"><span style="font-size:13.5px; font-weight:500">{{ se.device }}</span><span style="font-family:'Geist Mono',monospace; font-size:12px; color:var(--faint)">{{ se.detail }}</span></span>
+                <span style="font-size:13px; color:var(--muted)">{{ se.last }}</span>
+                <button style="white-space:nowrap; flex-shrink:0; height:28px; padding:0 10px; border:0; border-radius:6px; background:transparent; font-size:12.5px; color:{{ se.actColor }}; cursor:pointer" style-hover="background:var(--raised)">{{ se.action }}</button>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:12px">
+          <h2 style="margin:0; font-size:16px; font-weight:600">Preferences</h2>
+          <div style="border:1px solid var(--line); border-radius:10px; background:var(--surface)">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 16px; flex-wrap:wrap">
+              <span style="display:flex; flex-direction:column; gap:3px"><span style="font-size:13.5px; font-weight:500">Theme</span><span style="font-size:12.5px; color:var(--muted)">Applies on this device.</span></span>
+              <div style="display:inline-flex; padding:3px; gap:2px; border-radius:8px; background:var(--raised)">
+                <sc-for list="{{ themeOpts }}" as="o" hint-placeholder-count="2"><button onClick="{{ o.go }}" style="white-space:nowrap; flex-shrink:0; height:28px; padding:0 12px; border:0; border-radius:6px; font-size:13px; font-weight:500; cursor:pointer; background:{{ o.bg }}; color:{{ o.color }}; box-shadow:{{ o.shadow }}">{{ o.label }}</button></sc-for>
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 16px; border-top:1px solid var(--line); flex-wrap:wrap">
+              <span style="display:flex; flex-direction:column; gap:3px"><span style="font-size:13.5px; font-weight:500">Accent</span><span style="font-size:12.5px; color:var(--muted)">Primary actions, selection and focus.</span></span>
+              <div style="display:inline-flex; padding:3px; gap:2px; border-radius:8px; background:var(--raised)">
+                <sc-for list="{{ accentOpts }}" as="o" hint-placeholder-count="3"><button onClick="{{ o.go }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:7px; height:28px; padding:0 12px; border:0; border-radius:6px; font-size:13px; font-weight:500; cursor:pointer; background:{{ o.bg }}; color:{{ o.color }}; box-shadow:{{ o.shadow }}"><span style="width:10px; height:10px; border-radius:999px; background:{{ o.swatch }}"></span>{{ o.label }}</button></sc-for>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+    </div>
+    </sc-if>
+  </main>
+</div>
+
+<sc-if value="{{ launchOpen }}">
+<div onClick="{{ closeLaunch }}" style="position:fixed; inset:0; background:var(--scrim); display:flex; align-items:flex-start; justify-content:center; padding:10vh 20px 20px; z-index:50">
+  <div onClick="{{ stop }}" style="width:100%; max-width:660px; border-radius:12px; background:var(--surface); border:1px solid var(--line); box-shadow:var(--shadow-lg); display:flex; flex-direction:column; max-height:84vh">
+    <div style="display:flex; align-items:center; gap:10px; padding:14px 18px; border-bottom:1px solid var(--line)">
+      <span style="font-size:15px; font-weight:600; flex:1">Launch a sandbox</span>
+      <button onClick="{{ closeLaunch }}" style="white-space:nowrap; flex-shrink:0; width:28px; height:28px; border:0; border-radius:6px; background:transparent; color:var(--muted); cursor:pointer; display:inline-flex; align-items:center; justify-content:center" style-hover="background:var(--raised)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18 M6 6l12 12"></path></svg></button>
+    </div>
+    <div style="padding:18px; display:flex; flex-direction:column; gap:18px; overflow:auto; min-height:0">
+      <div style="display:flex; flex-direction:column; gap:8px">
+        <span style="font-size:12px; font-weight:500; color:var(--faint)">From snapshot</span>
+        <div style="display:flex; gap:6px; flex-wrap:wrap">
+          <sc-for list="{{ launchSnaps }}" as="ls" hint-placeholder-count="3">
+            <button onClick="{{ ls.go }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:8px; height:32px; padding:0 12px; border:1px solid {{ ls.border }}; border-radius:7px; background:{{ ls.bg }}; font-family:'Geist Mono',monospace; font-size:12.5px; cursor:pointer" style-hover="border-color:var(--line-strong)">{{ ls.id }}<span style="font-family:'Geist',sans-serif; font-size:11.5px; color:var(--faint)">{{ ls.provider }}</span></button>
+          </sc-for>
+        </div>
+      </div>
+      <div style="font-size:17px; line-height:2.1; text-wrap:pretty">Launch <button onClick="{{ L.cycleAgent }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); font-size:15px; cursor:pointer; vertical-align:baseline" style-hover="background:var(--raised)">{{ L.agent }}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint)"><path d="M6 9l6 6 6-6"></path></svg></button> running <button onClick="{{ L.cycleModel }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); font-size:15px; cursor:pointer" style-hover="background:var(--raised)">{{ L.model }}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint)"><path d="M6 9l6 6 6-6"></path></svg></button> on <button onClick="{{ L.cycleAcct }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border:1px solid {{ L.acctBorder }}; border-radius:6px; background:var(--surface); color:{{ L.acctColor }}; font-size:15px; cursor:pointer" style-hover="background:var(--raised)">{{ L.acct }}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint)"><path d="M6 9l6 6 6-6"></path></svg></button>, reasoning effort <button onClick="{{ L.cycleEffort }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); font-size:15px; cursor:pointer" style-hover="background:var(--raised)">{{ L.effort }}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint)"><path d="M6 9l6 6 6-6"></path></svg></button>.</div>
+      <textarea value="{{ L.prompt }}" onChange="{{ L.onPrompt }}" placeholder="What should the agent do? Leave empty to start the sandbox idle and send the first prompt later." rows="5" style="flex-shrink:0; min-height:120px; width:100%; resize:vertical; padding:12px 14px; border:1px solid var(--line-strong); border-radius:10px; background:var(--canvas); outline:none; font-size:14px; line-height:1.55"></textarea>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:16px">
+        <div style="display:flex; flex-direction:column; gap:8px">
+          <span style="font-size:12px; font-weight:500; color:var(--faint)">Lifetime</span>
+          <div style="display:inline-flex; padding:3px; gap:2px; border-radius:8px; background:var(--raised); align-self:flex-start">
+            <sc-for list="{{ L.ttls }}" as="o" hint-placeholder-count="3"><button onClick="{{ o.go }}" style="white-space:nowrap; flex-shrink:0; height:26px; padding:0 10px; border:0; border-radius:6px; font-family:'Geist Mono',monospace; font-size:12px; cursor:pointer; background:{{ o.bg }}; color:{{ o.color }}; box-shadow:{{ o.shadow }}">{{ o.label }}</button></sc-for>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:8px">
+          <span style="font-size:12px; font-weight:500; color:var(--faint)">Visible to</span>
+          <div style="display:inline-flex; padding:3px; gap:2px; border-radius:8px; background:var(--raised); align-self:flex-start">
+            <sc-for list="{{ L.vis }}" as="o" hint-placeholder-count="2"><button onClick="{{ o.go }}" style="white-space:nowrap; flex-shrink:0; height:26px; padding:0 10px; border:0; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer; background:{{ o.bg }}; color:{{ o.color }}; box-shadow:{{ o.shadow }}">{{ o.label }}</button></sc-for>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:8px">
+        <span style="font-size:12px; font-weight:500; color:var(--faint)">Tools</span>
+        <div style="display:flex; gap:6px; flex-wrap:wrap">
+          <sc-for list="{{ L.tools }}" as="o" hint-placeholder-count="3"><button onClick="{{ o.go }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:6px; height:28px; padding:0 10px; border:1px solid {{ o.border }}; border-radius:6px; background:{{ o.bg }}; font-size:12.5px; cursor:pointer"><span style="width:12px; height:12px; border-radius:3px; border:1px solid var(--line-strong); background:{{ o.box }}"></span>{{ o.label }}</button></sc-for>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; padding:12px 18px; border-top:1px solid var(--line); flex-wrap:wrap">
+      <sc-if value="{{ L.hasNotice }}"><span style="flex:1; min-width:200px; font-size:12.5px; color:var(--warn)">{{ L.notice }}</span></sc-if>
+      <sc-if value="{{ L.noNotice }}"><span style="flex:1; min-width:200px; font-family:'Geist Mono',monospace; font-size:12px; color:var(--faint)">{{ L.machine }}</span></sc-if>
+      <button onClick="{{ closeLaunch }}" style="white-space:nowrap; flex-shrink:0; height:34px; padding:0 12px; border:0; border-radius:7px; background:transparent; font-size:13px; color:var(--muted); cursor:pointer" style-hover="background:var(--raised); color:var(--fg)">Cancel</button>
+      <button onClick="{{ doLaunch }}" style="white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 14px; border:0; border-radius:7px; background:var(--accent); color:var(--accent-fg); font-size:13px; font-weight:600; cursor:pointer; opacity:{{ L.btnOpacity }}" style-hover="background:var(--accent-hover)">Launch<span style="font-family:'Geist Mono',monospace; font-size:11px; padding:1px 5px; border-radius:4px; background:color-mix(in oklch, var(--accent-fg) 12%, transparent)">⌘↵</span></button>
+    </div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ cmdOpen }}">
+<div onClick="{{ closeCmd }}" style="position:fixed; inset:0; background:var(--scrim); display:flex; align-items:flex-start; justify-content:center; padding:14vh 20px 20px; z-index:60">
+  <div onClick="{{ stop }}" style="width:100%; max-width:580px; border-radius:12px; background:var(--surface); border:1px solid var(--line); box-shadow:var(--shadow-lg); overflow:hidden; display:flex; flex-direction:column; max-height:70vh">
+    <div style="display:flex; align-items:center; gap:10px; padding:0 16px; height:50px; border-bottom:1px solid var(--line)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="color:var(--faint)"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3"></path></svg>
+      <input ref="{{ cmdRef }}" value="{{ cmdQuery }}" onChange="{{ onCmdQuery }}" onKeyDown="{{ onCmdKey }}" placeholder="Search sandboxes, pages and actions" style="flex:1; border:0; outline:none; background:transparent; font-size:15px">
+      <span style="font-family:'Geist Mono',monospace; font-size:11px; color:var(--faint); border:1px solid var(--line); border-radius:4px; padding:0 5px">esc</span>
+    </div>
+    <div style="overflow:auto; padding:6px">
+      <sc-for list="{{ cmdGroups }}" as="cg" hint-placeholder-count="2">
+        <div style="display:flex; flex-direction:column; padding-bottom:4px">
+          <div style="padding:8px 10px 4px; font-size:12px; font-weight:500; color:var(--faint)">{{ cg.label }}</div>
+          <sc-for list="{{ cg.items }}" as="ci" hint-placeholder-count="3">
+            <button onClick="{{ ci.run }}" style="white-space:nowrap; flex-shrink:0; display:flex; align-items:center; gap:10px; height:36px; padding:0 10px; border:0; border-radius:7px; background:{{ ci.bg }}; cursor:pointer; text-align:left; font-size:13.5px; min-width:0" style-hover="background:var(--raised)">
+              <span style="width:16px; display:inline-flex; justify-content:center; color:var(--muted); flex-shrink:0">{{ ci.lead }}</span>
+              <span style="flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ ci.label }}</span>
+              <span style="font-family:'Geist Mono',monospace; font-size:11.5px; color:var(--faint)">{{ ci.hint }}</span>
+            </button>
+          </sc-for>
+        </div>
+      </sc-for>
+      <sc-if value="{{ cmdEmpty }}"><div style="padding:24px; text-align:center; font-size:13px; color:var(--muted)">Nothing matches.</div></sc-if>
+    </div>
+    <div style="padding:8px 14px; border-top:1px solid var(--line); font-family:'Geist Mono',monospace; font-size:11.5px; color:var(--faint)">↵ open first result · esc close</div>
+  </div>
+</div>
+</sc-if>
+</sc-if>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'dark' | 'light'&quot;},&quot;accent&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;lime&quot;,&quot;blue&quot;,&quot;coral&quot;],&quot;default&quot;:&quot;lime&quot;,&quot;tsType&quot;:&quot;'lime' | 'blue' | 'coral'&quot;},&quot;toolCalls&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;grouped&quot;,&quot;expanded&quot;],&quot;default&quot;:&quot;grouped&quot;,&quot;tsType&quot;:&quot;'grouped' | 'expanded'&quot;},&quot;factsPanel&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+const P = {
+  boxes:'M21 8 12 3 3 8v8l9 5 9-5V8z M3 8l9 5 9-5 M12 13v8',
+  cal:'M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z',
+  tpl:'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z M3 9h18 M9 21V9',
+  cam:'M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z M12 16.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z',
+  key:'M15.5 7.5 19 4 M21 2l-9.6 9.6 M7.5 22a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11z M18 5l3 3',
+  plug:'M12 22v-5 M9 8V2 M15 8V2 M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z',
+  pkg:'M16.5 9.4 7.5 4.2 M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.7z M3.3 7 12 12l8.7-5 M12 22V12',
+  vars:'M8 21s-4-3-4-9 4-9 4-9 M16 3s4 3 4 9-4 9-4 9 M15 9l-6 6 M9 9l6 6',
+  cloud:'M17.5 19H9a7 7 0 1 1 6.7-9h1.8a4.5 4.5 0 1 1 0 9z',
+  server:'M4 3h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z M4 13h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2z M6 7h.01 M6 17h.01',
+  sliders:'M4 21v-7 M4 10V3 M12 21v-9 M12 8V3 M20 21v-5 M20 12V3 M1 14h6 M9 8h6 M17 16h6',
+  file:'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6',
+  term:'M4 17l6-6-6-6 M12 19h8',
+  search:'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3',
+  edit:'M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z',
+  branch:'M6 3v12 M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M18 9a9 9 0 0 1-9 9',
+  plus:'M12 5v14 M5 12h14',
+  arrow:'M5 12h14 M13 6l6 6-6 6'
+};
+const STEP_ICON = { read:P.file, run:P.term, search:P.search, edit:P.edit, git:P.branch };
+const TONE = {
+  working:['Working','var(--ok)',1], waiting:['Waiting for you','var(--warn)'], starting:['Starting','var(--faint)',1],
+  stopped:['Stopped','var(--faint)'], failed:['Failed','var(--danger)'], ready:['Ready','var(--ok)'], building:['Building','var(--info)',1],
+  connected:['Connected','var(--ok)'], expired:['Token expired','var(--warn)'], full:['At limit','var(--warn)'], revoked:['Revoked','var(--danger)'],
+  auth:['Needs authorization','var(--warn)'], online:['Online','var(--ok)'], offline:['Offline','var(--faint)'], pending:['Pending','var(--warn)'],
+  done:['Done','var(--ok)'], running:['Running','var(--info)',1], queued:['Not started','var(--line-strong)'], skipped:['Skipped','var(--line-strong)']
+};
+const dot = (c, p, s = 7) => React.createElement('span', { style: { width:s, height:s, borderRadius:999, background:c, display:'inline-block', flexShrink:0, animation:p ? 'arm-pulse 1.6s ease-in-out infinite' : 'none' } });
+const tone = (k) => { const [l, c, p] = TONE[k] || [k, 'var(--faint)']; return { sLabel:l, sColor:c, sDot:dot(c, !!p), sTint:`color-mix(in oklch, ${c} 12%, transparent)`, sLine:`color-mix(in oklch, ${c} 30%, transparent)` }; };
+const seg = (active) => active ? { bg:'var(--surface)', color:'var(--fg)', shadow:'0 1px 2px oklch(0 0 0 / .12), 0 0 0 1px var(--line)' } : { bg:'transparent', color:'var(--muted)', shadow:'none' };
+
+const SANDBOXES = [
+  { id:'sbx_7f3k2q', title:'Find why the checkout test is flaky and fix it', status:'working', agent:'Claude Code', model:'opus-5-5', effort:'high', snapshot:'web', provider:'Boat', owner:'Alice Martin', ini:'AM', mine:true, life:'3h 12m left', lifePct:'20%', updated:'now', branch:'fix/checkout-flake', launched:'18:58', acct:'My Claude Max', tools:['GitHub','Linear'] },
+  { id:'sbx_9a1m4t', title:'Migrate billing webhooks to the v2 events API', status:'waiting', agent:'Codex', model:'gpt-6.1-sol', effort:'medium', snapshot:'api', provider:'Modal', owner:'Hugo Lefèvre', ini:'HL', life:'1h 40m left', lifePct:'58%', updated:'4m', branch:'feat/webhooks-v2', launched:'16:20', acct:'Codex Pro', tools:['GitHub'] },
+  { id:'sbx_2c8p0z', title:'Add a dark theme to the settings page', status:'working', agent:'Claude Code', model:'sonnet-5', effort:'medium', snapshot:'web', provider:'Boat', owner:'Léa Bernard', ini:'LB', life:'2h 05m left', lifePct:'48%', updated:'1m', branch:'feat/settings-dark', launched:'17:12', acct:'Team Anthropic', tools:['GitHub'] },
+  { id:'sbx_4n2v7u', title:'Investigate the memory leak in the build worker', status:'starting', agent:'Codex', model:'gpt-6.1-sol', effort:'xhigh', snapshot:'api', provider:'Modal', owner:'Alice Martin', ini:'AM', mine:true, life:'4h left', lifePct:'1%', updated:'now', branch:'main', launched:'19:04', acct:'Codex Pro', tools:['GitHub','Granite'] },
+  { id:'sbx_0q9d3e', title:'Write regression tests for invoice rounding', status:'waiting', agent:'Claude Code', model:'opus-5-5', effort:'high', snapshot:'api', provider:'Modal', owner:'Alice Martin', ini:'AM', mine:true, life:'58m left', lifePct:'76%', updated:'35m', branch:'test/invoice-rounding', launched:'15:30', acct:'My Claude Max', tools:['GitHub'] },
+  { id:'sbx_6r1w5h', title:'Upgrade Next.js to 16 across the dashboard', status:'failed', agent:'Codex', model:'gpt-6.1-sol', effort:'medium', snapshot:'web', provider:'Boat', owner:'Victor Roux', ini:'VR', life:'—', lifePct:'0%', updated:'22m', branch:'main', launched:'18:31', acct:'Team Anthropic', tools:['GitHub'] },
+  { id:'sbx_8k5s6y', title:'Refactor the auth middleware into one guard', status:'stopped', agent:'Claude Code', model:'sonnet-5', effort:'medium', snapshot:'web', provider:'Boat', owner:'Hugo Lefèvre', ini:'HL', life:'Retained', lifePct:'100%', updated:'3h', branch:'refactor/auth-guard', launched:'12:02', acct:'Team Anthropic', tools:['GitHub'] },
+  { id:'sbx_1t3w9b', title:'Nightly dependency audit', status:'stopped', agent:'Codex', model:'gpt-6.1-mini', effort:'low', snapshot:'api', provider:'Modal', owner:'Routine', ini:'RT', life:'Retained', lifePct:'100%', updated:'16h', branch:'chore/deps-1116', launched:'03:00', acct:'OpenAI Platform', tools:['GitHub'] }
+];
+const C = (t) => ({ code:t });
+const RICH = [
+  { t:'user', text:'Find why the checkout test is flaky and fix it', meta:'opus-5-5 · high · 18:58' },
+  { t:'work', id:'g1', summary:'Worked for 2m 41s', count:'5 steps', steps:[
+    { k:'read', verb:'Read', target:'apps/web/tests/checkout.spec.ts' },
+    { k:'run', verb:'Ran', target:'bun test checkout --repeat 20', result:'3 of 20 failed', tone:'var(--danger)' },
+    { k:'search', verb:'Searched', target:'waitForResponse in apps/web', result:'6 matches' },
+    { k:'read', verb:'Read', target:'apps/web/src/lib/cart.ts' },
+    { k:'read', verb:'Read', target:'apps/web/src/app/checkout/page.tsx' } ] },
+  { t:'agent', parts:['The test races the cart refresh. ', C('addToCart()'), ' resolves before the ', C('/api/cart'), ' request settles, so the total assertion sometimes reads the previous value. I replaced the fixed 500 ms wait with a wait on that response, and made ', C('refreshCart()'), ' return its promise.'] },
+  { t:'edit', id:'e1', add:18, del:7, files:[{ path:'apps/web/tests/checkout.spec.ts', add:12, del:5 }, { path:'apps/web/src/lib/cart.ts', add:6, del:2 }], diff:[
+    { k:'ctx', n:'41', s:"  await page.getByRole('button', { name: 'Add to cart' }).click();" },
+    { k:'del', n:'42', s:'  await page.waitForTimeout(500);' },
+    { k:'add', n:'42', s:"  await page.waitForResponse((r) => r.url().endsWith('/api/cart') && r.ok());" },
+    { k:'ctx', n:'43', s:"  await expect(page.getByTestId('cart-total')).toHaveText('€48.00');" } ] },
+  { t:'work', id:'g2', summary:'Worked for 1m 27s', count:'2 steps', steps:[
+    { k:'run', verb:'Ran', target:'bun test checkout --repeat 50', result:'50 passed', tone:'var(--ok)' },
+    { k:'run', verb:'Ran', target:'bun run typecheck', result:'0 errors', tone:'var(--ok)' } ] },
+  { t:'agent', parts:['50 of 50 runs pass and the typecheck is clean. The fix is on ', C('fix/checkout-flake'), '. Should I open a pull request?'] },
+  { t:'user', text:'Yes, open a PR against main. Keep the public API unchanged.', meta:'steered · 19:03' },
+  { t:'live', steps:[{ k:'git', verb:'Pushed', target:'origin fix/checkout-flake', result:'3 commits', tone:'var(--ok)' }], verb:'Running', current:'gh pr create --base main --fill', start:Date.now() - 14000 }
+];
+const SNAPS = [
+  { id:'web', repos:['the-vibe-company/armada@main'], provider:'Boat', vis:'Organization', status:'ready', ver:'v12', built:'Built 2h ago', size:'4.1 GB', setup:'bun install\nbun run build --filter dashboard', init:'bun install' },
+  { id:'api', repos:['the-vibe-company/skillpack@main','the-vibe-company/quivr@main'], provider:'Modal', vis:'Organization', status:'ready', ver:'v7', built:'Built yesterday', size:'6.8 GB', setup:'pnpm install --frozen-lockfile\npnpm db:migrate', init:'pnpm install' },
+  { id:'ios', repos:['the-vibe-company/armada@main'], provider:'Boat', vis:'Only you', status:'building', ver:'v3', built:'Step 3 of 4', size:'—', setup:'cd apps/ios\nxcodegen generate', init:'—' },
+  { id:'docs', repos:['the-vibe-company/docs@main'], provider:'Boat', vis:'Organization', status:'failed', ver:'v4', built:'40m ago', size:'—', setup:'npm ci', init:'npm ci', error:'The secret scan found a credential in .env.example line 3 (STRIPE_SECRET_KEY). Nothing was saved. Remove it from the repository and rebuild.' },
+  { id:'granite', repos:['the-vibe-company/granite@main'], provider:'Modal', vis:'Only you', status:'ready', ver:'v2', built:'Built 3 days ago', size:'1.2 GB', setup:'uv sync', init:'uv sync' }
+];
+const TEMPLATES = [
+  { id:'tpl_fix', name:'Fix a flaky test', ver:'v3', snapshot:'web', agent:'Claude Code', model:'opus-5-5', effort:'high', tools:['GitHub','Linear'], used:42, by:'Alice Martin', updated:'2 days ago', prompt:'Find why <test name> is flaky. Reproduce it with --repeat 20, fix the cause rather than the symptom, and open a pull request against main.' },
+  { id:'tpl_review', name:'Review a pull request', ver:'v5', snapshot:'web', agent:'Claude Code', model:'sonnet-5', effort:'medium', tools:['GitHub'], used:118, by:'Hugo Lefèvre', updated:'last week', prompt:'Review pull request <number>. Check behaviour changes, missing tests and public API changes. Comment on the pull request; do not push.' },
+  { id:'tpl_audit', name:'Dependency audit', ver:'v2', snapshot:'api', agent:'Codex', model:'gpt-6.1-sol', effort:'medium', tools:['GitHub'], used:31, by:'Léa Bernard', updated:'3 weeks ago', prompt:'Run the dependency audit. Upgrade patch and minor versions that pass the test suite, one pull request per package.' },
+  { id:'tpl_notes', name:'Write release notes', ver:'v1', snapshot:'docs', agent:'Codex', model:'gpt-6.1-mini', effort:'low', tools:['GitHub','Linear'], used:6, by:'Victor Roux', updated:'yesterday', prompt:'Write release notes for <tag> from merged pull requests and their linked Linear issues.' }
+];
+const AGENTS = [
+  { name:'Claude Code', models:['opus-5-5','sonnet-5','haiku-5'], accts:['My Claude Max','Team Anthropic','Morph shared'] },
+  { name:'Codex', models:['gpt-6.1-sol','gpt-6.1-mini'], accts:['Codex Pro','OpenAI Platform','Morph shared'] },
+  { name:'OpenCode', models:['morph-kimik31'], accts:['Morph shared'] }
+];
+const EFFORTS = ['low','medium','high','xhigh'];
+const EFFORT_LABEL = { low:'Low', medium:'Medium', high:'High', xhigh:'Extra high' };
+const PAGES = { sandboxes:'Sandboxes', routines:'Routines', templates:'Templates', snapshots:'Snapshots', models:'Models', tools:'Tools', skills:'Skills', variables:'Variables', machines:'Machines', org:'Organization', connections:'Your connections', sandbox:'Sandboxes' };
+const NAV = [
+  { label:'Running', links:[['sandboxes','Sandboxes',P.boxes],['routines','Routines',P.cal]] },
+  { label:'Launch from', links:[['templates','Templates',P.tpl],['snapshots','Snapshots',P.cam]] },
+  { label:'What agents have', links:[['models','Models',P.key],['tools','Tools',P.plug],['skills','Skills',P.pkg],['variables','Variables',P.vars]] },
+  { label:'Setup', links:[['machines','Machines',P.cloud],['org','Organization',P.server],['connections','Your connections',P.sliders]] }
+];
+
+class Component extends DCLogic {
+  state = {
+    screen:'app', page:'sandbox', sandboxId:'sbx_7f3k2q', filter:'all', query:'',
+    sandboxes:SANDBOXES, threads:{ sbx_7f3k2q:RICH }, open:{}, factsOpen:null,
+    composer:'', mode:'steer', turnModel:{}, turnEffort:{}, execCmd:'', execOut:'',
+    selSnap:'web', selTpl:'tpl_fix', routinesOn:{ 0:true, 1:true, 2:false }, skillsOn:{ 0:true, 1:true, 2:true, 3:false, 4:true },
+    launchOpen:false, cmdOpen:false, cmdQuery:'', theme:null, accent:null,
+    L:{ snap:'web', agent:0, model:0, acct:0, effort:2, ttl:1, vis:0, prompt:'', tools:{ GitHub:true, Linear:false, Granite:false } },
+    now:Date.now()
+  };
+  mainRef = React.createRef(); chatRef = React.createRef(); cmdRef = React.createRef();
+
+  componentDidMount() {
+    this.applyTheme();
+    this.timer = setInterval(() => this.setState({ now:Date.now() }), 1000);
+    this.onKey = (e) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); this.setState(s => ({ cmdOpen:!s.cmdOpen, cmdQuery:'' })); return; }
+      if (mod && e.key === 'Enter' && this.state.launchOpen) { e.preventDefault(); this.doLaunch(); return; }
+      if (e.key === 'Escape') { this.setState({ cmdOpen:false, launchOpen:false }); return; }
+      const t = e.target.tagName;
+      if (!mod && e.key.toLowerCase() === 'l' && t !== 'INPUT' && t !== 'TEXTAREA' && !this.state.launchOpen && !this.state.cmdOpen && this.state.screen === 'app') { e.preventDefault(); this.openLaunch(); }
+    };
+    window.addEventListener('keydown', this.onKey);
+    this.scrollChat();
+  }
+  componentWillUnmount() { clearInterval(this.timer); window.removeEventListener('keydown', this.onKey); }
+  componentDidUpdate(pp, ps) {
+    this.applyTheme();
+    const len = (this.state.threads[this.state.sandboxId] || []).length;
+    const key = `${this.state.page}:${this.state.sandboxId}:${len}`;
+    if (key !== this._chatKey) { this._chatKey = key; this.scrollChat(); }
+    if (this.state.cmdOpen && !ps.cmdOpen) setTimeout(() => this.cmdRef.current && this.cmdRef.current.focus(), 0);
+  }
+  scrollChat() { setTimeout(() => { const el = this.chatRef.current; if (el) el.scrollTop = el.scrollHeight; }, 30); }
+  theme() { return this.state.theme ?? this.props.theme ?? 'dark'; }
+  accent() { return this.state.accent ?? this.props.accent ?? 'lime'; }
+  applyTheme() { const r = document.documentElement; r.dataset.theme = this.theme(); r.dataset.accent = this.accent(); }
+
+  go(page, id) {
+    this.setState(s => ({ page, sandboxId:id ?? s.sandboxId, cmdOpen:false, execOut:'', execCmd:'' }));
+    const el = this.mainRef.current; if (el) el.scrollTop = 0;
+  }
+  sb() { return this.state.sandboxes.find(x => x.id === this.state.sandboxId) || this.state.sandboxes[0]; }
+  fallback(s) {
+    const items = [{ t:'user', text:s.title, meta:`${s.model} · ${s.effort} · ${s.launched}` }];
+    if (s.status === 'starting') items.push({ t:'live', steps:[], verb:'Starting', current:`fork ${s.snapshot} · pull latest commits`, start:Date.now() - 6000 });
+    if (s.status === 'working') items.push({ t:'work', id:s.id + 'w', summary:'Worked for 6m 02s', count:'3 steps', steps:[{ k:'read', verb:'Read', target:'apps/web/src/app/settings/page.tsx' }, { k:'search', verb:'Searched', target:'useTheme in apps/web', result:'4 matches' }, { k:'edit', verb:'Edited', target:'apps/web/src/app/settings/theme.tsx', result:'+48 −3', tone:'var(--ok)' }] }, { t:'live', steps:[], verb:'Running', current:'bun run test settings', start:Date.now() - 42000 });
+    if (s.status === 'waiting') items.push({ t:'work', id:s.id + 'w', summary:'Worked for 11m 20s', count:'9 steps', steps:[{ k:'read', verb:'Read', target:'src/billing/webhooks.ts' }, { k:'run', verb:'Ran', target:'pnpm test billing', result:'all passed', tone:'var(--ok)' }] }, { t:'agent', parts:['Turn finished. The changes are on ', C(s.branch), '. Send the next prompt, or stop the sandbox to keep the disk and the conversation for later.'] });
+    if (s.status === 'failed') items.push({ t:'error', title:'Setup failed', text:'bun install exited with code 1\nerror: lockfile had changes, but lockfile is frozen' }, { t:'note', text:'The agent never started · no model usage' });
+    if (s.status === 'stopped') items.push({ t:'agent', parts:['Done. Opened a pull request from ', C(s.branch), '.'] }, { t:'note', text:'Stopped · disk and conversation retained · send a prompt to resume' });
+    return items;
+  }
+  thread(s) { return this.state.threads[s.id] || this.fallback(s); }
+  patchSb(id, patch) { this.setState(st => ({ sandboxes:st.sandboxes.map(x => x.id === id ? { ...x, ...patch } : x) })); }
+  pushItems(s, items, replaceLive) {
+    this.setState(st => {
+      let cur = st.threads[s.id] || this.fallback(s);
+      if (replaceLive) cur = cur.filter(i => i.t !== 'live');
+      return { threads:{ ...st.threads, [s.id]:cur.concat(items) } };
+    });
+  }
+  hhmm() { const d = new Date(); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
+
+  send = () => {
+    const text = this.state.composer.trim(); if (!text) return;
+    const s = this.sb(); const t = this.hhmm();
+    if (s.status === 'working') {
+      const steer = this.state.mode === 'steer';
+      this.pushItems(s, [{ t:'user', text, meta:steer ? `steered · ${t}` : `queued · runs after this turn · ${t}` }]);
+    } else if (s.status === 'failed') {
+      return;
+    } else {
+      const resumed = s.status === 'stopped';
+      this.pushItems(s, [ ...(resumed ? [{ t:'note', text:'Resuming the stopped sandbox' }] : []), { t:'user', text, meta:`${this.turnModel(s)} · ${this.turnEffort(s)} · ${t}` }, { t:'live', steps:[], verb:'Thinking', current:'reading the conversation', start:Date.now() }], true);
+      this.patchSb(s.id, { status:'working', updated:'now', life:resumed ? '4h left' : s.life });
+    }
+    this.setState({ composer:'' });
+  };
+  turnModel(s) { const a = AGENTS.find(x => x.name === s.agent) || AGENTS[0]; const i = this.state.turnModel[s.id]; return i == null ? s.model : a.models[i % a.models.length]; }
+  turnEffort(s) { const i = this.state.turnEffort[s.id]; return i == null ? s.effort : EFFORTS[i % 4]; }
+
+  openLaunch = (snap) => this.setState(st => ({ launchOpen:true, cmdOpen:false, L:{ ...st.L, snap:typeof snap === 'string' ? snap : st.L.snap } }));
+  doLaunch = () => {
+    const L = this.state.L; const a = AGENTS[L.agent]; const acct = a.accts[L.acct % a.accts.length];
+    if (acct === 'Morph shared' || acct === 'OpenAI Platform') return;
+    const id = 'sbx_' + Math.random().toString(36).slice(2, 8);
+    const snap = SNAPS.find(x => x.id === L.snap);
+    const title = L.prompt.trim() || 'Idle · waiting for the first prompt';
+    const sb = { id, title, status:'starting', agent:a.name, model:a.models[L.model % a.models.length], effort:EFFORTS[L.effort], snapshot:L.snap, provider:snap.provider, owner:'Alice Martin', ini:'AM', mine:true, life:['1h','4h','8h'][L.ttl] + ' left', lifePct:'1%', updated:'now', branch:'main', launched:this.hhmm(), acct, tools:Object.keys(L.tools).filter(k => L.tools[k]) };
+    const items = [ ...(L.prompt.trim() ? [{ t:'user', text:L.prompt.trim(), meta:`${sb.model} · ${sb.effort} · ${sb.launched}` }] : []), { t:'live', steps:[], verb:'Starting', current:`fork ${L.snap} ${snap.ver} · pull latest commits`, start:Date.now() }];
+    this.setState(st => ({ sandboxes:[sb, ...st.sandboxes], threads:{ ...st.threads, [id]:items }, launchOpen:false, page:'sandbox', sandboxId:id, L:{ ...st.L, prompt:'' } }));
+    setTimeout(() => {
+      const s = this.state.sandboxes.find(x => x.id === id); if (!s) return;
+      const next = L.prompt.trim() ? 'working' : 'waiting';
+      this.setState(st => ({ threads:{ ...st.threads, [id]:st.threads[id].filter(i => i.t !== 'live').concat([{ t:'note', text:`Sandbox ready on ${snap.provider} · ${snap.repos.length} repositor${snap.repos.length > 1 ? 'ies' : 'y'} pulled` }], next === 'working' ? [{ t:'live', steps:[], verb:'Thinking', current:'reading the repository', start:Date.now() }] : []) } }));
+      this.patchSb(id, { status:next });
+    }, 2600);
+  };
+
+  renderVals() {
+    const st = this.state; const page = st.page; const sbAll = st.sandboxes;
+    const active = sbAll.filter(s => ['working','waiting','starting'].includes(s.status));
+    const nav = NAV.map(g => ({ label:g.label, links:g.links.map(([id, label, icon]) => {
+      const on = page === id || (page === 'sandbox' && id === 'sandboxes');
+      return { label, icon, go:() => this.go(id), bg:on ? 'var(--surface)' : 'transparent', ring:on ? '0 0 0 1px var(--line), 0 1px 2px oklch(0 0 0 / .06)' : 'none', color:on ? 'var(--fg)' : 'var(--muted)',
+        count:id === 'sandboxes' ? String(active.length) : '', hasThreads:id === 'sandboxes' && active.length > 0,
+        threads:id === 'sandboxes' ? active.slice(0, 6).map(s => { const cur = page === 'sandbox' && st.sandboxId === s.id; return { ...tone(s.status), title:s.title, open:() => this.go('sandbox', s.id), bg:cur ? 'var(--raised)' : 'transparent', color:cur ? 'var(--fg)' : 'var(--muted)' }; }) : [] };
+    }) }));
+
+    const filters = [['all','All'],['mine','Mine'],['working','Working'],['waiting','Waiting for you'],['stopped','Stopped'],['failed','Failed']];
+    const match = (s, f) => f === 'all' || (f === 'mine' ? s.mine : f === 'working' ? (s.status === 'working' || s.status === 'starting') : s.status === f);
+    const q = st.query.toLowerCase();
+    const rows = sbAll.filter(s => match(s, st.filter) && (!q || (s.title + s.id + s.snapshot + s.owner).toLowerCase().includes(q)))
+      .map(s => ({ ...s, ...tone(s.status), effort:s.effort, labelColor:s.status === 'failed' ? 'var(--danger)' : s.status === 'waiting' ? 'var(--warn)' : 'var(--muted)', open:() => this.go('sandbox', s.id) }));
+    const n = (k) => sbAll.filter(s => match(s, k)).length;
+
+    const s = this.sb(); const working = s.status === 'working' || s.status === 'starting';
+    const toolsMode = this.props.toolCalls ?? 'grouped';
+    const thread = this.thread(s).map((m, i) => {
+      const base = { isUser:m.t === 'user', isAgent:m.t === 'agent', isWork:m.t === 'work', isEdit:m.t === 'edit', isLive:m.t === 'live', isError:m.t === 'error', isNote:m.t === 'note' };
+      const key = m.id || 'i' + i;
+      const defOpen = m.t === 'edit' ? true : toolsMode === 'expanded' ? true : m.id !== 'g1';
+      const open = st.open[s.id + key] ?? defOpen;
+      const toggle = () => this.setState(x => ({ open:{ ...x.open, [s.id + key]:!open } }));
+      const step = (p) => ({ ...p, icon:STEP_ICON[p.k] || P.term, result:p.result || '', rc:p.tone || 'var(--faint)' });
+      if (m.t === 'agent') return { ...m, ...base, parts:m.parts.map(p => typeof p === 'string' ? { text:p, isText:true, isCode:false } : { text:p.code, isCode:true, isText:false }) };
+      if (m.t === 'work') return { ...m, ...base, open, toggle, chev:open ? 'rotate(90deg)' : 'none', steps:m.steps.map(step) };
+      if (m.t === 'edit') return { ...m, ...base, open, toggle, nFiles:m.files.length, diffLabel:open ? 'Hide diff' : 'View diff', diff:m.diff.map(d => ({ ...d, sign:d.k === 'add' ? '+' : d.k === 'del' ? '−' : ' ', c:d.k === 'add' ? 'var(--ok)' : d.k === 'del' ? 'var(--danger)' : 'var(--faint)', bg:d.k === 'add' ? 'color-mix(in oklch, var(--ok) 11%, transparent)' : d.k === 'del' ? 'color-mix(in oklch, var(--danger) 10%, transparent)' : 'transparent' })) };
+      if (m.t === 'live') { const sec = Math.max(0, Math.floor((st.now - m.start) / 1000)); return { ...m, ...base, steps:m.steps.map(step), dot:dot('var(--ok)', true, 8), elapsed:`${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}` }; }
+      return { ...m, ...base };
+    });
+    const snapOf = SNAPS.find(x => x.id === s.snapshot) || SNAPS[0];
+    const mono = "'Geist Mono', monospace";
+    const R = (k, v, m) => ({ k, v, font:m ? mono : 'inherit', size:m ? '12.5px' : '13px' });
+    const facts = [
+      { label:'Agent', rows:[R('Agent', s.agent), R('Model', s.model, 1), R('Effort', EFFORT_LABEL[s.effort] || s.effort), R('Account', s.acct)] },
+      { label:'Workspace', rows:[R('Snapshot', `${s.snapshot} · ${snapOf.ver}`, 1), R('Repositories', snapOf.repos.join('\n'), 1), R('Branch', s.branch, 1), R('Machine', `${s.provider} · 4 vCPU · 8 GB`)] },
+      { label:'Access', rows:[R('Owner', s.owner), R('Visible to', s.mine ? 'The Vibe Company' : 'The Vibe Company'), R('Tools', (s.tools || []).join(', ')), R('ID', s.id, 1)] }
+    ];
+    const sbView = { ...s, ...tone(s.status), isWorking:working, canStop:['working','waiting','starting'].includes(s.status), canExtend:['working','waiting'].includes(s.status), toolsLabel:`${(s.tools || []).length} tools` };
+    const factsOpen = st.factsOpen ?? ((this.props.factsPanel ?? true) && window.innerWidth >= 1200);
+    const composerPh = s.status === 'failed' ? 'This sandbox failed before the agent started. Launch it again from its snapshot.' : working ? (st.mode === 'steer' ? 'Steer the running turn…' : 'Queue a prompt for after this turn…') : s.status === 'stopped' ? 'Send a prompt to resume this sandbox…' : 'Send the next prompt…';
+
+    const snaps = SNAPS.map(x => ({ ...x, ...tone(x.status), repoLine:x.repos.join(', '), select:() => this.setState({ selSnap:x.id }), bg:st.selSnap === x.id ? 'var(--accent-tint)' : 'transparent', edge:st.selSnap === x.id ? 'inset 2px 0 0 var(--accent-edge)' : 'none' }));
+    const sn = SNAPS.find(x => x.id === st.selSnap);
+    const stepState = sn.status === 'ready' ? ['done','done','done','done'] : sn.status === 'building' ? ['done','done','running','queued'] : ['done','done','failed','skipped'];
+    const stepTimes = sn.status === 'ready' ? ['0:42','3:10','0:08','1:02'] : sn.status === 'building' ? ['0:38','2:51','0:04',''] : ['0:31','1:12','0:06',''];
+    const snap = { ...sn, ...tone(sn.status), hasError:!!sn.error, repoList:sn.repos.join('\n'), launchOpacity:sn.status === 'ready' ? 1 : 0.4,
+      steps:['Clone repositories','Run setup script','Scan for secrets','Save snapshot'].map((label, i) => ({ label, time:stepTimes[i], ...tone(stepState[i]), color:stepState[i] === 'queued' || stepState[i] === 'skipped' ? 'var(--faint)' : stepState[i] === 'failed' ? 'var(--danger)' : 'var(--fg)' })) };
+
+    const templates = TEMPLATES.map(t => ({ ...t, select:() => this.setState({ selTpl:t.id }), bg:st.selTpl === t.id ? 'var(--accent-tint)' : 'transparent', edge:st.selTpl === t.id ? 'inset 2px 0 0 var(--accent-edge)' : 'none' }));
+    const tp = TEMPLATES.find(t => t.id === st.selTpl);
+    const tpl = { ...tp, effort:EFFORT_LABEL[tp.effort], tools:tp.tools.map(name => ({ name })) };
+
+    const toggleRow = (on) => ({ trackBg:on ? 'var(--accent)' : 'var(--line-strong)', justify:on ? 'flex-end' : 'flex-start' });
+    const routines = [
+      { name:'Nightly dependency audit', cron:'0 3 * * *', when:'Every day at 03:00', tpl:'Dependency audit', last:'done', lastText:'3 pull requests', next:'in 7h' },
+      { name:'Weekly flaky-test sweep', cron:'0 9 * * 1', when:'Mondays at 09:00', tpl:'Fix a flaky test', last:'failed', lastText:'Setup failed', next:'in 2d' },
+      { name:'Release notes on tag', cron:'on: release', when:'When a GitHub release is published', tpl:'Write release notes', last:'done', lastText:'v2.14.0', next:'—' }
+    ].map((r, i) => { const on = st.routinesOn[i]; return { ...r, ...tone(r.last), ...toggleRow(on), opacity:on ? 1 : 0.55, next:on ? r.next : 'paused', toggle:() => this.setState(x => ({ routinesOn:{ ...x.routinesOn, [i]:!on } })) }; });
+
+    const fixFor = { expired:'Reconnect', full:'Change limit', auth:'Authorize', revoked:'Reconnect' };
+    const models = [
+      { name:'My Claude Max', kind:'Claude subscription', agentFor:'Claude Code', scope:'Only you', cap:'1 of 2', status:'connected' },
+      { name:'Team Anthropic', kind:'Anthropic API key', agentFor:'Claude Code', scope:'The Vibe Company', cap:'3 · no limit', status:'connected' },
+      { name:'Codex Pro', kind:'ChatGPT subscription', agentFor:'Codex', scope:'Only you', cap:'1 of 2', status:'connected' },
+      { name:'OpenAI Platform', kind:'OpenAI API key', agentFor:'Codex', scope:'The Vibe Company', cap:'0 · no limit', status:'expired' },
+      { name:'Morph shared', kind:'Morph', agentFor:'Claude Code, Codex', scope:'The Vibe Company', cap:'2 of 2', status:'full' }
+    ].map(a => ({ ...a, ...tone(a.status), hasFix:!!fixFor[a.status], fix:fixFor[a.status] || '' }));
+    const tools = [
+      { name:'GitHub', url:'built in · acts as you', scope:'Everyone', status:'connected', used:'Every sandbox' },
+      { name:'Linear', url:'https://mcp.linear.app/mcp', scope:'The Vibe Company', status:'connected', used:'4 sandboxes' },
+      { name:'Granite', url:'https://granite.example.internal/mcp', scope:'Only you', status:'connected', used:'1 sandbox' },
+      { name:'Sentry', url:'https://mcp.sentry.dev/mcp', scope:'Only you', status:'auth', used:'—' },
+      { name:'Docs', url:'https://mcp.example.com/mcp', scope:'The Vibe Company', status:'revoked', used:'—' }
+    ].map(t => ({ ...t, ...tone(t.status), hasFix:!!fixFor[t.status], fix:fixFor[t.status] || '' }));
+    const skills = [
+      { slug:'ship-pr', desc:'Open, describe and land a pull request', ver:'2.1.0', scope:'org', upd:'3d' },
+      { slug:'incident-summary', desc:'Summarize an incident from logs and threads', ver:'1.4.0', scope:'org', upd:'1w' },
+      { slug:'plan-pr', desc:'Plan a change before writing code', ver:'1.2.0', scope:'org', upd:'2w' },
+      { slug:'design-frontend', desc:'Build UI against the design system', ver:'0.9.2', scope:'personal', upd:'5d' },
+      { slug:'capture-learning', desc:'Write what the agent learned back to Granite', ver:'1.0.0', scope:'personal', upd:'1mo' }
+    ].map((k, i) => { const on = st.skillsOn[i]; return { ...k, ...toggleRow(on), toggle:() => this.setState(x => ({ skillsOn:{ ...x.skillsOn, [i]:!on } })) }; });
+    const vars = [
+      { name:'NODE_ENV', kind:'variable', value:'production', scope:'The Vibe Company', upd:'12 days ago' },
+      { name:'DATABASE_URL', kind:'secret', value:'••••••••••••••••', scope:'The Vibe Company', upd:'Rotated 3 days ago' },
+      { name:'STRIPE_TEST_KEY', kind:'secret', value:'••••••••••••••••', scope:'Only you', upd:'Last week' },
+      { name:'SENTRY_DSN', kind:'variable', value:'https://4f2c…@o12.ingest.sentry.io/77', scope:'The Vibe Company', upd:'Last month' },
+      { name:'NPM_TOKEN', kind:'secret', value:'••••••••••••••••', scope:'The Vibe Company', upd:'2 months ago' }
+    ].map(v => ({ ...v, kindBg:v.kind === 'secret' ? 'var(--accent-tint)' : 'var(--raised)', kindColor:v.kind === 'secret' ? 'var(--accent-text)' : 'var(--muted)' }));
+    const providers = [
+      { name:'Boat', status:'connected', running:'5 sandboxes running', size:'Default machine 4 vCPU · 8 GB', by:'Connected by Hugo Lefèvre on 12 Sep' },
+      { name:'Modal', status:'connected', running:'3 sandboxes running', size:'Default machine 8 vCPU · 16 GB', by:'Connected by Alice Martin on 3 Oct' }
+    ].map(p => ({ ...p, ...tone(p.status) }));
+    const hosts = [
+      { name:'build-01.example.internal', docker:'Docker 28.1 · x86_64', slots:'2 of 8', status:'online', seen:'now' },
+      { name:'gpu-box', docker:'Docker 27.5 · arm64', slots:'0 of 4', status:'offline', seen:'2d ago' }
+    ].map(h => ({ ...h, ...tone(h.status) }));
+    const members = [
+      { name:'Alice Martin', ini:'AM', email:'alice@example.com', role:'Admin', last:'Active now', you:'you' },
+      { name:'Hugo Lefèvre', ini:'HL', email:'hugo@example.com', role:'Admin', last:'4m ago', you:'' },
+      { name:'Léa Bernard', ini:'LB', email:'lea@example.com', role:'Member', last:'1m ago', you:'' },
+      { name:'Victor Roux', ini:'VR', email:'victor@example.com', role:'Member', last:'22m ago', you:'' }
+    ].map((m, i) => ({ ...m, border:i ? '1px solid var(--line)' : '0' }));
+    const tokens = [{ label:'ci', created:'12 Oct', last:'2h ago' }, { label:'linear-bot', created:'2 Sep', last:'yesterday' }].map((t, i) => ({ ...t, border:i ? '1px solid var(--line)' : '0' }));
+    const sessions = [
+      { device:'This browser', detail:'Safari · Paris', last:'Now', action:'Log out', actColor:'var(--muted)' },
+      { device:'MacBook Pro', detail:'armada CLI 2.14.0 · darwin-arm64', last:'4m ago', action:'Revoke', actColor:'var(--danger)' },
+      { device:'Claude Code (MCP)', detail:'OAuth client · armada.example.com/mcp', last:'1h ago', action:'Revoke', actColor:'var(--danger)' }
+    ].map((x, i) => ({ ...x, border:i ? '1px solid var(--line)' : '0' }));
+    const themeOpts = [['dark','Dark'],['light','Light']].map(([v, label]) => ({ label, ...seg(this.theme() === v), go:() => this.setState({ theme:v }) }));
+    const accentOpts = [['lime','Lime','oklch(0.88 0.19 127)'],['blue','Blue','oklch(0.62 0.15 250)'],['coral','Coral','oklch(0.72 0.16 38)']].map(([v, label, swatch]) => ({ label, swatch, ...seg(this.accent() === v), go:() => this.setState({ accent:v }) }));
+
+    const L = st.L; const ag = AGENTS[L.agent]; const acct = ag.accts[L.acct % ag.accts.length];
+    const setL = (p) => this.setState(x => ({ L:{ ...x.L, ...p } }));
+    const notice = acct === 'Morph shared' ? '2 of 2 agents are working on Morph shared. Pick another account or change its limit.' : acct === 'OpenAI Platform' ? 'OpenAI Platform has an expired token. Reconnect it in Models or pick another account.' : '';
+    const lsnap = SNAPS.find(x => x.id === L.snap);
+    const Lv = {
+      agent:ag.name, model:ag.models[L.model % ag.models.length], acct, effort:EFFORT_LABEL[EFFORTS[L.effort]], prompt:L.prompt,
+      cycleAgent:() => setL({ agent:(L.agent + 1) % AGENTS.length, model:0, acct:0 }), cycleModel:() => setL({ model:(L.model + 1) % ag.models.length }),
+      cycleAcct:() => setL({ acct:(L.acct + 1) % ag.accts.length }), cycleEffort:() => setL({ effort:(L.effort + 1) % 4 }), onPrompt:(e) => setL({ prompt:e.target.value }),
+      acctBorder:notice ? 'var(--warn)' : 'var(--line-strong)', acctColor:notice ? 'var(--warn)' : 'var(--fg)',
+      hasNotice:!!notice, noNotice:!notice, notice, btnOpacity:notice ? 0.4 : 1, machine:`${lsnap.provider} · ${lsnap.provider === 'Boat' ? '4 vCPU · 8 GB' : '8 vCPU · 16 GB'}`,
+      ttls:['1h','4h','8h'].map((label, i) => ({ label, ...seg(L.ttl === i), go:() => setL({ ttl:i }) })),
+      vis:['The Vibe Company','Only you'].map((label, i) => ({ label, ...seg(L.vis === i), go:() => setL({ vis:i }) })),
+      tools:['GitHub','Linear','Granite'].map(label => { const on = L.tools[label]; return { label, border:on ? 'var(--accent-edge)' : 'var(--line)', bg:on ? 'var(--accent-tint)' : 'transparent', box:on ? 'var(--accent-edge)' : 'transparent', go:() => setL({ tools:{ ...L.tools, [label]:!on } }) }; })
+    };
+    const launchSnaps = SNAPS.filter(x => x.status === 'ready').map(x => ({ id:x.id, provider:x.provider, border:L.snap === x.id ? 'var(--accent-edge)' : 'var(--line)', bg:L.snap === x.id ? 'var(--accent-tint)' : 'transparent', go:() => setL({ snap:x.id }) }));
+
+    const cq = st.cmdQuery.toLowerCase();
+    const icon = (d) => React.createElement('svg', { width:15, height:15, viewBox:'0 0 24 24', fill:'none', stroke:'currentColor', strokeWidth:1.75, strokeLinecap:'round', strokeLinejoin:'round' }, React.createElement('path', { d }));
+    const groups = [
+      { label:'Actions', items:[{ label:'Launch a sandbox', hint:'L', lead:icon(P.plus), run:() => this.openLaunch() }, { label:'New snapshot', hint:'', lead:icon(P.cam), run:() => this.go('snapshots') }, { label:'Invite a member', hint:'', lead:icon(P.server), run:() => this.go('org') }, { label:st.screen && this.theme() === 'dark' ? 'Switch to light theme' : 'Switch to dark theme', hint:'', lead:icon(P.sliders), run:() => this.setState({ theme:this.theme() === 'dark' ? 'light' : 'dark', cmdOpen:false }) }] },
+      { label:'Sandboxes', items:sbAll.slice(0, 8).map(x => ({ label:x.title, hint:x.id, lead:tone(x.status).sDot, run:() => this.go('sandbox', x.id) })) },
+      { label:'Go to', items:NAV.flatMap(g => g.links).map(([id, label, d]) => ({ label, hint:'', lead:icon(d), run:() => this.go(id) })) }
+    ].map(g => ({ ...g, items:g.items.filter(i => !cq || (i.label + i.hint).toLowerCase().includes(cq)) })).filter(g => g.items.length);
+    let first = true;
+    groups.forEach(g => g.items.forEach(i => { i.bg = first ? 'var(--raised)' : 'transparent'; first = false; }));
+    const firstItem = groups[0] && groups[0].items[0];
+
+    const d = new Date(st.now);
+    return {
+      isLogin:st.screen === 'login', isApp:st.screen === 'app',
+      signIn:() => this.setState({ screen:'app' }), signOut:() => this.setState({ screen:'login' }),
+      toggleTheme:() => this.setState({ theme:this.theme() === 'dark' ? 'light' : 'dark' }),
+      openCmd:() => this.setState({ cmdOpen:true, cmdQuery:'' }), closeCmd:() => this.setState({ cmdOpen:false }), stop:(e) => e.stopPropagation(),
+      openLaunch:() => this.openLaunch(), closeLaunch:() => this.setState({ launchOpen:false }), doLaunch:this.doLaunch,
+      launchFromSnap:() => sn.status === 'ready' && this.openLaunch(sn.id), launchFromTemplate:() => { const ai = AGENTS.findIndex(a => a.name === tp.agent); this.setState(x => ({ launchOpen:true, L:{ ...x.L, snap:tp.snapshot, agent:ai, model:Math.max(0, AGENTS[ai].models.indexOf(tp.model)), acct:0, effort:EFFORTS.indexOf(tp.effort), prompt:tp.prompt, tools:{ GitHub:tp.tools.includes('GitHub'), Linear:tp.tools.includes('Linear'), Granite:false } } })); },
+      nav, pageTitle:PAGES[page], crumbGo:() => this.go(page === 'sandbox' ? 'sandboxes' : page), crumbColor:page === 'sandbox' ? 'var(--muted)' : 'var(--fg)',
+      isSandbox:page === 'sandbox', notSandbox:page !== 'sandbox',
+      isSandboxes:page === 'sandboxes', isRoutines:page === 'routines', isTemplates:page === 'templates', isSnapshots:page === 'snapshots', isModels:page === 'models', isTools:page === 'tools', isSkills:page === 'skills', isVariables:page === 'variables', isMachines:page === 'machines', isOrg:page === 'org', isConnections:page === 'connections',
+      mainRef:this.mainRef, chatRef:this.chatRef, cmdRef:this.cmdRef,
+      liveDot:dot('var(--ok)', false, 6), okDot:dot('var(--ok)', false), pendingDot:dot('var(--warn)', false), clock:`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`,
+      counts:[{ n:sbAll.length, label:'sandboxes', dot:null }, { n:n('working'), label:'working', dot:dot('var(--ok)', true) }, { n:n('waiting'), label:'waiting for you', dot:dot('var(--warn)', false) }, { n:n('failed'), label:'failed', dot:dot('var(--danger)', false) }],
+      filters:filters.map(([k, label]) => ({ label, n:String(n(k)), ...seg(st.filter === k), go:() => this.setState({ filter:k }) })),
+      query:st.query, onQuery:(e) => this.setState({ query:e.target.value }), rows, noRows:rows.length === 0, clearFilters:() => this.setState({ filter:'all', query:'' }),
+      sb:sbView, thread, facts, factsOpen, factsBtnBg:factsOpen ? 'var(--raised)' : 'transparent', toggleFacts:() => this.setState({ factsOpen:!factsOpen }),
+      composer:st.composer, onComposer:(e) => this.setState({ composer:e.target.value }), onComposerKey:(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.metaKey) { e.preventDefault(); this.send(); } },
+      composerPh, send:this.send, sendOpacity:st.composer.trim() && s.status !== 'failed' ? 1 : 0.4,
+      composerHint:working ? (st.mode === 'steer' ? '↵ steer · ⇧↵ newline' : '↵ queue · ⇧↵ newline') : '↵ send · ⇧↵ newline',
+      turnModel:this.turnModel(s), turnEffort:EFFORT_LABEL[this.turnEffort(s)] || this.turnEffort(s),
+      cycleTurnAgent:() => {}, cycleTurnModel:() => this.setState(x => ({ turnModel:{ ...x.turnModel, [s.id]:((x.turnModel[s.id] ?? Math.max(0, (AGENTS.find(a => a.name === s.agent) || AGENTS[0]).models.indexOf(s.model))) + 1) } })),
+      cycleTurnEffort:() => this.setState(x => ({ turnEffort:{ ...x.turnEffort, [s.id]:((x.turnEffort[s.id] ?? EFFORTS.indexOf(s.effort)) + 1) % 4 } })),
+      setSteer:() => this.setState({ mode:'steer' }), setQueue:() => this.setState({ mode:'queue' }),
+      ...Object.fromEntries(Object.entries(seg(st.mode === 'steer')).map(([k, v]) => ['steer' + k[0].toUpperCase() + k.slice(1), v])),
+      ...Object.fromEntries(Object.entries(seg(st.mode === 'queue')).map(([k, v]) => ['queue' + k[0].toUpperCase() + k.slice(1), v])),
+      interrupt:() => { this.pushItems(s, [{ t:'note', text:'Turn interrupted · the sandbox is waiting for you' }], true); this.patchSb(s.id, { status:'waiting' }); },
+      stopSb:() => { this.pushItems(s, [{ t:'note', text:'Stopped · disk and conversation retained · send a prompt to resume' }], true); this.patchSb(s.id, { status:'stopped', life:'Retained', lifePct:'100%' }); },
+      extend:() => this.patchSb(s.id, { life:'4h 30m left', lifePct:'6%' }),
+      execCmd:st.execCmd, onExec:(e) => this.setState({ execCmd:e.target.value }), hasExecOut:!!st.execOut, execOut:st.execOut,
+      onExecKey:(e) => { if (e.key === 'Enter' && st.execCmd.trim()) { const c = st.execCmd.trim(); const out = c.startsWith('git status') ? `On branch ${s.branch}\nChanges not staged for commit:\n  modified:   apps/web/tests/checkout.spec.ts\n  modified:   apps/web/src/lib/cart.ts` : c.startsWith('ls') ? 'apps  docs  packages  scripts  package.json  README.md' : `$ ${c}\nexit 0`; this.setState({ execOut:out, execCmd:'' }); } },
+      snaps, snap, templates, tpl, routines, models, tools, skills, vars, providers, hosts, members, tokens, sessions, themeOpts, accentOpts,
+      launchOpen:st.launchOpen, L:Lv, launchSnaps,
+      cmdOpen:st.cmdOpen, cmdQuery:st.cmdQuery, onCmdQuery:(e) => this.setState({ cmdQuery:e.target.value }), cmdGroups:groups, cmdEmpty:groups.length === 0,
+      onCmdKey:(e) => { if (e.key === 'Enter' && firstItem) { e.preventDefault(); firstItem.run(); this.setState({ cmdOpen:false }); } }
+    };
+  }
+}
+</script>
+</body>
+</html>

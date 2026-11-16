@@ -1,8 +1,8 @@
 "use client";
 
 import { CheckIcon, ListFilterIcon, SearchIcon, XIcon } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { type ReactNode, useEffect, useState, useTransition } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -31,11 +31,14 @@ const LABELS: Record<Facet, string> = {
 export function SandboxToolbar({
   filters,
   options,
+  children,
 }: {
+  children?: ReactNode;
   filters: SandboxFilters;
   options: Record<Facet, FacetOption[]>;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [current, setCurrent] = useState(filters);
   const [query, setQuery] = useState(filters.q);
   const [pending, startTransition] = useTransition();
@@ -45,7 +48,10 @@ export function SandboxToolbar({
   }, [filters]);
   function navigate(next: SandboxFilters) {
     setCurrent(next);
-    startTransition(() => router.push(`/sandboxes${filtersToSearch(next)}`, { scroll: false }));
+    const params = new URLSearchParams(filtersToSearch(next));
+    const activity = searchParams.get("activity");
+    if (activity) params.set("activity", activity);
+    startTransition(() => router.push(`/sandboxes?${params}`, { scroll: false }));
   }
   function toggle(key: Facet, value: string) {
     const selected = current[key];
@@ -57,9 +63,10 @@ export function SandboxToolbar({
   }
   return (
     <section aria-label="Filters" aria-busy={pending} className="@container space-y-3">
-      <div className="min-w-0">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {children}
         <form
-          className="flex min-w-0 items-center gap-2 @min-[36rem]:max-w-md"
+          className="flex w-full min-w-0 items-center gap-2 sm:w-[280px]"
           onSubmit={(event) => {
             event.preventDefault();
             navigate({ ...current, q: query.trim(), page: 1 });
@@ -72,7 +79,7 @@ export function SandboxToolbar({
             />
             <Input
               aria-label="Search sandboxes"
-              placeholder="Search name or ID…"
+              placeholder="Filter by name or ID"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               className="pl-9"

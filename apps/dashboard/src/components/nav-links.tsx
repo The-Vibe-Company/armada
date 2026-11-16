@@ -1,5 +1,6 @@
 "use client";
 
+import type { SandboxStatus } from "@armada/core";
 import {
   BoxesIcon,
   CalendarClockIcon,
@@ -16,10 +17,10 @@ import {
   VariableIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { type ReactNode, Suspense, use } from "react";
-
+import { usePathname, useRouter } from "next/navigation";
+import { type ReactNode, Suspense, startTransition, use, useEffect } from "react";
 import { LinkPendingIcon } from "@/components/link-pending";
+import { StatusDot } from "@/components/status-badge";
 import {
   SidebarContent,
   SidebarGroup,
@@ -32,6 +33,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { isActiveLink, NAV_GROUPS, type NavIcon, type NavOptIn } from "@/lib/navigation";
+import { statusLook } from "@/lib/status-tone";
 import { cn } from "@/lib/utils";
 
 /** Each destination's glyph; the order and labels live in `NAV_GROUPS`. */
@@ -82,9 +84,30 @@ export function NavMobileTrigger() {
 /** Read dynamic destinations on demand instead of eagerly rendering every sidebar page.
  * The shared loading boundary keeps navigation responsive; visited routes still use the router cache.
  */
-export function NavLinks({ className, optIns }: { className?: string; optIns: NavOptIns }) {
+export function NavLinks({
+  className,
+  optIns,
+  sandboxes = [],
+}: {
+  className?: string;
+  optIns: NavOptIns;
+  sandboxes?: { id: string; label: string; status: SandboxStatus }[];
+}) {
   const pathname = usePathname();
   const { setOpenMobile } = useSidebar();
+  const router = useRouter();
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") startTransition(() => router.refresh());
+    };
+    const timer = setInterval(refresh, 30_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [router]);
+
   return (
     <SidebarContent className={cn("gap-0", className)}>
       <nav id="main-navigation-links" aria-label="Main">
@@ -92,7 +115,7 @@ export function NavLinks({ className, optIns }: { className?: string; optIns: Na
           <SidebarGroup key={group.label} className="p-0 pt-4 first:pt-0" role="region" aria-label={group.label}>
             <SidebarGroupLabel
               asChild
-              className="h-auto px-2 text-xs font-medium text-foreground group-data-[collapsible=icon]:mt-0 group-data-[collapsible=icon]:h-0"
+              className="h-auto px-2 pb-1 text-xs font-medium text-[var(--faint)] group-data-[collapsible=icon]:mt-0 group-data-[collapsible=icon]:h-0"
             >
               <h2>{group.label}</h2>
             </SidebarGroupLabel>
@@ -109,9 +132,9 @@ export function NavLinks({ className, optIns }: { className?: string; optIns: Na
                         isActive={active}
                         tooltip={label}
                         className={cn(
-                          "h-auto min-h-9 gap-2.5 px-2 py-2 text-sm font-medium transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50 has-[[data-pending]]:bg-accent has-[[data-pending]]:text-accent-foreground md:min-h-0 md:py-1.5",
+                          "h-8 min-h-8 gap-2.5 px-2 py-1.5 text-[13px] font-medium transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50 has-[[data-pending]]:bg-accent has-[[data-pending]]:text-accent-foreground md:min-h-0 md:py-1.5",
                           active
-                            ? "bg-background text-foreground shadow-xs ring-1 ring-border data-[active=true]:bg-background"
+                            ? "bg-[var(--surface)] text-foreground shadow-xs ring-1 ring-border data-[active=true]:bg-[var(--surface)]"
                             : "text-muted-foreground",
                         )}
                       >
@@ -127,6 +150,32 @@ export function NavLinks({ className, optIns }: { className?: string; optIns: Na
                           <span className="truncate">{label}</span>
                         </Link>
                       </SidebarMenuButton>
+                      {href === "/sandboxes" && sandboxes.length > 0 && (
+                        <ul className="my-1 ml-[15px] space-y-px border-l pl-2 group-data-[collapsible=icon]:hidden">
+                          {sandboxes.map((sandbox) => {
+                            const look = statusLook(sandbox.status);
+                            return (
+                              <li key={sandbox.id}>
+                                <Link
+                                  href={`/sandboxes/${sandbox.id}`}
+                                  prefetch={false}
+                                  onClick={() => setOpenMobile(false)}
+                                  title={`${sandbox.label} · ${look.label}`}
+                                  aria-current={pathname === `/sandboxes/${sandbox.id}` ? "page" : undefined}
+                                  className={cn(
+                                    "flex h-7 min-w-0 items-center gap-2 rounded-md px-2 text-[12.5px] text-muted-foreground hover:bg-[var(--raised)] hover:text-foreground",
+                                    pathname === `/sandboxes/${sandbox.id}` && "bg-[var(--raised)] text-foreground",
+                                  )}
+                                >
+                                  <StatusDot tone={look.tone} pulse={look.pulse} />
+                                  <span className="truncate">{sandbox.label}</span>
+                                  <span className="sr-only">{look.label}</span>
+                                </Link>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
                     </SidebarMenuItem>
                   );
                   if (!link.optIn) return item;

@@ -12,7 +12,6 @@ import {
 } from "@armada/core";
 import {
   CheckIcon,
-  ChevronDownIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleHelpIcon,
@@ -40,6 +39,7 @@ import {
   updateAccountLimits,
 } from "@/app/actions/model-accounts";
 import { SubmitButton } from "@/components/action-form";
+import { CatalogDrawer } from "@/components/catalog-drawer";
 import { PresetConnectionFields } from "@/components/connection-preset-fields";
 import { ResultLine } from "@/components/connections";
 import { CreateDialog, CreateDialogBody, CreateDialogFooter } from "@/components/create-dialog";
@@ -447,10 +447,12 @@ export function AccountRow({
   now: number;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const detailTrigger = useRef<HTMLButtonElement>(null);
   const [result, setResult] = useState<ActionResult | null>(null);
   const [dialog, setDialog] = useState<RowDialog>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const rowAction = useRef<HTMLButtonElement>(null);
+  const defaultActions = useRef<HTMLDivElement>(null);
   /** Which control opened the dialog, so closing it gives focus back there. */
   const opener = useRef<"menu" | "row">("menu");
   const info = KIND_INFO[account.kind];
@@ -475,13 +477,19 @@ export function AccountRow({
   }, []);
 
   return (
-    <section className="border-b last:border-0" data-account={account.name} aria-labelledby={headingId}>
+    <section
+      className="min-w-0 overflow-hidden rounded-[10px] border bg-card transition-colors hover:border-foreground/25"
+      data-account={account.name}
+      aria-labelledby={headingId}
+    >
       <button
+        ref={detailTrigger}
         type="button"
+        aria-haspopup="dialog"
         aria-expanded={expanded}
         aria-controls={`${headingId}-detail`}
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-3 px-4 py-4 text-left hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring"
+        className="flex w-full items-start gap-3 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring"
       >
         <ProviderMark kind={account.kind} />
         <span className="min-w-0 flex-1">
@@ -492,194 +500,219 @@ export function AccountRow({
             {state.label === "Ready" ? "Connected" : state.label} · {info.label}
           </span>
         </span>
-        <span className="hidden text-xs text-muted-foreground sm:block">{info.harnessLabel}</span>
-        <ChevronDownIcon
-          aria-hidden
-          className={cn(
-            "size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none",
-            expanded && "rotate-180",
-          )}
-        />
+        <span className={cn("shrink-0 text-xs", STATE_TONE[state.tone])}>
+          {state.label === "Ready" ? "Connected" : state.label}
+        </span>
       </button>
-      <div id={`${headingId}-detail`} hidden={!expanded} className="space-y-4 border-t bg-muted/10 px-4 py-5 sm:px-6">
-        <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-medium break-all">{account.name}</h3>
-            <Badge variant="secondary" className="gap-1" data-account-scope={account.scope}>
-              {account.scope === "user" ? <UserIcon /> : <UsersIcon />}
-              {account.scope === "user" ? "Personal" : orgName}
-            </Badge>
-            {account.isDefault && (
-              <Badge variant="outline" className="gap-1" data-default>
-                <StarIcon className="fill-current" /> Account-wide default
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="flex w-full flex-wrap items-center justify-between gap-2 border-t bg-muted/20 px-4 py-2.5 text-left text-xs text-muted-foreground hover:bg-muted/40"
+        aria-label={`View ${account.name} details`}
+      >
+        <span>
+          {info.harnessLabel} · {account.scope === "user" ? "Personal" : orgName}
+        </span>
+        <span className="font-mono">
+          {account.runningAgents ?? 0}
+          {account.maxAgents == null ? " agents" : ` / ${account.maxAgents} agents`}
+        </span>
+      </button>
+      <CatalogDrawer
+        open={expanded}
+        onOpenChange={setExpanded}
+        title={account.name}
+        subtitle={info.label}
+        mark={<ProviderMark kind={account.kind} />}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          detailTrigger.current?.focus();
+        }}
+      >
+        <div id={`${headingId}-detail`} className="space-y-4">
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-medium break-all">{account.name}</h3>
+              <Badge variant="secondary" className="gap-1" data-account-scope={account.scope}>
+                {account.scope === "user" ? <UserIcon /> : <UsersIcon />}
+                {account.scope === "user" ? "Personal" : orgName}
               </Badge>
+              {account.isDefault && (
+                <Badge variant="outline" className="gap-1" data-default>
+                  <StarIcon className="fill-current" /> Account-wide default
+                </Badge>
+              )}
+            </div>
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+              <span>
+                {kindNote(account) ?? (info.billing === "subscription" ? "Subscription" : "API key")} ·{" "}
+                {account.scope === "user" ? "only you" : orgName}
+              </span>
+              {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
+            </p>
+          </div>
+
+          <div>
+            <p className="mb-1 text-xs text-muted-foreground">Status</p>
+            <p
+              className={cn("flex items-center gap-1.5 text-sm", STATE_TONE[state.tone])}
+              data-account-status={account.status}
+              data-account-state={state.label.toLowerCase()}
+            >
+              <StateIcon className="size-4 shrink-0" aria-hidden />
+              {state.label === "Ready" ? "Connected" : state.label === "Expired" ? "Sign-in expired" : state.label}
+            </p>
+          </div>
+          {canManage && <InlineDisplayName account={account} orgId={orgId} onResult={setResult} />}
+          <div className="text-sm">
+            <span className="text-muted-foreground">Works with: </span>
+            {info.harnessLabel}
+          </div>
+          <div className="tabular-nums">
+            <span className="text-muted-foreground">Agents running: </span>
+            {account.runningAgents ?? 0}
+            {account.maxAgents == null ? (
+              <span className="block text-xs text-muted-foreground">no limit</span>
+            ) : (
+              ` of ${account.maxAgents}`
+            )}
+            {account.waitingAgents !== undefined && account.waitingAgents > 0 && (
+              <span className="block text-xs text-muted-foreground">
+                {account.waitingAgents} {account.waitingAgents === 1 ? "message" : "messages"} waiting
+              </span>
             )}
           </div>
-          <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-            <span>
-              {kindNote(account) ?? (info.billing === "subscription" ? "Subscription" : "API key")} ·{" "}
-              {account.scope === "user" ? "only you" : orgName}
-            </span>
-            {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
-          </p>
-        </div>
-
-        <div>
-          <p className="mb-1 text-xs text-muted-foreground">Status</p>
-          <p
-            className={cn("flex items-center gap-1.5 text-sm", STATE_TONE[state.tone])}
-            data-account-status={account.status}
-            data-account-state={state.label.toLowerCase()}
-          >
-            <StateIcon className="size-4 shrink-0" aria-hidden />
-            {state.label === "Ready" ? "Connected" : state.label === "Expired" ? "Sign-in expired" : state.label}
-          </p>
-        </div>
-        {canManage && <InlineDisplayName account={account} orgId={orgId} onResult={setResult} />}
-        <div className="text-sm">
-          <span className="text-muted-foreground">Works with: </span>
-          {info.harnessLabel}
-        </div>
-        <div className="tabular-nums">
-          <span className="text-muted-foreground">Agents running: </span>
-          {account.runningAgents ?? 0}
-          {account.maxAgents == null ? (
-            <span className="block text-xs text-muted-foreground">no limit</span>
-          ) : (
-            ` of ${account.maxAgents}`
-          )}
-          {account.waitingAgents !== undefined && account.waitingAgents > 0 && (
-            <span className="block text-xs text-muted-foreground">
-              {account.waitingAgents} {account.waitingAgents === 1 ? "message" : "messages"} waiting
-            </span>
-          )}
-        </div>
-        <div>
-          {info.billing === "subscription" && account.status === "active" ? (
-            <UsagePanel usage={usage} account={account} now={now} />
-          ) : (
-            <span className="text-xs text-muted-foreground">Not reported</span>
-          )}
-        </div>
-        <div>
-          {canManage ? (
-            <div className="flex flex-wrap items-center gap-1">
-              {/* A default that cannot run would refuse launches that name no account: Reconnect leads instead. */}
-              {state.needsAction ? (
-                <Button
-                  ref={rowAction}
-                  size="sm"
-                  onClick={() => {
-                    opener.current = "row";
-                    setDialog("replace");
-                  }}
-                  aria-label={`${info.billing === "subscription" ? "Reconnect" : "Replace key"}, ${account.name}`}
-                >
-                  {info.billing === "subscription" ? "Reconnect" : "Replace key"}
-                </Button>
-              ) : null}
-
-              <DropdownMenu modal={false}>
-                <DropdownMenuTrigger asChild>
+          <div>
+            {info.billing === "subscription" && account.status === "active" ? (
+              <UsagePanel usage={usage} account={account} now={now} />
+            ) : (
+              <span className="text-xs text-muted-foreground">Not reported</span>
+            )}
+          </div>
+          <div>
+            {canManage ? (
+              <div className="flex flex-wrap items-center gap-1">
+                {/* A default that cannot run would refuse launches that name no account: Reconnect leads instead. */}
+                {state.needsAction ? (
                   <Button
-                    ref={menuTrigger}
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label={`More actions for ${account.name}`}
+                    ref={rowAction}
+                    size="sm"
+                    onClick={() => {
+                      opener.current = "row";
+                      setDialog("replace");
+                    }}
+                    aria-label={`${info.billing === "subscription" ? "Reconnect" : "Replace key"}, ${account.name}`}
                   >
-                    <EllipsisIcon />
+                    {info.billing === "subscription" ? "Reconnect" : "Replace key"}
                   </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-44">
-                  {!state.needsAction && !account.isDefault && (
-                    <DropdownMenuItem
-                      onSelect={() =>
-                        menuTrigger.current
-                          ?.closest("[data-account]")
-                          ?.querySelector<HTMLButtonElement>('button[aria-label^="Make default"]')
-                          ?.click()
-                      }
-                    >
-                      Make account-wide default
-                    </DropdownMenuItem>
-                  )}
-                  {info.billing === "api" &&
-                    (account.kind !== "opencode" || !!account.models?.length) &&
-                    account.status === "active" && (
-                      <DropdownMenuItem onSelect={() => setDialog("test")}>Test connection</DropdownMenuItem>
-                    )}
-                  <DropdownMenuItem onSelect={() => setDialog("limits")}>
-                    <PencilIcon /> Agent limit
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => setDialog("rename")}>
-                    <PencilIcon /> Rename
-                  </DropdownMenuItem>
-                  {!state.needsAction && (
-                    <DropdownMenuItem onSelect={() => setDialog("replace")}>
-                      <KeyRoundIcon /> {info.billing === "subscription" ? "Reconnect" : `Replace ${secretWord}`}
-                    </DropdownMenuItem>
-                  )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive" onSelect={() => setDialog("remove")}>
-                    <Trash2Icon /> Remove
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          ) : (
-            <p className="text-right text-xs text-muted-foreground">Managed by the organization&apos;s admins.</p>
-          )}
-          <ResultLine result={result} />
+                ) : null}
 
-          {canManage && (
-            <>
-              <div className={cn(!account.isDefault && "[&>div>form:first-child]:hidden")}>
-                <DefaultAccountAction account={account} previous={previousDefault} orgId={orgId} onResult={setResult} />
+                <DropdownMenu modal={false}>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      ref={menuTrigger}
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`More actions for ${account.name}`}
+                    >
+                      <EllipsisIcon />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-44">
+                    {!state.needsAction && !account.isDefault && (
+                      <DropdownMenuItem
+                        onSelect={() =>
+                          defaultActions.current
+                            ?.querySelector<HTMLButtonElement>('button[aria-label^="Make default"]')
+                            ?.click()
+                        }
+                      >
+                        Make account-wide default
+                      </DropdownMenuItem>
+                    )}
+                    {info.billing === "api" &&
+                      (account.kind !== "opencode" || !!account.models?.length) &&
+                      account.status === "active" && (
+                        <DropdownMenuItem onSelect={() => setDialog("test")}>Test connection</DropdownMenuItem>
+                      )}
+                    <DropdownMenuItem onSelect={() => setDialog("limits")}>
+                      <PencilIcon /> Agent limit
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setDialog("rename")}>
+                      <PencilIcon /> Rename
+                    </DropdownMenuItem>
+                    {!state.needsAction && (
+                      <DropdownMenuItem onSelect={() => setDialog("replace")}>
+                        <KeyRoundIcon /> {info.billing === "subscription" ? "Reconnect" : `Replace ${secretWord}`}
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem variant="destructive" onSelect={() => setDialog("remove")}>
+                      <Trash2Icon /> Remove
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
-              <ConnectionTestDialog
-                account={account}
-                orgId={orgId}
-                choices={testChoices}
-                open={dialog === "test"}
-                onOpenChange={closeDialog}
-                onCloseAutoFocus={restoreFocus}
-              />
-              <LimitsDialog
-                account={account}
-                orgId={orgId}
-                onResult={setResult}
-                open={dialog === "limits"}
-                onOpenChange={closeDialog}
-                onCloseAutoFocus={restoreFocus}
-              />
-              <RenameDialog
-                account={account}
-                orgId={orgId}
-                onResult={setResult}
-                open={dialog === "rename"}
-                onOpenChange={closeDialog}
-                onCloseAutoFocus={restoreFocus}
-              />
-              <ReplaceDialog
-                account={account}
-                orgId={orgId}
-                reconnect={state.needsAction}
-                onResult={setResult}
-                open={dialog === "replace"}
-                onOpenChange={closeDialog}
-                onCloseAutoFocus={restoreFocus}
-              />
-              <RemoveDialog
-                account={account}
-                orgId={orgId}
-                open={dialog === "remove"}
-                onOpenChange={closeDialog}
-                onCloseAutoFocus={restoreFocus}
-              />
-            </>
-          )}
+            ) : (
+              <p className="text-right text-xs text-muted-foreground">Managed by the organization&apos;s admins.</p>
+            )}
+            <ResultLine result={result} />
+
+            {canManage && (
+              <>
+                <div ref={defaultActions} className={cn(!account.isDefault && "[&>div>form:first-child]:hidden")}>
+                  <DefaultAccountAction
+                    account={account}
+                    previous={previousDefault}
+                    orgId={orgId}
+                    onResult={setResult}
+                  />
+                </div>
+                <ConnectionTestDialog
+                  account={account}
+                  orgId={orgId}
+                  choices={testChoices}
+                  open={dialog === "test"}
+                  onOpenChange={closeDialog}
+                  onCloseAutoFocus={restoreFocus}
+                />
+                <LimitsDialog
+                  account={account}
+                  orgId={orgId}
+                  onResult={setResult}
+                  open={dialog === "limits"}
+                  onOpenChange={closeDialog}
+                  onCloseAutoFocus={restoreFocus}
+                />
+                <RenameDialog
+                  account={account}
+                  orgId={orgId}
+                  onResult={setResult}
+                  open={dialog === "rename"}
+                  onOpenChange={closeDialog}
+                  onCloseAutoFocus={restoreFocus}
+                />
+                <ReplaceDialog
+                  account={account}
+                  orgId={orgId}
+                  reconnect={state.needsAction}
+                  onResult={setResult}
+                  open={dialog === "replace"}
+                  onOpenChange={closeDialog}
+                  onCloseAutoFocus={restoreFocus}
+                />
+                <RemoveDialog
+                  account={account}
+                  orgId={orgId}
+                  open={dialog === "remove"}
+                  onOpenChange={closeDialog}
+                  onCloseAutoFocus={restoreFocus}
+                />
+              </>
+            )}
+          </div>
         </div>
-      </div>
+      </CatalogDrawer>
     </section>
   );
 }
@@ -2039,7 +2072,7 @@ export function ModelsOverview({
           </Button>
         </div>
         {accounts.length ? (
-          <div className="rounded-lg border">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,310px),1fr))] gap-3">
             {orderAccounts(accounts, now).map((account) => (
               <AccountRow
                 key={account.id}
@@ -2059,9 +2092,6 @@ export function ModelsOverview({
                 testChoices={testChoices}
               />
             ))}
-            <div className="border-t px-2 py-1 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:text-muted-foreground [&_button]:shadow-none [&_button:hover]:bg-muted">
-              {emptyAction}
-            </div>
           </div>
         ) : (
           <Empty title="Connect what your agents run on" action={emptyAction}>
@@ -2231,9 +2261,11 @@ function PersonalDefaultSentence({
             if (summary?.getAttribute("aria-expanded") === "false") summary.click();
             // Wait for the expanded detail to render before focusing its repair action.
             requestAnimationFrame(() => {
-              const repair = row?.querySelector<HTMLButtonElement>(
-                'button[aria-label^="Reconnect"], button[aria-label^="Replace key"]',
-              );
+              const repair = document
+                .getElementById(`account-${account.id}-detail`)
+                ?.querySelector<HTMLButtonElement>(
+                  'button[aria-label^="Reconnect"], button[aria-label^="Replace key"]',
+                );
               repair?.focus();
               repair?.click();
             });

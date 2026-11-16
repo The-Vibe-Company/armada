@@ -3,6 +3,7 @@ import { GitPullRequestIcon } from "lucide-react";
 import type { Metadata } from "next";
 import { disconnectGitHub } from "@/app/actions/github";
 import { ConfirmedAction } from "@/components/confirmed-action";
+import { ConnectionPreferences } from "@/components/connection-preferences";
 import { PageHeader } from "@/components/page-header";
 import { PersonalProviderKeys } from "@/components/personal-provider-keys";
 import { ConnectionBadge } from "@/components/status-badge";
@@ -40,23 +41,23 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const installations = connection && !revoked ? storedGitHubInstallations(connection.installations) : [];
 
   return (
-    <>
-      <PageHeader title="Your connections" description="What Armada uses in your name." />
+    <div className="mx-auto flex w-full max-w-[880px] flex-col gap-7">
+      <PageHeader title="Your connections" />
       {result && (
         <Alert variant={result.ok ? "default" : "destructive"}>
           <AlertDescription>{result.text}</AlertDescription>
         </Alert>
       )}
 
-      <Card data-settings="github">
-        <CardHeader>
+      <Card data-settings="github" className="gap-3 rounded-[10px] border-0 bg-transparent py-0 shadow-none">
+        <CardHeader className="px-0">
           <CardTitle className="flex items-center gap-2">
             <GitPullRequestIcon className="size-4" />
             GitHub
           </CardTitle>
           <CardDescription>Sandboxes commit and push as you.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-4 px-0">
           {!configured && (
             <Alert variant="destructive">
               <AlertDescription>
@@ -67,7 +68,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
           {connection && !revoked ? (
             <div
-              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-[10px] border bg-card px-4 py-3.5"
               data-github-state="connected"
             >
               <div className="min-w-0 space-y-1">
@@ -103,7 +104,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             </div>
           ) : (
             <div
-              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-[10px] border bg-card px-4 py-3.5"
               data-github-state={revoked ? "revoked" : "not-connected"}
             >
               <div className="min-w-0 space-y-1">
@@ -222,6 +223,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           </Button>
         </CardContent>
       </Card>
-    </>
+      <ConnectionPreferences />
+    </div>
   );
 }
