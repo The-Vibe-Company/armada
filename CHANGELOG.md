@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.46.4](https://github.com/The-Vibe-Company/armada/compare/v2.46.3...v2.46.4) (2026-11-16)
+
+
+### Bug Fixes
+
+* **dashboard:** bound sandbox enrichment reads ([#2281](https://github.com/The-Vibe-Company/armada/issues/2281)) ([6c7ccb8](https://github.com/The-Vibe-Company/armada/commit/6c7ccb875adf2338bd6101419d6420fd35c7a44c))
+* **docker:** accept initial actor epoch for launch reservations ([#2285](https://github.com/The-Vibe-Company/armada/issues/2285)) ([8d3c987](https://github.com/The-Vibe-Company/armada/commit/8d3c987ce818e12ba65387389ac2090330a04a8f))
+* **queue:** settle stranded receipts and report genuine slot waits ([#2291](https://github.com/The-Vibe-Company/armada/issues/2291)) ([fa04985](https://github.com/The-Vibe-Company/armada/commit/fa04985f6b02d77dbfb244efb8db8048d34c57ff))
+
 ## [2.46.3](https://github.com/The-Vibe-Company/armada/compare/v2.46.2...v2.46.3) (2026-11-16)
 
 
