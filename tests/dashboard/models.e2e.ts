@@ -16,7 +16,7 @@ for (const session of ["alice", "large"]) {
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await screen.getByRole("button", "Add an account", { exact: true }).first().tap();
     const dialog = screen.getByRole("dialog", "Add an account");
-    await dialog.getByLabel("Kind", { exact: true }).selectOption("openai");
+    await dialog.getByRole("radio", "OpenAI API key", { exact: true }).check();
     await dialog.getByLabel("Name", { exact: true }).fill("Journey model connection");
     await dialog.getByLabel("Maximum agents running at the same time").fill("0");
     await dialog.getByRole("button", "Add account", { exact: true }).tap();
@@ -67,7 +67,7 @@ test("long account names and subscription fallback fit a phone", { session: "ali
   await app.open("/harness");
   await screen.getByRole("button", "Add an account", { exact: true }).first().tap();
   let dialog = screen.getByRole("dialog", "Add an account");
-  await dialog.getByLabel("Kind", { exact: true }).selectOption("openai");
+  await dialog.getByRole("radio", "OpenAI API key", { exact: true }).check();
   await dialog.getByLabel("Name", { exact: true }).fill(name);
   await dialog.getByLabel("API key", { exact: true }).fill("example_api_key");
   await dialog.getByRole("button", "Add account", { exact: true }).tap();
@@ -89,12 +89,15 @@ test("long account names and subscription fallback fit a phone", { session: "ali
   for (const provider of ["claude_oauth", "codex_auth"]) {
     await screen.getByRole("button", "Add an account", { exact: true }).first().tap();
     dialog = screen.getByRole("dialog", "Add an account");
-    await dialog.getByLabel("Kind", { exact: true }).selectOption(provider);
-    const fallback = dialog.getByRole("button", /No terminal here, or on a phone/);
+    await dialog
+      .getByRole("radio", provider === "claude_oauth" ? "Claude subscription" : "ChatGPT subscription", { exact: true })
+      .check();
+    const fallback = dialog.getByRole("button", "Sign-in instructions and terminal login");
     await expect(fallback).toBeVisible();
     await fits();
     const box = await fallback.boundingBox();
     expect(box !== null && box.x >= 0 && box.x + box.width <= (await browser.evaluate(() => innerWidth))).toBe(true);
+    await fallback.tap();
     await expect(fallback).toHaveAttribute("aria-expanded", "true");
     await dialog.getByRole("button", "Close", { exact: true }).tap();
   }

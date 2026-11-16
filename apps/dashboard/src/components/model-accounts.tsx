@@ -1527,7 +1527,6 @@ export function AddAccountDialog({
   const wizardRef = useRef<HTMLFormElement>(null);
   const [open, setOpen] = useState(false);
   const step = 2;
-  const [pasteOpen, setPasteOpen] = useState(true);
   const [generation, setGeneration] = useState(0);
   const [state, formAction] = useMutationState(addAccount);
   const [choice, setChoice] = useState<AddChoice>(initialKind);
@@ -1541,7 +1540,7 @@ export function AddAccountDialog({
           ? preset.kind
           : (choice as AccountKind);
   const [scope, setScope] = useState<"user" | "org">("user");
-  const [name, setName] = useState(KIND_INFO[initialKind].label);
+  const [name, setName] = useState("");
   const [maxAgents, setMaxAgents] = useState(initialKind === "morph" ? "2" : "");
   const router = useRouter();
   const id = useId();
@@ -1631,7 +1630,6 @@ export function AddAccountDialog({
     </>
   );
   const choose = (next: AddChoice) => {
-    setPasteOpen(true);
     const nextPreset = connectionPreset(next);
     const nextKind =
       next === "your-endpoint-claude"
@@ -1640,11 +1638,7 @@ export function AddAccountDialog({
           ? "openai"
           : (nextPreset?.kind ?? (next as AccountKind));
     setChoice(next);
-    setName(
-      next === "your-endpoint" || next === "your-endpoint-claude"
-        ? "Your endpoint"
-        : (nextPreset?.label ?? KIND_INFO[nextKind].label),
-    );
+    setName("");
     setMaxAgents(nextKind === "morph" ? "2" : "");
   };
   return (
@@ -1658,7 +1652,6 @@ export function AddAccountDialog({
       onOpenChange={(next) => {
         setOpen(next);
         if (next) {
-          setPasteOpen(true);
           choose(initialKind);
           setScope("user");
           setGeneration((value) => value + 1);
@@ -1679,27 +1672,64 @@ export function AddAccountDialog({
         {preset?.models === "choose" && <input type="hidden" name="preset" value={preset.id} />}
         <input type="hidden" name="scope" value={scope} />
         <CreateDialogBody className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-kind`}>Kind</Label>
-            <NativeSelect
-              id={`${id}-kind`}
-              value={choice}
-              onChange={(event) => choose(event.target.value as AddChoice)}
-            >
-              {SUBSCRIPTION_KINDS.map((value) => (
-                <option key={value} value={value}>
-                  {KIND_INFO[value].label}
-                </option>
+          <fieldset className="space-y-2">
+            <legend className="mb-2 text-sm font-medium">Kind</legend>
+            <div className="overflow-hidden rounded-lg border divide-y">
+              {(["claude_oauth", "anthropic", "codex_auth", "openai", "morph"] as const).map((value) => (
+                <label
+                  key={value}
+                  className={cn(
+                    "flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm",
+                    choice === value && "bg-primary/15",
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="account-kind-choice"
+                    aria-label={KIND_INFO[value].label}
+                    value={value}
+                    checked={choice === value}
+                    onChange={() => choose(value)}
+                    className="accent-primary"
+                  />
+                  <ProviderMark kind={value} />
+                  <span>
+                    <span className="block font-medium">{KIND_INFO[value].label}</span>
+                    <span className="block text-xs text-muted-foreground">
+                      {value === "claude_oauth"
+                        ? "The token from claude setup-token"
+                        : value === "codex_auth"
+                          ? "The contents of ~/.codex/auth.json"
+                          : value === "morph"
+                            ? "Morph models for Claude Code, Codex and OpenCode"
+                            : "Billed per token"}
+                    </span>
+                  </span>
+                </label>
               ))}
-              {CONNECTION_PRESETS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-              <option value="your-endpoint">Custom endpoint for Codex</option>
-              <option value="your-endpoint-claude">Custom endpoint for Claude Code</option>
-            </NativeSelect>
-          </div>
+            </div>
+            <Disclosure summary="Other providers and custom endpoints">
+              <Label htmlFor={`${id}-kind`}>Provider</Label>
+              <NativeSelect
+                id={`${id}-kind`}
+                value={choice}
+                onChange={(event) => choose(event.target.value as AddChoice)}
+              >
+                {SUBSCRIPTION_KINDS.map((value) => (
+                  <option key={value} value={value}>
+                    {KIND_INFO[value].label}
+                  </option>
+                ))}
+                {CONNECTION_PRESETS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+                <option value="your-endpoint">Custom endpoint for Codex</option>
+                <option value="your-endpoint-claude">Custom endpoint for Claude Code</option>
+              </NativeSelect>
+            </Disclosure>
+          </fieldset>
           <div
             key={choice}
             className="space-y-4 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-150"
@@ -1717,26 +1747,12 @@ export function AddAccountDialog({
                   autoComplete="off"
                 />
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                {isAdmin && (
-                  <div className="space-y-2">
-                    <Label htmlFor={`${id}-scope`}>Who uses it</Label>
-                    <NativeSelect
-                      id={`${id}-scope`}
-                      value={scope}
-                      onChange={(event) => setScope(event.target.value as "user" | "org")}
-                    >
-                      <option value="user">Only you</option>
-                      <option value="org">{orgName}</option>
-                    </NativeSelect>
-                  </div>
-                )}
-                <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
-              </div>
             </div>
             <div data-wizard-panel="2" className="space-y-4">
-              {command ? (
-                <>
+              {saveFields}
+              {command && (
+                <Disclosure summary="Sign-in instructions and terminal login">
+                  {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
                   <TerminalSignIn
                     command={command}
                     onDone={() => {
@@ -1744,23 +1760,34 @@ export function AddAccountDialog({
                       router.refresh();
                     }}
                   />
-                  <Disclosure
-                    summary="No terminal here, or on a phone? Paste a sign-in token instead"
-                    defaultOpen={false}
-                    open={pasteOpen}
-                    onOpenChange={setPasteOpen}
-                  >
-                    <div className="space-y-4">
-                      {pasteSignIn && (
-                        <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />
-                      )}
-                      {saveFields}
-                    </div>
-                  </Disclosure>
-                </>
-              ) : (
-                saveFields
+                </Disclosure>
               )}
+              <div className="space-y-4">
+                {isAdmin && (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium">Shared with</p>
+                    <fieldset aria-label="Shared with" className="inline-flex gap-0.5 rounded-lg bg-muted p-[3px]">
+                      {[
+                        { value: "user", label: "Only you" },
+                        { value: "org", label: orgName },
+                      ].map((option) => (
+                        <Button
+                          key={option.value}
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          aria-pressed={scope === option.value}
+                          className={scope === option.value ? "h-7 bg-card shadow-xs" : "h-7"}
+                          onClick={() => setScope(option.value as "user" | "org")}
+                        >
+                          {option.label}
+                        </Button>
+                      ))}
+                    </fieldset>
+                  </div>
+                )}
+                <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
+              </div>
             </div>
           </div>
         </CreateDialogBody>
@@ -1769,9 +1796,7 @@ export function AddAccountDialog({
             Cancel
           </Button>
           <div className="flex flex-wrap gap-2">
-            {(!command || pasteOpen) && (
-              <SubmitButton>{preset?.deploymentNames ? "Test and add account" : "Add account"}</SubmitButton>
-            )}
+            {<SubmitButton>{preset?.deploymentNames ? "Test and add account" : "Add account"}</SubmitButton>}
           </div>
         </CreateDialogFooter>
       </form>
@@ -2053,11 +2078,10 @@ function PersonalDefaultSentence({
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b py-4 last:border-0">
       <div className="min-w-0">
-        <p className="text-lg">
-          {HARNESS_LABELS[harness]}{" "}
+        <p className="flex flex-col gap-0.5 text-[13px]">
+          <span className="text-xs text-muted-foreground">{HARNESS_LABELS[harness]}</span>
           {account ? (
             <>
-              runs{" "}
               <button
                 type="button"
                 className={cn(
@@ -2065,7 +2089,7 @@ function PersonalDefaultSentence({
                   !HARNESS_CATALOG[harness].models.some(
                     (model) => model.id === (current.model ?? modelsPageModel(account, harness)),
                   ) && "font-mono",
-                  "text-base",
+                  "text-[13px]",
                 )}
                 onClick={(event) => {
                   opener.current = event.currentTarget;
@@ -2079,18 +2103,6 @@ function PersonalDefaultSentence({
                   current.model ??
                   modelsPageModel(account, harness)}
               </button>{" "}
-              on{" "}
-              <button
-                type="button"
-                className={word}
-                onClick={(event) => {
-                  opener.current = event.currentTarget;
-                  setOpen(true);
-                }}
-                aria-label={`Change default account for ${HARNESS_LABELS[harness]}`}
-              >
-                {account.name}
-              </button>
             </>
           ) : resolved.state === "missing" ? (
             "has an unavailable default account"
