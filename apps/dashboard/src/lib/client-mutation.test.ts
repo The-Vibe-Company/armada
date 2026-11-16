@@ -7,7 +7,7 @@ test("a lost mutation reply becomes an unconfirmed local failure without retryin
     calls++;
     throw new Error("private_submitted_value");
   });
-  expect(result).toEqual({ ok: false, error: UNCONFIRMED_MUTATION, pending: true });
+  expect(result).toEqual({ ok: false, error: UNCONFIRMED_MUTATION, pending: true, unconfirmed: true });
   expect(calls).toBe(1);
 });
 

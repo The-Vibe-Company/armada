@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/components/ui/toast";
 import type { ActionResult } from "@/lib/action";
+import { clientMutation } from "@/lib/client-mutation";
 import { toastFromResult } from "@/lib/toast";
 
 const CAN_STOP: readonly SandboxStatus[] = ["starting", "ready", "running"];
@@ -66,7 +67,7 @@ function DeleteButton({ sandboxId }: { sandboxId: string }) {
   const toast = useToast();
   const remove = useCallback(
     async (previous: ActionResult | null, data: FormData) => {
-      const result = await deleteSandbox(previous, data);
+      const result = await clientMutation(() => deleteSandbox(previous, data));
       toast(toastFromResult(result, "Delete request not confirmed"));
       return result;
     },
@@ -124,7 +125,7 @@ export function StopButton({
   // The toast is raised by the action itself, not by an effect on its state: the button unmounts with the refresh.
   const stop = useCallback(
     async (previous: ActionResult | null, data: FormData) => {
-      const result = await stopSandbox(previous, data);
+      const result = await clientMutation(() => stopSandbox(previous, data));
       toast(toastFromResult(result, "Stop request not confirmed"));
       return result;
     },

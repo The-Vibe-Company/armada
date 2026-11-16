@@ -117,9 +117,10 @@ async function fixture() {
       ttlSeconds: 600,
     })
   ).item as Routine;
+  // These cases exercise elapsed intervals; calendar conversion can otherwise add a slot across a minute boundary.
   const due = async (hours = 0) =>
     db.query(
-      "update routines set status='enabled',next_due_at=now()-($2*interval '1 hour')-interval '1 second' where id=$1",
+      "update routines set status='enabled',cron=null,next_due_at=now()-($2*interval '1 hour')-interval '1 second' where id=$1",
       [routine.id, hours],
     );
   const runs = async () =>
