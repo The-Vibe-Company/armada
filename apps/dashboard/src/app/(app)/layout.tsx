@@ -1,6 +1,6 @@
 import { LogOutIcon } from "lucide-react";
 import { type CSSProperties, type ReactNode, Suspense } from "react";
-import { AppSidebar } from "@/components/app-sidebar";
+import { AppSidebar, DesktopSidebarTrigger } from "@/components/app-sidebar";
 import { CommandMenu } from "@/components/command-menu";
 import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
@@ -8,7 +8,7 @@ import { SandboxLaunchAction } from "@/components/sandbox-launch-action";
 import { ShellBreadcrumb, ShellSearch } from "@/components/shell-toolbar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/toast";
 import { dockerHostsEnabled } from "@/lib/data/docker-hosts";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -29,7 +29,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     <div className="space-y-2 px-3 pt-3 pb-2">
       <div className="flex items-center justify-end gap-2.5 px-1.5">
         <span className="flex-1" />
-        <SidebarTrigger className="hidden md:flex" aria-label="Collapse navigation" />
+        <DesktopSidebarTrigger />
         <div className="flex items-center gap-1 md:hidden">
           <ThemeToggle />
           <SignOut compact />

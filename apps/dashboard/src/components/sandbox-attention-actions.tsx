@@ -132,13 +132,13 @@ export function PushSandboxWork({ sandboxId, restarts }: { sandboxId: string; re
   );
 }
 
-export function AddSandboxTime({ sandboxId }: { sandboxId: string }) {
+export function AddSandboxTime({ sandboxId, label = "Add time" }: { sandboxId: string; label?: string }) {
   const [state, action, pending] = useMutationState(extendSandbox);
   return (
     <form action={action} className="space-y-2">
       <input type="hidden" name="sandbox" value={sandboxId} />
       <Button size="sm" variant="outline" disabled={pending}>
-        {pending ? "Adding time…" : "Add time"}
+        {pending ? "Adding time…" : label}
       </Button>
       {state && (
         <p role={state.ok ? "status" : "alert"} className="text-xs">

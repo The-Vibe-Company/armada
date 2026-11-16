@@ -206,7 +206,7 @@ export default async function SandboxPage({ params }: Props) {
             {configured &&
               (sandbox.status === "ready" || sandbox.status === "running") &&
               (owner || org?.role === "admin") &&
-              sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} />}
+              sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} label="Extend" />}
             {configured && isActiveStatus(sandbox.status) && <StopButton sandboxId={sandbox.id} size="sm" />}
           </div>
         </div>

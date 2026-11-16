@@ -55,11 +55,12 @@ for (const [label, size] of [
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
 
     // Details stay reachable: a bounded panel beside the conversation, or a compact disclosure on a phone.
-    if (label === "mobile") await page.getByRole("button", { name: "Details" }).click();
-    const details = page.getByRole("region", { name: "Details" });
+    if (label === "mobile") await page.getByRole("button", { name: "Sandbox details" }).click();
+    const details = page.locator('section[data-fit="side"]');
     // Opening them brings them into view; nothing else has to be scrolled to find what the tap revealed.
-    await expect(details.getByText("Golden", { exact: true })).toBeInViewport();
-    const connections = details.getByText("Launched without MCP connections you can see.");
+    await expect(details.getByText("Snapshot", { exact: true }).first()).toBeInViewport();
+    await details.getByText("Tools", { exact: true }).click();
+    const connections = details.getByText("Launched without Tools you can see.");
     await connections.scrollIntoViewIfNeeded();
     await expect(connections).toBeInViewport();
     expect(await overflow(page)).toEqual({ vertical: 0, horizontal: 0 });
@@ -81,18 +82,19 @@ test("the history stays on its newest message when its height changes, and comes
   const before = await messages.evaluate((element) => element.clientHeight);
   const atLatest = () =>
     messages.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight <= 1);
-  // The model panel shrinks the history: it stays pinned to the latest message.
-  await page.getByRole("button", { name: "Model", exact: true }).click();
+  // The custom-model field shrinks the history: it stays pinned to the latest message.
+  await page.getByLabel("Model", { exact: true }).selectOption("other");
   await expect(page.getByLabel("Reasoning effort")).toBeVisible();
   await expect.poll(atLatest).toBe(true);
-  await page.getByRole("button", { name: "Model", exact: true }).click();
+  await page.getByLabel("Model", { exact: true }).selectOption("");
   await expect.poll(atLatest).toBe(true);
   // Open details take the history's place on a phone; closed again, the history is back as it was, on its latest.
-  const toggle = page.getByRole("button", { name: "Details" });
+  const toggle = page.getByRole("button", { name: "Sandbox details" });
   await toggle.click();
-  const details = page.getByRole("region", { name: "Details" });
-  await expect(details.getByText("Golden", { exact: true })).toBeVisible();
+  const details = page.locator('section[data-fit="side"]');
+  await expect(details.getByText("Snapshot", { exact: true }).first()).toBeVisible();
   // A nested disclosure may stay open: only the outer Details toggle should take the history's place.
+  await details.locator("summary").filter({ hasText: "Usage" }).click();
   await details.getByRole("button", { name: "Per turn" }).click();
   await expect(details.getByRole("table", { name: "Cost per turn" })).toBeVisible();
   await toggle.click();
@@ -109,20 +111,20 @@ test("a history that grows back to its bottom follows new messages again", async
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
   const messages = page.getByRole("log", { name: "Messages" });
   await expect(messages.getByText("Step 39:")).toBeInViewport();
-  const model = page.getByRole("button", { name: "Model", exact: true });
+  const model = page.getByLabel("Model", { exact: true });
   const height = () => messages.evaluate((element) => element.clientHeight);
   const tall = await height();
-  await model.click();
+  await model.selectOption("other");
   await expect(page.getByLabel("Reasoning effort")).toBeVisible();
   await expect.poll(height).toBeLessThan(tall);
   const growth = tall - (await height());
-  // Read just far enough above the latest message that closing the panel brings its bottom back within reach
+  // Read just far enough above the latest message that hiding the custom-model field brings its bottom back within reach
   // without the browser clamping the scroll (no scroll event: only the resize can tell).
   await messages.evaluate((element, distance) => {
     element.scrollTop = element.scrollHeight - element.clientHeight - distance;
   }, growth + 24);
   await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
-  await model.click();
+  await model.selectOption("");
   await expect.poll(height).toBe(tall);
   await expect(page.getByRole("button", { name: "Jump to latest" })).toHaveCount(0);
   await fetch(`${MOCK}/__test/append-event`, {
@@ -164,13 +166,13 @@ test("on a common phone height, a running turn's composer and its controls are i
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
   const messages = page.getByRole("log", { name: "Messages" });
   await expect(messages.getByText("Step 39:")).toBeAttached();
-  await expect(page.getByText("Technical events (1)")).toBeAttached();
+  await expect(page.getByText("Technical details · events (1)")).toBeAttached();
   const box = page.getByRole("textbox", { name: "Message" });
   await box.fill("Keep the old behaviour for empty input");
   const scrolled = () =>
     page.evaluate(() => ({ document: window.scrollY, main: document.querySelector("main")?.scrollTop ?? 0 }));
   for (const open of [false, true]) {
-    if (open) await page.getByRole("button", { name: "Details" }).click();
+    if (open) await page.getByRole("button", { name: "Sandbox details" }).click();
     await page.screenshot({
       path: `test-results/sandbox-viewport-phone-664${open ? "-details" : ""}.png`,
       animations: "disabled",
@@ -189,13 +191,11 @@ test("on a common phone height, a running turn's composer and its controls are i
   }
   // A model change makes Steer unavailable, and says so in words on a touch screen, without costing a row, even
   // after an earlier action left its result in the same place.
-  await page.getByRole("button", { name: "Details" }).click();
+  await page.getByRole("button", { name: "Sandbox details" }).click();
   await page.getByRole("button", { name: "Steer", exact: true }).click();
   await expect(page.locator('form p[role="status"]')).toHaveText("Steered.");
   await box.fill("Keep the old behaviour for empty input");
-  await page.getByRole("button", { name: "Model", exact: true }).click();
   await page.getByLabel("Reasoning effort").selectOption("high");
-  await page.getByRole("button", { name: "Model changed" }).click();
   await expect(page.getByRole("button", { name: "Steer", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Steer", exact: true })).toHaveAccessibleDescription(
     "Model change: New turn only",
@@ -207,15 +207,14 @@ test("on a common phone height, a running turn's composer and its controls are i
   expect(await hitTestable(page.getByRole("button", { name: "Send as new turn" }))).toBe(true);
   expect(await scrolled()).toEqual({ document: 0, main: 0 });
   await page.screenshot({ path: "test-results/sandbox-viewport-phone-664-model-change.png", animations: "disabled" });
-  await page.getByRole("button", { name: "Model changed" }).click();
   await page.getByLabel("Reasoning effort").selectOption("");
-  await page.getByRole("button", { name: "Model", exact: true }).click();
   await expect(page.getByRole("button", { name: "Steer", exact: true })).toBeEnabled();
   await expect(box).toHaveValue("Keep the old behaviour for empty input");
-  await page.getByRole("button", { name: "Details" }).click();
+  await page.getByRole("button", { name: "Sandbox details" }).click();
   // Open details are readable in their own bounded panel, still without moving the page.
-  const details = page.getByRole("region", { name: "Details" });
-  const connections = details.getByText("Launched without MCP connections you can see.");
+  const details = page.locator('section[data-fit="side"]');
+  await details.getByText("Tools", { exact: true }).click();
+  const connections = details.getByText("Launched without Tools you can see.");
   await connections.scrollIntoViewIfNeeded();
   await expect(connections).toBeInViewport();
   expect(await scrolled()).toEqual({ document: 0, main: 0 });
