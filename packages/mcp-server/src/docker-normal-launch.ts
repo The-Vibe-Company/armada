@@ -317,7 +317,7 @@ const notReady = (row: Row) => {
     "sandbox_not_ready",
     row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ||
       Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((message) => message === row.status_reason)
-      ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
+      ? row.status_reason!
       : undefined,
   );
 };

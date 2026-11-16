@@ -9,7 +9,7 @@ import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
@@ -125,7 +125,7 @@ test("skill defaults resolve global personal and org/golden layers, clear with e
 });
 
 test("skill defaults JWT reads obey own/org/private visibility and never permit direct writes", async () => {
-  const f = await fixture(database);
+  const f = await fixture(sharedDatabase);
   try {
     await f.service.command(f.actor(), "set", f.request("personal", ["own@1.0.0"]));
     await f.service.command(f.actor(f.people.admin), "set", f.request("personal", ["admin@1.0.0"]));
@@ -154,7 +154,7 @@ test("skill defaults JWT reads obey own/org/private visibility and never permit 
     await f.db.exec("reset role; set role anon");
     await expect(f.db.query("select * from personal_skill_defaults")).rejects.toThrow("permission denied");
   } finally {
-    await f.db.close();
+    await f.db.exec("reset role; reset all; set search_path=public");
   }
 });
 

@@ -11,7 +11,7 @@ import {
   VaultError,
 } from "@armada/core";
 import { admitAccountCapacity } from "./account-capacity.ts";
-import { admitDockerCapacity, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
+import { admitDockerCapacity, admitDockerDisk, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
@@ -258,6 +258,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           return record(row);
         }
         if (request.credentialId) await admitAccountCapacity(tx, request.credentialId, request.requestId);
+        await admitDockerDisk(tx, request.hostId);
         await admitDockerCapacity(tx, request.hostId);
         const generation = randomUUID();
         const physical = `armada-${host.installation_id}-${request.hostId}-${request.requestId}-${generation}`;

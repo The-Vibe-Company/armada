@@ -13,17 +13,23 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
-let db: Awaited<ReturnType<typeof migratedDatabase>>;
+let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const key = Buffer.alloc(32, 17).toString("base64");
 const sql: Sql = {
-  query: (q, p) => db.query(q, p),
-  transaction: (work) => db.transaction((tx) => work({ query: (q, p) => tx.query(q, p) })),
+  query: (q, p) => database().query(q, p),
+  transaction: (work) => database().transaction((tx) => work({ query: (q, p) => tx.query(q, p) })),
 };
 beforeAll(async () => {
-  db = await migratedDatabase();
+  connection = await migratedDatabase();
 });
 afterAll(async () => {
-  await db.close();
+  const db = connection;
+  connection = undefined;
+  await db?.close();
 });
 const manifest = {
   protocol: 1,
@@ -34,6 +40,7 @@ const manifest = {
   harnesses: { codex: { files: [{ path: "bin/codex" }] } },
 };
 async function fixture() {
+  const db = database();
   const userId = randomUUID(),
     orgId = randomUUID(),
     installationId = randomUUID();
@@ -103,6 +110,7 @@ async function fixture() {
 
 // HTTP owns dispatch/shape/bearer boundaries; lifecycle authorization is exercised by its service tests.
 test("Docker HTTP requires explicit placement, user bearer and bounded exact shapes", async () => {
+  const db = database();
   const f = await fixture();
   expect((await f.post("launch", f.launch, false)).status).toBe(403);
   expect((await f.post("launch", f.launch, true, f.hostToken)).status).toBe(401);

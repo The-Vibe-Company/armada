@@ -24,7 +24,6 @@ import { createSkillDefaultsService, createSqlVaultStore } from "@armada/core/se
 import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
 import { AppService } from "modal";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { createCredentialBindingRecovery } from "../src/credential-binding-recovery.ts";
@@ -1029,7 +1028,7 @@ describe("control API", () => {
 
   for (const repo of [undefined, "ACME/web"]) {
     test(`sandbox/launch uses scoped credentials and forwards repo (${repo ?? "omitted"})`, async () => {
-      const isolatedDb = await openMigratedDatabase();
+      const launchDb = await controlDatabase();
       const runLaunch = async ({ db, options }: Parameters<Parameters<typeof withServer>[0]>[0]) => {
         const org = (await options.store.createOrg("Launch", STAN)).id;
         options.authStore.addMembership(STAN, { orgId: org, name: "Launch", role: "admin" });
@@ -1119,9 +1118,9 @@ describe("control API", () => {
         expect(text).not.toContain("server-only-model-token");
       };
       try {
-        await withServer(runLaunch, isolatedDb);
+        await withServer(runLaunch, launchDb);
       } finally {
-        await isolatedDb.close();
+        await launchDb.exec("reset role; reset all; set search_path=public");
       }
     });
   }
@@ -1429,9 +1428,8 @@ async function withServer(
   }) => Promise<void>,
   callerDb?: PGlite,
 ): Promise<void> {
-  // Ordinary control cases use one raw migrated connection. rowOnlyConnection
-  // resets its rows before each fixture and owns closing it after the suite;
-  // callers supplying an isolated connection retain ownership of its close.
+  // All control cases share one file-owned engine. A supplied connection has
+  // already reset its rows; the caller restores any changed session identity.
   const db = callerDb ?? (await controlDatabase());
   try {
     await db.query("insert into auth.users (id, email) values ($1, 'stan@example.com'), ($2, 'ada@example.com')", [

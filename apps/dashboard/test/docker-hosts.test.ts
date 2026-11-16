@@ -263,3 +263,13 @@ test("retention observations preserve explicit nulls and zero while malformed va
   ])
     expect(parse(fields)).toMatchObject({ hosts: [], skipped: 1 });
 });
+
+test("Docker disk observations preserve missing, unknown and zero without accepting invalid bytes", () => {
+  const parse = (fields: Record<string, unknown>) =>
+    parseDockerHostList({ placement: true, hosts: [{ ...host(), ...fields }] });
+  expect(parse({})?.hosts[0]?.diskFreeBytes).toBeUndefined();
+  for (const value of [null, 0, 10_000_000_000])
+    expect(parse({ diskFreeBytes: value })?.hosts[0]?.diskFreeBytes).toBe(value);
+  for (const value of [-1, 0.5, "free", Number.MAX_SAFE_INTEGER + 1])
+    expect(parse({ diskFreeBytes: value })).toMatchObject({ hosts: [], skipped: 1 });
+});

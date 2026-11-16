@@ -1,4 +1,5 @@
 import { ProviderError, type Sql } from "@armada/core";
+import { DOCKER_DISK_FLOOR_BYTES, DOCKER_DISK_FLOOR_MESSAGE } from "../../core/src/docker-disk-policy.ts";
 import { dockerResourcePolicy } from "../../core/src/docker-resources.ts";
 
 export type DockerPolicyRow = {
@@ -53,6 +54,19 @@ export class DockerHostFull extends ProviderError {
       message: `Host ${name} is full: ${running}/${capacity} sandboxes running; stop one or raise the limit.`,
     });
   }
+}
+
+/** New reservations may allocate/pull; retained resume is CPU/memory admission only.
+ * Missing telemetry retains older-daemon compatibility; the daemon always checks fresh proof locally. */
+export async function admitDockerDisk(tx: Sql, hostId: string): Promise<void> {
+  const host = (
+    await tx.query<{ disk_free_bytes: number | string | null }>(
+      "select disk_free_bytes from public.docker_hosts where id=$1",
+      [hostId],
+    )
+  ).rows[0];
+  if (host?.disk_free_bytes != null && Number(host.disk_free_bytes) < DOCKER_DISK_FLOOR_BYTES)
+    throw new DockerLimitsRefused("conflict", DOCKER_DISK_FLOOR_MESSAGE);
 }
 
 /** Caller must hold the host row FOR UPDATE. Pending starts reserve capacity too:

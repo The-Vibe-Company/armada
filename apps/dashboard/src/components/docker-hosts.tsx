@@ -447,6 +447,13 @@ export function HostRetention({ orgId, host }: { orgId: string; host: DockerHost
         Retention:{" "}
         {host.retentionSeconds == null ? "Unknown — update the server daemon" : `${host.retentionSeconds} seconds`}
       </p>
+      <p>
+        Docker disk free:{" "}
+        {host.diskFreeBytes == null
+          ? "Unknown — update/check the daemon"
+          : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB (${host.diskFreeBytes} bytes)`}
+        . Launch floor: 10 GB.
+      </p>
       <p>Next cleanup: {host.nextCleanupAt ? new Date(host.nextCleanupAt).toISOString() : "None reported"}</p>
       <p className="text-xs text-muted-foreground">
         As of last check-in: {host.lastSeenAt ?? "Never"}. Offline servers enforce their last saved policy.

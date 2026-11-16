@@ -4,20 +4,22 @@ import { createUsagePricingContext, type Provider, priceTurn, resolvePrice } fro
 import { createSqlData } from "../src/data.ts";
 import { collectSandboxUsage } from "../src/turns.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { database, fakeBoat } from "./support.ts";
+import { fakeBoat } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
-async function fixture({ isolated = false } = {}) {
-  const data = await (isolated ? database() : sharedDatabase());
+async function fixture() {
+  const data = await sharedDatabase();
   return {
     ...data,
     close: async () => {
-      if (isolated) await data.db.close();
+      await data.db.exec(
+        "reset role; reset all; set search_path=public; drop trigger if exists fail_quote_test on public.sandboxes; drop function if exists public.fail_quote_test()",
+      );
     },
   };
 }
 
-async function state(data: Awaited<ReturnType<typeof database>>) {
+async function state(data: Awaited<ReturnType<typeof sharedDatabase>>) {
   const { db, people: p } = data;
   const golden = (
     await db.query<{ id: string }>(
@@ -214,7 +216,7 @@ test("query-only SQL cannot erase a price context or update counters beside a st
 });
 
 test("database failure publishing a changed quote rolls native counters back atomically", async () => {
-  const data = await fixture({ isolated: true });
+  const data = await fixture();
   try {
     const { db, store, saved, native, context, read } = await state(data);
     await store.recordUsage!(
