@@ -456,19 +456,25 @@ export function createArmadaServer(context: ToolContext, version: string, option
               usage?: { turns: { promptId: string }[] };
             };
             const root = raw as PublicReport;
-            for (const report of name === "list" ? (root.sandboxes ?? []) : [root]) {
+            const reports = (name === "list" ? (root.sandboxes ?? []) : [root]).map((report) => {
               const items = [
                 ...(report.events ?? []),
                 ...(report.prompt ? [report.prompt] : []),
                 ...(report.usage?.turns ?? []),
               ];
-              const ids = await context.accountTurns.publicPromptIds(
-                caller,
-                report.id ?? ((args as Record<string, unknown>).id as string),
-                items.flatMap((item) => (item.promptId ? [item.promptId] : [])),
-              );
+              return { sandboxId: report.id ?? ((args as Record<string, unknown>).id as string), items };
+            });
+            const aliases = await context.accountTurns.publicPromptIdsBatch(
+              caller,
+              reports.map(({ sandboxId, items }) => ({
+                sandboxId,
+                nativeIds: items.flatMap((item) => (item.promptId ? [item.promptId] : [])),
+              })),
+            );
+            for (const { sandboxId, items } of reports) {
+              const ids = aliases.get(sandboxId);
               for (const item of items)
-                if (item.promptId && ids.has(item.promptId)) item.promptId = ids.get(item.promptId)!;
+                if (item.promptId && ids?.has(item.promptId)) item.promptId = ids.get(item.promptId)!;
             }
           }
           const value =
