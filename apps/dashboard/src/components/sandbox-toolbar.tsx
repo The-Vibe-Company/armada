@@ -65,98 +65,100 @@ export function SandboxToolbar({
     <section aria-label="Filters" aria-busy={pending} className="@container space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         {children}
-        <form
-          className="flex w-full min-w-0 items-center gap-2 sm:w-[280px]"
-          onSubmit={(event) => {
-            event.preventDefault();
-            navigate({ ...current, q: query.trim(), page: 1 });
-          }}
-        >
-          <div className="relative min-w-0 flex-1">
-            <SearchIcon
-              aria-hidden
-              className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground"
-            />
-            <Input
-              aria-label="Search sandboxes"
-              placeholder="Filter by name or ID"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              className="pl-9"
-            />
-          </div>
-          <Button type="submit" variant="outline" size="sm">
-            Search
-          </Button>
-        </form>
-      </div>
-      <details className="group">
-        <summary className="inline-flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-md px-3 text-sm font-medium hover:bg-muted focus-visible:outline-2">
-          <ListFilterIcon className="size-4" aria-hidden /> Filters
-          {FACETS.some((key) => current[key].length > 0) && (
-            <Badge variant="secondary">{FACETS.reduce((count, key) => count + current[key].length, 0)}</Badge>
-          )}
-        </summary>
-        <div className="space-y-3 rounded-lg border p-3 mt-2">
-          <div className="flex min-w-0 items-center gap-3 @min-[36rem]:w-64">
-            <span className="shrink-0 text-sm text-muted-foreground">Sort by</span>
-            <NativeSelect
-              aria-label="Sort sandboxes"
-              value={current.sort}
-              onChange={(event) =>
-                navigate({ ...current, sort: event.target.value as SandboxFilters["sort"], page: 1 })
-              }
-            >
-              <option value="newest">Newest first</option>
-              <option value="attention">Needs attention first</option>
-              <option value="oldest">Oldest first</option>
-              <option value="name">Name A–Z</option>
-            </NativeSelect>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {FACETS.map((key) => (
-              <Popover key={key}>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" size="sm" className="border-dashed">
-                    <ListFilterIcon />
-                    {LABELS[key]}
-                    {current[key].length > 0 && <Badge variant="secondary">{current[key].length}</Badge>}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-64 p-0" align="start">
-                  <Command label={`Filter by ${LABELS[key]}`}>
-                    <CommandInput placeholder={`Find ${LABELS[key].toLowerCase()}…`} />
-                    <CommandList>
-                      <CommandEmpty>No options found.</CommandEmpty>
-                      <CommandGroup heading={key === "owner" ? "Everyone in this organization" : LABELS[key]}>
-                        {options[key].map((option) => (
-                          <CommandItem
-                            key={option.value}
-                            value={`${option.label} ${option.value}`}
-                            onSelect={() => toggle(key, option.value)}
-                          >
-                            <span
-                              className="flex size-4 shrink-0 items-center justify-center rounded-sm border"
-                              aria-hidden
-                            >
-                              {current[key].includes(option.value) && <CheckIcon className="size-3" />}
-                            </span>
-                            <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                            <span className="sr-only">
-                              {current[key].includes(option.value) ? "Filter applied" : "Filter not applied"}
-                            </span>
-                            <span className="text-xs text-muted-foreground tabular-nums">{option.count}</span>
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
-            ))}
-          </div>
+        <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+          <form
+            className="flex min-w-0 flex-1 items-center gap-2 sm:w-[280px]"
+            onSubmit={(event) => {
+              event.preventDefault();
+              navigate({ ...current, q: query.trim(), page: 1 });
+            }}
+          >
+            <div className="relative min-w-0 flex-1">
+              <SearchIcon
+                aria-hidden
+                className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground"
+              />
+              <Input
+                aria-label="Search sandboxes"
+                placeholder="Filter by name or ID"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                className="pl-9"
+              />
+            </div>
+            <Button type="submit" variant="outline" size="sm">
+              Search
+            </Button>
+          </form>
+          <details className="group relative">
+            <summary className="inline-flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-md px-3 text-sm font-medium hover:bg-muted focus-visible:outline-2">
+              <ListFilterIcon className="size-4" aria-hidden /> Filters
+              {FACETS.some((key) => current[key].length > 0) && (
+                <Badge variant="secondary">{FACETS.reduce((count, key) => count + current[key].length, 0)}</Badge>
+              )}
+            </summary>
+            <div className="absolute right-0 z-20 mt-2 w-[min(340px,85vw)] space-y-3 rounded-lg border bg-popover p-3 shadow-md">
+              <div className="flex min-w-0 items-center gap-3 @min-[36rem]:w-64">
+                <span className="shrink-0 text-sm text-muted-foreground">Sort by</span>
+                <NativeSelect
+                  aria-label="Sort sandboxes"
+                  value={current.sort}
+                  onChange={(event) =>
+                    navigate({ ...current, sort: event.target.value as SandboxFilters["sort"], page: 1 })
+                  }
+                >
+                  <option value="newest">Newest first</option>
+                  <option value="attention">Needs attention first</option>
+                  <option value="oldest">Oldest first</option>
+                  <option value="name">Name A–Z</option>
+                </NativeSelect>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {FACETS.map((key) => (
+                  <Popover key={key}>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" size="sm" className="border-dashed">
+                        <ListFilterIcon />
+                        {LABELS[key]}
+                        {current[key].length > 0 && <Badge variant="secondary">{current[key].length}</Badge>}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-64 p-0" align="start">
+                      <Command label={`Filter by ${LABELS[key]}`}>
+                        <CommandInput placeholder={`Find ${LABELS[key].toLowerCase()}…`} />
+                        <CommandList>
+                          <CommandEmpty>No options found.</CommandEmpty>
+                          <CommandGroup heading={key === "owner" ? "Everyone in this organization" : LABELS[key]}>
+                            {options[key].map((option) => (
+                              <CommandItem
+                                key={option.value}
+                                value={`${option.label} ${option.value}`}
+                                onSelect={() => toggle(key, option.value)}
+                              >
+                                <span
+                                  className="flex size-4 shrink-0 items-center justify-center rounded-sm border"
+                                  aria-hidden
+                                >
+                                  {current[key].includes(option.value) && <CheckIcon className="size-3" />}
+                                </span>
+                                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                                <span className="sr-only">
+                                  {current[key].includes(option.value) ? "Filter applied" : "Filter not applied"}
+                                </span>
+                                <span className="text-xs text-muted-foreground tabular-nums">{option.count}</span>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                ))}
+              </div>
+            </div>
+          </details>
         </div>
-      </details>
+      </div>
 
       {hasSandboxFilters(current) && (
         <section className="flex flex-wrap items-center gap-2" aria-label="Active filters">

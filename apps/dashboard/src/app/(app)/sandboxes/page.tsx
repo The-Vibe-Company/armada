@@ -163,7 +163,15 @@ async function SandboxesContent({ searchParams }: Props) {
 
   return (
     <>
-      <PageHeader title="Sandboxes" meta={total > 0 ? countLabel(total, filtered) : undefined}>
+      <PageHeader
+        title="Sandboxes"
+        meta={
+          <span className="inline-flex items-center gap-2">
+            <span aria-hidden="true" className="size-1.5 rounded-full bg-success" />
+            {total > 0 ? countLabel(total, filtered) : "0 sandboxes"}
+          </span>
+        }
+      >
         {launchAction}
       </PageHeader>
 
@@ -322,9 +330,9 @@ async function SandboxesContent({ searchParams }: Props) {
                   <div className="min-w-0 text-[13px] text-muted-foreground max-lg:col-start-1">
                     <p>
                       <span className="lg:hidden">Lifetime: </span>
-                      {life.lifetime ?? "Not recorded"}
+                      {sandbox.status === "stopped" ? "Retained" : (life.remaining ?? life.lifetime ?? "Not recorded")}
                     </p>
-                    <LifecycleHint view={life} />
+                    <LifecycleHint view={{ ...life, remaining: null }} />
                     <CostCell cost={sandbox.canOpen ? costs.get(sandbox.id) : undefined} />
                   </div>
                   <div className="relative z-10 flex items-center justify-end gap-1 max-lg:col-start-2 max-lg:row-start-1">
