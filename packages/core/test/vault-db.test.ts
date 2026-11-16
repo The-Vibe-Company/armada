@@ -386,6 +386,90 @@ describe("Skillpack registry credentials", () => {
 });
 
 describe("named model accounts", () => {
+  test("account creation defaults agree across legacy and named paths without resetting overrides", async () => {
+    await withVault(async ({ store, people }) => {
+      const org = await createOrg(store, people.stan, "Defaults");
+      for (const scope of ["user", "org"] as const) {
+        const owner = scope === "user" ? people.stan : org.id;
+        for (const kind of ["morph", "openai"] as const) {
+          const expected = kind === "morph" ? 2 : null;
+          const write = () => store.upsertCredential(scope, owner, kind, new Uint8Array([1]), people.stan);
+          const current = async () =>
+            (await store.listCredentials(scope, owner)).find((row) => row.kind === kind && row.status !== "deleted")!;
+          await write();
+          expect((await current()).maxAgents).toBe(expected);
+          for (const maxAgents of [5, null]) {
+            await store.mutateAccount!(
+              people.stan,
+              {
+                action: "limits",
+                scope,
+                org: org.id,
+                id: (await current()).id!,
+                maxAgents,
+              },
+              undefined,
+              KEY,
+            );
+            await write();
+            expect((await current()).maxAgents).toBe(maxAgents);
+          }
+          await store.mutateAccount!(
+            people.stan,
+            {
+              action: "remove",
+              scope,
+              org: org.id,
+              id: (await current()).id!,
+            },
+            undefined,
+            KEY,
+          );
+          await write();
+          expect((await current()).maxAgents).toBe(expected);
+          await store.mutateAccount!(
+            people.stan,
+            {
+              action: "remove",
+              scope,
+              org: org.id,
+              id: (await current()).id!,
+            },
+            undefined,
+            KEY,
+          );
+          const named = await store.mutateAccount!(
+            people.stan,
+            {
+              action: "set",
+              scope,
+              org: org.id,
+              kind,
+            },
+            new Uint8Array([1]),
+            KEY,
+          );
+          expect(named.maxAgents).toBe(expected);
+          const unlimited = await store.mutateAccount!(
+            people.stan,
+            {
+              action: "set",
+              scope,
+              org: org.id,
+              kind,
+              maxAgents: null,
+            },
+            new Uint8Array([1]),
+            KEY,
+          );
+          expect(unlimited.maxAgents).toBeNull();
+          for (const id of [named.id!, unlimited.id!])
+            await store.mutateAccount!(people.stan, { action: "remove", scope, org: org.id, id }, undefined, KEY);
+        }
+      }
+    });
+  });
+
   test("Morph model limits preserve exact native and OpenCode launch identities", async () => {
     await withVault(async ({ store, people }) => {
       const account = await mutateCredentialAccount(store, KEY, people.stan, {
@@ -393,7 +477,11 @@ describe("named model accounts", () => {
         scope: "user",
         kind: "morph",
         value: "morph_account_placeholder",
+        model: "morph-kimik31",
+        maxAgents: 1,
       });
+      expect(account.maxAgents).toBe(2);
+      expect(account.modelLimits).toEqual({ "morph-kimik31": 1 });
       for (const [model, maxAgents] of [
         ["morph-kimik31", 2],
         ["armada/morph-kimik31", 1],
