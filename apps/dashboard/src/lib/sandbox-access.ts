@@ -103,11 +103,6 @@ function parseRow(value: unknown): SandboxListMetadata | string {
   };
 }
 
-/** How a listed sandbox is named: its provider's display ID (bx_ on Boat) when there is one, else its logical label. */
-export function sandboxName(sandbox: Pick<SandboxListMetadata, "providerSandboxId" | "displayLabel">): string {
-  return sandbox.providerSandboxId ?? sandbox.displayLabel;
-}
-
 export function machineSizeLabel(size: MachineSize): string {
   return MACHINE_SIZE_LABELS[size];
 }
