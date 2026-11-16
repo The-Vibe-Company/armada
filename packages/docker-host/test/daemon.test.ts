@@ -893,14 +893,17 @@ test("compaction preserves cleanup capacity, TTL facts and stored replay fences"
   expect(effects).toBe(1);
 });
 
-test("native poll carries sampled availability without changing the private credential boundary", async () => {
+test("native poll retains sampled availability when an older server rejects retention telemetry", async () => {
+  let calls = 0;
   const f = fixture();
   const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
   const api = httpApi(
     Object.assign(
       async (_url: string | URL | Request, init?: RequestInit) => {
         const body = JSON.parse(String(init?.body));
+        calls++;
         expect(body.resources).toEqual(resources);
+        if ("retentionSeconds" in body) return new Response(null, { status: 400 });
         expect(JSON.stringify(body)).not.toContain(f.state().hostToken);
         return Response.json({ job: null });
       },
@@ -909,6 +912,7 @@ test("native poll carries sampled availability without changing the private cred
     async () => resources,
   );
   expect(await api.poll(await f.store.load())).toEqual({ job: null });
+  expect(calls).toBe(2);
 });
 
 test("older policy-capable servers retain the quota handshake when availability fields are refused", async () => {
@@ -928,7 +932,7 @@ test("older policy-capable servers retain the quota handshake when availability 
     async () => ({ cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 2, availableMemoryBytes: 10 * 1024 ** 3 }),
   );
   expect(await api.poll(await f.store.load())).toMatchObject({ limits: { cpus: 1 } });
-  expect(calls).toBe(2);
+  expect(calls).toBe(3);
 });
 
 test("TTL index deduplicates active receipts, retires terminal history and rotates uncertain failures before mailbox polling", async () => {
