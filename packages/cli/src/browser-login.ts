@@ -30,12 +30,22 @@ export async function browserLogin(options: {
     fetch(request) {
       const url = new URL(request.url);
       if (url.pathname !== "/callback" || url.searchParams.get("state") !== state) {
-        reject(new Error("Login callback was refused."));
+        reject(
+          new AuthError(
+            "Login callback was refused because its state did not match this sign-in attempt. Start sign-in again from the terminal.",
+            "unauthorized",
+          ),
+        );
         return new Response("Login failed", { status: 400 });
       }
       const value = url.searchParams.get("code");
       if (!value || url.searchParams.get("error")) {
-        reject(new Error("Login was declined."));
+        reject(
+          new AuthError(
+            "Login was declined or returned no authorization code. Start sign-in again and approve the browser request.",
+            "unauthorized",
+          ),
+        );
         return new Response("Login failed", { status: 400 });
       }
       resolve(value);
@@ -52,7 +62,16 @@ export async function browserLogin(options: {
     options.open(authorize.toString());
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error("Login timed out.")), options.timeoutMs ?? 300_000);
+      timeoutId = setTimeout(
+        () =>
+          reject(
+            new AuthError(
+              "Login timed out before the browser returned an authorization code. Start sign-in again from the terminal.",
+              "unavailable",
+            ),
+          ),
+        options.timeoutMs ?? 300_000,
+      );
     });
     const value = await Promise.race([code, timeout]).finally(() => {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
