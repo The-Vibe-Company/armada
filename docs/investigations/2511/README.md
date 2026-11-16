@@ -61,10 +61,16 @@ These compare layout and supported controls across different task content; they 
 | Large / expired / 390×844 / dark | No dedicated prototype state | ![Fixture Large expired-phone-dark](fixture-large-expired-phone-dark.png) |
 | Large / expired / 390×844 / light | No dedicated prototype state | ![Fixture Large expired-phone-light](fixture-large-expired-phone-light.png) |
 
+| Organization / state / size / theme | Prototype | Fixture |
+| --- | --- | --- |
 | Acme / command results, push and running / 1440×900 / dark | ![Prototype command-results-desktop-dark](prototype-command-results-desktop-dark.png) | ![Fixture command-results-desktop-dark](fixture-command-results-desktop-dark.png) |
 | Acme / command results, push and running / 1440×900 / light | ![Prototype command-results-desktop-light](prototype-command-results-desktop-light.png) | ![Fixture command-results-desktop-light](fixture-command-results-desktop-light.png) |
 | Acme / command results, push and running / 390×844 / dark | ![Prototype command-results-phone-dark](prototype-command-results-phone-dark.png) | ![Fixture command-results-phone-dark](fixture-command-results-phone-dark.png) |
 | Acme / command results, push and running / 390×844 / light | ![Prototype command-results-phone-light](prototype-command-results-phone-light.png) | ![Fixture command-results-phone-light](fixture-command-results-phone-light.png) |
+| Acme / lower command results, push and running / 1440×900 / dark | ![Prototype commands desktop-dark](prototype-command-results-desktop-dark.png) | ![Fixture lower commands desktop-dark](fixture-command-results-lower-desktop-dark.png) |
+| Acme / lower command results, push and running / 1440×900 / light | ![Prototype commands desktop-light](prototype-command-results-desktop-light.png) | ![Fixture lower commands desktop-light](fixture-command-results-lower-desktop-light.png) |
+| Acme / lower command results, push and running / 390×844 / dark | ![Prototype commands phone-dark](prototype-command-results-phone-dark.png) | ![Fixture lower commands phone-dark](fixture-command-results-lower-phone-dark.png) |
+| Acme / lower command results, push and running / 390×844 / light | ![Prototype commands phone-light](prototype-command-results-phone-light.png) | ![Fixture lower commands phone-light](fixture-command-results-lower-phone-light.png) |
 
 ## Delivered
 
