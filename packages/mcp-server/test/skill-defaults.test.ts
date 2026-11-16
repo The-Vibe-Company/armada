@@ -8,11 +8,14 @@ import { createSkillDefaultsService } from "../../core/src/skill-defaults.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
+const sharedDatabase = rowOnlyDatabase();
+
 // Owner boundary: real migrations and service-role SQL, including user-JWT access.
-async function fixture() {
-  const { db, people } = await database();
+async function fixture(seed = sharedDatabase) {
+  const { db, people } = await seed();
   const sql: Sql = { query: (s, p) => db.query(s, p), transaction: (work) => db.transaction((tx) => work(tx)) };
   const service = createSkillDefaultsService(sql);
   const actor = (userId = people.owner, org = people.org) => ({
@@ -36,101 +39,93 @@ async function fixture() {
 
 test("skill defaults require strict exact pins and authorized current membership, not stale role claims", async () => {
   const f = await fixture();
-  try {
-    for (const input of [
-      f.request("personal", ["tools@latest"]),
-      f.request("personal", ["tools@1.0.0", "team/tools@2.0.0"]),
-      f.request("personal", ["armada-tools@1.0.0"]),
-      f.request("personal", "tools@1.0.0"),
-      f.request(
-        "personal",
-        Array.from({ length: 21 }, (_, i) => `tool-${i}@1.0.0`),
-      ),
-      { ...f.request("personal", []), unexpected: true },
-      { ...f.request("personal", []), goldenId: f.shared.id },
-      f.request("golden", []),
-    ]) {
-      await expect(f.service.command(f.actor(), "set", input)).rejects.toMatchObject({ code: "invalid" });
-    }
-    await expect(f.service.command(f.actor(), "get", f.request("personal", []))).rejects.toMatchObject({
-      code: "invalid",
-    });
-    await expect(f.service.command(f.actor(), "set", f.request("org", ["team/tool@1.0.0"]))).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    await expect(f.service.command(f.actor(), "set", f.request("golden", [], f.shared.id))).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    await f.service.command(f.actor(f.people.admin), "set", f.request("org", ["team/tool@1.0.0"]));
-    await f.db.query("update members set role='admin' where org_id=$1 and user_id=$2", [f.people.org, f.people.member]);
-    await f.db.query("update members set role='member' where org_id=$1 and user_id=$2", [f.people.org, f.people.admin]);
-    await expect(f.service.command(f.actor(f.people.admin), "set", f.request("org", []))).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    await expect(
-      f.service.command(f.actor(f.people.member, f.people.otherOrg), "get", f.request("personal")),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
-    await expect(f.service.command(f.actor(), "get", f.request("personal"))).rejects.toMatchObject({
-      code: "forbidden",
-    });
-  } finally {
-    await f.db.close();
+  for (const input of [
+    f.request("personal", ["tools@latest"]),
+    f.request("personal", ["tools@1.0.0", "team/tools@2.0.0"]),
+    f.request("personal", ["armada-tools@1.0.0"]),
+    f.request("personal", "tools@1.0.0"),
+    f.request(
+      "personal",
+      Array.from({ length: 21 }, (_, i) => `tool-${i}@1.0.0`),
+    ),
+    { ...f.request("personal", []), unexpected: true },
+    { ...f.request("personal", []), goldenId: f.shared.id },
+    f.request("golden", []),
+  ]) {
+    await expect(f.service.command(f.actor(), "set", input)).rejects.toMatchObject({ code: "invalid" });
   }
+  await expect(f.service.command(f.actor(), "get", f.request("personal", []))).rejects.toMatchObject({
+    code: "invalid",
+  });
+  await expect(f.service.command(f.actor(), "set", f.request("org", ["team/tool@1.0.0"]))).rejects.toMatchObject({
+    code: "forbidden",
+  });
+  await expect(f.service.command(f.actor(), "set", f.request("golden", [], f.shared.id))).rejects.toMatchObject({
+    code: "forbidden",
+  });
+  await f.service.command(f.actor(f.people.admin), "set", f.request("org", ["team/tool@1.0.0"]));
+  await f.db.query("update members set role='admin' where org_id=$1 and user_id=$2", [f.people.org, f.people.member]);
+  await f.db.query("update members set role='member' where org_id=$1 and user_id=$2", [f.people.org, f.people.admin]);
+  await expect(f.service.command(f.actor(f.people.admin), "set", f.request("org", []))).rejects.toMatchObject({
+    code: "forbidden",
+  });
+  await expect(
+    f.service.command(f.actor(f.people.member, f.people.otherOrg), "get", f.request("personal")),
+  ).rejects.toMatchObject({ code: "forbidden" });
+  await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
+  await expect(f.service.command(f.actor(), "get", f.request("personal"))).rejects.toMatchObject({
+    code: "forbidden",
+  });
 });
 
 test("skill defaults resolve global personal and org/golden layers, clear with empty lists, and reject stale golden access", async () => {
   const f = await fixture();
-  try {
-    const actor: GoldenActor = { userId: f.people.member, orgId: f.people.org, role: "admin" };
-    expect(await f.service.resolve(actor, f.shared)).toEqual({ personal: [], org: [], environment: [] });
-    await f.service.command(f.actor(f.people.member, f.people.otherOrg), "set", {
-      org: f.people.otherOrg,
-      scope: "personal",
-      skills: ["personal@1.0.0"],
-    });
-    await f.service.command(f.actor(f.people.admin), "set", f.request("org", ["team/org@2.0.0"]));
-    await f.service.command(f.actor(f.people.admin), "set", f.request("golden", ["team/env@3.0.0"], f.shared.id));
-    expect(await f.service.resolve(actor, f.shared)).toEqual({
-      personal: ["personal@1.0.0"],
-      org: ["team/org@2.0.0"],
-      environment: ["team/env@3.0.0"],
-    });
-    expect(await f.service.resolve(actor, null)).toEqual({
-      personal: ["personal@1.0.0"],
-      org: ["team/org@2.0.0"],
-      environment: [],
-    });
-    expect(await f.service.command(f.actor(f.people.member), "get", f.request("personal"))).toEqual({
-      skills: ["personal@1.0.0"],
-    });
-    await f.service.command(f.actor(f.people.member), "set", f.request("personal", []));
-    expect((await f.service.resolve(actor, f.shared)).personal).toEqual([]);
-    for (const goldenId of [f.privateGolden.id, crypto.randomUUID()]) {
-      for (const operation of ["get", "set"] as const) {
-        await expect(
-          f.service.command(
-            f.actor(f.people.admin),
-            operation,
-            f.request("golden", operation === "set" ? [] : undefined, goldenId),
-          ),
-        ).rejects.toMatchObject({ code: "not_found", message: "Golden unavailable." });
-      }
+  const actor: GoldenActor = { userId: f.people.member, orgId: f.people.org, role: "admin" };
+  expect(await f.service.resolve(actor, f.shared)).toEqual({ personal: [], org: [], environment: [] });
+  await f.service.command(f.actor(f.people.member, f.people.otherOrg), "set", {
+    org: f.people.otherOrg,
+    scope: "personal",
+    skills: ["personal@1.0.0"],
+  });
+  await f.service.command(f.actor(f.people.admin), "set", f.request("org", ["team/org@2.0.0"]));
+  await f.service.command(f.actor(f.people.admin), "set", f.request("golden", ["team/env@3.0.0"], f.shared.id));
+  expect(await f.service.resolve(actor, f.shared)).toEqual({
+    personal: ["personal@1.0.0"],
+    org: ["team/org@2.0.0"],
+    environment: ["team/env@3.0.0"],
+  });
+  expect(await f.service.resolve(actor, null)).toEqual({
+    personal: ["personal@1.0.0"],
+    org: ["team/org@2.0.0"],
+    environment: [],
+  });
+  expect(await f.service.command(f.actor(f.people.member), "get", f.request("personal"))).toEqual({
+    skills: ["personal@1.0.0"],
+  });
+  await f.service.command(f.actor(f.people.member), "set", f.request("personal", []));
+  expect((await f.service.resolve(actor, f.shared)).personal).toEqual([]);
+  for (const goldenId of [f.privateGolden.id, crypto.randomUUID()]) {
+    for (const operation of ["get", "set"] as const) {
+      await expect(
+        f.service.command(
+          f.actor(f.people.admin),
+          operation,
+          f.request("golden", operation === "set" ? [] : undefined, goldenId),
+        ),
+      ).rejects.toMatchObject({ code: "not_found", message: "Golden unavailable." });
     }
-    await f.service.command(f.actor(), "set", f.request("golden", ["private@1.0.0"], f.privateGolden.id));
-    await expect(f.service.resolve(actor, f.privateGolden)).rejects.toMatchObject({ code: "not_found" });
-    await f.db.query("update goldens set removed_at=now() where id=$1", [f.shared.id]);
-    await expect(f.service.resolve(actor, f.shared)).rejects.toMatchObject({ code: "not_found" });
-    await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.member]);
-    await expect(f.service.resolve(actor, f.shared)).rejects.toMatchObject({ code: "forbidden" });
-    await expect(f.service.resolve(actor, null)).rejects.toMatchObject({ code: "forbidden" });
-  } finally {
-    await f.db.close();
   }
+  await f.service.command(f.actor(), "set", f.request("golden", ["private@1.0.0"], f.privateGolden.id));
+  await expect(f.service.resolve(actor, f.privateGolden)).rejects.toMatchObject({ code: "not_found" });
+  await f.db.query("update goldens set removed_at=now() where id=$1", [f.shared.id]);
+  await expect(f.service.resolve(actor, f.shared)).rejects.toMatchObject({ code: "not_found" });
+  await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.member]);
+  await expect(f.service.resolve(actor, f.shared)).rejects.toMatchObject({ code: "forbidden" });
+  await expect(f.service.resolve(actor, null)).rejects.toMatchObject({ code: "forbidden" });
 });
 
 test("skill defaults JWT reads obey own/org/private visibility and never permit direct writes", async () => {
-  const f = await fixture();
+  const f = await fixture(database);
   try {
     await f.service.command(f.actor(), "set", f.request("personal", ["own@1.0.0"]));
     await f.service.command(f.actor(f.people.admin), "set", f.request("personal", ["admin@1.0.0"]));
@@ -165,61 +160,57 @@ test("skill defaults JWT reads obey own/org/private visibility and never permit 
 
 test("HTTP and MCP default operations share persisted state and strict authenticated transport validation", async () => {
   const f = await fixture();
-  try {
-    const boat = fakeBoat();
-    const options: ControlOptions = {
-      skillDefaults: f.service,
-      store: createSqlVaultStore(f.sql),
-      authStore: createSqlAuthStore(f.sql),
-      encryptionKey: ENCRYPTION_KEY,
-      data: createSqlData(f.sql),
-      providers: { resolve: async () => boat.provider },
-      supabase: {
-        supabaseUrl: "https://supabase.test",
-        anonKey: "synthetic-anon",
-        fetch: async () => Response.json({ id: f.people.owner }),
+  const boat = fakeBoat();
+  const options: ControlOptions = {
+    skillDefaults: f.service,
+    store: createSqlVaultStore(f.sql),
+    authStore: createSqlAuthStore(f.sql),
+    encryptionKey: ENCRYPTION_KEY,
+    data: createSqlData(f.sql),
+    providers: { resolve: async () => boat.provider },
+    supabase: {
+      supabaseUrl: "https://supabase.test",
+      anonKey: "synthetic-anon",
+      fetch: async () => Response.json({ id: f.people.owner }),
+    },
+  };
+  const api = (operation: string, body: unknown, authenticated = true, query = "") =>
+    handleControlRequest(
+      new Request(`https://armada.test/api/v1/skills/defaults/${operation}${query}`, {
+        method: "POST",
+        headers: authenticated ? { authorization: "Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig" } : {},
+        body: JSON.stringify(body),
+      }),
+      options,
+    );
+  const read = f.request("personal");
+  expect((await api("get", read, false))?.status).toBe(401);
+  expect((await api("get", read, true, "?scope=org"))?.status).toBe(400);
+  expect((await api("set", { ...f.request("personal", []), extra: 1 }))?.status).toBe(400);
+  const saved = await api("set", f.request("personal", ["team/tool@1.2.3"]));
+  expect(saved?.status).toBe(200);
+  expect(saved?.headers.get("cache-control")).toBe("no-store");
+  expect(await saved?.json()).toEqual({ skills: ["team/tool@1.2.3"] });
+  const caller = { ...f.actor(), via: "supabase" as const };
+  const context = {
+    skillDefaults: f.service,
+    caller,
+    data: createSqlData(f.sql)(caller),
+    provider: async () => boat.provider,
+    launchCredentials: {
+      resolve: async () => {
+        throw new Error("Defaults operations never resolve launch credentials.");
       },
-    };
-    const api = (operation: string, body: unknown, authenticated = true, query = "") =>
-      handleControlRequest(
-        new Request(`https://armada.test/api/v1/skills/defaults/${operation}${query}`, {
-          method: "POST",
-          headers: authenticated ? { authorization: "Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig" } : {},
-          body: JSON.stringify(body),
-        }),
-        options,
-      );
-    const read = f.request("personal");
-    expect((await api("get", read, false))?.status).toBe(401);
-    expect((await api("get", read, true, "?scope=org"))?.status).toBe(400);
-    expect((await api("set", { ...f.request("personal", []), extra: 1 }))?.status).toBe(400);
-    const saved = await api("set", f.request("personal", ["team/tool@1.2.3"]));
-    expect(saved?.status).toBe(200);
-    expect(saved?.headers.get("cache-control")).toBe("no-store");
-    expect(await saved?.json()).toEqual({ skills: ["team/tool@1.2.3"] });
-    const caller = { ...f.actor(), via: "supabase" as const };
-    const context = {
-      skillDefaults: f.service,
-      caller,
-      data: createSqlData(f.sql)(caller),
-      provider: async () => boat.provider,
-      launchCredentials: {
-        resolve: async () => {
-          throw new Error("Defaults operations never resolve launch credentials.");
-        },
-      },
-      exposedSecrets: async () => [],
-      now: () => new Date(),
-      sleep: async () => {},
-    };
-    expect(await callSharedTool(context, "skill_defaults_get", read)).toEqual({ skills: ["team/tool@1.2.3"] });
-    await expect(
-      callSharedTool(context, "skill_defaults_set", { ...f.request("personal", []), extra: 1 }),
-    ).rejects.toThrow();
-    await expect(callSharedTool(context, "skill_defaults_get", f.request("personal", []))).rejects.toThrow();
-    expect(await callSharedTool(context, "skill_defaults_set", f.request("personal", []))).toEqual({ skills: [] });
-    expect(await (await api("get", read))?.json()).toEqual({ skills: [] });
-  } finally {
-    await f.db.close();
-  }
+    },
+    exposedSecrets: async () => [],
+    now: () => new Date(),
+    sleep: async () => {},
+  };
+  expect(await callSharedTool(context, "skill_defaults_get", read)).toEqual({ skills: ["team/tool@1.2.3"] });
+  await expect(
+    callSharedTool(context, "skill_defaults_set", { ...f.request("personal", []), extra: 1 }),
+  ).rejects.toThrow();
+  await expect(callSharedTool(context, "skill_defaults_get", f.request("personal", []))).rejects.toThrow();
+  expect(await callSharedTool(context, "skill_defaults_set", f.request("personal", []))).toEqual({ skills: [] });
+  expect(await (await api("get", read))?.json()).toEqual({ skills: [] });
 });
