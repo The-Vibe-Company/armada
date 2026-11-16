@@ -4,10 +4,13 @@ import type { ServerWebSocket } from "bun";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeSockets, type RuntimeSocketData } from "../src/runtime-sockets.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
+
+const sharedDatabase = rowOnlyDatabase();
 
 async function fixture() {
-  const { db, people } = await database();
+  const { db, people } = await sharedDatabase();
   const id = crypto.randomUUID();
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
@@ -105,7 +108,6 @@ test("authenticated ready/ping delivers one pending command, and HTTP ACK advanc
     expect((await f.sockets.upgrade(f.request(active.runtimeToken, active.epoch), () => true))?.status).toBe(503);
   } finally {
     await f.sockets.stop();
-    await f.db.close();
   }
 });
 
@@ -129,7 +131,6 @@ test("replaced epoch fences idle and busy sockets before delivering another comm
     expect(fresh.sent).toHaveLength(1);
   } finally {
     await f.sockets.stop();
-    await f.db.close();
   }
 });
 
@@ -168,6 +169,5 @@ test("control frame bounds, ready/idle deadlines and malformed upgrades cannot l
     expect(f.timers.size).toBe(0);
   } finally {
     await f.sockets.stop();
-    await f.db.close();
   }
 });
