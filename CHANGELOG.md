@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.46.0](https://github.com/The-Vibe-Company/armada/compare/v2.45.0...v2.46.0) (2026-11-16)
+
+
+### Features
+
+* **accounts:** free turn slots and queue account-bound prompts ([#2160](https://github.com/The-Vibe-Company/armada/issues/2160)) ([0a13c7f](https://github.com/The-Vibe-Company/armada/commit/0a13c7f4138eff4ff99e6369acbcaa0853a59403))
+* **dashboard:** clarify model accounts and account setup ([#2179](https://github.com/The-Vibe-Company/armada/issues/2179)) ([a873307](https://github.com/The-Vibe-Company/armada/commit/a873307269cb43339b812652b972a69dd1557027))
+* **dashboard:** clarify organization, connections, skills and variables ([#2215](https://github.com/The-Vibe-Company/armada/issues/2215)) ([9138f49](https://github.com/The-Vibe-Company/armada/commit/9138f49881c5e74af51b44f6102a7745c0540719))
+* **dashboard:** clarify own server identity details ([#2204](https://github.com/The-Vibe-Company/armada/issues/2204)) ([3c731ac](https://github.com/The-Vibe-Company/armada/commit/3c731ac2814caabbad57dc2cdc46f28ac68a94ba))
+* **dashboard:** clarify snapshot rows and technical details ([#2200](https://github.com/The-Vibe-Company/armada/issues/2200)) ([11f2191](https://github.com/The-Vibe-Company/armada/commit/11f2191c4f76f342e7a1d078b1bb3ad868b2a318))
+* **dashboard:** group snapshots by readiness and server ([#2203](https://github.com/The-Vibe-Company/armada/issues/2203)) ([4549a69](https://github.com/The-Vibe-Company/armada/commit/4549a69601cc38a3776c0651a96a6b1028ad076a))
+* **dashboard:** make template setup and launches readable ([#2197](https://github.com/The-Vibe-Company/armada/issues/2197)) ([6ae8e88](https://github.com/The-Vibe-Company/armada/commit/6ae8e8845fcde8a31a49d9e4e390d4e369890a27))
+* **dashboard:** offer Boat runtime model connection checks ([#2229](https://github.com/The-Vibe-Company/armada/issues/2229)) ([12925ba](https://github.com/The-Vibe-Company/armada/commit/12925ba12c4606cc533e6915d6bd9e09656801c2))
+* **dashboard:** open sandbox launch dialog directly ([#2196](https://github.com/The-Vibe-Company/armada/issues/2196)) ([26c7ef2](https://github.com/The-Vibe-Company/armada/commit/26c7ef2d7572e8e7ab92ec8fc99896fc5c6e958d))
+* **dashboard:** rebuild launch sentence and model account picker ([#2177](https://github.com/The-Vibe-Company/armada/issues/2177)) ([e29e902](https://github.com/The-Vibe-Company/armada/commit/e29e902fb3df95feb27c26ab96f17df8fd79bd22))
+* **dashboard:** rebuild the new snapshot form ([#2195](https://github.com/The-Vibe-Company/armada/issues/2195)) ([530a1fc](https://github.com/The-Vibe-Company/armada/commit/530a1fc275b6931c903da076e78fc8945fd0d0d4))
+* **dashboard:** redesign sandbox page and activity list ([#2208](https://github.com/The-Vibe-Company/armada/issues/2208)) ([a14a1d7](https://github.com/The-Vibe-Company/armada/commit/a14a1d71787e7f6740bcf6dc53b80d3d2dba2903))
+* **dashboard:** regroup navigation and unify Machines ([#2214](https://github.com/The-Vibe-Company/armada/issues/2214)) ([f3afdee](https://github.com/The-Vibe-Company/armada/commit/f3afdee75354eb9687ed11f7bdb248979e67d6e4))
+* **dashboard:** share sentence-based launch controls ([#2192](https://github.com/The-Vibe-Company/armada/issues/2192)) ([178bb95](https://github.com/The-Vibe-Company/armada/commit/178bb95a5fba35ed7020558ce273c792a4f08b03))
+* **dashboard:** simplify routines and run history ([#2213](https://github.com/The-Vibe-Company/armada/issues/2213)) ([6b44278](https://github.com/The-Vibe-Company/armada/commit/6b44278314a6ee2cbf7269d9365b94610a1f29cc))
+* **dashboard:** simplify Tools setup and launch selection ([#2207](https://github.com/The-Vibe-Company/armada/issues/2207)) ([7d6fc3a](https://github.com/The-Vibe-Company/armada/commit/7d6fc3a7438a28815d5e863b75a78281f883b4ce))
+* **server:** add per-agent defaults and account retry metadata ([#2178](https://github.com/The-Vibe-Company/armada/issues/2178)) ([61f3ffc](https://github.com/The-Vibe-Company/armada/commit/61f3ffc72e07507c3a6dfa8922bd5bae0feceb36))
+
+
+### Bug Fixes
+
+* **dashboard:** finish launch and template redesign polish ([#2226](https://github.com/The-Vibe-Company/armada/issues/2226)) ([359303a](https://github.com/The-Vibe-Company/armada/commit/359303aaa862256240da0bfbf1817c998763a805))
+* **dashboard:** finish model account mockup alignment ([#2191](https://github.com/The-Vibe-Company/armada/issues/2191)) ([f92687e](https://github.com/The-Vibe-Company/armada/commit/f92687ee63ef92a96af3d00df61f520b4535c85e))
+* **dashboard:** keep launch discovery off sandbox list critical path ([#2224](https://github.com/The-Vibe-Company/armada/issues/2224)) ([74ec6f9](https://github.com/The-Vibe-Company/armada/commit/74ec6f915cc7679f00640b780394021c1e482a33))
+* **dashboard:** keep snapshot choices inside the build sentence ([#2202](https://github.com/The-Vibe-Company/armada/issues/2202)) ([d5bf73d](https://github.com/The-Vibe-Company/armada/commit/d5bf73db48d25b7ebd0eed7156045e9d87a58045))
+* **dashboard:** refine sandbox attention and responsive details ([#2220](https://github.com/The-Vibe-Company/armada/issues/2220)) ([389785d](https://github.com/The-Vibe-Company/armada/commit/389785d70fd00013f30968aa67863374fe50b8c6))
+* **docker-host:** support independent server installations ([#2170](https://github.com/The-Vibe-Company/armada/issues/2170)) ([5f18da5](https://github.com/The-Vibe-Company/armada/commit/5f18da5f5c30a4b036597c11f3133c6348584fe2))
+* **server:** batch sandbox list prompt identity reads ([#2233](https://github.com/The-Vibe-Company/armada/issues/2233)) ([790dea7](https://github.com/The-Vibe-Company/armada/commit/790dea7bfc56d06ad1d9aafc1c39ba65534e5507))
+* **server:** preserve queued prompt identity across evidence and outcomes ([#2212](https://github.com/The-Vibe-Company/armada/issues/2212)) ([ed149ff](https://github.com/The-Vibe-Company/armada/commit/ed149ff3b23b5710d9d9f0e482f1df6d99e5e35a))
+* **server:** preserve queued prompt identity in usage reads ([#2201](https://github.com/The-Vibe-Company/armada/issues/2201)) ([bf97054](https://github.com/The-Vibe-Company/armada/commit/bf970547aba2099f0e8ddfafd9600d244ed72fd9))
+* **server:** preserve queued prompt identity in wait responses ([#2190](https://github.com/The-Vibe-Company/armada/issues/2190)) ([99170e7](https://github.com/The-Vibe-Company/armada/commit/99170e77c92106cf9ddd5d08b06b0962c40cae2f))
+
 ## [2.45.0](https://github.com/The-Vibe-Company/armada/compare/v2.44.1...v2.45.0) (2026-11-15)
 
 
