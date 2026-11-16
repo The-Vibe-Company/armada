@@ -22,6 +22,7 @@ const ownerPaths = [
   "/api/v1/docker/snapshots/rebuild",
   "/api/v1/docker/hosts/list",
   "/api/v1/docker/hosts/limits",
+  "/api/v1/docker/hosts/retention",
   "/api/v1/docker/hosts/register-token",
   "/api/v1/docker/hosts/revoke",
 ];
@@ -66,23 +67,32 @@ export function createDockerHostRoutes(
         }
         fields(
           body,
-          path.endsWith("/limits")
-            ? ["org", "hostId", ...["cpus", "memoryBytes", "maxSandboxes", "auto"].filter((k) => k in body)]
-            : path.endsWith("/revoke")
-              ? ["org", "hostId"]
-              : path.endsWith("/register-token") && "name" in body
-                ? ["org", "name"]
-                : ["org"],
+          path.endsWith("/retention")
+            ? ["org", "hostId", "retentionSeconds"]
+            : path.endsWith("/limits")
+              ? ["org", "hostId", ...["cpus", "memoryBytes", "maxSandboxes", "auto"].filter((k) => k in body)]
+              : path.endsWith("/revoke")
+                ? ["org", "hostId"]
+                : path.endsWith("/register-token") && "name" in body
+                  ? ["org", "name"]
+                  : ["org"],
         );
         const orgId = string(body.org);
         const listing = path.endsWith("/list");
         const limits = path.endsWith("/limits");
+        const retention = path.endsWith("/retention");
         if (
           !uuid.test(orgId) ||
-          !result.caller.orgs.some((org) => org.orgId === orgId && (listing || limits || org.role === "admin"))
+          !result.caller.orgs.some(
+            (org) => org.orgId === orgId && (listing || limits || retention || org.role === "admin"),
+          )
         )
           throw new DockerHostDenied();
         actor = { userId: result.caller.userId, orgId };
+        if (retention)
+          return Response.json(await store.setRetention(actor, string(body.hostId), body.retentionSeconds as number), {
+            headers,
+          });
         if (limits) {
           const { org: _org, hostId, ...patch } = body;
           return Response.json(await store.setLimits(actor, string(hostId), patch), { headers });
@@ -133,6 +143,7 @@ export function createDockerHostRoutes(
                 ...("resources" in body ? ["resources"] : []),
                 ...("resourcePolicyVersion" in body ? ["resourcePolicyVersion"] : []),
                 ...("skipSnapshots" in body ? ["skipSnapshots"] : []),
+                ...("retentionSeconds" in body ? ["retentionSeconds", "nextCleanupAt"] : []),
               ]
             : ["installationId"],
       );
@@ -161,8 +172,27 @@ export function createDockerHostRoutes(
         const version = body.version === undefined ? undefined : string(body.version);
         if (version !== undefined && !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new InvalidInput();
         if (body.skipSnapshots !== undefined && body.skipSnapshots !== true) throw new InvalidInput();
+        if (
+          "retentionSeconds" in body &&
+          (!Number.isInteger(body.retentionSeconds) ||
+            Number(body.retentionSeconds) < 0 ||
+            Number(body.retentionSeconds) > 31536000 ||
+            !(
+              body.nextCleanupAt === null ||
+              (typeof body.nextCleanupAt === "string" && Number.isFinite(Date.parse(body.nextCleanupAt)))
+            ))
+        )
+          throw new InvalidInput();
+        const retentionSeconds = await store.retentionForHost(
+          token,
+          installationId,
+          "retentionSeconds" in body
+            ? { retentionSeconds: body.retentionSeconds as number, nextCleanupAt: body.nextCleanupAt as string | null }
+            : undefined,
+        );
         return Response.json(
           {
+            ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
             job: await store.poll(
               token,
               installationId,

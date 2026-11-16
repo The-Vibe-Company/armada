@@ -209,3 +209,35 @@ export async function updateDockerHostLimits(_previous: ActionResult | null, dat
     return fail(dockerHostActionFailure(error.status, "limits"));
   }
 }
+
+/** The member who added this machine controls its retention. Server rechecks ownership. */
+export async function updateDockerHostRetention(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const org = formString(data, "org");
+  const hostId = formString(data, "hostId");
+  const raw = formString(data, "retentionSeconds");
+  const seconds = Number(raw);
+  if (
+    !isUuid(org) ||
+    !isUuid(hostId) ||
+    raw.trim() === "" ||
+    !Number.isInteger(seconds) ||
+    seconds < 0 ||
+    seconds > 31536000
+  )
+    return fail("Enter retention in seconds, from 0 to 31536000.");
+  if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
+  const control = await viewerDockerHosts();
+  if (!control) return fail("The Armada server is not configured.");
+  try {
+    await control.retention(org, hostId, seconds);
+    revalidatePath(HOSTS_PATH);
+    return done("Retention saved. The server applies it on its next check-in.");
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    return fail(
+      error.status === 403
+        ? "Only the member who added this server can change retention."
+        : "Could not update retention.",
+    );
+  }
+}

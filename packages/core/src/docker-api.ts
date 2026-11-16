@@ -35,6 +35,9 @@ export interface DockerHostSummary {
   /** Missing on older servers; null until upgraded host hardware has been observed. */
   resources?: DockerHostResourceSummary | null;
   canManageLimits?: boolean;
+  retentionSeconds?: number | null;
+  retentionOverrideSeconds?: number | null;
+  nextCleanupAt?: string | null;
   limitsSupported?: boolean;
   /** Retained sandboxes, including stopped/failed, excluding deleted. */
   sandboxes: number;

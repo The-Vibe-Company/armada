@@ -35,12 +35,17 @@ export async function SandboxAttention({ sandbox, viewer }: { sandbox: Sandbox; 
   let action: React.ReactNode = null;
   if (sandbox.status === "failed") {
     title = view.state.failure?.title ?? "This sandbox failed.";
-    detail = "It takes no new messages. Launch a new sandbox to continue.";
-    action = (
-      <Button asChild size="sm">
-        <Link href="/sandboxes">Launch a new one</Link>
-      </Button>
-    );
+    detail =
+      sandbox.status_reason?.includes("before launching again") ||
+      sandbox.status_reason?.startsWith("Runtime credential projection failed.")
+        ? sandbox.status_reason
+        : "It takes no new messages. Launch a new sandbox to continue.";
+    action =
+      detail === sandbox.status_reason ? null : (
+        <Button asChild size="sm">
+          <Link href="/sandboxes">Launch a new one</Link>
+        </Button>
+      );
   } else if (view.state.failure) {
     title = view.state.failure.title;
     detail = view.state.failure.hint;

@@ -11,17 +11,11 @@ import { newWorkBlocker } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { templateLookups, viewerTemplates } from "@/lib/data/templates";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
+import { followTemplateLaunch } from "@/lib/launch";
 import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
-import {
-  launchReason,
-  REQUEST_KEY,
-  type TemplateDefinition,
-  templateFailure,
-  templateRequest,
-  ttlChoice,
-} from "@/lib/templates";
+import { REQUEST_KEY, type TemplateDefinition, templateFailure, templateRequest, ttlChoice } from "@/lib/templates";
 
 /**
  * The Templates page's writes and launch (#949), each one control API call as the signed-in viewer. The server
@@ -166,8 +160,8 @@ export async function launchFromTemplate(
   const size = formString(data, "size").trim();
   if (size && !(MACHINE_SIZES as readonly string[]).includes(size)) return fail("Choose a machine size from the list.");
 
-  let outcome: Awaited<ReturnType<Templates["launch"]>>;
-  let provider: SandboxPlacementProviderId;
+  let outcome: Awaited<ReturnType<typeof followTemplateLaunch>>;
+  let provider: SandboxPlacementProviderId | undefined;
   try {
     const { revision: saved } = await templates.get({ org, id, revision });
     provider = saved.definition.provider;
@@ -197,16 +191,31 @@ export async function launchFromTemplate(
       modelAccount = { id: accountId, version };
     }
     const prompt = formString(data, "prompt").trim();
-    outcome = await templates.launch({
-      org,
-      id,
-      revision,
-      requestKey,
-      ...(modelAccount ? { modelAccount } : {}),
-      ...(prompt ? { prompt } : {}),
-      ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
-      ...(size ? { size } : {}),
-      ...(repository.repo === undefined ? {} : { repo: repository.repo }),
+    outcome = await followTemplateLaunch({
+      key: requestKey,
+      exists: async (id) => {
+        const client = await createClient();
+        const { data, error } = await client
+          .from("sandboxes")
+          .select("id")
+          .eq("id", id)
+          .eq("org_id", org)
+          .maybeSingle();
+        if (error) throw new ControlError("Your sandbox could not be checked.");
+        return !!data;
+      },
+      launch: () =>
+        templates.launch({
+          org,
+          id,
+          revision,
+          requestKey,
+          ...(modelAccount ? { modelAccount } : {}),
+          ...(prompt ? { prompt } : {}),
+          ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
+          ...(size ? { size } : {}),
+          ...(repository.repo === undefined ? {} : { repo: repository.repo }),
+        }),
     });
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
@@ -220,26 +229,23 @@ export async function launchFromTemplate(
     )
       return {
         ...fail(
-          `${templateFailure(error.status, error.message, error.code)} Armada could not confirm whether the sandbox started. Check Sandboxes before launching again: retrying here repeats the same request.`,
+          `The launch could not be confirmed yet. Retry to check the same request; this will not start another sandbox.`,
         ),
         pending: true,
       };
-    return fail(templateFailure(error.status, error.message, error.code));
+    if (size && provider && error.code === "launch_unavailable")
+      return fail(
+        `${error.message} If ${PROVIDER_LABELS[provider]} refused ${MACHINE_SIZE_LABELS[size as MachineSize]}, choose another size or the default.`,
+      );
+    return fail(error.code ? error.message : templateFailure(error.status, error.message, error.code));
   }
   revalidatePath("/sandboxes");
-  if (outcome.state === "succeeded") redirect(`/sandboxes/${outcome.id}`);
-  if (outcome.state === "reconciling")
-    return {
-      ...fail(
-        `${outcome.reason?.startsWith("skillpack_") ? launchReason(outcome.reason) : ""} Armada could not confirm whether the sandbox started. Check Sandboxes before launching again: launching again from this dialog repeats the same request and starts nothing new.`,
-      ),
-      pending: true,
-    };
-  if (size && outcome.reason === "launch_unavailable")
-    return fail(
-      `${launchReason(outcome.reason)} If ${PROVIDER_LABELS[provider]} refused ${MACHINE_SIZE_LABELS[size as MachineSize]}, choose another size or the default.`,
-    );
+  if (outcome.state === "started") redirect(`/sandboxes/${outcome.id}`);
   return {
-    ...fail(launchReason(outcome.reason)),
+    ...fail("The launch is still being confirmed. Retry to check the same request.", {
+      href: "/sandboxes",
+      label: "View sandboxes",
+    }),
+    pending: true,
   };
 }

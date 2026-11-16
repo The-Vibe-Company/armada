@@ -425,7 +425,7 @@ request containing another sandbox ID must be refused.
 After ACKed deletion, compare inventories with the recorded baseline. The owned
 container and volume for `SANDBOX_ID` must be absent; unrelated workloads/data
 unchanged. All created Docker resources carry `dev.armada.machine.*` labels.
-There is no global prune or shared image removal. The daemon now observes exact
+There is no global prune; shared official image removal follows the conservative policy below. The daemon now observes exact
 ownership-verified stopped/failed/expired allocations and persists a local cleanup
 deadline, default 24 hours after first observing physical exit. It removes only that
 registration's labelled container and home volume (including sandbox files) after
@@ -433,15 +433,14 @@ the deadline, even when the server is unreachable. Shared runtime artifact cache
 and user snapshot images are not sandbox files and remain untouched. Set
 `ARMADA_DOCKER_RETENTION_SECONDS` in this host daemon's environment before starting
 it to configure the period (`0` means the next local sweep); this setting persists
-in its private state. Already scheduled deadlines are frozen. A resume observed
+in its private state. Policy changes shift existing deadlines, preserving stopped age. A resume observed
 before deletion cancels the deadline; cleanup refuses a running allocation. Missing
 resources are safe to retry. Authenticated physical-cleanup reports reconcile the
 server to `deleted` after reconnection. Deploy the server support before upgrading
 hosts; old servers reject the additive report and the daemon retries it safely.
 
-This backend slice does not yet add `armada host --retention`, dashboard retention
-controls or cleanup-deadline display. Those owner-facing surfaces remain follow-up
-work for #2154, as do old-image cleanup and disk floors.
+Retention controls and cleanup-deadline display are described below. Disk floors
+remain separate follow-up work for #2154.
 To uninstall, first confirm every retained sandbox for this host is deleted; then
 revoke `POST /api/v1/docker/hosts/revoke` with `{"org":"<org>","hostId":"<HOST_ID>"}`
 using normal private bearer delivery. Verify the saved PID belongs to the exact
@@ -1085,3 +1084,41 @@ After release, the coordinator must retry the owner's normal CLI launch with
 its original body/request ID, inspect any retained reservation first, then verify
 host create, runtime enrolment/readiness and an actual harness reply. Neither
 unit tests nor passing staging probes establish that production is configured.
+
+### Official image retention
+
+The daemon performs an offline, hourly best-effort image sweep, removing at most
+one superseded official image per sweep. It keeps the two newest locally present
+official image generations (by Docker creation time), every container's image,
+and every image with a descendant (including user snapshots). Only images whose
+registry digests belong exclusively to `ghcr.io/the-vibe-company/armada-sandbox`
+are candidates; foreign tags and snapshot ownership labels exclude an image.
+Registry provenance identifies these shared release images, which do not carry
+per-registration container labels. Unproven dangling images are left alone.
+There is no global prune, forced removal, snapshot deletion or foreign-image
+cleanup. Docker's non-forced removal provides the final concurrent-use guard.
+
+### Retention controls and visibility
+
+`armada host show HOST` (also `--json`) and Machines → server panel show the
+last reported retention delay and next local cleanup deadline, with the host's
+last check-in. No reported deadline means none has been reported, not proof
+that the disk is empty. Offline hosts continue enforcing their saved policy.
+
+The member who added the server can run
+`armada host retention HOST --retention 24h` (units: `s`, `m`, `h`, `d`; `0`
+means next-sweep cleanup), or save retention in seconds in the server panel.
+The maximum is 365 days. Other members, including other admins, cannot change
+this machine policy. A saved request is applied and persisted at the daemon's
+next check-in; the panel distinguishes requested from reported settings.
+Changing the delay adjusts existing pending retention deadlines too; shortening
+it can immediately make stopped sandboxes eligible. Until the daemon reports
+its new deadlines, the server clears the old next-cleanup display rather than
+inventing a deadline. Snapshots remain outside automatic sandbox retention.
+
+Deploy the new retention-control schema and server before updating daemons.
+
+Once a server-requested retention policy has been received, it takes precedence
+over the installer/environment default even across daemon restarts. Before any
+server override, changing the environment default shifts existing deadlines by
+the policy delta, preserving their original stopped age.

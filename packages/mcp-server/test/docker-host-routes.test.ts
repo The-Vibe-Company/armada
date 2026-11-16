@@ -244,6 +244,9 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
   expect(byId.has(expiredPending.hostId)).toBe(false);
   expect(byId.get(revokedPending.hostId)?.state).toBe("revoked");
   expect(byId.get(pending.hostId)).toEqual({
+    retentionSeconds: null,
+    retentionOverrideSeconds: null,
+    nextCleanupAt: null,
     id: pending.hostId,
     name: null,
     state: "pending",
@@ -273,7 +276,10 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       "lastSeenAt",
       "limitsSupported",
       "name",
+      "nextCleanupAt",
       "resources",
+      "retentionOverrideSeconds",
+      "retentionSeconds",
       "revokedAt",
       "running",
       "sandboxes",

@@ -1,6 +1,6 @@
 import { SIZED_LAUNCH_ROUTE_V1 } from "@armada/core";
 import { isUuid } from "./action.ts";
-import { type ArmadaApiOptions, ControlError, controlPost } from "./control.ts";
+import { type ArmadaApiOptions, ControlError, controlPost, LAUNCH_TIMEOUT_MS } from "./control.ts";
 import type { LaunchArgs } from "./model-choice.ts";
 import { skillLaunchFailure } from "./skills";
 import { launchReason } from "./templates.ts";
@@ -11,7 +11,7 @@ import { launchReason } from "./templates.ts";
  * short control default (`CONTROL_TIMEOUT_MS`) would report a launch that succeeds as a failure. The routes that run
  * the launch action keep `maxDuration` above it.
  */
-export const LAUNCH_TIMEOUT_MS = 10 * 60_000;
+export { LAUNCH_TIMEOUT_MS } from "./control.ts";
 
 /** The legacy launch route of the Armada API: no sizing semantics are promised on it. */
 export const LAUNCH_PATH = "/api/v1/sandbox/launch";
@@ -176,4 +176,33 @@ export function launchFailureMessage(error: Pick<ControlError, "status" | "code"
   if (error.status === 409)
     return "The launch setup changed. Reload Snapshots and check its current state before trying again.";
   return "The launch result could not be confirmed. Check Sandboxes before retrying, then reload Snapshots.";
+}
+
+/** Templates (including routine revisions) retain server-side idempotency; recovery replays that exact request. */
+export async function followTemplateLaunch(deps: {
+  key: string;
+  launch: () => Promise<import("./templates.ts").LaunchOutcome>;
+  exists: (id: string) => Promise<boolean>;
+}): Promise<FollowedLaunch> {
+  let outcome: import("./templates.ts").LaunchOutcome | undefined;
+  return followLaunch({
+    key: deps.key.replace(/^dashboard:/, ""),
+    previous: null,
+    now: Date.now,
+    remember: () => {},
+    forget: () => {},
+    launch: async () => {
+      outcome = await deps.launch();
+      if (outcome.state === "succeeded") return { id: outcome.id };
+      if (outcome.state === "failed") throw new ControlError(launchReason(outcome.reason), 400, outcome.reason);
+      throw new ControlError("Launch is still being confirmed.", undefined, "outcome_unknown");
+    },
+    created: async () => {
+      // A transport failure has no receipt. Replay the same frozen request, never a fresh launch.
+      outcome ??= await deps.launch();
+      if (outcome.state === "succeeded") return outcome.id;
+      if (outcome.state === "failed") throw new ControlError(launchReason(outcome.reason), 400, outcome.reason);
+      return outcome.state === "reconciling" && outcome.id && (await deps.exists(outcome.id)) ? outcome.id : null;
+    },
+  });
 }

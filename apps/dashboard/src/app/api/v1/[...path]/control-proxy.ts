@@ -90,6 +90,7 @@ const PRIVATE_POST_PATHS = new Set([
   "docker/hosts/register-token",
   "docker/hosts/list",
   "docker/hosts/limits",
+  "docker/hosts/retention",
   "docker/snapshots/list",
   "docker/snapshots/get",
   "docker/snapshots/create",

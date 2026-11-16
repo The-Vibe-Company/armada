@@ -830,7 +830,8 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
         <LaunchAdvanced
           summary={
             <span className="text-xs text-muted-foreground">
-              {target.tools.length} tools · {target.definition.skills.length} extra skills
+              {target.tools.length} {target.tools.length === 1 ? "tool" : "tools"} · {target.definition.skills.length}{" "}
+              extra {target.definition.skills.length === 1 ? "skill" : "skills"}
             </span>
           }
         >
