@@ -77,6 +77,10 @@
     order: 3;
     margin-top: 12px;
   }
+  .page [data-routine] > :nth-child(4) > div > * {
+    position: relative;
+    z-index: 10;
+  }
   .facts > span {
     min-width: 0;
     overflow: hidden;
