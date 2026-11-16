@@ -725,6 +725,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
             providerSandboxId: request.sandboxId,
             stage,
             execId,
+            caller: request.preservationContext?.source ?? "unspecified",
+            captureId: request.preservationContext?.captureId ?? null,
             attempt,
             maxAttempts: RESTORE_RETRIES,
             elapsedMs: Math.round(performance.now() - started),

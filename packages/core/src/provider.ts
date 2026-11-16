@@ -373,6 +373,11 @@ export interface ExecRequest {
   onlyIfRunning?: boolean;
   /** Trusted diagnostic phase only; not shell input. Boat omits it from the HTTP command body. */
   preservationStage?: "collect_exec" | "chunk_exec";
+  /** Trusted capture correlation only; never forwarded as command input. */
+  preservationContext?: {
+    source: "user_stop" | "lifecycle_stop" | "managed_child_stop" | "unspecified";
+    captureId: string;
+  };
   sandboxId: string;
   command: string;
   cwd?: string;

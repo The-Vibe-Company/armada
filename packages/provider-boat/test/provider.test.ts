@@ -1228,3 +1228,26 @@ test("runtime activation resumes compute with explicit lifetime and no account e
   await expect(boat.provider.resumeRuntime(ID, 1.5)).rejects.toBeDefined();
   expect(boat.requests).toHaveLength(2);
 });
+
+test("terminal capture refusal identifies its stop caller without forwarding context to Boat", async () => {
+  const log = spyOn(console, "info").mockImplementation(() => {});
+  try {
+    const boat = fakeBoat({ body: { sandbox: sandbox({ state: "archived" }) } });
+    await expect(
+      boat.provider.exec({
+        sandboxId: ID,
+        command: "unused",
+        onlyIfRunning: true,
+        preservationContext: { source: "lifecycle_stop", captureId: "capture_fixture" },
+      }),
+    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(lines).toHaveLength(2);
+    for (const line of lines) expect(line).toMatchObject({ caller: "lifecycle_stop", captureId: "capture_fixture" });
+    expect(lines[1]).toMatchObject({ decision: "refuse_terminal", normalizedState: "stopped" });
+    expect(boat.requests).toHaveLength(1);
+    expect(JSON.stringify(boat.requests)).not.toContain("capture_fixture");
+  } finally {
+    log.mockRestore();
+  }
+});
