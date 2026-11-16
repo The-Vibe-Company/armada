@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.47.0](https://github.com/The-Vibe-Company/armada/compare/v2.46.4...v2.47.0) (2026-11-16)
+
+
+### Features
+
+* **docker-host:** reclaim old official images and expose retention controls ([#2306](https://github.com/The-Vibe-Company/armada/issues/2306)) ([c88a3f8](https://github.com/The-Vibe-Company/armada/commit/c88a3f8f344561a7c553fdc706f734167630f5a4))
+* **sandbox:** let scoped agents finish and release compute ([#2307](https://github.com/The-Vibe-Company/armada/issues/2307)) ([9a15643](https://github.com/The-Vibe-Company/armada/commit/9a15643acab678815a52f00e7fb0b871429b0072))
+
+
+### Bug Fixes
+
+* **dashboard:** confirm template launches through the shared launch path ([#2312](https://github.com/The-Vibe-Company/armada/issues/2312)) ([4f908c2](https://github.com/The-Vibe-Company/armada/commit/4f908c255c9c36369c1255c301e43bd412583aa3))
+* **dashboard:** diagnose unavailable statistics safely ([#2303](https://github.com/The-Vibe-Company/armada/issues/2303)) ([bf15cc4](https://github.com/The-Vibe-Company/armada/commit/bf15cc45a2562f1a723883fb2ea1255edb40b759))
+* **dashboard:** exercise large organizations and bound resource layouts ([#2310](https://github.com/The-Vibe-Company/armada/issues/2310)) ([51bdbf0](https://github.com/The-Vibe-Company/armada/commit/51bdbf026842420dc7141d72c5dfd645693c85a2))
+* **runtime:** diagnose Docker startup failures with actionable sub-reasons ([#2311](https://github.com/The-Vibe-Company/armada/issues/2311)) ([62ec506](https://github.com/The-Vibe-Company/armada/commit/62ec506367cfe2dd0811c9c8effb83bbe7713308))
+
 ## [2.46.4](https://github.com/The-Vibe-Company/armada/compare/v2.46.3...v2.46.4) (2026-11-16)
 
 
