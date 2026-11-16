@@ -694,12 +694,22 @@ test.each([
     f.setFailure(reason);
     await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
     await expect(f.service().launch(f.caller, f.body)).rejects.toThrow(message);
-    const status = await createDockerSandboxControls(sql, key, { clock: f.clock }).invoke(f.caller, "status", {
-      id: f.body.requestId,
-    });
-    expect(status).toMatchObject({ result: { status: "failed", statusReason: message } });
-    const record = await f.service(sql, true, 10000, officialImage, true).launch(f.caller, f.body);
-    expect(record).toMatchObject({ sandbox: { statusReason: message } });
+    const runtimeReason =
+      "Runtime model routing failed. Ask the server operator to check the configured model endpoint before launching again.";
+    for (const [stored, expected] of [
+      [message, message],
+      [runtimeReason, runtimeReason],
+      ["internal_private_diagnostic", DOCKER_LAUNCH_FAILURE_MESSAGES.startup],
+    ]) {
+      await database().query("update sandboxes set status_reason=$2 where id=$1", [f.body.requestId, stored]);
+      await expect(f.service().launch(f.caller, f.body)).rejects.toThrow(expected);
+      const status = await createDockerSandboxControls(sql, key, { clock: f.clock }).invoke(f.caller, "status", {
+        id: f.body.requestId,
+      });
+      expect(status).toMatchObject({ result: { status: "failed", statusReason: expected } });
+      const record = await f.service(sql, true, 10000, officialImage, true).launch(f.caller, f.body);
+      expect(record).toMatchObject({ sandbox: { statusReason: expected } });
+    }
   },
 );
 

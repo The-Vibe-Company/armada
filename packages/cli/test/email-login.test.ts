@@ -129,6 +129,42 @@ test("email start network failure closes the listener without reading input", as
   }
 });
 
+test.each([
+  [503, "unavailable", "Sign-in service is unavailable."],
+  [429, "rate_limited", "Too many sign-in emails. Wait a minute and try again."],
+] as const)("email start preserves typed refusal %s without reading input", async (status, code, message) => {
+  let stops = 0;
+  const listener = spyOn(Bun, "serve").mockReturnValue({
+    port: 43123,
+    stop: async () => {
+      stops++;
+    },
+  } as never);
+  try {
+    await expect(
+      emailLogin(
+        {
+          env: {},
+          out: () => undefined,
+          err: () => undefined,
+          now: () => new Date(0),
+          open: () => undefined,
+          session: memorySessionStore(),
+          fetch: async () => Response.json({ error: { code, message } }, { status }),
+          readCode: async () => {
+            throw new Error("Must not read input");
+          },
+        },
+        "user@example.test",
+        "https://armada.example",
+      ),
+    ).rejects.toMatchObject({ code, message });
+    expect(stops).toBe(1);
+  } finally {
+    listener.mockRestore();
+  }
+});
+
 test("email login timeout cancels code input and closes its listener", async () => {
   let expire!: () => void;
   let aborted = false;

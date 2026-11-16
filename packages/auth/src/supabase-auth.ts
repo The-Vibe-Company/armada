@@ -105,7 +105,7 @@ export async function sendEmailLink(options: {
     throw new AuthError("Armada could not reach Supabase.", "unavailable", error);
   }
   if (response.status === 429)
-    throw new AuthError("Too many sign-in emails. Wait a minute and try again.", "unavailable");
+    throw new AuthError("Too many sign-in emails. Wait a minute and try again.", "rate_limited");
   if (!response.ok) {
     throw new AuthError(
       "Supabase could not send the sign-in email.",

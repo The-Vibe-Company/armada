@@ -5,7 +5,6 @@ import {
   createSqlVaultStore,
   DelegatedAuthority,
   mapSandboxRow,
-  ProviderError,
   type ProviderRegistry,
   resolveCredentials,
   type SandboxRow,
@@ -198,15 +197,21 @@ export function createSandboxAccessServices(input: {
               "managed_child_stop",
             ).catch(() => {})) === "pending"
           )
-            throw new ProviderError({
-              provider: provider.id,
-              code: "sandbox_not_ready",
-              retryable: true,
-              message: "Interruption is pending; retry stop after turns settle.",
-            });
+            return { result: undefined, patch: { status: "stopping", stopRequested: true } };
           recordStopDispatch(saved.id, saved.providerSandboxId, "managed_child_stop");
           await provider.stop({ sandboxId: saved.providerSandboxId });
-          return { result: undefined, patch: { status: "stopped", stoppedAt: new Date().toISOString() } };
+          // Stop dispatch is not physical closure. Keep pending stops observable by
+          // lifecycle recovery, and release the status-read fence only on confirmation.
+          const observed = await provider.get(saved.providerSandboxId);
+          const terminal = observed.state === "stopped";
+          return {
+            result: undefined,
+            patch: {
+              status: terminal ? "stopped" : "stopping",
+              stopRequested: !terminal,
+              stoppedAt: terminal ? (observed.stoppedAt ?? new Date()).toISOString() : null,
+            },
+          };
         },
       );
     },

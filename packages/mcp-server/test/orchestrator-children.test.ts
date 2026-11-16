@@ -8,9 +8,12 @@ import {
   encryptSecret,
   type Sql,
 } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
+import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
+import { readStatus } from "../src/turns.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -897,6 +900,65 @@ test("registered failed child with confirmed stopped compute releases explicit c
     expect((await children.launch(token, "capacity-after-confirmed-closure", selection)).state).toBe("failed");
     expect(executionCalls).toBe(2);
     expect(boat.forks).toHaveLength(1);
+  } finally {
+    await close();
+  }
+});
+
+// Real delegated stop and SQL fences: a completed stop must remain live-readable.
+test("managed child stop clears its epoch only after physical confirmation", async () => {
+  const { close, db, sql, p, id, token, golden } = await fixture();
+  try {
+    const fake = fakeBoat();
+    let pending = false;
+    const provider = {
+      ...fake.provider,
+      stop: async (request: { sandboxId: string }) => {
+        if (!pending) await fake.provider.stop(request);
+      },
+    };
+    const services = createSandboxAccessServices({
+      sql,
+      providers: { resolve: async () => provider },
+      credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+      connections: undefined,
+      encryptionKey: ENCRYPTION_KEY,
+      scopedMcpUrl: "https://armada.example/mcp",
+    });
+    for (pending of [false, true]) {
+      const physical = await fake.provider.fork({
+        from: "test",
+        name: "child",
+        ttlSeconds: 3600,
+        env: {},
+        noEnv: true,
+      });
+      const child = await createSqlSandboxStore(sql).insert({
+        id: crypto.randomUUID(),
+        provider: "boat",
+        providerSandboxId: physical.id,
+        goldenId: golden.id,
+        orgId: p.org,
+        ownerId: p.owner,
+        harness: "codex",
+        status: "ready",
+        model: "m",
+        reasoningEffort: "high",
+      });
+      await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+      await services.childWorker.stop(token, crypto.randomUUID(), child.id);
+      const store = createSqlData(sql)({
+        via: "service",
+        userId: p.owner,
+        orgs: [{ orgId: p.org, role: "member" }],
+      }).sandboxes;
+      const saved = await store.get(child.id);
+      expect(saved?.status).toBe(pending ? "stopping" : "stopped");
+      expect(Boolean(saved?.stopRequestedAt)).toBe(pending);
+      expect(saved?.stoppedAt !== null).toBe(!pending);
+      const report = await readStatus(provider, store, saved!, { now: new Date() });
+      expect(report.providerState).toBe(pending ? null : "archived");
+    }
   } finally {
     await close();
   }

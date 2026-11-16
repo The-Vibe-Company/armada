@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import {
   type ApplicationSecretBinding,
   DEFAULT_LAUNCH_TTL_SECONDS,
-  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerLaunchResult,
   type DockerSandboxRecord,
+  dockerSandboxFailureReason,
   type GitHubLaunchInfo,
   type GoldenActor,
   type GoldenRepo,
@@ -313,13 +313,7 @@ const repositoryAccessMessage = (message: string | null | undefined): message is
 const notReady = (row: Row) => {
   if (row.status === "failed" && repositoryAccessMessage(row.status_reason))
     return new LaunchError("no_credentials", row.status_reason);
-  return failure(
-    "sandbox_not_ready",
-    row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ||
-      Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((message) => message === row.status_reason)
-      ? row.status_reason!
-      : undefined,
-  );
+  return failure("sandbox_not_ready", dockerSandboxFailureReason(row.status_reason));
 };
 const iso = (date: Date | string) => new Date(date).toISOString();
 const active = (row: Row) =>
@@ -442,11 +436,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       statusReason:
         row.status !== "failed"
           ? null
-          : row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ||
-              repositoryAccessMessage(row.status_reason) ||
-              Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((message) => message === row.status_reason)
+          : repositoryAccessMessage(row.status_reason)
             ? row.status_reason
-            : DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
+            : dockerSandboxFailureReason(row.status_reason),
       repositoryDir: null,
       model: row.model,
       reasoningEffort: row.reasoning_effort,
