@@ -1,7 +1,7 @@
 "use client";
 
 import { CircleAlertIcon, Loader2Icon, UserMinusIcon } from "lucide-react";
-import { useActionState, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { changeMemberRole, removeMember } from "@/app/actions/orgs";
 import {
   AlertDialog,
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
+import { useMutationState } from "@/components/use-mutation-state";
 import { type MemberRole, roleChange } from "@/lib/members";
 
 type Member = { org: string; orgName: string; user: string; email: string; role: MemberRole; self: boolean };
@@ -33,7 +34,7 @@ function Refusal({ error }: { error: string }) {
  * first, in the destructive confirmation every irreversible change uses (#758). A refusal stays in the row.
  */
 export function MemberRoleForm({ org, orgName, user, email, role, self }: Member) {
-  const [state, action, pending] = useActionState(changeMemberRole, null);
+  const [state, action, pending] = useMutationState(changeMemberRole);
   const [next, setNext] = useState<MemberRole>(role);
   const [confirming, setConfirming] = useState(false);
   const form = useRef<HTMLFormElement>(null);
@@ -124,7 +125,7 @@ export function MemberRoleForm({ org, orgName, user, email, role, self }: Member
  * on a refusal, so the reason is read where the action was taken; on success the row, and the dialog, are gone.
  */
 export function RemoveMember({ org, orgName, user, email, self }: Omit<Member, "role">) {
-  const [state, action, pending] = useActionState(removeMember, null);
+  const [state, action, pending] = useMutationState(removeMember);
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>

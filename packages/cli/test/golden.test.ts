@@ -270,6 +270,7 @@ async function asUser<T>(db: PGlite, userId: string, run: () => Promise<T>): Pro
 
 function loggedIn(userId: string, fetchImpl: AuthIo["fetch"], env: Record<string, string>): AuthIo {
   const session = memorySessionStore({
+    ...(env.ARMADA_URL ? { armadaUrl: env.ARMADA_URL } : {}),
     userId,
     accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
     refreshToken: "refresh",

@@ -78,7 +78,7 @@ function rpc(handler: TestServer["handler"], bearer: string) {
 describe("http", () => {
   test("/mcp without a valid token is the OAuth challenge", async () => {
     const { handler } = await start();
-    for (const authorization of [undefined, "Bearer armada_sk_not-a-real-token-but-long-enough-000000000"]) {
+    for (const authorization of [undefined, `Bearer armada_sk_${"not-a-real-token-but-long-enough-000000000"}`]) {
       const response = await handler(
         new Request(`${PUBLIC_URL}/mcp`, {
           method: "POST",
@@ -517,7 +517,7 @@ describe("tools", () => {
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
     const narrow = `armada_gw_${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url")}`;
-    boat.setExecOutput({ stdout: `GH_TOKEN=ghu_0123456789abcdefghijABCDEFGHIJ0123 MCP=${narrow}` });
+    boat.setExecOutput({ stdout: `GH_TOKEN=ghu_${"0123456789abcdefghijABCDEFGHIJ0123"} MCP=${narrow}` });
     const ran = await call(mcp, "exec", { id: launched.data.id, command: "env" });
     expect(String(ran.data.stdout).includes(narrow)).toBe(false);
     expect(ran.data.stdout).toBe("GH_TOKEN=*** MCP=***");

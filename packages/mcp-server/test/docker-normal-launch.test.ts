@@ -38,6 +38,7 @@ import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
 import { createDockerNormalSend } from "../src/docker-normal-send.ts";
+import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
@@ -1624,7 +1625,7 @@ for (const checkoutExitCode of [0, 1])
     }
     const launched = await f.service().launch(f.caller, body);
     expect(launched.github).toMatchObject({ status: "connected", login: "owner" });
-    const native = f.native as { op: string; input?: { command?: string } }[];
+    const native = f.native as { op: string; input?: { command?: string; cwd?: string } }[];
     expect(native.filter((c) => c.op !== "health").map((c) => c.op)).toEqual([
       "configureGitHub",
       "exec",
@@ -1633,6 +1634,32 @@ for (const checkoutExitCode of [0, 1])
       "prompt",
     ]);
     expect(launched.sandbox.skills?.map((receipt) => receipt.reference)).toEqual(["catalog/repository@1.0.0"]);
+    expect(native.find((command) => command.op === "prompt")?.input?.cwd).toBe("/home/user/project");
+    // Retained pre-upgrade command IDs must keep their original home cwd.
+    const retained = (
+      await database().query<{ request_id: string; request_enc: Uint8Array<ArrayBuffer> }>(
+        "select request_id,request_enc from runtime_commands where sandbox_id=$1 and starts_with(request_id,'docker_prompt_')",
+        [body.requestId],
+      )
+    ).rows[0]!;
+    const previous = JSON.parse(await decryptSecret(retained.request_enc, key));
+    previous.input.cwd = "/home/user";
+    await database().query("update runtime_commands set request_enc=$3 where sandbox_id=$1 and request_id=$2", [
+      body.requestId,
+      retained.request_id,
+      await encryptSecret(JSON.stringify(previous), key),
+    ]);
+    const replay = await createDockerRuntimeLifecycle(sql, key, { enabled: true }).prompt(
+      { userId: f.caller.userId, orgId: body.org },
+      body.requestId,
+      {
+        requestId: retained.request_id.slice("docker_prompt_".length),
+        text: previous.input.text,
+        conversationId: previous.input.conversationId,
+      },
+    );
+    expect(replay.state).toBe("admitted");
+
     expect(native[2]?.input?.command).toContain("--branch 'feature/work'");
     expect(native[2]?.input?.command).toContain("'/home/user/project'");
     expect(JSON.stringify(native)).not.toContain("offline-github-token");

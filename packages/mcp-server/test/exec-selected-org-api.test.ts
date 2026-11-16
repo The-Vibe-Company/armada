@@ -85,6 +85,7 @@ test("exec command text after -- cannot bypass persisted selected-org HTTP scope
       env: { ARMADA_URL: "https://armada.test" },
       preferences: filePreferences(preferencesPath),
       session: memorySessionStore({
+        armadaUrl: "https://armada.test",
         accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: user })).replace(/=+$/, "")}.sig`,
         refreshToken: "fixture",
         expiresAt: "2099-01-01T00:00:00.000Z",

@@ -34,7 +34,7 @@ bindings, and unique-account/golden finalization errors. Run against a fresh,
 disposable migrated database only:
 
 ```sh
-ARMADA_TEST_POSTGRES_URL='<disposable-test-database-url>' bun test packages/core/test/golden-adoption-postgres.test.ts
+ARMADA_TEST_POSTGRES_URL='<disposable-test-database-url>' bun test packages/core/test/golden-adoption-postgres.release.ts
 ```
 
 This changes only the error boundary: no schema, capacity policy, binding, leases,

@@ -7,7 +7,6 @@ import {
   type ComponentProps,
   createContext,
   type ReactNode,
-  useActionState,
   useCallback,
   useContext,
   useEffect,
@@ -32,6 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
+import { useMutationState } from "@/components/use-mutation-state";
 import { isUuid } from "@/lib/action";
 import type { DockerHost } from "@/lib/docker-hosts";
 import { goldenRequest, type RepoRow } from "@/lib/golden-form";
@@ -127,7 +127,7 @@ function DockerSnapshotForm({
   const placement = useSnapshotPlacement();
   const [hostId, setHostId] = useState(hosts.find((host) => host.state === "online")?.id ?? "");
   const [visibility, setVisibility] = useState("private");
-  const [result, action, pending] = useActionState(buildDockerSnapshot, null);
+  const [result, action, pending] = useMutationState(buildDockerSnapshot);
   const [config, setConfig] = useState("");
   const [advanced, setAdvanced] = useState(false);
   const [repos, setRepos] = useState<(RepoRow & { key: string })[]>([
@@ -495,7 +495,7 @@ function SnapshotRebuildForm({
   snapshotId: string;
   onAccepted: () => void;
 }) {
-  const [result, action, pending] = useActionState(rebuildDockerSnapshot, null);
+  const [result, action, pending] = useMutationState(rebuildDockerSnapshot);
   const [requestId, setRequestId] = useState("");
   const form = useRef<HTMLFormElement>(null);
   const router = useRouter();

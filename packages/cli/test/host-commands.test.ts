@@ -36,7 +36,7 @@ async function capture(args: string[], fetcher: (request: Request) => Promise<Re
       auth: {
         out: () => {},
         err: () => {},
-        env: { ARMADA_TOKEN: "armada_sk_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO12" },
+        env: { ARMADA_TOKEN: "armada_sk_fixture_token" },
         session: memorySessionStore(),
         now: () => new Date(now),
         open: () => {},

@@ -22,8 +22,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup } from "@/components/ui/radio-group";
 import { useToast } from "@/components/ui/toast";
+import { useMutationState } from "@/components/use-mutation-state";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
+import { clientMutation } from "@/lib/client-mutation";
 import { type SkillpackKey, type SkillpackKeys, type SkillpackScope, skillpackAudience } from "@/lib/skillpack-key";
 
 type Props = {
@@ -217,7 +219,7 @@ function KeyForm({
   initialScope: SkillpackScope;
   onDone: (message: string) => void;
 }) {
-  const [state, formAction] = useActionState(saveSkillpackKey, null);
+  const [state, formAction] = useMutationState(saveSkillpackKey);
   const formRef = usePreservedActionForm();
   const [scope, setScope] = useState<SkillpackScope>(isAdmin ? initialScope : "user");
   const id = useId();
@@ -346,7 +348,7 @@ function RemoveKey({ scope, orgId }: { scope: SkillpackScope; orgId: string }) {
 function RemoveForm({ scope, orgId, onRemoved }: { scope: SkillpackScope; orgId: string; onRemoved: () => void }) {
   const toast = useToast();
   const [state, formAction] = useActionState(async (previous: ActionResult | null, data: FormData) => {
-    const result = await removeSkillpackKey(previous, data);
+    const result = await clientMutation(() => removeSkillpackKey(previous, data));
     if (result.ok) {
       toast({ tone: "success", title: result.message });
       onRemoved();

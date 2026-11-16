@@ -2,7 +2,7 @@
 
 import { CircleCheckIcon, Loader2Icon, ServerIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useActionState, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   dockerHostConnected,
   registerDockerHost,
@@ -24,6 +24,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useMutationState } from "@/components/use-mutation-state";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import { type DockerHost, expiryCountdown, HOST_NAME_MAX, revokeWarning } from "@/lib/docker-hosts";
 import { cn } from "@/lib/utils";
 
@@ -73,7 +75,7 @@ export function AddHostDialog({ orgId }: { orgId: string }) {
 }
 
 function AddHostForm({ orgId, onGuard }: { orgId: string; onGuard: (guarded: boolean) => void }) {
-  const [state, formAction, pending] = useActionState(registerDockerHost, null);
+  const [state, formAction, pending] = useMutationState(registerDockerHost);
   const [name, setName] = useState("");
   const issued = state?.ok === true;
   const connected = useCallback(() => onGuard(false), [onGuard]);
@@ -355,8 +357,9 @@ export function HostLimitsDialog({ orgId, host }: { orgId: string; host: DockerH
 }
 
 function HostLimitsForm({ orgId, host, onSaved }: { orgId: string; host: DockerHost; onSaved: () => void }) {
+  const preserve = usePreservedActionForm();
   const router = useRouter();
-  const [state, submit, pending] = useActionState(updateDockerHostLimits, null);
+  const [state, submit, pending] = useMutationState(updateDockerHostLimits);
   const errorRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
     if (state?.ok) {
@@ -365,7 +368,7 @@ function HostLimitsForm({ orgId, host, onSaved }: { orgId: string; host: DockerH
     } else if (state) errorRef.current?.focus();
   }, [state, onSaved, router]);
   return (
-    <form action={submit} className="space-y-4" aria-busy={pending}>
+    <form ref={preserve} action={submit} className="space-y-4" aria-busy={pending}>
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="hostId" value={host.id} />
       <p id="host-limits-hint" className="text-xs text-muted-foreground">
@@ -440,7 +443,8 @@ function HostLimitsForm({ orgId, host, onSaved }: { orgId: string; host: DockerH
 }
 
 export function HostRetention({ orgId, host }: { orgId: string; host: DockerHost }) {
-  const [state, action, pending] = useActionState(updateDockerHostRetention, null);
+  const preserve = usePreservedActionForm();
+  const [state, action, pending] = useMutationState(updateDockerHostRetention);
   return (
     <div className="space-y-3 text-sm">
       <p>
@@ -462,7 +466,7 @@ export function HostRetention({ orgId, host }: { orgId: string; host: DockerHost
         <p>Requested: {host.retentionOverrideSeconds} seconds; waiting for check-in.</p>
       )}
       {host.canManageLimits && host.state !== "revoked" ? (
-        <form action={action} className="space-y-2">
+        <form ref={preserve} action={action} className="space-y-2">
           <input type="hidden" name="org" value={orgId} />
           <input type="hidden" name="hostId" value={host.id} />
           <label htmlFor={`retention-${host.id}`}>

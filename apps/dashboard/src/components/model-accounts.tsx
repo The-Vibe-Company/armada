@@ -10,6 +10,8 @@ import {
   type Harness,
 } from "@armada/core";
 import {
+  CheckIcon,
+  ChevronDownIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleHelpIcon,
@@ -17,13 +19,14 @@ import {
   EllipsisIcon,
   KeyRoundIcon,
   PencilIcon,
+  RefreshCwIcon,
   StarIcon,
   Trash2Icon,
   UserIcon,
   UsersIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
 import {
   addAccount,
   makeDefaultAccount,
@@ -41,6 +44,7 @@ import { ResultLine } from "@/components/connections";
 import { CreateDialog } from "@/components/create-dialog";
 import { Disclosure } from "@/components/disclosure";
 import { Empty } from "@/components/page-header";
+import { AnthropicIcon, ClaudeAI, OpenAI } from "@/components/provider-marks";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -66,8 +70,10 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { useMutationState } from "@/components/use-mutation-state";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
+import { clientMutation } from "@/lib/client-mutation";
 import { HARNESS_LABELS } from "@/lib/labels";
 import {
   ACCOUNT_KINDS,
@@ -162,7 +168,7 @@ function ConnectionTestForm({
   orgId: string;
   choices: ConnectionTestChoices;
 }) {
-  const [state, action, pending] = useActionState(testAccountConnection, null);
+  const [state, action, pending] = useMutationState(testAccountConnection);
   const candidates =
     choices.state === "ready"
       ? choices.sandboxes.filter((sandbox) => sandbox.accountId === account.id && sandbox.version === account.version)
@@ -440,6 +446,7 @@ export function AccountRow({
   usage: AccountUsage | null;
   now: number;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const [result, setResult] = useState<ActionResult | null>(null);
   const [dialog, setDialog] = useState<RowDialog>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
@@ -468,189 +475,276 @@ export function AccountRow({
   }, []);
 
   return (
-    <tr
-      className="block border-b p-4 last:border-0 sm:table-row sm:p-0 [&>td]:py-1.5 sm:[&>td]:py-3 sm:[&>td]:px-3 [&>td]:align-top"
-      data-account={account.name}
-      aria-labelledby={headingId}
-    >
-      <td className="block min-w-0 space-y-1 sm:table-cell">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 id={headingId} className="font-medium break-all">
+    <section className="border-b last:border-0" data-account={account.name} aria-labelledby={headingId}>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={`${headingId}-detail`}
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-3 px-4 py-4 text-left hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        <ProviderMark kind={account.kind} />
+        <span className="min-w-0 flex-1">
+          <span id={headingId} className="block truncate text-sm font-medium">
             {account.name}
-          </h3>
-          <Badge variant="secondary" className="gap-1" data-account-scope={account.scope}>
-            {account.scope === "user" ? <UserIcon /> : <UsersIcon />}
-            {account.scope === "user" ? "Personal" : orgName}
-          </Badge>
-          {account.isDefault && (
-            <Badge variant="outline" className="gap-1" data-default>
-              <StarIcon className="fill-current" /> Account-wide default
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            {state.label === "Ready" ? "Connected" : state.label} · {info.label}
+          </span>
+        </span>
+        <span className="hidden text-xs text-muted-foreground sm:block">{info.harnessLabel}</span>
+        <ChevronDownIcon
+          aria-hidden
+          className={cn(
+            "size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none",
+            expanded && "rotate-180",
+          )}
+        />
+      </button>
+      <div id={`${headingId}-detail`} hidden={!expanded} className="space-y-4 border-t bg-muted/10 px-4 py-5 sm:px-6">
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-medium break-all">{account.name}</h3>
+            <Badge variant="secondary" className="gap-1" data-account-scope={account.scope}>
+              {account.scope === "user" ? <UserIcon /> : <UsersIcon />}
+              {account.scope === "user" ? "Personal" : orgName}
             </Badge>
+            {account.isDefault && (
+              <Badge variant="outline" className="gap-1" data-default>
+                <StarIcon className="fill-current" /> Account-wide default
+              </Badge>
+            )}
+          </div>
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+            <span>
+              {kindNote(account) ?? (info.billing === "subscription" ? "Subscription" : "API key")} ·{" "}
+              {account.scope === "user" ? "only you" : orgName}
+            </span>
+            {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
+          </p>
+        </div>
+
+        <div>
+          <p className="mb-1 text-xs text-muted-foreground">Status</p>
+          <p
+            className={cn("flex items-center gap-1.5 text-sm", STATE_TONE[state.tone])}
+            data-account-status={account.status}
+            data-account-state={state.label.toLowerCase()}
+          >
+            <StateIcon className="size-4 shrink-0" aria-hidden />
+            {state.label === "Ready" ? "Connected" : state.label === "Expired" ? "Sign-in expired" : state.label}
+          </p>
+        </div>
+        {canManage && <InlineDisplayName account={account} orgId={orgId} onResult={setResult} />}
+        <div className="text-sm">
+          <span className="text-muted-foreground">Works with: </span>
+          {info.harnessLabel}
+        </div>
+        <div className="tabular-nums">
+          <span className="text-muted-foreground">Agents running: </span>
+          {account.runningAgents ?? 0}
+          {account.maxAgents == null ? (
+            <span className="block text-xs text-muted-foreground">no limit</span>
+          ) : (
+            ` of ${account.maxAgents}`
+          )}
+          {account.waitingAgents !== undefined && account.waitingAgents > 0 && (
+            <span className="block text-xs text-muted-foreground">
+              {account.waitingAgents} {account.waitingAgents === 1 ? "message" : "messages"} waiting
+            </span>
           )}
         </div>
-        <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-          <span>
-            {kindNote(account) ?? (info.billing === "subscription" ? "Subscription" : "API key")} ·{" "}
-            {account.scope === "user" ? "only you" : orgName}
-          </span>
-          {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
-        </p>
-      </td>
-
-      <td className="block sm:table-cell">
-        <p
-          className={cn("flex items-center gap-1.5 text-sm", STATE_TONE[state.tone])}
-          data-account-status={account.status}
-          data-account-state={state.label.toLowerCase()}
-        >
-          <StateIcon className="size-4 shrink-0" aria-hidden />
-          {state.label === "Ready" ? "Connected" : state.label === "Expired" ? "Sign-in expired" : state.label}
-        </p>
-      </td>
-      <td className="block text-sm sm:table-cell">
-        <span className="text-muted-foreground sm:hidden">Works with: </span>
-        {info.harnessLabel}
-      </td>
-      <td className="block tabular-nums sm:table-cell sm:text-right">
-        <span className="text-muted-foreground sm:hidden">Agents running: </span>
-        {account.runningAgents ?? 0}
-        {account.maxAgents == null ? (
-          <span className="block text-xs text-muted-foreground">no limit</span>
-        ) : (
-          ` of ${account.maxAgents}`
-        )}
-        {account.waitingAgents !== undefined && account.waitingAgents > 0 && (
-          <span className="block text-xs text-muted-foreground">
-            {account.waitingAgents} {account.waitingAgents === 1 ? "message" : "messages"} waiting
-          </span>
-        )}
-      </td>
-      <td className="block sm:table-cell">
-        {info.billing === "subscription" && account.status === "active" ? (
-          <UsagePanel usage={usage} account={account} now={now} />
-        ) : (
-          <span className="text-xs text-muted-foreground">Not reported</span>
-        )}
-      </td>
-      <td className="block sm:table-cell">
-        {canManage ? (
-          <div className="flex flex-wrap items-center justify-end gap-1">
-            {/* A default that cannot run would refuse launches that name no account: Reconnect leads instead. */}
-            {state.needsAction ? (
-              <Button
-                ref={rowAction}
-                size="sm"
-                onClick={() => {
-                  opener.current = "row";
-                  setDialog("replace");
-                }}
-                aria-label={`${info.billing === "subscription" ? "Reconnect" : "Replace key"}, ${account.name}`}
-              >
-                {info.billing === "subscription" ? "Reconnect" : "Replace key"}
-              </Button>
-            ) : null}
-
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger asChild>
+        <div>
+          {info.billing === "subscription" && account.status === "active" ? (
+            <UsagePanel usage={usage} account={account} now={now} />
+          ) : (
+            <span className="text-xs text-muted-foreground">Not reported</span>
+          )}
+        </div>
+        <div>
+          {canManage ? (
+            <div className="flex flex-wrap items-center gap-1">
+              {/* A default that cannot run would refuse launches that name no account: Reconnect leads instead. */}
+              {state.needsAction ? (
                 <Button
-                  ref={menuTrigger}
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={`More actions for ${account.name}`}
+                  ref={rowAction}
+                  size="sm"
+                  onClick={() => {
+                    opener.current = "row";
+                    setDialog("replace");
+                  }}
+                  aria-label={`${info.billing === "subscription" ? "Reconnect" : "Replace key"}, ${account.name}`}
                 >
-                  <EllipsisIcon />
+                  {info.billing === "subscription" ? "Reconnect" : "Replace key"}
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-44">
-                {!state.needsAction && !account.isDefault && (
-                  <DropdownMenuItem
-                    onSelect={() =>
-                      menuTrigger.current
-                        ?.closest("tr")
-                        ?.querySelector<HTMLButtonElement>('button[aria-label^="Make default"]')
-                        ?.click()
-                    }
-                  >
-                    Make account-wide default
-                  </DropdownMenuItem>
-                )}
-                {info.billing === "api" &&
-                  (account.kind !== "opencode" || !!account.models?.length) &&
-                  account.status === "active" && (
-                    <DropdownMenuItem onSelect={() => setDialog("test")}>Test connection</DropdownMenuItem>
-                  )}
-                <DropdownMenuItem onSelect={() => setDialog("limits")}>
-                  <PencilIcon /> Agent limit
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setDialog("rename")}>
-                  <PencilIcon /> Rename
-                </DropdownMenuItem>
-                {!state.needsAction && (
-                  <DropdownMenuItem onSelect={() => setDialog("replace")}>
-                    <KeyRoundIcon /> {info.billing === "subscription" ? "Reconnect" : `Replace ${secretWord}`}
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onSelect={() => setDialog("remove")}>
-                  <Trash2Icon /> Remove
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        ) : (
-          <p className="text-right text-xs text-muted-foreground">Managed by the organization&apos;s admins.</p>
-        )}
-        <ResultLine result={result} />
+              ) : null}
 
-        {canManage && (
-          <>
-            <div className={cn(!account.isDefault && "[&>div>form:first-child]:hidden")}>
-              <DefaultAccountAction account={account} previous={previousDefault} orgId={orgId} onResult={setResult} />
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    ref={menuTrigger}
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`More actions for ${account.name}`}
+                  >
+                    <EllipsisIcon />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-44">
+                  {!state.needsAction && !account.isDefault && (
+                    <DropdownMenuItem
+                      onSelect={() =>
+                        menuTrigger.current
+                          ?.closest("[data-account]")
+                          ?.querySelector<HTMLButtonElement>('button[aria-label^="Make default"]')
+                          ?.click()
+                      }
+                    >
+                      Make account-wide default
+                    </DropdownMenuItem>
+                  )}
+                  {info.billing === "api" &&
+                    (account.kind !== "opencode" || !!account.models?.length) &&
+                    account.status === "active" && (
+                      <DropdownMenuItem onSelect={() => setDialog("test")}>Test connection</DropdownMenuItem>
+                    )}
+                  <DropdownMenuItem onSelect={() => setDialog("limits")}>
+                    <PencilIcon /> Agent limit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setDialog("rename")}>
+                    <PencilIcon /> Rename
+                  </DropdownMenuItem>
+                  {!state.needsAction && (
+                    <DropdownMenuItem onSelect={() => setDialog("replace")}>
+                      <KeyRoundIcon /> {info.billing === "subscription" ? "Reconnect" : `Replace ${secretWord}`}
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem variant="destructive" onSelect={() => setDialog("remove")}>
+                    <Trash2Icon /> Remove
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
-            <ConnectionTestDialog
-              account={account}
-              orgId={orgId}
-              choices={testChoices}
-              open={dialog === "test"}
-              onOpenChange={closeDialog}
-              onCloseAutoFocus={restoreFocus}
-            />
-            <LimitsDialog
-              account={account}
-              orgId={orgId}
-              onResult={setResult}
-              open={dialog === "limits"}
-              onOpenChange={closeDialog}
-              onCloseAutoFocus={restoreFocus}
-            />
-            <RenameDialog
-              account={account}
-              orgId={orgId}
-              onResult={setResult}
-              open={dialog === "rename"}
-              onOpenChange={closeDialog}
-              onCloseAutoFocus={restoreFocus}
-            />
-            <ReplaceDialog
-              account={account}
-              orgId={orgId}
-              reconnect={state.needsAction}
-              onResult={setResult}
-              open={dialog === "replace"}
-              onOpenChange={closeDialog}
-              onCloseAutoFocus={restoreFocus}
-            />
-            <RemoveDialog
-              account={account}
-              orgId={orgId}
-              open={dialog === "remove"}
-              onOpenChange={closeDialog}
-              onCloseAutoFocus={restoreFocus}
-            />
-          </>
-        )}
-      </td>
-    </tr>
+          ) : (
+            <p className="text-right text-xs text-muted-foreground">Managed by the organization&apos;s admins.</p>
+          )}
+          <ResultLine result={result} />
+
+          {canManage && (
+            <>
+              <div className={cn(!account.isDefault && "[&>div>form:first-child]:hidden")}>
+                <DefaultAccountAction account={account} previous={previousDefault} orgId={orgId} onResult={setResult} />
+              </div>
+              <ConnectionTestDialog
+                account={account}
+                orgId={orgId}
+                choices={testChoices}
+                open={dialog === "test"}
+                onOpenChange={closeDialog}
+                onCloseAutoFocus={restoreFocus}
+              />
+              <LimitsDialog
+                account={account}
+                orgId={orgId}
+                onResult={setResult}
+                open={dialog === "limits"}
+                onOpenChange={closeDialog}
+                onCloseAutoFocus={restoreFocus}
+              />
+              <RenameDialog
+                account={account}
+                orgId={orgId}
+                onResult={setResult}
+                open={dialog === "rename"}
+                onOpenChange={closeDialog}
+                onCloseAutoFocus={restoreFocus}
+              />
+              <ReplaceDialog
+                account={account}
+                orgId={orgId}
+                reconnect={state.needsAction}
+                onResult={setResult}
+                open={dialog === "replace"}
+                onOpenChange={closeDialog}
+                onCloseAutoFocus={restoreFocus}
+              />
+              <RemoveDialog
+                account={account}
+                orgId={orgId}
+                open={dialog === "remove"}
+                onOpenChange={closeDialog}
+                onCloseAutoFocus={restoreFocus}
+              />
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** Compact provider identity, without claiming a binary version Armada does not track. */
+function ProviderMark({ kind }: { kind: AccountKind }) {
+  const mark =
+    kind === "claude_oauth" || kind === "anthropic"
+      ? "A"
+      : kind === "codex_auth" || kind === "openai"
+        ? "O"
+        : kind === "morph"
+          ? "M"
+          : "OC";
+  return (
+    <span
+      aria-hidden
+      className="grid size-9 shrink-0 place-items-center rounded-lg border bg-background font-mono text-sm font-semibold"
+    >
+      {kind === "claude_oauth" ? (
+        <ClaudeAI className="size-5" />
+      ) : kind === "anthropic" ? (
+        <AnthropicIcon className="size-5" />
+      ) : kind === "openai" || kind === "codex_auth" ? (
+        <OpenAI className="size-5" />
+      ) : (
+        mark
+      )}
+    </span>
+  );
+}
+
+function InlineDisplayName({
+  account,
+  orgId,
+  onResult,
+}: {
+  account: ModelAccount;
+  orgId: string;
+  onResult: (result: ActionResult) => void;
+}) {
+  const preserve = usePreservedActionForm();
+  const [state, action] = useMutationState(async (previous: ActionResult | null, data: FormData) => {
+    const result = await clientMutation(() => renameAccount(previous, data));
+    onResult(result);
+    return result;
+  });
+  const id = useId();
+  return (
+    <form ref={preserve} action={action} className="max-w-md space-y-2">
+      <TargetFields account={account} orgId={orgId} />
+      <Label htmlFor={id}>Display name</Label>
+      <div className="flex gap-2">
+        <Input
+          key={`${account.id}:${account.version}`}
+          id={id}
+          name="name"
+          defaultValue={account.name}
+          required
+          maxLength={MAX_ACCOUNT_NAME}
+        />
+        <SubmitButton>Save name</SubmitButton>
+      </div>
+      {state && !state.ok && <ResultLine result={state} />}
+    </form>
   );
 }
 
@@ -669,7 +763,7 @@ function DefaultAccountAction({
 }) {
   const [undo, setUndo] = useState<ModelAccount | null>(null);
   const change = async (_: ActionResult | null, data: FormData) => {
-    const result = await makeDefaultAccount(null, data);
+    const result = await clientMutation(() => makeDefaultAccount(null, data));
     if (result.ok && previous) {
       try {
         const list = await pollModelAccounts(orgId);
@@ -724,7 +818,7 @@ function InlineAction({
   label: string;
   children: ReactNode;
 }) {
-  const [state, formAction] = useActionState(action, null);
+  const [state, formAction] = useMutationState(action);
   useEffect(() => {
     if (state) onResult(state);
   }, [state, onResult]);
@@ -754,7 +848,7 @@ function useDialogAction(
   onOpenChange: (open: boolean) => void,
 ) {
   const [generation, setGeneration] = useState(0);
-  const [state, formAction] = useActionState(action, null);
+  const [state, formAction] = useMutationState(action);
   useEffect(() => {
     if (!state) return;
     if (state.ok) {
@@ -778,6 +872,7 @@ function LimitsDialog({
   orgId: string;
   onResult: (result: ActionResult) => void;
 } & Controlled) {
+  const preserve = usePreservedActionForm();
   const { state, formAction, generation } = useDialogAction(updateAccountLimits, onResult, onOpenChange);
   const id = useId();
   return (
@@ -789,7 +884,7 @@ function LimitsDialog({
             Turns wait when an account or model limit is full. Existing agents are not stopped.
           </DialogDescription>
         </DialogHeader>
-        <form key={generation} action={formAction} className="space-y-4">
+        <form ref={preserve} key={generation} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
           <AgentLimitField id={id} defaultValue={account.maxAgents ?? ""} />
           <div className="space-y-2">
@@ -859,6 +954,7 @@ function RenameDialog({
   orgId: string;
   onResult: (result: ActionResult) => void;
 } & Controlled) {
+  const preserve = usePreservedActionForm();
   const { state, formAction, generation } = useDialogAction(renameAccount, onResult, onOpenChange);
   const id = useId();
   return (
@@ -868,7 +964,7 @@ function RenameDialog({
           <DialogTitle>Rename {account.name}</DialogTitle>
           <DialogDescription>Only the name changes. Its token and running sandboxes are untouched.</DialogDescription>
         </DialogHeader>
-        <form key={generation} action={formAction} className="space-y-4">
+        <form ref={preserve} key={generation} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
           <div className="space-y-2">
             <Label htmlFor={`${id}-name`}>Name</Label>
@@ -987,7 +1083,7 @@ function RemoveDialog({
   const toast = useToast();
   const remove = useCallback(
     async (previous: ActionResult | null, data: FormData) => {
-      const result = await removeAccount(previous, data);
+      const result = await clientMutation(() => removeAccount(previous, data));
       if (result.ok) toast({ tone: "success", title: `Removed ${account.name}.` });
       return result;
     },
@@ -1396,9 +1492,13 @@ export function AddAccountDialog({
   triggerVariant?: "default" | "outline";
 }) {
   const formRef = usePreservedActionForm();
+  const wizardRef = useRef<HTMLFormElement>(null);
   const [open, setOpen] = useState(false);
+  const [step, setStep] = useState(0);
+  const [showMore, setShowMore] = useState(false);
+  const [manual, setManual] = useState(false);
   const [generation, setGeneration] = useState(0);
-  const [state, formAction] = useActionState(addAccount, null);
+  const [state, formAction] = useMutationState(addAccount);
   const [choice, setChoice] = useState<AddChoice>(initialKind);
   const preset = connectionPreset(choice);
   const kind: AccountKind =
@@ -1429,7 +1529,7 @@ export function AddAccountDialog({
 
   // Read only safe metadata. Capture a baseline so an existing namesake cannot close the dialog.
   useEffect(() => {
-    if (!open || !subscription) return;
+    if (!open || !subscription || step !== 2) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     let baseline: Set<string> | null = null;
@@ -1463,7 +1563,16 @@ export function AddAccountDialog({
       stopped = true;
       clearTimeout(timer);
     };
-  }, [open, subscription, orgId, kind, name, scope, info.label, router]);
+  }, [open, subscription, step, orgId, kind, name, scope, info.label, router]);
+
+  useEffect(() => {
+    if (open)
+      wizardRef.current
+        ?.querySelector<HTMLElement>(
+          `[data-wizard-panel="${step}"] button, [data-wizard-panel="${step}"] input:not([type="hidden"]), [data-wizard-panel="${step}"] textarea`,
+        )
+        ?.focus();
+  }, [open, step]);
 
   const endpoint = choice === "your-endpoint" || choice === "your-endpoint-claude";
   const secretFields = endpoint ? (
@@ -1507,179 +1616,290 @@ export function AddAccountDialog({
     );
     setMaxAgents(nextKind === "morph" ? "2" : "");
   };
+  const advance = () => {
+    const fields = wizardRef.current?.querySelectorAll<HTMLInputElement>(`[data-wizard-panel="${step}"] input`);
+    if (fields && [...fields].some((field) => !field.reportValidity())) return;
+    setStep(step + 1);
+  };
   return (
     <CreateDialog
       triggerVariant={triggerVariant}
       label={triggerLabel}
-      title="Add an account"
+      title="Add provider"
       description="A subscription, an API key, or your own endpoint. Choose what you have."
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
         if (next) {
+          setStep(0);
+          setShowMore(false);
+          setManual(false);
           choose(initialKind);
           setScope("user");
           setGeneration((value) => value + 1);
         }
       }}
     >
-      <form ref={formRef} key={generation} action={formAction} className="min-w-0 space-y-4">
+      <form
+        ref={(node) => {
+          formRef(node);
+          wizardRef.current = node;
+        }}
+        key={generation}
+        action={formAction}
+        className="min-w-0 space-y-4"
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || step === 2 || !(event.target instanceof HTMLInputElement)) return;
+          event.preventDefault();
+          advance();
+        }}
+      >
         <input type="hidden" name="org" value={orgId} />
         <input type="hidden" name="kind" value={kind} />
         {preset?.models === "choose" && <input type="hidden" name="preset" value={preset.id} />}
         <input type="hidden" name="scope" value={scope} />
-        <fieldset className="grid grid-cols-2 gap-2 sm:grid-cols-3" aria-label="Account provider">
-          {SUBSCRIPTION_KINDS.map((value) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={choice === value}
-              onClick={() => choose(value)}
+        <ol aria-label="Connection steps" className="flex items-center justify-between gap-2 border-b pb-4 text-xs">
+          {["Provider", "Identity", "Config"].map((label, index) => (
+            <li
+              key={label}
+              aria-current={step === index ? "step" : undefined}
               className={cn(
-                "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
-                choice === value && "border-primary bg-accent",
+                "flex items-center gap-2",
+                step === index ? "font-medium text-foreground" : "text-muted-foreground",
               )}
             >
-              {value === "claude_oauth" ? "Claude" : "ChatGPT"}
-              <span className="block text-xs text-muted-foreground">Subscription</span>
-            </button>
+              <span
+                className={cn(
+                  "grid size-6 place-items-center rounded-full border",
+                  step === index && "border-primary bg-primary text-primary-foreground",
+                )}
+              >
+                {index + 1}
+              </span>
+              {label}
+            </li>
           ))}
-          <button
-            type="button"
-            aria-pressed={
-              endpoint ||
-              (!!preset &&
-                !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))
-            }
-            onClick={() => choose("your-endpoint")}
-            className={cn(
-              "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
-              (endpoint ||
+        </ol>
+        <div data-wizard-panel="0" hidden={step !== 0} className="space-y-4">
+          <fieldset className="grid grid-cols-2 gap-2" aria-label="Account provider">
+            {SUBSCRIPTION_KINDS.map((value) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={choice === value}
+                onClick={() => choose(value)}
+                className={cn(
+                  "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
+                  choice === value && "border-primary bg-accent",
+                )}
+              >
+                <span className="mb-2 block">
+                  <ProviderMark kind={value} />
+                </span>
+                {choice === value && <CheckIcon aria-hidden className="float-right size-4" />}
+                {value === "claude_oauth" ? "Claude" : "ChatGPT"}
+                <span className="block text-xs text-muted-foreground">Subscription</span>
+              </button>
+            ))}
+            <button
+              hidden={!showMore && !endpoint}
+              type="button"
+              aria-pressed={
+                endpoint ||
                 (!!preset &&
-                  !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))) &&
-                "border-primary bg-accent",
-            )}
-          >
-            Your endpoint<span className="block text-xs text-muted-foreground">Azure, OpenRouter, DeepSeek, other</span>
-          </button>
-          {CONNECTION_PRESETS.filter((option) => ["anthropic", "openai", "morph"].includes(option.id)).map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              aria-pressed={choice === option.id || choice === `opencode-${option.id}`}
-              onClick={() => choose(option.id)}
+                  !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))
+              }
+              onClick={() => choose("your-endpoint")}
               className={cn(
                 "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
-                (choice === option.id || choice === `opencode-${option.id}`) && "border-primary bg-accent",
+                (endpoint ||
+                  (!!preset &&
+                    !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))) &&
+                  "border-primary bg-accent",
               )}
             >
-              {option.id === "anthropic" ? "Anthropic" : option.id === "openai" ? "OpenAI" : option.label}
-              <span className="block text-xs text-muted-foreground">API key</span>
+              <KeyRoundIcon aria-hidden className="mb-3 size-6" />
+              {endpoint && <CheckIcon aria-hidden className="float-right size-4" />}
+              Your endpoint
+              <span className="block text-xs text-muted-foreground">Azure, OpenRouter, DeepSeek, other</span>
             </button>
-          ))}
-        </fieldset>
+            {CONNECTION_PRESETS.filter((option) => ["anthropic", "openai", "morph"].includes(option.id)).map(
+              (option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  aria-pressed={choice === option.id || choice === `opencode-${option.id}`}
+                  onClick={() => choose(option.id)}
+                  className={cn(
+                    "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
+                    (choice === option.id || choice === `opencode-${option.id}`) && "border-primary bg-accent",
+                  )}
+                >
+                  <span className="mb-2 block">
+                    <ProviderMark kind={option.kind} />
+                  </span>
+                  {(choice === option.id || choice === `opencode-${option.id}`) && (
+                    <CheckIcon aria-hidden className="float-right size-4" />
+                  )}
+                  {option.id === "anthropic" ? "Anthropic" : option.id === "openai" ? "OpenAI" : option.label}
+                  <span className="block text-xs text-muted-foreground">API key</span>
+                </button>
+              ),
+            )}
+          </fieldset>
+          <Button type="button" variant="ghost" size="sm" onClick={() => setShowMore(!showMore)}>
+            {showMore ? "Show less" : "Show more"}
+          </Button>
+          <p className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            Connect an existing subscription or API key. Armada stores credentials encrypted and never displays them
+            again.
+          </p>
+        </div>
         <div
           key={choice}
           className="space-y-4 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-150"
         >
-          {(endpoint ||
-            (preset &&
-              !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))) && (
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-provider`}>Provider</Label>
-              <NativeSelect
-                id={`${id}-provider`}
-                value={choice}
-                onChange={(event) => choose(event.target.value as AddChoice)}
-              >
-                <option value="your-endpoint">Custom endpoint for Codex</option>
-                <option value="your-endpoint-claude">Custom endpoint for Claude Code</option>
-                {CONNECTION_PRESETS.filter(
-                  (option) =>
-                    !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(option.id),
-                ).map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </NativeSelect>
-            </div>
-          )}
-          {["anthropic", "openai", "opencode-openai", "opencode-anthropic"].includes(choice) && (
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-agents`}>Which agents will use it?</Label>
-              <NativeSelect
-                id={`${id}-agents`}
-                value={choice}
-                onChange={(event) => choose(event.target.value as AddChoice)}
-              >
-                {choice.includes("anthropic") ? (
-                  <>
-                    <option value="anthropic">Claude Code</option>
-                    <option value="opencode-anthropic">OpenCode</option>
-                  </>
-                ) : (
-                  <>
-                    <option value="openai">Codex</option>
-                    <option value="opencode-openai">OpenCode</option>
-                  </>
-                )}
-              </NativeSelect>
-            </div>
-          )}
-          <p className="text-xs text-muted-foreground" data-connection-availability>
-            Works with {info.harnessLabel}.{" "}
-            {kind === "morph"
-              ? "One Morph key for Claude Code, Codex and OpenCode."
-              : "Stored encrypted, never shown again."}
-          </p>
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-name`}>Name</Label>
-            <Input
-              id={`${id}-name`}
-              name="name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              required
-              maxLength={MAX_ACCOUNT_NAME}
-              autoComplete="off"
-            />
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {isAdmin && (
+          <div hidden={step !== 0} className="space-y-4">
+            {(endpoint ||
+              (preset &&
+                !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))) && (
               <div className="space-y-2">
-                <Label htmlFor={`${id}-scope`}>Who uses it</Label>
+                <Label htmlFor={`${id}-provider`}>Provider</Label>
                 <NativeSelect
-                  id={`${id}-scope`}
-                  value={scope}
-                  onChange={(event) => setScope(event.target.value as "user" | "org")}
+                  id={`${id}-provider`}
+                  value={choice}
+                  onChange={(event) => choose(event.target.value as AddChoice)}
                 >
-                  <option value="user">Only you</option>
-                  <option value="org">{orgName}</option>
+                  <option value="your-endpoint">Custom endpoint for Codex</option>
+                  <option value="your-endpoint-claude">Custom endpoint for Claude Code</option>
+                  {CONNECTION_PRESETS.filter(
+                    (option) =>
+                      !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(option.id),
+                  ).map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
                 </NativeSelect>
               </div>
             )}
-            <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
+            {["anthropic", "openai", "opencode-openai", "opencode-anthropic"].includes(choice) && (
+              <div className="space-y-2">
+                <Label htmlFor={`${id}-agents`}>Which agents will use it?</Label>
+                <NativeSelect
+                  id={`${id}-agents`}
+                  value={choice}
+                  onChange={(event) => choose(event.target.value as AddChoice)}
+                >
+                  {choice.includes("anthropic") ? (
+                    <>
+                      <option value="anthropic">Claude Code</option>
+                      <option value="opencode-anthropic">OpenCode</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="openai">Codex</option>
+                      <option value="opencode-openai">OpenCode</option>
+                    </>
+                  )}
+                </NativeSelect>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground" data-connection-availability>
+              Works with {info.harnessLabel}.{" "}
+              {kind === "morph"
+                ? "One Morph key for Claude Code, Codex and OpenCode."
+                : "Stored encrypted, never shown again."}
+            </p>
           </div>
-          {command ? (
-            <>
-              <TerminalSignIn
-                command={command}
-                onDone={() => {
-                  setOpen(false);
-                  router.refresh();
-                }}
+          <div data-wizard-panel="1" hidden={step !== 1} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor={`${id}-name`}>Name</Label>
+              <Input
+                id={`${id}-name`}
+                name="name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                required
+                maxLength={MAX_ACCOUNT_NAME}
+                autoComplete="off"
               />
-              <Disclosure summary="No terminal here, or on a phone? Paste a sign-in token instead" defaultOpen={false}>
-                <div className="space-y-4">
-                  {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
-                  {saveFields}
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {isAdmin && (
+                <div className="space-y-2">
+                  <Label htmlFor={`${id}-scope`}>Who uses it</Label>
+                  <NativeSelect
+                    id={`${id}-scope`}
+                    value={scope}
+                    onChange={(event) => setScope(event.target.value as "user" | "org")}
+                  >
+                    <option value="user">Only you</option>
+                    <option value="org">{orgName}</option>
+                  </NativeSelect>
                 </div>
-              </Disclosure>
-            </>
-          ) : (
-            saveFields
-          )}
+              )}
+              <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
+            </div>
+          </div>
+          <div data-wizard-panel="2" hidden={step !== 2} className="space-y-4">
+            {command ? (
+              <>
+                <TerminalSignIn
+                  command={command}
+                  onDone={() => {
+                    setOpen(false);
+                    router.refresh();
+                  }}
+                />
+                <Disclosure
+                  key={manual ? "manual" : "terminal"}
+                  summary="No terminal here, or on a phone? Paste a sign-in token instead"
+                  defaultOpen={manual}
+                >
+                  <div className="space-y-4">
+                    {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
+                    {saveFields}
+                  </div>
+                </Disclosure>
+              </>
+            ) : (
+              saveFields
+            )}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-4">
+          <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <div className="flex flex-wrap gap-2">
+            {step === 0 && subscription && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setManual(true);
+                  advance();
+                }}
+              >
+                Configure manually
+              </Button>
+            )}
+            {step > 0 && (
+              <Button type="button" variant="outline" onClick={() => setStep(step - 1)}>
+                Back
+              </Button>
+            )}
+            {step < 2 && (
+              <Button type="button" onClick={advance}>
+                {subscription
+                  ? `Continue with ${kind === "claude_oauth" ? "Claude" : "ChatGPT"}`
+                  : step === 0
+                    ? "Continue"
+                    : "Continue to configuration"}
+              </Button>
+            )}
+          </div>
         </div>
       </form>
     </CreateDialog>
@@ -1783,8 +2003,61 @@ export function ModelsOverview({
   testChoices: ConnectionTestChoices;
   emptyAction: ReactNode;
 }) {
+  const router = useRouter();
+  const [refreshing, startRefresh] = useTransition();
   return (
     <div className="space-y-8">
+      <section aria-labelledby="all-accounts" className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 [&_button]:size-7 [&_button]:p-0 [&_button]:text-[0px] [&_svg]:size-4">
+            <h2 id="all-accounts" className="text-base font-semibold">
+              Providers
+            </h2>
+            {emptyAction}
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={refreshing}
+            onClick={() => startRefresh(() => router.refresh())}
+            aria-label="Refresh accounts"
+          >
+            <RefreshCwIcon className={cn("size-3.5", refreshing && "animate-spin motion-reduce:animate-none")} />
+            <span className="text-xs text-muted-foreground">{refreshing ? "Refreshing…" : "Refresh accounts"}</span>
+          </Button>
+        </div>
+        {accounts.length ? (
+          <div className="rounded-lg border">
+            {orderAccounts(accounts, now).map((account) => (
+              <AccountRow
+                key={account.id}
+                account={account}
+                previousDefault={accounts.find(
+                  (other) =>
+                    other.id !== account.id &&
+                    other.scope === account.scope &&
+                    other.isDefault &&
+                    accountsFor([other], KIND_INFO[account.kind].harness).length > 0,
+                )}
+                orgId={orgId}
+                orgName={orgName}
+                canManage={account.scope === "user" || isAdmin}
+                usage={usage[account.id] ?? null}
+                now={now}
+                testChoices={testChoices}
+              />
+            ))}
+            <div className="border-t px-2 py-1 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:text-muted-foreground [&_button]:shadow-none [&_button:hover]:bg-muted">
+              {emptyAction}
+            </div>
+          </div>
+        ) : (
+          <Empty title="Connect what your agents run on" action={emptyAction}>
+            A subscription you already pay for, an API key, or your own endpoint. One is enough to launch.
+          </Empty>
+        )}
+      </section>
       <section aria-labelledby="launch-defaults" className="rounded-lg border px-5 py-2">
         <h2 id="launch-defaults" className="pt-3 text-sm font-medium text-muted-foreground">
           When you launch
@@ -1801,51 +2074,6 @@ export function ModelsOverview({
             emptyAction={emptyAction}
           />
         ))}
-      </section>
-      <section aria-labelledby="all-accounts" className="space-y-3">
-        <h2 id="all-accounts" className="text-base font-semibold">
-          Accounts
-        </h2>
-        {accounts.length ? (
-          <div className="rounded-lg border">
-            <table className="block w-full table-fixed text-sm sm:table">
-              <thead className="hidden border-b text-left text-xs text-muted-foreground sm:table-header-group">
-                <tr>
-                  {["Account", "Status", "Works with", "Agents running", "Usage", "Actions"].map((label) => (
-                    <th key={label} className={cn("px-3 py-3 font-medium", label === "Agents running" && "text-right")}>
-                      {label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="block sm:table-row-group">
-                {orderAccounts(accounts, now).map((account) => (
-                  <AccountRow
-                    key={account.id}
-                    account={account}
-                    previousDefault={accounts.find(
-                      (other) =>
-                        other.id !== account.id &&
-                        other.scope === account.scope &&
-                        other.isDefault &&
-                        accountsFor([other], KIND_INFO[account.kind].harness).length > 0,
-                    )}
-                    orgId={orgId}
-                    orgName={orgName}
-                    canManage={account.scope === "user" || isAdmin}
-                    usage={usage[account.id] ?? null}
-                    now={now}
-                    testChoices={testChoices}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <Empty title="Connect what your agents run on" action={emptyAction}>
-            A subscription you already pay for, an API key, or your own endpoint. One is enough to launch.
-          </Empty>
-        )}
       </section>
     </div>
   );
@@ -1986,13 +2214,19 @@ function PersonalDefaultSentence({
       {account && accountProblem(account, now) && (account.scope === "user" || isAdmin) && (
         <Button
           size="sm"
-          onClick={() =>
-            document
-              .getElementById(`account-${account.id}`)
-              ?.closest("tr")
-              ?.querySelector<HTMLButtonElement>('button[aria-label^="Reconnect"], button[aria-label^="Replace key"]')
-              ?.click()
-          }
+          onClick={() => {
+            const row = document.getElementById(`account-${account.id}`)?.closest("[data-account]");
+            const summary = row?.querySelector<HTMLButtonElement>("button[aria-expanded]");
+            if (summary?.getAttribute("aria-expanded") === "false") summary.click();
+            // Wait for the expanded detail to render before focusing its repair action.
+            requestAnimationFrame(() => {
+              const repair = row?.querySelector<HTMLButtonElement>(
+                'button[aria-label^="Reconnect"], button[aria-label^="Replace key"]',
+              );
+              repair?.focus();
+              repair?.click();
+            });
+          }}
         >
           {KIND_INFO[account.kind].billing === "subscription" ? "Reconnect" : "Replace key"}
         </Button>

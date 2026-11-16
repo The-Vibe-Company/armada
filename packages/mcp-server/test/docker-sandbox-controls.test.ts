@@ -485,7 +485,11 @@ test("failed/expired cleanup preserves failure facts and unfinished prompt outco
   expect(row?.stopped_at).not.toBeNull();
   await hosts.revoke(f.admin, f.hostId);
   expect(await invoke(who, "stop", { id: f.sandbox.id })).toEqual({ id: f.sandbox.id, status: "failed" });
-  await rejected(invoke(who, "delete", { id: f.sandbox.id }, controller), "conflict");
+  // Revocation fences new work, not authorized physical cleanup of a bound allocation.
+  expect(await invoke(who, "delete", { id: f.sandbox.id }, controller)).toEqual({
+    id: f.sandbox.id,
+    status: "deleted",
+  });
 });
 
 // Actual producer -> MCP output validator -> dashboard parser/CLI formatter. No duplicated DTO fixture.

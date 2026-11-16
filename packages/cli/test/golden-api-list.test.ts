@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
-const token = "armada_sk_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO12";
+const token = "armada_sk_fixture_token";
 
 function apiFetch(calls: Request[]) {
   return async (input: string | URL | Request, init?: RequestInit) => {

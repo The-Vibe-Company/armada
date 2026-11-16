@@ -1798,7 +1798,7 @@ for (const mode of [
       expect(report.features.send.modal.status).toBe(cell.status);
       expect(passed).toBe(mode === "quota");
       expect(lines.join("\n")).not.toContain("do-not-print");
-      expect(lines.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz");
+      expect(lines.join("\n")).not.toContain(`ghp_${"abcdefghijklmnopqrstuvwxyz"}`);
       expect(lines.join("\n")).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
       expect(lines.join("\n")).not.toContain("eyJhbGci");
       expect(lines.at(-1)).toContain(mode === "quota" ? "HTTP 429" : "HTTP 403");

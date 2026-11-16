@@ -31,8 +31,8 @@ import { migratedDatabase } from "./support/database.ts";
 const database = migratedDatabase();
 
 const KEY = Buffer.alloc(32, 9).toString("base64");
-const CLAUDE = "sk-ant-oat01-user-token";
-const ORG_CLAUDE = "sk-ant-oat01-org-token";
+const CLAUDE = "claude_user_token";
+const ORG_CLAUDE = "claude_org_token";
 const AUTH_JSON = '{"OPENAI_API_KEY":null,"tokens":{"access_token":"at-secret"}}';
 
 describe("orgs and members", () => {

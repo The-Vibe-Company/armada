@@ -1,3 +1,6 @@
+// This contract must never silently skip in release validation.
+if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
+
 import { describe, expect, test } from "bun:test";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
@@ -8,7 +11,7 @@ import { createSqlVaultStore } from "../src/vault-store.ts";
 
 // Real PostgreSQL proves refresh never reserves the sole main-pool connection during HTTP,
 // and that the durable pre-request fence survives a failed rotation publication.
-describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub managed refresh (PostgreSQL)", () => {
+describe("GitHub managed refresh (PostgreSQL)", () => {
   test("same-owner expiry rotates once; HTTP leaves the sole main connection free for other owners", async () => {
     await fixture(async (world) => {
       let entered!: () => void, release!: () => void;
