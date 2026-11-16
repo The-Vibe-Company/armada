@@ -246,7 +246,7 @@ test("vault API errors select actionable local messages without echoing untruste
       status,
       response: { error: { code: canary, message }, value: canary },
     });
-    expect(result.code).toBe(status === 400 ? 2 : 1);
+    expect(result.code).toBe(status === 400 ? 2 : status === 401 ? 3 : 1);
     expect(result.out).toBe("");
     expect(JSON.parse(result.err).error.message).toContain(meaning);
     expect(result.err).not.toContain(canary);
