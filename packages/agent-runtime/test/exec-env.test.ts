@@ -179,11 +179,11 @@ test("exec bootstrap rejects model/provider/unknown variables and credential-fre
 });
 
 test.skipIf(process.platform !== "linux")(
-  "exec close redacts newly rotated native auth before response and durable persistence",
+  "exec close redacts newly rotated native auth before response and process recording",
   async () => {
     const root = await mkdtemp(join(tmpdir(), "armada-rotated-auth-"));
     await mkdir(join(root, "codex"), { mode: 0o700 });
-    const journal = new Journal(join(root, "journal.sqlite"), (text) => text);
+    const journal = new Journal(":memory:", (text) => text);
     const runner = new Runner(journal, grant, { claude: unused, codex: unused }, undefined, undefined, undefined, {
       execEnv: { HOME: root },
       refreshNativeSecrets: () => {
@@ -197,7 +197,7 @@ test.skipIf(process.platform !== "linux")(
         input: {
           sandboxId: "s",
           cwd: root,
-          command: `umask 077; printf '%s' '${state}' > codex/auth.json; node -p 'JSON.parse(require("fs").readFileSync("codex/auth.json","utf8")).tokens.refresh_token'`,
+          command: `umask 077; printf '%s' '${state}' > codex/auth.json; printf '%s' 'synthetic-new-refresh'`,
         },
       });
       const body = await response.text();
@@ -208,7 +208,8 @@ test.skipIf(process.platform !== "linux")(
         "synthetic-new-refresh",
       );
     } finally {
-      journal.db.close();
+      await runner.close();
+      journal.close();
       await rm(root, { recursive: true, force: true });
     }
   },
