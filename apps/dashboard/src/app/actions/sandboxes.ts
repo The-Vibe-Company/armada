@@ -72,6 +72,33 @@ function drivingFailure(error: GatewayError, owner: boolean, keyedSend = false):
   return fail(drivingFailureMessage(error, owner, keyedSend));
 }
 
+/** Run a shell command through the existing user-authorized, redacting MCP tool. */
+export async function execSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const id = formString(data, "sandbox");
+  const command = formString(data, "command").trim();
+  if (!isUuid(id) || !command) return fail("Enter a command.");
+  const target = await gatewayFor(id);
+  if (target.error) return target.error;
+  const viewer = await requireViewer();
+  const url = mcpUrl();
+  if (!url || !viewer.token) return fail("The Armada server is not configured.");
+  try {
+    const result = await createGateway({ url, token: viewer.token }).call("exec", { id, command, timeout_seconds: 30 });
+    if (!result || typeof result !== "object")
+      return fail("The command result was not available. Check before retrying.");
+    const output = result as Record<string, unknown>;
+    const text = [output.stdout, output.stderr]
+      .filter((value): value is string => typeof value === "string")
+      .join("\n");
+    return done(
+      `${text}\n${output.timedOut ? "Timed out" : `Exit ${output.exitCode ?? "unknown"}`}${output.truncated ? " · Output truncated" : ""}`,
+    );
+  } catch (error) {
+    if (error instanceof GatewayError) return fail(error.message);
+    throw error;
+  }
+}
+
 /** Set a later deadline through the existing owner/admin-authorized server action. */
 export async function extendSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const id = formString(data, "sandbox");

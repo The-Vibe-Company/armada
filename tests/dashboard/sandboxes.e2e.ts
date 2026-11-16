@@ -62,12 +62,11 @@ for (const organization of [
       await screen.getByRole("button", /^(Send|Send as new turn)$/).tap();
       await expect(browser.locator('[role="log"][aria-label="Messages"]')).toContainText(message);
     }
-    await screen.getByRole("button", "Sandbox actions").tap();
     await screen.getByRole("button", "Stop").tap();
     await screen.getByRole("button", "Stop sandbox").tap();
     await expect(screen.getByRole("textbox", "Message")).toHaveAttribute(
       "placeholder",
-      "Send a message to resume the sandbox",
+      "Send a prompt to resume this sandbox…",
     );
   });
 }

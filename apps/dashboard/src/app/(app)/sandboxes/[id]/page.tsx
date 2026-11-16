@@ -15,10 +15,11 @@ import { CreatedAt } from "@/components/created-at";
 import { InstalledSkills } from "@/components/installed-skills";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
-import { SandboxActions } from "@/components/sandbox-actions";
+import { SandboxActions, StopButton } from "@/components/sandbox-actions";
 import { SandboxAttention } from "@/components/sandbox-attention";
 import { AddSandboxTime } from "@/components/sandbox-attention-actions";
 import { SandboxChat } from "@/components/sandbox-chat";
+import { SandboxCommand } from "@/components/sandbox-command";
 import { RowCost, SandboxCostCard } from "@/components/sandbox-cost";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
 import { SandboxState } from "@/components/sandbox-state";
@@ -178,10 +179,10 @@ export default async function SandboxPage({ params }: Props) {
   ];
 
   return (
-    <div data-fit-viewport className="space-y-3 md:space-y-6">
+    <div data-fit-viewport className="space-y-3 md:space-y-4">
       <div className="space-y-3">
         {/* On a phone the navigation above already leads back to the sandboxes; the conversation needs the room. */}
-        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground max-md:hidden">
+        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
           <Link href="/sandboxes">
             <LinkPendingIcon>
               <ArrowLeftIcon />
@@ -192,7 +193,7 @@ export default async function SandboxPage({ params }: Props) {
         {/* One row on every width: a long name wraps inside its heading, the machine's action stays on the right. */}
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <h1 className="w-full min-w-0 text-xl font-semibold tracking-tight break-words">
+            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
               {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {golden?.name ?? "snapshot"}
             </h1>
             <p className="w-full text-sm break-words text-muted-foreground">
@@ -215,7 +216,14 @@ export default async function SandboxPage({ params }: Props) {
               <RowCost cost={cost} />
             </span>
           </div>
-          {configured && <SandboxActions sandboxId={sandbox.id} status={sandbox.status} />}
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            <span id="sandbox-details-toggle" />
+            {configured &&
+              (sandbox.status === "ready" || sandbox.status === "running") &&
+              (owner || org?.role === "admin") &&
+              sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} />}
+            {configured && isActiveStatus(sandbox.status) && <StopButton sandboxId={sandbox.id} size="sm" />}
+          </div>
         </div>
       </div>
 
@@ -226,7 +234,10 @@ export default async function SandboxPage({ params }: Props) {
       )}
       <SandboxAttention sandbox={sandbox} viewer={viewer} />
 
-      <div data-fit="body" className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+      <div
+        data-fit="body"
+        className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
+      >
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
           <SandboxChat
             sandboxId={sandbox.id}
@@ -244,15 +255,60 @@ export default async function SandboxPage({ params }: Props) {
             conversations={sandbox.conversation_ids}
             configured={configured}
           />
+          <footer className="flex flex-wrap gap-x-4 gap-y-1 px-4 font-mono text-[11px] text-muted-foreground">
+            <span>{sandbox.model ?? "Provider default"}</span>
+            <span>
+              {sandbox.provider} · {HARNESS_LABELS[sandbox.harness]}
+            </span>
+            <span>{life.remaining ?? life.lifetime}</span>
+            <span>⌘ / Ctrl + Enter to send</span>
+          </footer>
         </div>
         <SandboxDetailsPanel>
+          <section className="space-y-3 text-xs">
+            <h2 className="font-medium text-muted-foreground">Lifetime</h2>
+            <p className="font-mono">{life.remaining ?? life.lifetime ?? "No time limit recorded"}</p>
+            {lifecycle.expiresAt && lifecycle.effectiveTtlSeconds && isActiveStatus(sandbox.status) ? (
+              <div
+                role="progressbar"
+                aria-label="Lifetime remaining"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(
+                  Math.max(
+                    0,
+                    Math.min(
+                      100,
+                      (Date.parse(lifecycle.expiresAt) - Date.now()) / (lifecycle.effectiveTtlSeconds * 10),
+                    ),
+                  ),
+                )}
+                className="h-1 overflow-hidden rounded-full bg-muted"
+              >
+                <div
+                  className="h-full rounded-full bg-foreground/55"
+                  style={{
+                    width: `${Math.max(0, Math.min(100, (Date.parse(lifecycle.expiresAt) - Date.now()) / (lifecycle.effectiveTtlSeconds * 10)))}%`,
+                  }}
+                />
+              </div>
+            ) : null}
+            <p className="leading-relaxed text-muted-foreground">
+              Stopping keeps the disk and the conversation. Send a prompt to resume.
+            </p>
+          </section>
           <section className="space-y-4 text-sm" aria-label="About">
-            <h2 className="font-medium">About</h2>
+            <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
+            <Facts
+              facts={[
+                ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+                ["Model", sandbox.model ?? "Provider default"],
+                ["Effort", sandbox.reasoning_effort ?? "Provider default"],
+              ]}
+            />
+            <h2 className="text-xs font-medium text-muted-foreground">Workspace</h2>
             <BillingAccountSummary account={account} />
-            {configured &&
-              (sandbox.status === "ready" || sandbox.status === "running") &&
-              (owner || org?.role === "admin") &&
-              sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} />}
+            <h2 className="text-xs font-medium text-muted-foreground">Access</h2>
             <Facts
               facts={[
                 ["Started", <CreatedAt key="started" iso={sandbox.created_at} now={Date.now()} />],
@@ -276,6 +332,9 @@ export default async function SandboxPage({ params }: Props) {
               </details>
             )}
           </section>
+          {configured && (sandbox.status === "ready" || sandbox.status === "running") && (
+            <SandboxCommand sandboxId={sandbox.id} />
+          )}
           <details className="text-sm">
             <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
             <div className="pt-4">
@@ -377,9 +436,9 @@ function DockerSandbox({
     ["Conversations", String(sandbox.conversation_ids.length)],
   ];
   return (
-    <div data-fit-viewport data-docker-sandbox className="space-y-3 md:space-y-6">
+    <div data-fit-viewport data-docker-sandbox className="space-y-3 md:space-y-4">
       <div className="space-y-3">
-        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground max-md:hidden">
+        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
           <Link href="/sandboxes">
             <LinkPendingIcon>
               <ArrowLeftIcon />
@@ -389,7 +448,7 @@ function DockerSandbox({
         </Button>
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <h1 className="w-full min-w-0 text-xl font-semibold tracking-tight break-words">
+            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
               {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {host}
             </h1>
             <p className="w-full text-sm break-words text-muted-foreground">
@@ -407,6 +466,7 @@ function DockerSandbox({
           <span className="text-xs text-muted-foreground">
             <RowCost cost={cost} />
           </span>
+          <span id="sandbox-details-toggle" />
           {configured && (
             <SandboxActions
               sandboxId={sandbox.id}
@@ -429,7 +489,10 @@ function DockerSandbox({
       <p className="text-sm text-muted-foreground">
         {life.remaining} · The time limit cannot be extended on your own server.
       </p>
-      <div data-fit="body" className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+      <div
+        data-fit="body"
+        className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
+      >
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
           {ownerCanChange && (sandbox.status === "ready" || sandbox.status === "stopped") && (
             <SandboxAccountChoice
@@ -466,11 +529,31 @@ function DockerSandbox({
               pinnedModel
             />
           )}
+          <footer className="flex flex-wrap gap-x-4 gap-y-1 px-4 font-mono text-[11px] text-muted-foreground">
+            <span>{sandbox.model ?? "Provider default"}</span>
+            <span>
+              {sandbox.provider} · {HARNESS_LABELS[sandbox.harness]}
+            </span>
+            <span>{life.remaining ?? life.lifetime}</span>
+            <span>⌘ / Ctrl + Enter to send</span>
+          </footer>
         </div>
         <SandboxDetailsPanel>
+          {configured && !reasons.exec && (sandbox.status === "ready" || sandbox.status === "running") && (
+            <SandboxCommand sandboxId={sandbox.id} />
+          )}
           <section className="space-y-3 text-sm">
-            <h2 className="font-medium">About</h2>
+            <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
+            <Facts
+              facts={[
+                ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+                ["Model", sandbox.model ?? "Provider default"],
+                ["Effort", sandbox.reasoning_effort ?? "Provider default"],
+              ]}
+            />
+            <h2 className="text-xs font-medium text-muted-foreground">Workspace</h2>
             <BillingAccountSummary account={billing} />
+            <h2 className="text-xs font-medium text-muted-foreground">Access</h2>
             <Facts
               facts={[
                 ["Started", <CreatedAt key="started" iso={sandbox.created_at} now={Date.now()} />],
@@ -560,9 +643,9 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
     ["Stopped", sandbox.stoppedAt ? formatDate(sandbox.stoppedAt) : "Not stopped"],
   ];
   return (
-    <div className="space-y-3 md:space-y-6">
+    <div className="space-y-3 md:space-y-4">
       <div className="space-y-3">
-        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground max-md:hidden">
+        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
           <Link href="/sandboxes">
             <LinkPendingIcon>
               <ArrowLeftIcon />
