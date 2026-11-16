@@ -10,6 +10,8 @@ let attempts = 0;
 let failUntil = 2;
 let now = 0;
 let schemaVersion = REQUIRED_MIGRATION;
+let repaired = false;
+let schemaChecked = false;
 const logs: string[] = [];
 const intervals = spyOn(globalThis, "setInterval");
 const sleep = spyOn(Bun, "sleep").mockImplementation((async () => {
@@ -25,8 +27,10 @@ Bun.SQL = class {
   }
   async reserve() {
     this.pool.leased++;
+    const unsafe = this.unsafe.bind(this);
     return {
-      unsafe: this.unsafe.bind(this),
+      unsafe,
+      begin: async <T>(work: (tx: { unsafe: typeof unsafe }) => Promise<T>) => work({ unsafe }),
       release: () => {
         this.pool.leased--;
       },
@@ -38,6 +42,13 @@ Bun.SQL = class {
         code: "ERR_POSTGRES_SERVER_ERROR",
         errno: "XX000",
       });
+    if (text.startsWith("lock table public.account_turn_queue")) {
+      assert.equal(schemaChecked, true, "Schema must be checked before model repair");
+      assert.equal(intervals.mock.calls.length, 0, "Model repair must finish before workers start");
+    }
+    if (text.startsWith("update public.account_agent_reservations")) repaired = true;
+    if (text.includes("supabase_migrations.schema_migrations") && schemaVersion === REQUIRED_MIGRATION)
+      schemaChecked = true;
     return text.includes("supabase_migrations.schema_migrations") ? [{ version: schemaVersion }] : [];
   }
   async close() {
@@ -119,6 +130,7 @@ try {
   });
   try {
     assert.equal(attempts >= 3, true);
+    assert.equal(repaired, true, "Historical model repair must complete before serving");
     assert.equal(intervals.mock.calls.length > 0, true);
     const response = await fetch(`http://127.0.0.1:${server.port}/healthz`);
     assert.equal(response.status, 200);
@@ -182,8 +194,11 @@ try {
   intervals.mockClear();
   failUntil = 0;
   schemaVersion = "20000101000000";
+  repaired = false;
+  schemaChecked = false;
   await assert.rejects(startServer(env, { log: () => {}, logError: (line) => logs.push(line) }), /schema behind/);
   assert.equal(intervals.mock.calls.length, 0, "Outdated schema must fail before workers start");
+  assert.equal(repaired, false, "Outdated schema must fail before model repair");
   assert.deepEqual(
     pools.slice(2).map((p) => p.closed),
     [1, 1],
