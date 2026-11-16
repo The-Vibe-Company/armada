@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
   type AgentEvent,
-  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerSandboxStatus,
+  dockerSandboxFailureReason,
   GoldenError,
   HARNESS_CAPABILITIES,
   HARNESS_KINDS,
@@ -75,10 +75,7 @@ function reason(row: Row) {
   if (row.status_reason === "expired") return "expired";
   if (row.status_reason === "idle_paused" && ["stopping", "stopped"].includes(row.status)) return "idle_paused";
   if (row.status !== "failed") return null;
-  return row.status_reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ||
-    Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((message) => message === row.status_reason)
-    ? row.status_reason
-    : DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
+  return dockerSandboxFailureReason(row.status_reason);
 }
 function usage(value: unknown): SandboxUsage | null {
   if (!value || typeof value !== "object" || !("turnCount" in value) || !("turns" in value)) return null;

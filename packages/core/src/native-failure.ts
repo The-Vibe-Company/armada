@@ -121,3 +121,9 @@ export function describeSandboxFailure(reason: string | null | undefined): { tit
     hint: "The sandbox stopped without a public diagnosis. Launch a new sandbox; if it fails again, ask the server operator to inspect its status.",
   };
 }
+
+/** Project persisted Docker failures through the shared closed public vocabulary. */
+export function dockerSandboxFailureReason(reason: string | null | undefined): string {
+  const explanation = describeSandboxFailure(reason);
+  return explanation.title === "Sandbox failed" ? DOCKER_LAUNCH_FAILURE_MESSAGES.startup : explanation.hint;
+}

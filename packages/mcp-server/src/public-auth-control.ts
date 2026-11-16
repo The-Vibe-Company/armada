@@ -101,12 +101,13 @@ export async function emailStartRoute(request: Request, options: PublicAuthOptio
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof BodyTooLargeError) return fail(413, "invalid", error.message);
-    const status = error instanceof Error && error.message.includes("Too many") ? 429 : 400;
-    return fail(
-      status,
-      status === 429 ? "rate_limited" : "invalid",
-      status === 429 ? "Try again later." : "Invalid email login request.",
-    );
+    if (error instanceof AuthError)
+      return fail(
+        error.code === "rate_limited" ? 429 : error.code === "unavailable" ? 503 : error.code === "usage" ? 400 : 401,
+        error.code,
+        error.message,
+      );
+    return fail(400, "invalid", "Invalid email login request.");
   }
 }
 
