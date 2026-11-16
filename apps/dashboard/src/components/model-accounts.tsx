@@ -26,7 +26,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
 import {
   addAccount,
   makeDefaultAccount,
@@ -70,8 +70,10 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { useMutationState } from "@/components/use-mutation-state";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
+import { clientMutation } from "@/lib/client-mutation";
 import { HARNESS_LABELS } from "@/lib/labels";
 import {
   ACCOUNT_KINDS,
@@ -166,7 +168,7 @@ function ConnectionTestForm({
   orgId: string;
   choices: ConnectionTestChoices;
 }) {
-  const [state, action, pending] = useActionState(testAccountConnection, null);
+  const [state, action, pending] = useMutationState(testAccountConnection);
   const candidates =
     choices.state === "ready"
       ? choices.sandboxes.filter((sandbox) => sandbox.accountId === account.id && sandbox.version === account.version)
@@ -719,14 +721,15 @@ function InlineDisplayName({
   orgId: string;
   onResult: (result: ActionResult) => void;
 }) {
-  const [state, action] = useActionState(async (previous: ActionResult | null, data: FormData) => {
-    const result = await renameAccount(previous, data);
+  const preserve = usePreservedActionForm();
+  const [state, action] = useMutationState(async (previous: ActionResult | null, data: FormData) => {
+    const result = await clientMutation(() => renameAccount(previous, data));
     onResult(result);
     return result;
-  }, null);
+  });
   const id = useId();
   return (
-    <form action={action} className="max-w-md space-y-2">
+    <form ref={preserve} action={action} className="max-w-md space-y-2">
       <TargetFields account={account} orgId={orgId} />
       <Label htmlFor={id}>Display name</Label>
       <div className="flex gap-2">
@@ -760,7 +763,7 @@ function DefaultAccountAction({
 }) {
   const [undo, setUndo] = useState<ModelAccount | null>(null);
   const change = async (_: ActionResult | null, data: FormData) => {
-    const result = await makeDefaultAccount(null, data);
+    const result = await clientMutation(() => makeDefaultAccount(null, data));
     if (result.ok && previous) {
       try {
         const list = await pollModelAccounts(orgId);
@@ -815,7 +818,7 @@ function InlineAction({
   label: string;
   children: ReactNode;
 }) {
-  const [state, formAction] = useActionState(action, null);
+  const [state, formAction] = useMutationState(action);
   useEffect(() => {
     if (state) onResult(state);
   }, [state, onResult]);
@@ -845,7 +848,7 @@ function useDialogAction(
   onOpenChange: (open: boolean) => void,
 ) {
   const [generation, setGeneration] = useState(0);
-  const [state, formAction] = useActionState(action, null);
+  const [state, formAction] = useMutationState(action);
   useEffect(() => {
     if (!state) return;
     if (state.ok) {
@@ -869,6 +872,7 @@ function LimitsDialog({
   orgId: string;
   onResult: (result: ActionResult) => void;
 } & Controlled) {
+  const preserve = usePreservedActionForm();
   const { state, formAction, generation } = useDialogAction(updateAccountLimits, onResult, onOpenChange);
   const id = useId();
   return (
@@ -878,7 +882,7 @@ function LimitsDialog({
           <DialogTitle>Agent limit for {account.name}</DialogTitle>
           <DialogDescription>New starts are refused at the limit. Existing agents are not stopped.</DialogDescription>
         </DialogHeader>
-        <form key={generation} action={formAction} className="space-y-4">
+        <form ref={preserve} key={generation} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
           <AgentLimitField id={id} defaultValue={account.maxAgents ?? ""} />
           {state && !state.ok && <ResultLine result={state} />}
@@ -934,6 +938,7 @@ function RenameDialog({
   orgId: string;
   onResult: (result: ActionResult) => void;
 } & Controlled) {
+  const preserve = usePreservedActionForm();
   const { state, formAction, generation } = useDialogAction(renameAccount, onResult, onOpenChange);
   const id = useId();
   return (
@@ -943,7 +948,7 @@ function RenameDialog({
           <DialogTitle>Rename {account.name}</DialogTitle>
           <DialogDescription>Only the name changes. Its token and running sandboxes are untouched.</DialogDescription>
         </DialogHeader>
-        <form key={generation} action={formAction} className="space-y-4">
+        <form ref={preserve} key={generation} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
           <div className="space-y-2">
             <Label htmlFor={`${id}-name`}>Name</Label>
@@ -1062,7 +1067,7 @@ function RemoveDialog({
   const toast = useToast();
   const remove = useCallback(
     async (previous: ActionResult | null, data: FormData) => {
-      const result = await removeAccount(previous, data);
+      const result = await clientMutation(() => removeAccount(previous, data));
       if (result.ok) toast({ tone: "success", title: `Removed ${account.name}.` });
       return result;
     },
@@ -1477,7 +1482,7 @@ export function AddAccountDialog({
   const [showMore, setShowMore] = useState(false);
   const [manual, setManual] = useState(false);
   const [generation, setGeneration] = useState(0);
-  const [state, formAction] = useActionState(addAccount, null);
+  const [state, formAction] = useMutationState(addAccount);
   const [choice, setChoice] = useState<AddChoice>(initialKind);
   const preset = connectionPreset(choice);
   const kind: AccountKind =

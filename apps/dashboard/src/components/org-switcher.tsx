@@ -4,19 +4,12 @@ import type { MemberRole } from "@armada/core";
 import { Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  type ChangeEvent,
-  type KeyboardEvent,
-  startTransition,
-  useActionState,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ChangeEvent, type KeyboardEvent, startTransition, useEffect, useRef, useState } from "react";
 import { switchOrganization } from "@/app/actions/selected-org";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
+import { useMutationState } from "@/components/use-mutation-state";
 import type { Membership } from "@/lib/data/viewer";
 
 /**
@@ -68,7 +61,7 @@ function SelectedOrg({
   role: MemberRole | null;
   section: string;
 }) {
-  const [result, switchTo, pending] = useActionState(switchOrganization, null);
+  const [result, switchTo, pending] = useMutationState(switchOrganization);
   const select = useRef<HTMLSelectElement>(null);
   useEffect(() => {
     const focus = refocusOn === selected;

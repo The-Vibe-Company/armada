@@ -1,5 +1,25 @@
-import { idlePauseMessage, type SandboxListMetadata } from "@armada/core";
-import { lifecycleView, readLifecycle } from "./lifecycle";
+import type { SandboxListMetadata } from "@armada/core";
+import { sandboxAttention } from "./sandbox-attention";
+
+/** Project the same attention as detail, without pretending unread turns have finished. */
+export function sandboxListAttention(row: SandboxListMetadata, now: Date) {
+  return sandboxAttention(
+    {
+      id: row.id,
+      status: row.status,
+      task_outcome: row.taskOutcome ?? null,
+      preservation_note: row.preservationNote ?? null,
+      ...(row.expiresAt ? { expires_at: row.expiresAt } : {}),
+      status_reason: row.statusMessage ?? null,
+    },
+    null,
+    now,
+  ).attention;
+}
+
+export function sandboxNeedsViewer(row: SandboxListMetadata, viewerId: string, now: Date) {
+  return row.ownerId === viewerId && sandboxListAttention(row, now) !== null;
+}
 
 export function sandboxActivityPage(
   rows: SandboxListMetadata[],
@@ -9,13 +29,7 @@ export function sandboxActivityPage(
   now = new Date(),
 ) {
   const working = (row: SandboxListMetadata) => row.status === "running" || row.status === "starting";
-  const need = (row: SandboxListMetadata) =>
-    row.ownerId === viewerId &&
-    !idlePauseMessage(row, now) &&
-    (row.status === "ready" ||
-      row.status === "failed" ||
-      Boolean(lifecycleView(row.status, readLifecycle(row), now).notice) ||
-      (working(row) && Date.parse(row.expiresAt ?? "") - now.getTime() < 30 * 60_000));
+  const need = (row: SandboxListMetadata) => sandboxNeedsViewer(row, viewerId, now);
   const activity: "all" | "need" | "working" =
     requestedActivity === "all" || requestedActivity === "working" ? requestedActivity : "need";
   const counts = { all: rows.length, need: rows.filter(need).length, working: rows.filter(working).length };

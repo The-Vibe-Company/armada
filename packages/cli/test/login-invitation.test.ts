@@ -3,7 +3,12 @@ import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore, type Session } from "../src/session.ts";
 
-const saved: Session = { accessToken: "old-access", refreshToken: "old-refresh", expiresAt: "2099-01-01" };
+const saved: Session = {
+  armadaUrl: "https://armada.example",
+  accessToken: "old-access",
+  refreshToken: "old-refresh",
+  expiresAt: "2099-01-01",
+};
 
 function fixture(initial: Session | null = null) {
   let out = "";

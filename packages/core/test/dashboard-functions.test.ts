@@ -109,6 +109,27 @@ describe("dashboard functions", () => {
     });
   });
 
+  test("a demoted admin cannot change golden visibility in either direction", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const shared = await insertGolden(db, people, { name: "shared", visibility: "org", owner: people.admin });
+      const draft = await insertGolden(db, people, { name: "draft", visibility: "private", owner: people.admin });
+      await db.query("update members set role = 'admin' where org_id = $1 and user_id = $2", [
+        people.org,
+        people.owner,
+      ]);
+      await db.query("update members set role = 'member' where org_id = $1 and user_id = $2", [
+        people.org,
+        people.admin,
+      ]);
+      await expect(setVisibility(db, people.admin, shared, "private")).rejects.toThrow(/only an org admin/);
+      await expect(setVisibility(db, people.admin, draft, "org")).rejects.toThrow(/only an org admin/);
+      expect(await visibility(db, shared)).toBe("org");
+      expect(await sees(db, people.member, shared)).toBe(true);
+      expect(await visibility(db, draft)).toBe("private");
+    });
+  });
+
   test("the visibility guard still allows the golden sandbox id, and oauth stays service-only", async () => {
     await withDb(async (db) => {
       const people = await fixture(db);

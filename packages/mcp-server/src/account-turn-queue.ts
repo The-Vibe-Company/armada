@@ -302,7 +302,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         const candidates = (
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
-             where (q.state='queued' or (q.state='dispatching' and q.dispatch_until<=now() and q.dispatch_generation is not null and ${RUNTIME_LANE} and (${RUNTIME_REQUEST_EVIDENCE} or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null))))
+             where (q.state='queued' or (q.state='dispatching' and q.dispatch_until<=now() and q.dispatch_generation is not null and ((${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE}) or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false)))))
            and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null) or not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.sequence<q.sequence))
            order by case when q.sequence>$1::bigint then 0 else 1 end,q.sequence limit 20`,
             [scanAfter],
@@ -327,6 +327,29 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               [candidate.sandbox_id, candidate.request_id, candidate.state],
             );
             if (!current.rows.length) return null;
+            if (recovering) {
+              // Recheck under account, queue and sandbox locks: the discovery read may be stale.
+              // Native providers cannot replay uncertain mutations, but an unchanged generation
+              // with no request evidence proves the previous claim never began dispatch.
+              const abandoned = await tx.query(
+                `select s.id from public.sandboxes s
+                 join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
+                 where s.id=$1 and not coalesce(${RUNTIME_LANE},false)
+                 and s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null
+                 and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false) for update of s`,
+                [candidate.sandbox_id, candidate.request_id],
+              );
+              if (abandoned.rows.length) {
+                await tx.query(
+                  `with retried as (update public.account_turn_queue set state='queued',
+                    dispatch_generation=null,dispatch_until=null,failure_reason=null
+                    where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
+                   delete from public.account_agent_reservations r using retried q where r.sandbox_id=q.sandbox_id`,
+                  [candidate.sandbox_id, candidate.request_id],
+                );
+                return null;
+              }
+            }
             const valid = await tx.query<{ id: string; runtime: boolean }>(
               `select s.id,${RUNTIME_LANE} as runtime from public.sandboxes s join public.credentials c on c.id=s.credential_id
              where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.credential_id=$4 and s.credential_version=$5
