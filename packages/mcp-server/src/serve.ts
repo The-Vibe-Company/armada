@@ -15,6 +15,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
+import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
 import { readBoatRuntimeManifest } from "./boat-runtime-manifest.ts";
@@ -173,6 +174,7 @@ export async function startServer(
   try {
     await retryDatabaseBoot(async () => {
       await requireDatabaseSchema(sql);
+      await repairHistoricalTurnModels(sql, config.encryptionKey);
       await mcp.drainInvalidations();
     }, options.logError ?? console.error);
   } catch (error) {

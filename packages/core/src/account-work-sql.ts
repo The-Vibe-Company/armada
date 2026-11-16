@@ -12,9 +12,9 @@ export const ACCOUNT_WORKING_PREDICATE = `s.deleted_at is null and s.stopped_at 
 export function accountWorkingCountSql(account: string, exclude = "null::uuid", model?: string): string {
   return `(select count(*) from (
     select s.id from public.sandboxes s where s.credential_id=${account}
-      ${model ? `and coalesce((select active.model from public.account_turn_queue active where active.sandbox_id=s.id and active.state in ('admitted','dispatching') order by active.sequence desc limit 1),s.model)=${model}` : ""} and s.id is distinct from ${exclude} and ${ACCOUNT_WORKING_PREDICATE}
+      ${model ? `and (exists(select 1 from public.account_turn_queue unknown_turn where unknown_turn.sandbox_id=s.id and unknown_turn.state in ('admitted','dispatching') and unknown_turn.model is null) or coalesce((select active.model from public.account_turn_queue active where active.sandbox_id=s.id and active.state in ('admitted','dispatching') order by active.sequence desc limit 1),s.model)=${model})` : ""} and s.id is distinct from ${exclude} and ${ACCOUNT_WORKING_PREDICATE}
     union select r.sandbox_id from public.account_agent_reservations r
-      where r.account_id=${account} ${model ? `and coalesce(r.model,(select model from public.sandboxes where id=r.sandbox_id))=${model}` : ""} and r.sandbox_id is distinct from ${exclude}
+      where r.account_id=${account} ${model ? `and (r.model is null or r.model=${model})` : ""} and r.sandbox_id is distinct from ${exclude}
         and not exists(select 1 from public.sandboxes ended where ended.id=r.sandbox_id
           and (ended.deleted_at is not null or ended.stopped_at is not null)
           and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=ended.id
