@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createMemoryAuthStore, createServiceToken } from "@armada/auth";
 import { createSqlVaultStore } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
@@ -13,8 +13,19 @@ const other = "22222222-2222-4222-8222-222222222222";
 const key = Buffer.alloc(32, 7).toString("base64");
 const bearer = (user: string) => `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: user })).replace(/=+$/, "")}.sig`;
 
+let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
+beforeAll(async () => {
+  connection = await migratedDatabase();
+});
+afterAll(async () => {
+  const db = connection;
+  connection = undefined;
+  await db?.close();
+});
+
 test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay and disconnect cancels in-flight callback", async () => {
-  const db = await migratedDatabase();
+  const db = connection;
+  if (!db) throw new Error("Missing GitHub handoff schema fixture");
   try {
     await db.query("insert into auth.users(id) values ($1),($2)", [owner, other]);
     const authStore = createMemoryAuthStore();
@@ -291,6 +302,6 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
     await db.exec("set role authenticated");
     await expect(db.query("select state_hash from github_authorizations")).rejects.toThrow();
   } finally {
-    await db.close();
+    await db.exec("reset role");
   }
 });
