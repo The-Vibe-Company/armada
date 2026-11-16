@@ -1,9 +1,11 @@
 "use server";
 
-import type { Harness } from "@armada/core";
+import { type Harness, validateSkillPins } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
+import { CONNECTION_CHOICE_FIELD, launchSelection } from "@/lib/connections";
 import { ControlError, controlPost } from "@/lib/control";
+import { listSelectedConnections } from "@/lib/data/connections";
 import { readDockerLaunchOption, readSelectedDockerHosts, viewerDockerHosts } from "@/lib/data/docker-hosts";
 import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selected-org";
@@ -147,6 +149,25 @@ export async function launchOnDockerHost(
   if (!account.ok) return fail(account.error);
   if (!account.id) return fail(`Choose which ${HARNESS_LABELS[harness]} account the agent runs on.`);
 
+  const skills = data.getAll("skills");
+  try {
+    validateSkillPins(skills);
+  } catch {
+    return fail("Choose exact skill pins.");
+  }
+  let connections: string[] | undefined;
+  if (formString(data, CONNECTION_CHOICE_FIELD) === "explicit") {
+    const requested = data.getAll("connections").map(String);
+    if (!requested.length) connections = [];
+    else {
+      const current = await listSelectedConnections();
+      if (current.state !== "ready") return fail("Connections are unavailable.");
+      const result = launchSelection({ connections: requested, available: current.connections });
+      if (!result.ok) return fail(result.error);
+      connections = result.value.connections;
+    }
+  }
+
   const viewer = await requireViewer();
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
@@ -157,17 +178,21 @@ export async function launchOnDockerHost(
       await controlPost(
         { serverUrl, token: viewer.token, timeoutMs: LAUNCH_TIMEOUT_MS },
         LAUNCH_PATH,
-        dockerLaunchBody({
-          org,
-          hostId,
-          harness,
-          credentialId: account.id,
-          requestId,
-          model: choice.args.model,
-          reasoningEffort: choice.args.reasoningEffort,
-          ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
-          ...(prompt ? { prompt } : {}),
-        }),
+        {
+          ...dockerLaunchBody({
+            org,
+            hostId,
+            harness,
+            credentialId: account.id,
+            requestId,
+            model: choice.args.model,
+            reasoningEffort: choice.args.reasoningEffort,
+            ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),
+            ...(prompt ? { prompt } : {}),
+          }),
+          ...(skills.length ? { skills } : {}),
+          ...(connections === undefined ? {} : { connections }),
+        },
         "launching on Docker hosts",
       ),
     );
