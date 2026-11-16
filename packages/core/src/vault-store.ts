@@ -23,6 +23,9 @@ function accountKinds(kind: CredentialKind): readonly CredentialKind[] {
     ),
   ];
 }
+function defaultAccountMaxAgents(kind: CredentialKind): number | null {
+  return kind === "morph" ? 2 : null;
+}
 const githubRefreshQueues = new WeakMap<Sql, Map<string, Promise<void>>>();
 
 /**
@@ -94,8 +97,18 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
             );
           else {
             const created = await tx.query<{ id: string }>(
-              "insert into public.credentials(scope,owner_id,kind,value_enc,name,expires_at) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea,$5,$6::timestamptz) returning id",
-              [input.scope, owner, kind, valueEnc, input.name?.trim() ?? "Default", input.expiresAt ?? null],
+              "insert into public.credentials(scope,owner_id,kind,value_enc,name,expires_at,max_agents) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea,$5,$6::timestamptz,$7) returning id",
+              [
+                input.scope,
+                owner,
+                kind,
+                valueEnc,
+                input.name?.trim() ?? "Default",
+                input.expiresAt ?? null,
+                input.model === undefined && input.maxAgents !== undefined
+                  ? input.maxAgents
+                  : defaultAccountMaxAgents(kind),
+              ],
             );
             id = created.rows[0]?.id;
           }
@@ -130,11 +143,8 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
             [id, input.model, input.maxAgents],
           );
         }
-        if (input.model === undefined && (input.maxAgents !== undefined || (input.action === "set" && !input.id)))
-          await tx.query("update public.credentials set max_agents=$2 where id=$1", [
-            id,
-            input.maxAgents === undefined ? (kind === "morph" ? 2 : null) : input.maxAgents,
-          ]);
+        if (input.model === undefined && input.maxAgents !== undefined)
+          await tx.query("update public.credentials set max_agents=$2 where id=$1", [id, input.maxAgents]);
         if (input.action === "limits" || input.action === "set") {
           // Limits do not rotate secrets or change defaults.
         } else if (input.action === "rename") {
@@ -288,8 +298,8 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
             ]);
           else
             await tx.query(
-              "insert into public.credentials(scope,owner_id,kind,value_enc) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea)",
-              [scope, ownerId, kind, valueEnc],
+              "insert into public.credentials(scope,owner_id,kind,value_enc,max_agents) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea,$5)",
+              [scope, ownerId, kind, valueEnc, defaultAccountMaxAgents(kind)],
             );
           // Legacy kind writes preserve the old harness preference through explicit defaults.
           const preferred = await tx.query<{ id: string }>(
