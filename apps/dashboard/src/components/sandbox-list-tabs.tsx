@@ -10,8 +10,8 @@ export function SandboxListTabs({
   search,
 }: {
   rows: { id: string; need: boolean; working: boolean; content: ReactNode }[];
-  counts: { need: number; working: number; all: number };
-  tab: "need" | "working" | "all";
+  counts: Record<"all" | "mine" | "need" | "working" | "stopped" | "failed", number>;
+  tab: "all" | "mine" | "need" | "working" | "stopped" | "failed";
   page: number;
   search: string;
 }) {
@@ -25,28 +25,33 @@ export function SandboxListTabs({
   const pages = Math.max(1, Math.ceil(counts[tab] / 50));
   return (
     <section className="min-w-0 space-y-3">
-      <nav className="flex gap-1 border-b" aria-label="Sandbox activity">
-        {(
-          [
-            ["need", "Need you"],
-            ["working", "Working"],
-            ["all", "All"],
-          ] as const
-        ).map(([id, label]) => (
-          <Link
-            key={id}
-            href={href(id)}
-            aria-current={tab === id ? "page" : undefined}
-            className={`inline-flex min-h-11 items-center border-b-2 px-3 text-sm focus-visible:outline-2 ${tab === id ? "border-foreground font-medium" : "border-transparent text-muted-foreground"}`}
-          >
-            {label} · {counts[id]}
-          </Link>
-        ))}
-      </nav>
       <section
-        aria-label={tab === "need" ? "Need you" : tab === "working" ? "Working" : "All"}
-        className="divide-y rounded-xl border bg-card px-4"
+        aria-label={
+          tab === "need"
+            ? "Waiting for you"
+            : tab === "working"
+              ? "Working"
+              : tab === "mine"
+                ? "Mine"
+                : tab === "stopped"
+                  ? "Stopped"
+                  : tab === "failed"
+                    ? "Failed"
+                    : "All"
+        }
+        className="divide-y overflow-hidden rounded-[10px] border bg-card"
       >
+        <div
+          aria-hidden="true"
+          className="hidden grid-cols-[minmax(0,2.8fr)_minmax(0,1.3fr)_minmax(0,.8fr)_minmax(0,1fr)_minmax(0,.9fr)_64px] gap-4 bg-muted/40 px-4 py-[9px] text-xs text-muted-foreground lg:grid"
+        >
+          <span>Task</span>
+          <span>Agent</span>
+          <span>Snapshot</span>
+          <span>Owner</span>
+          <span>Lifetime</span>
+          <span />
+        </div>
         {rows.map((row) => (
           <div key={row.id}>{row.content}</div>
         ))}
@@ -78,5 +83,46 @@ export function SandboxListTabs({
         </nav>
       )}
     </section>
+  );
+}
+
+export function SandboxActivityTabs({
+  counts,
+  tab,
+  search,
+}: {
+  counts: Record<"all" | "mine" | "need" | "working" | "stopped" | "failed", number>;
+  tab: "all" | "mine" | "need" | "working" | "stopped" | "failed";
+  search: string;
+}) {
+  function href(activity: string) {
+    const params = new URLSearchParams(search);
+    params.set("activity", activity);
+    params.delete("page");
+    return `?${params}`;
+  }
+  return (
+    <nav className="inline-flex flex-wrap gap-0.5 rounded-lg bg-muted p-[3px]" aria-label="Sandbox activity">
+      {(
+        [
+          ["all", "All"],
+          ["mine", "Mine"],
+          ["working", "Working"],
+          ["need", "Waiting for you"],
+          ["stopped", "Stopped"],
+          ["failed", "Failed"],
+        ] as const
+      ).map(([id, label]) => (
+        <Link
+          key={id}
+          href={href(id)}
+          aria-current={tab === id ? "page" : undefined}
+          className={`inline-flex min-h-9 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium focus-visible:outline-2 ${tab === id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          {label}
+          <span className="font-mono text-[11px] text-muted-foreground">{counts[id]}</span>
+        </Link>
+      ))}
+    </nav>
   );
 }
