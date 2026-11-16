@@ -98,7 +98,14 @@ test.each(["--help", "-h", "--version"])("exec payload %s does not bypass profil
     auth.fetch = async (url, init) => {
       calls.push(String(url));
       expect(JSON.parse(String(init?.body)).command).toBe(`echo ${payload} --profile payload`);
-      return Response.json({});
+      return Response.json({
+        id: "11111111-1111-4111-8111-111111111111",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      });
     };
     expect(
       await run(["exec", "11111111-1111-4111-8111-111111111111", "--", "echo", payload, "--profile", "payload"], io, {
