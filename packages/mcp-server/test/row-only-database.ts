@@ -19,7 +19,7 @@ export function rowOnlyDatabase() {
  * and no-overlapping-fixture restrictions apply.
  */
 export function rowOnlyConnection() {
-  let db: Awaited<ReturnType<typeof openMigratedDatabase>>;
+  let db: Awaited<ReturnType<typeof openMigratedDatabase>> | undefined;
   let reset: string;
   beforeAll(async () => {
     db = await openMigratedDatabase();
@@ -29,9 +29,16 @@ export function rowOnlyConnection() {
     reset = `truncate table ${tables.rows.map((row) => row.name).join(", ")} restart identity cascade`;
   });
   afterAll(async () => {
-    await db?.close();
+    try {
+      await db?.close();
+    } finally {
+      // Bun retains suite hook closures after the file finishes. Release the
+      // closed PGlite instance too, so its WASM heap can be collected.
+      db = undefined;
+    }
   });
   return async () => {
+    if (!db) throw new Error("row-only database is not open");
     await resetMigratedDatabaseRows(db, reset);
     return db;
   };
