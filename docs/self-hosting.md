@@ -174,7 +174,7 @@ provider credentials still belong in Armada's encrypted store, not the CLI.
 | `NEXT_PUBLIC_AUTH_PROVIDERS` | build and runtime | Social buttons to show, `github,google`. Empty: email sign-in only. |
 | `ARMADA_MCP_URL` | runtime | The `armada-server` origin. Required in practice: without it the dashboard only lists what Supabase shows; it cannot launch, build goldens, set up providers, read live logs, stop or message sandboxes, and `/.well-known/armada.json` answers 503. |
 | `ARMADA_ENCRYPTION_KEY` | build and runtime | The same key as the server. Without it the dashboard refuses to save a credential. |
-| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG`, `GITHUB_APP_ID` | runtime | Connect GitHub in Settings ([github-app.md](github-app.md)). |
+| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG`, `GITHUB_APP_ID` | runtime | Connect GitHub in Your connections ([github-app.md](github-app.md)). |
 | `STATS_TOKEN`, `ARMADA_DATABASE_URL` | runtime | Optional, server only: the bearer and privileged Postgres connection of `GET /api/stats`. Never exposed to the browser. |
 
 Add `<origin>/auth/callback` (production and previews) to the Supabase project's redirect URLs, and allow `http://127.0.0.1:**` for CLI login callbacks. On Vercel, set the project root to `apps/dashboard` (its `vercel.json` sets the framework and the Bun install and build).

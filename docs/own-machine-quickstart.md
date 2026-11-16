@@ -25,7 +25,7 @@ for this path.
 
 ### Does my Armada server support it?
 
-In the dashboard's selected organization, look for **Providers → Self-hosted**.
+In the dashboard's selected organization, look for **Setup → Machines → Your own servers**.
 An org admin registers hosts. Hosts and new Docker placements are separate server
 opt-ins: a visible host list does not guarantee new launches are enabled.
 `armada host list --org ORG_UUID --json` reports `placement` and host states.
@@ -80,7 +80,7 @@ simultaneous-sandbox capacity.
 
 ## 2. Register the Linux machine
 
-In **Providers → Self-hosted**, choose **Add a Docker host**, or run:
+In **Setup → Machines → Your own servers**, choose **Add your own server**, or run:
 
 ```sh
 armada host add --name office --org ORG_UUID
@@ -162,8 +162,8 @@ armada launch "Summarize both repositories" --provider docker \
   --golden SNAPSHOT_UUID --org ORG_UUID --agent codex
 ```
 
-In the dashboard: **Snapshots → New → Your host · Docker**, select the host,
-upload the same JSON, then launch the ready snapshot. Private is the default;
+In the dashboard: **Launch from → Snapshots → New**, choose **your server <name>** in the build placement selector,
+choose **Use a snapshot file instead** to upload the same JSON, then launch the ready snapshot. Private is the default;
 only admins can publish organization snapshots.
 
 A snapshot is host-local: it launches on its original host, not Boat/Modal or

@@ -44,8 +44,8 @@ for meaning only, and every text colour holds AA (4.5:1) on the page, the card a
 - `Skeleton` placeholders that take the shape of what loads (the conversation's history while it is first read), so
   nothing moves when the data arrives. A `loading.tsx` boundary is never placed above a page that calls `redirect()` or
   `notFound()`: the boundary streams a 200 first, so the 307 or 404 would be lost (the sandboxes list redirects a new
-  organization to Settings, a sandbox page answers 404).
+  organization to setup, a sandbox page answers 404).
 - The command menu (`components/command-menu.tsx`, `lib/command-menu.ts`): ⌘K or Ctrl+K anywhere in the signed-in
   app, also reachable from the Search button in the navigation.
 
-Group labels in the navigation are sentence case (`Run`, `Build`, `Account`), not uppercase.
+Group labels in the navigation are sentence case (`Running`, `Launch from`, `What agents have`, `Setup`), not uppercase.

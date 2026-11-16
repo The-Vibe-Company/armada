@@ -110,7 +110,7 @@ than holding a session waiting on GitHub. Reconnect can progress during HTTP;
 stale publication cannot overwrite it. A consume-fence loser re-reads the
 connection once and returns retryable unavailable. A changed token needs only a
 retry; an unchanged token asks for a short retry and, if the problem persists,
-reconnect under dashboard Settings to recover a permanently uncertain refresh.
+reconnect under dashboard Your connections to recover a permanently uncertain refresh.
 Uncertain refresh is never replayed. See [GitHub reconnect safety](github-app.md#reconnect-cache-deployment-585)
 for the full ordering and validation mechanism.
 Database queries/short publication transactions still queue behind DB work.

@@ -4,6 +4,12 @@ Use `armada template` for API-only template management. `template launch` keeps
 revision selection and durable request keys together without changing ordinary
 snapshot launches. Templates contain readable configuration and value-free secret ID/version bindings.
 
+In the dashboard, find templates under **Launch from → Templates**. The screen calls
+immutable revisions **versions**; the CLI retains `publish`, `--revision` and
+`--expected-revision`. **Launch** opens **Launch <template name>** with that version’s choices fixed.
+**Running → Routines → New routine** schedules a task against the template as it is
+at creation, not against future versions.
+
 Create a personal preset in your selected organization from a definition file
 using the definition below:
 

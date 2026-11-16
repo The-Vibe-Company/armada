@@ -13,6 +13,30 @@ This guide takes a new user from nothing to a coding agent running on Boat or Mo
 
 `curl https://armada-mcp-production.up.railway.app/healthz` answers `{"ok":true,"version":"…"}` when the server is up.
 
+## Find your way around the dashboard
+
+The sidebar groups match the task:
+
+- **Running**: **Sandboxes** and **Routines**.
+- **Launch from**: **Templates** and **Snapshots**.
+- **What agents have**: **Models**, **Tools**, **Skills** and **Variables**.
+- **Setup**: **Machines**, **Organization** and **Your connections**.
+
+Connect organization compute in **Machines** (cloud accounts or **Your own servers**);
+connect your personal GitHub account in **Your connections**. **Tools** is where you
+connect MCP servers; CLI commands still use `armada mcp` and connection IDs.
+
+In **Snapshots**, choose **New** to open **New snapshot**, then **Build snapshot**
+to prepare a workspace. **Sandboxes → Launch a sandbox** and a snapshot’s **Launch**
+open the launch dialog. A template’s **Launch** opens **Launch <template name>**
+with its version’s choices fixed; enter the task there. Templates save reusable launch
+settings: the dashboard calls their immutable revisions **versions** (CLI flags
+still use `--revision` and `--expected-revision`).
+
+In **Routines**, choose **New routine** to schedule a task from a template.
+It keeps the template as it is at creation; later template versions do not update
+the routine. Routines cannot be edited: switch one on or off, or create a replacement.
+
 ## 1. Install the CLI
 
 The package ships a prebuilt binary for linux and macOS (x64 and arm64), so it needs neither Bun nor a build. Version 2 replaces the legacy CLI under the `latest` dist-tag ([release guide](releasing.md)):
@@ -201,7 +225,7 @@ shown again. They do not belong in a snapshot, setup script, command argument or
 ### Morph and per-account agent limits
 
 Morph is a model account, not a sandbox provider. In the dashboard use
-**Models → Add a model account → Morph**, or store its API key from a private file:
+**What agents have → Models → Add account → Morph**, or store its API key from a private file:
 
 ```sh
 armada creds connect morph --name shared --file ~/.config/armada/morph-key
@@ -414,8 +438,8 @@ Connections perform a bounded, read-only authentication check before encrypted s
 credential or unavailable provider leaves the stored credential unchanged. No sandbox or App is created.
 
 In the dashboard, an admin connects, replaces and disconnects the active organization's providers in
-[Providers → Overview](/providers/cloud). Select the intended organization first; these Boat/Modal controls
-are separate from Settings personal provider keys and model accounts. Members must ask an org admin to connect compute.
+[Setup → Machines](/providers/cloud). Select the intended organization first; these Boat/Modal controls
+are separate from personal provider keys in Your connections and model accounts in Models. Members must ask an org admin to connect compute.
 New snapshots, rebuilds and launches use only a provider the organization has connected; snapshots
 and sandboxes already on a disconnected provider stay listed and manageable.
 
