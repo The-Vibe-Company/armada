@@ -1,6 +1,7 @@
 "use client";
 
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { CatalogDrawer } from "@/components/catalog-drawer";
 import type { ResourceRow } from "@/components/resource-browser";
 import { Button } from "@/components/ui/button";
@@ -19,10 +20,22 @@ export function MachinesSection({
 }) {
   const [selected, setSelected] = useState<string | null>(initial);
   const opener = useRef<HTMLButtonElement | null>(null);
+  const root = useRef<HTMLElement>(null);
+  const lastSelected = useRef<string | null>(initial);
+  const parking = useRef<HTMLDivElement>(null);
+  const [host, setHost] = useState<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    setHost(document.createElement("div"));
+  }, []);
   const current = rows.find((row) => row.key === selected);
+  useLayoutEffect(() => {
+    if (host && !current) parking.current?.appendChild(host);
+    if (current) lastSelected.current = current.key;
+  }, [host, current]);
   useEffect(() => {
     const sync = () => setSelected(new URL(window.location.href).searchParams.get("item"));
     window.addEventListener("popstate", sync);
+    sync();
     return () => window.removeEventListener("popstate", sync);
   }, []);
   function select(key: string | null) {
@@ -35,7 +48,7 @@ export function MachinesSection({
     setSelected(key);
   }
   return (
-    <section aria-label={label} className="space-y-3">
+    <section ref={root} aria-label={label} className="space-y-3">
       <h2 className="text-sm font-semibold">{label}</h2>
       {rows.length === 0 ? (
         empty
@@ -75,7 +88,7 @@ export function MachinesSection({
                         select(row.key);
                       }}
                     >
-                      Details
+                      {row.actionLabel ?? "Details"}
                     </Button>
                   )}
                 </div>
@@ -94,11 +107,29 @@ export function MachinesSection({
         mark={current?.mark}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
-          opener.current?.focus();
+          const key = lastSelected.current;
+          const fallback = key
+            ? root.current?.querySelector<HTMLButtonElement>(`[data-select-item="${CSS.escape(key)}"]`)
+            : null;
+          (opener.current?.isConnected ? opener.current : fallback)?.focus();
         }}
       >
-        {current?.detail}
+        <div
+          ref={(node) => {
+            if (node && host) node.appendChild(host);
+          }}
+        />
       </CatalogDrawer>
+      <div ref={parking} hidden />
+      {host &&
+        createPortal(
+          rows.map((row) => (
+            <div key={row.key} hidden={row.key !== selected}>
+              {row.detail}
+            </div>
+          )),
+          host,
+        )}
     </section>
   );
 }

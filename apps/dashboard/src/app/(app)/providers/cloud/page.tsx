@@ -112,6 +112,7 @@ function SandboxProviders({
             </Alert>
           )}
           <MachinesSection
+            key={selected.org.id}
             initial={initial}
             label="Cloud providers"
             rows={SETUP_PROVIDERS.map((provider) => {
@@ -127,7 +128,11 @@ function SandboxProviders({
                 name,
                 search: name,
                 actionLabel: isAdmin ? (state === "connected" ? "Replace key" : "Connect") : "Details",
-                mark: <ProviderMark provider={provider} />,
+                mark: (
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border bg-muted [&_svg]:size-5">
+                    <ProviderMark provider={provider} />
+                  </span>
+                ),
                 meta: "Organization key",
                 state: <ConnectionBadge state={state} />,
                 subtitle: selected.org.name,
@@ -206,6 +211,7 @@ async function OwnServers({
       <PageHeader title={TITLE}>{isAdmin ? <AddHostDialog orgId={orgId} /> : undefined}</PageHeader>
       {cloud}
       <MachinesSection
+        key={orgId}
         label="Docker hosts"
         rows={rows}
         initial={requested}
@@ -307,7 +313,7 @@ function row(
     search: [name, host.id, host.state, host.version ?? ""].join(" "),
     mark: <HostMark />,
     meta: host.version ? `Docker · ${host.version}` : "Docker host",
-    subtitle: seen ? `Seen ${seen} ago` : "Never seen",
+    subtitle: seen ? `Seen ${seen}` : "Never seen",
     state: (
       <div className="space-y-1">
         <StateCell tone={state.tone} label={state.label} data-host-state={host.state} />
