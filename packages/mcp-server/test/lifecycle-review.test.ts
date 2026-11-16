@@ -185,7 +185,7 @@ test("actual Boat resume rearms deadline even when the earlier send sample was r
   });
   try {
     await f.insert();
-    await f.server.db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [f.id]);
+    await f.server.db.query("update sandboxes set expires_at=now()+interval '1 hour' where id=$1", [f.id]);
     expect((await f.control("send", provider))?.status).toBe(200);
     const row = await f.scoped.sandboxes.get(f.id);
     expect(row?.status).toBe("running");

@@ -308,7 +308,7 @@ test("an expired native idle pause refuses wake before provider work", async () 
       "send",
       { id: f.id, prompt: "too late" },
     ),
-  ).rejects.toMatchObject({ code: "conflict" });
+  ).rejects.toMatchObject({ code: "sandbox_terminal", status: 409 });
 });
 
 test("native Modal retries its already-fenced stop phase without active-only observation", async () => {

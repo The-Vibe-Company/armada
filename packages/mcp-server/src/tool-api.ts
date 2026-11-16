@@ -66,6 +66,7 @@ export class ToolApiError extends Error {
         "credential_binding_unsupported",
         "conflict",
         "sandbox_not_ready",
+        "sandbox_terminal",
         "no_running_turn",
       ].includes(this.code)
     )

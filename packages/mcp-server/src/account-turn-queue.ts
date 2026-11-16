@@ -12,6 +12,7 @@ import {
 import { admitAccountCapacity } from "./account-capacity.ts";
 import type { Caller } from "./caller.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
+import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 
 const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
   or exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))
@@ -92,6 +93,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     const entry = await sql.transaction(async (tx) => {
       const target = (
         await tx.query<{
+          status: string;
+          status_reason: string | null;
+          expires_at: string | null;
           harness: Harness;
           provider: string;
           boat_runtime: boolean;
@@ -103,7 +107,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           org_id: string;
           conversation_ids: string[];
         }>(
-          `select s.harness,s.provider,s.boat_runtime,s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,s.conversation_ids from public.sandboxes s
+          `select s.status,s.status_reason,s.expires_at,s.harness,s.provider,s.boat_runtime,s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,s.conversation_ids from public.sandboxes s
          join public.members m on m.org_id=s.org_id and m.user_id=$2
          where s.id=$1 and s.owner_id=$2 and s.deleted_at is null`,
           [input.id, caller.userId],
@@ -111,6 +115,17 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       ).rows[0];
       if (!target || !caller.orgs.some((org) => org.orgId === target.org_id))
         throw new VaultError("not_found", "No owned sandbox.");
+      const refusal = sandboxControlRefusal(
+        {
+          ...target,
+          statusReason: target.status_reason,
+          expiresAt: target.expires_at,
+          boatRuntime: target.boat_runtime,
+          runtimeTransport: target.runtime_transport,
+        },
+        new Date(),
+      );
+      if (refusal) throw new VaultError("conflict", refusal);
       if (!target.credential_id) return null;
       if (target.boat_runtime || target.runtime_transport === "dialout" || target.provider === "docker") {
         if (
@@ -162,13 +177,26 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       )
         throw new VaultError("conflict", "Reuse the original request_id and identical input.");
       if (!saved) {
-        const sandbox = await tx.query(
-          `select id from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3
+        const sandbox = await tx.query<Record<string, unknown>>(
+          `select id,status,provider,status_reason,expires_at,boat_runtime,runtime_transport from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3
            and deleted_at is null and expires_at>now() and stop_requested_at is null
            and status in ('ready','running','stopped') for update`,
           [input.id, target.credential_id, target.credential_version],
         );
         if (!sandbox.rows.length) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
+        const locked = sandbox.rows[0]!;
+        const lockedRefusal = sandboxControlRefusal(
+          {
+            status: String(locked.status),
+            provider: String(locked.provider),
+            statusReason: locked.status_reason as string | null,
+            expiresAt: locked.expires_at as string | null,
+            boatRuntime: !!locked.boat_runtime,
+            runtimeTransport: locked.runtime_transport as string | null,
+          },
+          new Date(),
+        );
+        if (lockedRefusal) throw new VaultError("conflict", lockedRefusal);
         saved = (
           await tx.query<Entry>(
             `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,model,queued_generation)

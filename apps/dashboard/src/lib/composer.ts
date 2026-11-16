@@ -57,6 +57,7 @@ export function drivingFailureMessage(
   owner: boolean,
   keyedSend = false,
 ): string {
+  if (error.code === "sandbox_terminal") return error.message;
   if (error.code === "credential_binding_required")
     return owner
       ? "This sandbox needs an account before it can resume. Choose one above."
