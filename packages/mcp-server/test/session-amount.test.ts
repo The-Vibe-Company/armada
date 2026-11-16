@@ -7,14 +7,16 @@ import {
   launchSandbox,
   type Provider,
 } from "@armada/core/server";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { run } from "../../cli/src/run.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { collectSandboxUsage, type StatusReport } from "../src/turns.ts";
+import { rowOnlyConnection } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, fakeBoat, harness, type People, PUBLIC_URL, SECRETS } from "./support.ts";
+
+const connection = rowOnlyConnection();
 
 // Primary owner boundary: real credential admission -> native collector -> SQL -> HTTP/MCP/CLI JSON.
 // The only fake is the native provider; no supplied quotes or test-only pricing contexts.
@@ -43,7 +45,7 @@ test.each([
   "$agent admission actually produces persisted amounts returned identically by status and CLI",
   async ({ agent, model, basis, usd, sum, input: nativeInput, output: nativeOutput, write: nativeWrite }) => {
     let control: ControlOptions | undefined;
-    const db = await openMigratedDatabase();
+    const db = await connection();
     const people: People = {
       org: crypto.randomUUID(),
       otherOrg: crypto.randomUUID(),
@@ -287,11 +289,7 @@ test.each([
         unpricedTurns: 2,
       });
     } finally {
-      try {
-        await server?.close();
-      } finally {
-        await db.close();
-      }
+      await server?.close();
     }
   },
 );
