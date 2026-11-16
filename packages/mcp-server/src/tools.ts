@@ -2327,7 +2327,7 @@ async function readLogs(
   },
 ) {
   if (args.direction === "backward" && args.all) throw new Error("Backward reads cannot drain all pages.");
-  const { events, cursor, hasMore, olderCursor } = await readEventPages(
+  const { events, cursor, hasMore, olderCursor, source, runtimeFailure } = await readEventPages(
     (cursor) =>
       provider.events({
         sandboxId,
@@ -2343,6 +2343,8 @@ async function readLogs(
   );
   return {
     ...(olderCursor ? { olderCursor } : {}),
+    ...(source ? { source } : {}),
+    ...(runtimeFailure ? { runtimeFailure } : {}),
     events: publicLogEvents(events),
     cursor,
     hasMore,
