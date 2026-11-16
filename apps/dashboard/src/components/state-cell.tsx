@@ -1,5 +1,5 @@
 import { CircleAlertIcon, CircleCheckIcon, CircleDashedIcon, CircleXIcon, LoaderCircleIcon } from "lucide-react";
-import type { ComponentProps } from "react";
+import { Children, type ComponentProps } from "react";
 import { Badge } from "@/components/ui/badge";
 import type { Tone } from "@/lib/status-tone";
 import { cn } from "@/lib/utils";
@@ -46,17 +46,25 @@ export function StateCell({
   );
 }
 
-/** A small tag beside a row's name: who it belongs to (Private, Org, Personal). */
-export function RowTag({ className, ...props }: ComponentProps<"span">) {
+/**
+ * A small tag beside a row's name: who it belongs to (Private, Org, Personal), and arbitrary names such as
+ * snapshots, repositories and tools. It never outgrows its container: a long unbroken name truncates inside the
+ * chip (#2522), keeping the icon, instead of widening the card and the page.
+ */
+export function RowTag({ className, children, ...props }: ComponentProps<"span">) {
   return (
     <Badge
       variant="outline"
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-px text-[11px] leading-4 font-medium text-muted-foreground [&_svg]:size-3",
+        "inline-flex max-w-full min-w-0 items-center rounded-md border px-1.5 py-px text-[11px] leading-4 font-medium text-muted-foreground [&_svg]:size-3",
         className,
       )}
       {...props}
-    />
+    >
+      <span className="min-w-0 truncate [&_svg]:me-1 [&_svg]:inline-block [&_svg]:align-[-0.125em]">
+        {Children.toArray(children)}
+      </span>
+    </Badge>
   );
 }
 
