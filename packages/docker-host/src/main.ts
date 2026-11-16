@@ -201,10 +201,12 @@ async function main(args: string[]) {
         cacheDir: join(directory, "runtime-cache"),
       }),
     };
-    if (process.env.ARMADA_DOCKER_RETENTION_SECONDS !== undefined) {
+    if (process.env.ARMADA_DOCKER_RETENTION_SECONDS !== undefined && !state.retentionPolicyFromServer) {
       const seconds = Number(process.env.ARMADA_DOCKER_RETENTION_SECONDS);
       if (!/^\d+$/.test(process.env.ARMADA_DOCKER_RETENTION_SECONDS) || !Number.isSafeInteger(seconds))
         throw new Error("Invalid ARMADA_DOCKER_RETENTION_SECONDS");
+      const previous = state.retentionSeconds ?? 86400;
+      for (const entry of state.retention ?? []) if (!entry.deleted) entry.deadline += (seconds - previous) * 1000;
       state.retentionSeconds = seconds;
       await store.save(state);
     }

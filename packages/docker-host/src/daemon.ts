@@ -45,6 +45,7 @@ export type State = {
   /** Local durable retention obligations survive receipt compaction and offline polls. */
   retention?: { request: DockerMachineRequest; requestId: string; deadline: number; deleted?: true }[];
   retentionSeconds?: number;
+  retentionPolicyFromServer?: true;
   retentionScanAfter?: string;
   retentionDeleteAfter?: string;
   retentionReportAfter?: string;
@@ -352,6 +353,8 @@ export async function tick(
     const previous = state.retentionSeconds ?? 86400;
     for (const entry of state.retention ?? []) if (!entry.deleted) entry.deadline += (seconds - previous) * 1000;
     state.retentionSeconds = seconds;
+    state.retentionPolicyFromServer = true;
+    await store.save(state);
   }
   state.lastPollAt = new Date().toISOString();
   if (!polled.job) {

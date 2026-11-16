@@ -1194,8 +1194,10 @@ test("server retention override persists and shifts pending deadlines without re
   state.retentionSeconds = 86400;
   state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 100000000 }];
   await f.store.save(state);
-  f.api.poll = async () => ({ job: null, retentionSeconds: 3600 });
+  // A completed-job replay must not bypass durable policy storage.
+  f.api.poll = async () => ({ job: f.job, retentionSeconds: 3600 });
   await tick(f.store, f.api, f.executor);
   expect((await f.store.load()).retentionSeconds).toBe(3600);
+  expect((await f.store.load()).retentionPolicyFromServer).toBe(true);
   expect((await f.store.load()).retention?.[0]?.deadline).toBe(17200000);
 });
