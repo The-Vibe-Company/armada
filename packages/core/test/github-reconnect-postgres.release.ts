@@ -1,3 +1,6 @@
+// This contract must never silently skip in release validation.
+if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
+
 import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
@@ -7,7 +10,7 @@ import { resolveGitHubAccess } from "../src/github.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
 
 // This URL must allow CREATE DATABASE. Each case owns a disposable database.
-describe.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)("GitHub reconnect (PostgreSQL)", () => {
+describe("GitHub reconnect (PostgreSQL)", () => {
   test("reconnect completes during profile HTTP and stale publication cannot overwrite its identity", async () => {
     const postgresUrl = process.env.ARMADA_TEST_POSTGRES_URL;
     if (!postgresUrl) throw new Error("ARMADA_TEST_POSTGRES_URL is required");

@@ -58,7 +58,7 @@ For actual multi-session PostgreSQL locking tests, create a **disposable** datab
 apply `scripts/db/supabase-prereq.sql` and all migrations, then run:
 
 ```sh
-ARMADA_TEST_POSTGRES_URL='<disposable-test-database-url>' bun test packages/core/test/golden-adoption-postgres.test.ts
+ARMADA_TEST_POSTGRES_URL='<disposable-test-database-url>' bun test packages/core/test/golden-adoption-postgres.release.ts
 ```
 
 That test inserts fixtures and is intended for a fresh test database, not production.
