@@ -23,7 +23,7 @@ beforeAll(async () => {
     create table members(org_id uuid,user_id uuid,role text);
     create table mcp_actor_epochs(org_id uuid,user_id uuid,epoch bigint);
     create table sandboxes(id uuid primary key,harness text default 'codex',provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
-      conversation_ids text[],visibility text default 'private',status_reason text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
+      conversation_ids text[],visibility text default 'private',status_reason text,preservation_note text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
       activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 0,reconcile_lease_until timestamptz);
     create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid);
@@ -387,6 +387,10 @@ test.each(["docker", "boat", "modal"] as const)(
       "update sandboxes set provider=$2,boat_runtime=$3,runtime_transport=$4,status='stopped',status_reason='idle_paused',stopped_at=now() where id=$1",
       [input.id, provider, provider === "boat", provider === "modal" ? "dialout" : null],
     );
+    await db.query("update sandboxes set status_reason=$2 where id=$1", [
+      input.id,
+      provider === "docker" ? "idle_paused" : null,
+    ]);
     await queue.accept(caller, input);
     const requestsSeen: unknown[] = [];
     queue.setDispatch(async (_caller, request) => {
@@ -740,6 +744,7 @@ test("queued status retains its own model when a newer request targets another m
 test("terminal admission creates neither queue entries nor reservations", async () => {
   for (const status of ["stopped", "failed", "expired"]) {
     for (const provider of ["docker", "boat", "modal"]) {
+      if (status === "stopped" && provider !== "docker") continue;
       await db.query("update sandboxes set status=$2,provider=$3 where id=$1", [ids[0], status, provider]);
       await expect(queue.accept(caller, { id: ids[0]!, prompt: "continue" })).rejects.toThrow(
         `Cannot control ${provider} sandbox: ${status}`,
@@ -748,4 +753,15 @@ test("terminal admission creates neither queue entries nor reservations", async 
   }
   expect((await db.query("select * from account_turn_queue")).rows).toHaveLength(0);
   expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(0);
+});
+
+test.each(["boat", "modal"] as const)("stopped %s native send reaches account admission", async (provider) => {
+  await db.query("update sandboxes set provider=$2,status='stopped',status_reason=null where id=$1", [
+    ids[1],
+    provider,
+  ]);
+  expect(
+    await queue.accept(caller, { id: ids[1]!, request_id: requests[0]!, prompt: "continue preserved work" }),
+  ).toMatchObject({ status: "queued" });
+  expect((await db.query("select * from account_turn_queue")).rows).toHaveLength(1);
 });
