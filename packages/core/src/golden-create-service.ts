@@ -479,7 +479,7 @@ export function withGoldenDirs(repos: readonly AuthorizedRepo[]): PreparedRepo[]
 }
 
 /** Apply validated requested branch/directory metadata only after authorization resolved canonical GitHub repos. */
-export function applyRequestedRepos(
+function applyRequestedRepos(
   repos: readonly AuthorizedRepo[],
   requested: readonly GitHubGoldenConfig["repos"][number][],
 ): PreparedRepo[] {
