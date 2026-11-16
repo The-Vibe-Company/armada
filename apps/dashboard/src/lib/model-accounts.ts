@@ -11,6 +11,7 @@ import {
   harnessForCredential,
   isRecord as isRow,
   MODEL_CREDENTIAL_KINDS,
+  shellQuote,
 } from "@armada/core";
 
 export const ACCOUNT_KINDS = MODEL_CREDENTIAL_KINDS;
@@ -215,11 +216,6 @@ export function accountsFromList(
       )
     : undefined;
   return { accounts, legacy, ...(defaults ? { defaults } : {}) };
-}
-
-/** A value quoted for a POSIX shell: a name with spaces, quotes or `$` is passed as one literal argument. */
-export function shellQuote(value: string): string {
-  return /^[A-Za-z0-9._-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 /**

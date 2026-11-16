@@ -8,6 +8,7 @@ import {
   connectionPreset,
   HARNESS_CATALOG,
   type Harness,
+  shellQuote,
 } from "@armada/core";
 import {
   CheckIcon,
@@ -94,7 +95,6 @@ import {
   orderAccounts,
   PASTE_SIGN_IN,
   relativeTime,
-  shellQuote,
   type UsageView,
   usageView,
 } from "@/lib/model-accounts";
