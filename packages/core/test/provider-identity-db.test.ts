@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,22 +14,41 @@ const CONFIG = JSON.stringify({
   init: [],
 });
 
+function isolatedDatabase(open: () => Promise<PGlite>, prepare?: (db: PGlite) => Promise<void>) {
+  let connection: PGlite | undefined;
+  beforeAll(async () => {
+    const db = await open();
+    connection = db;
+    await prepare?.(db);
+  });
+  afterAll(async () => {
+    const db = connection;
+    connection = undefined;
+    await db?.close();
+  });
+  return () => {
+    if (!connection) throw new Error("Missing provider schema fixture");
+    return connection;
+  };
+}
+
 describe("sandbox provider identity", () => {
-  test("existing goldens and sandboxes are backfilled to Boat with their ids, and server writes keep Boat aliases compatible", async () => {
-    const db = await openDatabase();
-    try {
-      // The database as the previous release left it.
-      await applyUpTo(db, IDENTITY);
+  describe("legacy upgrade", () => {
+    // The database as the previous release left it.
+    const getDatabase = isolatedDatabase(openDatabase, (db) => applyUpTo(db, IDENTITY));
+
+    test("existing goldens and sandboxes are backfilled to Boat with their ids, and server writes keep Boat aliases compatible", async () => {
+      const db = getDatabase();
       const people = await fixture(db);
       const golden = await db.query<{ id: string }>(
         `insert into goldens (org_id, name, visibility, owner_id, boat_sandbox_id, boat_snapshot_id, config)
-         values ($1, 'web', 'org', $2, 'bx_builder', 'snap-1', $3::jsonb) returning id`,
+           values ($1, 'web', 'org', $2, 'bx_builder', 'snap-1', $3::jsonb) returning id`,
         [people.org, people.admin, CONFIG],
       );
       const goldenId = golden.rows[0]?.id;
       await db.query(
         `insert into sandboxes (boat_id, golden_id, org_id, owner_id, harness, status)
-         values ('bx_old', $1, $2, $3, 'claude', 'ready')`,
+           values ('bx_old', $1, $2, $3, 'claude', 'ready')`,
         [goldenId, people.org, people.member],
       );
 
@@ -51,7 +70,7 @@ describe("sandbox provider identity", () => {
       // Trusted server writes retain the legacy Boat alias contract.
       await db.query(
         `insert into sandboxes (boat_id, golden_id, org_id, owner_id, harness, status)
-         values ('bx_legacy', $1, $2, $3, 'claude', 'starting')`,
+           values ('bx_legacy', $1, $2, $3, 'claude', 'starting')`,
         [goldenId, people.org, people.admin],
       );
       expect((await db.query("select provider_snapshot_id, boat_snapshot_id from goldens")).rows).toEqual([
@@ -60,14 +79,14 @@ describe("sandbox provider identity", () => {
       expect(
         (await db.query("select provider::text, provider_sandbox_id from sandboxes where boat_id = 'bx_legacy'")).rows,
       ).toEqual([{ provider: "boat", provider_sandbox_id: "bx_legacy" }]);
-    } finally {
-      await db.close();
-    }
+    });
   });
 
-  test("only the service role registers sandbox identities for either provider; existing rows remain readable", async () => {
-    const db = await openMigratedDatabase();
-    try {
+  describe("registration authority", () => {
+    const getDatabase = isolatedDatabase(openMigratedDatabase);
+
+    test("only the service role registers sandbox identities for either provider; existing rows remain readable", async () => {
+      const db = getDatabase();
       const people = await fixture(db);
       for (const provider of ["boat", "modal"] as const) {
         const goldenId = await insertGolden(db, people, provider, `snapshot-${provider}`);
@@ -119,14 +138,14 @@ describe("sandbox provider identity", () => {
         );
         expect(rows.rows).toEqual([{ id: registered.id }]);
       }
-    } finally {
-      await db.close();
-    }
+    });
   });
 
-  test("a name lives once per provider, identities are fixed, and a user JWT cannot write or relabel a Modal golden", async () => {
-    const db = await openMigratedDatabase();
-    try {
+  describe("golden identity authority", () => {
+    const getDatabase = isolatedDatabase(openMigratedDatabase);
+
+    test("a name lives once per provider, identities are fixed, and a user JWT cannot write or relabel a Modal golden", async () => {
+      const db = getDatabase();
       const people = await fixture(db);
       const boatId = await insertGolden(db, people, "boat", "snap-boat");
       // The server (service role here) writes the Modal golden of the same name, pinned to its App.
@@ -190,9 +209,7 @@ describe("sandbox provider identity", () => {
       await db.query("insert into auth.users (id) values ($1)", [outsider]);
       const seen = await asUser(db, outsider, () => db.query("select id from goldens"));
       expect(seen.rows).toEqual([]);
-    } finally {
-      await db.close();
-    }
+    });
   });
 });
 
