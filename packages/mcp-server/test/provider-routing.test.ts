@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { encryptSecret, type ModalBinding, type ModalTokenPair, type Provider } from "@armada/core";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, fakeBoat, harness, type TestServer } from "./support.ts";
 
+const database = rowOnlyDatabase();
 let server: TestServer | undefined;
 
 afterEach(async () => {
@@ -42,7 +44,7 @@ async function setOrgModalPair(target: TestServer, pair: typeof PAIR) {
 
 describe("provider routing", () => {
   test("a same-name Modal golden is listed apart, named explicitly, and never launched on Boat", async () => {
-    server = await harness();
+    server = await harness({}, await database());
     await seedModal(server);
     const mcp = await server.client(await server.token(server.people.member));
 
@@ -76,12 +78,15 @@ describe("provider routing", () => {
   test("a Modal sandbox runs on the pinned App with the org's token pair, which a rotation never redirects", async () => {
     const modal = fakeBoat();
     const calls: { tokens: ModalTokenPair; binding: ModalBinding }[] = [];
-    server = await harness({
-      modalProviderFor: (tokens, binding) => {
-        calls.push({ tokens, binding });
-        return { ...modal.provider, id: "modal" } as Provider;
+    server = await harness(
+      {
+        modalProviderFor: (tokens, binding) => {
+          calls.push({ tokens, binding });
+          return { ...modal.provider, id: "modal" } as Provider;
+        },
       },
-    });
+      await database(),
+    );
     await seedModal(server);
     const mcp = await server.client(await server.token(server.people.member));
 
