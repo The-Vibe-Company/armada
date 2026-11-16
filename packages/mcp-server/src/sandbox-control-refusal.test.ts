@@ -34,3 +34,18 @@ test("only send resumes preserved stopped cloud sandboxes", () => {
     }
   }
 });
+
+test("retained Docker idle pauses accept a fresh send but terminal Docker stops do not", () => {
+  const row = { provider: "docker", status: "stopped", statusReason: "idle_paused", expiresAt: "2026-11-17T00:00:00Z" };
+  expect(sandboxControlRefusal(row, now, "send")).toBeNull();
+  for (const operation of ["steer", "exec", "interrupt"])
+    expect(sandboxControlRefusal(row, now, operation)).toContain(
+      "Send a message to resume its retained idle checkpoint",
+    );
+  for (const change of [
+    { statusReason: null },
+    { expiresAt: now.toISOString() },
+    { preservationNote: "checkpoint_failed_disk_not_retained" },
+  ])
+    expect(sandboxControlRefusal({ ...row, ...change }, now, "send")).toContain("same branch");
+});

@@ -33,6 +33,14 @@ export function sandboxControlRefusal(
   if (!expired && !["stopped", "failed", "expired", "deleted", "removed"].includes(sandbox.status)) return null;
   const reason = expired ? "expired" : sandbox.status;
   const prefix = `Cannot control ${sandbox.provider} sandbox: ${reason}. `;
+  if (
+    sandbox.provider === "docker" &&
+    sandbox.status === "stopped" &&
+    sandbox.statusReason === "idle_paused" &&
+    !expired &&
+    sandbox.preservationNote !== "checkpoint_failed_disk_not_retained"
+  )
+    return `${prefix}Send a message to resume its retained idle checkpoint before using this operation.`;
   if (sandbox.provider === "docker")
     return `${prefix}Its container is removed after finish/stop; start a new sandbox on the same branch.`;
   if (

@@ -987,7 +987,13 @@ function Composer({
   const sendKey = useRef<LaunchKey | null>(null);
   const fieldId = useId();
   const refusal = sandboxControlRefusal(
-    { provider: provider ?? "boat", status, preservationNote: preservationNote ?? null, expiresAt: expiresAt ?? null },
+    {
+      provider: provider ?? "boat",
+      status,
+      statusReason: idlePaused ? "idle_paused" : null,
+      preservationNote: preservationNote ?? null,
+      expiresAt: expiresAt ?? null,
+    },
     new Date(),
   );
   const enabled = !refusal && (CAN_SEND as readonly SandboxStatus[]).includes(status);
