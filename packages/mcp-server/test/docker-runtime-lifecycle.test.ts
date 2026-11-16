@@ -13,10 +13,14 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
-let db: Awaited<ReturnType<typeof migratedDatabase>>;
+let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const sql: Sql = {
-  query: (q, v) => db.query(q, v),
-  transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  query: (q, v) => database().query(q, v),
+  transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
 };
 const key = Buffer.alloc(32, 13).toString("base64");
 const service = createDockerRuntimeLifecycle(sql, key, { enabled: true });
@@ -39,12 +43,15 @@ const bootstrap = createDockerBootstrapService(sql, key, {
   credentials: launchCredentials(createSqlVaultStore(sql), key),
 });
 beforeAll(async () => {
-  db = await migratedDatabase();
+  connection = await migratedDatabase();
 });
 afterAll(async () => {
-  await db.close();
+  const db = connection;
+  connection = undefined;
+  await db?.close();
 });
 async function fixture() {
+  const db = database();
   const orgId = randomUUID(),
     userId = randomUUID(),
     adminId = randomUUID(),
@@ -148,6 +155,7 @@ test("ACK is not readiness: current epoch health proof alone publishes ready wit
 });
 
 test("normal launch preparation cannot be bypassed by private readiness or an unrelated first prompt", async () => {
+  const db = database();
   const f = await fixture(),
     session = await f.enrol(),
     healthId = randomUUID();
@@ -196,6 +204,7 @@ test("a health reply from before stop or an epoch replacement cannot publish rea
 });
 
 test("one durable conversation survives lost responses and admits only exact retries or explicit same-conversation follow-ups", async () => {
+  const db = database();
   const f = await fixture(),
     session = await ready(f),
     input = { requestId: randomUUID(), text: "Report the current directory" };
@@ -323,6 +332,7 @@ test("one durable conversation survives lost responses and admits only exact ret
 });
 
 test("prompt receipts cannot replace the allocation conversation and invalid replies remain redacted", async () => {
+  const db = database();
   const f = await fixture(),
     session = await ready(f);
   const input = { requestId: randomUUID(), text: "Begin" };
@@ -351,6 +361,7 @@ test("prompt receipts cannot replace the allocation conversation and invalid rep
 });
 
 test("new ready/prompt operations fail closed on current account, membership, issuer, host and lifecycle authority", async () => {
+  const db = database();
   for (const change of ["flag", "admin", "pin", "credential", "owner", "issuer", "rejoin", "host", "stop"] as const) {
     const f = await fixture();
     await ready(f);
@@ -384,6 +395,7 @@ test("new ready/prompt operations fail closed on current account, membership, is
 });
 
 test("journal reads acknowledged encrypted events plus saved usage after stop/delete/host revoke and flag off, but remains owner/member only", async () => {
+  const db = database();
   const f = await fixture(),
     session = await ready(f),
     promptId = randomUUID();
@@ -448,6 +460,7 @@ test("journal reads acknowledged encrypted events plus saved usage after stop/de
 });
 
 test("rebound Docker usage has its epoch's admitted prices before the accepted prompt receipt is recorded", async () => {
+  const db = database();
   const f = await fixture();
   await ready(f);
   const stopId = randomUUID();

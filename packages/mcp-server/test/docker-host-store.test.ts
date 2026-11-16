@@ -5,20 +5,27 @@ import { decryptSecret } from "@armada/core/server";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
-let db: Awaited<ReturnType<typeof migratedDatabase>>;
+let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const sql: Sql = {
-  query: (query, params) => db.query(query, params),
-  transaction: (work) => db.transaction((tx) => work({ query: (query, params) => tx.query(query, params) })),
+  query: (query, params) => database().query(query, params),
+  transaction: (work) => database().transaction((tx) => work({ query: (query, params) => tx.query(query, params) })),
 };
 const key = Buffer.alloc(32, 7).toString("base64");
 const store = createDockerHostStore(sql, key);
 beforeAll(async () => {
-  db = await migratedDatabase();
+  connection = await migratedDatabase();
 });
 afterAll(async () => {
-  await db.close();
+  const db = connection;
+  connection = undefined;
+  await db?.close();
 });
 async function fixture() {
+  const db = database();
   const userId = randomUUID(),
     memberId = randomUUID(),
     backupAdmin = randomUUID(),
@@ -54,6 +61,7 @@ async function denied(work: Promise<unknown>) {
 
 // Each case owns an independent security/durability contract at the actual SQL boundary.
 test("current admin admission rejects members, cross-org access, and malformed job payloads", async () => {
+  const db = database();
   const a = await fixture(),
     b = await fixture();
   await denied(store.issueRegistration({ ...a.actor, userId: a.memberId }));
@@ -72,6 +80,7 @@ test("current admin admission rejects members, cross-org access, and malformed j
 });
 
 test("registration is single-use, expires, and rechecks the issuing admin", async () => {
+  const db = database();
   const a = await fixture();
   await denied(store.exchangeRegistration(a.ticket.registrationToken, a.installationId));
   const expired = await store.issueRegistration(a.actor);
@@ -93,6 +102,7 @@ test("registration is single-use, expires, and rechecks the issuing admin", asyn
 });
 
 test("registration reuse cancels only a fresh same-owner/org ticket and preserves existing machine authority", async () => {
+  const db = database();
   const a = await fixture(),
     b = await fixture();
   await db.query(`update docker_hosts set name='existing office',last_seen_at=now()-interval '1 day' where id=$1`, [
@@ -145,6 +155,7 @@ test("registration reuse cancels only a fresh same-owner/org ticket and preserve
 });
 
 test("host credentials bind installation, owner membership, and revocation", async () => {
+  const db = database();
   const a = await fixture();
   const task = job();
   await store.enqueue(a.actor, a.hostId, task);
@@ -177,6 +188,7 @@ test("durable UUID enqueue is idempotent only for the same host and payload", as
 });
 
 test("poll redelivers oldest unfinished job; terminal ACKs are isolated and immutable", async () => {
+  const db = database();
   const a = await fixture(),
     b = await fixture(),
     first = job(),
@@ -199,6 +211,7 @@ test("poll redelivers oldest unfinished job; terminal ACKs are isolated and immu
 });
 
 test("SQL persists only token hashes and sealed input and denies user-JWT table/sequence access", async () => {
+  const db = database();
   const a = await fixture(),
     task = job();
   await store.enqueue(a.actor, a.hostId, task);
@@ -240,6 +253,7 @@ test("SQL persists only token hashes and sealed input and denies user-JWT table/
 });
 
 test("bootstrap tickets are sealed, strictly admitted, immutable and redelivered until terminal acknowledgement", async () => {
+  const db = database();
   const a = await fixture();
   const task = {
     ...job(),
@@ -295,6 +309,7 @@ test("bootstrap tickets are sealed, strictly admitted, immutable and redelivered
 });
 
 test("frozen machine expiry survives mailbox delivery and cannot change under an admitted request ID", async () => {
+  const db = database();
   const a = await fixture();
   const task = job();
   const absolute = { ...task, request: { ...task.request, expiresAt: 1_700_000_000_000 } };
@@ -333,6 +348,7 @@ test("frozen machine expiry survives mailbox delivery and cannot change under an
 });
 
 async function boundFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
+  const db = database();
   const host = registered ?? (await fixture());
   const sandboxId = randomUUID(),
     generation = randomUUID();
@@ -358,6 +374,7 @@ async function boundFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
 
 // The migrated SQL boundary owns binding, actor fencing, lifecycle intent and capabilities.
 test("bound member admission derives immutable machine fields and cannot redirect or adopt mailbox IDs", async () => {
+  const db = database();
   const a = await boundFixture(),
     b = await boundFixture();
   await denied(store.enqueueSandbox(a.actor, a.sandboxId, a.create)); // admin is not the private owner
@@ -406,6 +423,7 @@ test("bound member admission derives immutable machine fields and cannot redirec
 });
 
 test("poll retires stale actor grants without starving authorized cleanup; ACK remains a machine fact", async () => {
+  const db = database();
   for (const change of ["demotion", "removal", "rejoin"] as const) {
     const a = await boundFixture();
     await db.query(`update members set role='admin' where org_id=$1 and user_id=$2`, [a.owner.orgId, a.owner.userId]);
@@ -500,6 +518,7 @@ test("bound bootstrap requires ACKed creation and the exact pending capability, 
 });
 
 test("stop commits runtime revocation once; cleanup retains the create deadline and ACKs only terminal transitions", async () => {
+  const db = database();
   const a = await boundFixture();
   const { createRuntimeEnrolments } = await import("../src/runtime-enrolment.ts");
   const authority = createRuntimeEnrolments(sql, key, { allowDockerIssue: true });
@@ -595,6 +614,7 @@ async function boundStartup(operation: "create" | "bootstrap") {
   return { ...a, startup, authority, runtime };
 }
 async function lifecycle(sandboxId: string) {
+  const db = database();
   return (
     await db.query<{
       status: string;
@@ -612,6 +632,7 @@ async function lifecycle(sandboxId: string) {
 }
 
 test("host-confirmed frozen expiry fences runtime once, survives owner removal and admits cleanup", async () => {
+  const db = database();
   for (const operation of ["create", "bootstrap"] as const) {
     const a = await boundStartup(operation);
     // SQL's deadline is still in the future: the host's physical observation,
@@ -646,6 +667,7 @@ test("host-confirmed frozen expiry fences runtime once, survives owner removal a
 });
 
 test("expiry accepts only this installation's bound frozen startup machine, never arbitrary mailbox claims", async () => {
+  const db = database();
   const a = await boundFixture(),
     b = await boundFixture();
   await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
@@ -703,6 +725,7 @@ test("expiry accepts only this installation's bound frozen startup machine, neve
 });
 
 test("failed startup ACK or rejected admission fails logical startup without claiming a physical stop", async () => {
+  const db = database();
   for (const operation of ["create", "bootstrap"] as const) {
     for (const failure of ["ack", "historical-ack", "expiry", "removed-actor"] as const) {
       const a = await boundStartup(operation);

@@ -101,14 +101,18 @@ async function fixture(provider: "boat" | "modal" = "boat") {
 }
 
 describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (provider) => {
-  let x: Awaited<ReturnType<typeof fixture>>;
+  let current: Awaited<ReturnType<typeof fixture>> | undefined;
   beforeAll(async () => {
-    x = await fixture(provider);
+    current = await fixture(provider);
   }, 20_000);
   afterAll(async () => {
+    const x = current;
+    current = undefined;
     await x?.f.close();
   });
   test("authenticated setup reaches the real Runner and real MCP gateway; only scoped leases reach the driver", async () => {
+    const x = current;
+    if (!x) throw new Error("Runtime fixture is not open");
     const { f } = x;
     expect(
       (await x.api("sandbox/mcp-preflight-v1", { runtimeVersion: 1, org: f.people.org, connections: [x.c.id] })).status,
@@ -345,15 +349,20 @@ test("old runtime health cannot receive newly enabled MCP capabilities", async (
 });
 
 describe("automatic MCP authority updates", () => {
-  let x: Awaited<ReturnType<typeof fixture>>;
+  let current: Awaited<ReturnType<typeof fixture>> | undefined;
   beforeAll(async () => {
-    x = await fixture();
+    const x = await fixture();
+    current = x;
     await x.send(x.f.caller, x.f.input());
   }, 20_000);
   afterAll(async () => {
+    const x = current;
+    current = undefined;
     await x?.f.close();
   });
   test("ordinary turns adopt reconnected grants and clear deleted bindings without a setup API", async () => {
+    const x = current;
+    if (!x) throw new Error("Runtime fixture is not open");
     const { f } = x,
       old = x.configuration();
     await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);
