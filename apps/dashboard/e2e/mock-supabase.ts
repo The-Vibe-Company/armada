@@ -1783,6 +1783,7 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
     ],
     enable: ["org", "id", "expectedVersion"],
     pause: ["org", "id", "expectedVersion"],
+    delete: ["org", "id", "expectedVersion"],
   };
   if (!fields[operation] || Object.keys(body).some((key) => !fields[operation]!.includes(key)))
     return controlFail(400, "invalid", "Invalid routine request.");
@@ -1825,6 +1826,7 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
         String(body.templateId),
         Number(body.templateRevision),
       ),
+      orgId: body.org,
       prompt: body.prompt,
       intervalHours: body.intervalHours,
       ttlSeconds: body.ttlSeconds ?? 3600,
@@ -1850,7 +1852,7 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
     return controlFail(403, "forbidden", "Routine administrator permission required.");
   if (body.expectedVersion !== item.version) return controlFail(409, "conflict", "Routine version changed.");
   Object.assign(item, {
-    status: operation === "enable" ? "enabled" : "paused",
+    status: operation === "enable" ? "enabled" : operation === "delete" ? "deleted" : "paused",
     version: Number(item.version) + 1,
     nextDueAt:
       operation === "enable" ? new Date(Date.now() + Number(item.intervalHours) * 3600000).toISOString() : null,
