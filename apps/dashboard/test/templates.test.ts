@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { createTemplateControl } from "../src/lib/control.ts";
+import { describe, expect, spyOn, test } from "bun:test";
+import { createTemplateControl, LAUNCH_TIMEOUT_MS } from "../src/lib/control.ts";
 import { launchTarget } from "../src/lib/template-launch.ts";
 import {
   agentSummary,
@@ -363,7 +363,14 @@ describe("template launch", () => {
         return Response.json({ state: "succeeded", id: REGION, manifest: { variables: { APP_REGION: "eu" } } });
       }) as typeof fetch,
     });
-    const outcome = await control.launch({ org: ORG, id: TEMPLATE, revision: 2, requestKey: "dashboard:k" });
+    const deadline = spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
+    let outcome: Awaited<ReturnType<typeof control.launch>>;
+    try {
+      outcome = await control.launch({ org: ORG, id: TEMPLATE, revision: 2, requestKey: "dashboard:k" });
+      expect(deadline).toHaveBeenCalledWith(LAUNCH_TIMEOUT_MS);
+    } finally {
+      deadline.mockRestore();
+    }
     expect(outcome).toEqual({ state: "succeeded", id: REGION });
     expect(calls).toEqual([
       { route: "/api/v1/templates/launch", body: { org: ORG, id: TEMPLATE, revision: 2, requestKey: "dashboard:k" } },
