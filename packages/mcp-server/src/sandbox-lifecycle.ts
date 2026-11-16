@@ -140,6 +140,31 @@ export function createSandboxLifecycle(
         const provider = await operation(signal, () => providerFor(row.id));
         resolved = true;
         let info = await operation(signal, () => provider.get(row.provider_sandbox_id));
+        // Name the persisted selection and provider observation before any capture.
+        // No secret values or provider error bodies enter this diagnostic.
+        try {
+          console.info(
+            JSON.stringify({
+              event: "sandbox_lifecycle_observation",
+              sandboxId: row.id,
+              providerSandboxId: row.provider_sandbox_id,
+              provider: providerId,
+              status: row.status,
+              statusReason:
+                row.status_reason === null
+                  ? null
+                  : ["idle_paused", "expired", "agent_finished"].includes(row.status_reason)
+                    ? row.status_reason
+                    : "other",
+              expired,
+              stopRequested: row.stop_requested_at !== null,
+              normalizedState: info.state,
+              terminal: info.physicalExitConfirmed === true || ["stopped", "deleted"].includes(info.state),
+            }),
+          );
+        } catch {
+          /* Diagnostics cannot change lifecycle settlement. */
+        }
         const host = isSandboxProvider(provider.id) ? HOST_CAPABILITIES[provider.id] : undefined;
         physicalExit = info.physicalExitConfirmed === true;
         // A native turn's terminal receipt frees model capacity immediately on observation,

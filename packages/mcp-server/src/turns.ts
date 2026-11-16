@@ -461,15 +461,35 @@ export async function collectSandboxUsage(
         if (event.kind === "prompt" && event.promptId) prompts.set(event.promptId, event.conversationId ?? undefined);
       }
       if (targetPromptId && !prompts.has(targetPromptId)) prompts.set(targetPromptId, undefined);
+      // Observe compute once before fan-out. A terminal guest cannot provide native
+      // counters; per-prompt exec guards would otherwise repeat the same GET up to
+      // twenty times for an archived sandbox. Exec still guards races after this read.
+      const compute = prompts.size ? await provider.get(sandbox.providerSandboxId).catch(() => null) : null;
+      const inactive =
+        compute !== null && (compute.physicalExitConfirmed === true || !["ready", "running"].includes(compute.state));
       // A native read is bounded independently of provider event history.
       for (const [promptId, conversationId] of [...prompts].slice(-20)) {
         try {
-          const native = await provider.collectTurnUsage({
-            sandboxId: sandbox.providerSandboxId,
-            promptId,
-            ...(conversationId ? { conversationId } : {}),
-            harness: sandbox.harness,
-          });
+          const native: TurnTokenUsage[] =
+            inactive || compute === null
+              ? [
+                  {
+                    promptId,
+                    model: null,
+                    inputTokens: null,
+                    outputTokens: null,
+                    cachedTokens: null,
+                    unavailableReason: usageUnavailableReason(
+                      compute === null ? "reader_unavailable" : "compute_inactive",
+                    ),
+                  },
+                ]
+              : await provider.collectTurnUsage({
+                  sandboxId: sandbox.providerSandboxId,
+                  promptId,
+                  ...(conversationId ? { conversationId } : {}),
+                  harness: sandbox.harness,
+                });
           for (const row of native) {
             if (row.promptId !== promptId) continue;
             observations.push(row);
