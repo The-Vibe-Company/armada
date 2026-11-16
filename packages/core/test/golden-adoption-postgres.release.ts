@@ -129,7 +129,8 @@ test("real PostgreSQL serializes adoption/create and competing account binding; 
     await a.unsafe("commit");
     const conflict = await loser;
     expect(conflict.code).toBe("conflict");
-    expect(conflict.message).toContain("Use an existing golden you can access");
+    // The winner is a pending build, not an accessible published golden.
+    expect(conflict.message).toContain("This backend has reached its golden capacity.");
     expect(conflict.message).not.toContain(input.backendId);
     expect(
       (await a.unsafe("select build_id from golden_backend_slots where backend_id=$1", [input.backendId])).length,

@@ -3,11 +3,13 @@ if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES
 
 import { expect, test } from "bun:test";
 import { SQL } from "bun";
+import { encryptSecret } from "../src/crypto.ts";
 import { GoldenBuildJobs } from "../src/golden-build-jobs.ts";
 import type { GoldenConfig } from "../src/golden-config.ts";
 import type { Sql } from "../src/golden-store.ts";
 import { createSqlGoldenStore } from "../src/golden-store.ts";
 import type { Provider } from "../src/provider.ts";
+import { createSqlVaultStore } from "../src/vault-store.ts";
 
 // Dedicated disposable database with migrations applied, never a production URL.
 const url = process.env.ARMADA_TEST_POSTGRES_URL;
@@ -37,9 +39,27 @@ test("PostgreSQL serializes durable admission and fences a crashed claim across 
     resume = resolve;
   });
   let resolutions = 0;
+  const encryptionKey = Buffer.alloc(32, 31).toString("base64");
+  const githubFetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url === "https://api.github.com/user") return Response.json({ id: 42, login: "fixture_user" });
+    if (url.startsWith("https://api.github.com/user/installations?")) return Response.json({ installations: [] });
+    if (url === "https://api.github.com/repos/acme/web")
+      return Response.json({ id: 7, name: "web", owner: { login: "acme" }, private: false, default_branch: "main" });
+    throw new Error("Unexpected GitHub fixture request: " + url);
+  }) as typeof fetch;
   const options = {
-    encryptionKey: Buffer.alloc(32, 31).toString("base64"),
-    service: { github: { store: {} as never, encryptionKey: undefined, app: null }, installationApp: null },
+    encryptionKey,
+    service: {
+      github: {
+        store: createSqlVaultStore(sqlA),
+        encryptionKey,
+        app: { clientId: "fixture_client", clientSecret: "fixture_secret" },
+        fetch: githubFetch,
+      },
+      fetch: githubFetch,
+      installationApp: null,
+    },
     provider: async () => {
       resolutions++;
       entered();
@@ -54,6 +74,16 @@ test("PostgreSQL serializes durable admission and fences a crashed claim across 
     await a.unsafe("insert into auth.users(id) values($1)", [owner]);
     await a.unsafe("insert into orgs(id,name) values($1,$2)", [org, "async-jobs-" + org]);
     await a.unsafe("insert into members(org_id,user_id,role) values($1,$2,'admin')", [org, owner]);
+    // Admission now authorizes repositories before reserving capacity. Keep that
+    // boundary real SQL, while GitHub HTTP remains deterministic and offline.
+    await a.unsafe(
+      "insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at) values($1,42,'fixture_user',$2,$3,now()+interval '8 hours')",
+      [
+        owner,
+        await encryptSecret("fixture_refresh", encryptionKey),
+        await encryptSecret("fixture_access", encryptionKey),
+      ],
+    );
     const key = crypto.randomUUID();
     const input = { name: "async-job", visibility: "org" as const, repos: ["acme/web"] };
     const [one, replay] = await Promise.all([
