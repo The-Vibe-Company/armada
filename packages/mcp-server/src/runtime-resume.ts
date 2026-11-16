@@ -204,6 +204,7 @@ export function createRuntimeResume(
         stoppedAt: null,
         stopRequested: false,
         advanceGeneration: true,
+        queueRequestId: requestId,
         activityToken: requestId,
         clearTaskOutcome: true,
         ...(current.lifecycleGeneration !== undefined ? { expectedGeneration: current.lifecycleGeneration } : {}),

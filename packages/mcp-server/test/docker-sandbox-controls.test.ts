@@ -17,6 +17,7 @@ import {
 } from "@armada/core/server";
 import { parseSandboxListMetadata } from "../../../apps/dashboard/src/lib/sandbox-access.ts";
 import { sandboxListText } from "../../cli/src/sandbox-list.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -931,6 +932,23 @@ test("Docker mutations reuse the fenced runtime mailbox and reconcile identical 
     invoke(caller(f.actor), "interrupt", { id: f.sandbox.id, request_id: randomUUID() }, controller),
   ).rejects.toMatchObject({ code: "conflict" });
   expect(delivered).toBe(4);
+});
+
+test("cancelled account dispatch cannot admit a Docker prompt or resume", async () => {
+  const f = await fixture();
+  const session = await ready(f);
+  const requestId = randomUUID();
+  const queue = createAccountTurnQueue(sql, key);
+  await queue.accept(caller(f.actor), { id: f.sandbox.id, request_id: requestId, prompt: "old work" });
+  await database().query("update account_turn_queue set state='dispatching' where sandbox_id=$1", [f.sandbox.id]);
+  await queue.cancelQueued(caller(f.actor), f.sandbox.id);
+  await expect(service.prompt(f.actor, f.sandbox.id, { requestId, text: "old work" })).rejects.toThrow();
+  expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
+  const stopId = randomUUID();
+  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
+  await expect(bootstrap.resume(f.actor, f.sandbox.id, requestId)).rejects.toThrow("Docker bootstrap denied");
+  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
 });
 
 test("Docker status preserves safe native prompt diagnoses instead of replacing them", async () => {

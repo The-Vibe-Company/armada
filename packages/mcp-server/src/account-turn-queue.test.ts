@@ -471,7 +471,7 @@ test("runtime dispatch leases survive a server restart without replaying while a
   expect(await restarted.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "recovered_prompt" });
 });
 
-test("explicit owner stop cancels waiting prompts before Docker no-op routing, but idle cleanup and dispatching work stay intact", async () => {
+test("explicit owner stop cancels waiting prompts before Docker no-op routing, but idle cleanup stays intact", async () => {
   const { callSharedTool } = await import("./tool-api.ts");
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "do not wake after explicit stop" };
   await queue.accept(caller, input);
@@ -482,7 +482,7 @@ test("explicit owner stop cancels waiting prompts before Docker no-op routing, b
   } as unknown as import("./tools.ts").ToolContext;
   await callSharedTool(context, "stop", { id: input.id, only_if_idle: true });
   expect((await queue.status(caller, input.id, input.request_id))?.failed).toBe(false);
-  // The same sandbox may have another admitted/uncertain operation; cancel only queued facts.
+  // Stop also refuses a picked dispatch before it can resume compute.
   await db.query(
     "insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state) select sandbox_id,$2,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'dispatching' from account_turn_queue where sandbox_id=$1",
     [input.id, requests[1]],
@@ -493,7 +493,7 @@ test("explicit owner stop cancels waiting prompts before Docker no-op routing, b
     failed: true,
     message: "Queued prompt was cancelled.",
   });
-  expect((await db.query("select * from account_turn_queue where state='dispatching'")).rows).toHaveLength(1);
+  expect((await db.query("select * from account_turn_queue where state='dispatching'")).rows).toHaveLength(0);
   expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(1);
   let dispatched = false;
   queue.setDispatch(async () => {
@@ -562,7 +562,9 @@ test("forward repair fails historical stopped rows and preserves live queued wor
 test("stranded receipts settle without replay while safe unlimited and paused work dispatches", async () => {
   for (const id of ids) await queue.accept(caller, { id, request_id: requests[0]!, prompt: "historical" });
   await db.query("update sandboxes set activity_lease_id=$2 where id=$1", [ids[0], requests[0]]);
-  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
+  await db.query("update sandboxes set status='stopped',status_reason='idle_paused',stopped_at=now() where id=$1", [
+    ids[1],
+  ]);
   await db.query("update sandboxes set status='running',task_prompt_id='busy_turn' where id=$1", [ids[2]]);
   const count = async () =>
     Number(
@@ -755,6 +757,36 @@ test("terminal admission creates neither queue entries nor reservations", async 
   expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(0);
 });
 
+// Runtime evidence is not permission to wake a sandbox after its owner stopped it.
+test.each(["boat", "modal", "docker"])(
+  "%s stopped runtime receipts are refused instead of resumed",
+  async (provider) => {
+    const input = { id: ids[1]!, request_id: requests[0]!, prompt: "old instruction" };
+    await db.query(
+      "update sandboxes set provider=$2,boat_runtime=($2='boat'),runtime_transport=case when $2='modal' then 'dialout' else null end where id=$1",
+      [input.id, provider],
+    );
+    await queue.accept(caller, input);
+    await db.query(
+      "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
+      [input.id],
+    );
+    await db.query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
+    await db.query(
+      "update sandboxes set status='stopped',lifecycle_generation=2,activity_lease_id='30000000-0000-4000-8000-000000000001' where id=$1",
+      [input.id],
+    );
+    let calls = 0;
+    queue.setDispatch(async () => {
+      calls++;
+      return { promptId: "unwanted_turn" };
+    });
+    await queue.reconcileOne(new AbortController().signal);
+    await queue.drain();
+    expect(calls).toBe(0);
+    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
+  },
+);
 test.each(["boat", "modal"] as const)("stopped %s native send reaches account admission", async (provider) => {
   await db.query("update sandboxes set provider=$2,status='stopped',status_reason=null where id=$1", [
     ids[1],

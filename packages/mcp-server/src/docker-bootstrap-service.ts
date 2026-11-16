@@ -194,6 +194,11 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           [sandboxId, actor.userId, actor.orgId, current.hostId],
         );
         if (!original.rows.length) deny();
+        const refused = await tx.query(
+          "select 1 from public.account_turn_queue where sandbox_id=$1 and request_id=$2 and state='failed'",
+          [sandboxId, requestId],
+        );
+        if (refused.rows.length) deny();
         const existing = await phase(tx, sandboxId, resume ? requestId : undefined);
         let descriptor: BootstrapDescriptor;
         if (existing) {

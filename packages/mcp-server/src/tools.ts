@@ -1772,6 +1772,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       found,
       {
         clearTaskOutcome: true,
+        ...(args.request_id ? { queueRequestId: args.request_id } : {}),
         renewLifecycle: machine.state === "stopped" && found.statusReason !== "idle_paused",
         stopRequested: false,
         ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
