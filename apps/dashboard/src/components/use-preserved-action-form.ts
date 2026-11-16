@@ -7,10 +7,10 @@ import { useLayoutEffect, useState } from "react";
  * Keep their state/native form values, while retaining the original one-attempt lifetime of uncontrolled secrets.
  * The callback ref also handles dialogs whose forms mount only after opening or remount after a success.
  */
-export function usePreservedActionForm() {
+export function usePreservedActionForm(preserve = true) {
   const [form, setForm] = useState<HTMLFormElement | null>(null);
   useLayoutEffect(() => {
-    if (!form) return;
+    if (!form || !preserve) return;
     const keep = (event: Event) => {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -22,6 +22,6 @@ export function usePreservedActionForm() {
     };
     form.addEventListener("reset", keep, true);
     return () => form.removeEventListener("reset", keep, true);
-  }, [form]);
+  }, [form, preserve]);
   return setForm;
 }

@@ -388,10 +388,11 @@ Read your GitHub connection and installation metadata after Armada login.
 Output is JSON even without --json. Use an installation ID with github manage.
 Example: armada github status --json
 `,
-  "github manage": `Usage: armada github manage <installation-id> [--no-browser]
+  "github manage": `Usage: armada github manage <installation-id> [--no-browser] [--json]
 Open settings for one of your GitHub installations after Armada login.
 Choose an installation ID from armada github status, not a sandbox ID.
 --no-browser prints the settings URL to stdout instead of opening a browser.
+--json returns {url} without opening a browser.
 Example: armada github manage INSTALLATION_ID --no-browser
 `,
   "github refresh": `Usage: armada github refresh <sandbox-id> [--json]
@@ -422,15 +423,17 @@ Read account status with authenticated access and server authorization.
 Output is JSON even without --json. This is not a local session-file inspection.
 Example: armada account status --json
 `,
-  "account logout": `Usage: armada account logout
+  "account logout": `Usage: armada account logout [--json]
 Sign out the current personal login session remotely, then clear its local session.
 Requires a personal login session; service-token authentication is not supported.
 If ARMADA_TOKEN is set, remove it from this command's environment to use your personal session.
 To clear only the saved local session, use armada logout.
+--json returns {authenticated:false}.
 Example: armada account logout
 `,
-  logout: `Usage: armada logout
+  logout: `Usage: armada logout [--json]
 Clear the saved local Armada login without a server request.
+--json returns {authenticated:false}.
 This does not revoke service tokens or remove ARMADA_TOKEN from your environment.
 To sign out a personal session remotely first, use armada account logout.
 Example: armada logout
@@ -679,6 +682,11 @@ Output is JSON even without --json.
 Example: armada report SANDBOX_UUID blocked --prompt-id PROMPT_ID --reason "Need owner input"
 Example: armada report SANDBOX_UUID ready --prompt-id PROMPT_ID --pr-number 123
 `,
+  "snapshot retirement": `Usage: armada snapshot retirement dry-run|reconcile <snapshot-UUID> [options]
+Review historical candidates with dry-run; apply reviewed receipts with reconcile.
+Use each subcommand with --help for exact flags.
+Example: armada snapshot retirement dry-run SNAPSHOT_UUID --json
+`,
   "snapshot retirement dry-run": `Usage: armada snapshot retirement dry-run <snapshot-UUID> [--limit <1-50>] [--org UUID] [--json]
 Review bounded historical snapshot retirement candidates after Armada login.
 Requires server owner/admin authorization. Limit defaults to 20; output is always JSON.
@@ -695,7 +703,7 @@ Server rechecks authority, history and references; eligible work is queued, not 
 Output is always JSON. Use the snapshot record UUID, not a provider artifact ID.
 Example: armada snapshot retirement reconcile SNAPSHOT_UUID --org ORG_UUID --file reviewed.json
 `,
-  login: `Usage: armada login [--email <address> | --provider github|google] [--url <server-origin>]
+  login: `Usage: armada login [--json] [--email <address> | --provider github|google] [--url <server-origin>]
 Sign in to Armada, not directly to a sandbox provider.
 Use --email for email code/link sign-in; --provider chooses an enabled browser method.
 Do not combine --email and --provider. Without either, discover enabled server methods.
@@ -705,6 +713,7 @@ use login --url to configure a new profile's server.
 Keep the terminal open while completing sign-in. Use an interactive terminal for email code entry.
 ARMADA_TOKEN supplies service-token authentication to API commands; a saved login
 does not unset that environment variable. Keep tokens in a secure environment, never arguments.
+--json returns {authenticated:true} on success; progress remains on stderr.
 Example: armada login --email you@example.com
 Example: armada --profile staging login --url https://staging.example.com --provider github
 `,
@@ -975,13 +984,14 @@ Select an organization first or pass --org UUID. Names must match exactly and be
 A UUID can identify a revoked host; name lookup excludes revoked hosts.
 Example: armada host show workstation --org ORG_UUID --json
 `,
-  "host retention": `Usage: armada host retention <UUID|name> --retention <duration> [--org UUID]
+  "host retention": `Usage: armada host retention <UUID|name> --retention <duration> [--org UUID] [--json]
 Only the member who added the server can change retention.
 Use 0 for next-sweep removal, or seconds/minutes/hours/days (24h, 30m, 7d), maximum 365d.
 Applies at next check-in, including existing stopped sandbox deadlines.
+--json returns {hostId, retentionSeconds}.
 Example: armada host retention workstation --retention 24h
 `,
-  "host limits": `Usage: armada host limits <UUID|name> [--org UUID]
+  "host limits": `Usage: armada host limits <UUID|name> [--org UUID] [--json]
   [--cpus <N>] [--memory <size>] [--max-sandboxes <N>] [--auto]
 Update Docker host policy after Armada login and server authorization.
 Select an organization first or pass --org UUID. Supply at least one override or --auto.
@@ -989,16 +999,19 @@ Combine overrides as needed:
 --cpus must be at least 0.01; --max-sandboxes must be a positive integer.
 --auto resets all limits and cannot be combined with overrides.
 Container changes apply on the next start or resume. Inspect with host show.
+--json returns {hostId, ...requestedPolicy}.
 Example: armada host limits workstation --org ORG_UUID --cpus 2 --memory 4GiB
 `,
-  "host revoke": `Usage: armada host revoke <UUID> [--org UUID]
+  "host revoke": `Usage: armada host revoke <UUID> [--org UUID] [--json]
 Revoke a Docker host after Armada login and server authorization.
 Select an organization first or pass --org UUID. Use a host UUID from host list, not a name.
+--json returns {hostId, revoked:true}.
 Example: armada host revoke HOST_UUID --org ORG_UUID
 `,
-  "host add": `Usage: armada host add [--name <name>] [--org <UUID>]
+  "host add": `Usage: armada host add [--name <name>] [--org <UUID>] [--json]
 Register your Docker machine after Armada login. Select an organization first or pass --org.
 Run the returned installer only on your intended host; its registration token is short-lived.
+--json returns the registration receipt without waiting; protect its short-lived installer token.
 Example: armada host add --name workstation
 `,
 };

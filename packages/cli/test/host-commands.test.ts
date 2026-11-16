@@ -229,3 +229,22 @@ test("host retention sends a duration to the owner API and show prints reported 
   expect(shown.out).toContain("Retention: 86400s");
   expect(shown.out).toContain("Next cleanup: 2026-11-20T00:00:00Z");
 });
+
+test("host mutation JSON is a single receipt without prose or registration polling", async () => {
+  for (const [argv, response, expected] of [
+    [["add"], ticket(), ticket()],
+    [["revoke", hostId], { revoked: true }, { hostId, revoked: true }],
+    [["limits", hostId, "--auto"], {}, { hostId, auto: true }],
+    [["retention", hostId, "--retention", "24h"], {}, { hostId, retentionSeconds: 86400 }],
+  ] as const) {
+    let calls = 0;
+    const result = await capture(["host", ...argv, "--json"], async () => {
+      calls++;
+      return Response.json(response);
+    });
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.out)).toEqual(expected);
+    expect(calls).toBe(1);
+    expect(result.slept).toBe(0);
+  }
+});

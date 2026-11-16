@@ -83,7 +83,7 @@ for (const [name, initial, commands] of [
 test("a failed retried command never starts another login", async () => {
   const state = fixture();
   state.rejectRetry();
-  expect(await state.run(["token", "list"])).toBe(1);
+  expect(await state.run(["token", "list"])).toBe(3);
   expect(state.output()).toMatchObject({ invitations: 1, logins: 1, commands: 1 });
   expect(state.output().err).toContain("Run armada login.");
 });
@@ -92,7 +92,7 @@ for (const json of [false, true]) {
   test(`noninteractive authentication failure gives safe login instructions (${json ? "JSON" : "text"})`, async () => {
     const state = fixture(saved);
     state.auth.interactive = false;
-    expect(await state.run(["token", "list", ...(json ? ["--json"] : [])])).toBe(1);
+    expect(await state.run(["token", "list", ...(json ? ["--json"] : [])])).toBe(3);
     expect(state.output()).toMatchObject({ invitations: 0, logins: 0, out: "" });
     if (json)
       expect(JSON.parse(state.output().err)).toEqual({
@@ -106,14 +106,14 @@ for (const json of [false, true]) {
 test("declining the invitation leaves the command unexecuted", async () => {
   const state = fixture();
   state.auth.confirmSignIn = async () => false;
-  expect(await state.run(["token", "list"])).toBe(1);
+  expect(await state.run(["token", "list"])).toBe(3);
   expect(state.output()).toMatchObject({ logins: 0, commands: 0 });
 });
 
 test("an invalid environment token is never replaced by interactive login", async () => {
   const state = fixture();
   state.auth.env.ARMADA_TOKEN = "invalid-environment-token";
-  expect(await state.run(["token", "list"])).toBe(1);
+  expect(await state.run(["token", "list"])).toBe(3);
   expect(state.output()).toMatchObject({ invitations: 0, logins: 0 });
 });
 
@@ -139,7 +139,7 @@ test("invited login preserves code-refusal guidance", async () => {
   const original = state.auth.fetch;
   state.auth.fetch = async (input, init) =>
     String(input).endsWith("/email/verify") ? Response.json({}, { status: 401 }) : original(input, init);
-  expect(await state.run(["token", "list"])).toBe(1);
+  expect(await state.run(["token", "list"])).toBe(3);
   expect(state.output().err).toContain("already used");
 });
 
@@ -174,6 +174,6 @@ test("a typed server 401 after successful refresh still offers login", async () 
 test("account logout never invites a user to log in first", async () => {
   const state = fixture(saved);
   state.auth.fetch = async () => Response.json({}, { status: 401 });
-  expect(await state.run(["account", "logout"])).toBe(1);
+  expect(await state.run(["account", "logout"])).toBe(3);
   expect(state.output().invitations).toBe(0);
 });

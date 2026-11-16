@@ -450,7 +450,7 @@ try:
         reply=registration.getresponse();reply.read()
         if reply.status!=200: raise ValueError()
         registration.close()
-    stage='request'
+    stage='repository_selection'
     mode=sys.argv[1]
     if mode=='native':
         execute(sys.argv[3],sys.argv[4:],dict(os.environ))
@@ -512,10 +512,19 @@ try:
                     if repository(arg).lower()!=repo.lower(): raise ValueError()
                     i+=1
     else: raise ValueError()
+    stage='broker_request'
     connection=Connection('private')
     connection.request('POST','/',json.dumps({'repository':repo,'operation':mode}),{'Content-Type':'application/json'})
     response=connection.getresponse()
-    if response.status!=200: raise ValueError()
+    if response.status!=200:
+        raw=response.read(1024)
+        try: code=json.loads(raw).get('error','')
+        except Exception: code=''
+        allowed=('github_credentials_denied','github_credentials_unavailable','github_credentials_http_denied','github_credentials_http_unavailable','github_credentials_oversized','github_credentials_invalid_json','github_credentials_invalid_token')
+        if code in allowed: stage=code
+        else: stage='broker_denied'
+        raise ValueError()
+    stage='broker_response'
     raw=response.read(16385)
     if len(raw)>16384: raise ValueError()
     token=json.loads(raw)['token']

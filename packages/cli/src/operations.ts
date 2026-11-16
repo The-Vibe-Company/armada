@@ -1,6 +1,6 @@
 import { AuthError } from "@armada/auth";
 import { GoldenError, HARNESSES } from "@armada/core";
-import { flag, parseArgs, single, uuid } from "./args.ts";
+import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
@@ -28,6 +28,27 @@ export async function operation(
           : [],
     command === "list" ? ["--page-info"] : command === "rm" ? ["--yes"] : command === "status" ? ["--live"] : [],
   );
+  const options: Record<string, readonly string[]> = {
+    list: ["--status", "--agent", "--harness", "--golden", "--owner", "--page", "--limit", "--page-info"],
+    status: ["--live", "--prompt-id"],
+    detail: ["--prompt-id"],
+    recovery: [],
+    advice: [],
+    send: ["--request-id", "--conversation", "--model", "--reasoning-effort"],
+    steer: ["--conversation"],
+    exec: ["--cwd", "--timeout"],
+    stop: [],
+    wait: ["--timeout", "--prompt-id"],
+    interrupt: ["--conversation"],
+    report: [
+      "--prompt-id",
+      ...(args.positionals[1] === "blocked" ? ["--reason"] : ["--pr-number", "--pr-url", "--head-sha"]),
+    ],
+    "bind-credential": ["--credential-id"],
+    extend: ["--ttl"],
+    rm: ["--yes"],
+  };
+  acceptedOptions(args, command, ["--org", "--json", ...(options[command] ?? [])]);
   if (command === "rm") {
     const [id, ...extra] = args.positionals;
     uuid(id, "sandbox id");

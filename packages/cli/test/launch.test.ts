@@ -38,7 +38,7 @@ describe("launch command", () => {
     const result = await capture(["launch", "web", "--agent", "claude", "--provider", "modal"], {
       auth: offlineAuth(calls),
     });
-    expect(result.code).toBe(1);
+    expect(result.code).toBe(3);
     expect(result.err).toContain("You are not signed in. Run armada login.");
     expect(calls).toEqual([]);
   });

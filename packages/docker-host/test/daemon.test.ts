@@ -829,7 +829,7 @@ test("compaction preserves cleanup capacity, TTL facts and stored replay fences"
   const initial = await f.store.load();
   const old = {
     requestId: crypto.randomUUID(),
-    operation: "stop" as const,
+    operation: "delete" as const,
     outcome: "completed" as const,
     request: {
       ...f.job.request,
@@ -855,6 +855,7 @@ test("compaction preserves cleanup capacity, TTL facts and stored replay fences"
   const pending = { request: old.request, operation: "stop" as const, requestId: crypto.randomUUID() };
   const active = { ...old, requestId: crypto.randomUUID(), operation: "create" as const };
   initial.receipts.push(pending, active);
+  initial.retention = [{ request: active.request, requestId: active.requestId, deadline: 86400000 }];
   expect(Buffer.byteLength(JSON.stringify(initial))).toBeGreaterThan(1024 * 1024);
   await store.save(initial);
   let effects = 0;
@@ -1262,6 +1263,91 @@ test.each([false, true])(
     expect(f.executed).toEqual(["create"]);
   },
 );
+test.each(["stop", "create", "resume"] as const)(
+  "compacting %s receipts before discovery preserves every generation across restart",
+  async (operation) => {
+    const f = fixture();
+    const state = await f.store.load();
+    state.retentionSeconds = 0;
+    state.receipts = Array.from({ length: 3 }, () => ({
+      operation,
+      inputHash: "resume_input",
+      requestId: crypto.randomUUID(),
+      request: {
+        ...f.job.request,
+        sandboxId: crypto.randomUUID(),
+        generation: crypto.randomUUID(),
+        image: "x".repeat(400000),
+      },
+      outcome: "completed" as const,
+      ...(operation === "stop" ? {} : { expired: true as const, expiryReported: true as const }),
+    }));
+    const expected = state.receipts.map((r) => r.request.generation).sort();
+    const store: Store = {
+      load: () => f.store.load(),
+      async save(next) {
+        compactReceipts(next);
+        await f.store.save(next);
+      },
+    };
+    await store.save(state); // Compaction happens before the first observation.
+    const deleted: string[] = [];
+    const executor: Executor = {
+      ...f.executor,
+      isStopped: async () => true,
+      deleteStopped: async (request) => {
+        deleted.push(request.generation);
+      },
+    };
+    const api: Api = { ...f.api, poll: async () => ({ job: null }) };
+    // Each tick reloads a serialized state, just like a restarted daemon.
+    for (let i = 0; i < 3; i++) await tick(store, api, executor, false, () => 1000);
+    expect(deleted.sort()).toEqual(expected);
+  },
+);
+
+test("expiry report compaction preserves an unobserved allocation across restart", async () => {
+  const f = fixture();
+  const state = await f.store.load();
+  state.retentionSeconds = 0;
+  state.receipts = [0, 1].map(() => ({
+    operation: "create" as const,
+    requestId: crypto.randomUUID(),
+    request: {
+      ...f.job.request,
+      sandboxId: crypto.randomUUID(),
+      generation: crypto.randomUUID(),
+      image: "x".repeat(600000),
+    },
+    outcome: "completed" as const,
+    expired: true as const,
+  }));
+  const expected = state.receipts.map((r) => r.request.generation).sort();
+  await f.store.save(state);
+  const store: Store = {
+    load: () => f.store.load(),
+    async save(next) {
+      compactReceipts(next);
+      await f.store.save(next);
+    },
+  };
+  const deleted: string[] = [];
+  let observed = false;
+  const executor: Executor = {
+    ...f.executor,
+    isStopped: async () => observed,
+    deleteStopped: async (request) => {
+      deleted.push(request.generation);
+    },
+  };
+  const api: Api = { ...f.api, poll: async () => ({ job: null }), result: async () => {} };
+  await tick(store, api, executor, false, () => 1000);
+  expect((await store.load()).receipts.some((r) => r.expiryReported)).toBe(true);
+  observed = true;
+  for (let i = 0; i < 2; i++) await tick(store, api, executor, false, () => 1000);
+  expect(deleted.sort()).toEqual(expected);
+});
+
 test("physical expiry stops every generation while create is stalled without racing state persistence", async () => {
   const f = fixture();
   await tick(f.store, f.api, f.executor);
@@ -1306,4 +1392,26 @@ test("physical expiry stops every generation while create is stalled without rac
   // Only the serialized mailbox persists and publishes the physical proof.
   await tick(f.store, f.api, f.executor);
   expect(f.state().receipts.find((r) => r.requestId === second.job.requestId)?.expired).toBe(true);
+});
+
+test("compaction retires reconciled absence without dropping undiscovered allocations", async () => {
+  const f = fixture();
+  const state = await f.store.load();
+  state.receipts = [true, false].map((cleaned) => ({
+    requestId: crypto.randomUUID(),
+    operation: "create" as const,
+    outcome: "completed" as const,
+    expired: true as const,
+    expiryReported: true as const,
+    ...(cleaned ? { cleaned: true as const } : {}),
+    request: {
+      ...f.job.request,
+      generation: crypto.randomUUID(),
+      image: "x".repeat(600000),
+    },
+  }));
+  const [reconciled, undiscovered] = state.receipts;
+  compactReceipts(state);
+  expect(state.receipts.map((r) => r.requestId)).toEqual([undiscovered!.requestId]);
+  expect(state.retired?.map((r) => r[0])).toEqual([reconciled!.requestId]);
 });

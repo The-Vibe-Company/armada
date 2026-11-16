@@ -503,6 +503,14 @@ export function compactReceipts(state: State): void {
   if (Buffer.byteLength(JSON.stringify(state)) < 1024 * 1024) return;
   state.retired ??= [];
   const retired = state.retired;
+  // Replay finality is not physical deletion. Until discovery has persisted an
+  // exact-generation obligation, keep the request that lets a later tick observe it.
+  const covered = new Set(state.retention?.map((entry) => generationKey(entry.request)));
+  for (const receipt of state.receipts) {
+    if (receipt.cleaned || (receipt.operation === "delete" && receipt.outcome === "completed")) {
+      covered.add(generationKey(receipt.request));
+    }
+  }
   state.receipts = state.receipts.filter((receipt) => {
     if (!receipt.outcome || retired.length >= state.cleanupLimit!) return true;
     const closed =
@@ -512,6 +520,12 @@ export function compactReceipts(state: State): void {
       receipt.operation === "buildSnapshot" ||
       (receipt.expired && receipt.expiryReported);
     if (!closed) return true;
+    if (
+      receipt.operation !== "delete" &&
+      receipt.operation !== "buildSnapshot" &&
+      !covered.has(generationKey(receipt.request))
+    )
+      return true;
     retired.push([
       receipt.requestId,
       digest(
