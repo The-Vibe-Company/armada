@@ -58,13 +58,23 @@ describe("attentionState", () => {
     expect(
       attentionState("failed", null, { statusReason: null, lifecycleError: "The provider lost the machine." }).failure
         ?.title,
-    ).toBe("The provider lost the machine.");
+    ).toBe("Sandbox failed");
     // The reason the server recorded on the sandbox explains a launch failure, with its fix.
     expect(attentionState("failed", null, { statusReason: "auth_expiry", lifecycleError: "later" }).failure).toEqual({
       title: "Account expired",
       hint: expect.any(String),
       fix: { href: "/harness", label: "Reconnect the account" },
     });
+    for (const statusReason of [
+      "internal_debug_secret",
+      "Docker sandbox failed.",
+      "Armada runtime bootstrap failed.",
+      "expired",
+    ]) {
+      const failure = attentionState("failed", null, { statusReason, lifecycleError: null }).failure;
+      expect(failure?.hint).toContain("sandbox");
+      expect(failure?.title).not.toBe(statusReason);
+    }
     expect(attentionState("failed", null).failure?.title).toBe("Sandbox failed");
   });
 

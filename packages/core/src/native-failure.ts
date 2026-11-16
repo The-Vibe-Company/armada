@@ -1,3 +1,7 @@
+import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, DOCKER_LAUNCH_FAILURE_MESSAGES } from "./docker-api.ts";
+
+import { RUNTIME_STARTUP_FAILURES } from "./runtime-startup-failure.ts";
+
 /** Closed public explanations: never interpolate native error text. */
 const HELP: Record<string, { title: string; hint: string }> = {
   rate_limited: {
@@ -50,6 +54,10 @@ const PHASES: Record<string, string> = {
 };
 export function describeNativeFailure(reason: string | null | undefined): { title: string; hint: string } | null {
   if (!reason) return null;
+  const publicHelp = Object.values(HELP).find(
+    (help) => reason === help.hint || reason === `${help.title}. ${help.hint}`,
+  );
+  if (publicHelp) return publicHelp;
   const [code, phase, extra] = reason.split(":");
   if (
     !code ||
@@ -60,4 +68,56 @@ export function describeNativeFailure(reason: string | null | undefined): { titl
     return null;
   const help = HELP[code]!;
   return phase ? { ...help, hint: `${PHASES[phase]} ${help.hint}` } : help;
+}
+
+/** Normalize public prompt diagnoses without exposing arbitrary native output. */
+export function promptFailureReason(message?: string): string {
+  const help =
+    describeNativeFailure(message) ??
+    Object.values(HELP).find((help) => message === help.hint || message === `${help.title}. ${help.hint}`) ??
+    HELP.harness_failed!;
+  return `${help.title}. ${help.hint}`;
+}
+
+/** Closed sandbox-level explanations, including persisted legacy status reasons. */
+export function describeSandboxFailure(reason: string | null | undefined): { title: string; hint: string } {
+  if (reason && Object.values(RUNTIME_STARTUP_FAILURES).some((message) => message === reason))
+    return { title: "Sandbox startup failed", hint: reason };
+  const native = describeNativeFailure(reason);
+  if (native) return native;
+  if (
+    reason &&
+    (Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((value) => value === reason) ||
+      reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE)
+  )
+    return { title: "Sandbox preparation failed", hint: reason };
+  if (reason === "Docker sandbox startup failed." || reason === "Docker sandbox failed.")
+    return { title: "Sandbox startup failed", hint: DOCKER_LAUNCH_FAILURE_MESSAGES.startup };
+  if (reason === "expired")
+    return { title: "Sandbox expired", hint: "The sandbox reached its deadline. Launch a new sandbox to continue." };
+  if (reason === "agent_finished")
+    return { title: "Agent finished", hint: "The agent ended its session. Launch a new sandbox to continue." };
+  if (reason === "Armada runtime bootstrap failed.")
+    return {
+      title: "Sandbox startup failed",
+      hint: "The agent runtime could not start. Launch a new sandbox; if it fails again, ask the server operator to check the runtime setup.",
+    };
+  if (reason === "Runtime resume failed before a restored worker was confirmed; cleanup requested.")
+    return {
+      title: "Sandbox resume failed",
+      hint: "The agent runtime could not resume. Launch a new sandbox; if it fails again, ask the server operator to check the runtime setup.",
+    };
+  if (
+    reason === "The machine failed (exited)." ||
+    reason === "The machine failed (unrecognized)." ||
+    reason === "Provider confirmed physical exit without a new verified recovery checkpoint."
+  )
+    return {
+      title: "Sandbox machine stopped",
+      hint: "The provider stopped the sandbox machine. Launch a new sandbox; if it fails again, ask the server operator to check the provider.",
+    };
+  return {
+    title: "Sandbox failed",
+    hint: "The sandbox stopped without a public diagnosis. Launch a new sandbox; if it fails again, ask the server operator to inspect its status.",
+  };
 }

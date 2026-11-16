@@ -1,4 +1,4 @@
-import { describeNativeFailure } from "./native-failure.ts";
+import { promptFailureReason } from "./native-failure.ts";
 import { type PlanLimit, planLimitData, planLimitFromMessage, planLimitMessage } from "./plan-limit.ts";
 import type { AgentEvent, PromptState, Provider } from "./provider.ts";
 
@@ -86,7 +86,7 @@ export async function promptOutcome(
     }
     return {
       state: "failed",
-      reason: describeNativeFailure(message)?.hint ?? (message || "The agent failed."),
+      reason: promptFailureReason(message),
     };
   }
   if (state.status !== "finished") return { state: "running" };

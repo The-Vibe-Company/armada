@@ -446,7 +446,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               repositoryAccessMessage(row.status_reason) ||
               Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((message) => message === row.status_reason)
             ? row.status_reason
-            : "Docker sandbox failed.",
+            : DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
       repositoryDir: null,
       model: row.model,
       reasoningEffort: row.reasoning_effort,

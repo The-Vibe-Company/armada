@@ -1,4 +1,4 @@
-import { describeNativeFailure } from "@armada/core";
+import { describeNativeFailure, planLimitFromMessage, planLimitMessage } from "@armada/core";
 
 export type FailureHelp = {
   title: string;
@@ -55,5 +55,12 @@ const HELP: Record<string, FailureHelp> = {
 /** A clear message for the reasons an agent or a call fails with. Unknown reasons have none: show them as they are. */
 export function describeFailure(reason: string | null | undefined): FailureHelp | null {
   if (!reason) return null;
+  const limit = planLimitFromMessage(reason);
+  if (limit)
+    return {
+      ...USAGE,
+      title: limit.code === "rate_limited" ? "Rate limit reached" : "Plan limit reached",
+      hint: planLimitMessage(limit),
+    };
   return describeNativeFailure(reason) ?? HELP[reason] ?? null;
 }

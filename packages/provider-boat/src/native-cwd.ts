@@ -427,7 +427,7 @@ def receive():
                 elif isinstance(error,dict) and isinstance(error.get("message"),str):
                     import re
                     if re.fullmatch(r"(?:Plan|Rate) limit reached[.] (?:Resets at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.]000Z[.]|Try again after the limit resets[.])",error["message"]):
-                        terminal["error"]={"message":"Authentication failed. Reconnect this account." if code=="unauthorized" else "The agent failed.","codexErrorInfo":code}
+                        terminal["error"]={"message":"Authentication failed. Reconnect this account." if code=="unauthorized" else plan_limit_message("rateLimitExceeded" if error["message"].startswith("Rate") else "usageLimitExceeded"),"codexErrorInfo":code}
                         line=(json.dumps(message)+"\\n").encode()
             read=plan_read_requests.pop(str(message.get("id")),None) if "method" not in message else None
             if read is not None and "error" not in message and isinstance(message.get("result"),dict):

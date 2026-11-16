@@ -589,7 +589,7 @@ describe("tools", () => {
       "interrupted",
       "interrupted_by_harness_exit",
     ],
-    ["Agent request failed", "failed", "Agent request failed"],
+    ["Agent request failed", "failed", "Agent failed. Check the agent configuration before retrying."],
   ] as const) {
     test(`turn error does not fail the machine: ${reason}`, async () => {
       const { token, client, people, boat, db } = await start();
@@ -710,7 +710,7 @@ describe("tools", () => {
       status: "ready",
       prompt: {
         state: "failed",
-        reason: `Plan limit reached. Resets at ${resetsAt}.`,
+        reason: `Plan limit reached. Resets at ${resetsAt}. Wait for the limit to reset, or switch to another account before sending the prompt again.`,
         limit: { code: "usage_limit_exceeded", resetsAt },
       },
     });
