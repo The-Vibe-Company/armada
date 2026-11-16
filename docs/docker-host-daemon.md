@@ -395,7 +395,10 @@ The sandbox-scoped Armada MCP surface exposes `finish`. Unlike the owner-facing
 `report` tool (which records the latest finished turn's outcome only), `finish`
 declares that the calling sandbox is no longer needed. It accepts no sandbox ID:
 the current acknowledged epoch binds it to itself, never a sibling or child.
-It requires the existing `worker:stop` grant; it does not grant owner authority.
+Native delegated access requires the existing `worker:stop` grant. Enrolled
+runtimes receive a finish-only capability through private MCP configuration,
+bound to their current runtime epoch and MCP generation even when no upstream
+MCP connections were selected. Neither capability grants owner authority.
 
 The report durably requests shutdown. Boat and Modal use their existing
 work-preservation and stop lifecycle. Docker records the runtime preservation

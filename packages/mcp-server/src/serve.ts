@@ -80,6 +80,7 @@ import { createSandboxAccessServices } from "./sandbox-access-services.ts";
 import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
+import { createFinishedDockerCleanup } from "./sandbox-finish.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
 import { createServerRequestDrain } from "./server-request-drain.ts";
 import { createServerRoutineScheduler } from "./server-routines.ts";
@@ -688,6 +689,7 @@ export async function startServer(
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
     [
       delegatedAccess.childWorker,
+      createFinishedDockerCleanup(sql, config.encryptionKey),
       accountTurns,
       createRuntimeIdle(sql, config.encryptionKey, runtimeCheckpoint, {
         delayMs: idleDelayMs,

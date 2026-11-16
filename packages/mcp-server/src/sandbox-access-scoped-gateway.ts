@@ -71,15 +71,18 @@ const fail = (status: number, code: string) =>
 export function createSandboxScopedGateway(
   children: ReturnType<typeof createSandboxChildren>,
   finish?: (token: string) => Promise<unknown>,
+  runtimeFinish?: (token: string) => Promise<unknown>,
 ): Route {
   async function call(token: string, name: string, args: unknown): Promise<unknown> {
     if (waitMethods.has(name)) throw new WaitAuthorityUnavailable();
-    if (!childMethod(name)) throw new InvalidScopedRequest();
+    if (!childMethod(name) || (token.startsWith("armada_finish_") && name !== "finish"))
+      throw new InvalidScopedRequest();
     const parsed = schemas[name].safeParse(args);
     if (!parsed.success) throw new InvalidScopedRequest();
     if (name === "finish") {
-      if (!finish) throw new InvalidScopedRequest();
-      return finish(token);
+      const handler = token.startsWith("armada_finish_") ? runtimeFinish : finish;
+      if (!handler) throw new InvalidScopedRequest();
+      return handler(token);
     }
     if (name === "launch") {
       const input = schemas.launch.parse(args);
@@ -118,7 +121,9 @@ export function createSandboxScopedGateway(
       return null;
     const suffix = url.pathname.slice(ORCHESTRATOR_SCOPED_PATH.length + 1);
     // Owner sessions/service keys are NOT promoted into delegated authority, or vice versa.
-    const match = /^Bearer (armada_epoch_[a-f0-9]{64})$/.exec(request.headers.get("authorization") ?? "");
+    const match = /^Bearer (armada_epoch_[a-f0-9]{64}|armada_finish_[A-Za-z0-9_-]{1,1000}\.[A-Za-z0-9_-]{43})$/.exec(
+      request.headers.get("authorization") ?? "",
+    );
     if (!match?.[1]) return fail(401, "invalid_epoch_authority");
     if (request.method !== "POST") return fail(405, "use_post");
     const token = match[1];
@@ -148,7 +153,9 @@ export function createSandboxScopedGateway(
           throw new InvalidScopedRequest();
       }
       const server = new McpServer({ name: "armada-owned-worker-tools", version: VERSION });
-      for (const name of Object.keys(schemas) as Method[])
+      for (const name of (Object.keys(schemas) as Method[]).filter((name) =>
+        token.startsWith("armada_finish_") ? name === "finish" : name !== "finish" || finish,
+      ))
         server.registerTool(
           name,
           {
