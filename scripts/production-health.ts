@@ -1,5 +1,5 @@
 /** Read-only probe of the public production API, independent of compute smoke configuration. */
-export async function checkProductionHealth(origin: string, expectedVersion?: string) {
+export async function checkProductionHealth(origin: string, expectedVersion?: string, expectedCommit?: string) {
   const url = new URL(origin);
   if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
     throw new Error("Production health origin must be an explicit HTTPS origin");
@@ -22,11 +22,20 @@ export async function checkProductionHealth(origin: string, expectedVersion?: st
     throw new Error("Production health response is not Armada readiness");
   if (expectedVersion !== undefined && body.version !== expectedVersion)
     throw new Error("Production health version does not match the deployment");
+  if (
+    expectedCommit !== undefined &&
+    (!/^[a-f0-9]{40}$/.test(expectedCommit) || !("commit" in body) || body.commit !== expectedCommit)
+  )
+    throw new Error("Production health commit does not match the deployment");
 }
 
 if (import.meta.main) {
   try {
-    await checkProductionHealth(process.env.ARMADA_PRODUCTION_ORIGIN ?? "", process.env.ARMADA_EXPECTED_VERSION);
+    await checkProductionHealth(
+      process.env.ARMADA_PRODUCTION_ORIGIN ?? "",
+      process.env.ARMADA_EXPECTED_VERSION,
+      process.env.ARMADA_EXPECTED_COMMIT,
+    );
     console.log("Production Armada readiness passed");
   } catch {
     console.error(

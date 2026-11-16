@@ -251,7 +251,10 @@ RELEASE_SHA/RELEASE_VERSION are workflow outputs, not owner-managed secrets.
 
 Railway CLI 5.71.0 uploads clean pinned source, then the workflow waits for the
 **exact returned deployment ID** to reach SUCCESS and public /healthz to report
-the source version. Only then does it build/upload the dashboard. Vercel waits
+both the source version and full release SHA. The clean upload archive carries
+`packages/mcp-server/src/source-identity.json`, bundled into the server binary;
+this identity takes precedence over provider Git metadata. Missing or wrong
+commit evidence (including a same-version older server) fails closed. Only then does it build/upload the dashboard. Vercel waits
 for Ready. npm only follows successful production for publishing releases.
 No deploy hook or moving main checkout substitutes for the validated source.
 

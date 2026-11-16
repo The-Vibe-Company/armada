@@ -86,6 +86,7 @@ import { createServerRequestDrain } from "./server-request-drain.ts";
 import { createServerRoutineScheduler } from "./server-routines.ts";
 import { installServerShutdown } from "./server-shutdown.ts";
 import { startServerWorkers } from "./server-workers.ts";
+import sourceIdentity from "./source-identity.json";
 import { bunSql } from "./sql.ts";
 import { createSubscriptionMigration } from "./subscription-migration.ts";
 
@@ -551,6 +552,7 @@ export async function startServer(
     createRuntimeNativeAuth(sql, config.encryptionKey),
   );
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
+  const commitSha = sourceIdentity.commit ?? env.RAILWAY_GIT_COMMIT_SHA;
   const handler = createHandler({
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
@@ -561,7 +563,7 @@ export async function startServer(
     ...(control.sandboxBillingAccount ? { sandboxBillingAccount: control.sandboxBillingAccount } : {}),
     ready: createDatabaseReadiness(sql),
     idlePauseDelayMs: idleDelayMs,
-    ...(env.RAILWAY_GIT_COMMIT_SHA ? { commitSha: env.RAILWAY_GIT_COMMIT_SHA } : {}),
+    ...(commitSha ? { commitSha } : {}),
     runtimeProviderFor,
     ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(sql),
     launch,
