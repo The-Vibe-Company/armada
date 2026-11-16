@@ -147,8 +147,7 @@ export default async function TemplatesPage({ searchParams }: Props) {
   return (
     <CatalogBrowser
       title={TITLE}
-      description={DESCRIPTION}
-      meta={rows.length > 0 ? rows.length : undefined}
+      description=""
       label="Templates"
       rows={rows}
       blockers={[]}
@@ -380,6 +379,11 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
   );
 
   return {
+    catalog: {
+      group: definition?.harness,
+      version: `v${item.currentRevision}`,
+      footer: templateAudience(item.scope, org.name),
+    },
     key: item.id,
     name: item.name,
     tie: item.id,
@@ -392,10 +396,19 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
         {item.scope === "personal" ? "Personal" : "Org"}
       </RowTag>
     ),
-    meta,
+    meta: definition
+      ? `${HARNESS_LABELS[definition.harness]} · ${modelLabel(definition.harness, definition.model)}`
+      : meta,
     subtitle: `Version ${item.currentRevision} · ${templateAudience(item.scope, org.name)}`,
     state: <StateCell tone={state.tone} label={state.label} data-template-state={state.label} />,
-    fact: templateAudience(item.scope, org.name),
+    fact: (
+      <div className="flex flex-wrap gap-1.5">
+        {environment && <RowTag>{environment}</RowTag>}
+        {definition?.connections.map((id) => (
+          <RowTag key={id}>{lookups.connections?.find((tool) => tool.id === id)?.name ?? "Unavailable tool"}</RowTag>
+        ))}
+      </div>
+    ),
     ...(target && !blocker ? { action: <TemplateLaunchDialog target={target} /> } : {}),
     detail,
     attrs: { "data-template": item.name },

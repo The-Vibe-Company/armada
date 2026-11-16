@@ -290,6 +290,7 @@ function ScopedGoldenForm({
         <LaunchChoice
           inline
           label="Where to build"
+          presentation="chips"
           value={chosenProvider}
           onChange={(value) => setChosenProvider(value as SandboxProviderId)}
           options={providers.map((value) => ({ value, label: `${PROVIDER_LABELS[value]} cloud` }))}
@@ -333,8 +334,8 @@ function ScopedGoldenForm({
       <fieldset disabled={pending || jobActive} className="space-y-4 disabled:opacity-70">
         {mode === "create" ? (
           <div className="space-y-2">
-            <div className="text-lg leading-loose">
-              Build{" "}
+            <div className="space-y-2">
+              <Label htmlFor={`${id}-name`}>Name</Label>
               <Input
                 id={`${id}-name`}
                 aria-label="Snapshot name"
@@ -345,26 +346,8 @@ function ScopedGoldenForm({
                 maxLength={120}
                 placeholder="web-app"
                 autoComplete="off"
-                className="inline-flex h-8 w-36 rounded-none border-0 border-b border-dashed px-1 text-lg shadow-none"
+                className="h-[38px] font-mono"
               />{" "}
-              on {providerChoice}
-              {", visible to "}
-              <LaunchChoice
-                inline
-                label="Who sees it"
-                value={chosenVisibility}
-                onChange={(value) => setChosenVisibility(value as "org" | "private")}
-                options={[
-                  {
-                    value: "org",
-                    label: `everyone in ${orgName}`,
-                    ...(!isAdmin ? { reason: "Only an organization admin can create a snapshot for everyone." } : {}),
-                  },
-                  { value: "private", label: "only you" },
-                ]}
-              />
-              .
-              <input type="hidden" name="visibility" value={chosenVisibility} />
             </div>
             <p className="flex items-start gap-1.5 text-xs">
               <LockIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
@@ -389,7 +372,7 @@ function ScopedGoldenForm({
         )}
 
         <fieldset className="relative space-y-3">
-          <legend className="text-sm font-medium">Repositories to put on the machine</legend>
+          <legend className="text-sm font-medium">Repositories</legend>
           <ol className="space-y-3">
             {rows.map((row, index) => (
               <li
@@ -490,9 +473,34 @@ function ScopedGoldenForm({
           </Button>
         </fieldset>
 
+        {mode === "create" && (
+          <div className="space-y-2">
+            {" "}
+            <div className="pt-2 text-sm font-medium">Machine</div>
+            {providerChoice}
+            <div className="pt-2 text-sm font-medium">Visible to</div>
+            <LaunchChoice
+              inline
+              label="Who sees it"
+              presentation="chips"
+              value={chosenVisibility}
+              onChange={(value) => setChosenVisibility(value as "org" | "private")}
+              options={[
+                {
+                  value: "org",
+                  label: `everyone in ${orgName}`,
+                  ...(!isAdmin ? { reason: "Only an organization admin can create a snapshot for everyone." } : {}),
+                },
+                { value: "private", label: "only you" },
+              ]}
+            />
+            <input type="hidden" name="visibility" value={chosenVisibility} />
+          </div>
+        )}
+
         <div className="space-y-2">
           <Label htmlFor={`${id}-init`}>
-            Commands to run once, while building <span className="font-normal text-muted-foreground">optional</span>
+            Setup script <span className="font-normal text-muted-foreground">optional</span>
           </Label>
           <Textarea
             id={`${id}-init`}

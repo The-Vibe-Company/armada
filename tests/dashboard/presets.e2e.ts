@@ -28,9 +28,11 @@ for (const org of [
     await app.open("/templates");
     await screen.getByRole("button", "New template").tap();
     await screen.getByRole("textbox", "Template name").fill(name);
-    await screen.getByRole("button", /^Snapshot:/).tap();
-    await screen.getByPlaceholder("Search snapshot").fill(org.snapshot);
-    await screen.getByRole("option", new RegExp(`^${org.snapshot} · Boat cloud`)).tap();
+    if (org.session === "large") {
+      await screen.getByRole("button", /^Snapshot:/).tap();
+      await screen.getByPlaceholder("Search snapshot").fill(org.snapshot);
+      await screen.getByRole("option", new RegExp(`^${org.snapshot} · Boat cloud`)).tap();
+    } else await screen.getByRole("button", new RegExp(`^${org.snapshot} · Boat cloud`)).tap();
     await screen.getByRole("button", /^Model account:/).tap();
     await screen.getByRole("option", org.account).tap();
     await screen.getByRole("button", "Save template").tap();
@@ -43,8 +45,7 @@ for (const org of [
     await app.open("/templates");
     await screen.getByRole("link", name, { exact: true }).tap();
     await screen.getByRole("button", "Change", { exact: true }).tap();
-    await screen.getByRole("button", /^Reasoning effort:/).tap();
-    await screen.getByRole("option", /^low/).tap();
+    await screen.getByRole("button", "low", { exact: true }).tap();
     await screen.getByRole("button", "Save as version 2").tap();
     await expect(screen.getByRole("dialog", `Change ${name}`)).toBeHidden();
     await expect(browser.locator(`[data-template-panel="${name}"]`)).toContainText(

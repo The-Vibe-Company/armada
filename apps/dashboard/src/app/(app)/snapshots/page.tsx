@@ -3,6 +3,7 @@ import {
   type Golden,
   isSandboxProvider,
   MODEL_CATALOG,
+  machineCapacity,
   type SandboxProviderId,
 } from "@armada/core";
 import {
@@ -34,7 +35,7 @@ import {
   LaunchStart,
 } from "@/components/launch-dialog";
 import { LaunchDialogContent, LaunchDialogHeader } from "@/components/launch-surface";
-import { Empty, PageHeader } from "@/components/page-header";
+import { Empty } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
 import { RemoveGolden } from "@/components/remove-golden";
 import { type ResourceRow, SelectItem } from "@/components/resource-browser";
@@ -463,6 +464,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       label: `On your server ${name} · ${host?.state ?? "unavailable"}`,
       rows: [
         {
+          catalog: { group: "docker", attention: !!blocker, footer: name },
           key: `empty:${hostId}`,
           name: "Empty machine",
           search: name,
@@ -484,73 +486,19 @@ export default async function GoldensPage({ searchParams }: Props) {
       ],
     });
   }
-  const readyCloud = shown.find((golden) =>
-    cloudRows.some((row) => row.key === golden.id && row.status.action === "launch"),
-  );
-  const readyHost = hosts.find(
-    (host) => !dockerLaunchBlocker(dockerOption, hostRead.state === "ready" && hostRead.list.placement, host),
-  );
-  const readySizing = readyCloud ? goldenSizing(readyCloud, goldenRepositoryDirs(readyCloud.config)) : null;
-  const launch = readyCloud ? (
-    <SnapshotLaunchDialog
-      primary
-      {...(readySizing?.kind === "ready" ? { sizing: { policy: readySizing.policy } } : {})}
-      golden={readyCloud.name}
-      templates={templates.filter((template) => template.definition.goldenId === readyCloud.id)}
-      provider={readyCloud.provider}
-      orgId={readyCloud.org_id}
-      catalog={MODEL_CATALOG}
-      repositories={goldenRepositoryDirs(readyCloud.config)}
-      connections={connections}
-      accounts={accounts}
-    />
-  ) : readyHost && selected ? (
-    <HostLaunchDialog
-      primary
-      orgId={selected.org.id}
-      hostId={readyHost.id}
-      hostName={readyHost.name ?? "Your server"}
-      accounts={accounts}
-      unavailable={dockerOption ? dockerUnavailable(dockerOption) : []}
-      harnesses={dockerHarnesses(dockerOption).offered}
-      initialHarness={dockerHarnesses(dockerOption).initial ?? "codex"}
-    />
-  ) : (
-    <Button disabled>Launch a sandbox</Button>
-  );
   return (
-    <>
-      <PageHeader
-        title="Snapshots"
-        description="Saved machines, with your repositories already set up, that sandboxes start from."
-      >
-        {create}
-        {launch}
-      </PageHeader>
-      {notices}
-      {rows.length === 0 && hosts.length === 0
-        ? empty
-        : groups
-            .filter((group) => group.rows.length > 0)
-            .map((group) => (
-              <section key={group.key} aria-label={group.label} className="space-y-3">
-                <h2 className="text-sm font-medium text-muted-foreground">{group.label}</h2>
-                {/* Each group keeps the existing detail/history controller; its duplicate page heading is not needed. */}
-                <div className="space-y-3 [&>div>div:first-child]:hidden">
-                  <CatalogBrowser
-                    title=""
-                    description=""
-                    label={group.label}
-                    rows={group.rows}
-                    blockers={[]}
-                    initial={initial}
-                    empty={null}
-                  />
-                </div>
-              </section>
-            ))}
-      {footer}
-    </>
+    <CatalogBrowser
+      title="Snapshots"
+      description=""
+      label="Snapshots"
+      rows={groups.flatMap((group) => group.rows)}
+      blockers={[]}
+      initial={initial}
+      actions={create}
+      notices={notices}
+      empty={empty}
+      footer={footer}
+    />
   );
 }
 
@@ -701,12 +649,14 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
   const repos = goldenRepos(golden.config);
   const directories = goldenRepositoryDirs(golden.config);
   const sizing = goldenSizing(golden, directories);
+  const capacity =
+    sizing.kind === "ready" && sizing.policy?.golden ? machineCapacity(golden.provider, sizing.policy.golden) : null;
   const owner = displayUser(context.directory, golden.owner_id, context.viewerId);
   const age = relativeAge(golden.created_at, now);
   const meta = [
     label,
-    golden.visibility === "private" ? "only you" : (membership?.org.name ?? "Organization"),
-    age ? `created ${age}` : null,
+    capacity ? `${capacity.vcpus} vCPU · ${capacity.memoryMiB / 1024} GB` : null,
+    golden.visibility === "private" ? "Private" : (membership?.org.name ?? "Organization"),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -886,6 +836,11 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
   );
 
   return {
+    catalog: {
+      group: golden.provider,
+      attention: state.bucket !== "ready",
+      footer: age ? `Created ${age}` : state.label,
+    },
     key: golden.id,
     name: golden.name,
     tie: golden.provider,
@@ -940,14 +895,16 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
         </p>
       </div>
     ),
-    fact:
-      repos.length === 0 ? (
-        <span className="text-muted-foreground">No repository</span>
-      ) : (
-        <span className="font-mono text-xs" title={repos.map((r) => r.slug ?? r.url).join(", ")}>
-          {repos.map((r) => r.slug ?? r.url).join(", ")}
-        </span>
-      ),
+    fact: (
+      <div className="flex flex-wrap gap-1.5">
+        {repos.map((repo) => (
+          <RowTag key={repo.url}>
+            {repo.slug ?? repo.url}
+            {repo.branch ? `@${repo.branch}` : ""}
+          </RowTag>
+        ))}
+      </div>
+    ),
     action,
     detail,
     attrs: { "data-golden": golden.name, "data-golden-provider": golden.provider },
@@ -1040,6 +997,11 @@ function dockerSnapshotRow(
             ? "Snapshot launches are unavailable on this server. Check Docker placement and the server version."
             : "Launch the saved workspace on its original host, with your current account and GitHub access.";
   return {
+    catalog: {
+      group: "docker",
+      attention: state.bucket !== "ready",
+      footer: snapshot.status === "ready" && age ? `Built ${age}` : detailText,
+    },
     key: snapshot.id,
     name: snapshot.name,
     tie: `docker-${snapshot.id}`,

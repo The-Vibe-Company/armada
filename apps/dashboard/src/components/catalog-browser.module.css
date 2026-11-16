@@ -65,3 +65,125 @@ body:has(.catalog) [role="dialog"][aria-labelledby$="-panel-title"] aside {
   border-left: 1px solid var(--border);
   background: var(--card);
 }
+
+.catalog[data-fidelity] [data-catalog-body] > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.catalog[data-fidelity] > div:first-child {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.catalog[data-fidelity] section > div > ul > li {
+  position: relative;
+  gap: 0;
+}
+
+.catalog[data-fidelity] section > div > ul > li > div:first-child {
+  align-items: flex-start;
+  padding-right: 108px;
+}
+
+.catalog[data-fidelity] [data-catalog-status] {
+  position: absolute;
+  top: 18px;
+  right: 16px;
+  font-size: 12px;
+}
+
+.catalog[data-fidelity] [data-catalog-status] p {
+  display: none;
+}
+
+.catalog[data-fidelity] section > div > ul > li > [data-catalog-body] {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 12px;
+  padding: 14px 0 16px;
+  font-size: 13px;
+}
+
+.catalog[data-fidelity] section > div > ul > li > [data-catalog-body] + div {
+  display: none;
+}
+
+.catalog[data-fidelity] section > div > ul > li > div:last-child button {
+  height: 26px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.catalog[data-fidelity] [data-catalog-status] > span,
+.catalog[data-fidelity] [data-catalog-status] > div > span {
+  max-width: 100px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.catalog[data-fidelity] [data-catalog-status] svg {
+  width: 8px;
+  height: 8px;
+  fill: currentColor;
+}
+
+body:has(.catalog[data-fidelity]) [data-catalog-panel] > div:first-child {
+  padding: 18px 20px;
+}
+
+body:has(.catalog[data-fidelity]) [data-catalog-panel] > div:first-child > div:first-of-type {
+  flex: 1;
+}
+
+body:has(.catalog[data-fidelity]) [data-catalog-panel] > div:last-child {
+  padding: 16px 20px;
+}
+
+body:has(.catalog[data-fidelity]) [data-create-dialog] {
+  border-radius: 12px;
+  background: var(--card);
+  padding: 18px;
+}
+
+body:has(.catalog[data-fidelity]) [data-catalog-panel] [data-panel] section {
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
+body:has(.catalog[data-fidelity]) [data-catalog-panel] [data-panel] h3 {
+  margin-bottom: 10px;
+  font-weight: 500;
+}
+
+body:has(.catalog[data-fidelity]) [data-create-dialog] {
+  top: 9vh;
+  translate: -50% 0;
+  width: calc(100% - 40px);
+  max-width: 560px;
+  max-height: 84dvh;
+  gap: 18px;
+}
+
+body:has(.catalog[data-fidelity]) [data-create-dialog] > [data-slot="dialog-header"] {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+}
+
+.catalog[data-fidelity] li[data-golden-provider] > div:first-child > span {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px;
+  background: var(--muted);
+}
+
+.catalog[data-fidelity] li[data-golden-provider="boat"] > div:first-child > span {
+  background: #263fa9;
+}
+
+.catalog[data-fidelity] li[data-golden-provider="boat"] > div:first-child > span path {
+  fill: white;
+}

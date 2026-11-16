@@ -49,6 +49,7 @@ export type ResourceRow = {
   /** Everything the filter matches: name, provider, repositories, URL… */
   search: string;
   mark?: ReactNode;
+  catalog?: { group?: string | undefined; attention?: boolean; version?: string; body?: ReactNode; footer?: ReactNode };
   /** Small tags beside the name (Personal, Org, Private). */
   tags?: ReactNode;
   /** One line under the name: provider · scope · age. */
@@ -98,7 +99,9 @@ export function ResourceBrowser({
   empty,
   initial,
   selectionQuery = "",
+  catalogFilters,
 }: {
+  catalogFilters?: { key: string; label: string }[] | undefined;
   title: string;
   description: string;
   meta?: ReactNode;
@@ -124,6 +127,7 @@ export function ResourceBrowser({
   // A row removed by an action, or a stale link, closes the panel rather than showing nothing.
   const selected = chosen !== null && valid(chosen) ? chosen : null;
   const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("all");
   const browserId = useId();
   const panelId = `${browserId}-panel`;
   const titleId = `${browserId}-panel-title`;
@@ -243,7 +247,9 @@ export function ResourceBrowser({
     };
   }, []);
 
-  const shown = query ? rows.filter((row) => matchesQuery(row.search, query)) : rows;
+  const inCategory = (row: ResourceRow, key: string) =>
+    key === "all" || (key === "attention" ? row.catalog?.attention : row.catalog?.group === key);
+  const shown = rows.filter((row) => inCategory(row, category) && (!query || matchesQuery(row.search, query)));
   const current = rows.find((row) => row.key === selected) ?? null;
   const currentIndex = shown.findIndex((row) => row.key === selected);
   const move = (delta: number) => {
@@ -258,37 +264,83 @@ export function ResourceBrowser({
 
   return (
     <Context.Provider value={context}>
-      <PageHeader title={title} description={description} meta={meta}>
+      <PageHeader inlineActions={!!catalogFilters} title={title} description={description} meta={meta}>
         {actions}
       </PageHeader>
       {blockers.length > 0 && <ReadinessStrip blockers={blockers} />}
       {notices}
       <section ref={rootRef} aria-label={label} tabIndex={-1} className="grid items-start gap-4">
         <div className="@container min-w-0 space-y-3">
-          {rows.length >= FILTER_FROM && (
-            <div className="relative max-w-sm">
-              <SearchIcon
-                aria-hidden
-                className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-              />
-              <label htmlFor={filterId} className="sr-only">
-                Filter {label.toLowerCase()}
-              </label>
-              <Input
-                id={filterId}
-                type="search"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Filter by name, provider, repository…"
-                className="pl-8"
-              />
+          {(catalogFilters || rows.length >= FILTER_FROM) && (
+            <div className={catalogFilters ? "flex flex-wrap items-center justify-between gap-3" : "relative max-w-sm"}>
+              {catalogFilters && (
+                <fieldset
+                  aria-label={`Filter ${label.toLowerCase()}`}
+                  className="flex flex-wrap gap-0.5 rounded-lg bg-muted p-0.5"
+                >
+                  {catalogFilters.map((filter) => (
+                    <Button
+                      key={filter.key}
+                      variant="ghost"
+                      size="sm"
+                      aria-pressed={category === filter.key}
+                      onClick={() => setCategory(filter.key)}
+                      className={cn(
+                        "h-7 gap-1.5 rounded-md px-2.5 text-[13px]",
+                        category === filter.key && "bg-card shadow-xs",
+                      )}
+                    >
+                      {filter.label}
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        {rows.filter((row) => inCategory(row, filter.key)).length}
+                      </span>
+                    </Button>
+                  ))}
+                </fieldset>
+              )}
+              <div className={catalogFilters ? "relative w-[260px] max-w-full" : "relative"}>
+                <SearchIcon
+                  aria-hidden
+                  className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+                />
+                <label htmlFor={filterId} className="sr-only">
+                  Filter {label.toLowerCase()}
+                </label>
+                <Input
+                  id={filterId}
+                  type="search"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={
+                    catalogFilters
+                      ? title === "Snapshots"
+                        ? "Search snapshots or repositories"
+                        : "Search templates"
+                      : "Filter by name, provider, repository…"
+                  }
+                  className="pl-8"
+                />
+              </div>
             </div>
           )}
           {rows.length === 0 ? (
             empty
           ) : shown.length === 0 ? (
             <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-              Nothing matches “{query}”.
+              Nothing matches{!catalogFilters && ` “${query}”`}.
+              {catalogFilters && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mx-auto mt-3 block"
+                  onClick={() => {
+                    setQuery("");
+                    setCategory("all");
+                  }}
+                >
+                  Clear filters
+                </Button>
+              )}
             </p>
           ) : (
             <ul
@@ -301,6 +353,7 @@ export function ResourceBrowser({
                   row={row}
                   panelId={panelId}
                   selected={selected === row.key}
+                  catalog={!!catalogFilters}
                   onSelect={() => select(row.key)}
                 />
               ))}
@@ -320,7 +373,10 @@ export function ResourceBrowser({
             <DialogPrimitive.Content
               aria-labelledby={titleId}
               aria-describedby={undefined}
-              className="fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right motion-reduce:animate-none"
+              className={cn(
+                "fixed inset-y-0 right-0 z-50 w-full outline-none sm:max-w-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-right motion-reduce:animate-none",
+                catalogFilters && "sm:max-w-[460px]",
+              )}
               ref={(node) => {
                 if (node && host) node.appendChild(host);
               }}
@@ -340,6 +396,7 @@ export function ResourceBrowser({
             <aside
               id={panelId}
               data-resource-panel
+              data-catalog-panel={!!catalogFilters || undefined}
               onKeyDown={(event) => {
                 if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
                 const target = event.target as HTMLElement;
@@ -369,6 +426,7 @@ export function ResourceBrowser({
               className="flex h-dvh flex-col overflow-hidden border-l bg-background shadow-2xl"
             >
               <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
+                {catalogFilters && current?.mark}
                 <div className="min-w-0 space-y-0.5">
                   <h2
                     id={titleId}
@@ -423,11 +481,13 @@ export function ResourceBrowser({
 }
 
 function Row({
+  catalog,
   row,
   selected,
   onSelect,
   panelId,
 }: {
+  catalog?: boolean;
   row: ResourceRow;
   selected: boolean;
   onSelect: () => void;
@@ -470,7 +530,10 @@ function Row({
                 </span>
               </a>
             </Button>
-            {row.tags}
+            {catalog && row.catalog?.version && (
+              <span className="font-mono text-xs text-muted-foreground">{row.catalog.version}</span>
+            )}
+            {!catalog && row.tags}
           </div>
           <div
             title={typeof row.meta === "string" ? row.meta : undefined}
@@ -480,10 +543,29 @@ function Row({
           </div>
         </div>
       </div>
-      <div className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto">{row.state}</div>
-      <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{row.fact}</div>
+      <div
+        data-catalog-status={catalog || undefined}
+        className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto"
+      >
+        {row.state}
+      </div>
+      {catalog && (
+        <div data-catalog-body className="space-y-3">
+          {row.catalog?.body}
+          {row.fact}
+        </div>
+      )}
+      <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{!catalog && row.fact}</div>
       <div className="relative z-10 col-start-1 row-start-3 flex justify-start @sm:col-start-2 @sm:row-span-2 @sm:row-start-1 @sm:justify-end @xl:col-start-auto @xl:row-span-1 @xl:row-start-auto">
-        {row.action}
+        {catalog && (
+          <span className="mr-auto min-w-0 truncate text-xs text-muted-foreground">{row.catalog?.footer}</span>
+        )}
+        {row.action ??
+          (catalog && (
+            <Button variant="outline" size="sm" onClick={onSelect}>
+              {row.catalog?.attention ? "See why" : "Details"}
+            </Button>
+          ))}
       </div>
     </li>
   );

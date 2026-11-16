@@ -32,7 +32,7 @@ export function GoldenCreateDialog({
       <CreateDialog
         label="New snapshot"
         title="New snapshot"
-        description="A saved machine with your repositories already set up."
+        description="Armada clones the repositories in a disposable sandbox, runs your setup, scans for secrets and only then saves."
         open={open}
         onOpenChange={(next) => {
           if (next) itemAtOpen.current = currentItem();
