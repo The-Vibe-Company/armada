@@ -231,7 +231,7 @@ for (const mode of [
       const history = turns.get(provider) ?? [];
       history.push(promptId);
       turns.set(provider, history);
-      return { promptId };
+      return { id: provider, promptId, conversationId: "client_conversation", status: "queued" };
     }
 
     const deletes = new Map<string, number>();
@@ -800,17 +800,26 @@ for (const mode of [
               const history = turns.get(p) ?? [];
               history.push(`turn-${history.length + 1}`);
               turns.set(p, history);
-              result = { promptId: history.at(-1) };
+              result = {
+                id: body.id,
+                promptId: history.at(-1),
+                conversationId: "client_conversation",
+                status: "queued",
+              };
               break;
             }
             case "logs/read":
               if (clientFull && clientAnswers.has(turns.get(p)?.at(-1) ?? "")) {
                 const promptId = turns.get(p)!.at(-1)!;
                 result = {
+                  cursor: null,
+                  hasMore: false,
+                  settled: true,
                   events: [
-                    { kind: "prompt", promptId, status: "finished" },
+                    { id: "finished", at: 0, text: "", kind: "prompt", promptId, status: "finished" },
                     {
                       id: "client_answer",
+                      at: 0,
                       kind: "message",
                       promptId,
                       text: clientAnswers.get(promptId),
@@ -1053,6 +1062,8 @@ for (const mode of [
               if (mode === "subscription_probe_budget") clock += 110_001;
               result = {
                 id: mode === "template_identity" || mode.startsWith("routine_") || deepFull ? body.id : p,
+                settled: true,
+                prompt: null,
                 status: states.get(p),
                 ...(clientFull ? { conversationIds: ["client_conversation"] } : {}),
                 ...(mode === "skills_resume_full" ? { skills: [skillReceipt] } : {}),

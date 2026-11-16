@@ -132,6 +132,9 @@ for (const mode of [
             case "sandbox/detail":
               return Response.json({
                 id: body.id,
+                status: "ready",
+                settled: true,
+                prompt: null,
                 conversationIds: mode === "conversation_missing" ? [] : [conversation],
               });
             case "sandbox/send": {
@@ -159,7 +162,7 @@ for (const mode of [
               const promptId = `cli_${provider}`;
               prompts.set(promptId, String(body.prompt).match(/PARITY_CLIENT_CLI_[a-f0-9-]{36}/)![0]);
               clients.set(provider, "cli");
-              return Response.json({ promptId });
+              return Response.json({ id: body.id, promptId, conversationId: conversation, status: "queued" });
             }
             case "logs/read": {
               const client = clients.get(provider)!;
@@ -181,6 +184,7 @@ for (const mode of [
               reads.set(promptId, n);
               const answer = {
                 id: "answer",
+                at: 0,
                 kind: "message",
                 promptId: mode === "cli_stale" && client === "cli" ? `dashboard_${provider}` : promptId,
                 text: prompts.get(promptId),
@@ -189,18 +193,19 @@ for (const mode of [
               };
               return Response.json({
                 cursor: `page_${n}`,
+                settled: true,
                 hasMore: mode === "cli_later_answer" && client === "cli" && n === 1,
                 events: [
                   answer,
                   ...(mode === "cli_later_answer" && client === "cli" && n > 1
                     ? [{ ...answer, id: "later", text: "different final answer" }]
                     : []),
-                  { kind: "prompt", promptId, status: "finished" },
+                  { id: "finished", at: 0, text: "", kind: "prompt", promptId, status: "finished" },
                 ],
               });
             }
             case "sandbox/status":
-              return Response.json({ id: body.id, status: states.get(provider) });
+              return Response.json({ id: body.id, status: states.get(provider), settled: true, prompt: null });
             case "sandbox/stop":
               states.set(provider, "stopped");
               return Response.json({ id: body.id, status: "stopped" });

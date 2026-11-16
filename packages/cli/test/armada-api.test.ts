@@ -83,7 +83,7 @@ describe("API client origin and session safety", () => {
         write: async () => undefined,
         clear: async () => undefined,
       },
-      fetch: async () => Response.json({ ok: true }),
+      fetch: async () => Response.json({ goldens: [] }),
     });
     await client.request("/api/v1/golden/list");
     expect(reads).toBe(0);

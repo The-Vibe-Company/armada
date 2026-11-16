@@ -7,7 +7,18 @@ test.each(["status", "logs"])("%s explains provider backoff in plain text", asyn
   const wait = { message: "Rate limited by the model provider, retrying in 20 s", retryCount: 2, totalWaitMs: 21_000 };
   const result =
     command === "status"
-      ? { prompt: { rateLimit: wait } }
+      ? {
+          id: "11111111-1111-4111-8111-111111111111",
+          status: "running",
+          settled: false,
+          prompt: {
+            promptId: "prompt",
+            conversationId: "conversation",
+            state: "running",
+            reason: null,
+            rateLimit: wait,
+          },
+        }
       : {
           events: [{ id: "wait", at: 1000, kind: "other", type: "armada/modelRateLimit", data: wait }],
           cursor: null,

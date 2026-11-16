@@ -9,6 +9,7 @@ import {
   providerRateLimitMessage,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
+import { validApiReceipt } from "./api-receipts.ts";
 import { sandboxFailure } from "./sandbox-errors.ts";
 import type { Session, SessionStore } from "./session.ts";
 
@@ -132,7 +133,15 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         (!payload || typeof payload !== "object" || Array.isArray(payload))
       )
         throw new ArmadaApiError("unavailable", response.status, TEMPLATE_LAUNCH_UNKNOWN);
-      if (response.ok) return normalizeProviderDto(path, payload) as T;
+      if (response.ok) {
+        if (!validApiReceipt(path, payload))
+          throw new ArmadaApiError(
+            "unavailable",
+            response.status,
+            "Armada returned an invalid success receipt. The operation may have been accepted; inspect its state before retrying. For sandbox operations, run armada status <id> or armada list. Do not replay a mutation blindly.",
+          );
+        return normalizeProviderDto(path, payload) as T;
+      }
       const failureCode =
         payload && typeof payload === "object" && "error" in payload
           ? (payload as { error?: { code?: string } }).error?.code
