@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.49.2](https://github.com/The-Vibe-Company/armada/compare/v2.49.1...v2.49.2) (2026-11-16)
+
+
+### Bug Fixes
+
+* **accounts:** count historical turns under their effective model ([#2437](https://github.com/The-Vibe-Company/armada/issues/2437)) ([734f01d](https://github.com/The-Vibe-Company/armada/commit/734f01db6299a13bbb91ada39cc06f9cab807ab7))
+* **control:** refuse terminal sandbox operations before admission ([#2449](https://github.com/The-Vibe-Company/armada/issues/2449)) ([fa35613](https://github.com/The-Vibe-Company/armada/commit/fa35613cb3e10e3f7beb3aa923587e9b8868fea7))
+* **dashboard:** keep Models dialogs within phone screens ([#2438](https://github.com/The-Vibe-Company/armada/issues/2438)) ([5eae24f](https://github.com/The-Vibe-Company/armada/commit/5eae24ffec5622d1ef4d826bff1cb2422f8145ba))
+* **docker-host:** isolate periodic expiry checks by allocation ([#2436](https://github.com/The-Vibe-Company/armada/issues/2436)) ([ac86255](https://github.com/The-Vibe-Company/armada/commit/ac862554bbe0532f23bd58a09f069d8c8319446f))
+* **runtime:** resolve managed GitHub command repositories ([#2440](https://github.com/The-Vibe-Company/armada/issues/2440)) ([fb9eb49](https://github.com/The-Vibe-Company/armada/commit/fb9eb4994b6c3163a673137e01fc15e4995b0731))
+* **server:** skip native usage fan-out on inactive compute ([#2450](https://github.com/The-Vibe-Company/armada/issues/2450)) ([112bfcb](https://github.com/The-Vibe-Company/armada/commit/112bfcb16335a21c3e2c42e508dd981f3acbb2d4))
+* **server:** trace preservation caller and capture identity ([#2448](https://github.com/The-Vibe-Company/armada/issues/2448)) ([a1aec1b](https://github.com/The-Vibe-Company/armada/commit/a1aec1b106e864efa02530234a7f1a06fe5ac7b8))
+
 ## [2.49.1](https://github.com/The-Vibe-Company/armada/compare/v2.49.0...v2.49.1) (2026-11-16)
 
 
