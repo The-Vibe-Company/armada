@@ -58,8 +58,8 @@ export function AddHostDialog({ orgId }: { orgId: string }) {
   return (
     <CreateDialog
       dismissible={!guarded}
-      label="Add your own server"
-      title="Add your own server"
+      label="Register a Docker host"
+      title="Register a Docker host"
       description="A Linux machine you own, with Docker installed. Armada runs sandboxes on it as containers."
       open={open}
       onOpenChange={(next) => {

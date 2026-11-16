@@ -26,7 +26,7 @@ export default async function OrgsPage() {
   const memberships = await listMemberships(supabase, viewer.id);
 
   return (
-    <>
+    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-7">
       <PageHeader title="Organizations">
         <CreateDialog
           label="New org"
@@ -46,10 +46,10 @@ export default async function OrgsPage() {
 
       {memberships.length === 0 ? (
         <Empty icon={<UsersIcon />} title="You are not in an org yet">
-          Create an org, or ask an admin to add your email.
+          Create your first organization, or ask an admin to invite you by email.
         </Empty>
       ) : (
-        <ul className="divide-y overflow-hidden rounded-xl border bg-card shadow-xs" aria-label="Your orgs">
+        <ul className="divide-y overflow-hidden rounded-[10px] border bg-card" aria-label="Your orgs">
           {memberships.map(({ org, role }) => {
             const current = selected?.org.id === org.id;
             const identity = (
@@ -102,6 +102,6 @@ export default async function OrgsPage() {
           })}
         </ul>
       )}
-    </>
+    </div>
   );
 }

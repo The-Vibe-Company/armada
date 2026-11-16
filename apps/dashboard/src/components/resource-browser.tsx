@@ -49,6 +49,7 @@ export type ResourceRow = {
   /** Everything the filter matches: name, provider, repositories, URL… */
   search: string;
   mark?: ReactNode;
+  catalog?: { group?: string | undefined; attention?: boolean; version?: string; body?: ReactNode; footer?: ReactNode };
   filters?: string[];
   columns?: { key: string; content: ReactNode }[];
   /** Small tags beside the name (Personal, Org, Private). */
@@ -102,11 +103,13 @@ export function ResourceBrowser({
   initial,
   selectionQuery = "",
   filters,
+  catalogFilters,
   searchPlaceholder,
   columns,
 }: {
   title: string;
   description: string;
+  catalogFilters?: { key: string; label: string }[] | undefined;
   filters?: { key: string; label: string }[];
   searchPlaceholder?: string;
   columns?: string[];
@@ -253,8 +256,13 @@ export function ResourceBrowser({
     };
   }, []);
 
+  const inCategory = (row: ResourceRow, key: string) =>
+    key === "all" || (key === "attention" ? row.catalog?.attention : row.catalog?.group === key);
+  const tabs = catalogFilters ?? (filters ? [{ key: "all", label: "All" }, ...filters] : undefined);
+  const matchesFilter = (row: ResourceRow, key: string) =>
+    catalogFilters ? inCategory(row, key) : key === "all" || row.filters?.includes(key);
   const shown = rows.filter(
-    (row) => (!query || matchesQuery(row.search, query)) && (filter === "all" || row.filters?.includes(filter)),
+    (row) => (!query || matchesQuery(row.search, query)) && matchesFilter(row, filter),
   );
   const current = rows.find((row) => row.key === selected) ?? null;
   const currentIndex = shown.findIndex((row) => row.key === selected);
@@ -274,7 +282,7 @@ export function ResourceBrowser({
         title={title}
         description={filters || columns ? undefined : description}
         meta={meta}
-        inlineActions={Boolean(filters || columns)}
+        inlineActions={Boolean(tabs || columns)}
       >
         {actions}
       </PageHeader>
@@ -282,14 +290,14 @@ export function ResourceBrowser({
       {notices}
       <section ref={rootRef} aria-label={label} tabIndex={-1} className="grid items-start gap-4">
         <div className="@container min-w-0 space-y-3">
-          {(searchPlaceholder || rows.length >= FILTER_FROM) && (
+          {(tabs || searchPlaceholder || rows.length >= FILTER_FROM) && (
             <div className="flex flex-wrap items-center justify-between gap-3">
-              {filters && (
+              {tabs && (
                 <fieldset
                   aria-label={`Filter ${label.toLowerCase()}`}
                   className="inline-flex flex-wrap gap-0.5 rounded-lg bg-muted p-[3px]"
                 >
-                  {[{ key: "all", label: "All" }, ...filters].map((item) => (
+                  {tabs.map((item) => (
                     <Button
                       key={item.key}
                       variant="ghost"
@@ -300,7 +308,7 @@ export function ResourceBrowser({
                     >
                       {item.label}
                       <span className="font-mono text-[11px] text-muted-foreground">
-                        {rows.filter((row) => item.key === "all" || row.filters?.includes(item.key)).length}
+                        {rows.filter((row) => matchesFilter(row, item.key)).length}
                       </span>
                     </Button>
                   ))}
@@ -319,7 +327,7 @@ export function ResourceBrowser({
                   type="search"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder={searchPlaceholder ?? "Filter by name, provider, repository…"}
+                  placeholder={searchPlaceholder ?? (catalogFilters ? title === "Snapshots" ? "Search snapshots or repositories" : "Search templates" : "Filter by name, provider, repository…")}
                   className="h-[34px] pl-8 text-[13px]"
                 />
               </div>
@@ -330,6 +338,7 @@ export function ResourceBrowser({
           ) : shown.length === 0 ? (
             <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
               Nothing matches “{query}”.
+              {tabs && <Button variant="outline" size="sm" className="mx-auto mt-3 block" onClick={() => { setQuery(""); setFilter("all"); }}>Clear filters</Button>}
             </p>
           ) : columns ? (
             <div className="overflow-x-auto rounded-[10px] border bg-card">
@@ -366,6 +375,7 @@ export function ResourceBrowser({
                 <Row
                   key={row.key}
                   row={row}
+                  catalog={!!catalogFilters}
                   panelId={panelId}
                   selected={selected === row.key}
                   onSelect={() => select(row.key)}
@@ -406,6 +416,7 @@ export function ResourceBrowser({
           createPortal(
             <aside
               id={panelId}
+              data-catalog-panel={!!catalogFilters || undefined}
               data-resource-panel
               onKeyDown={(event) => {
                 if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -439,7 +450,8 @@ export function ResourceBrowser({
                 <div className="min-w-0 space-y-0.5">
                   <h2
                     id={titleId}
-                    data-resource-panel-title
+                    data-catalog-panel={!!catalogFilters || undefined}
+              data-resource-panel-title
                     ref={titleRef}
                     tabIndex={-1}
                     className="break-words text-base font-semibold tracking-tight outline-none"
@@ -491,6 +503,7 @@ export function ResourceBrowser({
 
 function Row({
   table = false,
+  catalog = false,
   row,
   selected,
   onSelect,
@@ -498,6 +511,7 @@ function Row({
 }: {
   row: ResourceRow;
   table?: boolean;
+  catalog?: boolean;
   selected: boolean;
   onSelect: () => void;
   panelId: string;
@@ -560,11 +574,12 @@ function Row({
         ))
       ) : (
         <>
-          <div className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto">{row.state}</div>
-          <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{row.fact}</div>
+          <div data-catalog-status={catalog || undefined} className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto">{row.state}</div>
+          {catalog && <div data-catalog-body className="space-y-3">{row.catalog?.body}{row.fact}</div>}
+          <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{!catalog && row.fact}</div>
           <div className="relative z-10 col-start-1 row-start-3 flex justify-start @sm:col-start-2 @sm:row-span-2 @sm:row-start-1 @sm:justify-end @xl:col-start-auto @xl:row-span-1 @xl:row-start-auto">
-            {row.foot && <span className="mr-auto min-w-0 truncate text-xs text-muted-foreground">{row.foot}</span>}
-            {row.action}
+            {(row.foot || row.catalog?.footer) && <span className="mr-auto min-w-0 truncate text-xs text-muted-foreground">{row.foot ?? row.catalog?.footer}</span>}
+            {row.action ?? (catalog && <Button variant="outline" size="sm" onClick={onSelect}>{row.catalog?.attention ? "See why" : "Details"}</Button>)}
           </div>
         </>
       )}

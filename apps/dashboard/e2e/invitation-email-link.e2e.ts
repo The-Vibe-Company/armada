@@ -54,7 +54,7 @@ const sessionCookies = async (page: Page) =>
 async function signInHere(page: Page, email: string) {
   await expect(page).toHaveURL(/\/login\?next=%2Finvitations%2Faccept$/);
   await page.getByLabel("Email").fill(email);
-  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
+  await page.getByRole("button", { name: "Email me a code" }).click();
   await page.getByLabel("Code").fill("123456");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.waitForURL("**/invitations/accept");

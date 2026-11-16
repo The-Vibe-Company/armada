@@ -65,6 +65,7 @@ export function CreateDialog({
         </Button>
       </DialogTrigger>
       <DialogContent
+        data-create-dialog
         className={cn(
           "max-h-[calc(100dvh-2rem)] gap-5 overflow-y-auto sm:max-w-xl",
           fixedActions && "flex flex-col overflow-hidden [&>form]:flex [&>form]:min-h-0 [&>form]:flex-col",

@@ -237,8 +237,8 @@ private struct OutcomeRow: View {
                 Text(status == .interrupted ? "Turn interrupted" : "Turn failed")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(ArmadaTheme.textPrimary)
-                if let reason {
-                    Text(reason)
+                if status == .interrupted || reason != nil {
+                    Text(status == .interrupted ? SandboxPresentation.interruption(reason) : SandboxPresentation.sandboxFailure(reason))
                         .font(.footnote)
                         .foregroundStyle(ArmadaTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

@@ -3,6 +3,7 @@
 import type { SandboxPlacementProviderId } from "@armada/core";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useState } from "react";
+import { ProviderMark } from "@/components/provider-mark";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -13,12 +14,22 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { isSubmitShortcut } from "@/lib/shortcut";
 import { ttlOptions } from "@/lib/templates";
+import { cn } from "@/lib/utils";
 
 /** One launch surface for cloud snapshots, Docker snapshots and owned machines. Controllers stay provider-specific. */
 export function LaunchDialogContent({ children }: { children: ReactNode }) {
   return (
     <DialogContent
       className="sm:max-w-[620px] flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden rounded-[14px] p-0"
+      onEscapeKeyDown={(event) => {
+        const root = (event.target as HTMLElement | null)?.closest('[data-slot="dialog-content"]');
+        const trigger = root?.querySelector<HTMLButtonElement>('[data-launch-disclosure][aria-expanded="true"]');
+        if (trigger) {
+          event.preventDefault();
+          trigger.click();
+          trigger.focus();
+        }
+      }}
       onOpenAutoFocus={(event) => {
         const task = (event.target as HTMLElement | null)?.querySelector<HTMLElement>('textarea[name="prompt"]');
         if (!task) return;
@@ -68,8 +79,8 @@ export function LaunchTaskField({
         name="prompt"
         value={value}
         onChange={onChange ? (event) => onChange(event.target.value) : undefined}
-        rows={2}
-        className="max-h-[40dvh] min-h-[72px] resize-y rounded-[10px] bg-background px-3.5 py-3 text-[14.5px] leading-[1.55]"
+        rows={5}
+        className="max-h-[40dvh] min-h-[138px] resize-y rounded-[10px] bg-background px-3.5 py-3 text-[14.5px] leading-[1.55]"
         placeholder="What should the agent do? Leave it empty to start the sandbox idle."
       />
     </div>
@@ -106,6 +117,51 @@ export function LaunchAdvanced({
         {children}
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+/** Keep picker fields inside the form and mounted, so closed settings still submit. */
+export function LaunchSetting({
+  label,
+  value,
+  description,
+  mark,
+  children,
+}: {
+  label: string;
+  value: ReactNode;
+  description?: ReactNode;
+  mark?: ReactNode;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <fieldset className="min-w-0" aria-label={`${label} settings`}>
+      <button
+        type="button"
+        data-launch-disclosure
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        aria-label={`${label} settings`}
+        className="grid min-h-[53px] w-full grid-cols-[84px_minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2 text-left text-[13px] hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <span className="text-muted-foreground">{label}</span>
+        <span className="flex min-w-0 items-center gap-2.5">
+          {mark}
+          <span className="min-w-0">
+            <span className="block truncate font-medium">{value}</span>
+            <span className="block truncate text-xs text-muted-foreground">{description}</span>
+          </span>
+        </span>
+        <span aria-hidden className="flex items-center gap-1 text-xs text-muted-foreground">
+          Change <ChevronDownIcon className="size-3.5" />
+        </span>
+      </button>
+
+      <div hidden={!open} className="max-h-[60dvh] overflow-y-auto border-t bg-popover p-3 text-popover-foreground">
+        {children}
+      </div>
+    </fieldset>
   );
 }
 
@@ -167,6 +223,7 @@ export function useLaunchSurface(root: RefObject<HTMLElement | null>) {
 
 /** A settings row with a searchable picker; compact catalog controls can opt into inline. */
 export function LaunchChoice({
+  presentation = "picker",
   inline = false,
   label,
   value,
@@ -175,6 +232,7 @@ export function LaunchChoice({
   disabled = false,
   tone,
 }: {
+  presentation?: "picker" | "chips";
   inline?: boolean;
   label: string;
   value: string;
@@ -246,6 +304,26 @@ export function LaunchChoice({
       </CommandList>
     </Command>
   );
+  if (presentation === "chips" && options.length <= 8)
+    return (
+      <fieldset aria-label={label} className="flex flex-wrap gap-1.5">
+        {options.map((option) => (
+          <Button
+            key={option.value}
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-pressed={option.value === value}
+            disabled={disabled || !!option.reason}
+            title={option.reason}
+            onClick={() => onChange(option.value)}
+            className={cn("h-8 rounded-[7px] text-[13px]", option.value === value && "border-primary bg-primary/10")}
+          >
+            {option.label}
+          </Button>
+        ))}
+      </fieldset>
+    );
   if (phone)
     return (
       <>
@@ -278,7 +356,9 @@ export function LaunchLocation({
   starts,
   onStart,
   lockedStart = false,
+  compact = false,
 }: {
+  compact?: boolean;
   provider: SandboxPlacementProviderId;
   lockedStart?: boolean;
   start: string;
@@ -292,6 +372,34 @@ export function LaunchLocation({
   onStart?: ((value: string) => void) | undefined;
 }) {
   const [ttl, setTtl] = useState("");
+  if (compact)
+    return (
+      <LaunchSetting
+        label="From"
+        value={starts?.find((x) => x.value === start)?.label ?? start}
+        description={`${repositories.join(", ")} · ${provider}`}
+        mark={<ProviderMark provider={provider} />}
+      >
+        <LaunchChoice
+          disabled={lockedStart}
+          label="From"
+          value={start}
+          options={starts ?? [{ value: start, label: start }]}
+          onChange={(value) => onStart?.(value)}
+        />
+        {provider !== "docker" && (
+          <>
+            <LaunchChoice
+              label="Folder"
+              value={project}
+              options={[{ value: "", label: "default" }, ...repositories.map((value) => ({ value, label: value }))]}
+              onChange={(value) => onProject?.(value)}
+            />
+            <input type="hidden" name="repo" value={project} />
+          </>
+        )}
+      </LaunchSetting>
+    );
   return (
     <div data-launch-location className="space-y-2">
       <div className="overflow-hidden rounded-[10px] border [&>button]:border-b [&>button:last-of-type]:border-b-0">

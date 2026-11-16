@@ -8,7 +8,7 @@ const row = (page: Page, name: string) => page.locator(`[data-routine="${name}"]
 const shownPanel = (page: Page, name: string) => page.locator(`[data-routine-panel="${name}"]`);
 async function panel(page: Page, name: string) {
   const target = shownPanel(page, name);
-  if (!(await target.isVisible())) await row(page, name).locator("[data-select-item]").click();
+  if (!(await target.isVisible())) await row(page, name).locator("[data-select-item]").first().click();
   await expect(target).toBeVisible();
   return target;
 }
@@ -48,8 +48,8 @@ for (const mobile of [false, true]) {
       await page.keyboard.press("Escape");
       await expect(navigation).toBeFocused();
     }
-    await expect(row(page, "Morning review")).toContainText(/Enabled/);
-    await expect(row(page, "Release notes")).toContainText(/Paused/);
+    await expect(row(page, "Morning review").getByRole("switch")).toBeChecked();
+    await expect(row(page, "Release notes").getByRole("switch")).not.toBeChecked();
     await expect(row(page, "Bob private check")).toHaveCount(0);
     expect((await state()).routineCalls.filter((c) => c.route === "routines/history")).toHaveLength(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(mobile ? 390 : 1360);
@@ -72,17 +72,17 @@ for (const mobile of [false, true]) {
     });
     // Close details before opening the centered creation flow on a phone.
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "New", exact: true }).click();
+    await page.getByRole("button", { name: "New routine", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "New routine" });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByLabel("Prompt", { exact: true })).toBeVisible();
+    await expect(dialog.getByLabel("Task", { exact: true })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeInViewport();
     await page.screenshot({
       path: `test-results/routines-create-${mobile ? "phone" : "desktop"}.png`,
       animations: "disabled",
     });
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("button", { name: "New", exact: true })).toBeFocused();
+    await expect(page.getByRole("button", { name: "New routine", exact: true })).toBeFocused();
   });
 }
 
@@ -90,17 +90,17 @@ test("create pins a revision and preserves the prompt; enable/pause submit fresh
   page,
 }) => {
   await signIn(page, "alice@example.com", "/routines");
-  await page.getByRole("button", { name: "New", exact: true }).click();
+  await page.getByRole("button", { name: "New routine", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "New routine" });
   await dialog.getByLabel("Name", { exact: true }).fill("Weekly notes");
-  await dialog.getByLabel("Template", { exact: true }).selectOption(MODAL_TEMPLATE);
+  await dialog.getByRole("radio", { name: "Modal quick fix", exact: true }).check();
   const prompt = "  Summarize this week's changes.\nDo not edit files.  ";
-  await dialog.getByLabel("Prompt", { exact: true }).fill(prompt);
-  await dialog.getByLabel("Interval (hours)", { exact: true }).fill("1");
+  await dialog.getByLabel("Task", { exact: true }).fill(prompt);
+  await dialog.getByLabel("Interval in hours", { exact: true }).fill("1");
   await dialog.getByRole("button", { name: "Create routine", exact: true }).click();
   await expect(dialog).toBeHidden();
   const created = row(page, "Weekly notes");
-  await expect(created).toContainText("Paused");
+  await expect(created.getByRole("switch")).not.toBeChecked();
   const saved = (await state()).routines.find((r) => r.name === "Weekly notes");
   expect(saved).toMatchObject({
     prompt,
@@ -109,10 +109,10 @@ test("create pins a revision and preserves the prompt; enable/pause submit fresh
     intervalHours: 1,
     status: "paused",
   });
-  await page.getByRole("button", { name: "Enable Weekly notes", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Pause Weekly notes", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Pause Weekly notes", exact: true }).click();
-  await expect(created).toContainText("Paused");
+  await page.getByRole("switch", { name: "Switch Weekly notes on", exact: true }).click();
+  await expect(page.getByRole("switch", { name: "Switch Weekly notes off", exact: true })).toBeVisible();
+  await page.getByRole("switch", { name: "Switch Weekly notes off", exact: true }).click();
+  await expect(created.getByRole("switch")).not.toBeChecked();
   const calls = (await state()).routineCalls;
   expect(calls.filter((c) => c.route === "routines/enable").at(-1)).toMatchObject({
     authorized: true,
@@ -126,11 +126,11 @@ test("create pins a revision and preserves the prompt; enable/pause submit fresh
 
 test("create cannot be resubmitted while the server is still accepting its first request", async ({ page }) => {
   await signIn(page, "alice@example.com", "/routines");
-  await page.getByRole("button", { name: "New", exact: true }).click();
+  await page.getByRole("button", { name: "New routine", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "New routine" });
   await dialog.getByLabel("Name", { exact: true }).fill("Pending review");
-  await dialog.getByLabel("Template", { exact: true }).selectOption(MODAL_TEMPLATE);
-  await dialog.getByLabel("Prompt", { exact: true }).fill("Read-only review.");
+  await dialog.getByRole("radio", { name: "Modal quick fix", exact: true }).check();
+  await dialog.getByLabel("Task", { exact: true }).fill("Read-only review.");
   await configure({ holdCreate: true });
   try {
     await dialog.getByRole("button", { name: "Create routine", exact: true }).click();
@@ -140,14 +140,14 @@ test("create cannot be resubmitted while the server is still accepting its first
     await configure({ holdCreate: false });
   }
   await expect(dialog).toBeHidden();
-  await expect(row(page, "Pending review")).toContainText("Paused");
+  await expect(row(page, "Pending review").getByRole("switch")).not.toBeChecked();
   expect((await state()).routineCalls.filter((c) => c.route === "routines/create")).toHaveLength(1);
 });
 
 test("stale versions are readable refusals, not silent retry or duplicate schedule changes", async ({ page }) => {
   await signIn(page, "alice@example.com", "/routines");
   await configure({ stale: MORNING });
-  await page.getByRole("button", { name: "Pause Morning review", exact: true }).click();
+  await page.getByRole("switch", { name: "Switch Morning review off", exact: true }).click();
   await expect(
     page
       .getByRole("alert")
@@ -157,8 +157,8 @@ test("stale versions are readable refusals, not silent retry or duplicate schedu
   expect((await state()).routineCalls.filter((c) => c.route === "routines/pause")).toHaveLength(1);
   expect((await state()).routines.find((r) => r.id === MORNING)?.status).toBe("enabled");
   await page.reload();
-  await page.getByRole("button", { name: "Pause Morning review", exact: true }).click();
-  await expect(row(page, "Morning review")).toContainText("Paused");
+  await page.getByRole("switch", { name: "Switch Morning review off", exact: true }).click();
+  await expect(row(page, "Morning review").getByRole("switch")).not.toBeChecked();
 });
 
 test("member reads shared history without another owner's sandbox links or shared mutation controls", async ({
@@ -167,8 +167,8 @@ test("member reads shared history without another owner's sandbox links or share
   await signIn(page, "bob@example.com", "/routines");
   await expect(row(page, "Morning review")).toBeVisible();
   await expect(row(page, "Release notes")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Pause Morning review", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Enable Bob private check", exact: true })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "Switch Morning review off", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("switch", { name: "Switch Bob private check on", exact: true })).toBeVisible();
   const detail = await panel(page, "Morning review");
   await expect(detail.getByText("Skipped", { exact: true })).toBeVisible();
   await expect(detail.locator('a[href^="/sandboxes/"]')).toHaveCount(0);
@@ -182,6 +182,6 @@ test("empty and unavailable states stay actionable without echoing upstream erro
   await configure({ failure: null, empty: true });
   await page.reload();
   await expect(page.getByText("No routines yet", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "New", exact: true }).click();
+  await page.getByRole("button", { name: "New routine", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "New routine" })).toBeVisible();
 });

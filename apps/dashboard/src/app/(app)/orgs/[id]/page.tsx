@@ -1,9 +1,9 @@
 import { CircleAlertIcon } from "lucide-react";
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { inviteMember, resendInvitation, revokeInvitation } from "@/app/actions/invitations";
-import { InvitationList, InviteForm } from "@/components/invitations";
+import { InvitationList } from "@/components/invitations";
+import { InviteMemberDialog } from "@/components/invite-member-dialog";
 import { MemberRoleForm, RemoveMember } from "@/components/member-controls";
 import { PageHeader, SectionHeader } from "@/components/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -17,8 +17,6 @@ import { listMemberships, requireViewer, type Viewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { type InvitationView, pendingInvitations } from "@/lib/invitations";
 import { initialOf } from "@/lib/members";
-import { HARNESS_PATH } from "@/lib/model-accounts";
-import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Organization" };
@@ -64,14 +62,9 @@ export default async function OrgPage({ params, searchParams }: Props) {
   const invitations = isAdmin ? await readInvitations(viewer, id, now) : null;
 
   return (
-    <>
-      <PageHeader title="Organization" description={`${membership.org.name} · ${roster.data.length} members`}>
-        <Button variant="outline" asChild>
-          <Link href={CLOUD_PROVIDERS_PATH}>Machines</Link>
-        </Button>
-        <Button variant="outline" asChild>
-          <Link href={HARNESS_PATH}>Models</Link>
-        </Button>
+    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-7">
+      <PageHeader title={membership.org.name}>
+        {isAdmin && <InviteMemberDialog org={id} action={inviteMember} />}
       </PageHeader>
 
       {joined && (
@@ -80,60 +73,14 @@ export default async function OrgPage({ params, searchParams }: Props) {
         </p>
       )}
 
-      {invitations && (
-        <section className="space-y-3" aria-labelledby="invite-heading">
-          <SectionHeader
-            id="invite-heading"
-            title="Invite a teammate"
-            description="Armada emails them a link to this invitation. They sign in with that address, review the organization and join only if they accept."
-          />
-          <InviteForm org={id} action={inviteMember} />
-          <h3 className="pt-2 text-sm font-medium">Pending invitations</h3>
-          {invitations.ok ? (
-            <InvitationList
-              org={id}
-              invitations={invitations.rows}
-              now={now}
-              resend={resendInvitation}
-              revoke={revokeInvitation}
-            />
-          ) : (
-            <Alert variant="destructive">
-              <CircleAlertIcon />
-              <AlertTitle>Pending invitations could not be loaded</AlertTitle>
-              <AlertDescription>
-                <p>
-                  {invitations.reason === "not-configured"
-                    ? "Ask an Armada administrator to finish server setup, then reload this organization."
-                    : "Reload this organization to try again. If this continues, ask an Armada administrator for help."}
-                </p>
-                <p>Existing invitations may still be pending. Your members are shown below.</p>
-                <Button asChild variant="outline" size="sm" className="mt-2">
-                  <a href={`/orgs/${id}`}>Reload organization</a>
-                </Button>
-              </AlertDescription>
-            </Alert>
-          )}
-        </section>
-      )}
-
       <section className="space-y-3" aria-labelledby="members-heading">
-        <SectionHeader
-          id="members-heading"
-          title="Members"
-          description={
-            isAdmin
-              ? "Admins invite people, connect machines and shared accounts, and manage shared snapshots, templates and tools. Members launch and use them."
-              : "Members launch and use shared resources. Ask an admin to invite people or change members."
-          }
-        >
-          <span className="text-sm text-muted-foreground tabular-nums">
-            {roster.data.length} {roster.data.length === 1 ? "member" : "members"}
-          </span>
-        </SectionHeader>
-        <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
+        <h2 id="members-heading" className="text-base font-semibold">
+          Members{" "}
+          <span className="ml-1 font-mono text-[13px] font-normal text-muted-foreground">{roster.data.length}</span>
+        </h2>
+        <div className="overflow-hidden rounded-[10px] border bg-card">
           <Table>
-            <TableHeader className="max-sm:sr-only">
+            <TableHeader className="sr-only">
               <TableRow className="hover:bg-transparent">
                 <TableHead className="pl-3 sm:pl-4">Member</TableHead>
                 <TableHead>Role</TableHead>
@@ -158,7 +105,7 @@ export default async function OrgPage({ params, searchParams }: Props) {
                       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:flex-nowrap">
                         <span
                           aria-hidden="true"
-                          className="flex size-8 shrink-0 items-center justify-center rounded-full border bg-muted text-xs font-medium text-muted-foreground max-sm:hidden"
+                          className="flex size-[26px] shrink-0 items-center justify-center rounded-full border bg-muted text-xs font-medium text-muted-foreground max-sm:hidden"
                         >
                           {initialOf(member.email)}
                         </span>
@@ -204,6 +151,36 @@ export default async function OrgPage({ params, searchParams }: Props) {
           </Table>
         </div>
       </section>
-    </>
+      {invitations && (
+        <section className="space-y-3" aria-labelledby="invite-heading">
+          <SectionHeader id="invite-heading" title="Pending invitations" />
+          {invitations.ok ? (
+            <InvitationList
+              org={id}
+              invitations={invitations.rows}
+              now={now}
+              resend={resendInvitation}
+              revoke={revokeInvitation}
+            />
+          ) : (
+            <Alert variant="destructive">
+              <CircleAlertIcon />
+              <AlertTitle>Pending invitations could not be loaded</AlertTitle>
+              <AlertDescription>
+                <p>
+                  {invitations.reason === "not-configured"
+                    ? "Ask an Armada administrator to finish server setup, then reload this organization."
+                    : "Reload this organization to try again. If this continues, ask an Armada administrator for help."}
+                </p>
+                <p>Existing invitations may still be pending. Your members are shown above.</p>
+                <Button asChild variant="outline" size="sm" className="mt-2">
+                  <a href={`/orgs/${id}`}>Reload organization</a>
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+        </section>
+      )}
+    </div>
   );
 }

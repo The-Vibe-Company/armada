@@ -3,12 +3,14 @@ import { ShellPageActions } from "@/components/shell-page-actions";
 
 /** The title of a page, one line saying what it holds, and its primary action on the right. */
 export function PageHeader({
+  inlineActions = false,
   title,
   description,
   meta,
   children,
   inlineActions = false,
 }: {
+  inlineActions?: boolean;
   title: string;
   inlineActions?: boolean;
   description?: ReactNode;
