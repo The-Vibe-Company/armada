@@ -37,6 +37,8 @@ export class Runner {
   private execChildren = new ChildOwner();
   private execReleases = new Set<Promise<void>>();
   private closing = false;
+  private shutdown: Promise<void> | undefined;
+  private requests = new Set<Promise<Response>>();
   private active = new Map<
     string,
     { turn: Turn; done: Promise<void>; controller: AbortController; prompt: StoredPrompt; terminal: boolean }
@@ -154,13 +156,37 @@ export class Runner {
     );
   }
   /** Revoke admission first, then terminate owned groups before draining their RPCs. */
-  async close(): Promise<void> {
+  close(): Promise<void> {
     this.closing = true;
-    await Promise.all([...this.execReleases]);
-    await Promise.all([this.execChildren.close(), ...Object.values(this.drivers).map((driver) => driver.close())]);
-    await Promise.allSettled([...this.commands]);
+    this.shutdown ??= this.drain();
+    return this.shutdown;
   }
-  async handle(request: Request): Promise<Response> {
+  private async drain(): Promise<void> {
+    const releases = await Promise.allSettled([...this.execReleases]);
+    const owners = await Promise.allSettled([
+      this.execChildren.close(),
+      ...Object.values(this.drivers).map((driver) => driver.close()),
+    ]);
+    // Spawn and prompt completion can register more work while shutdown is awaiting
+    // owners. Drain to quiescence, including RPC receipts, before releasing the journal.
+    while (this.commands.size || this.requests.size || this.active.size) {
+      await Promise.allSettled([
+        ...this.commands,
+        ...this.requests,
+        ...[...this.active.values()].map((active) => active.done),
+      ]);
+    }
+    await this.flushing?.catch(() => {});
+    const failed = [...releases, ...owners].find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+  }
+  handle(request: Request): Promise<Response> {
+    const work = this.handleRequest(request);
+    this.requests.add(work);
+    void work.finally(() => this.requests.delete(work));
+    return work;
+  }
+  private async handleRequest(request: Request): Promise<Response> {
     const token = request.headers.get(AUTH_HEADER) ?? "";
     if (
       Date.now() >= this.grant.expiresAt ||
