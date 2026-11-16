@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AuthError } from "@armada/auth";
 import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "../src/armada-api.ts";
 import { fileSessionStore, memorySessionStore } from "../src/session.ts";
 
@@ -212,19 +213,25 @@ test("a long-lived client uses the rotated refresh token on later requests and p
   expect((await session.read())?.refreshToken).toBe("refresh-2");
 });
 
-for (const failure of ["502", "network", "timeout"] as const) {
-  test(`lost launch outcome (${failure}) advises checking without echoing server text`, async () => {
-    const state = io({ ARMADA_TOKEN: token });
-    state.fetch = (async () => {
-      if (failure === "network") throw Error(token);
-      if (failure === "timeout") throw new DOMException(token, "TimeoutError");
-      return Response.json({ error: { message: token } }, { status: 502 });
-    }) as unknown as typeof fetch;
-    const client = await createArmadaApiClient(state);
-    await expect(client.request("/api/v1/sandbox/launch", { method: "POST" })).rejects.toThrow(
-      "Run armada list to check before retrying.",
-    );
-  });
+for (const path of ["launch", "launch-sized-v1", "launch-access-v1"]) {
+  for (const failure of ["500", "502", "network", "timeout"] as const) {
+    test(`lost launch outcome (${path}, ${failure}) advises checking without echoing server text`, async () => {
+      const state = io({ ARMADA_TOKEN: token });
+      let attempts = 0;
+      state.fetch = (async () => {
+        attempts++;
+        if (failure === "network") throw Error(token);
+        if (failure === "timeout") throw new DOMException(token, "TimeoutError");
+        return Response.json({ error: { code: "unavailable", message: token } }, { status: Number(failure) });
+      }) as unknown as typeof fetch;
+      const client = await createArmadaApiClient(state);
+      const error = await client.request(`/api/v1/sandbox/${path}`, { method: "POST" }).catch((error) => error);
+      expect(error).toBeInstanceOf(AuthError);
+      expect((error as Error).message).toContain("Run armada list to check before retrying.");
+      expect((error as Error).message).not.toContain(token);
+      expect(attempts).toBe(1);
+    });
+  }
 }
 
 for (const path of ["launch", "launch-sized-v1", "launch-access-v1"]) {
