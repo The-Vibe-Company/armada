@@ -4,6 +4,7 @@ import {
   isModelConnectionTestResult,
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   OPENCODE_ENDPOINT_ENV,
+  PUBLIC_CONTROL_ROUTES,
   parseMachineSizePolicy,
   VERSION,
 } from "@armada/core";
@@ -219,21 +220,27 @@ async function timedControlRequest(
   const url = new URL(request.url);
   const timing = options.timing;
   const route = url.pathname.slice(CONTROL_PREFIX.length);
-  if (route === "github/oauth/callback") {
-    if (request.method !== "GET" && request.method !== "POST") return fail(405, "invalid", "Use POST or GET.");
-    return options.githubAccount
-      ? options.githubAccount.callback(request)
-      : fail(503, "dependency_unavailable", "GitHub account authorization is not configured.");
+  const publicHandlers: Record<keyof typeof PUBLIC_CONTROL_ROUTES, () => Response | Promise<Response>> = {
+    "auth/methods": () => authMethodsRoute(request, options),
+    "auth/authorize": () => authorizeRoute(request, options),
+    "auth/exchange": () => exchangeRoute(request, options),
+    "auth/email/start": () => emailStartRoute(request, options),
+    "auth/email/verify": () => emailVerifyRoute(request, options),
+    "auth/refresh": () => refreshRoute(request, options),
+    "github/oauth/callback": () =>
+      options.githubAccount
+        ? options.githubAccount.callback(request)
+        : fail(503, "dependency_unavailable", "GitHub account authorization is not configured."),
+  };
+  if (Object.hasOwn(PUBLIC_CONTROL_ROUTES, route)) {
+    const publicRoute = route as keyof typeof PUBLIC_CONTROL_ROUTES;
+    const methods: readonly string[] = PUBLIC_CONTROL_ROUTES[publicRoute];
+    if (!methods.includes(request.method)) return fail(405, "invalid", `Use ${methods.join(" or ")}.`);
+    return publicHandlers[publicRoute]();
   }
-  if (route === "auth/methods") return authMethodsRoute(request, options);
-  if (route === "auth/authorize") return authorizeRoute(request, options);
-  if (route === "auth/exchange") return exchangeRoute(request, options);
-  if (route === "auth/email/start") return emailStartRoute(request, options);
-  if (route === "auth/email/verify") return emailVerifyRoute(request, options);
   if (route === "token/list") return tokenListRoute(request, options);
   if (route === "token/create") return tokenCreateRoute(request, options);
   if (route === "token/revoke") return tokenRevokeRoute(request, options);
-  if (route === "auth/refresh") return refreshRoute(request, options);
   const deletion = /^sandboxes\/([0-9a-f-]+)$/i.exec(route);
   if (deletion ? request.method !== "DELETE" : request.method !== "POST")
     return fail(405, "invalid", deletion ? "Use DELETE." : "Use POST.");
