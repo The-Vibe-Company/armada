@@ -77,22 +77,36 @@ test("unconfigured database returns unknown counts", async () => {
   });
 });
 
-test("database errors return only a generic unavailable response", async () => {
+test("database failures identify the missing relation or connection setting without leaking values", async () => {
   const log = spyOn(console, "error").mockImplementation(() => {});
   try {
-    const response = await statsRoute(get(`Bearer ${TOKEN}`), {
-      ...deps,
-      accounts: async () => {
-        throw Object.assign(new Error("postgres://synthetic:secret@database.test"), {
-          code: "08P01",
-          detail: "synthetic sensitive detail",
-        });
-      },
-    });
-    expect(response.status).toBe(503);
-    expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({ error: "stats unavailable" });
-    expect(log.mock.calls).toEqual([["armada dashboard: stats query failed", { name: "Error", code: "08P01" }]]);
+    for (const [code, diagnostic] of [
+      ["42P01", { relation: "auth.users" }],
+      ["28P01", { setting: "ARMADA_DATABASE_URL" }],
+      ["08P01", {}],
+    ] as const) {
+      log.mockClear();
+      const response = await statsRoute(get(`Bearer ${TOKEN}`), {
+        ...deps,
+        accounts: async () => ({
+          client: {
+            query: async () => {
+              throw Object.assign(new Error("sensitive driver message"), {
+                code,
+                detail: "sensitive detail",
+                table: "untrusted relation",
+              });
+            },
+          },
+        }),
+      });
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(log.mock.calls).toEqual([
+        ["armada dashboard: stats query failed", { name: "Error", code, ...diagnostic }],
+      ]);
+      expect(await response.json()).toEqual({ error: "statistics unavailable" });
+    }
   } finally {
     log.mockRestore();
   }
