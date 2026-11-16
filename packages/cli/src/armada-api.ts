@@ -6,7 +6,7 @@ import {
   githubHydrationPhase,
   type InvitationApiError,
   type InvitationErrorReason,
-  providerRateLimitMessage,
+  launchFailureHelp,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
 import { validApiReceipt } from "./api-receipts.ts";
@@ -283,29 +283,19 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         );
       }
       if (isSandboxLaunchPath(path)) {
-        if (response.status === 400 && failureCode === "no_credentials")
+        const help = launchFailureHelp(
+          failureCode,
+          (payload as { error?: { details?: unknown } })?.error?.details,
+          apiMessage(payload, ""),
+        );
+        if (help && failureCode)
           throw new ArmadaApiError(
-            "no_credentials",
-            400,
-            apiMessage(
-              payload,
-              "A configured repository needs a GitHub connection with read access. Run armada github connect, then retry.",
-            ),
+            failureCode,
+            response.status,
+            help,
             undefined,
             undefined,
-            2,
-          );
-        if (response.status === 429 && failureCode === "rate_limited")
-          throw new ArmadaApiError(
-            "rate_limited",
-            429,
-            providerRateLimitMessage((payload as { error?: { details?: unknown } }).error?.details),
-          );
-        if (response.status === 402 && failureCode === "payment_required")
-          throw new ArmadaApiError(
-            "payment_required",
-            402,
-            "The provider account cannot create machines. Check billing or credits on the selected provider account before retrying.",
+            ["invalid_request", "no_credentials"].includes(failureCode) ? 2 : 1,
           );
       }
       if (isSandboxLaunchPath(path) && response.status >= 500)

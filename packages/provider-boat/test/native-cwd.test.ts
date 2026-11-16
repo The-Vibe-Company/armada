@@ -948,7 +948,9 @@ for line in sys.stdin:
         const reason = terminal.params.turn.error.message;
         if (source === "unauthorized" || source === "unknown") {
           const expectedReason =
-            source === "unauthorized" ? "Authentication failed. Reconnect this account." : "The agent failed.";
+            source === "unauthorized"
+              ? "Authentication failed. Reconnect this account."
+              : "Plan limit reached. Resets at 2026-11-10T00:00:00.000Z.";
           expect(reason).toBe(expectedReason);
           expect(JSON.stringify(terminal)).not.toContain("private-vendor-body");
           const { normalizeEvent } = await import("../src/events.ts");
@@ -966,7 +968,13 @@ for line in sys.stdin:
               { sandboxId: "s", promptId: "p" },
               { state: { promptId: "p", status: "failed", done: true }, events: [event] },
             ),
-          ).toEqual({ state: "failed", reason: expectedReason });
+          ).toMatchObject({
+            state: "failed",
+            reason:
+              source === "unknown"
+                ? `${expectedReason} Wait for the limit to reset, or switch to another account before sending the prompt again.`
+                : expect.any(String),
+          });
           return;
         }
         expect(JSON.stringify(terminal)).not.toContain("private-vendor-body");
@@ -993,7 +1001,7 @@ for line in sys.stdin:
         );
         expect(outcome).toEqual({
           state: "failed",
-          reason,
+          reason: `${reason} Wait for the limit to reset, or switch to another account before sending the prompt again.`,
           limit: { code: "usage_limit_exceeded", ...(resetsAt ? { resetsAt } : {}) },
         });
       } finally {

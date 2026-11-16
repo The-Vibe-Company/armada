@@ -150,7 +150,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     } catch (error) {
       const failure = modalError(error);
       if (failure.code === "not_found")
-        throw refusal("provider_not_configured", "Snapshot backend authority cannot be verified.");
+        throw refusal("provider_routing_unavailable", "Snapshot backend authority cannot be verified.");
       throw failure;
     }
   }

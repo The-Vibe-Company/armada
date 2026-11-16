@@ -212,7 +212,8 @@ export async function appendModalEvents(
   events: Omit<IngestPayload, "sandboxId" | "generation">[],
   projectEvents?: (tx: Sql, events: AgentEvent[]) => Promise<void>,
 ): Promise<number> {
-  if (!sql.transaction) throw refusal("provider_not_configured", "Transactional SQL is required for event ingestion.");
+  if (!sql.transaction)
+    throw refusal("provider_routing_unavailable", "Transactional SQL is required for event ingestion.");
   const key = scopeKey(scope);
   return sql.transaction(async (db) => {
     const member = await db.query(`select 1 from public.members where org_id=$1 and user_id=$2`, [

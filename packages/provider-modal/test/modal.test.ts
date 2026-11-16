@@ -1365,8 +1365,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     f.client.apps.fromName = async () => {
       throw Object.assign(Error("private SDK diagnostic"), { name: "NotFoundError" });
     };
-    await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "provider_not_configured" });
-    await expect(f.provider.deleteSnapshot(name)).rejects.toMatchObject({ code: "provider_not_configured" });
+    await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "provider_routing_unavailable" });
+    await expect(f.provider.deleteSnapshot(name)).rejects.toMatchObject({ code: "provider_routing_unavailable" });
     expect((await f.store.image(name)).info.status).toBe("ready");
     expect(f.log).not.toContain("delete-image");
   });
@@ -1755,10 +1755,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(operator.provider.getSnapshot(snapshot)).rejects.toMatchObject({ code: "not_found" });
     operator.close();
     const { client: _client, ...withoutClient } = operatorConfiguration;
-    await expect(createComposedModalProvider(withoutClient)).rejects.toMatchObject({ code: "provider_not_configured" });
+    await expect(createComposedModalProvider(withoutClient)).rejects.toMatchObject({
+      code: "provider_routing_unavailable",
+    });
     await expect(
       createComposedModalProvider({ ...operatorConfiguration, tokenId: "incomplete-pair" }),
-    ).rejects.toMatchObject({ code: "provider_not_configured" });
+    ).rejects.toMatchObject({ code: "provider_routing_unavailable" });
     await expect(
       createComposedModalProvider({
         ...configuration,
@@ -2746,8 +2748,9 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
         [id],
       )
     ).rows[0];
-    expect(row?.status).toBe(hardExit ? "failed" : "stopped");
+    expect(row?.status).toBe(hardExit || mode === "legacy_scrub_failure" ? "failed" : "stopped");
     expect(row?.stopped_at).not.toBeNull();
+    if (mode === "legacy_scrub_failure") expect(row?.status_reason).toBe("expired");
     expect(f.log).not.toContain("delete-image");
     if (hardExit) {
       expect(row?.status_reason).toContain("without a new verified recovery checkpoint");

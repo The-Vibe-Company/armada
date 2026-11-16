@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { PUBLIC_CONTROL_ROUTES } from "@armada/core";
 import { forwardControl } from "../src/app/api/v1/[...path]/control-proxy.ts";
 import { POST } from "../src/app/api/v1/[...path]/route.ts";
 
@@ -85,11 +86,48 @@ test("forwards anonymous public auth routes without a bearer", async () => {
   expect(output).not.toContain("ARMADA_MCP_URL");
 });
 
+test("public control contract forwards every declared method anonymously, including redirects and query", async () => {
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+  for (const [path, methods] of Object.entries(PUBLIC_CONTROL_ROUTES)) {
+    for (const method of methods) {
+      const seen: Request[] = [];
+      const response = await forwardControl(
+        new Request(`https://dashboard.test/api/v1/${path}?state=login_state`, { method }),
+        path.split("/"),
+        async (input, init) => {
+          seen.push(new Request(input, init));
+          expect(init?.redirect).toBe("manual");
+          return path.endsWith("authorize") || path.endsWith("callback")
+            ? new Response(null, { status: 302, headers: { location: "https://identity.test/authorize" } })
+            : Response.json({ methods: ["email", "github", "google"] });
+        },
+      );
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.method).toBe(method);
+      expect(seen[0]?.url).toBe(`https://armada.test/api/v1/${path}${method === "GET" ? "?state=login_state" : ""}`);
+      expect(seen[0]?.headers.get("authorization")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      if (response.status === 302) expect(response.headers.get("location")).toBe("https://identity.test/authorize");
+      else {
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ methods: ["email", "github", "google"] });
+      }
+    }
+  }
+});
+
 test("forwards authenticated CLI operations and MCP control routes", async () => {
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   const seen: Request[] = [];
   for (const path of [
     ["sandbox", "test-model-connection"],
+    ["golden", "adopt"],
+    ["github", "runtime-status"],
+    ["sandbox", "resume"],
+    ["sandbox", "delete"],
+    ["skillpack", "connection"],
+    ["creds", "accounts", "models"],
+    ["creds", "defaults", "set"],
     ["skillpack", "catalog"],
     ["skillpack", "versions"],
     ["skills", "defaults", "get"],

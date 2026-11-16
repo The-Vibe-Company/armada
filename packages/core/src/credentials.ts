@@ -77,10 +77,10 @@ function authJsonSecrets(value: string): string[] {
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new LaunchError("no_credentials", "The stored Codex auth.json is not valid JSON.");
+    throw new LaunchError("credential_refused", "The stored Codex auth.json is not valid JSON.");
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new LaunchError("no_credentials", "The stored Codex auth.json is not a JSON object.");
+    throw new LaunchError("credential_refused", "The stored Codex auth.json is not a JSON object.");
   }
   const leaves: string[] = [];
   const walk = (node: unknown) => {

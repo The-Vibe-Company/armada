@@ -167,7 +167,7 @@ export interface ProviderRegistry {
 
 export type ProviderRoutingErrorCode =
   /** This server has no adapter for the provider (Modal before #513). */
-  | "provider_not_configured"
+  | "provider_routing_unavailable"
   /** The record and the provider disagree: refused rather than sent to the wrong backend. */
   | "provider_mismatch";
 
@@ -184,7 +184,7 @@ export class ProviderRoutingError extends Error {
 
 /**
  * Routes each target to the factory of its own provider. A provider with no factory is an honest
- * `provider_not_configured`, and a factory that answers with another provider is refused: a Modal
+ * `provider_routing_unavailable`, and a factory that answers with another provider is refused: a Modal
  * record never falls back to Boat.
  */
 export function createProviderRegistry(
@@ -196,7 +196,7 @@ export function createProviderRegistry(
       const factory = factories[target.provider];
       if (!factory) {
         throw new ProviderRoutingError(
-          "provider_not_configured",
+          "provider_routing_unavailable",
           target.provider,
           `This Armada server cannot run ${target.provider} sandboxes yet: no ${target.provider} provider is configured.`,
         );

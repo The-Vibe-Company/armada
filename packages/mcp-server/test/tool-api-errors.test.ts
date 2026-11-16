@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { LaunchError } from "@armada/core";
+import { LaunchError, ProviderError } from "@armada/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { callSharedTool, ToolApiError } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
@@ -37,7 +37,7 @@ test.each([
       skillFailure: { reason: "skillpack_install_nonzero", stage: "install" },
     }),
     details: { reason: "skillpack_install_nonzero", stage: "install" },
-    status: 400,
+    status: 502,
   },
   {
     error: new LaunchError("unsupported", "Rebuild the golden.", {
@@ -57,7 +57,14 @@ test.each([
     throw new Error("Expected a tool failure");
   } catch (caught) {
     expect(caught).toBeInstanceOf(ToolApiError);
-    expect(caught).toMatchObject({ code: error.code, message: error.message, status });
+    expect(caught).toMatchObject({
+      code: error.code,
+      message:
+        error.code === "start_failed"
+          ? "The sandbox could not start. Check its recorded status, correct the provider setup and launch again."
+          : error.message,
+      status,
+    });
     expect((caught as ToolApiError).details).toEqual(details);
   }
 });
@@ -122,8 +129,24 @@ test("start failures log missing-relation causes without changing the public err
   ctx.logError = (line) => logs.push(line);
   await expect(callSharedTool(ctx, "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
     code: "start_failed",
-    message: error.message,
+    message: "The sandbox could not start. Check its recorded status, correct the provider setup and launch again.",
   });
   expect(logs).toHaveLength(1);
   expect(logs[0]).toContain('relation "public.skill_defaults" does not exist');
+});
+
+test("provider start-limit reset survives the real MCP to HTTP bridge", async () => {
+  const error = new ProviderError({
+    provider: "boat",
+    code: "rate_limited",
+    status: 429,
+    retryable: true,
+    message: "private_diagnostic",
+    details: { provider: "boat", window: "day", nextStartAt: "2026-11-17T00:00:00.000Z", secret: "private_diagnostic" },
+  });
+  await expect(callSharedTool(context(error), "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+    code: "rate_limited",
+    status: 429,
+    details: { provider: "boat", window: "day", nextStartAt: "2026-11-17T00:00:00.000Z" },
+  });
 });

@@ -1,10 +1,17 @@
+import { PUBLIC_CONTROL_ROUTES } from "@armada/core";
 import { NextResponse } from "next/server";
 
 const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = 128 * 1024;
 
-const PUBLIC_POST_PATHS = new Set(["auth/refresh", "auth/exchange", "auth/email/start", "auth/email/verify"]);
 const PRIVATE_POST_PATHS = new Set([
+  "golden/adopt",
+  "github/runtime-status",
+  "sandbox/resume",
+  "sandbox/delete",
+  "skillpack/connection",
+  "creds/accounts/models",
+  "creds/defaults/set",
   "skillpack/catalog",
   "skillpack/versions",
   "skills/defaults/get",
@@ -185,8 +192,11 @@ export async function forwardControl(
   const relative = path.join("/");
   const sandboxDeletion =
     method === "DELETE" && path.length === 2 && path[0] === "sandboxes" && SANDBOX_ID.test(path[1] ?? "");
-  const isPublic = method === "POST" && PUBLIC_POST_PATHS.has(relative);
-  if (!sandboxDeletion && !(method === "POST" && (isPublic || PRIVATE_POST_PATHS.has(relative))))
+  const publicMethods: readonly string[] = Object.hasOwn(PUBLIC_CONTROL_ROUTES, relative)
+    ? PUBLIC_CONTROL_ROUTES[relative as keyof typeof PUBLIC_CONTROL_ROUTES]
+    : [];
+  const isPublic = publicMethods.includes(method);
+  if (!sandboxDeletion && !isPublic && !(method === "POST" && PRIVATE_POST_PATHS.has(relative)))
     return fail(404, "Not found.");
   const authorization = request.headers.get("authorization");
   if (!isPublic && !authorization) return fail(401, "Unauthorized.");
@@ -200,7 +210,7 @@ export async function forwardControl(
       : fail(400, "Invalid request body.");
   }
   const target = new URL(`${CONTROL_PREFIX}${relative}`, upstream);
-  if (sandboxDeletion || relative === "skillpack/catalog" || relative === "skillpack/versions")
+  if (method === "GET" || sandboxDeletion || relative === "skillpack/catalog" || relative === "skillpack/versions")
     target.search = new URL(request.url).search;
   let response: Response;
   try {
@@ -212,7 +222,7 @@ export async function forwardControl(
         accept: "application/json",
       },
       ...(body ? { body } : {}),
-      redirect: "error",
+      redirect: isPublic ? "manual" : "error",
       cache: "no-store",
       signal: AbortSignal.any([
         request.signal,
@@ -234,6 +244,8 @@ export async function forwardControl(
     return fail(502, "Armada API is unavailable.");
   }
   const headers = new Headers();
+  if (isPublic && response.status === 302 && response.headers.has("location"))
+    headers.set("location", response.headers.get("location")!);
   const contentType = response.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
   // Preserve the configured Armada upstream's fixed, numeric phase timings.

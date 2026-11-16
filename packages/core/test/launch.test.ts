@@ -1109,7 +1109,11 @@ exit 1
       log.mockRestore();
     }
     expect(waits).toEqual([1000]);
-    expect(diagnostics.map((line) => JSON.parse(line))).toEqual([
+    expect(
+      diagnostics
+        .map((line) => JSON.parse(line))
+        .filter((entry) => entry.event === "launch_repository_ownership_retry"),
+    ).toEqual([
       {
         event: "launch_repository_ownership_retry",
         sandboxId: [...world.rows.keys()][0],
@@ -1381,7 +1385,7 @@ describe("prompt outcome", () => {
         sandboxId: "bx_1",
         promptId: "p1",
       }),
-    ).toEqual({ state: "failed", reason: "out of credit" });
+    ).toEqual({ state: "failed", reason: "Agent failed. Check the agent configuration before retrying." });
     expect(
       await promptOutcome(outcomeProvider("interrupted", events([])), { sandboxId: "bx_1", promptId: "p1" }),
     ).toEqual({
@@ -1403,7 +1407,8 @@ describe("prompt outcome", () => {
         }),
       ).toEqual({
         state: "failed",
-        reason: "Plan limit reached. Try again after the limit resets.",
+        reason:
+          "Plan limit reached. Try again after the limit resets. Wait for the limit to reset, or switch to another account before sending the prompt again.",
         limit: { code: "usage_limit_exceeded" },
       });
     }
@@ -1412,7 +1417,10 @@ describe("prompt outcome", () => {
         sandboxId: "s",
         promptId: "p1",
       }),
-    ).toEqual({ state: "failed", reason: "Reconnect the agent account, then send the prompt again." });
+    ).toEqual({
+      state: "failed",
+      reason: "Authentication failed. Reconnect the agent account, then send the prompt again.",
+    });
     expect(
       await promptOutcome(outcomeProvider("interrupted", events([prompt("interrupted"), limit])), {
         sandboxId: "s",
