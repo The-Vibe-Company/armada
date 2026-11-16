@@ -724,6 +724,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
             event: "boat_preservation_exec",
             providerSandboxId: request.sandboxId,
             stage,
+            purpose: stage === "exec" ? "native_usage" : "work_preservation",
             execId,
             caller: request.preservationContext?.source ?? "unspecified",
             captureId: request.preservationContext?.captureId ?? null,
