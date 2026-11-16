@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { type ChangeEvent, type KeyboardEvent, startTransition, useEffect, useRef, useState } from "react";
 import { switchOrganization } from "@/app/actions/selected-org";
+import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -120,9 +121,9 @@ function SelectedOrg({
 
   const described = [draft && "active-org-hint", error && "active-org-error"].filter(Boolean).join(" ");
   return (
-    <div className="space-y-1.5 px-4 pb-3 md:px-3 md:pb-4">
-      <div className="flex items-center justify-between gap-2 px-0 md:px-2">
-        <Label htmlFor="active-org" className="text-xs font-medium text-muted-foreground">
+    <div className="relative space-y-1.5 rounded-lg px-1.5 py-1 hover:bg-[var(--raised)]">
+      <div className="flex items-center justify-between gap-2 pl-10">
+        <Label htmlFor="active-org" className="sr-only">
           Active organization
         </Label>
         {busy ? (
@@ -138,25 +139,28 @@ function SelectedOrg({
           )
         )}
       </div>
-      <NativeSelect
-        ref={select}
-        id="active-org"
-        name="org"
-        value={target ?? draft ?? selected}
-        onChange={choose}
-        onKeyDown={key}
-        onBlur={() => setDraft(null)}
-        aria-busy={busy}
-        aria-disabled={busy}
-        aria-describedby={described || undefined}
-        className="bg-background font-medium aria-disabled:cursor-progress"
-      >
-        {memberships.map(({ org }) => (
-          <option key={org.id} value={org.id}>
-            {org.name}
-          </option>
-        ))}
-      </NativeSelect>
+      <div className="flex items-center gap-2.5">
+        <BrandMark />
+        <NativeSelect
+          ref={select}
+          id="active-org"
+          name="org"
+          value={target ?? draft ?? selected}
+          onChange={choose}
+          onKeyDown={key}
+          onBlur={() => setDraft(null)}
+          aria-busy={busy}
+          aria-disabled={busy}
+          aria-describedby={described || undefined}
+          className="h-7 border-0 bg-transparent px-0 text-[13px] font-semibold shadow-none aria-disabled:cursor-progress dark:bg-transparent"
+        >
+          {memberships.map(({ org }) => (
+            <option key={org.id} value={org.id}>
+              {org.name}
+            </option>
+          ))}
+        </NativeSelect>
+      </div>
       {draft && (
         <p id="active-org-hint" className="px-0 text-xs text-muted-foreground md:px-2">
           Press Enter to switch.

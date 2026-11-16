@@ -17,6 +17,26 @@ connections, keys and members. These notes keep later changes consistent with th
 - **Every state says what to do next.** Empty lists name the action that fills them; errors say what failed
   and where to fix it. No marketing copy, no invented labels.
 
+## November 2026 redesign foundation (#2487)
+
+The owner’s source of truth is checked in at `docs/design/refonte-2026-11-16/`.
+`Armada.dc.html` specifies the shell and primitives; `Logo.dc.html` supplies the provider marks.
+Later slices own page content and use this shared foundation rather than redefining tokens.
+
+Prototype token names are public CSS variables: `canvas`, `sidebar`, `surface`, `raised`,
+`sunken`, `line`, `line-strong`, `fg`, `muted`, `faint`, `ok`, `warn`, `danger`, `info`,
+`scrim`, and `accent` with its `hover`, `fg`, `tint`, `edge`, and `text` variants.
+The `.dark` class applies the prototype’s dark palette. Existing shadcn utilities map onto
+these variables: `bg-muted` uses `raised`, `text-muted-foreground` uses `muted`, and
+`bg-accent` is the neutral interaction fill. For the actual lime use `bg-primary` or
+`var(--accent)`. This distinction preserves existing hover styles throughout the app.
+Shadows are exposed as `shadow-md` and `shadow-lg` utilities and `--elevation-md/lg`.
+
+Reuse `Button`, `Badge`, `Card`, `Input`, `Textarea`, `Dialog`, `Sheet`, `Table`,
+`PageHeader`, `Empty`, `StatusBadge` and `StatusDot`; keep status meaning in `status-tone.ts`.
+The shell owns the 244px rail, organization scope, command search, launch entry,
+inline active sandboxes, grouped links, footer and breadcrumb. PageHeader actions render into the top bar through ShellPageActions; their forms and authorization remain page-owned.
+
 ## Tokens
 
 The tokens live in `apps/dashboard/src/app/globals.css` (#757). The public landing has its own (`landing.css`) and
@@ -26,9 +46,9 @@ for meaning only, and every text colour holds AA (4.5:1) on the page, the card a
 | Role | Choice |
 | --- | --- |
 | Type | Geist and Geist Mono, the landing's faces (`src/app/landing/fonts.ts`), on every platform; page title 24px semibold, section 16px, card title 14px semibold, body 14px, facts 13px, labels 12px muted |
-| Neutrals | cool graphite (hue 265, barely tinted); the page (`background`) a shade off the cards (`card`), so groups read without heavy borders; `sidebar` for the navigation rail |
+| Neutrals | prototype cool graphite (hue 265); the page (`background`) a shade off the cards (`card`), so groups read without heavy borders; `sidebar` for the navigation rail |
 | State colour | `info` in flight (running), `success` live and idle (ready, connected), `warning` in transition (starting, stopping), `destructive` failed; neutral at rest. `src/lib/status-tone.ts` is the one mapping, `StatusBadge` draws it with a dot that pulses while the state moves on its own |
-| Brand | the landing's lime, on the mark only; focus rings are the landing's frontier blue (`ring`) |
+| Brand | prototype lime for primary actions and the fleet mark; focus rings use `accent-edge` |
 | Identifiers | Geist Mono only for machine ids (sandbox ids, snapshots, paths), with a `CopyButton` where people take them elsewhere |
 | Spacing | 4px grid; 24px between page sections, 12px inside a group |
 | Radius | `rounded-xl` for cards, tables and dialogs, `rounded-md` for controls inside them |

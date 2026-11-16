@@ -102,7 +102,7 @@ export function TemplateMark() {
   return (
     <span
       aria-hidden
-      className="flex size-8 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-primary [&_svg]:size-4"
+      className="flex size-8 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-[var(--accent-text)] [&_svg]:size-4"
     >
       <LayoutTemplateIcon />
     </span>
