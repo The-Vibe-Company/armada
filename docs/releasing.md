@@ -266,17 +266,24 @@ one-time provider cutover freeze above is separate.
 Ordinary main workflows retain only the latest pending main without cancelling
 active work. Release holds the shared `release-production` admission lock for its
 whole lifetime; ordinary staging jobs acquire that same lock. Pinned child smoke
-uses a distinct lock to avoid reacquiring its parent's reservation. At admission,
-ordinary jobs inspect active Release runs and yield before setup or mutation when
-a release is queued. This lets a queued release pass ordinary waiters without
-running their deployment. An already admitted ordinary deployment finishes safely.
-Reservation is conservative: Release preparation and dry runs also briefly defer
-ordinary staging; they still do not read production configuration.
+uses a distinct lock to avoid reacquiring its parent's reservation. The shared
+lock is the only admission authority: an ordinary job that acquires it
+proceeds, regardless of stale queued Release rows in the Actions API. Already
+admitted deployments finish safely. Preparation and dry runs briefly serialize on
+the lock too, but do not create a separate reservation or read production configuration.
 
 A `workflow_run` completion wakeup (success, failure or cancellation) resolves current main,
-not the release SHA, and uses the ordinary staging path. Intermediate wakeups
-yield if another Release remains; push/completion wakeups coalesce in the same
-latest-main group. There is no manual merge pause. API or main-resolution failure
+not the release SHA, and uses the ordinary staging path. Push/completion wakeups
+coalesce in the same latest-main group; the final Release completion leaves a
+newest-main wakeup waiting on the lock, rather than a successful no-deploy deferral.
+A completion coalesces with an authenticated successful push deployment only when
+its deployment step began after that Release finished and live health still proves
+the same version and commit. It reports a neutral coalescing summary; unavailable
+or ambiguous evidence falls back to deployment. Pinned release calls always require
+fresh exact-schema acceptance and never use this optimization.
+Manual workflow_dispatch uses the same lock and proceeds too. Waiting admission
+is visibly queued in Actions, never a green deployment with every mutation skipped.
+There is no manual merge pause. API or main-resolution failure
 fails closed. Schema-changing merges flow normally; their staging migrations wait
 until the release relinquishes its reservation. Never cancel live smoke blindly.
 Completion journals carry the triggering Release run ID. The shared ordinary and
