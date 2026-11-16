@@ -56,10 +56,37 @@ export const NAV_GROUPS: readonly NavGroup[] = [
 ];
 
 /** Whether `pathname` is `href` or a page under it. */
-export const isActiveLink = (pathname: string, href: string) => pathname === href || pathname.startsWith(`${href}/`);
+export const isActiveLink = (pathname: string, href: string) => {
+  const canonical =
+    pathname === "/hosts" || pathname.startsWith("/hosts/")
+      ? pathname.replace(/^\/hosts/, "/providers/cloud")
+      : pathname;
+  return canonical === href || canonical.startsWith(`${href}/`);
+};
 
 /**
  * Whether the sidebar shows anything about organizations: the switcher only to someone who belongs to more than one,
  * and the "create one" prompt to someone with none in scope. A single organization shows nothing.
  */
 export const showsOrganizations = (memberships: number, selected: boolean) => !selected || memberships > 1;
+
+/**
+ * Switch at section level, never carrying item IDs or filters into another organization.
+ * Canonical sections come from the navigation catalog; older entry points stay supported.
+ */
+export function organizationSwitchDestination(section: string, organizationId: string): string {
+  const pathname = section.startsWith("/") ? section : `/${section}`;
+  const aliases: Record<string, string> = {
+    setup: "/providers/cloud",
+    hosts: "/providers/cloud",
+    environments: "/snapshots",
+    goldens: "/snapshots",
+    credentials: "/harness",
+    connections: "/tools",
+  };
+  const key = pathname.split("/")[1] ?? "";
+  const alias = Object.hasOwn(aliases, key) ? aliases[key] : undefined;
+  const destination =
+    alias ?? NAV_GROUPS.flatMap((group) => group.links).find((link) => isActiveLink(pathname, link.href))?.href;
+  return destination === "/orgs" ? `/orgs/${encodeURIComponent(organizationId)}` : (destination ?? "/sandboxes");
+}

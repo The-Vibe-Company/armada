@@ -9,6 +9,7 @@ import {
   STAGING_ORIGIN,
   saveSmokeJournal,
 } from "./smoke-sandbox-cleanup.ts";
+import { timedSmokeStep } from "./smoke-step.ts";
 import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
 /** API-only smoke; ARMADA_SMOKE=create_real_compute explicitly authorizes compute.
  * ARMADA_URL must be an HTTPS origin; ARMADA_TOKEN is the only credential.
@@ -177,11 +178,12 @@ async function runPostDeploySmoke(
   io: SmokeIo,
   cleanupEnd?: number,
 ): Promise<boolean> {
-  function report(index: number, step: string, error?: unknown) {
+  function report(index: number, step: string, error?: unknown, elapsedMs?: number) {
     io.out(
       JSON.stringify({
         case: index,
         step,
+        ...(elapsedMs === undefined ? {} : { elapsedMs }),
         pass: error === undefined,
         ...(error === undefined
           ? {}
@@ -412,14 +414,7 @@ async function runPostDeploySmoke(
         const pins = await readDefaultPins(item.org, item.goldenId!, {
           request,
           step: async (name, action) => {
-            try {
-              const value = await action();
-              report(index, name);
-              return value;
-            } catch (error) {
-              report(index, name, error);
-              throw error;
-            }
+            return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
           },
         });
         defaultPins.set(index, pins);
@@ -439,14 +434,7 @@ async function runPostDeploySmoke(
         isFailure: (error, status, code) =>
           error instanceof SmokeFailure && error.status === status && error.code === code,
         step: async (name, action) => {
-          try {
-            const value = await action();
-            report(index, name);
-            return value;
-          } catch (error) {
-            report(index, name, error);
-            throw error;
-          }
+          return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
         },
         out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
         withCleanup: async (action) => {
@@ -471,14 +459,7 @@ async function runPostDeploySmoke(
           request: (path, body) => request(path, body, undefined, path === "templates/launch" ? 600_000 : 120_000),
           poll,
           step: async (name, action) => {
-            try {
-              const value = await action();
-              report(index, name);
-              return value;
-            } catch (error) {
-              report(index, name, error);
-              throw error;
-            }
+            return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
           },
           out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
           withCleanup: async (action) => {
@@ -521,14 +502,7 @@ async function runPostDeploySmoke(
         sleep: io.sleep,
         out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
         step: async (name, action) => {
-          try {
-            const value = await action();
-            report(index, name);
-            return value;
-          } catch (error) {
-            report(index, name, error);
-            throw error;
-          }
+          return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
         },
         withCleanup: async (action) => {
           cleaning = true;
@@ -548,14 +522,7 @@ async function runPostDeploySmoke(
     (preservation ? [false, true] : [false]).map((dirty) => ({ index, item, dirty })),
   )) {
     async function step<T>(name: string, action: () => Promise<T>): Promise<T> {
-      try {
-        const value = await action();
-        report(index, name);
-        return value;
-      } catch (error) {
-        report(index, name, error);
-        throw error;
-      }
+      return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
     }
     const sandbox = <T>(action: string, body: object, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);

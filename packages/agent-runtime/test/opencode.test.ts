@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "@armada/core";
 import { createRedactor, OpenCodeDriver } from "../src/index.ts";
 import { configureOpenCodeEndpoint } from "../src/opencode-endpoint.ts";
+import { exportedToolProofs } from "../src/opencode-export-observations.ts";
 
 // The local stdio/export fixture does not implement OpenCode's separate HTTP event server.
 // Observer wire/auth/filter behavior has its own fake-stream boundary test (no network).
@@ -12,51 +13,6 @@ const createRetryObserver = async () => ({
   args: ["acp"],
   env: {},
   observation: { ready: async () => {}, failed: new Promise<never>(() => {}), close: async () => {} },
-});
-
-// Native exported session state is the checkpoint boundary: credentials/cache/SQLite must not be persisted.
-test("OpenCode exports sanitized history and imports it before no-text resume and follow-up", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opencode-state-"));
-  const driver = new OpenCodeDriver({
-    createRetryObserver,
-    executable: `${import.meta.dir}/fixtures/opencode.ts`,
-    root: join(root, "opencode"),
-    cwd: root,
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
-    redact: createRedactor(["private-key-for-test"]),
-  });
-  const finalMessages: string[] = [];
-  const context = {
-    request: { sandboxId: "s", harness: "opencode" as const, text: "hello" },
-    signal: new AbortController().signal,
-    emit: (event: import("../src/protocol.ts").DriverEvent) => {
-      if (event.kind === "message" && !event.partial && event.text) finalMessages.push(event.text);
-    },
-    session: (id: string) => expect(id).toBe("session-1"),
-  };
-  try {
-    expect(await driver.start(context).done).toBe("finished");
-    expect(finalMessages).toEqual(["hello"]);
-    const history = await readFile(join(root, "opencode/sessions/session-1.json"), "utf8");
-    expect(history).not.toContain("private-key-for-test");
-    expect(history).toContain("[REDACTED]");
-    const { HarnessState } = await import("../src/state.ts");
-    await Bun.write(join(root, "opencode/data/auth.json"), "fake-private-cache");
-    const state = new HarnessState(root, createRedactor(["private-key-for-test"]));
-    await state.checkpoint();
-    await state.restore();
-    expect(await Bun.file(join(root, "opencode/data/auth.json")).exists()).toBe(false);
-
-    expect(await driver.resumeSession({ ...context, sessionId: "session-1" })).toEqual({ sessionId: "session-1" });
-    expect(await driver.start({ ...context, sessionId: "session-1" }).done).toBe("finished");
-    expect(finalMessages).toEqual(["hello", "hello"]);
-    await expect(driver.resumeSession({ ...context, sessionId: "../other" })).rejects.toThrow(
-      "invalid_harness_protocol",
-    );
-  } finally {
-    await driver.close();
-    await rm(root, { recursive: true, force: true });
-  }
 });
 
 // Protect the private native provider configuration, not a second credential catalog.
@@ -239,7 +195,63 @@ test("OpenCode meters every new native assistant step once, excludes loaded hist
   }
 });
 
-// Completed native export, not model-controlled ACP titles, owns shell proof.
+// Completed native exports own tool receipts; ACP display titles are not evidence.
+function nativeToolMessage(id: string, kind: "shell" | "mcp") {
+  const metadata: { exit?: number; truncated: boolean; timeout?: boolean } =
+    kind === "shell" ? { exit: 0, truncated: false, timeout: false } : { truncated: false };
+  return {
+    info: { id, sessionID: "session-1", role: "assistant", time: { completed: 1 } },
+    parts: [
+      {
+        type: "tool",
+        id: `part-${id}`,
+        callID: `call-${id}`,
+        messageID: id,
+        sessionID: "session-1",
+        tool: kind === "shell" ? "bash" : "armada_fixture_read_counter",
+        state: {
+          status: "completed",
+          input:
+            kind === "shell"
+              ? { command: id === "old" ? "printf OLD" : "printf EXPECTED" }
+              : { label: "fixture", nested: { a: 1, b: 2 } },
+          output: kind === "shell" ? (id === "old" ? "OLD" : "EXPECTED") : "native MCP result",
+          metadata,
+        },
+      },
+    ],
+  };
+}
+
+const shellReceipt = (id: string, command: string, output: string) => ({
+  type: "armada/opencodeShell" as const,
+  data: {
+    version: 1,
+    nativeMessageId: id,
+    callId: `call-${id}`,
+    tool: "bash",
+    command,
+    output,
+    exitCode: 0,
+    truncated: false,
+  },
+});
+const mcpServer = { type: "http" as const, url: "https://gateway.example/mcp" };
+const mcpConfiguration = { revision: "r1", servers: { armada_fixture: mcpServer } };
+const mcpReceipt = (id: string) => ({
+  type: "armada/opencodeMcp" as const,
+  data: {
+    version: 1,
+    nativeMessageId: id,
+    callId: `call-${id}`,
+    server: "armada_fixture",
+    configurationRevision: "r1",
+    nativeToolName: "armada_fixture_read_counter",
+    input: { label: "fixture", nested: { a: 1, b: 2 } },
+    result: { output: "native MCP result", isError: false },
+  },
+});
+
 test.each([
   "success",
   "exit",
@@ -249,63 +261,24 @@ test.each([
   "duplicate",
   "foreign-session",
   "oversized",
-] as const)("OpenCode shell proof excludes restored history and refuses unsafe native results (%s)", async (mode) => {
-  const root = await mkdtemp(join(tmpdir(), "opencode-shell-proof-"));
-  const env = { EXPORT_STAGE: "1", EXPORT_TOOLS: mode, PATH: process.env.PATH ?? "/usr/bin:/bin" };
-  const driver = new OpenCodeDriver({
-    createRetryObserver,
-    executable: `${import.meta.dir}/fixtures/opencode.ts`,
-    root,
-    cwd: root,
-    env,
-    redact: createRedactor([]),
-  });
-  const proofs: unknown[] = [];
-  const context = {
-    request: { sandboxId: "s", harness: "opencode" as const, text: "hello" },
-    signal: new AbortController().signal,
-    emit: (event: import("../src/protocol.ts").DriverEvent) => {
-      if (event.kind === "other" && event.type === "armada/opencodeShell") proofs.push(event.data);
-    },
-    session: () => {},
-  };
-  try {
-    expect(await driver.start(context).done).toBe("finished");
-    expect(proofs).toEqual([
-      {
-        version: 1,
-        nativeMessageId: "old",
-        callId: "call-old",
-        tool: "bash",
-        command: "printf OLD",
-        output: "OLD",
-        exitCode: 0,
-        truncated: false,
-      },
+] as const)("OpenCode shell proof excludes restored history and refuses unsafe native results (%s)", (mode) => {
+  const old = nativeToolMessage("old", "shell"),
+    next = nativeToolMessage("new-tool", "shell");
+  const part = next.parts[0]!;
+  if (mode === "exit") part.state.metadata.exit = 1;
+  if (mode === "missing-exit") delete part.state.metadata.exit;
+  if (mode === "truncated") part.state.metadata.truncated = true;
+  if (mode === "timeout") part.state.metadata.timeout = true;
+  if (mode === "duplicate") next.parts.push(part);
+  if (mode === "foreign-session") part.sessionID = "foreign";
+  if (mode === "oversized") part.state.output = "x".repeat(65537);
+  if (mode === "success")
+    expect(exportedToolProofs({ info: { id: "session-1" }, messages: [old] }, new Set())).toEqual([
+      shellReceipt("old", "printf OLD", "OLD"),
     ]);
-    proofs.length = 0;
-    env.EXPORT_STAGE = "2";
-    expect(await driver.start({ ...context, sessionId: "session-1" }).done).toBe("finished");
-    expect(proofs).toEqual(
-      mode === "success"
-        ? [
-            {
-              version: 1,
-              nativeMessageId: "new-tool",
-              callId: "call-new-tool",
-              tool: "bash",
-              command: "printf EXPECTED",
-              output: "EXPECTED",
-              exitCode: 0,
-              truncated: false,
-            },
-          ]
-        : [],
-    );
-  } finally {
-    await driver.close();
-    await rm(root, { recursive: true, force: true });
-  }
+  expect(exportedToolProofs({ info: { id: "session-1" }, messages: [old, next] }, new Set(["old"]))).toEqual(
+    mode === "success" ? [shellReceipt("new-tool", "printf EXPECTED", "EXPECTED")] : [],
+  );
 });
 
 test.each([
@@ -317,49 +290,64 @@ test.each([
   "unknown-server",
   "ambiguous-server",
   "oversized",
-] as const)("OpenCode MCP proof binds new native results to the selected configuration (%s)", async (mode) => {
+] as const)("OpenCode MCP proof binds new native results to the selected configuration (%s)", (mode) => {
+  const old = nativeToolMessage("old", "mcp"),
+    next = nativeToolMessage("new-tool", "mcp");
+  const part = next.parts[0]!;
+  if (mode === "failed") part.state.status = "error";
+  if (mode === "truncated") part.state.metadata.truncated = true;
+  if (mode === "duplicate") next.parts.push(part);
+  if (mode === "foreign-session") part.sessionID = "foreign";
+  if (mode === "unknown-server") part.tool = "foreign_read_counter";
+  if (mode === "oversized") part.state.output = "x".repeat(65537);
+  const mcp =
+    mode === "ambiguous-server"
+      ? { revision: "r2", servers: { ...mcpConfiguration.servers, armada_fixture_read: mcpServer } }
+      : mcpConfiguration;
+  if (mode === "success")
+    expect(exportedToolProofs({ info: { id: "session-1" }, messages: [old] }, new Set(), mcp)).toEqual([
+      mcpReceipt("old"),
+    ]);
+  expect(exportedToolProofs({ info: { id: "session-1" }, messages: [old, next] }, new Set(["old"]), mcp)).toEqual(
+    mode === "success" ? [mcpReceipt("new-tool")] : [],
+  );
+});
+
+// One real driver receipt owns save/restore baseline delivery and native event publication.
+test("OpenCode driver publishes only the new MCP receipt from a follow-up native export", async () => {
   const root = await mkdtemp(join(tmpdir(), "opencode-mcp-proof-"));
-  const env = { EXPORT_STAGE: "1", EXPORT_MCP: mode, PATH: process.env.PATH ?? "/usr/bin:/bin" };
+  const env = { EXPORT_STAGE: "1", EXPORT_MCP: "success", PATH: process.env.PATH ?? "/usr/bin:/bin" };
   const driver = new OpenCodeDriver({
     createRetryObserver,
     executable: `${import.meta.dir}/fixtures/opencode.ts`,
     root,
     cwd: root,
     env,
-    redact: createRedactor([]),
+    redact: createRedactor(["native MCP result"]),
   });
   const proofs: unknown[] = [];
-  const server = { type: "http" as const, url: "https://gateway.example/mcp" };
   const context = {
     request: { sandboxId: "s", harness: "opencode" as const, text: "hello" },
     signal: new AbortController().signal,
-    mcp: { revision: "r1", servers: { armada_fixture: server } },
+    mcp: mcpConfiguration,
     emit: (event: import("../src/protocol.ts").DriverEvent) => {
       if (event.kind === "other" && event.type === "armada/opencodeMcp") proofs.push(event.data);
     },
     session: () => {},
   };
-  const expected = (id: string) => ({
-    version: 1,
-    nativeMessageId: id,
-    callId: `call-${id}`,
-    server: "armada_fixture",
-    configurationRevision: "r1",
-    nativeToolName: "armada_fixture_read_counter",
-    input: { label: "fixture", nested: { a: 1, b: 2 } },
-    result: { output: "native MCP result", isError: false },
-  });
   try {
     expect(await driver.start(context).done).toBe("finished");
-    expect(proofs).toEqual([expected("old")]);
+    expect(proofs).toEqual([mcpReceipt("old").data]);
+    const history = await readFile(join(root, "sessions/session-1.json"), "utf8");
+    expect(history).not.toContain("native MCP result");
+    expect(history).toContain("[REDACTED]");
+    await expect(driver.resumeSession({ ...context, sessionId: "../other" })).rejects.toThrow(
+      "invalid_harness_protocol",
+    );
     proofs.length = 0;
     env.EXPORT_STAGE = "2";
-    const mcp =
-      mode === "ambiguous-server"
-        ? { revision: "r2", servers: { ...context.mcp.servers, armada_fixture_read: server } }
-        : context.mcp;
-    expect(await driver.start({ ...context, sessionId: "session-1", mcp }).done).toBe("finished");
-    expect(proofs).toEqual(mode === "success" ? [expected("new-tool")] : []);
+    expect(await driver.start({ ...context, sessionId: "session-1" }).done).toBe("finished");
+    expect(proofs).toEqual([mcpReceipt("new-tool").data]);
   } finally {
     await driver.close();
     await rm(root, { recursive: true, force: true });

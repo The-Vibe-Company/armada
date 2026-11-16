@@ -424,7 +424,8 @@ export async function resolveCredentials(
     ["org", input.orgId],
   ] as const) {
     const rows = await reader.credentials(scope, ownerId);
-    const compatible = rows.filter((row) => kinds.includes(row.kind));
+    // Historical rows remain available for explicit binding refusal, not automatic selection.
+    const compatible = rows.filter((row) => row.status !== "deleted" && kinds.includes(row.kind));
     const candidates =
       input.credentialId !== undefined ? rows.filter((row) => row.id === input.credentialId) : compatible;
     if (candidates.length === 0) continue;

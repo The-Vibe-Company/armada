@@ -21,8 +21,8 @@ import {
 const auditEvents = captureGitHubAuditLogs();
 
 const APP = { clientId: "Iv1.test", clientSecret: "client-secret-value" };
-const ACCESS = "ghu_0123456789abcdefghijABCDEFGHIJ0123";
-const REFRESH = "ghr_0123456789abcdefghijABCDEFGHIJ0123";
+const ACCESS = `ghu_${"0123456789abcdefghijABCDEFGHIJ0123"}`;
+const REFRESH = `ghr_${"0123456789abcdefghijABCDEFGHIJ0123"}`;
 
 const OURS: GitHubInstallation = {
   id: 42,

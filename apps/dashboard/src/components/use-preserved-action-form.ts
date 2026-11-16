@@ -2,6 +2,18 @@
 
 import { useLayoutEffect, useState } from "react";
 
+const explicitResets = new WeakSet<HTMLFormElement>();
+
+/** Permit only this synchronous, confirmed-success reset; later action resets still preserve the draft. */
+export function resetPreservedActionForm(form: HTMLFormElement) {
+  explicitResets.add(form);
+  try {
+    form.reset();
+  } finally {
+    explicitResets.delete(form);
+  }
+}
+
 /**
  * React action resets must not ask controlled Radix fields to restore their initial choices or fire actions.
  * Keep their state/native form values, while retaining the original one-attempt lifetime of uncontrolled secrets.
@@ -12,6 +24,7 @@ export function usePreservedActionForm() {
   useLayoutEffect(() => {
     if (!form) return;
     const keep = (event: Event) => {
+      if (explicitResets.has(form)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       for (const field of form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(

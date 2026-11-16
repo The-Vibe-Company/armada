@@ -10,7 +10,8 @@ import {
 } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
 import { createAvailabilitySampler } from "./availability.ts";
-import { register, serverOrigin, tick, validToken } from "./daemon.ts";
+import { enforcePhysicalExpiry, register, serverOrigin, tick, validToken } from "./daemon.ts";
+import { dockerDiskFreeBytes, withDiskFloor } from "./disk.ts";
 import { cleanupOfficialImages } from "./image-retention.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
@@ -169,7 +170,8 @@ async function main(args: string[]) {
     }
   };
   try {
-    const api = httpApi(fetch, createAvailabilitySampler(dockerCli));
+    const sampleDisk = () => dockerDiskFreeBytes(dockerCli);
+    const api = httpApi(fetch, createAvailabilitySampler(dockerCli), sampleDisk);
     if (command === "register" || command === "install") {
       if (await store.exists()) throw new Error("Host already registered");
       const token = (await Bun.stdin.text()).trim();
@@ -190,17 +192,20 @@ async function main(args: string[]) {
       now: Date.now,
       limits: () => limits,
     });
-    const runtime = {
-      ...executor,
-      configureLimits(next: DockerSandboxLimits | undefined) {
-        if (next && next.pids !== 4096) throw new Error("Invalid process policy");
-        limits = dockerResourceLimits(dockerHostResources(), next);
+    const runtime = withDiskFloor(
+      {
+        ...executor,
+        configureLimits(next: DockerSandboxLimits | undefined) {
+          if (next && next.pids !== 4096) throw new Error("Invalid process policy");
+          limits = dockerResourceLimits(dockerHostResources(), next);
+        },
+        startRuntime: dockerRuntimeStarter(executor, {
+          serverUrl: state.server,
+          cacheDir: join(directory, "runtime-cache"),
+        }),
       },
-      startRuntime: dockerRuntimeStarter(executor, {
-        serverUrl: state.server,
-        cacheDir: join(directory, "runtime-cache"),
-      }),
-    };
+      sampleDisk,
+    );
     if (process.env.ARMADA_DOCKER_RETENTION_SECONDS !== undefined && !state.retentionPolicyFromServer) {
       const seconds = Number(process.env.ARMADA_DOCKER_RETENTION_SECONDS);
       if (!/^\d+$/.test(process.env.ARMADA_DOCKER_RETENTION_SECONDS) || !Number.isSafeInteger(seconds))
@@ -216,22 +221,44 @@ async function main(args: string[]) {
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
-    let nextImageCleanup = 0;
-    while (!stopping) {
-      if (Date.now() >= nextImageCleanup) {
-        nextImageCleanup = Date.now() + 60 * 60_000;
-        try {
-          await cleanupOfficialImages(dockerCli);
-        } catch {
-          /* Fail closed; retry next hour. */
+    // Independent of mailbox, artifact/bootstrap and image maintenance latency.
+    // This lane performs no state writes; do not overlap physical sweeps.
+    let expirySweep: Promise<void> | undefined;
+    const sweep = () => {
+      if (expirySweep) return;
+      expirySweep = enforcePhysicalExpiry(store, runtime)
+        .catch(() => {
+          console.error("Docker host physical expiry sweep failed; retrying independently.");
+        })
+        .finally(() => {
+          expirySweep = undefined;
+        });
+    };
+    sweep();
+    const expiryTimer = setInterval(sweep, 10_000);
+    try {
+      let nextImageCleanup = 0;
+      while (!stopping) {
+        if (Date.now() >= nextImageCleanup) {
+          nextImageCleanup = Date.now() + 60 * 60_000;
+          try {
+            await cleanupOfficialImages(dockerCli);
+          } catch {
+            /* Fail closed; retry next hour. */
+          }
         }
+        try {
+          await tick(store, api, runtime);
+        } catch {
+          console.error(
+            "Docker host iteration failed; local TTL sweep continues. If membership was removed or the host revoked, ask an organization admin to request cleanup; preserve daemon state until cleanup is confirmed.",
+          );
+        }
+        if (!stopping) await Bun.sleep(20_000);
       }
-      try {
-        await tick(store, api, runtime);
-      } catch {
-        console.error("Docker host iteration failed; local TTL sweep continues.");
-      }
-      if (!stopping) await Bun.sleep(20_000);
+    } finally {
+      clearInterval(expiryTimer);
+      await expirySweep;
     }
   } finally {
     await release();

@@ -1,6 +1,6 @@
 import { type OrgSummary, VaultError } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { armadaApiUrl } from "./armada-api.ts";
+import { resolveArmadaOrigin } from "./armada-api.ts";
 import { control } from "./control.ts";
 import type { VaultIo } from "./vault-commands.ts";
 
@@ -64,7 +64,7 @@ export async function applicationVaultCommand(
       throw new VaultError("invalid", "Could not read value. Pipe it on stdin or use --file <path>.");
     }
   }
-  const selected = input.org ?? (await io.auth.preferences?.read(armadaApiUrl(io.auth.env.ARMADA_URL)));
+  const selected = input.org ?? (await io.auth.preferences?.read(await resolveArmadaOrigin(io.auth)));
   if (!selected) throw new VaultError("invalid", "Select an organization with --org <name|UUID> or armada org use.");
   body.org = await resolveOrganization(selected, io);
   const routes = {

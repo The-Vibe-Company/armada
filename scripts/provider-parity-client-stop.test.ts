@@ -167,7 +167,7 @@ for (const mode of [
                 );
               }
               if (due.has(provider) && now >= due.get(provider)!) states.set(provider, "stopped");
-              return Response.json({ id: body.id, status: states.get(provider) });
+              return Response.json({ id: body.id, status: states.get(provider), settled: true, prompt: null });
             case "sandbox/stop":
               if (body.request_id) {
                 cleanupStops.set(provider, (cleanupStops.get(provider) ?? 0) + 1);

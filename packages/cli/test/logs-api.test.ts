@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
-const token = "armada_sk_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO12";
+const token = "armada_sk_fixture_token";
 const id = "11111111-1111-4111-8111-111111111111";
 
 function auth(fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>) {

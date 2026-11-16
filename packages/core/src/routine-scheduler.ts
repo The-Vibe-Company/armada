@@ -1,6 +1,7 @@
 import type { ApplicationVaultActor } from "./application-vault.ts";
 import type { Sql } from "./golden-store.ts";
 import { advanceRoutineSchedule, parseRoutineSchedule } from "./routine-schedule.ts";
+import { routineLaunchRefusal } from "./routines.ts";
 import { VaultError } from "./vault-error.ts";
 
 export interface RoutineLaunchAdmission {
@@ -53,6 +54,7 @@ type Run = {
   lease_id: string | null;
 };
 type Claim = {
+  reason?: string | null;
   id: string;
   state: string;
   sandbox_id: string;
@@ -67,12 +69,18 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
     if (!sql.transaction) throw Error("Routine scheduler transactions unavailable.");
     return sql.transaction(work);
   }
-  async function settle(run: Run, state: "succeeded" | "failed" | "reconciling", claim?: Claim, reason?: string) {
+  async function settle(
+    run: Run,
+    state: "succeeded" | "failed" | "reconciling",
+    claim?: Claim,
+    reason?: string,
+    refusal?: string | null,
+  ) {
     await transaction(async (tx) => {
       await tx.query("select id from public.routines where id=$1 for update", [run.routine_id]);
       const changed = await tx.query(
         `update public.routine_runs set state=$3,reason=$4,template_request_id=$5,sandbox_id=$6,
-         prompt_id=$7,conversation_id=$8,
+         prompt_id=$7,conversation_id=$8,launch_refusal=$9,
          task_state=case when $3='succeeded' then case when $7::text is null then 'unknown' else 'running' end else null end,
          task_checked_at=case when $3='succeeded' then now() else null end,
          lease_id=null,lease_until=case when $3='reconciling' then now()+interval '1 minute' else null end,updated_at=now()
@@ -88,6 +96,7 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
           claim?.state === "failed" ? null : (claim?.sandbox_id ?? null),
           claim?.prompt_id ?? null,
           claim?.conversation_id ?? null,
+          routineLaunchRefusal(refusal),
         ],
       );
       if (!changed.rows.length || state === "reconciling") return;
@@ -109,14 +118,14 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
   async function templateClaim(run: Run): Promise<Claim | undefined> {
     return (
       await sql.query<Claim>(
-        "select id,state,sandbox_id,result->>'promptId' as prompt_id,result->>'conversationId' as conversation_id from public.template_launch_requests where org_id=$1 and actor_id=$2 and client_key=$3",
+        "select id,state,reason,sandbox_id,result->>'promptId' as prompt_id,result->>'conversationId' as conversation_id from public.template_launch_requests where org_id=$1 and actor_id=$2 and client_key=$3",
         [run.org_id, run.owner_id, run.request_key],
       )
     ).rows[0];
   }
   async function reconcile(run: Run, claim: Claim) {
     if (claim.state === "succeeded") return settle(run, "succeeded", claim);
-    if (claim.state === "failed") return settle(run, "failed", claim, "launch_failed");
+    if (claim.state === "failed") return settle(run, "failed", claim, "launch_failed", claim.reason);
     // A nonterminal template call may still publish/start after an observed stop. Only its
     // own terminal claim can resolve uncertainty; a sandbox status alone cannot fence it.
     return settle(run, "reconciling", claim, "launch_uncertain");
@@ -142,7 +151,7 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
     if (!member || (member.scope === "org" && member.role !== "admin"))
       return settle(run, "failed", undefined, "owner_authorization_changed");
     try {
-      await runtime.launch(
+      const result = await runtime.launch(
         { userId: run.owner_id, orgs: [{ orgId: run.org_id }] },
         {
           org: run.org_id,
@@ -166,7 +175,11 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
           },
         },
       );
-    } catch {
+      const claim = await templateClaim(run);
+      if (claim) return reconcile(run, claim);
+      if (result.state === "failed")
+        return settle(run, "failed", undefined, "launch_failed", routineLaunchRefusal(result.reason));
+    } catch (error) {
       const claim = await templateClaim(run);
       if (claim) return reconcile(run, claim);
       return settle(
@@ -174,6 +187,9 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
         signal.aborted ? "reconciling" : "failed",
         undefined,
         signal.aborted ? "launch_uncertain" : "launch_failed",
+        !signal.aborted && error instanceof VaultError
+          ? routineLaunchRefusal(/^Template launch refused: ([a-z_]+)\.$/.exec(error.message)?.[1])
+          : null,
       );
     }
     const claim = await templateClaim(run);

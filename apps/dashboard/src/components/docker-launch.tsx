@@ -7,7 +7,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm, SubmitButton } from "@/components/action-form";
-import { LaunchStart } from "@/components/launch-dialog";
+import { type LaunchConnections, LaunchStart, mcpFact, useLaunchAccess } from "@/components/launch-dialog";
 import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
 import {
   LaunchAdvanced,
@@ -18,9 +18,11 @@ import {
   useLaunchSurface,
 } from "@/components/launch-surface";
 import { SubmitShortcut } from "@/components/mod-key";
+import { SkillPicker } from "@/components/skill-picker";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import type { ActionResult } from "@/lib/action";
+import { CONNECTION_CHOICE_FIELD } from "@/lib/connections";
 import { dockerLaunchKeyStorage, preferredHarness, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
@@ -73,6 +75,7 @@ export function DockerLaunchDialog({
 }
 
 export function DockerLaunchForm({
+  connections,
   orgId,
   hostId,
   hostName,
@@ -88,6 +91,7 @@ export function DockerLaunchForm({
   onTask,
   launchBlockedReason,
 }: {
+  connections: LaunchConnections;
   orgId: string;
   hostId: string;
   hostName: string;
@@ -104,6 +108,8 @@ export function DockerLaunchForm({
   onTask?: (value: string) => void;
 }) {
   const id = useId();
+  const access = useLaunchAccess(connections);
+  const [skills, setSkills] = useState<string[]>([]);
   const hasUsableAccount = (agent: Harness) =>
     accounts.state === "ready" &&
     accountsFor(accounts.accounts, agent).some((account) => accountProblem(account, accounts.now) === null);
@@ -172,6 +178,7 @@ export function DockerLaunchForm({
         footer={
           <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
             <LaunchProgress />
+            {access.alerts(() => {}, id)}
             {launchBlockedReason && (
               <p id={`${id}-source-blocked`} role="alert" className="mr-auto text-xs text-warning">
                 {launchBlockedReason}
@@ -186,10 +193,14 @@ export function DockerLaunchForm({
             />
             <SubmitButton
               className="max-sm:ml-auto"
-              {...(!usable || accounts.state === "unavailable" || launchBlockedReason
+              {...(!usable || access.held || accounts.state === "unavailable" || launchBlockedReason
                 ? {
                     disabled: true,
-                    "aria-describedby": launchBlockedReason ? `${id}-source-blocked` : `${id}-account-unavailable`,
+                    "aria-describedby": launchBlockedReason
+                      ? `${id}-source-blocked`
+                      : access.held
+                        ? `${id}-held`
+                        : `${id}-account-unavailable`,
                   }
                 : {})}
             >
@@ -203,6 +214,7 @@ export function DockerLaunchForm({
       >
         <input type="hidden" name="org" value={orgId} />
         <input type="hidden" name="hostId" value={hostId} />
+        <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
         <LaunchFields>
           <LaunchTaskField idPrefix={id} value={task} onChange={onTask} />
           <LaunchSentence
@@ -229,11 +241,17 @@ export function DockerLaunchForm({
             onStart={onStart}
             idleDelaySeconds={idleDelaySeconds}
           />
-          <LaunchAdvanced summary={<span className="text-xs text-muted-foreground">Armada official environment</span>}>
+          <LaunchAdvanced
+            summary={
+              <span className="text-xs text-muted-foreground">Armada official environment · {mcpFact(access)}</span>
+            }
+          >
             <p className="text-sm">
               <span className="text-muted-foreground">Environment:</span> Armada official (fetched by your host the
               first time)
             </p>
+            <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
+            {access.fields(id)}
             {unavailable.length > 0 && (
               <div data-docker-unavailable>
                 <p className="font-medium">Not available on Docker hosts yet</p>

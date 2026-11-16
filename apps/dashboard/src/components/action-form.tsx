@@ -2,10 +2,12 @@
 
 import { CircleAlertIcon, CircleCheckIcon, Loader2Icon } from "lucide-react";
 import Link from "next/link";
-import { type ComponentProps, type ReactNode, useActionState, useCallback, useEffect, useRef } from "react";
+import { type ComponentProps, type ReactNode, useCallback, useEffect, useRef } from "react";
 import { useFormStatus } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
+import { useMutationState } from "@/components/use-mutation-state";
+import { resetPreservedActionForm, usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import { cn } from "@/lib/utils";
 
@@ -48,13 +50,21 @@ export function ActionForm({
     },
     [action, successToast, toast],
   );
-  // Without a toast the server action is bound directly, so the form still submits before hydration.
-  const [state, formAction] = useActionState(successToast === undefined ? action : run, null);
+  // Always recover transport failures locally, including forms without success toasts.
+  const [state, formAction] = useMutationState(run);
   const form = useRef<HTMLFormElement>(null);
+  const preserve = usePreservedActionForm();
+  const attach = useCallback(
+    (node: HTMLFormElement | null) => {
+      form.current = node;
+      preserve(node);
+    },
+    [preserve],
+  );
   const message = useRef<HTMLParagraphElement>(null);
 
   useEffect(() => {
-    if (resetOnSuccess && state?.ok) form.current?.reset();
+    if (resetOnSuccess && state?.ok && form.current) resetPreservedActionForm(form.current);
   }, [state, resetOnSuccess]);
 
   useEffect(() => {
@@ -90,7 +100,7 @@ export function ActionForm({
     </p>
   );
   return (
-    <form ref={form} action={formAction} className={className}>
+    <form ref={attach} action={formAction} className={className}>
       {children}
       {footer === undefined ? (
         result

@@ -12,16 +12,15 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
 async function fixture(
   parentState: "ready" | "running" = "running",
   accountKind: "anthropic" | "codex_auth" = "anthropic",
-  { isolated = false } = {},
 ) {
-  const { db, people: p } = await (isolated ? database() : sharedDatabase());
+  const { db, people: p } = await sharedDatabase();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -136,7 +135,7 @@ async function fixture(
     golden,
     // The shared helper owns borrowed connections until afterAll.
     close: async () => {
-      if (isolated) await db.close();
+      await db.exec("reset role; reset all; set search_path=public");
     },
   };
 }
@@ -357,11 +356,11 @@ test("revocation between reservation and dispatch cancels queued allocation", as
 });
 
 test("missing actual named-account schema fails before fork without an uncertain allocation reservation", async () => {
-  const { close, db, sql, authority, token, selection } = await fixture("running", "anthropic", { isolated: true });
+  const { close, db, sql, authority, token, selection } = await fixture("running", "anthropic");
   try {
     const boat = fakeBoat();
     // Simulate a deployment missing the actual producer202 column, not a second account schema.
-    await db.exec("alter table sandboxes drop column credential_id");
+    await db.exec("alter table sandboxes rename column credential_id to unavailable_credential_id");
     const children = createSandboxChildren(sql, authority, {
       async launch(operation, selected) {
         return launchSandboxChild({
@@ -404,6 +403,7 @@ test("missing actual named-account schema fails before fork without an uncertain
       "failed",
     );
   } finally {
+    await db.exec("alter table sandboxes rename column unavailable_credential_id to credential_id");
     await close();
   }
 });

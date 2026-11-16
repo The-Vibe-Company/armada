@@ -2,11 +2,12 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerHostSummary,
   type DockerJobFailureReason,
   type Sql,
 } from "@armada/core";
-import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { decryptSecret, encryptSecret, VaultError } from "@armada/core/server";
 import {
   type BootstrapDescriptor,
   canonicalDockerHostJob,
@@ -75,6 +76,12 @@ export class DockerHostDenied extends Error {
     this.name = "DockerHostDenied";
   }
 }
+export class DockerHostUnavailable extends Error {
+  constructor(cause: unknown) {
+    super("Docker host unavailable", { cause });
+    this.name = "DockerHostUnavailable";
+  }
+}
 function deny(): never {
   throw new DockerHostDenied();
 }
@@ -105,11 +112,17 @@ function input(job: Job): string {
 export function createDockerHostStore(sql: Sql, key: string) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
     try {
-      if (!sql.transaction) deny();
+      if (!sql.transaction) throw new Error("Docker host store requires transactions");
       return await sql.transaction(work);
     } catch (error) {
-      if (error instanceof DockerHostFull || error instanceof DockerLimitsRefused) throw error;
-      return deny();
+      if (
+        error instanceof DockerHostDenied ||
+        error instanceof DockerHostFull ||
+        error instanceof DockerLimitsRefused ||
+        error instanceof VaultError
+      )
+        throw error;
+      throw new DockerHostUnavailable(error);
     }
   }
   async function admin(tx: Sql, actor: Actor) {
@@ -153,6 +166,23 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
     return locked.rows[0] ?? deny();
   }
+  // Retained credentials accept physical facts, never new launch authority.
+  async function reconcileHost(tx: Sql, hostToken: string, installationId: string, actorId?: string) {
+    id(installationId);
+    if (actorId) {
+      // Preserve membership -> host lock order for cleanup dispatch authorization.
+      await tx.query(
+        `select m.user_id from public.members m join public.docker_hosts h on h.org_id=m.org_id
+         where h.hash=$1 and h.installation_id=$2 and m.user_id=$3 for update of m`,
+        [hash(hostToken), installationId, actorId],
+      );
+    }
+    const result = await tx.query<Host>(
+      `select id,org_id,owner_id from public.docker_hosts where hash=$1 and installation_id=$2 for update`,
+      [hash(hostToken), installationId],
+    );
+    return result.rows[0] ?? deny();
+  }
   async function insert(tx: Sql, hostId: string, job: Job, bound?: Bound) {
     const canonical = input(job);
     // Deliberately incompatible with old strict mailbox readers: a mixed-version
@@ -169,7 +199,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     };
     await tx.query(
       `insert into public.docker_host_jobs(request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation,snapshot_id)
-       values($1,$2,$3,$4,$5,$6,$7,$8) on conflict(request_id) do nothing`,
+       values($1,$2,$3,$4,$5,$6,$7,$8) on conflict do nothing`,
       [
         job.requestId,
         hostId,
@@ -317,9 +347,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
        lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
       [
         row.id,
-        reason === "image_unavailable" && operation === "create"
-          ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
-          : "Docker sandbox startup failed.",
+        reason === "disk_full"
+          ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
+          : reason === "image_unavailable" && operation === "create"
+            ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
+            : "Docker sandbox startup failed.",
       ],
     );
   }
@@ -356,6 +388,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           retention_seconds: number | null;
           reported_retention_seconds: number | null;
           next_cleanup_at: Date | string | null;
+          disk_free_bytes: number | string | null;
         }>(
           `select h.id,
             case when h.revoked_at is not null then 'revoked'
@@ -364,7 +397,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
+            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.disk_free_bytes,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -390,6 +423,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               throw error;
             }
           })(),
+          diskFreeBytes: host.disk_free_bytes == null ? null : Number(host.disk_free_bytes),
           retentionSeconds: host.reported_retention_seconds ?? null,
           retentionOverrideSeconds: host.retention_seconds ?? null,
           nextCleanupAt: host.next_cleanup_at == null ? null : new Date(host.next_cleanup_at).toISOString(),
@@ -426,7 +460,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       report?: { retentionSeconds: number; nextCleanupAt: string | null },
     ) {
       return transaction(async (tx) => {
-        const host = await authenticate(tx, hostToken, installationId);
+        const host = await reconcileHost(tx, hostToken, installationId);
         if (report)
           await tx.query(
             "update public.docker_hosts set reported_retention_seconds=$2,next_cleanup_at=case when retention_seconds is null or retention_seconds=$2 then $3::timestamptz else null end where id=$1",
@@ -444,7 +478,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     },
     limitsForHost(hostToken: string, installationId: string) {
       return transaction(async (tx) => {
-        const host = await authenticate(tx, hostToken, installationId);
+        const host = await reconcileHost(tx, hostToken, installationId);
         const row = (
           await tx.query<DockerPolicyRow>(
             "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,available_cpus,available_memory_bytes from public.docker_hosts where id=$1",
@@ -645,10 +679,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     revoke(actor: Actor, hostId: string) {
       return transaction(async (tx) => {
         await owned(tx, actor, hostId);
-        await tx.query(
-          `update public.docker_hosts set revoked_at=now(),registration_hash=null,hash=null,installation_id=null where id=$1`,
-          [hostId],
-        );
+        await tx.query(`update public.docker_hosts set revoked_at=now(),registration_hash=null where id=$1`, [hostId]);
       });
     },
     enqueue(actor: Actor, hostId: string, job: Job) {
@@ -724,13 +755,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
           [actor.orgId, actor.userId, hint.issuer_id, hint.owner_id],
         );
         const locked = new Set(members.rows.map((m) => m.user_id));
-        if (!locked.has(actor.userId) || !locked.has(hint.issuer_id)) deny();
+        const cleanup = selection.operation === "stop" || selection.operation === "delete";
+        if (!locked.has(actor.userId) || (!cleanup && !locked.has(hint.issuer_id))) deny();
         const host =
           (
             await tx.query<Host>(
               `select id,org_id,owner_id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
-           and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null for update`,
-              [hint.docker_host_id, actor.orgId, hint.issuer_id, hint.docker_installation_id],
+           and installation_id=$4 and hash is not null and registration_hash is null and ($5::boolean or revoked_at is null) for update`,
+              [hint.docker_host_id, actor.orgId, hint.issuer_id, hint.docker_installation_id, cleanup],
             )
           ).rows[0] ?? deny();
         if (selection.operation === "bootstrap" || selection.operation === "resume") {
@@ -814,18 +846,31 @@ export function createDockerHostStore(sql: Sql, key: string) {
     async unregister(hostToken: string, installationId: string): Promise<boolean> {
       const drain = await transaction(async (tx) => {
         id(installationId);
-        // A revoked hash authorizes only idempotent uninstall reconciliation.
-        const revoked = await tx.query(
-          `select 1 from public.docker_hosts where hash=$1 and installation_id=$2 and revoked_at is not null`,
-          [hash(hostToken), installationId],
-        );
-        if (revoked.rows.length) return null;
-        const host = await authenticate(tx, hostToken, installationId);
+        const host = await reconcileHost(tx, hostToken, installationId);
+        const members = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2", [
+          host.org_id,
+          host.owner_id,
+        ]);
         await tx.query(`update public.docker_hosts set draining_at=coalesce(draining_at,now()) where id=$1`, [host.id]);
         const retained = await tx.query<{ id: string; status: string }>(
           `select id,status from public.sandboxes where docker_host_id=$1 and status<>'deleted' order by id`,
           [host.id],
         );
+        // Retirement must not wait forever on launch work that can no longer be
+        // dispatched. This is cancellation, never evidence of physical cleanup.
+        const active = await tx.query("select 1 from public.docker_hosts where id=$1 and revoked_at is null", [
+          host.id,
+        ]);
+        if (!members.rows.length || !active.rows.length) {
+          await tx.query(
+            "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Host retired before snapshot publication.' where host_id=$1 and status='building'",
+            [host.id],
+          );
+          await tx.query(
+            "update public.docker_host_jobs set outcome='failed',completed_at=now() where host_id=$1 and outcome is null and (bound_operation is null or bound_operation not in ('stop','delete'))",
+            [host.id],
+          );
+        }
         const pending = await tx.query(
           `select 1 from public.docker_host_jobs where host_id=$1 and outcome is null limit 1`,
           [host.id],
@@ -836,7 +881,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ]);
           return null;
         }
-        return { host, rows: pending.rows.length ? [] : retained.rows };
+        return { host, rows: pending.rows.length || !members.rows.length ? [] : retained.rows };
       });
       if (drain === null) return true;
       // Reuse normal bound cleanup admission and physical ACK reconciliation, never
@@ -859,6 +904,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       skipSnapshots = false,
       resources?: DockerHostResources,
       resourcePolicyVersion?: 1,
+      diskFreeBytes?: number | null,
     ): Promise<Job | null> {
       return transaction(async (tx) => {
         // Cleanup bypasses queued startup/snapshot work; already executing native work remains serial.
@@ -867,14 +913,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const hint = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null and (not $3::boolean or j.snapshot_id is null) order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
+           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
             [hash(hostToken), installationId, skipSnapshots],
           )
         ).rows[0];
-        const host = await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
+        const host =
+          hint?.bound_sandbox_id && ["stop", "delete"].includes(hint.bound_operation ?? "")
+            ? await reconcileHost(tx, hostToken, installationId, hint.bound_actor_id ?? undefined)
+            : await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
         await tx.query(
-          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null where id=$1`,
-          [host.id, version ?? null, resourcePolicyVersion ?? null],
+          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4 where id=$1`,
+          [host.id, version ?? null, resourcePolicyVersion ?? null, diskFreeBytes ?? null],
         );
         if (resources) {
           await tx.query(
@@ -947,7 +996,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
             const job = await readJob(row);
             if (job.operation !== "buildSnapshot") deny();
             await authorizeSnapshotBuild(tx, host.id, installationId, job);
-          } catch {
+          } catch (error) {
+            if (!(error instanceof DockerHostDenied) && !(error instanceof VaultError && error.code === "forbidden"))
+              throw error;
             await tx.query(
               "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build authorization is no longer valid.' where id=$1 and status='building'",
               [row.snapshot_id],
@@ -990,7 +1041,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       return transaction(async (tx) => {
         exact(result, ["requestId"]);
         id(result.requestId);
-        const host = await authenticate(tx, hostToken, installationId);
+        const host = await reconcileHost(tx, hostToken, installationId);
         const job =
           (
             await tx.query<StoredJob>("select * from public.docker_host_jobs where host_id=$1 and request_id=$2", [
@@ -1013,7 +1064,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       return transaction(async (tx) => {
         exact(result, ["requestId"]);
         id(result.requestId);
-        const host = await authenticate(tx, hostToken, installationId);
+        const host = await reconcileHost(tx, hostToken, installationId);
         const job =
           (
             await tx.query<StoredJob>(`select * from public.docker_host_jobs where host_id=$1 and request_id=$2`, [
@@ -1062,12 +1113,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
             [result.requestId, hash(hostToken), installationId],
           )
         ).rows[0];
-        const host = await authenticate(
-          tx,
-          hostToken,
-          installationId,
-          peek?.snapshot_id ? (peek.bound_actor_id ?? undefined) : undefined,
-        );
+        const host = peek?.bound_sandbox_id
+          ? await reconcileHost(tx, hostToken, installationId)
+          : await authenticate(
+              tx,
+              hostToken,
+              installationId,
+              peek?.snapshot_id ? (peek.bound_actor_id ?? undefined) : undefined,
+            );
         const hint =
           (
             await tx.query<StoredJob>(`select * from public.docker_host_jobs where host_id=$1 and request_id=$2`, [
@@ -1102,7 +1155,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
               try {
                 await authorizeSnapshotBuild(tx, host.id, installationId, parsed);
                 eligible = true;
-              } catch {}
+              } catch (error) {
+                if (!(error instanceof VaultError && error.code === "forbidden")) throw error;
+              }
             }
             await tx.query(
               "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4 where id=$1 and status='building'",
@@ -1114,7 +1169,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
                   ? null
                   : result.outcome === "completed"
                     ? "Snapshot build authorization is no longer valid."
-                    : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
+                    : result.reason === "disk_full"
+                      ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
+                      : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
               ],
             );
           }
@@ -1139,7 +1196,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
                and bound_operation='delete' and outcome is distinct from 'failed' limit 1`,
               [logical.id],
             );
-            if (current.status === "stopped" && !known.rows.length) {
+            const member = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2", [
+              logical.org_id,
+              logical.owner_id,
+            ]);
+            if (current.status === "stopped" && !known.rows.length && member.rows.length) {
               const epoch = await permission(
                 tx,
                 { userId: logical.owner_id, orgId: logical.org_id },

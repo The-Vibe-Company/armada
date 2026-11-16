@@ -101,3 +101,10 @@ export function providerFlag(args: Args): SandboxProviderId | undefined {
     throw new GoldenError("invalid_config", `--provider is ${SANDBOX_PROVIDERS.join(" or ")}.`);
   return value;
 }
+
+/** Reject recognized but unused flags before a command can perform I/O. */
+export function acceptedOptions(args: Args, command: string, allowed: readonly string[]): void {
+  for (const key of args.options.keys()) {
+    if (!allowed.includes(key)) throw new GoldenError("invalid_config", `Unsupported ${command} option '${key}'.`);
+  }
+}

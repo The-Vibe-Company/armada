@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isActiveLink, NAV_GROUPS, showsOrganizations } from "../src/lib/navigation.ts";
+import { isActiveLink, NAV_GROUPS, organizationSwitchDestination, showsOrganizations } from "../src/lib/navigation.ts";
 
 describe("sidebar navigation", () => {
   test("lists the owner's groups and destinations in order", () => {
@@ -27,5 +27,42 @@ describe("sidebar navigation", () => {
     expect(showsOrganizations(1, true)).toBe(false);
     expect(showsOrganizations(2, true)).toBe(true);
     expect(showsOrganizations(0, false)).toBe(true);
+  });
+});
+
+test("host bookmarks share the Machines active destination without matching similarly named routes", () => {
+  for (const path of ["/hosts", "/hosts/host_one"]) {
+    expect(isActiveLink(path, "/providers/cloud")).toBe(true);
+    expect(isActiveLink(path, "/sandboxes")).toBe(false);
+  }
+  expect(isActiveLink("/hostsx", "/providers/cloud")).toBe(false);
+});
+
+describe("organization switch destination", () => {
+  test.each([
+    ["/routines", "/routines"],
+    ["/templates/template_old", "/templates"],
+    ["/skills/skill_old", "/skills"],
+    ["/variables", "/variables"],
+    ["/providers/cloud", "/providers/cloud"],
+    ["/hosts/host_old", "/providers/cloud"],
+    ["/snapshots/snapshot_old", "/snapshots"],
+    ["/harness", "/harness"],
+    ["/tools", "/tools"],
+    ["/settings", "/settings"],
+    ["/orgs/org_old/members", "/orgs/org_new"],
+    ["/sandboxes/sandbox_old", "/sandboxes"],
+    ["/unknown", "/sandboxes"],
+    ["/constructor", "/sandboxes"],
+    ["//external.example", "/sandboxes"],
+    ["/routines-other", "/sandboxes"],
+    ["setup", "/providers/cloud"],
+    ["orgs", "/orgs/org_new"],
+    ["environments", "/snapshots"],
+    ["goldens", "/snapshots"],
+    ["credentials", "/harness"],
+    ["connections", "/tools"],
+  ])("switches from %s to %s without old organization item IDs", (pathname, expected) => {
+    expect(organizationSwitchDestination(pathname, "org_new")).toBe(expected);
   });
 });

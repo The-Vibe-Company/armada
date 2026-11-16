@@ -69,6 +69,9 @@ function parseHost(value: unknown): DockerHost | null {
       (!Number.isInteger(value.retentionOverrideSeconds) ||
         Number(value.retentionOverrideSeconds) < 0 ||
         Number(value.retentionOverrideSeconds) > 31536000)) ||
+    (value.diskFreeBytes !== undefined &&
+      value.diskFreeBytes !== null &&
+      (!Number.isSafeInteger(value.diskFreeBytes) || Number(value.diskFreeBytes) < 0)) ||
     (value.canManageLimits !== undefined && typeof value.canManageLimits !== "boolean") ||
     (value.limitsSupported !== undefined && typeof value.limitsSupported !== "boolean") ||
     (value.running !== undefined && (!Number.isSafeInteger(value.running) || Number(value.running) < 0)) ||
@@ -88,6 +91,7 @@ function parseHost(value: unknown): DockerHost | null {
       ? {}
       : { retentionOverrideSeconds: value.retentionOverrideSeconds as number | null }),
     ...(value.nextCleanupAt === undefined ? {} : { nextCleanupAt: value.nextCleanupAt as string | null }),
+    ...(value.diskFreeBytes === undefined ? {} : { diskFreeBytes: value.diskFreeBytes as number | null }),
     ...(value.canManageLimits === undefined ? {} : { canManageLimits: value.canManageLimits as boolean }),
     ...(value.limitsSupported === undefined ? {} : { limitsSupported: value.limitsSupported as boolean }),
     ...(value.running === undefined ? {} : { running: value.running as number }),

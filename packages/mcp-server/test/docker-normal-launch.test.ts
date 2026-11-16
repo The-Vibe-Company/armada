@@ -38,6 +38,7 @@ import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
 import { createDockerNormalSend } from "../src/docker-normal-send.ts";
+import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
@@ -50,10 +51,14 @@ import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createArmadaServer } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
-let db: Awaited<ReturnType<typeof migratedDatabase>>;
+let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const sql: Sql = {
-  query: (q, v) => db.query(q, v),
-  transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  query: (q, v) => database().query(q, v),
+  transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
 };
 const officialImage = `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repeat(64)}`;
 const key = Buffer.alloc(32, 19).toString("base64");
@@ -76,10 +81,12 @@ const bootstrap = createDockerBootstrapService(sql, key, {
   credentials,
 });
 beforeAll(async () => {
-  db = await migratedDatabase();
+  connection = await migratedDatabase();
 });
 afterAll(async () => {
-  await db.close();
+  const db = connection;
+  connection = undefined;
+  await db?.close();
 });
 
 // The real migrated boundary owns normal-launch sequencing and durable retries.
@@ -99,6 +106,7 @@ async function fixture(
     daemonVersion?: string;
   } = {},
 ) {
+  const db = database();
   const orgId = randomUUID(),
     userId = randomUUID(),
     adminId = randomUUID(),
@@ -148,7 +156,7 @@ async function fixture(
   };
   let now = 0,
     drive = true,
-    failCreate: false | "plain" | "image" = false,
+    failCreate: false | "plain" | "image" | "disk" = false,
     malformedSkills = false;
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
@@ -166,7 +174,9 @@ async function fixture(
       await hosts.complete(host.hostToken, installationId, {
         requestId: job.requestId,
         outcome: failed ? "failed" : "completed",
-        ...(failed && failCreate === "image" ? { reason: "image_unavailable" as const } : {}),
+        ...(failed && failCreate !== "plain"
+          ? { reason: failCreate === "image" ? ("image_unavailable" as const) : ("disk_full" as const) }
+          : {}),
       });
       if (job.operation === "create" && options.lifecycleGenerationAfterCreate !== undefined) {
         await db.query(`update public.sandboxes set lifecycle_generation=$2 where id=$1`, [
@@ -369,7 +379,7 @@ async function fixture(
     setDrive(value: boolean) {
       drive = value;
     },
-    setFailure(kind: "plain" | "image" = "plain") {
+    setFailure(kind: "plain" | "image" | "disk" = "plain") {
       failCreate = kind;
     },
     resolutions: () => resolutions,
@@ -389,6 +399,7 @@ async function rejected(work: Promise<unknown>, code: string) {
   expect((error as Error).message).not.toContain("offline-normal");
 }
 async function counts(f: Fixture) {
+  const db = database();
   return (
     await db.query<{ sandboxes: number; claims: number; jobs: number; commands: number }>(
       `select (select count(*)::int from public.sandboxes where id=$1) as sandboxes,
@@ -401,6 +412,7 @@ async function counts(f: Fixture) {
 }
 
 test("an initial actor epoch reserves a CLI-session Docker launch without weakening revocation", async () => {
+  const db = database();
   const f = await fixture();
   // Members present when MCP epochs were introduced were backfilled at zero.
   await db.query("update public.mcp_actor_epochs set epoch=0 where org_id=$1 and user_id=$2", [
@@ -426,6 +438,7 @@ test("an initial actor epoch reserves a CLI-session Docker launch without weaken
 });
 
 test("normal launch drives create, bootstrap, health and one first prompt, seals its claim and replays current metadata", async () => {
+  const db = database();
   const f = await fixture();
   const result = await f.service().launch(f.caller, f.body);
   expect(result).toMatchObject({
@@ -507,6 +520,7 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
 });
 
 test("unknown timeout and response loss survive restart and concurrent exact retries without rotating phase IDs", async () => {
+  const db = database();
   const f = await fixture();
   f.setDrive(false);
   await rejected(f.service(sql, true, 250).launch(f.caller, f.body), "unavailable");
@@ -632,6 +646,7 @@ test("admission and bound create roll back together when claim persistence fails
 });
 
 test("member removal and rejoin cannot continue a pending normal claim under a new actor epoch", async () => {
+  const db = database();
   const f = await fixture();
   f.setDrive(false);
   await rejected(f.service(sql, true, 250).launch(f.caller, f.body), "unavailable");
@@ -647,6 +662,7 @@ test("member removal and rejoin cannot continue a pending normal claim under a n
 });
 
 test("failed startup returns a safe failure without claiming stopped, and pending retry never starts replacement work", async () => {
+  const db = database();
   const f = await fixture();
   f.setFailure();
   await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
@@ -668,16 +684,24 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("deleted");
 });
 
-test("a launch whose host could not fetch the image says so in plain words, at launch and in status", async () => {
-  const f = await fixture();
-  f.setFailure("image");
-  await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
-  await expect(f.service().launch(f.caller, f.body)).rejects.toThrow(DOCKER_IMAGE_UNAVAILABLE_MESSAGE);
-  const status = await createDockerSandboxControls(sql, key, { clock: f.clock }).invoke(f.caller, "status", {
-    id: f.body.requestId,
-  });
-  expect(status).toMatchObject({ result: { status: "failed", statusReason: DOCKER_IMAGE_UNAVAILABLE_MESSAGE } });
-});
+test.each([
+  ["image", DOCKER_IMAGE_UNAVAILABLE_MESSAGE],
+  ["disk", DOCKER_LAUNCH_FAILURE_MESSAGES.disk],
+] as const)(
+  "host failure retains its safe launch/status diagnostic instead of becoming an image error (%s)",
+  async (reason, message) => {
+    const f = await fixture();
+    f.setFailure(reason);
+    await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
+    await expect(f.service().launch(f.caller, f.body)).rejects.toThrow(message);
+    const status = await createDockerSandboxControls(sql, key, { clock: f.clock }).invoke(f.caller, "status", {
+      id: f.body.requestId,
+    });
+    expect(status).toMatchObject({ result: { status: "failed", statusReason: message } });
+    const record = await f.service(sql, true, 10000, officialImage, true).launch(f.caller, f.body);
+    expect(record).toMatchObject({ sandbox: { statusReason: message } });
+  },
+);
 
 test("prompt-free, image-free launch normalizes UUIDs, uses the default image, honors TTL and stops at runtime readiness", async () => {
   const f = await fixture({ daemonVersion: "2.27.0" });
@@ -711,6 +735,7 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
 });
 
 test("normal publication uses the runtime epoch rather than the independent lifecycle generation", async () => {
+  const db = database();
   const f = await fixture({ lifecycleGenerationAfterCreate: 7 });
   const result = await f.service().launch(f.caller, f.body);
   expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
@@ -884,6 +909,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
 });
 
 test("normal launch claims remain service-only even for their owner's user JWT", async () => {
+  const db = database();
   const f = await fixture();
   await f.service().launch(f.caller, f.body);
   for (const role of ["anon", "authenticated"]) {
@@ -927,6 +953,7 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
 test.each(["codex", "opencode"] as const)(
   "queued %s send passes the real MCP structured-output schema and keeps its native conversation",
   async (harness) => {
+    const db = database();
     const f = await fixture({ harness });
     const launch = f.service(sql, true, 10000, officialImage, true);
     const { prompt: _prompt, ...body } = f.body;
@@ -1001,6 +1028,7 @@ test.each(["codex", "opencode"] as const)(
 );
 
 test("legacy initial prompt replay retains its already-enqueued conversation payload", async () => {
+  const db = database();
   const f = await fixture();
   const server = f.service(sql, true, 10000, officialImage, true);
   await server.launch(f.caller, f.body);
@@ -1057,6 +1085,7 @@ test("legacy initial prompt replay retains its already-enqueued conversation pay
 });
 
 async function publishFinished(f: Fixture, sequence = 0, promptId = f.receipt.promptId) {
+  const db = database();
   const session = f.session();
   if (!session) throw Error("no runtime");
   const launch = (
@@ -1097,6 +1126,7 @@ async function publishFinished(f: Fixture, sequence = 0, promptId = f.receipt.pr
 test.each([false, true])(
   "send during accepted startup immediately returns a stable queued receipt and dispatches after preparation: initial %s",
   async (initial) => {
+    const db = database();
     const f = await fixture({ distinctPromptIds: true });
     const server = f.service(sql, true, 10000, officialImage, true);
     const { prompt: _prompt, ...empty } = f.body;
@@ -1172,6 +1202,7 @@ test.each([false, true])(
 test.each([false, true])(
   "pre-ACK queued history and usage never expose transient native IDs: cancel %s",
   async (cancel) => {
+    const db = database();
     const f = await fixture();
     const server = f.service(sql, true, 10000, officialImage, true);
     const { prompt: _prompt, ...empty } = f.body;
@@ -1332,6 +1363,7 @@ test("queued sends retain FIFO order across server recovery and stop fences disp
 });
 
 test("queued dispatch failure is visible by default until a newer ordinary send", async () => {
+  const db = database();
   const f = await fixture();
   const server = f.service(sql, true, 10000, officialImage, true);
   const { prompt: _prompt, ...empty } = f.body;
@@ -1489,6 +1521,7 @@ test("deferred launch reconciles an uncertain first-prompt receipt without marki
 
 for (const scenario of ["success", "checkout-failed", "missing-github", "github-delivery-failed"] as const)
   test(`deferred repository launch returns before host work and durably completes: ${scenario}`, async () => {
+    const db = database();
     const f = await fixture({
       checkoutExitCode: scenario === "checkout-failed" ? 1 : 0,
       githubConfigurationAcknowledged: scenario !== "github-delivery-failed",
@@ -1571,6 +1604,7 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
 
 for (const checkoutExitCode of [0, 1])
   test(`Docker checkout exit ${checkoutExitCode} gates its first prompt and scopes GitHub access`, async () => {
+    const db = database();
     const f = await fixture({ checkoutExitCode });
     await db.query(
       `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
@@ -1591,7 +1625,7 @@ for (const checkoutExitCode of [0, 1])
     }
     const launched = await f.service().launch(f.caller, body);
     expect(launched.github).toMatchObject({ status: "connected", login: "owner" });
-    const native = f.native as { op: string; input?: { command?: string } }[];
+    const native = f.native as { op: string; input?: { command?: string; cwd?: string } }[];
     expect(native.filter((c) => c.op !== "health").map((c) => c.op)).toEqual([
       "configureGitHub",
       "exec",
@@ -1600,6 +1634,32 @@ for (const checkoutExitCode of [0, 1])
       "prompt",
     ]);
     expect(launched.sandbox.skills?.map((receipt) => receipt.reference)).toEqual(["catalog/repository@1.0.0"]);
+    expect(native.find((command) => command.op === "prompt")?.input?.cwd).toBe("/home/user/project");
+    // Retained pre-upgrade command IDs must keep their original home cwd.
+    const retained = (
+      await database().query<{ request_id: string; request_enc: Uint8Array<ArrayBuffer> }>(
+        "select request_id,request_enc from runtime_commands where sandbox_id=$1 and starts_with(request_id,'docker_prompt_')",
+        [body.requestId],
+      )
+    ).rows[0]!;
+    const previous = JSON.parse(await decryptSecret(retained.request_enc, key));
+    previous.input.cwd = "/home/user";
+    await database().query("update runtime_commands set request_enc=$3 where sandbox_id=$1 and request_id=$2", [
+      body.requestId,
+      retained.request_id,
+      await encryptSecret(JSON.stringify(previous), key),
+    ]);
+    const replay = await createDockerRuntimeLifecycle(sql, key, { enabled: true }).prompt(
+      { userId: f.caller.userId, orgId: body.org },
+      body.requestId,
+      {
+        requestId: retained.request_id.slice("docker_prompt_".length),
+        text: previous.input.text,
+        conversationId: previous.input.conversationId,
+      },
+    );
+    expect(replay.state).toBe("admitted");
+
     expect(native[2]?.input?.command).toContain("--branch 'feature/work'");
     expect(native[2]?.input?.command).toContain("'/home/user/project'");
     expect(JSON.stringify(native)).not.toContain("offline-github-token");
@@ -1700,6 +1760,7 @@ for (const checkoutExitCode of [0, 1])
   });
 
 test("Docker freezes versioned readable bindings and re-delivers them before the first resumed prompt", async () => {
+  const db = database();
   const f = await fixture();
   const vault = createApplicationVault(sql, undefined);
   const value = "europe\n$(not-a-command)";
@@ -1782,6 +1843,7 @@ test("Docker variable admission rejects unsafe names and inaccessible personal r
 });
 
 test("Docker delivers value-free secret references through native environment and refuses new delivery after revocation", async () => {
+  const db = database();
   const f = await fixture();
   const canary = `offline-application-secret-${randomUUID()}`;
   const secretId = randomUUID();
@@ -1835,6 +1897,7 @@ test("Docker delivers value-free secret references through native environment an
 });
 
 test("Docker secret admission rolls back inaccessible, stale, expired and oversized environments", async () => {
+  const db = database();
   const f = await fixture();
   const secretId = randomUUID();
   await db.query(
@@ -1873,6 +1936,7 @@ test("normal Docker launch refuses caller-selected images before allocation", as
 });
 
 async function defaultRemote(f: Awaited<ReturnType<typeof fixture>>) {
+  const db = database();
   const registry = createSqlMcpRegistry(sql, key);
   const connection = await registry.save(f.actor.userId, f.actor.orgId, {
     name: "Docker remote",
@@ -1887,6 +1951,7 @@ async function defaultRemote(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 test("Docker freezes org/personal skill defaults and MCP defaults, verifies receipts and configures the epoch before first prompt", async () => {
+  const db = database();
   const f = await fixture(),
     remote = await defaultRemote(f);
   await db.query("insert into public.org_skill_defaults(org_id,skills) values($1,$2::text::jsonb)", [
@@ -1941,6 +2006,7 @@ test("Docker freezes org/personal skill defaults and MCP defaults, verifies rece
 test.each(["receipt", "runtime refusal"])(
   "Docker skill failure remains Docker-scoped and blocks the first prompt: %s",
   async (failure) => {
+    const db = database();
     const f = await fixture({ refuseSkillInstall: failure === "runtime refusal" });
     if (failure === "receipt") f.setMalformedSkills();
     await rejected(
@@ -2007,6 +2073,7 @@ test("Docker re-prepares bound MCP grants before follow-up and after same-host r
 });
 
 test("legacy Docker claims without preparation keep their original hash and do not acquire later defaults", async () => {
+  const db = database();
   const f = await fixture();
   f.setDrive(false);
   await rejected(f.service(sql, true, 250).launch(f.caller, f.body), "unavailable");
@@ -2041,6 +2108,7 @@ test("legacy Docker claims without preparation keep their original hash and do n
 });
 
 test("Docker honors frozen launch pins without re-merging later skill defaults", async () => {
+  const db = database();
   for (const explicit of [[], ["catalog/frozen@1.0.0"]]) {
     const f = await fixture();
     await db.query("insert into public.personal_skill_defaults(user_id,skills) values($1,$2::text::jsonb)", [
@@ -2060,6 +2128,7 @@ test("Docker honors frozen launch pins without re-merging later skill defaults",
 test.each([false, true])(
   "Docker templates freeze pins and replay one host/snapshot allocation (snapshot=%s)",
   async (fromSnapshot) => {
+    const db = database();
     const f = fromSnapshot ? await snapshotFixture() : await fixture();
     const snapshotId = fromSnapshot
       ? await readyTemplateSnapshot(f as Awaited<ReturnType<typeof snapshotFixture>>)
@@ -2164,6 +2233,7 @@ test.each([false, true])(
 );
 
 test("Docker template placement refuses inaccessible, revoked and replaced host identities before reservation", async () => {
+  const db = database();
   for (const change of ["revoked", "replaced", "issuer_removed"] as const) {
     const f = await fixture();
     const templates = createTemplateService(sql, key);
@@ -2255,6 +2325,7 @@ test("a lost Docker template response retains one reconciling claim and never re
 });
 
 async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}) {
+  const db = database();
   const f = await fixture(options);
   for (const [userId, githubId, access] of [
     [f.actor.userId, 123, "offline-snapshot-access"],
@@ -2326,6 +2397,7 @@ test.each([
   "replaced",
   "removed_before_launch",
 ] as const)("Docker snapshot templates validate source scope/binding: %s", async (scenario) => {
+  const db = database();
   const f = await snapshotFixture();
   const snapshotId = await readyTemplateSnapshot(f);
   const templates = createTemplateService(sql, key);
@@ -2392,6 +2464,7 @@ test.each([
 test.each(["private", "org"] as const)(
   "host snapshot %s publication enforces visibility and launches the baked image without cloning again",
   async (visibility) => {
+    const db = database();
     const f = await snapshotFixture(),
       id = randomUUID();
     const creator = visibility === "private" ? f.caller : f.adminCaller;
@@ -2539,6 +2612,7 @@ test("snapshot caller-access port refuses before Docker host admission with the 
 test.each([false, true])(
   "public snapshot refresh remains anonymous when GitHub is disconnected (deferred=%s)",
   async (deferred) => {
+    const db = database();
     const f = await snapshotFixture(true, { publicRepositoryAccess: true });
     const id = randomUUID();
     await f.snapshots.command(f.caller, "create", {
@@ -2619,6 +2693,7 @@ test.each(["timeout", "stop"] as const)(
 test.each(["auth", "auth-deferred", "network"] as const)(
   "snapshot refresh uses the shared authorization/fallback policy before prompt (%s)",
   async (mode) => {
+    const db = database();
     const f = await snapshotFixture(true, { refreshFailure: mode === "network" ? "network" : "auth" });
     const id = randomUUID();
     await f.snapshots.command(f.caller, "create", {
@@ -2694,6 +2769,7 @@ test.each([
   ["issuer-rejoined", false],
   ["owner-rejoined", true],
 ] as const)("snapshot authorization fences %s (already delivered: %s)", async (reason, delivered) => {
+  const db = database();
   const f = await snapshotFixture(),
     id = randomUUID();
   await f.snapshots.command(f.caller, "create", {
@@ -2728,6 +2804,7 @@ test.each([
 });
 
 test("snapshot building respects the existing Docker placement switch", async () => {
+  const db = database();
   const f = await snapshotFixture(false);
   await expect(
     f.snapshots.command(f.caller, "create", {
@@ -2745,6 +2822,7 @@ test("snapshot building respects the existing Docker placement switch", async ()
 });
 
 test("old or unreported Docker daemons get an actionable resume refusal before any job is queued", async () => {
+  const db = database();
   const f = await fixture();
   await f.service().launch(f.caller, f.body);
   const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
@@ -2767,6 +2845,7 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
 test.each(["private", "org"] as const)(
   "snapshot rebuild %s publishes a new immutable build and retains its source and retry receipt",
   async (visibility) => {
+    const db = database();
     const f = await snapshotFixture(),
       id = randomUUID(),
       requestId = randomUUID();
@@ -2862,3 +2941,52 @@ test("Docker normal launch uses the saved model unless explicitly overridden", a
     expect(replay.sandbox.model).toBe(result.sandbox.model);
   }
 });
+
+test.each(["poll", "complete"] as const)(
+  "snapshot %s infrastructure failure remains retryable without failing the build",
+  async (operation) => {
+    const f = await snapshotFixture(true);
+    const id = randomUUID();
+    await f.snapshots.command(f.caller, "create", {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: id,
+      name: "retryable-build",
+      visibility: "private",
+      config: f.config,
+    });
+    const cause = new Error("snapshot database unavailable");
+    const failing: Sql = {
+      query: (q, p) => sql.query(q, p),
+      transaction: (work) =>
+        sql.transaction!((tx) =>
+          work({
+            query: (q, p) => {
+              if (q.includes("select s.* from public.docker_snapshots s")) throw cause;
+              return tx.query(q, p);
+            },
+          }),
+        ),
+    };
+    const store = createDockerHostStore(failing, key);
+    const result = { requestId: id, outcome: "completed" as const, imageId: `sha256:${"a".repeat(64)}` };
+    await expect(
+      operation === "poll"
+        ? store.poll(f.hostToken, f.installationId)
+        : store.complete(f.hostToken, f.installationId, result),
+    ).rejects.toMatchObject({
+      name: "DockerHostUnavailable",
+      cause,
+    });
+    const snapshot = (
+      await database().query<{ status: string }>("select status from public.docker_snapshots where id=$1", [id])
+    ).rows[0];
+    expect(snapshot?.status).toBe("building");
+    expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(id);
+    await hosts.complete(f.hostToken, f.installationId, result);
+    expect(
+      (await database().query<{ status: string }>("select status from public.docker_snapshots where id=$1", [id]))
+        .rows[0]?.status,
+    ).toBe("ready");
+  },
+);

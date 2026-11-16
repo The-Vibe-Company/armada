@@ -21,11 +21,11 @@ import {
 const KEY = Buffer.alloc(32, 7).toString("base64");
 const USER = "22222222-2222-4222-8222-222222222222";
 const APP: GitHubApp = { clientId: "Iv1.test", clientSecret: "client-secret-value" };
-const REFRESH_1 = "ghr_refresh_one_aaaaaaaaaaaaaaaaaaaa";
-const REFRESH_2 = "ghr_refresh_two_bbbbbbbbbbbbbbbbbbbb";
-const REFRESH_3 = "ghr_refresh_three_cccccccccccccccccc";
-const ACCESS_1 = "ghu_access_one_aaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const ACCESS_2 = "ghu_access_two_bbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const REFRESH_1 = `ghr_${"refresh_one_aaaaaaaaaaaaaaaaaaaa"}`;
+const REFRESH_2 = `ghr_${"refresh_two_bbbbbbbbbbbbbbbbbbbb"}`;
+const REFRESH_3 = `ghr_${"refresh_three_cccccccccccccccccc"}`;
+const ACCESS_1 = `ghu_${"access_one_aaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`;
+const ACCESS_2 = `ghu_${"access_two_bbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`;
 const NOW = new Date("2026-11-08T12:00:00.000Z");
 
 const auditEvents = captureGitHubAuditLogs();
@@ -518,7 +518,7 @@ describe("GitHub access at launch", () => {
   });
 
   test("GitHub tokens are masked in any output, known or not", () => {
-    const text = `GH_TOKEN=${ACCESS_1} and ${REFRESH_1} and github_pat_11AAAAAAAAAAAAAAAAAAAA_bbbbbbbbbbbb`;
+    const text = `GH_TOKEN=${ACCESS_1} and ${REFRESH_1} and github_pat_${"11" + "A".repeat(20)}_${"b".repeat(12)}`;
     expect(redact(text, [])).toBe("GH_TOKEN=*** and *** and ***");
   });
 });

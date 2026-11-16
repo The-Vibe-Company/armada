@@ -5,7 +5,7 @@ import {
   type OrgSummary,
   VaultError,
 } from "@armada/core";
-import { armadaApiUrl } from "./armada-api.ts";
+import { resolveArmadaOrigin } from "./armada-api.ts";
 import { control } from "./control.ts";
 import { parseInvitationInput, readInvitationToken } from "./invitation-input.ts";
 import type { VaultIo } from "./vault-commands.ts";
@@ -20,7 +20,7 @@ export async function invitationCommand(argv: readonly string[], io: VaultIo): P
     io.auth.out(input.json ? `${JSON.stringify(output)}\n` : `Accepted invitation for organization ${output.orgId}.\n`);
     return 0;
   }
-  const selected = input.org ?? (await io.auth.preferences?.read(armadaApiUrl(io.auth.env.ARMADA_URL)));
+  const selected = input.org ?? (await io.auth.preferences?.read(await resolveArmadaOrigin(io.auth)));
   const org = selected ? await resolveOrganization(selected, io) : undefined;
   if (!org) throw new VaultError("invalid", "Select an organization with --org <name|UUID> or armada org use.");
   if (input.action === "list") {

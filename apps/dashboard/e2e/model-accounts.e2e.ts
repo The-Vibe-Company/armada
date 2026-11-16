@@ -5,8 +5,8 @@ import { MOCK, openLaunch as openLaunchDialog, reset, signIn } from "./helpers";
 test.beforeEach(reset);
 
 const ALICE = "00000000-0000-4000-8000-000000000001";
-const WORK_TOKEN = "sk-ant-oat01-work-account-token-e2e";
-const HOME_TOKEN = "sk-ant-oat01-home-account-token-e2e";
+const WORK_TOKEN = "claude_work_token";
+const HOME_TOKEN = "claude_home_token";
 
 type Row = Record<string, unknown>;
 

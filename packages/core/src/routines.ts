@@ -1,3 +1,5 @@
+import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
+
 /** A scheduled owner-scoped template launch definition. */
 export interface Routine {
   id: string;
@@ -41,4 +43,46 @@ export function routineReasonHelp(reason: unknown): string | null {
   return typeof reason === "string" && Object.hasOwn(ROUTINE_REASON_HELP, reason)
     ? ROUTINE_REASON_HELP[reason as keyof typeof ROUTINE_REASON_HELP]
     : "The routine could not launch. Check its owner access, template and run history.";
+}
+
+/** Closed, value-free diagnostics shared by persistence and authorized history. */
+const LAUNCH_REFUSALS: readonly string[] = [
+  ...PRIVATE_SKILL_FAILURES,
+  "skillpack_credential_missing",
+  "skillpack_credential_refused",
+  "skillpack_skill_unavailable",
+  "forbidden",
+  "not_found",
+  "conflict",
+  "invalid_config",
+  "setup_failed",
+  "snapshot_failed",
+  "build_failed",
+  "reference_unavailable",
+  "variable_unavailable",
+  "variable_version_changed",
+  "secret_unavailable",
+  "secret_version_changed",
+  "environment_unavailable",
+  "environment_snapshot_unavailable",
+  "environment_binding_changed",
+  "connection_unavailable",
+  "connection_version_changed",
+  "model_account_unavailable",
+  "model_account_version_changed",
+  "model_account_incompatible",
+  "environment_limits_exceeded",
+  "model_account_ambiguous",
+  "template_revision_changed",
+  "environment_admission_unavailable",
+  "secret_delivery_unavailable",
+  "variable_delivery_unavailable",
+  "authorization_changed",
+  "no_credentials",
+  "credential_refused",
+  "unsupported",
+  "invalid_request",
+];
+export function routineLaunchRefusal(value: unknown): string | null {
+  return typeof value === "string" && LAUNCH_REFUSALS.includes(value) ? value : null;
 }

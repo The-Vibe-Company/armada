@@ -273,7 +273,11 @@ export async function updateAccountLimits(_previous: ActionResult | null, data: 
   const maxAgents = formAgentLimit(data);
   if (!isUuid(id) || maxAgents === undefined) return fail("Enter a positive integer, or leave empty for unlimited.");
   try {
-    const saved = await context.control.limits({ ...target(context, id), maxAgents });
+    const saved = await context.control.limits({
+      ...target(context, id),
+      maxAgents,
+      ...(formString(data, "model").trim() ? { model: formString(data, "model").trim() } : {}),
+    });
     refresh();
     return done(`${saved.name} limit updated.`);
   } catch (error) {

@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { createSqlGoldenStore } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { rowOnlyConnection } from "./row-only-database.ts";
+
+const migratedDatabase = rowOnlyConnection();
 
 for (const provider of ["boat", "modal"] as const) {
   test(`scoped ${provider} master writes preserve compatibility pairs without repair and refuse blind replacement`, async () => {
@@ -72,7 +74,7 @@ for (const provider of ["boat", "modal"] as const) {
       await expect(store.setSnapshot(golden.id, "revoked-setter")).rejects.toMatchObject({ code: "forbidden" });
       expect(await read()).toMatchObject({ provider_snapshot_id: "snapshot-next" });
     } finally {
-      await db.close();
+      await db.exec("alter table public.goldens enable trigger goldens_provider_guard");
     }
   });
 }
@@ -121,6 +123,6 @@ test("scoped setters recheck current membership and admin role after the caller 
       });
     }
   } finally {
-    await db.close();
+    await db.exec("alter table public.goldens enable trigger goldens_provider_guard");
   }
 });

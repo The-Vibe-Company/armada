@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AuthError } from "@armada/auth";
 import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "../src/armada-api.ts";
 import { fileSessionStore, memorySessionStore } from "../src/session.ts";
 
@@ -82,7 +83,7 @@ describe("API client origin and session safety", () => {
         write: async () => undefined,
         clear: async () => undefined,
       },
-      fetch: async () => Response.json({ ok: true }),
+      fetch: async () => Response.json({ goldens: [] }),
     });
     await client.request("/api/v1/golden/list");
     expect(reads).toBe(0);
@@ -212,19 +213,25 @@ test("a long-lived client uses the rotated refresh token on later requests and p
   expect((await session.read())?.refreshToken).toBe("refresh-2");
 });
 
-for (const failure of ["502", "network", "timeout"] as const) {
-  test(`lost launch outcome (${failure}) advises checking without echoing server text`, async () => {
-    const state = io({ ARMADA_TOKEN: token });
-    state.fetch = (async () => {
-      if (failure === "network") throw Error(token);
-      if (failure === "timeout") throw new DOMException(token, "TimeoutError");
-      return Response.json({ error: { message: token } }, { status: 502 });
-    }) as unknown as typeof fetch;
-    const client = await createArmadaApiClient(state);
-    await expect(client.request("/api/v1/sandbox/launch", { method: "POST" })).rejects.toThrow(
-      "Run armada list to check before retrying.",
-    );
-  });
+for (const path of ["launch", "launch-sized-v1", "launch-access-v1"]) {
+  for (const failure of ["500", "502", "network", "timeout"] as const) {
+    test(`lost launch outcome (${path}, ${failure}) advises checking without echoing server text`, async () => {
+      const state = io({ ARMADA_TOKEN: token });
+      let attempts = 0;
+      state.fetch = (async () => {
+        attempts++;
+        if (failure === "network") throw Error(token);
+        if (failure === "timeout") throw new DOMException(token, "TimeoutError");
+        return Response.json({ error: { code: "unavailable", message: token } }, { status: Number(failure) });
+      }) as unknown as typeof fetch;
+      const client = await createArmadaApiClient(state);
+      const error = await client.request(`/api/v1/sandbox/${path}`, { method: "POST" }).catch((error) => error);
+      expect(error).toBeInstanceOf(AuthError);
+      expect((error as Error).message).toContain("Run armada list to check before retrying.");
+      expect((error as Error).message).not.toContain(token);
+      expect(attempts).toBe(1);
+    });
+  }
 }
 
 for (const path of ["launch", "launch-sized-v1", "launch-access-v1"]) {
@@ -425,4 +432,81 @@ test("a pending request never switches to a replacement login at the same origin
   await expect(client.request("/api/v1/example")).rejects.toThrow("saved login changed");
   expect(calls).toBe(1);
   expect(await state.session.read()).toEqual(replacement);
+});
+
+describe("saved login server binding", () => {
+  test.each(["fresh", "expired", "rejected"])(
+    "routes %s login requests and refresh only to the saved origin",
+    async (mode) => {
+      const state = io();
+      if (mode === "expired") {
+        const saved = await state.session.read();
+        await state.session.write({ ...saved!, expiresAt: "2000-01-01" });
+      }
+      const paths: string[] = [];
+      let rejected = false;
+      state.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const url = new URL(String(input));
+        expect(url.origin).toBe("https://saved.armada.test");
+        paths.push(url.pathname);
+        if (url.pathname.endsWith("/refresh")) {
+          expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "refresh" });
+          return Response.json({
+            accessToken: "rotated_access",
+            refreshToken: "rotated_refresh",
+            expiresAt: "2099-01-01",
+          });
+        }
+        if (mode === "rejected" && !rejected) {
+          rejected = true;
+          return new Response(null, { status: 401 });
+        }
+        return Response.json({});
+      }) as unknown as typeof fetch;
+      const client = await createArmadaApiClient(state);
+      await client.request("/api/v1/example");
+      expect(paths.filter((path) => path.endsWith("/refresh"))).toHaveLength(mode === "fresh" ? 0 : 1);
+    },
+  );
+
+  test.each(["environment", "option"])(
+    "rejects a different %s origin before sending any saved credential",
+    async (source) => {
+      const state = io(source === "environment" ? { ARMADA_URL: "https://other.test" } : {});
+      let calls = 0;
+      state.fetch = (async () => {
+        calls++;
+        return Response.json({});
+      }) as unknown as typeof fetch;
+      await expect(
+        createArmadaApiClient(state, source === "option" ? { url: "https://other.test" } : {}),
+      ).rejects.toThrow("another server");
+      expect(calls).toBe(0);
+    },
+  );
+
+  test("legacy unbound logins cannot be redirected away from the historical default", async () => {
+    const state = io({ ARMADA_URL: "https://other.test" });
+    await state.session.write({
+      accessToken: "legacy_access",
+      refreshToken: "legacy_refresh",
+      expiresAt: "2099-01-01",
+    });
+    await expect(createArmadaApiClient(state)).rejects.toThrow("another server");
+  });
+});
+
+test("refresh refuses a replacement unbound legacy login under the session lock", async () => {
+  const state = io();
+  const client = await createArmadaApiClient({
+    ...state,
+    fetch: async () => new Response(null, { status: 401 }),
+  });
+  // Old sessions may lack loginId; the binding must still identify a replacement.
+  await state.session.write({
+    accessToken: "replacement_access",
+    refreshToken: "replacement_refresh",
+    expiresAt: "2000-01-01",
+  });
+  await expect(client.request("/api/v1/example")).rejects.toThrow("saved login changed");
 });

@@ -17,7 +17,6 @@ import {
   isValidElement,
   type ReactNode,
   type RefObject,
-  useActionState,
   useCallback,
   useEffect,
   useId,
@@ -70,6 +69,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { useToast } from "@/components/ui/toast";
+import { useMutationState } from "@/components/use-mutation-state";
 import type { ActionResult } from "@/lib/action";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { EFFORT_LABEL, HARNESS_LABELS } from "@/lib/labels";
@@ -203,7 +203,7 @@ function TemplateForm({
   onDone: (message: string) => void;
   editing?: Editing;
 }) {
-  const [state, formAction] = useActionState(action, null);
+  const [state, formAction] = useMutationState(action);
   const [name, setName] = useState(editing?.name ?? "");
   const [scope, setScope] = useState<TemplateScope>(editing?.scope ?? "personal");
   const [golden, setGolden] = useState(editing?.definition.goldenId ?? "");
@@ -726,7 +726,7 @@ export function TemplateLaunchForm({ target }: { target: TemplateLaunchTarget })
     if (!result.ok && !result.pending) setRequestKey(newRequestKey());
     return result;
   }, []);
-  const [state, formAction] = useActionState(run, null);
+  const [state, formAction] = useMutationState(run);
   const [project, setProject] = useState(target.repositories.length === 1 ? (target.repositories[0] ?? "") : "");
   const root = useRef<HTMLFormElement>(null);
   useKeepOnReset(root);
@@ -937,7 +937,7 @@ export function TemplateManage({
     },
     [onDone],
   );
-  const [deleted, deleteAction] = useActionState(run, null);
+  const [deleted, deleteAction] = useMutationState(run);
   return (
     <div className="flex flex-wrap gap-2 border-t pt-4">
       <Button variant="outline" size="sm" onClick={() => setDialog("edit")} data-edit-template>

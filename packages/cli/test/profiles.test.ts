@@ -98,7 +98,14 @@ test.each(["--help", "-h", "--version"])("exec payload %s does not bypass profil
     auth.fetch = async (url, init) => {
       calls.push(String(url));
       expect(JSON.parse(String(init?.body)).command).toBe(`echo ${payload} --profile payload`);
-      return Response.json({});
+      return Response.json({
+        id: "11111111-1111-4111-8111-111111111111",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      });
     };
     expect(
       await run(["exec", "11111111-1111-4111-8111-111111111111", "--", "echo", payload, "--profile", "payload"], io, {
@@ -131,4 +138,41 @@ test("a malformed profile session can be cleared or replaced through explicit-se
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("default profile organization preferences use the saved login origin", async () => {
+  const auth = productionAuthIo({ out: () => {}, err: () => {} }, {});
+  const { memorySessionStore } = await import("../src/session.ts");
+  auth.session = memorySessionStore({
+    armadaUrl: "https://custom.example",
+    accessToken: "saved_access",
+    refreshToken: "saved_refresh",
+    expiresAt: "2099-01-01",
+  });
+  const origins: string[] = [];
+  auth.preferences = {
+    read: async (origin) => {
+      origins.push(origin);
+      return "chosen_org";
+    },
+    write: async () => {},
+  };
+  let output = "";
+  auth.out = (s) => {
+    output += s;
+  };
+  expect(
+    await run(
+      ["org", "current"],
+      {
+        out: (s) => {
+          output += s;
+        },
+        err: () => {},
+      },
+      { auth },
+    ),
+  ).toBe(0);
+  expect(origins).toEqual(["https://custom.example"]);
+  expect(JSON.parse(output)).toEqual({ org: "chosen_org" });
 });

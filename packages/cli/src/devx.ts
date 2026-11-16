@@ -7,7 +7,7 @@ import {
   VERSION,
 } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
+import { createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { listHosts } from "./host-commands.ts";
@@ -55,7 +55,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
   )
     return argv;
   const result = [...argv];
-  const origin = armadaApiUrl(auth.env.ARMADA_URL);
+  const origin = await resolveArmadaOrigin(auth);
   const choose = async (key: string, title: string, options: { value: string; label: string }[], fallback?: string) => {
     if (!options.length)
       throw new AuthError(`${title}: no choices available. Run armada doctor to check your setup.`, "usage");
@@ -143,7 +143,7 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
     throw new AuthError("Run armada doctor [--org UUID] [--json].", "usage");
   const rows: { check: string; status: string; detail: string }[] = [];
   const add = (check: string, status: string, detail: string) => rows.push({ check, status, detail });
-  const origin = armadaApiUrl(auth.env.ARMADA_URL);
+  const origin = await resolveArmadaOrigin(auth);
   let org = single(args, "--org") ?? (await auth.preferences?.read(origin));
   try {
     const account = await control<{ version?: string; orgs: { orgId: string; name: string }[] }>(
