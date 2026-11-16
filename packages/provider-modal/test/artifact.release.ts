@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitSetupCommand } from "@armada/core";
@@ -25,6 +25,15 @@ test("actual runtime artifact accepts private bootstrap and scoped RPC, checkpoi
   expect(artifact.bundle.length).toBeGreaterThan(1000);
   const root = await mkdtemp(join(tmpdir(), "armada-artifact-"));
   await Bun.write(join(root, "main.js"), artifact.bundle);
+  // Carry the caller-resolved Git into the isolated exec PATH instead of selecting
+  // an unrelated system credential wrapper in the nested runtime.
+  const git = Bun.which("git");
+  if (!git) throw new Error("Native artifact conformance requires Git in PATH");
+  const tools = join(root, "fixture-bin");
+  await mkdir(tools, { mode: 0o700 });
+  await symlink(git, join(tools, "git"));
+  const executionPath = `${tools}:/usr/local/bin:/usr/bin:/bin`;
+
   for (const [name, version] of [
     ["claude", "2.1.322"],
     ["codex", "0.167.0"],
@@ -110,7 +119,7 @@ test("actual runtime artifact accepts private bootstrap and scoped RPC, checkpoi
       stdin: "pipe",
       stdout: "ignore",
       stderr: "ignore",
-      env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: root },
+      env: { PATH: executionPath, HOME: root },
     });
     const input = process.stdin;
     if (typeof input === "number" || !input) throw Error("missing private pipe");
@@ -131,7 +140,7 @@ test("actual runtime artifact accepts private bootstrap and scoped RPC, checkpoi
           GH_TOKEN: "synthetic-artifact-github",
           GITHUB_TOKEN: "synthetic-artifact-github",
           HOME: root,
-          PATH: "/usr/local/bin:/usr/bin:/bin",
+          PATH: executionPath,
           GIT_CONFIG_GLOBAL: join(root, "fixture-gitconfig"),
           GIT_TERMINAL_PROMPT: "0",
         },
