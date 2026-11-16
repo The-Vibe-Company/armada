@@ -18,8 +18,7 @@ const unused: Driver = {
 };
 function setup(drivers = { claude: unused, codex: unused }) {
   const dir = mkdtempSync(join(tmpdir(), "armada-runner-"));
-  const path = join(dir, "journal");
-  const journal = new Journal(path, (t) => t.replaceAll(grant.token, "[REDACTED]"));
+  const journal = new Journal(":memory:", (t) => t.replaceAll(grant.token, "[REDACTED]"));
   const runner = new Runner(journal, grant, drivers);
   return {
     dir,
