@@ -44,6 +44,7 @@ test("nested onboarding help is focused and performs no authenticated or secret 
     "snapshot",
     "golden",
     "login",
+    "snapshot retirement",
     "snapshot retirement dry-run",
     "snapshot retirement reconcile",
     "golden retirement dry-run",

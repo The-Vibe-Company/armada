@@ -1,5 +1,5 @@
 import { AuthError } from "@armada/auth";
-import { flag, parseArgs, single } from "./args.ts";
+import { acceptedOptions, flag, parseArgs, single } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { logoutCommand } from "./auth-commands.ts";
 import { authorizationUrl } from "./connection-authorization.ts";
@@ -12,11 +12,19 @@ interface GitHubStatus {
 export async function accountCommand(command: "github" | "account", argv: readonly string[], auth: AuthIo) {
   const args = parseArgs(argv);
   const [action, id, ...extra] = args.positionals;
+  acceptedOptions(args, `${command} ${action ?? ""}`, [
+    "--json",
+    ...(command === "github" && ["connect", "reconnect", "install"].includes(action ?? "")
+      ? ["--no-browser", "--timeout"]
+      : command === "github" && action === "manage"
+        ? ["--no-browser"]
+        : []),
+  ]);
   if (command === "account") {
     if (id || extra.length) throw new AuthError("Run armada account status or logout.", "usage");
     if (action === "logout") {
       await control(auth, "account/logout", {});
-      await logoutCommand(auth);
+      await logoutCommand(auth, flag(args, "--json"));
       return 0;
     }
     if (action !== "status") throw new AuthError("Run armada account status or logout.", "usage");
@@ -56,7 +64,8 @@ export async function accountCommand(command: "github" | "account", argv: readon
       installation.account_type === "Organization"
         ? `https://github.com/organizations/${installation.account}/settings/installations/${installation.id}`
         : `https://github.com/settings/installations/${installation.id}`;
-    if (flag(args, "--no-browser")) auth.out(`${url}\n`);
+    if (flag(args, "--json")) auth.out(`${JSON.stringify({ url })}\n`);
+    else if (flag(args, "--no-browser")) auth.out(`${url}\n`);
     else auth.open(url);
     return 0;
   }
