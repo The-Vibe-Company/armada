@@ -1147,3 +1147,16 @@ locally and are refused safely. No privileged fallback, prune or unrelated
 resource deletion is performed. Deploy the additive schema/server support before
 upgrading daemons; older servers can still receive retention and capacity data
 without the new disk field.
+
+
+### Independent physical expiry
+
+The run process starts a physical-only sweep immediately and every ten seconds,
+independent of mailbox execution, image pulls, runtime installation and hourly
+image cleanup. Sweeps do not overlap. Each sweep checks all durable active
+generation identities concurrently through the executor's exact ownership and
+expiry checks; a failed inspection never authorizes a stop. Docker command
+latency and host/daemon downtime still bound enforcement, not a hard real-time
+deadline. This lane never writes the state file or contacts the server. The
+serialized mailbox subsequently observes the stop and persists/reports its proof;
+server acknowledgement can therefore lag physical enforcement during slow work.
