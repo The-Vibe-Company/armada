@@ -79,7 +79,7 @@ Claude models, not arbitrary non-Claude models.
 
 Coordinator staging addition: create the account with these fields using the
 owner-held endpoint/key, find its ID with `armada creds list --json`, select a
-Modal golden and Claude model at launch, and ask for MODEL_OK initially and on
+Modal snapshot and Claude model at launch, and ask for MODEL_OK initially and on
 the next turn. Expect MODEL_OK through the selected gateway path/header.
 Repeat for each auth mode the gateway supports. Inspect output/argv: no key.
 No migration or new setting is required; server/runtime must include #1195.
@@ -106,11 +106,11 @@ migration or new environment setting. Worker tests make no real endpoint call.
 
 ## Dashboard creation fields
 
-Open Models/Harness → Add a model account → Anthropic API key. Name the account and check **Use a custom endpoint (Modal)**. Enter
+Open **What agents have → Models → Add account → Anthropic** (API key). Name the account and check **Use a custom endpoint (Modal)**. Enter
 the HTTPS gateway base URL, select **Bearer token (Authorization)** or
 **API key (x-api-key)** as required by the gateway, and paste the key in the
-password field. Save with Add API key. The named account uses existing
-launch/template selectors; choose a Modal golden and a Claude model.
+password field. Save with **Add account**. The named account uses existing
+launch/template selectors; choose a Modal snapshot and a Claude model.
 
 Coordinator staging addition: repeat this flow for each supported gateway
 auth mode using the owner-held URL/key. Launch each account with “Reply
