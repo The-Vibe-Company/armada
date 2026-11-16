@@ -1,3 +1,6 @@
+// This contract must never silently skip in release validation.
+if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
+
 import { expect, test } from "bun:test";
 import { SQL } from "bun";
 import { GoldenBuildJobs } from "../src/golden-build-jobs.ts";
@@ -8,7 +11,7 @@ import type { Provider } from "../src/provider.ts";
 
 // Dedicated disposable database with migrations applied, never a production URL.
 const url = process.env.ARMADA_TEST_POSTGRES_URL;
-test.skipIf(!url)("PostgreSQL serializes durable admission and fences a crashed claim across workers", async () => {
+test("PostgreSQL serializes durable admission and fences a crashed claim across workers", async () => {
   const a = new SQL(url!, { max: 2 });
   const b = new SQL(url!, { max: 2 });
   const adapt = (client: Pick<SQL, "unsafe">): Sql => ({
@@ -86,65 +89,62 @@ test.skipIf(!url)("PostgreSQL serializes durable admission and fences a crashed 
   }
 });
 
-test.skipIf(!url)(
-  "Bun/PostgreSQL golden config bindings persist objects and reject scalar/secret configs",
-  async () => {
-    const client = new SQL(url!, { max: 1 });
-    const adapt = (driver: Pick<SQL, "unsafe">): Sql => ({
-      query: async <T>(text: string, params: unknown[] = []) => ({
-        rows: Array.from(await driver.unsafe(text, params as never[])) as T[],
-      }),
+test("Bun/PostgreSQL golden config bindings persist objects and reject scalar/secret configs", async () => {
+  const client = new SQL(url!, { max: 1 });
+  const adapt = (driver: Pick<SQL, "unsafe">): Sql => ({
+    query: async <T>(text: string, params: unknown[] = []) => ({
+      rows: Array.from(await driver.unsafe(text, params as never[])) as T[],
+    }),
+  });
+  const sql = adapt(client);
+  const store = createSqlGoldenStore(sql);
+  const owner = crypto.randomUUID(),
+    org = crypto.randomUUID();
+  const initial: GoldenConfig = {
+    repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
+    init: [],
+  };
+  const updated: GoldenConfig = { ...initial, init: ['echo "safe fixture"'] };
+  const input = {
+    orgId: org,
+    ownerId: owner,
+    name: "json-binding",
+    visibility: "org" as const,
+    provider: "boat" as const,
+    modal: null,
+    config: initial,
+  };
+  try {
+    await sql.query("insert into auth.users(id) values($1)", [owner]);
+    await sql.query("insert into orgs(id,name) values($1,$2)", [org, "json-binding-" + org]);
+    await sql.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [org, owner]);
+    const golden = await store.insert(input);
+    expect(golden.config).toEqual(initial);
+    await client.begin(async (tx) => {
+      await createSqlGoldenStore(adapt(tx)).setConfig(golden.id, updated);
     });
-    const sql = adapt(client);
-    const store = createSqlGoldenStore(sql);
-    const owner = crypto.randomUUID(),
-      org = crypto.randomUUID();
-    const initial: GoldenConfig = {
-      repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
-      init: [],
-    };
-    const updated: GoldenConfig = { ...initial, init: ['echo "safe fixture"'] };
-    const input = {
-      orgId: org,
-      ownerId: owner,
-      name: "json-binding",
-      visibility: "org" as const,
-      provider: "boat" as const,
-      modal: null,
-      config: initial,
-    };
-    try {
-      await sql.query("insert into auth.users(id) values($1)", [owner]);
-      await sql.query("insert into orgs(id,name) values($1,$2)", [org, "json-binding-" + org]);
-      await sql.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [org, owner]);
-      const golden = await store.insert(input);
-      expect(golden.config).toEqual(initial);
-      await client.begin(async (tx) => {
-        await createSqlGoldenStore(adapt(tx)).setConfig(golden.id, updated);
-      });
-      expect((await store.findByName(org, input.name))[0]?.config).toEqual(updated);
-      expect(
-        (await sql.query("select jsonb_typeof(config) as kind from goldens where id=$1", [golden.id])).rows,
-      ).toEqual([{ kind: "object" }]);
-      // The database guard is still active, including for raw writes that bypass TS types.
-      await expect(
-        sql.query("update goldens set config=$2::text::jsonb where id=$1", [golden.id, JSON.stringify("scalar")]),
-      ).rejects.toMatchObject({ errno: "23514" });
-      for (const invalid of ["scalar", { repos: [], init: [], token: "safe-short-fixture" }]) {
-        const config = invalid as unknown as GoldenConfig;
-        for (const write of [
-          () => store.setConfig(golden.id, config),
-          () => store.insert({ ...input, name: "invalid-config", config }),
-        ]) {
-          await expect(write()).rejects.toMatchObject({ name: "GoldenError", code: "invalid_config" });
-        }
+    expect((await store.findByName(org, input.name))[0]?.config).toEqual(updated);
+    expect((await sql.query("select jsonb_typeof(config) as kind from goldens where id=$1", [golden.id])).rows).toEqual(
+      [{ kind: "object" }],
+    );
+    // The database guard is still active, including for raw writes that bypass TS types.
+    await expect(
+      sql.query("update goldens set config=$2::text::jsonb where id=$1", [golden.id, JSON.stringify("scalar")]),
+    ).rejects.toMatchObject({ errno: "23514" });
+    for (const invalid of ["scalar", { repos: [], init: [], token: "safe-short-fixture" }]) {
+      const config = invalid as unknown as GoldenConfig;
+      for (const write of [
+        () => store.setConfig(golden.id, config),
+        () => store.insert({ ...input, name: "invalid-config", config }),
+      ]) {
+        await expect(write()).rejects.toMatchObject({ name: "GoldenError", code: "invalid_config" });
       }
-      expect((await store.findByName(org, input.name))[0]?.config).toEqual(updated);
-      expect((await sql.query("select 1 from goldens where org_id=$1", [org])).rows).toHaveLength(1);
-    } finally {
-      await sql.query("delete from goldens where org_id=$1", [org]);
-      // Last-admin guard retains the disposable org/admin until database teardown.
-      await client.close();
     }
-  },
-);
+    expect((await store.findByName(org, input.name))[0]?.config).toEqual(updated);
+    expect((await sql.query("select 1 from goldens where org_id=$1", [org])).rows).toHaveLength(1);
+  } finally {
+    await sql.query("delete from goldens where org_id=$1", [org]);
+    // Last-admin guard retains the disposable org/admin until database teardown.
+    await client.close();
+  }
+});

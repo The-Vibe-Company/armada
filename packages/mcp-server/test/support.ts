@@ -37,8 +37,8 @@ export const ENCRYPTION_KEY = btoa(String.fromCharCode(...new Uint8Array(32).map
 export const SECRETS = {
   orgBoat: "boat-org-key-0123456789",
   personalBoat: "boat-personal-key-0123456789",
-  ownerClaude: "sk-ant-oat01-owner-claude-token",
-  orgClaude: "sk-ant-oat01-org-claude-token",
+  ownerClaude: "claude_owner_token",
+  orgClaude: "claude_org_token",
   orgOpenai: "sk-proj-org-openai-key-0123456789",
 } as const;
 

@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { SQL } from "bun";
 
 import { providerRegistry } from "../../mcp-server/src/http.ts";
 import { fakeBoat } from "../../mcp-server/test/support.ts";
@@ -401,72 +400,6 @@ test("historical dry-run follows proven succeeded chains, mutates nothing, and n
   });
 });
 
-const postgres = process.env.ARMADA_TEST_POSTGRES_URL;
-test.skipIf(!postgres)(
-  "PostgreSQL serializes retirement replicas, stale admission and pointer resurrection while deletion is in flight",
-  async () => {
-    const a = new SQL(postgres!, { max: 1 }),
-      b = new SQL(postgres!, { max: 1 });
-    const adapt = (client: Pick<SQL, "unsafe">): Sql => ({
-      query: async <T>(text: string, params: unknown[] = []) => ({
-        rows: Array.from(await client.unsafe(text, params as never[])) as T[],
-      }),
-    });
-    const sqlA: Sql = { ...adapt(a), transaction: (work) => a.begin((tx) => work(adapt(tx))) };
-    const sqlB: Sql = { ...adapt(b), transaction: (work) => b.begin((tx) => work(adapt(tx))) };
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    let reached!: () => void;
-    const entered = new Promise<void>((r) => {
-      reached = r;
-    });
-    let running: Promise<boolean> | undefined;
-    try {
-      const f = await fixture(sqlA);
-      await f.publish();
-      f.pause(async () => {
-        reached();
-        await gate;
-      });
-      const other = new GoldenSnapshotRetirements({ sql: sqlB, encryptionKey: KEY, provider: async () => f.provider });
-      running = f.retirement.runOne();
-      await entered;
-      await expect(
-        beginGoldenOperation(sqlB, f.golden.id, { snapshotId: f.old, sandboxId: null }),
-      ).rejects.toMatchObject({ code: "conflict" });
-      await expect(createSqlGoldenStore(sqlB).setSnapshot(f.golden.id, f.old)).rejects.toThrow("unavailable");
-      expect(await other.runOne()).toBe(false);
-      // Expired ownership permits readback only, not a second destructive provider request.
-      await sqlB.query(
-        "update golden_snapshot_retirements set claim_until=now()-interval '1 second',next_attempt_at=now()-interval '1 second' where golden_id=$1",
-        [f.golden.id],
-      );
-      expect(await other.runOne()).toBe(true);
-      expect(f.deleted).toEqual([f.old]);
-      release();
-      await running;
-      await f.due();
-      await other.runOne();
-      expect(
-        (
-          await sqlB.query<{ state: string }>("select state from golden_snapshot_retirements where golden_id=$1", [
-            f.golden.id,
-          ])
-        ).rows[0]!.state,
-      ).toBe("retired");
-      expect((await createSqlGoldenStore(sqlB).findByName(f.actor.orgId, "retire"))[0]?.providerSnapshotId).toBe(
-        f.next,
-      );
-    } finally {
-      release();
-      await running;
-      await Promise.all([a.close(), b.close()]);
-    }
-  },
-);
-
 test("retirement management authority stays immutable across cached-provider source resolutions", async () => {
   const db = database();
   const f = await fixture(db);
@@ -682,43 +615,3 @@ test("historical reconciliation uses immutable publication witnesses after an in
   expect(f.deleted).toEqual([middle, f.old]);
   expect(f.snapshots.has(f.next)).toBe(true);
 });
-
-test.skipIf(!postgres)(
-  "PostgreSQL image reference predicate preserves retained recovery IDs through the production SQL adapter",
-  async () => {
-    const client = new SQL(postgres!, { max: 2 });
-    const { sqlOver } = await import("../../mcp-server/src/sql.ts");
-    const { createSqlModalStore } = await import("../../provider-modal/src/store.ts");
-    const sql = sqlOver(client);
-    try {
-      const f = await fixture(sql),
-        id = "logical-ref-" + crypto.randomUUID(),
-        retained = "im_retained_" + crypto.randomUUID();
-      const images = createSqlModalStore(sql, {
-        orgId: f.actor.orgId,
-        userId: f.actor.userId,
-        visibility: "private",
-        binding: { workspace: "local-test", environment: "main", appId: "ap_local_ref" },
-      });
-      await images.reserve("ref-" + crypto.randomUUID(), {
-        info: { id, name: id, state: "stopped", providerState: "stopped", labels: {} },
-        generation: 3,
-        phase: "stopped",
-        golden: false,
-        ttlSeconds: 60,
-        physicalName: "metadata-only-fixture",
-        imageId: "im_current_" + id,
-        recoveryImageId: "im_current_recovery_" + id,
-        retainedRecoveryIds: [retained],
-      });
-      expect(await images.imageReferenced(retained)).toBe(true);
-      await images.lease(id, async (row, save) => {
-        row.retainedRecoveryIds = [];
-        await save(row);
-      });
-      expect(await images.imageReferenced(retained)).toBe(false);
-    } finally {
-      await client.close();
-    }
-  },
-);

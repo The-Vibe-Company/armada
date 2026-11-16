@@ -208,9 +208,11 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             )
           ).rows[0];
           let plannedConversation: string | undefined;
+          let repositoryDir: string | undefined;
           if (launch) {
             const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
             plannedConversation = manifest.conversationId ?? manifest.promptId;
+            repositoryDir = manifest.request.repos?.[0]?.dir;
             if (
               !launch.result_enc &&
               (manifest.promptId !== input.requestId ||
@@ -250,10 +252,13 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           const id = `docker_prompt_${input.requestId}`;
           // Exact retries keep their original canonical payload, including the first
           // request's absent conversationId, even after its receipt is reconciled.
-          const previous = await tx.query(
-            `select request_id from public.runtime_commands where sandbox_id=$1 and request_id=$2`,
+          const previous = await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+            `select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2`,
             [sandboxId, id],
           );
+          const previousCwd = previous.rows[0]
+            ? JSON.parse(await decryptSecret(previous.rows[0].request_enc, key)).input.cwd
+            : undefined;
           const saved =
             (
               await tx.query<{ conversation_ids: string[] }>(
@@ -294,7 +299,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
               ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
               model: sandbox.model,
               reasoningEffort: sandbox.reasoningEffort,
-              cwd: "/home/user",
+              cwd: previous.rows.length ? previousCwd : repositoryDir ? `/home/user/${repositoryDir}` : "/home/user",
             },
           });
           await tx.query(`update public.sandboxes set status='running' where id=$1 and status='ready'`, [sandboxId]);

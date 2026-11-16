@@ -32,10 +32,23 @@ export function modalError(error: unknown): ProviderError {
     const code = Reflect.get(error, "code");
     if (Number.isInteger(code) && code >= 0 && code <= 16) status = code;
   }
+  // gRPC numbers are not HTTP statuses. Only classify validated SDK ClientErrors.
+  const grpcCodes: Partial<Record<number, ProviderErrorCode>> = {
+    3: "invalid_request",
+    4: "unavailable",
+    5: "not_found",
+    6: "conflict",
+    7: "forbidden",
+    8: "unavailable",
+    14: "unavailable",
+    16: "unauthorized",
+  };
+  const code = (status === undefined ? codes[name] : grpcCodes[status]) ?? "unknown";
   return new ProviderError({
     provider: "modal",
-    code: codes[name] ?? "unknown",
-    retryable: codes[name] === "unavailable",
+    code,
+    // Transport retryability is not permission to replay a mutating lifecycle step.
+    retryable: code === "unavailable",
     message: "Modal operation failed; consult the durable lifecycle phase before retrying.",
     ...(status === undefined ? {} : { status }),
     details: { modalFailure: Object.hasOwn(codes, name) ? name : status === undefined ? "unknown" : "grpc" },
