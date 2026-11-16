@@ -195,14 +195,16 @@ export default async function SandboxPage({ params }: Props) {
               </Link>
             </Button>
             {/* One row on every width: a long name wraps inside its heading, the machine's action stays on the right. */}
-            <ShellPageActions><SandboxState
-              viewerOwns={owner}
-              status={sandbox.status}
-              statusMessage={sandbox.status_reason}
-              readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
-              idlePaused={sandbox.status_reason === "idle_paused"}
-              expiresAt={sandbox.expires_at}
-            /></ShellPageActions>
+            <ShellPageActions>
+              <SandboxState
+                viewerOwns={owner}
+                status={sandbox.status}
+                statusMessage={sandbox.status_reason}
+                readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
+                idlePaused={sandbox.status_reason === "idle_paused"}
+                expiresAt={sandbox.expires_at}
+              />
+            </ShellPageActions>
             {sandbox.status === "running" && sandbox.status_reason && sandbox.status_reason !== "idle_paused" && (
               <span className="text-sm text-muted-foreground">{sandbox.status_reason}</span>
             )}
@@ -269,6 +271,49 @@ export default async function SandboxPage({ params }: Props) {
           </footer>
         </div>
         <SandboxDetailsPanel>
+          <section className="space-y-4 text-sm" aria-label="About">
+            <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
+            <Facts
+              facts={[
+                ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+                ["Model", sandbox.model ?? "Provider default"],
+                ["Effort", sandbox.reasoning_effort ?? "Provider default"],
+              ]}
+            />
+            <BillingAccountSummary account={account} />
+            <h2 className="text-xs font-medium text-muted-foreground">Workspace</h2>
+            <Facts
+              facts={[
+                ["Snapshot", golden?.name ?? "Unknown"],
+                ...(repositoryDir ? [["Repository context", repositoryDir] as [string, string]] : []),
+                ["Provider", sandbox.provider === "boat" ? "Boat cloud" : "Modal cloud"],
+                ...(machineSize ? [["Machine size", machineSize] as [string, string]] : []),
+              ]}
+            />
+            <h2 className="text-xs font-medium text-muted-foreground">Access</h2>
+            <Facts
+              facts={[
+                ["Owner", displayUser(directory, sandbox.owner_id, viewer.id)],
+                ["Who can open it", "Owner and organization admins"],
+                ["ID", sandbox.id],
+              ]}
+            />
+            {recovery && owner && (sandbox.status === "ready" || sandbox.status === "stopped") && (
+              <details>
+                <summary className="cursor-pointer text-muted-foreground">Change account</summary>
+                {
+                  <SandboxAccountChoice
+                    sandboxId={sandbox.id}
+                    status={sandbox.status}
+                    alreadyBound={sandbox.credential_id !== null}
+                    owner={owner}
+                    {...(choices ? { choices } : {})}
+                    harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
+                  />
+                }
+              </details>
+            )}
+          </section>
           <section className="space-y-3 text-xs">
             <h2 className="font-medium text-muted-foreground">Lifetime</h2>
             <p className="font-mono">{life.remaining ?? life.lifetime ?? "No time limit recorded"}</p>
@@ -300,41 +345,6 @@ export default async function SandboxPage({ params }: Props) {
             <p className="leading-relaxed text-muted-foreground">
               Stopping keeps the disk and the conversation. Send a prompt to resume.
             </p>
-          </section>
-          <section className="space-y-4 text-sm" aria-label="About">
-            <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
-            <Facts
-              facts={[
-                ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
-                ["Model", sandbox.model ?? "Provider default"],
-                ["Effort", sandbox.reasoning_effort ?? "Provider default"],
-              ]}
-            />
-            <h2 className="text-xs font-medium text-muted-foreground">Workspace</h2>
-            <BillingAccountSummary account={account} />
-            <h2 className="text-xs font-medium text-muted-foreground">Access</h2>
-            <Facts
-              facts={[
-                ["Started", <CreatedAt key="started" iso={sandbox.created_at} now={Date.now()} />],
-                ["Ends", lifecycle.expiresAt ? formatDate(lifecycle.expiresAt) : "No time limit recorded"],
-                ["Who can open it", "Owner and organization admins"],
-              ]}
-            />
-            {recovery && owner && (sandbox.status === "ready" || sandbox.status === "stopped") && (
-              <details>
-                <summary className="cursor-pointer text-muted-foreground">Change account</summary>
-                {
-                  <SandboxAccountChoice
-                    sandboxId={sandbox.id}
-                    status={sandbox.status}
-                    alreadyBound={sandbox.credential_id !== null}
-                    owner={owner}
-                    {...(choices ? { choices } : {})}
-                    harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
-                  />
-                }
-              </details>
-            )}
           </section>
           {configured && (sandbox.status === "ready" || sandbox.status === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
@@ -453,14 +463,16 @@ function DockerSandbox({
                 <span className="font-mono text-xs">{sandbox.id.slice(0, 8)}</span>
               </Link>
             </Button>
-            <ShellPageActions><SandboxState
-              viewerOwns={sandbox.owner_id === viewer.id}
-              status={sandbox.status}
-              statusMessage={sandbox.status_reason}
-              readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
-              idlePaused={sandbox.status_reason === "idle_paused"}
-              expiresAt={sandbox.expires_at}
-            /></ShellPageActions>
+            <ShellPageActions>
+              <SandboxState
+                viewerOwns={sandbox.owner_id === viewer.id}
+                status={sandbox.status}
+                statusMessage={sandbox.status_reason}
+                readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
+                idlePaused={sandbox.status_reason === "idle_paused"}
+                expiresAt={sandbox.expires_at}
+              />
+            </ShellPageActions>
           </div>
           <span className="text-xs text-muted-foreground">
             <RowCost cost={cost} />
