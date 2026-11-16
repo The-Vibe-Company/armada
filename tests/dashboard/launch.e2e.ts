@@ -16,14 +16,14 @@ for (const organization of [
     await screen.getByRole("button", /^Starts from:/).tap();
     await screen.getByPlaceholder("Search starts from").fill(organization.source);
     await screen.getByRole("option", new RegExp(organization.source)).tap();
-    await expect(screen.getByRole("button", /^Agent:/)).toBeVisible();
+    await expect(screen.getByRole("button", /^Agent settings:/)).toBeVisible();
     await screen.getByRole("button", /^Account:/).tap();
     // Account and model are one picker; an enabled model pins both together.
     await screen
       .getByRole("option", /Claude Opus/, { disabled: false })
       .first()
       .tap();
-    await expect(screen.getByRole("button", /^Model:/)).toContainText("Opus");
+    await expect(screen.getByRole("button", /^Agent settings:/)).toContainText(/opus/i);
     await expect(screen.getByRole("button", /^Account:/)).not.toContainText("Choose an account");
     await screen.getByRole("button", /^Folder:/).tap();
     await screen.getByRole("option", new RegExp(`^${organization.folder || "default"}(?: Selected)?$`)).tap();
@@ -50,6 +50,7 @@ for (const organization of [
 test("Acme: an agent without an account cannot launch", { session: "alice" }, async ({ app, screen }) => {
   await app.open("/sandboxes");
   await screen.getByRole("button", "Launch a sandbox").tap();
+  await screen.getByRole("button", /^Agent settings:/).tap();
   await screen.getByRole("button", /^Agent:/).tap();
   await screen.getByRole("option", "Codex", { exact: true }).tap();
   await expect(screen.getByRole("button", "Launch", { exact: true })).toBeDisabled();
@@ -94,6 +95,6 @@ test("Large: launch on the online Docker host", { session: "large" }, async ({ a
 test("Acme: a disconnected tool cannot be selected", { session: "alice" }, async ({ app, screen }) => {
   await app.open("/sandboxes");
   await screen.getByRole("button", "Launch a sandbox").tap();
-  await screen.getByRole("button", /^More options/).tap();
+  await screen.getByRole("button", /^Tools/).tap();
   await expect(screen.getByRole("checkbox", "Acme Sentry")).toBeDisabled();
 });

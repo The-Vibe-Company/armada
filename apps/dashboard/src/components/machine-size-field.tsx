@@ -2,6 +2,7 @@
 
 import type { MachineSize, MachineSizePolicy, SandboxProviderId } from "@armada/core";
 import { useEffect, useRef, useState } from "react";
+import { LaunchChoice } from "@/components/launch-surface";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import {
@@ -25,7 +26,9 @@ export function MachineSizeField({
   policy,
   repositoryDir,
   onSize,
+  composer = false,
 }: {
+  composer?: boolean;
   idPrefix: string;
   provider: SandboxProviderId;
   policy: MachineSizePolicy | null;
@@ -51,21 +54,35 @@ export function MachineSizeField({
 
   return (
     <div ref={group} className="space-y-2" data-machine-size>
-      <Label htmlFor={`${idPrefix}-size`}>Machine size</Label>
-      <NativeSelect
-        id={`${idPrefix}-size`}
-        name="size"
-        value={override}
-        onChange={(event) => setOverride(event.target.value as MachineSize | typeof DEFAULT_SIZE)}
-        aria-describedby={`${idPrefix}-size-hint`}
-      >
-        <option value={DEFAULT_SIZE}>{defaultOptionLabel(provider, resolved)}</option>
-        {sizeOptions(provider).map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </NativeSelect>
+      {composer ? (
+        <>
+          <input type="hidden" name="size" value={override} />
+          <LaunchChoice
+            label="Machine size"
+            value={override}
+            options={[{ value: DEFAULT_SIZE, label: defaultOptionLabel(provider, resolved) }, ...sizeOptions(provider)]}
+            onChange={(value) => setOverride(value as MachineSize | typeof DEFAULT_SIZE)}
+          />
+        </>
+      ) : (
+        <>
+          <Label htmlFor={`${idPrefix}-size`}>Machine size</Label>
+          <NativeSelect
+            id={`${idPrefix}-size`}
+            name="size"
+            value={override}
+            onChange={(event) => setOverride(event.target.value as MachineSize | typeof DEFAULT_SIZE)}
+            aria-describedby={`${idPrefix}-size-hint`}
+          >
+            <option value={DEFAULT_SIZE}>{defaultOptionLabel(provider, resolved)}</option>
+            {sizeOptions(provider).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </NativeSelect>
+        </>
+      )}
       <p id={`${idPrefix}-size-hint`} className="text-xs text-muted-foreground" data-size-source={resolved.source}>
         {override
           ? `Overrides the default (${describeDefault(provider, resolved)}).`
