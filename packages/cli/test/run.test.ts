@@ -159,7 +159,7 @@ describe("run", () => {
   });
 });
 
-test("bare discovery families retain exit codes without profile, account or input I/O", async () => {
+test("bare discovery families succeed without profile, account or input I/O", async () => {
   const forbidden = () => {
     throw new Error("Usage attempted external I/O");
   };
@@ -172,7 +172,7 @@ test("bare discovery families retain exit codes without profile, account or inpu
         return forbidden();
       },
     });
-    expect(result.code).toBe(["snapshot", "golden", "host"].includes(command) ? 2 : 0);
+    expect(result.code).toBe(0);
     expect(result.err).toBe("");
     const family = command === "golden" ? "snapshot" : command;
     expect(result.out).toContain(`Usage: armada ${family} <command>`);
