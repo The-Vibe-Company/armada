@@ -83,7 +83,6 @@ import {
   HARNESS_PATH,
   KIND_INFO,
   kindNote,
-  type LaunchDefault,
   MAX_ACCOUNT_NAME,
   type ModelAccount,
   orderAccounts,
@@ -251,51 +250,6 @@ function ConnectionTestForm({
         {pending ? "Checking…" : "Send tiny check"}
       </SubmitButton>
     </form>
-  );
-}
-
-/* ---------------------------------------------------------------- which account launches use */
-
-/** The one line that says which account a new launch of this agent bills, before anyone opens the dialog. */
-export function LaunchUses({
-  resolved,
-  harnessLabel,
-  now,
-}: {
-  resolved: LaunchDefault;
-  harnessLabel: string;
-  now: number;
-}) {
-  if (resolved.state === "resolved" || resolved.state === "unusable") {
-    const why = {
-      "personal-default": "your default",
-      "personal-only": "your only account",
-      "org-default": "the org's default",
-      "org-only": "the org's only account",
-    }[resolved.why];
-    if (resolved.state === "unusable")
-      return (
-        <p className="text-sm text-warning" data-launch-uses="unusable">
-          Launch would preselect {resolved.account.name}, {why}, but it is {accountProblem(resolved.account, now)}.
-          Replace its token or make another account the default.
-        </p>
-      );
-    return (
-      <p className="text-sm text-muted-foreground" data-launch-uses={resolved.account.id}>
-        Launch preselects <span className="font-medium text-foreground">{resolved.account.name}</span>, {why}.
-      </p>
-    );
-  }
-  if (resolved.state === "ambiguous")
-    return (
-      <p className="text-sm text-muted-foreground" data-launch-uses="ambiguous">
-        No default: each launch asks which account to use.
-      </p>
-    );
-  return (
-    <p className="text-sm text-muted-foreground" data-launch-uses="none">
-      No subscription yet. Add one to launch {harnessLabel}.
-    </p>
   );
 }
 
