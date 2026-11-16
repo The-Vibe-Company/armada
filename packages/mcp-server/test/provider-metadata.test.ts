@@ -8,7 +8,10 @@ import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createHandler } from "../src/http.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
+
+const database = rowOnlyDatabase();
 
 test("HTTP and MCP read Modal capacity before any App exists without provisioning; token scope precedes secret reads", async () => {
   const { db, people } = await database();
@@ -173,70 +176,64 @@ test("HTTP and MCP read Modal capacity before any App exists without provisionin
     expect(JSON.stringify(result)).not.toContain(pair.token_secret);
   } finally {
     await client?.close();
-    await db.close();
   }
 });
 
 test("Boat bindings disclose only visible requested-org goldens, including removed reservations", async () => {
   const { db, people } = await database();
-  try {
-    await db.query("delete from goldens");
-    const ids: string[] = [];
-    for (const [name, visibility, owner, org, _removed] of [
-      ["kept", "org", people.admin, people.org, false],
-      ["removed-bound", "org", people.admin, people.org, true],
-      ["prod-smoke", "org", people.admin, people.org, true],
-      ["live-unbound", "org", people.admin, people.org, false],
-      ["elsewhere", "org", people.admin, people.org, false],
-      ["hidden", "private", people.admin, people.org, false],
-      ["foreign", "org", people.admin, people.otherOrg, false],
-    ] as const) {
-      const result = await db.query<{ id: string }>(
-        "insert into goldens(name,visibility,owner_id,org_id,config,removed_at) values($1,$2,$3,$4,'{}',$5) returning id",
-        [name, visibility, owner, org, null],
-      );
-      ids.push(result.rows[0]!.id);
-    }
-    for (const i of [0, 4, 5, 6]) {
-      await db.query(
-        "insert into golden_backend_slots(provider,backend_id,max_goldens,org_id,owner_id,golden_id) values('boat',$1,10,$2,$3,$4)",
-        [i === 0 ? "trusted" : "other-" + i, i === 6 ? people.otherOrg : people.org, people.admin, ids[i]],
-      );
-    }
-    await db.query("update goldens set removed_at=now() where id=any($1::uuid[])", [[ids[1], ids[2]]]);
-    const metadata = createProviderMetadata({
-      sql: db,
-      vault: createSqlVaultStore(db),
-      encryptionKey: ENCRYPTION_KEY,
-      providerFor: (apiKey) => ({
-        ...createBoatProvider({ apiKey }),
-        backendIdentity: async () => ({ id: "trusted" }),
-      }),
-    });
-    const caller = {
-      via: "service" as const,
-      userId: people.member,
-      orgs: [{ orgId: people.org, name: "Example", role: "member" as const }],
-    };
-    const result = await metadata({ orgId: people.org, provider: "boat" }, caller);
-    expect(result.bindings?.sort((a, b) => a.goldenId.localeCompare(b.goldenId))).toEqual(
-      ids
-        .slice(0, 5)
-        .map((goldenId, i) => ({
-          goldenId,
-          relation:
-            i === 0 ? ("current_backend" as const) : i === 4 ? ("other_backend" as const) : ("unbound" as const),
-        }))
-        .sort((a, b) => a.goldenId.localeCompare(b.goldenId)),
+  await db.query("delete from goldens");
+  const ids: string[] = [];
+  for (const [name, visibility, owner, org, _removed] of [
+    ["kept", "org", people.admin, people.org, false],
+    ["removed-bound", "org", people.admin, people.org, true],
+    ["prod-smoke", "org", people.admin, people.org, true],
+    ["live-unbound", "org", people.admin, people.org, false],
+    ["elsewhere", "org", people.admin, people.org, false],
+    ["hidden", "private", people.admin, people.org, false],
+    ["foreign", "org", people.admin, people.otherOrg, false],
+  ] as const) {
+    const result = await db.query<{ id: string }>(
+      "insert into goldens(name,visibility,owner_id,org_id,config,removed_at) values($1,$2,$3,$4,'{}',$5) returning id",
+      [name, visibility, owner, org, null],
     );
-    await db.query("update goldens set removed_at=now() where id=$1", [ids[0]]);
-    expect(
-      (await metadata({ orgId: people.org, provider: "boat" }, caller)).bindings?.find((b) => b.goldenId === ids[0]),
-    ).toEqual({ goldenId: ids[0]!, relation: "current_backend" });
-    await expect(metadata({ orgId: people.otherOrg, provider: "boat" }, caller)).rejects.toThrow("scoped");
-    await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.member]);
-    await expect(metadata({ orgId: people.org, provider: "boat" }, caller)).rejects.toThrow("membership");
-  } finally {
-    await db.close();
+    ids.push(result.rows[0]!.id);
   }
+  for (const i of [0, 4, 5, 6]) {
+    await db.query(
+      "insert into golden_backend_slots(provider,backend_id,max_goldens,org_id,owner_id,golden_id) values('boat',$1,10,$2,$3,$4)",
+      [i === 0 ? "trusted" : "other-" + i, i === 6 ? people.otherOrg : people.org, people.admin, ids[i]],
+    );
+  }
+  await db.query("update goldens set removed_at=now() where id=any($1::uuid[])", [[ids[1], ids[2]]]);
+  const metadata = createProviderMetadata({
+    sql: db,
+    vault: createSqlVaultStore(db),
+    encryptionKey: ENCRYPTION_KEY,
+    providerFor: (apiKey) => ({
+      ...createBoatProvider({ apiKey }),
+      backendIdentity: async () => ({ id: "trusted" }),
+    }),
+  });
+  const caller = {
+    via: "service" as const,
+    userId: people.member,
+    orgs: [{ orgId: people.org, name: "Example", role: "member" as const }],
+  };
+  const result = await metadata({ orgId: people.org, provider: "boat" }, caller);
+  expect(result.bindings?.sort((a, b) => a.goldenId.localeCompare(b.goldenId))).toEqual(
+    ids
+      .slice(0, 5)
+      .map((goldenId, i) => ({
+        goldenId,
+        relation: i === 0 ? ("current_backend" as const) : i === 4 ? ("other_backend" as const) : ("unbound" as const),
+      }))
+      .sort((a, b) => a.goldenId.localeCompare(b.goldenId)),
+  );
+  await db.query("update goldens set removed_at=now() where id=$1", [ids[0]]);
+  expect(
+    (await metadata({ orgId: people.org, provider: "boat" }, caller)).bindings?.find((b) => b.goldenId === ids[0]),
+  ).toEqual({ goldenId: ids[0]!, relation: "current_backend" });
+  await expect(metadata({ orgId: people.otherOrg, provider: "boat" }, caller)).rejects.toThrow("scoped");
+  await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.member]);
+  await expect(metadata({ orgId: people.org, provider: "boat" }, caller)).rejects.toThrow("membership");
 });
