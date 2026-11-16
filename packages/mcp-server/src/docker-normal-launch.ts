@@ -45,6 +45,7 @@ import { resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
+import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservation-sql.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
@@ -608,7 +609,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
 
         // The transaction queues host work atomically; a lost commit reply is ambiguous.
         reason = "reservation";
-        state = await transaction(async (tx) => {
+        state = await transaction(async (connection) => {
+          const tx = reservationSql(connection);
           await tx.query(`select pg_advisory_xact_lock(hashtextextended($1,0))`, [
             `docker-normal-launch:${request.requestId}`,
           ]);
@@ -952,6 +954,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       // Never log raw exception messages: account/provider errors can contain secrets.
       console.warn("docker_launch_failed", {
         reason,
+        ...(reason === "reservation"
+          ? { statement: "reservation_transaction", ...reservationDatabaseDiagnostic(error) }
+          : {}),
         dispatchPossible,
         code:
           error instanceof ProviderError || error instanceof VaultError || error instanceof LaunchError
