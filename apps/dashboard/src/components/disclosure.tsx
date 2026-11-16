@@ -11,17 +11,28 @@ export function Disclosure({
   summary,
   defaultOpen,
   quiet = false,
+  onOpenChange,
+  open: controlledOpen,
   children,
 }: {
   summary: ReactNode;
   defaultOpen: boolean;
   quiet?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  open?: boolean;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [localOpen, setOpen] = useState(defaultOpen);
+  const open = controlledOpen ?? localOpen;
   const hidden = quiet && open;
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
+    <Collapsible
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        onOpenChange?.(next);
+      }}
+    >
       <CollapsibleTrigger asChild>
         <Button
           type="button"

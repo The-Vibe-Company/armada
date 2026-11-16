@@ -42,7 +42,7 @@ import {
 import { SubmitButton } from "@/components/action-form";
 import { PresetConnectionFields } from "@/components/connection-preset-fields";
 import { ResultLine } from "@/components/connections";
-import { CreateDialog } from "@/components/create-dialog";
+import { CreateDialog, CreateDialogBody, CreateDialogFooter } from "@/components/create-dialog";
 import { Disclosure } from "@/components/disclosure";
 import { Empty } from "@/components/page-header";
 import { AnthropicIcon, ClaudeAI, OpenAI } from "@/components/provider-marks";
@@ -1496,7 +1496,7 @@ export function AddAccountDialog({
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const [showMore, setShowMore] = useState(false);
-  const [manual, setManual] = useState(false);
+  const [pasteOpen, setPasteOpen] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [state, formAction] = useMutationState(addAccount);
   const [choice, setChoice] = useState<AddChoice>(initialKind);
@@ -1597,10 +1597,10 @@ export function AddAccountDialog({
         Make it the default for {info.harnessLabel}
       </Label>
       {state && !state.ok && <ResultLine result={state} />}
-      <SubmitButton>{preset?.deploymentNames ? "Test and add account" : "Add account"}</SubmitButton>
     </>
   );
   const choose = (next: AddChoice) => {
+    setPasteOpen(false);
     const nextPreset = connectionPreset(next);
     const nextKind =
       next === "your-endpoint-claude"
@@ -1623,6 +1623,7 @@ export function AddAccountDialog({
   };
   return (
     <CreateDialog
+      fixedActions
       triggerVariant={triggerVariant}
       label={triggerLabel}
       title="Add provider"
@@ -1633,7 +1634,7 @@ export function AddAccountDialog({
         if (next) {
           setStep(0);
           setShowMore(false);
-          setManual(false);
+          setPasteOpen(false);
           choose(initialKind);
           setScope("user");
           setGeneration((value) => value + 1);
@@ -1647,7 +1648,7 @@ export function AddAccountDialog({
         }}
         key={generation}
         action={formAction}
-        className="min-w-0 space-y-4"
+        className="min-w-0 gap-4"
         onKeyDown={(event) => {
           if (event.key !== "Enter" || step === 2 || !(event.target instanceof HTMLInputElement)) return;
           event.preventDefault();
@@ -1658,217 +1659,224 @@ export function AddAccountDialog({
         <input type="hidden" name="kind" value={kind} />
         {preset?.models === "choose" && <input type="hidden" name="preset" value={preset.id} />}
         <input type="hidden" name="scope" value={scope} />
-        <ol aria-label="Connection steps" className="flex items-center justify-between gap-2 border-b pb-4 text-xs">
-          {["Provider", "Identity", "Config"].map((label, index) => (
-            <li
-              key={label}
-              aria-current={step === index ? "step" : undefined}
-              className={cn(
-                "flex items-center gap-2",
-                step === index ? "font-medium text-foreground" : "text-muted-foreground",
-              )}
-            >
-              <span
+        <CreateDialogBody className="space-y-4">
+          <ol aria-label="Connection steps" className="flex items-center justify-between gap-2 border-b pb-4 text-xs">
+            {["Provider", "Identity", "Config"].map((label, index) => (
+              <li
+                key={label}
+                aria-current={step === index ? "step" : undefined}
                 className={cn(
-                  "grid size-6 place-items-center rounded-full border",
-                  step === index && "border-primary bg-primary text-primary-foreground",
+                  "flex items-center gap-2",
+                  step === index ? "font-medium text-foreground" : "text-muted-foreground",
                 )}
               >
-                {index + 1}
-              </span>
-              {label}
-            </li>
-          ))}
-        </ol>
-        <div data-wizard-panel="0" hidden={step !== 0} className="space-y-4">
-          <fieldset className="grid grid-cols-2 gap-2" aria-label="Account provider">
-            {SUBSCRIPTION_KINDS.map((value) => (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={choice === value}
-                onClick={() => choose(value)}
-                className={cn(
-                  "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
-                  choice === value && "border-primary bg-accent",
-                )}
-              >
-                <span className="mb-2 block">
-                  <ProviderMark kind={value} />
+                <span
+                  className={cn(
+                    "grid size-6 place-items-center rounded-full border",
+                    step === index && "border-primary bg-primary text-primary-foreground",
+                  )}
+                >
+                  {index + 1}
                 </span>
-                {choice === value && <CheckIcon aria-hidden className="float-right size-4" />}
-                {value === "claude_oauth" ? "Claude" : "ChatGPT"}
-                <span className="block text-xs text-muted-foreground">Subscription</span>
-              </button>
+                {label}
+              </li>
             ))}
-            <button
-              hidden={!showMore && !endpoint}
-              type="button"
-              aria-pressed={
-                endpoint ||
-                (!!preset &&
-                  !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))
-              }
-              onClick={() => choose("your-endpoint")}
-              className={cn(
-                "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
-                (endpoint ||
-                  (!!preset &&
-                    !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))) &&
-                  "border-primary bg-accent",
-              )}
-            >
-              <KeyRoundIcon aria-hidden className="mb-3 size-6" />
-              {endpoint && <CheckIcon aria-hidden className="float-right size-4" />}
-              Your endpoint
-              <span className="block text-xs text-muted-foreground">Azure, OpenRouter, DeepSeek, other</span>
-            </button>
-            {CONNECTION_PRESETS.filter((option) => ["anthropic", "openai", "morph"].includes(option.id)).map(
-              (option) => (
+          </ol>
+          <div data-wizard-panel="0" hidden={step !== 0} className="space-y-4">
+            <fieldset className="grid grid-cols-2 gap-2" aria-label="Account provider">
+              {SUBSCRIPTION_KINDS.map((value) => (
                 <button
-                  key={option.id}
+                  key={value}
                   type="button"
-                  aria-pressed={choice === option.id || choice === `opencode-${option.id}`}
-                  onClick={() => choose(option.id)}
+                  aria-pressed={choice === value}
+                  onClick={() => choose(value)}
                   className={cn(
                     "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
-                    (choice === option.id || choice === `opencode-${option.id}`) && "border-primary bg-accent",
+                    choice === value && "border-primary bg-accent",
                   )}
                 >
                   <span className="mb-2 block">
-                    <ProviderMark kind={option.kind} />
+                    <ProviderMark kind={value} />
                   </span>
-                  {(choice === option.id || choice === `opencode-${option.id}`) && (
-                    <CheckIcon aria-hidden className="float-right size-4" />
-                  )}
-                  {option.id === "anthropic" ? "Anthropic" : option.id === "openai" ? "OpenAI" : option.label}
-                  <span className="block text-xs text-muted-foreground">API key</span>
+                  {choice === value && <CheckIcon aria-hidden className="float-right size-4" />}
+                  {value === "claude_oauth" ? "Claude" : "ChatGPT"}
+                  <span className="block text-xs text-muted-foreground">Subscription</span>
                 </button>
-              ),
-            )}
-          </fieldset>
-          <Button type="button" variant="ghost" size="sm" onClick={() => setShowMore(!showMore)}>
-            {showMore ? "Show less" : "Show more"}
-          </Button>
-          <p className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
-            Connect an existing subscription or API key. Armada stores credentials encrypted and never displays them
-            again.
-          </p>
-        </div>
-        <div
-          key={choice}
-          className="space-y-4 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-150"
-        >
-          <div hidden={step !== 0} className="space-y-4">
-            {(endpoint ||
-              (preset &&
-                !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))) && (
-              <div className="space-y-2">
-                <Label htmlFor={`${id}-provider`}>Provider</Label>
-                <NativeSelect
-                  id={`${id}-provider`}
-                  value={choice}
-                  onChange={(event) => choose(event.target.value as AddChoice)}
-                >
-                  <option value="your-endpoint">Custom endpoint for Codex</option>
-                  <option value="your-endpoint-claude">Custom endpoint for Claude Code</option>
-                  {CONNECTION_PRESETS.filter(
-                    (option) =>
-                      !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(option.id),
-                  ).map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))}
-                </NativeSelect>
-              </div>
-            )}
-            {["anthropic", "openai", "opencode-openai", "opencode-anthropic"].includes(choice) && (
-              <div className="space-y-2">
-                <Label htmlFor={`${id}-agents`}>Which agents will use it?</Label>
-                <NativeSelect
-                  id={`${id}-agents`}
-                  value={choice}
-                  onChange={(event) => choose(event.target.value as AddChoice)}
-                >
-                  {choice.includes("anthropic") ? (
-                    <>
-                      <option value="anthropic">Claude Code</option>
-                      <option value="opencode-anthropic">OpenCode</option>
-                    </>
-                  ) : (
-                    <>
-                      <option value="openai">Codex</option>
-                      <option value="opencode-openai">OpenCode</option>
-                    </>
-                  )}
-                </NativeSelect>
-              </div>
-            )}
-            <p className="text-xs text-muted-foreground" data-connection-availability>
-              Works with {info.harnessLabel}.{" "}
-              {kind === "morph"
-                ? "One Morph key for Claude Code, Codex and OpenCode."
-                : "Stored encrypted, never shown again."}
+              ))}
+              <button
+                hidden={!showMore && !endpoint}
+                type="button"
+                aria-pressed={
+                  endpoint ||
+                  (!!preset &&
+                    !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))
+                }
+                onClick={() => choose("your-endpoint")}
+                className={cn(
+                  "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
+                  (endpoint ||
+                    (!!preset &&
+                      !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(
+                        preset.id,
+                      ))) &&
+                    "border-primary bg-accent",
+                )}
+              >
+                <KeyRoundIcon aria-hidden className="mb-3 size-6" />
+                {endpoint && <CheckIcon aria-hidden className="float-right size-4" />}
+                Your endpoint
+                <span className="block text-xs text-muted-foreground">Azure, OpenRouter, DeepSeek, other</span>
+              </button>
+              {CONNECTION_PRESETS.filter((option) => ["anthropic", "openai", "morph"].includes(option.id)).map(
+                (option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    aria-pressed={choice === option.id || choice === `opencode-${option.id}`}
+                    onClick={() => choose(option.id)}
+                    className={cn(
+                      "rounded-md border px-3 py-2 text-left text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none hover:bg-accent",
+                      (choice === option.id || choice === `opencode-${option.id}`) && "border-primary bg-accent",
+                    )}
+                  >
+                    <span className="mb-2 block">
+                      <ProviderMark kind={option.kind} />
+                    </span>
+                    {(choice === option.id || choice === `opencode-${option.id}`) && (
+                      <CheckIcon aria-hidden className="float-right size-4" />
+                    )}
+                    {option.id === "anthropic" ? "Anthropic" : option.id === "openai" ? "OpenAI" : option.label}
+                    <span className="block text-xs text-muted-foreground">API key</span>
+                  </button>
+                ),
+              )}
+            </fieldset>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setShowMore(!showMore)}>
+              {showMore ? "Show less" : "Show more"}
+            </Button>
+            <p className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+              Connect an existing subscription or API key. Armada stores credentials encrypted and never displays them
+              again.
             </p>
           </div>
-          <div data-wizard-panel="1" hidden={step !== 1} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-name`}>Name</Label>
-              <Input
-                id={`${id}-name`}
-                name="name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                required
-                maxLength={MAX_ACCOUNT_NAME}
-                autoComplete="off"
-              />
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {isAdmin && (
+          <div
+            key={choice}
+            className="space-y-4 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-150"
+          >
+            <div hidden={step !== 0} className="space-y-4">
+              {(endpoint ||
+                (preset &&
+                  !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(preset.id))) && (
                 <div className="space-y-2">
-                  <Label htmlFor={`${id}-scope`}>Who uses it</Label>
+                  <Label htmlFor={`${id}-provider`}>Provider</Label>
                   <NativeSelect
-                    id={`${id}-scope`}
-                    value={scope}
-                    onChange={(event) => setScope(event.target.value as "user" | "org")}
+                    id={`${id}-provider`}
+                    value={choice}
+                    onChange={(event) => choose(event.target.value as AddChoice)}
                   >
-                    <option value="user">Only you</option>
-                    <option value="org">{orgName}</option>
+                    <option value="your-endpoint">Custom endpoint for Codex</option>
+                    <option value="your-endpoint-claude">Custom endpoint for Claude Code</option>
+                    {CONNECTION_PRESETS.filter(
+                      (option) =>
+                        !["anthropic", "openai", "morph", "opencode-openai", "opencode-anthropic"].includes(option.id),
+                    ).map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
                   </NativeSelect>
                 </div>
               )}
-              <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
+              {["anthropic", "openai", "opencode-openai", "opencode-anthropic"].includes(choice) && (
+                <div className="space-y-2">
+                  <Label htmlFor={`${id}-agents`}>Which agents will use it?</Label>
+                  <NativeSelect
+                    id={`${id}-agents`}
+                    value={choice}
+                    onChange={(event) => choose(event.target.value as AddChoice)}
+                  >
+                    {choice.includes("anthropic") ? (
+                      <>
+                        <option value="anthropic">Claude Code</option>
+                        <option value="opencode-anthropic">OpenCode</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="openai">Codex</option>
+                        <option value="opencode-openai">OpenCode</option>
+                      </>
+                    )}
+                  </NativeSelect>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground" data-connection-availability>
+                Works with {info.harnessLabel}.{" "}
+                {kind === "morph"
+                  ? "One Morph key for Claude Code, Codex and OpenCode."
+                  : "Stored encrypted, never shown again."}
+              </p>
+            </div>
+            <div data-wizard-panel="1" hidden={step !== 1} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor={`${id}-name`}>Name</Label>
+                <Input
+                  id={`${id}-name`}
+                  name="name"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  required
+                  maxLength={MAX_ACCOUNT_NAME}
+                  autoComplete="off"
+                />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {isAdmin && (
+                  <div className="space-y-2">
+                    <Label htmlFor={`${id}-scope`}>Who uses it</Label>
+                    <NativeSelect
+                      id={`${id}-scope`}
+                      value={scope}
+                      onChange={(event) => setScope(event.target.value as "user" | "org")}
+                    >
+                      <option value="user">Only you</option>
+                      <option value="org">{orgName}</option>
+                    </NativeSelect>
+                  </div>
+                )}
+                <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
+              </div>
+            </div>
+            <div data-wizard-panel="2" hidden={step !== 2} className="space-y-4">
+              {command ? (
+                <>
+                  <TerminalSignIn
+                    command={command}
+                    onDone={() => {
+                      setOpen(false);
+                      router.refresh();
+                    }}
+                  />
+                  <Disclosure
+                    summary="No terminal here, or on a phone? Paste a sign-in token instead"
+                    defaultOpen={false}
+                    open={pasteOpen}
+                    onOpenChange={setPasteOpen}
+                  >
+                    <div className="space-y-4">
+                      {pasteSignIn && (
+                        <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />
+                      )}
+                      {saveFields}
+                    </div>
+                  </Disclosure>
+                </>
+              ) : (
+                saveFields
+              )}
             </div>
           </div>
-          <div data-wizard-panel="2" hidden={step !== 2} className="space-y-4">
-            {command ? (
-              <>
-                <TerminalSignIn
-                  command={command}
-                  onDone={() => {
-                    setOpen(false);
-                    router.refresh();
-                  }}
-                />
-                <Disclosure
-                  key={manual ? "manual" : "terminal"}
-                  summary="No terminal here, or on a phone? Paste a sign-in token instead"
-                  defaultOpen={manual}
-                >
-                  <div className="space-y-4">
-                    {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
-                    {saveFields}
-                  </div>
-                </Disclosure>
-              </>
-            ) : (
-              saveFields
-            )}
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-4">
+        </CreateDialogBody>
+        <CreateDialogFooter className="flex flex-wrap items-center justify-between gap-2">
           <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
             Cancel
           </Button>
@@ -1878,7 +1886,7 @@ export function AddAccountDialog({
                 type="button"
                 variant="outline"
                 onClick={() => {
-                  setManual(true);
+                  setPasteOpen(true);
                   advance();
                 }}
               >
@@ -1890,6 +1898,9 @@ export function AddAccountDialog({
                 Back
               </Button>
             )}
+            {step === 2 && (!command || pasteOpen) && (
+              <SubmitButton>{preset?.deploymentNames ? "Test and add account" : "Add account"}</SubmitButton>
+            )}
             {step < 2 && (
               <Button type="button" onClick={advance}>
                 {subscription
@@ -1900,7 +1911,7 @@ export function AddAccountDialog({
               </Button>
             )}
           </div>
-        </div>
+        </CreateDialogFooter>
       </form>
     </CreateDialog>
   );
