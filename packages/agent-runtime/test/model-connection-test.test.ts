@@ -1,8 +1,5 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { AUTH_HEADER, type Driver, Journal, Runner } from "../src/index.ts";
 import {
   type BoundModelConnection,
@@ -178,9 +175,8 @@ test("provider status/codes survive but key-echoing bodies and unknown diagnosti
 });
 
 test("private test RPC is grant protected, refuses request destinations/builders and writes no receipt", async () => {
-  const root = mkdtempSync(join(tmpdir(), "runtime-connection-test-"));
   const token = randomUUID();
-  const journal = new Journal(join(root, "journal"), (text) => text.replaceAll(token, "[redacted]"));
+  const journal = new Journal(":memory:", (text) => text.replaceAll(token, "[redacted]"));
   const driver: Driver = {
     start() {
       throw Error("unused");
@@ -190,6 +186,8 @@ test("private test RPC is grant protected, refuses request destinations/builders
   const grant = { token, sandboxId: "sandbox", generation: "1", expiresAt: Date.now() + 60000 };
   let calls = 0;
   let pending: Promise<void> | undefined;
+  let release: (() => void) | undefined;
+  let checking: Promise<Response> | undefined;
   let entered: (() => void) | undefined;
   const execution = {
     testModelConnection: async () => {
@@ -240,25 +238,26 @@ test("private test RPC is grant protected, refuses request destinations/builders
     });
     expect((await builder.handle(request())).status).toBe(409);
     expect(calls).toBe(2);
-    let release!: () => void;
     pending = new Promise<void>((resolve) => {
       release = resolve;
     });
     const started = new Promise<void>((resolve) => {
       entered = resolve;
     });
-    const checking = runner.handle(request());
+    checking = runner.handle(request());
     await started;
     expect((await runner.handle(request())).status).toBe(409);
-    release();
+    release?.();
     expect((await checking).status).toBe(200);
     journal.bindIdentity(grant);
     journal.checkpointFence(grant, "preparing");
     expect((await runner.handle(request())).status).toBe(409);
     expect(calls).toBe(3);
   } finally {
+    release?.();
+    await Promise.allSettled(checking ? [checking] : []);
+    await runner.close();
     journal.close();
-    rmSync(root, { recursive: true, force: true });
   }
 });
 
