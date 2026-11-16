@@ -87,7 +87,7 @@ armada creds limits ACCOUNT_UUID --unlimited
 ## Test a custom connection
 
 On Account → Models, a custom OpenCode connection with declared models offers
-**Test connection**. Choose an idle, already-running Modal sandbox bound to the
+**Test connection**. Choose an idle, already-running Modal or Boat shared-runtime sandbox bound to the
 current account revision and its declared model. The runtime strips the fixed
 `armada/` model prefix and sends one bounded request using the connection's
 configured protocol: OpenAI-compatible chat completions, OpenAI/Azure Responses,
@@ -99,7 +99,10 @@ agent turn, tool use or streaming.
 OpenCode plan-key checks remain unavailable: the native CLI owns its plan
 routing/session headers. OpenCode runs on Modal, Docker and the shared Boat runtime. Public API/CLI
 connection checks support Modal and the shared Boat runtime, not Docker; the
-dashboard sandbox picker currently offers Modal only. Boat is not part of the
+dashboard sandbox picker offers Modal and immutable Boat shared-runtime targets,
+using the same owner/current-account/version/running/no-stop-request metadata
+predicate at discovery and submit. Native Boat and Docker remain unavailable for
+checks. Boat is not part of the
 staging/release gate. No sandbox is
 started or resumed for a check. Coordinator staging: launch an idle Modal
 sandbox with a saved DeepSeek custom connection, then send a tiny check from

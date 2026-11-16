@@ -1,12 +1,19 @@
 import type { Harness, ModelConnectionTestResult } from "@armada/core";
 import type { ActionResult } from "./action";
 
-/** Only the viewer's recent running Modal sandboxes; no provider ids or secret/configuration values. */
+/** Only the viewer's recent running Modal/Boat-runtime sandboxes; no physical IDs or private config. */
 export type ConnectionTestChoices =
   | { state: "unavailable" }
   | {
       state: "ready";
-      sandboxes: { id: string; accountId: string; version: number; harness: Harness; createdAt: string }[];
+      sandboxes: {
+        id: string;
+        accountId: string;
+        version: number;
+        harness: Harness;
+        provider: "modal" | "boat";
+        createdAt: string;
+      }[];
     };
 
 /** User-JWT metadata must name this exact owner/account/version before probing. */
@@ -28,7 +35,8 @@ export function matchesConnectionTestSandbox(
     row.org_id === expected.orgId &&
     row.credential_id === expected.accountId &&
     row.credential_version === expected.version &&
-    row.provider === "modal" &&
+    (row.provider === "modal" || (row.provider === "boat" && row.boat_runtime === true)) &&
+    row.stop_requested_at === null &&
     typeof row.status === "string" &&
     ["ready", "running"].includes(row.status)
   );

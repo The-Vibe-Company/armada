@@ -754,8 +754,9 @@ from staging/release gates. These are acceptance instructions, not live evidence
 The existing `sandbox/test-model-connection` API and `armada creds test ID --model MODEL`
 now support an already-running, owner-controlled Boat shared-runtime sandbox. No
 start, resume, native Boat model API or SSH/exec fallback is used. Native Modal
-checks retain their existing path. Dashboard candidate selection and Docker
-connection checks remain separate follow-up work; this slice does not enable them.
+checks retain their existing path. The dashboard now lists matching running Boat
+shared-runtime sandboxes alongside Modal targets, with the provider named in the
+selector. Native Boat and Docker connection checks remain unavailable.
 
 Checks accept only sandbox ID, model and optional org: no key, endpoint, headers
 or arbitrary prompt. The sandbox's pinned current account/version must remain
@@ -774,6 +775,23 @@ runtime after normal release: invoke the existing CLI check with its selected
 API-key account and model; require a safe success or closed authentication/model
 failure and unchanged sandbox conversation/generation. A stopped or native Boat
 sandbox, another member, a rotated pinned account and subscription/OpenCode-plan
-accounts must refuse without starting or resuming compute. The UI remains
-unchanged. No provider calls, deployment, default flip or migration application
+accounts must refuse without starting or resuming compute. The dashboard action
+rereads user-JWT metadata, including immutable `boat_runtime` and
+`stop_requested_at`, before calling the same API; it does not accept eligibility
+from the form. No provider calls, deployment, default flip or migration application
 were performed by this worker; these steps are not evidence of acceptance.
+
+
+### Dashboard connection-check acceptance (#2052)
+
+Coordinator-only production check after the normal dashboard/server release,
+using existing resources: open Models → an API-key account → Test connection.
+Require a matching owner-controlled Boat shared-runtime target to appear with
+its provider and date, select its declared model and verify safe success or
+closed authentication/model guidance. Existing Modal targets must remain usable.
+Native Boat, Docker, stopping/stopped, foreign-owner/org and stale-account-version
+targets must not be offered; a stale open form must be rejected after a stop
+request or account change. No machine is started or resumed by testing. The
+fixture UI check is not production/provider evidence; no real provider call or
+deployment was performed by this worker. Boat remains outside staging and the
+release gate, with no default or schema change.
