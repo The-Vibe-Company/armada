@@ -221,7 +221,7 @@ export interface DockerSandboxStatus {
   golden: null;
   visibility: "private";
   harness: Harness;
-  repositoryDir: null;
+  repositoryDir: string | null;
   machineSize: MachineSizeEvidence | null;
   model: string | null;
   reasoningEffort: string | null;

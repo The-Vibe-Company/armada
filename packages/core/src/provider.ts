@@ -15,6 +15,7 @@ export interface GitHubRuntimeConfiguration {
   version: 1;
   revision: string;
   retired?: readonly string[];
+  repositories?: readonly string[];
   generation: string;
   url: string;
   capability: string;

@@ -172,6 +172,16 @@ export class GitHubBroker {
         try {
           const path = new URL(request.url).pathname;
           if (request.method !== "POST") throw Error("denied");
+          if (path === "/repositories")
+            return Response.json(
+              {
+                repositories:
+                  this.configuration && this.configuration.expiresAt > this.now()
+                    ? (this.configuration.repositories ?? [])
+                    : [],
+              },
+              { headers: { "cache-control": "no-store" } },
+            );
           if (path === "/register") return await register(request);
           if (path !== "/redact") throw Error("denied");
           const value = (await body(request, 262144)).toString("latin1");
@@ -220,6 +230,16 @@ export class GitHubBroker {
             this.configure(JSON.parse((await body(request, 1048576)).toString()));
             return Response.json({ acknowledged: true });
           }
+          if (path === "/repositories")
+            return Response.json(
+              {
+                repositories:
+                  this.configuration && this.configuration.expiresAt > this.now()
+                    ? (this.configuration.repositories ?? [])
+                    : [],
+              },
+              { headers: { "cache-control": "no-store" } },
+            );
           if (path === "/register") return await register(request);
           if (path !== "/") throw Error("denied");
           const value = JSON.parse((await body(request, 1024)).toString()) as {
