@@ -37,6 +37,7 @@ import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
 import { RemoveGolden } from "@/components/remove-golden";
 import { ResourceBrowser, type ResourceRow, SelectItem } from "@/components/resource-browser";
+import { ResourceTags } from "@/components/resource-tags";
 import { SizeDefaults } from "@/components/size-defaults";
 import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -910,7 +911,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
       </span>
     ),
     tags: (
-      <>
+      <ResourceTags>
         <RowTag>
           {golden.visibility === "private" ? <LockIcon aria-hidden /> : <GlobeIcon aria-hidden />}
           {golden.visibility === "private" ? "Private" : "Org"}
@@ -925,7 +926,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
             <TriangleAlertIcon aria-hidden /> Name shared by another snapshot
           </RowTag>
         )}
-      </>
+      </ResourceTags>
     ),
     meta,
     subtitle: meta,
@@ -1059,13 +1060,13 @@ function dockerSnapshotRow(
       </span>
     ),
     tags: (
-      <>
+      <ResourceTags>
         <RowTag>
           {snapshot.visibility === "private" ? <LockIcon aria-hidden /> : <GlobeIcon aria-hidden />}
           {snapshot.visibility === "private" ? "Private" : "Org"}
         </RowTag>
         {canRebuild && <RowTag>New Armada version available</RowTag>}
-      </>
+      </ResourceTags>
     ),
     meta,
     subtitle: meta,
