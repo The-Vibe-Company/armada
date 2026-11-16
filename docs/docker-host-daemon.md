@@ -644,8 +644,8 @@ and a working systemd user session. The binary is verified before execution,
 registered over stdin and installed as a user service with linger. If the user
 cannot enable linger or use Docker, an administrator must configure linger and
 rootless Docker (or explicitly grant powerful Docker access). No sudo is run.
-Existing binaries/registration are refused rather than overwritten. Failed or
-uncertain registration must be inspected, never blindly replayed.
+Use the current CLI installer below to safely upgrade an existing registration.
+Failed or uncertain registration must be inspected, never blindly replayed.
 
 `~/.local/bin/armada-docker-host status` reports registration, recent successful
 poll (not inferred runtime health), daemon version and labelled running count.
@@ -685,6 +685,17 @@ host credential still travels only in private state and authenticated requests.
 The POSIX script verifies the architecture's digest, installs the existing user
 service and prints `connected` after the daemon has successfully polled. A timeout
 reports pending, not failed registration or permission to replay a token.
+
+On a machine already linked to the same server, the current installer keeps its
+registration/name, safely upgrades the binary, and attempts to cancel the unused
+new ticket; if reconciliation fails, the ticket expires naturally.
+For a different server it creates a separate server-scoped installation and user
+service; it does not replace the existing server connection. Use
+`armada host status --server HTTPS_ORIGIN` and
+`armada host uninstall --server HTTPS_ORIGIN` to select the intended installation.
+With multiple installations, omitting the server returns an inventory and
+selection guidance without changing either installation.
+Unreadable existing identity/state refuses installation rather than guessing.
 
 CLI: `armada host add [--name NAME] [--org UUID]` prints that command and waits
 boundedly for the exact host. `armada host list [--json]` shows safe metadata;

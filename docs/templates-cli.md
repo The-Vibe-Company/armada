@@ -115,7 +115,9 @@ runtime-backed launch (native Boat is unsupported). See [Morph](morph.md).
 Per-account simultaneous-agent limits also apply to template/routine launches:
 Morph defaults to 2, other accounts to unlimited. A busy account refuses admission,
 not a silent fallback; wait for capacity or deliberately select another eligible
-unpinned account. See the [account setup and limits](dave-onboarding.md). No arbitrary environment override exists.
+unpinned account. Follow-up sends to existing sandboxes can instead queue durably
+for account capacity, dispatching FIFO per account. A queued receipt is not evidence
+that the prompt ran; read its outcome with wait/logs. See the [account setup and limits](dave-onboarding.md). No arbitrary environment override exists.
 
 Authenticated no-store POST `/api/v1/templates/{create,list,get,publish,delete,launch}`
 and MCP `template_{create,list,get,publish,delete,launch}` share validation; the

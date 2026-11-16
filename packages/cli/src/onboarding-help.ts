@@ -567,6 +567,7 @@ Example: armada bind-credential SANDBOX_UUID --credential-id ACCOUNT_UUID --org 
 `,
   extend: `Usage: armada extend <sandbox-UUID> --ttl <duration> [--org UUID] [--json]
 Request a sandbox lifetime extension after Armada login and server authorization.
+TTL is measured from now, not added to the old deadline, and must extend it.
 Duration is a positive integer with optional s, m, h or d; a bare number is seconds.
 Examples: 90, 90s, 30m, 4h, 2d. Server/provider state and lifetime limits still apply.
 Use a sandbox UUID from armada list --json. Output is JSON even without --json.

@@ -114,6 +114,9 @@ Morph defaults to **2**; other accounts default to unlimited. Set `--max-agents 
 or `--unlimited` when adding an account, or change it with
 `armada creds limits ACCOUNT_UUID --max-agents 2`. Starts beyond the cap are refused
 before allocating a machine; lowering it does not stop existing agents.
+Follow-up sends to existing sandboxes can return a durable queued prompt receipt
+when the account is full; they dispatch FIFO per account after capacity frees.
+Queued is not running or completed: use wait/logs for that sandbox and correlate the returned prompt ID.
 
 **4. Connect GitHub.** Snapshots are cloned over your own GitHub connection, and sandboxes use it so commits and pull requests come from you.
 
