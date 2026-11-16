@@ -825,3 +825,30 @@ test("retention belongs to the adding member and reports physical cleanup deadli
   expect((await store.list(a.actor)).find((h) => h.id === a.hostId)!.nextCleanupAt).toBeNull();
   expect(() => store.setRetention(a.actor, a.hostId, -1)).toThrow();
 });
+
+test("agent completion chains stop to immediate owned deletion and retains preservation diagnostics on repeated ACKs", async () => {
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+  await db.query(
+    "update public.sandboxes set status_reason='agent_finished',preservation_note='unpushed_work_unavailable' where id=$1",
+    [a.sandboxId],
+  );
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+  const remove = await store.poll(a.hostToken, a.installationId);
+  expect(remove?.operation).toBe("delete");
+  if (!remove) throw Error("Missing immediate cleanup");
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+  expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(remove.requestId);
+  await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+  const saved = (
+    await db.query<{ status: string; preservation_note: string }>(
+      "select status,preservation_note from public.sandboxes where id=$1",
+      [a.sandboxId],
+    )
+  ).rows[0];
+  expect(saved).toEqual({ status: "deleted", preservation_note: "unpushed_work_unavailable" });
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+});

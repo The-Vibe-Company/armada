@@ -30,6 +30,7 @@ const methods: Record<string, DelegatedScope> = {
   read: "worker:read",
   message: "worker:message",
   stop: "worker:stop",
+  finish: "worker:stop",
   extend: "worker:extend",
 };
 export class DelegatedAuthorityDenied extends Error {
@@ -123,6 +124,13 @@ export class DelegatedAuthority {
           credentialId: request.credentialId,
           credentialVersion: request.credentialVersion as number,
         });
+      } else if (request.method === "finish") {
+        // Self completion has no caller-selected target and never grants child/owner authority.
+        const self = await tx.query(
+          "select sandbox_id from public.armada_access_parents where id=$1 and kind='sandbox'",
+          [row.id],
+        );
+        if (!self.rows.length || request.childId !== undefined) return deny();
       } else {
         const child = await tx.query(
           `select c.sandbox_id from public.orchestrator_children c

@@ -37,6 +37,7 @@ const selection = z
   })
   .strict();
 const schemas = {
+  finish: z.object({}).strict(),
   launch: z.object({ idempotencyKey: key, selection }).strict(),
   read: z.object({ sandboxId: z.uuid() }).strict(),
   message: z.object({ idempotencyKey: key, sandboxId: z.uuid(), text }).strict(),
@@ -50,6 +51,7 @@ const schemas = {
     .strict(),
 };
 const restSchemas = {
+  finish: schemas.finish,
   launch: schemas.launch.omit({ idempotencyKey: true }),
   read: schemas.read,
   message: schemas.message.omit({ idempotencyKey: true }),
@@ -66,12 +68,19 @@ const fail = (status: number, code: string) =>
 
 /** Separate principal surface. Metadata/init are static and convey NO authenticated identity;
  * every data/effect call reaches the real Authority boundary through children. No Caller exists. */
-export function createSandboxScopedGateway(children: ReturnType<typeof createSandboxChildren>): Route {
+export function createSandboxScopedGateway(
+  children: ReturnType<typeof createSandboxChildren>,
+  finish?: (token: string) => Promise<unknown>,
+): Route {
   async function call(token: string, name: string, args: unknown): Promise<unknown> {
     if (waitMethods.has(name)) throw new WaitAuthorityUnavailable();
     if (!childMethod(name)) throw new InvalidScopedRequest();
     const parsed = schemas[name].safeParse(args);
     if (!parsed.success) throw new InvalidScopedRequest();
+    if (name === "finish") {
+      if (!finish) throw new InvalidScopedRequest();
+      return finish(token);
+    }
     if (name === "launch") {
       const input = schemas.launch.parse(args);
       const chosen = input.selection;
@@ -122,7 +131,9 @@ export function createSandboxScopedGateway(children: ReturnType<typeof createSan
         const input = restSchemas[suffix].safeParse(decoded);
         if (!input.success) throw new InvalidScopedRequest();
         const args =
-          suffix === "read" ? input.data : { ...input.data, idempotencyKey: request.headers.get("idempotency-key") };
+          suffix === "read" || suffix === "finish"
+            ? input.data
+            : { ...input.data, idempotencyKey: request.headers.get("idempotency-key") };
         return Response.json({ result: await call(token, suffix, args) }, { headers: { "cache-control": "no-store" } });
       }
       if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) throw new InvalidScopedRequest();
@@ -141,7 +152,10 @@ export function createSandboxScopedGateway(children: ReturnType<typeof createSan
         server.registerTool(
           name,
           {
-            description: "Scoped own-child operation. No owner/admin/credential/general sandbox authority.",
+            description:
+              name === "finish"
+                ? "Declare this sandbox finished. Stops Boat/Modal; permanently removes the Docker container and home volume immediately after work-preservation policy runs. Runtime Git archives are unavailable: push all work first. No target id; affects only this sandbox."
+                : "Scoped own-child operation. No owner/admin/credential/general sandbox authority.",
             inputSchema: schemas[name],
             outputSchema: z.object({ result: z.unknown() }),
           },

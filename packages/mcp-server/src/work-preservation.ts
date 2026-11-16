@@ -38,6 +38,24 @@ function writeNote(sql: Sql, id: string, note: string | null, stopToken: string 
   return sql.query(`update public.sandboxes set preservation_note=$2 where ${NOTE_FENCE}`, [id, note, stopToken]);
 }
 
+/** Runtime preservation policy records acknowledged journal evidence, never a Git archive. */
+export async function runtimePreservationNote(sql: Sql, id: string, transport: string | null): Promise<string> {
+  const checkpoint = (
+    await sql.query<{ epoch: string; watermark: string }>(
+      `select p.epoch::text,p.watermark::text from public.runtime_checkpoints p
+    join public.runtime_enrolments r on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+    where p.sandbox_id=$1 and p.watermark is not null
+    and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events e where e.sandbox_id=p.sandbox_id)`,
+      [id],
+    )
+  ).rows[0];
+  return checkpoint
+    ? `Armada runtime checkpoint acknowledged for epoch ${checkpoint.epoch} through event ${checkpoint.watermark}; disk retention requires confirmed host stop. No Git work archive is claimed.`
+    : transport === "dialout"
+      ? "Experimental Modal runtime stop: disk retention, resume and Git work preservation are unavailable."
+      : "Experimental runtime stop: no acknowledged runtime checkpoint; resume and Git work preservation are unavailable.";
+}
+
 type StopSource = "user_stop" | "lifecycle_stop" | "managed_child_stop" | "unspecified";
 /** Mark dispatch at the caller, separately from Boat's beforeStop hook/API boundary. */
 export function recordStopDispatch(sandboxId: string, providerSandboxId: string, source: StopSource): void {
@@ -171,25 +189,7 @@ async function captureAndStore(
       return;
     }
     if (stop.boat_runtime || stop.runtime_transport === "dialout") {
-      const checkpoint = (
-        await sql.query<{ epoch: string; watermark: string }>(
-          `select p.epoch::text,p.watermark::text from public.runtime_checkpoints p
-        join public.runtime_enrolments r on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
-        where p.sandbox_id=$1 and p.watermark is not null
-        and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events e where e.sandbox_id=p.sandbox_id)`,
-          [id],
-        )
-      ).rows[0];
-      await writeNote(
-        sql,
-        id,
-        checkpoint
-          ? `Armada runtime checkpoint acknowledged for epoch ${checkpoint.epoch} through event ${checkpoint.watermark}; disk retention requires confirmed host stop. No Git work archive is claimed.`
-          : stop.runtime_transport === "dialout"
-            ? "Experimental Modal runtime stop: disk retention, resume and Git work preservation are unavailable."
-            : "Experimental runtime stop: no acknowledged runtime checkpoint; resume and Git work preservation are unavailable.",
-        stop.stop_token,
-      );
+      await writeNote(sql, id, await runtimePreservationNote(sql, id, stop.runtime_transport), stop.stop_token);
       return;
     }
     if (stop.complete) {
