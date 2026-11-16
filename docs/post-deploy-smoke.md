@@ -1824,3 +1824,24 @@ This covers stop requests, not browser rendering/CORS, physical compute billing,
 other client actions or the intermediate resume's client-request parity. Live
 Modal/Docker acceptance is coordinator-owned. Boat remains coordinator-only via
 `--only boat --production-boat`, never the release gate.
+
+### Parallel provider observation (#2394)
+
+Full `--parity` runs validate the entire configuration first, then run the Modal
+and Docker observations concurrently. Each provider keeps its own poll deadlines,
+request state and ordered lifecycle/cleanup; one provider's failure does not
+short-circuit the other. Provider-filtered calls and coordinator-only production
+Boat verification keep their existing single-provider behavior. Account-matrix
+runs still sequence accounts to respect shared model-account admission limits.
+
+Only the selected provider column from each worker contributes to the one final
+matrix and Actions summary. Missing provider reports fail closed. The smoke
+journal remains shared through its serialized durable writer; cleanup fences
+within each provider are not parallelized. Existing configured snapshot sources
+are reused; this change does not create, trust or cache a new snapshot.
+
+This removes the sum of independent provider observation times from full parity's
+critical path; it does not change the ordinary Modal-only staging invocation.
+Coordinator acceptance still needs an authorized full Modal/Docker parity run
+with step timings before/after. No measured speedup is claimed from unit tests,
+and no Docker host/account is registered implicitly. Boat is not part of the gate.

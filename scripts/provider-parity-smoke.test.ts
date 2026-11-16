@@ -167,6 +167,12 @@ for (const mode of [
     const unpricedSubscription =
       mode === "subscription" || mode === "subscription_probe_unknown" || mode === "accounts_subscription";
     let clock = mode.startsWith("routine_") ? Date.parse("2026-11-14T08:59:20Z") : 0;
+    // Concurrent provider waits overlap; they do not consume each other's budget.
+    const advance = async (ms: number) => {
+      const until = clock + ms;
+      await Promise.resolve();
+      clock = Math.max(clock, until);
+    };
     const woken = new Set<string>();
     const idleReads = new Map<string, number>();
 
@@ -205,7 +211,6 @@ for (const mode of [
           : undefined;
     const lines: string[] = [];
     const calls: string[] = [];
-    let dashboardProvider = "modal";
     const clientAnswers = new Map<string, string>();
     const clientStops = new Map<string, number>();
     function acceptStop(provider: string, args: Record<string, unknown>) {
@@ -349,9 +354,7 @@ for (const mode of [
                                           : ["--parity"],
       {
         now: () => clock,
-        sleep: async (ms) => {
-          clock += ms;
-        },
+        sleep: advance,
         out: (line) => lines.push(line),
         recordSandbox: async (org, _id, requestKey, provider) => {
           journaled.push(org);
@@ -365,6 +368,7 @@ for (const mode of [
           if (new URL(url).pathname === "/mcp") {
             expect(clientFull || clientStopFull).toBe(true);
             const rpc = JSON.parse(String(init.body));
+            const dashboardProvider = rpc.params?.arguments?.id ?? "initializing";
             calls.push(`${dashboardProvider}:mcp:${rpc.method}`);
             if (rpc.method === "initialize")
               return Response.json({
@@ -657,7 +661,6 @@ for (const mode of [
               break;
             }
             case "sandbox/launch":
-              dashboardProvider = p;
               if (mode.startsWith("snapshot_")) {
                 if (p === "docker") {
                   expect(body.snapshotId).toBe(snapshotId);
@@ -696,7 +699,7 @@ for (const mode of [
                   },
                   { status: mode === "quota" ? 429 : 403 },
                 );
-              if (mode === "client_send_full_slow" || mode === "client_stop_full_slow") clock += 110_001;
+              if (mode === "client_send_full_slow" || mode === "client_stop_full_slow") await advance(110_001);
               states.set(p, "ready");
               result = {
                 sandbox: {
@@ -1047,7 +1050,7 @@ for (const mode of [
                   { error: { code: "rate_limited", message: "Read quota reached." } },
                   { status: 429 },
                 );
-              if (mode === "subscription_probe_budget") clock += 110_001;
+              if (mode === "subscription_probe_budget") await advance(110_001);
               result = {
                 id: mode === "template_identity" || mode.startsWith("routine_") || deepFull ? body.id : p,
                 status: states.get(p),
@@ -1382,6 +1385,7 @@ for (const mode of [
         const cell = report.features["subscription-account"][provider];
         expect(cell.status).toBe(
           mode === "subscription_probe_missing" ||
+            (mode === "subscription_probe_budget" && provider === "docker") ||
             refused ||
             ["subscription_probe_echo", "subscription_probe_later_answer"].includes(mode)
             ? "not-run"
@@ -1688,20 +1692,23 @@ for (const mode of [
         if (mode === "template_missing")
           expect(report.features.templates[provider].reason).toBe("template_revision_not_configured");
         else {
-          expect(templateCalls.get(provider)).toBe(
-            mode === "template_unknown" || mode === "template_transport_unknown"
-              ? 600
-              : [
-                    "template_pending",
-                    "template_identity",
-                    "template_final_missing",
-                    "template_transport_recovery",
-                    "template_timeout_recovery",
-                    "template_lost_identity",
-                  ].includes(mode)
+          if (mode === "template_unknown" || mode === "template_transport_unknown") {
+            // The elapsed-time limit can win before the attempt cap when probes overlap.
+            expect(templateCalls.get(provider)).toBeGreaterThan(0);
+            expect(templateCalls.get(provider)).toBeLessThanOrEqual(600);
+          } else
+            expect(templateCalls.get(provider)).toBe(
+              [
+                "template_pending",
+                "template_identity",
+                "template_final_missing",
+                "template_transport_recovery",
+                "template_timeout_recovery",
+                "template_lost_identity",
+              ].includes(mode)
                 ? 2
                 : 1,
-          );
+            );
           if (
             ![
               "template_transport_unknown",

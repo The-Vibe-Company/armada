@@ -309,6 +309,52 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     return false;
   }
   const deadline = Math.min(io.deadline ?? Number.POSITIVE_INFINITY, io.now() + 35 * 60_000);
+  if (!only && !productionBoat) {
+    // Each provider gets its own request/poll deadlines and cleanup state. Never
+    // parallelize the steps within a provider's lifecycle or authority fences.
+    const combined: Record<string, Partial<Record<Provider, Cell>>> = {};
+    let starts = 0;
+    const outcomes = await Promise.all(
+      cases.map(async (c) => {
+        let observed = false;
+        const ok = await providerParitySmoke(
+          { ...env, GITHUB_STEP_SUMMARY: undefined },
+          {
+            ...io,
+            deadline,
+            out: (line) => {
+              let value: { step?: string; starts?: number; features?: typeof combined };
+              try {
+                value = JSON.parse(line);
+              } catch {
+                return;
+              }
+              if (value.step !== "provider_parity") {
+                io.out(line);
+                return;
+              }
+              observed = true;
+              starts += value.starts ?? 0;
+              for (const [name, providers] of Object.entries(value.features ?? {})) {
+                combined[name] ??= { boat: { status: "not-run", reason: "not_part_of_release_gate" } };
+                // A child marks its sibling filtered; only carry the selected column.
+                if (providers[c.provider]) combined[name][c.provider] = providers[c.provider];
+              }
+            },
+          },
+          [...args, "--only", c.provider],
+        );
+        if (!observed) {
+          combined.provider_evidence ??= {};
+          combined.provider_evidence[c.provider] = { status: "fail", reason: "provider_report_missing" };
+        }
+        return ok && observed;
+      }),
+    );
+    const reported = await publishParityReport(env, io, starts, combined);
+    return outcomes.every(Boolean) && reported;
+  }
+
   let requestDeadline: number | undefined;
   async function request<T>(path: string, body: object): Promise<T> {
     // Never serialize the response envelope, details, or arbitrary caught errors.
@@ -2406,6 +2452,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       if (child && Object.values(child.features).some((providers) => providers[c.provider]?.status === "fail"))
         record(`${probe}-evidence`, c.provider, "fail", `${probe}_probe_failed`);
     }
+  return publishParityReport(env, io, starts, report);
+}
+
+async function publishParityReport(
+  env: NodeJS.ProcessEnv,
+  io: Io,
+  starts: number,
+  report: Record<string, Partial<Record<Provider, Cell>>>,
+): Promise<boolean> {
   io.out(JSON.stringify({ step: "provider_parity", version: 2, starts, features: report }));
   const escapeCell = (s: string) => s.replaceAll("|", "\\|").replaceAll("\n", " ").replaceAll("\r", " ");
   const table = [
