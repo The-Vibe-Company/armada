@@ -269,3 +269,12 @@ Use `armada vars -h` or `armada secrets rotate -h` to see the same reference as
 `--help`, before login or value input. The short alias does not reinterpret an
 option value such as `--file -h`, or literal arguments after `--`, as a help request.
 Secret values remain stdin/file-only and are never printed by help.
+
+### Fixture dashboard (`bun run dev`)
+
+Run `bun run dev` and sign in as `alice@example.com` with code `123456`.
+The small organization remains the default; use the organization switcher to
+select **Large** for deterministic, production-sized data (600 sandboxes plus
+snapshots, templates, routines, accounts and machines). This mock-only environment
+never launches real sandboxes; use Large when checking pages and launch pickers
+at desktop and mobile widths, including long names and unavailable resources.
