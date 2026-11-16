@@ -28,3 +28,6 @@ playwright-report/
 
 # Local smoke cleanup receipts
 .smoke/
+
+# tester-army run artifacts and encrypted session state
+.e2e/

@@ -278,3 +278,20 @@ select **Large** for deterministic, production-sized data (600 sandboxes plus
 snapshots, templates, routines, accounts and machines). This mock-only environment
 never launches real sandboxes; use Large when checking pages and launch pickers
 at desktop and mobile widths, including long names and unavailable resources.
+## Fixture dashboard and browser journeys
+
+`bun run dev` starts the fixture-only dashboard and mock. Sign in as
+`alice@example.com` with code `123456`. Stop it before running `bun run e2e`: the
+runner starts and stops the same fixture app itself. No deployment or provider
+credentials are needed; these deterministic journeys do not configure or invoke
+a model. Desktop (1280×800) and phone (375×812) run serially, without retries.
+The fixture sign-in is saved once per target for the duration of the run; session
+state is encrypted and removed by the runner. Only setup resets the mock because
+reset invalidates saved authentication tokens.
+
+Run one journey with `bun run e2e -- tests/dashboard/sandboxes.e2e.ts:25 --target desktop`.
+Trace pages and Markdown traces are in `.e2e/results/`; the machine-readable
+report is `.e2e/report.json` and app output is `.e2e/logs/dashboard.log`. These
+artifacts are ignored. There are no agent steps or replay recordings in slice 1.
+[Legacy spec retirement plan](docs/e2e-retirement.md) tracks the later slices.
+
