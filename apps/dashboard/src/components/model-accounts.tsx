@@ -488,7 +488,7 @@ export function AccountRow({
         aria-expanded={expanded}
         aria-controls={`${headingId}-detail`}
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-start gap-3 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring"
+        className="flex min-h-[84px] w-full items-start gap-3 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring"
       >
         <ProviderMark kind={account.kind} />
         <span className="min-w-0 flex-1">
@@ -506,7 +506,7 @@ export function AccountRow({
       <button
         type="button"
         onClick={() => setExpanded(true)}
-        className="flex w-full flex-wrap items-center justify-between gap-2 border-t bg-muted/20 px-4 py-2.5 text-left text-xs text-muted-foreground hover:bg-muted/40"
+        className="flex min-h-[46px] w-full flex-wrap items-center justify-between gap-2 border-t bg-muted/20 px-4 py-2.5 text-left text-xs text-muted-foreground hover:bg-muted/40"
         aria-label={`View ${account.name} details`}
       >
         <span>
