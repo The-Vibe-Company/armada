@@ -8,9 +8,9 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeNativeAuth } from "../src/runtime-native-auth.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
-const modalDatabase = rowOnlyDatabase();
+const sharedDatabase = rowOnlyDatabase();
 const nativeTest = process.platform === "linux" ? test : test.skip;
 
 const native = (revision: number, account = "offline-account") =>
@@ -22,7 +22,7 @@ const native = (revision: number, account = "offline-account") =>
     },
   });
 async function fixture(boatRuntime = false, authJson = native(0), provider: "boat" | "modal" = "boat") {
-  const { db, people } = await (provider === "modal" ? modalDatabase() : database());
+  const { db, people } = await sharedDatabase();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -98,7 +98,7 @@ async function fixture(boatRuntime = false, authJson = native(0), provider: "boa
     publisher,
     publish,
     async close() {
-      if (provider !== "modal") await db.close();
+      await db.exec("reset role; reset all; set search_path=public");
     },
   };
 }
