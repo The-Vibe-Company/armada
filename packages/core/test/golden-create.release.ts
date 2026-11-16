@@ -4,7 +4,7 @@ import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-aud
 if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
 
 // Release-only PostgreSQL contracts; retained unit cases stay in the sibling test file.
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { migrationsDir } from "../../../scripts/db/apply.ts";
@@ -138,11 +138,10 @@ function caps() {
 
 // A single PGlite connection cannot observe an uncommitted transaction from another session.
 // This test runs on actual PostgreSQL using promise barriers, with no wall-clock ordering guesses.
-test("invisible in-flight COMMIT cannot authorize deleting a ready golden artifact", async () => {
+function databaseHandles() {
   const configured = process.env.ARMADA_TEST_POSTGRES_URL!;
   const admin = new Bun.SQL(configured);
   const name = `golden_review_${crypto.randomUUID().replaceAll("-", "")}`;
-  await admin.unsafe(`create database "${name}"`);
   const url = new URL(configured);
   url.pathname = `/${name}`;
   const client = new Bun.SQL(url.href);
@@ -150,6 +149,40 @@ test("invisible in-flight COMMIT cannot authorize deleting a ready golden artifa
     unsafe: (text, params) => client.unsafe(text, params),
     begin: (work) => client.begin((tx) => work({ unsafe: (text, params) => tx.unsafe(text, params) })),
   });
+  return { admin, client, sql, name };
+}
+
+let ownedDatabase: ReturnType<typeof databaseHandles> | undefined;
+beforeAll(async () => {
+  const handles = databaseHandles();
+  ownedDatabase = handles;
+  await handles.admin.unsafe(`create database "${handles.name}"`);
+  const prereq = (await Bun.file(join(migrationsDir, "../../scripts/db/supabase-prereq.sql")).text()).replace(
+    /^create role [^;]+;/gm,
+    (command) => `do $$ begin ${command} exception when duplicate_object then null; end $$;`,
+  );
+  await handles.client.unsafe(prereq);
+  for (const file of (await readdir(migrationsDir)).filter((file) => file.endsWith(".sql")).sort())
+    await handles.client.unsafe(await Bun.file(join(migrationsDir, file)).text());
+});
+afterAll(async () => {
+  const handles = ownedDatabase;
+  ownedDatabase = undefined;
+  if (!handles) return;
+  try {
+    await handles.client.close();
+  } finally {
+    try {
+      await handles.admin.unsafe(`drop database if exists "${handles.name}" with (force)`);
+    } finally {
+      await handles.admin.close();
+    }
+  }
+});
+
+test("invisible in-flight COMMIT cannot authorize deleting a ready golden artifact", async () => {
+  const sql = ownedDatabase?.sql;
+  if (!sql) throw new Error("Golden release database is not open");
   let finish!: () => void;
   const commitGate = new Promise<void>((resolve) => {
     finish = resolve;
@@ -161,13 +194,6 @@ test("invisible in-flight COMMIT cannot authorize deleting a ready golden artifa
   let pendingCommit: Promise<unknown> | undefined;
   let attempt: Promise<void> | undefined;
   try {
-    const prereq = (await Bun.file(join(migrationsDir, "../../scripts/db/supabase-prereq.sql")).text()).replace(
-      /^create role [^;]+;/gm,
-      (command) => `do $$ begin ${command} exception when duplicate_object then null; end $$;`,
-    );
-    await client.unsafe(prereq);
-    for (const file of (await readdir(migrationsDir)).filter((file) => file.endsWith(".sql")).sort())
-      await client.unsafe(await Bun.file(join(migrationsDir, file)).text());
     const { actor, userId } = await fixture(sql);
     await connectGitHub(sql, userId);
     const artifacts = new Set<string>();
@@ -278,9 +304,6 @@ test("invisible in-flight COMMIT cannot authorize deleting a ready golden artifa
     finish();
     await pendingCommit?.catch(() => {});
     await attempt;
-    await client.close();
-    await admin.unsafe(`drop database "${name}" with (force)`);
-    await admin.close();
   }
 });
 
