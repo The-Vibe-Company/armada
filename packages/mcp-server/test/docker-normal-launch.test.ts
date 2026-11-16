@@ -155,7 +155,7 @@ async function fixture(
   };
   let now = 0,
     drive = true,
-    failCreate: false | "plain" | "image" = false,
+    failCreate: false | "plain" | "image" | "disk" = false,
     malformedSkills = false;
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
@@ -173,7 +173,9 @@ async function fixture(
       await hosts.complete(host.hostToken, installationId, {
         requestId: job.requestId,
         outcome: failed ? "failed" : "completed",
-        ...(failed && failCreate === "image" ? { reason: "image_unavailable" as const } : {}),
+        ...(failed && failCreate !== "plain"
+          ? { reason: failCreate === "image" ? ("image_unavailable" as const) : ("disk_full" as const) }
+          : {}),
       });
       if (job.operation === "create" && options.lifecycleGenerationAfterCreate !== undefined) {
         await db.query(`update public.sandboxes set lifecycle_generation=$2 where id=$1`, [
@@ -376,7 +378,7 @@ async function fixture(
     setDrive(value: boolean) {
       drive = value;
     },
-    setFailure(kind: "plain" | "image" = "plain") {
+    setFailure(kind: "plain" | "image" | "disk" = "plain") {
       failCreate = kind;
     },
     resolutions: () => resolutions,
@@ -681,16 +683,24 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("deleted");
 });
 
-test("a launch whose host could not fetch the image says so in plain words, at launch and in status", async () => {
-  const f = await fixture();
-  f.setFailure("image");
-  await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
-  await expect(f.service().launch(f.caller, f.body)).rejects.toThrow(DOCKER_IMAGE_UNAVAILABLE_MESSAGE);
-  const status = await createDockerSandboxControls(sql, key, { clock: f.clock }).invoke(f.caller, "status", {
-    id: f.body.requestId,
-  });
-  expect(status).toMatchObject({ result: { status: "failed", statusReason: DOCKER_IMAGE_UNAVAILABLE_MESSAGE } });
-});
+test.each([
+  ["image", DOCKER_IMAGE_UNAVAILABLE_MESSAGE],
+  ["disk", DOCKER_LAUNCH_FAILURE_MESSAGES.disk],
+] as const)(
+  "host failure retains its safe launch/status diagnostic instead of becoming an image error (%s)",
+  async (reason, message) => {
+    const f = await fixture();
+    f.setFailure(reason);
+    await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
+    await expect(f.service().launch(f.caller, f.body)).rejects.toThrow(message);
+    const status = await createDockerSandboxControls(sql, key, { clock: f.clock }).invoke(f.caller, "status", {
+      id: f.body.requestId,
+    });
+    expect(status).toMatchObject({ result: { status: "failed", statusReason: message } });
+    const record = await f.service(sql, true, 10000, officialImage, true).launch(f.caller, f.body);
+    expect(record).toMatchObject({ sandbox: { statusReason: message } });
+  },
+);
 
 test("prompt-free, image-free launch normalizes UUIDs, uses the default image, honors TTL and stops at runtime readiness", async () => {
   const f = await fixture({ daemonVersion: "2.27.0" });

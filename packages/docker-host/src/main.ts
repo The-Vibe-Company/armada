@@ -11,6 +11,7 @@ import {
 import { VERSION } from "../../core/src/version.ts";
 import { createAvailabilitySampler } from "./availability.ts";
 import { register, serverOrigin, tick, validToken } from "./daemon.ts";
+import { dockerDiskFreeBytes, withDiskFloor } from "./disk.ts";
 import { cleanupOfficialImages } from "./image-retention.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
@@ -169,7 +170,8 @@ async function main(args: string[]) {
     }
   };
   try {
-    const api = httpApi(fetch, createAvailabilitySampler(dockerCli));
+    const sampleDisk = () => dockerDiskFreeBytes(dockerCli);
+    const api = httpApi(fetch, createAvailabilitySampler(dockerCli), sampleDisk);
     if (command === "register" || command === "install") {
       if (await store.exists()) throw new Error("Host already registered");
       const token = (await Bun.stdin.text()).trim();
@@ -190,17 +192,20 @@ async function main(args: string[]) {
       now: Date.now,
       limits: () => limits,
     });
-    const runtime = {
-      ...executor,
-      configureLimits(next: DockerSandboxLimits | undefined) {
-        if (next && next.pids !== 4096) throw new Error("Invalid process policy");
-        limits = dockerResourceLimits(dockerHostResources(), next);
+    const runtime = withDiskFloor(
+      {
+        ...executor,
+        configureLimits(next: DockerSandboxLimits | undefined) {
+          if (next && next.pids !== 4096) throw new Error("Invalid process policy");
+          limits = dockerResourceLimits(dockerHostResources(), next);
+        },
+        startRuntime: dockerRuntimeStarter(executor, {
+          serverUrl: state.server,
+          cacheDir: join(directory, "runtime-cache"),
+        }),
       },
-      startRuntime: dockerRuntimeStarter(executor, {
-        serverUrl: state.server,
-        cacheDir: join(directory, "runtime-cache"),
-      }),
-    };
+      sampleDisk,
+    );
     if (process.env.ARMADA_DOCKER_RETENTION_SECONDS !== undefined && !state.retentionPolicyFromServer) {
       const seconds = Number(process.env.ARMADA_DOCKER_RETENTION_SECONDS);
       if (!/^\d+$/.test(process.env.ARMADA_DOCKER_RETENTION_SECONDS) || !Number.isSafeInteger(seconds))
