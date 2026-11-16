@@ -1359,7 +1359,7 @@ describe("prompt outcome", () => {
         sandboxId: "s",
         promptId: "p1",
       }),
-    ).toEqual({ state: "failed", reason: "authentication_failed" });
+    ).toEqual({ state: "failed", reason: "Reconnect the agent account, then send the prompt again." });
     expect(
       await promptOutcome(outcomeProvider("interrupted", events([prompt("interrupted"), limit])), {
         sandboxId: "s",

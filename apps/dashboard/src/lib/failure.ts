@@ -1,3 +1,5 @@
+import { describeNativeFailure } from "@armada/core";
+
 export type FailureHelp = {
   title: string;
   hint: string;
@@ -57,5 +59,5 @@ const HELP: Record<string, FailureHelp> = {
 /** A clear message for the reasons an agent or a call fails with. Unknown reasons have none: show them as they are. */
 export function describeFailure(reason: string | null | undefined): FailureHelp | null {
   if (!reason) return null;
-  return HELP[reason] ?? null;
+  return describeNativeFailure(reason) ?? HELP[reason] ?? null;
 }
