@@ -322,6 +322,8 @@ export interface PromptState {
 }
 
 export interface SteerRequest {
+  /** Durable runtime identity; native providers do not support this field. */
+  requestId?: string;
   sandboxId: string;
   text: string;
   /** Required when the sandbox has several conversations. */
@@ -336,6 +338,8 @@ export interface SteerReceipt {
 }
 
 export interface InterruptRequest {
+  /** Durable runtime identity; native providers do not support this field. */
+  requestId?: string;
   sandboxId: string;
   conversationId?: string;
 }
@@ -361,6 +365,8 @@ export interface PrepareNativeHarnessCwdRequest {
 }
 
 export interface ExecRequest {
+  /** Durable runtime identity; native providers do not support this field. */
+  requestId?: string;
   /** Caller cancellation for provider admission/retries where supported. */
   signal?: AbortSignal;
   /** Private lifecycle sampler: refuse rather than resuming stopped compute. */
