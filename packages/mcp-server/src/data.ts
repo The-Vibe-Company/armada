@@ -46,6 +46,12 @@ export interface SandboxView extends SandboxRecord {
 }
 
 export interface ServerSandboxStore extends SandboxStore {
+  controlState?(
+    id: string,
+  ): Promise<Pick<
+    SandboxView,
+    "provider" | "status" | "statusReason" | "expiresAt" | "boatRuntime" | "runtimeTransport"
+  > | null>;
   recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
@@ -716,6 +722,17 @@ export function createSqlData(
           [...scope, id, promptId, JSON.stringify(outcome), expectedGeneration ?? null],
         );
         if (!result.rows.length) throw new DataError("The turn changed or this sandbox is not reportable.");
+      },
+      async controlState(id) {
+        if (!UUID.test(id)) return null;
+        const result = await sql.query<
+          Pick<SandboxView, "provider" | "status" | "statusReason" | "expiresAt" | "boatRuntime" | "runtimeTransport">
+        >(
+          `select s.provider,s.status,s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport"
+           from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3`,
+          [...scope, id],
+        );
+        return result.rows[0] ?? null;
       },
       async get(id) {
         if (!UUID.test(id)) return null;

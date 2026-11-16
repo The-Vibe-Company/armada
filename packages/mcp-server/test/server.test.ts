@@ -1164,6 +1164,8 @@ describe("tools", () => {
 
     await call(mcp, "send", { id: launched.data.id, prompt: "first" });
     await call(mcp, "stop", { id: launched.data.id });
+    expect((await call(mcp, "send", { id: launched.data.id, prompt: "terminal refusal" })).isError).toBe(true);
+    await db.query("update sandboxes set status_reason='idle_paused' where id=$1", [launched.data.id]);
     await call(mcp, "send", { id: launched.data.id, prompt: "after stop" });
     await call(mcp, "send", { id: launched.data.id, prompt: "once", model: "gpt-6-luna", reasoning_effort: "low" });
     await call(mcp, "send", { id: launched.data.id, prompt: "back" });

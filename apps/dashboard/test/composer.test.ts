@@ -77,3 +77,10 @@ test("ordinary message keys survive unchanged retries and rotate for any submitt
     expect(messageKeyFor(first, changed, fresh).key).not.toBe(first.key);
   }
 });
+
+test("terminal sandbox refusal keeps actionable guidance for keyed and ordinary controls", () => {
+  const message =
+    "Cannot control docker sandbox: stopped. Its container is removed; start a new sandbox on the same branch.";
+  for (const keyed of [true, false])
+    expect(drivingFailureMessage({ code: "sandbox_terminal", message }, true, keyed)).toBe(message);
+});

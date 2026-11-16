@@ -23,7 +23,7 @@ beforeAll(async () => {
     create table members(org_id uuid,user_id uuid,role text);
     create table mcp_actor_epochs(org_id uuid,user_id uuid,epoch bigint);
     create table sandboxes(id uuid primary key,harness text default 'codex',provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
-      conversation_ids text[],visibility text default 'private',status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
+      conversation_ids text[],visibility text default 'private',status_reason text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
       activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 0,reconcile_lease_until timestamptz);
     create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid);
@@ -58,7 +58,7 @@ beforeAll(async () => {
 afterAll(() => db.close());
 beforeEach(async () => {
   await db.exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',task_prompt_id=null,stopped_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -164,9 +164,7 @@ test("queued public receipts remain usable across server reads, evidence, outcom
     accountTurns: queue,
     data: {
       sandboxes: {
-        get: async () => {
-          throw Error("Docker routes before native data");
-        },
+        get: async () => ({ id: input.id, provider: "docker", status: "ready" }),
       },
     },
     dockerControls: {
@@ -386,7 +384,7 @@ test.each(["docker", "boat", "modal"] as const)(
   async (provider) => {
     const input = { id: ids[1]!, request_id: requests[0]!, prompt: "resume the same conversation" };
     await db.query(
-      "update sandboxes set provider=$2,boat_runtime=$3,runtime_transport=$4,status='stopped',stopped_at=now() where id=$1",
+      "update sandboxes set provider=$2,boat_runtime=$3,runtime_transport=$4,status='stopped',status_reason='idle_paused',stopped_at=now() where id=$1",
       [input.id, provider, provider === "boat", provider === "modal" ? "dialout" : null],
     );
     await queue.accept(caller, input);
@@ -573,7 +571,7 @@ test("stranded receipts settle without replay while safe unlimited and paused wo
   expect(await count()).toBe(1); // Only paused work needs a new slot; busy targets already own one.
   await db.exec("update credentials set max_agents=null");
   expect(await count()).toBe(0);
-  await db.query("update sandboxes set status='ready',task_prompt_id=null where id=$1", [ids[2]]);
+  await db.query("update sandboxes set status='ready',status_reason=null,task_prompt_id=null where id=$1", [ids[2]]);
   const waiting = await db.query<{ n: string }>(
     `select ${accountWaitingCountSql("'" + account + "'::uuid", "null::int")} as n`,
   );
@@ -737,4 +735,17 @@ test("queued status retains its own model when a newer request targets another m
   expect(await queue.accept(caller, older)).toMatchObject({
     statusMessage: "Waiting for a free agent slot for model kimi on account Shared account (1/1).",
   });
+});
+
+test("terminal admission creates neither queue entries nor reservations", async () => {
+  for (const status of ["stopped", "failed", "expired"]) {
+    for (const provider of ["docker", "boat", "modal"]) {
+      await db.query("update sandboxes set status=$2,provider=$3 where id=$1", [ids[0], status, provider]);
+      await expect(queue.accept(caller, { id: ids[0]!, prompt: "continue" })).rejects.toThrow(
+        `Cannot control ${provider} sandbox: ${status}`,
+      );
+    }
+  }
+  expect((await db.query("select * from account_turn_queue")).rows).toHaveLength(0);
+  expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(0);
 });

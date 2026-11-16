@@ -8,7 +8,6 @@ import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
-import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
@@ -56,7 +55,7 @@ describe.each([
     await f?.close();
   });
 
-  test("send wakes a checkpointed runtime in the same conversation; replay never activates or starts a turn twice", async () => {
+  test("explicit resume wakes a checkpointed runtime in the same conversation; replay never activates or starts a turn twice", async () => {
     const old = f.active;
     let activations = 0;
     let preparations = 0;
@@ -91,9 +90,7 @@ describe.each([
     const request = { id: f.row.id, request_id: crypto.randomUUID(), prompt: "continue the previous conversation" };
     const before = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
     const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
-    const result = (await callSharedTool({ ...f.context, runtimeSend: send }, "send", request)) as Awaited<
-      ReturnType<typeof resume>
-    >;
+    const result = (await resume(f.caller, { ...request, runtimeVersion: 1 })) as Awaited<ReturnType<typeof resume>>;
     expect(result).toMatchObject({
       resumed: true,
       conversationId: f.first.conversationId,

@@ -68,6 +68,7 @@ import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
+import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import {
   collectSandboxUsage,
@@ -432,6 +433,15 @@ export function createArmadaServer(context: ToolContext, version: string, option
       // The SDK's callback type is generic over every schema flavour; the input is the parsed `In`.
       (async (args: z.infer<z.ZodObject<In>>): Promise<CallToolResult> => {
         try {
+          if (["send", "steer", "exec", "interrupt"].includes(name)) {
+            const input = args as Record<string, unknown>;
+            const found = data.sandboxes.controlState
+              ? await data.sandboxes.controlState(input.id as string)
+              : await visible(input.id as string);
+            if (!found) throw new ToolError("not_found", `No sandbox with id '${input.id}' that you can see.`);
+            const refusal = sandboxControlRefusal(found, context.now());
+            if (refusal) throw new ToolError("sandbox_terminal", refusal);
+          }
           if (
             name === "stop" &&
             !(args as Record<string, unknown>).only_if_idle &&
@@ -1813,7 +1823,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         "sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is " +
         "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
         "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
-        "an empty ready sandbox, existing conversation, or verified empty checkpoint; stopped sandboxes wake automatically. Model/effort remain pinned to launch.",
+        "an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Other terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch.",
       input: {
         id,
         request_id: z

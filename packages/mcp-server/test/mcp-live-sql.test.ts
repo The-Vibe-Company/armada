@@ -424,6 +424,8 @@ test("SQL gateway delivers MCP objects and provider configuration is reused acro
     ).rows[0];
     expect(stopped?.status).toBe("stopped");
     expect(stopped?.stopped_at).not.toBeNull();
+    expect((await controlPost("send", { prompt: "terminal refusal" })).status).toBe(409);
+    await db.query("update sandboxes set status_reason='idle_paused' where id=$1", [sandbox]);
     expect((await controlPost("send", { prompt: "resume the connected sandbox" })).status).toBe(200);
     expect(nativeTurns).toBe(1);
     expect(
