@@ -1,6 +1,9 @@
 /** Closed public explanations: never interpolate native error text. */
 const HELP: Record<string, { title: string; hint: string }> = {
-  rate_limited: { title: "Provider limit reached", hint: "Check the account limits and wait before retrying." },
+  rate_limited: {
+    title: "Provider limit reached",
+    hint: "The provider account reached a rate or plan limit. Check its limits and wait until the provider says another attempt is available.",
+  },
   usage_limit_exceeded: {
     title: "Usage limit reached",
     hint: "Check the account plan or billing limit before retrying.",

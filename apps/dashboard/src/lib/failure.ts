@@ -30,10 +30,6 @@ const HELP: Record<string, FailureHelp> = {
   },
   usage_limit: USAGE,
   payment_required: USAGE,
-  rate_limited: {
-    title: "Provider limit reached",
-    hint: "The provider account reached a rate or plan limit. Check its limits and wait until the provider says another attempt is available.",
-  },
   credential_refused: AUTH,
   provider_unavailable: {
     title: "Provider unavailable",
