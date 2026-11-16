@@ -24,3 +24,18 @@ test("definite lifecycle refusals retain their cause without exposing diagnostic
     expect(lifecycleFailure(operation, { status: 400 })).toContain("was refused");
   }
 });
+
+// Only known pre-dispatch refusals are definite; unknown conflicts can be pending cleanup.
+test("delete conflicts retain known pre-dispatch recovery without echoing unknown messages", () => {
+  for (const message of ["Stop the sandbox before deleting it.", "Stop the Docker sandbox before deleting it."])
+    expect(lifecycleFailure("delete", { code: "conflict", message })).toContain("Stop the sandbox, then delete it.");
+  expect(
+    lifecycleFailure("delete", {
+      status: 409,
+      message: "Managed orchestrators have their own lifecycle; delete an ordinary delegated parent before its child.",
+    }),
+  ).toContain("Delete its delegated parent");
+  const unknown = lifecycleFailure("delete", { status: 409, message: "private upstream diagnostic" });
+  expect(unknown).toContain("could not be confirmed");
+  expect(unknown).not.toContain("private upstream diagnostic");
+});
