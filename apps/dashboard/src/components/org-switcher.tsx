@@ -122,44 +122,44 @@ function SelectedOrg({
   const described = [draft && "active-org-hint", error && "active-org-error"].filter(Boolean).join(" ");
   return (
     <div className="relative space-y-1.5 rounded-lg px-1.5 py-1 hover:bg-[var(--raised)]">
-      <div className="flex items-center justify-between gap-2 pl-10">
-        <Label htmlFor="active-org" className="sr-only">
-          Active organization
-        </Label>
-        {busy ? (
-          <span className="flex items-center gap-1 text-xs text-muted-foreground" aria-hidden>
-            <Loader2Icon className="size-3 animate-spin" />
-            Switching
-          </span>
-        ) : (
-          role && (
-            <span className="text-xs text-muted-foreground" data-org-role={role}>
-              {role === "admin" ? "Admin" : "Member"}
-            </span>
-          )
-        )}
-      </div>
       <div className="flex items-center gap-2.5">
         <BrandMark />
-        <NativeSelect
-          ref={select}
-          id="active-org"
-          name="org"
-          value={target ?? draft ?? selected}
-          onChange={choose}
-          onKeyDown={key}
-          onBlur={() => setDraft(null)}
-          aria-busy={busy}
-          aria-disabled={busy}
-          aria-describedby={described || undefined}
-          className="h-7 border-0 bg-transparent px-0 text-[13px] font-semibold shadow-none aria-disabled:cursor-progress dark:bg-transparent"
-        >
-          {memberships.map(({ org }) => (
-            <option key={org.id} value={org.id}>
-              {org.name}
-            </option>
-          ))}
-        </NativeSelect>
+        <div className="min-w-0 flex-1">
+          <Label htmlFor="active-org" className="sr-only">
+            Active organization
+          </Label>
+          <NativeSelect
+            ref={select}
+            id="active-org"
+            name="org"
+            value={target ?? draft ?? selected}
+            onChange={choose}
+            onKeyDown={key}
+            onBlur={() => setDraft(null)}
+            aria-busy={busy}
+            aria-disabled={busy}
+            aria-describedby={described || undefined}
+            className="h-7 border-0 bg-transparent px-0 text-[13px] font-semibold shadow-none aria-disabled:cursor-progress dark:bg-transparent"
+          >
+            {memberships.map(({ org }) => (
+              <option key={org.id} value={org.id}>
+                {org.name}
+              </option>
+            ))}
+          </NativeSelect>
+          {busy ? (
+            <span className="flex items-center gap-1 text-xs text-muted-foreground" aria-hidden>
+              <Loader2Icon className="size-3 animate-spin" />
+              Switching
+            </span>
+          ) : (
+            role && (
+              <span className="text-xs text-muted-foreground" data-org-role={role}>
+                {role === "admin" ? "Admin" : "Member"}
+              </span>
+            )
+          )}
+        </div>
       </div>
       {draft && (
         <p id="active-org-hint" className="px-0 text-xs text-muted-foreground md:px-2">

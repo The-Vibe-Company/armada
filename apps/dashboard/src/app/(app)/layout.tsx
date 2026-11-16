@@ -38,7 +38,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       <OrgSwitcher memberships={memberships} selected={selected?.org.id ?? null} role={selected?.role ?? null} />
       <ShellSearch />
       <div className="[&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none [&_button:hover]:bg-[var(--raised)]">
-        <SandboxLaunchAction />
+        <SandboxLaunchAction shortcut />
       </div>
     </div>
   );

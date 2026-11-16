@@ -1,5 +1,5 @@
 import { routineReasonHelp } from "@armada/core";
-import { Clock3Icon } from "lucide-react";
+import { Clock3Icon, HistoryIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Empty, PageHeader } from "@/components/page-header";
@@ -90,7 +90,7 @@ export default async function RoutinesPage({
       key: item.id,
       name: item.name,
       search: `${item.name} ${template?.name ?? ""} ${item.scope} ${item.status}`,
-      meta: <span>{item.scope === "org" ? selected.org.name : "Only you"}</span>,
+      meta: null,
       state: (
         <div className="space-y-1 text-sm">
           {item.pauseReason ? (
@@ -115,6 +115,12 @@ export default async function RoutinesPage({
             <span className={styles.mobileLabel}>Template: </span>
             {template?.name ?? "Unavailable template"}
           </span>
+          <span className="text-[13px]">
+            <span className={styles.mobileLabel}>Last run: </span>
+            <SelectItem item={item.id} variant="link" size="sm" className="h-auto p-0">
+              See runs
+            </SelectItem>
+          </span>
           <span className="text-xs">
             <span className={styles.mobileLabel}>Next: </span>
             {dueLabel(item)}
@@ -128,8 +134,8 @@ export default async function RoutinesPage({
           ) : (
             <span className="text-xs">{item.status === "enabled" ? "On" : "Off"}</span>
           )}
-          <SelectItem item={item.id} variant="ghost" size="sm">
-            See runs
+          <SelectItem item={item.id} variant="ghost" size="icon" aria-label={`See runs for ${item.name}`}>
+            <HistoryIcon className="size-[15px]" />
           </SelectItem>
         </div>
       ),
@@ -190,7 +196,6 @@ export default async function RoutinesPage({
         title="Routines"
         description={DESCRIPTION}
         label="Routines"
-        meta={rows.length || undefined}
         rows={rows}
         blockers={[]}
         initial={typeof query.item === "string" ? query.item : null}
@@ -227,22 +232,17 @@ export default async function RoutinesPage({
           </Empty>
         }
         footer={
-          <>
-            {rows.length > 0 && (
-              <div className={styles.columns} aria-hidden="true">
-                <span>Routine</span>
-                <span>When</span>
-                <span>Template</span>
-                <span>Next (UTC)</span>
-                <span>On</span>
-                <span className="text-right">Runs</span>
-              </div>
-            )}
-            <p className={`${styles.footer} text-xs text-muted-foreground`}>
-              Personal routines are yours alone; organization routines are managed by admins. New routines start paused
-              so you can check them before enabling. Later template changes do not apply.
-            </p>
-          </>
+          rows.length > 0 && (
+            <div className={styles.columns} aria-hidden="true">
+              <span>Routine</span>
+              <span>When</span>
+              <span>Template</span>
+              <span>Last run</span>
+              <span>Next (UTC)</span>
+              <span>On</span>
+              <span className="text-right">Runs</span>
+            </div>
+          )
         }
       />
     </div>

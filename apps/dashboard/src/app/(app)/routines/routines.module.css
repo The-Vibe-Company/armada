@@ -48,7 +48,7 @@
   .page section[aria-label="Routines"] > div:first-child:has(> ul) > .columns {
     display: grid;
     order: 1;
-    grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) minmax(0, 1.3fr) minmax(0, 1.3fr) 44px 92px;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) minmax(0, 1.3fr) minmax(0, 1.3fr) 72px 44px 44px;
     gap: 16px;
     padding: 9px 16px;
     border: 1px solid var(--line);
@@ -60,7 +60,7 @@
   }
   .page ul[aria-label="Routines"] {
     order: 2;
-    grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) minmax(0, 1.3fr) minmax(0, 1.3fr) 44px 92px;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) minmax(0, 1.3fr) minmax(0, 1.3fr) 72px 44px 44px;
     border-top-left-radius: 0;
     border-top-right-radius: 0;
   }
