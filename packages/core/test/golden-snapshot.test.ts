@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import {
   connectGolden,
   createSqlGoldenStore,
@@ -10,6 +9,9 @@ import {
   type SnapshotInfo,
   snapshotGolden,
 } from "../src/server.ts";
+import { migratedDatabase } from "./support/database.ts";
+
+const database = migratedDatabase();
 
 test.each([
   "remapped-ready",
@@ -21,7 +23,7 @@ test.each([
   "lost-readback",
   "known-failed",
 ] as const)("Modal manual save verifies and publishes the actual immutable reference (%s)", async (mode) => {
-  const db = await openMigratedDatabase();
+  const db = database();
   try {
     const actor: GoldenActor = { orgId: crypto.randomUUID(), userId: crypto.randomUUID(), role: "admin" };
     await db.query("insert into auth.users(id) values($1)", [actor.userId]);
@@ -173,6 +175,6 @@ test.each([
     if (mode !== "last-good-alias")
       expect(artifacts.get(actual)?.status).toBe(mode === "known-failed" ? "failed" : "ready");
   } finally {
-    await db.close();
+    await db.exec("reset role; reset all; set search_path=public");
   }
 });

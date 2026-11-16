@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { migratedDatabase } from "./support/database.ts";
 
 const database = migratedDatabase();
@@ -17,8 +16,8 @@ const key = Buffer.alloc(32, 37).toString("base64");
 const binding: ModalBinding = { workspace: "verified-workspace", environment: "production", appId: "ap_pinned" };
 
 /** Actual queue/transactions/vault and service; only GitHub HTTP and the remote VM provider are synthetic. */
-async function fixture(isolatedSchema = false) {
-  const db = isolatedSchema ? await openMigratedDatabase() : database();
+async function fixture() {
+  const db = database();
   const userId = crypto.randomUUID(),
     orgId = crypto.randomUUID(),
     admin = crypto.randomUUID();
@@ -166,7 +165,7 @@ async function fixture(isolatedSchema = false) {
 
 // New owner risk: unbounded Modal uses the same durable publication protocol without fabricating a Boat slot.
 test("Modal admission seals pinned context, allocates only after commit, and publishes job plus golden atomically without a slot", async () => {
-  const f = await fixture(true);
+  const f = await fixture();
   try {
     const setup = "echo fixture-encrypted-setup";
     const idempotency = crypto.randomUUID();
@@ -228,7 +227,9 @@ test("Modal admission seals pinned context, allocates only after commit, and pub
     expect((await f.db.query("select 1 from goldens where name='rollback'")).rows).toEqual([]);
     expect((await f.db.query("select 1 from golden_backend_slots")).rows).toEqual([]);
   } finally {
-    await f.db.close();
+    await f.db.exec(
+      "drop trigger if exists reject_modal_success on golden_build_jobs; drop function if exists reject_modal_success()",
+    );
   }
 });
 

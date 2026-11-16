@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { resolveSkillpackCredential } from "../src/credentials.ts";
 import { decryptSecret, encryptSecret } from "../src/crypto.ts";
 import { resolveGitHubAccess } from "../src/github.ts";
@@ -575,7 +574,7 @@ describe("named model accounts", () => {
     });
   });
   test("ID mutations authorize owners/admins, preserve secret revisions and pin selection across default changes", async () => {
-    await withIsolatedVault(async ({ store, people, db }) => {
+    await withVault(async ({ store, people, db }) => {
       const org = await createOrg(store, people.stan, "Accounts");
       await addMember(store, people.stan, { org: org.id, email: "ada@example.com", role: "member" });
       // Canonical account operations, including explicit CAS, run as the real service role.
@@ -783,7 +782,7 @@ interface People {
 
 describe("GitHub connections", () => {
   test("reconnecting B discards cached A and the next launch resolves B", async () => {
-    await withIsolatedVault(async ({ store, db, people }) => {
+    await withVault(async ({ store, db, people }) => {
       await db.query(
         `insert into github_connections (user_id, github_id, login, refresh_token_enc, access_token_enc, access_expires_at)
          values ($1, 1, 'account-a', $2, $3, '2099-01-01')`,
@@ -818,7 +817,7 @@ describe("GitHub connections", () => {
   });
 
   test("a failed best-effort profile write does not roll back consumed token rotation", async () => {
-    await withIsolatedVault(async ({ store, db, people }) => {
+    await withVault(async ({ store, db, people }) => {
       await db.query(
         "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 1, 'before', $2)",
         [people.stan, await encryptSecret("refresh-before", KEY)],
@@ -977,16 +976,12 @@ async function withVault(run: VaultRun, db = database()): Promise<void> {
     "insert into auth.users (id, email) values ($1, 'stan@example.com'), ($2, 'ada@example.com'), ($3, 'bob@example.com')",
     [people.stan, people.ada, people.bob],
   );
-  await run({ db, store: createSqlVaultStore(db), people });
-}
-
-// Schema, session-role and JWT-setting tests need independent databases.
-async function withIsolatedVault(run: VaultRun): Promise<void> {
-  const db = await openMigratedDatabase();
   try {
-    await withVault(run, db);
+    await run({ db, store: createSqlVaultStore(db), people });
   } finally {
-    await db.close();
+    await db.exec(
+      "reset role; reset all; set search_path=public; drop trigger if exists refuse_profile on github_connections; drop function if exists refuse_profile()",
+    );
   }
 }
 
@@ -995,7 +990,7 @@ captureGitHubAuditLogs();
 
 // Real migrated vault is the owner of credential grouping, encrypted delivery and user-JWT fences.
 test("OpenCode accounts keep independent defaults, sealed endpoints and the model-account RLS fence", async () => {
-  await withIsolatedVault(async ({ store, people, db }) => {
+  await withVault(async ({ store, people, db }) => {
     const org = await createOrg(store, people.stan, "OpenCode accounts");
     const apiKey = crypto.randomUUID();
     const codex = await mutateCredentialAccount(store, KEY, people.stan, {

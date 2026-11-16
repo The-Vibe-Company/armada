@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import {
@@ -14,9 +14,20 @@ import { serviceGoldenOperations } from "./support/service-golden-operations.ts"
 
 const TOKEN = "claude_database_token";
 
+let connection: PGlite | undefined;
+beforeAll(async () => {
+  connection = await openMigratedDatabase();
+});
+afterAll(async () => {
+  const db = connection;
+  connection = undefined;
+  await db?.close();
+});
+
 describe("launch database", () => {
   test("sandbox interior is current owner/admin independently of source and legacy visibility", async () => {
-    const db = await openMigratedDatabase();
+    const db = connection;
+    if (!db) throw new Error("Launch database fixture is not open");
     try {
       const people = await fixture(db);
       const goldens = { ...createSqlGoldenStore(db), ...serviceGoldenOperations(db) };
@@ -207,7 +218,7 @@ describe("launch database", () => {
         "Skill receipts could not be recorded.",
       );
     } finally {
-      await db.close();
+      await db.exec("reset role; reset all; set search_path=public");
     }
   });
 });
