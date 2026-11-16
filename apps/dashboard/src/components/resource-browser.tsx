@@ -60,6 +60,7 @@ export type ResourceRow = {
   fact?: ReactNode;
   /** The one expected action, as a button. Stays above the row's select target. */
   action?: ReactNode;
+  foot?: ReactNode;
   /** The panel's subtitle under the name. */
   subtitle?: ReactNode;
   detail: ReactNode;
@@ -324,22 +325,38 @@ export function ResourceBrowser({
               </div>
             </div>
           )}
-          {columns && rows.length > 0 && (
-            <div
-              data-resource-columns
-              className="grid grid-cols-6 gap-4 rounded-t-[10px] border bg-muted px-4 py-2 text-xs text-muted-foreground"
-            >
-              {columns.map((column) => (
-                <span key={column}>{column}</span>
-              ))}
-            </div>
-          )}
           {rows.length === 0 ? (
             empty
           ) : shown.length === 0 ? (
             <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
               Nothing matches “{query}”.
             </p>
+          ) : columns ? (
+            <div className="overflow-x-auto rounded-[10px] border bg-card">
+              <table aria-label={label} className="w-full min-w-[760px] table-fixed text-left">
+                <thead className="bg-muted text-xs text-muted-foreground">
+                  <tr>
+                    {columns.map((column) => (
+                      <th key={column} scope="col" className="px-4 py-2 font-normal">
+                        {column}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map((row) => (
+                    <Row
+                      key={row.key}
+                      row={row}
+                      panelId={panelId}
+                      selected={selected === row.key}
+                      onSelect={() => select(row.key)}
+                      table
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
           ) : (
             <ul
               aria-label={label}
@@ -473,19 +490,23 @@ export function ResourceBrowser({
 }
 
 function Row({
+  table = false,
   row,
   selected,
   onSelect,
   panelId,
 }: {
   row: ResourceRow;
+  table?: boolean;
   selected: boolean;
   onSelect: () => void;
   panelId: string;
 }) {
   const { selectionQuery } = useBrowser();
+  const Container = table ? "tr" : "li";
+  const Cell = table ? "td" : "div";
   return (
-    <li
+    <Container
       {...row.attrs}
       data-selected={selected || undefined}
       className={cn(
@@ -493,10 +514,11 @@ function Row({
         // row does not shift the state and fact columns of the others (a row without one keeps that column empty).
         // On phones actions follow the name and state; wider rows can share space without squeezing long names.
         "relative col-span-full grid grid-cols-1 items-center @sm:grid-cols-[minmax(0,1fr)_auto] @xl:grid-cols-subgrid gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-accent/50 has-[[data-select-item]:focus-visible]:bg-accent/60 has-[[data-select-item]:focus-visible]:ring-[3px] has-[[data-select-item]:focus-visible]:ring-ring/50 has-[[data-select-item]:focus-visible]:ring-inset",
+        table && "!table-row border-t",
         selected && "bg-accent/70 shadow-[inset_3px_0_0_var(--color-primary)] hover:bg-accent/70",
       )}
     >
-      <div className="flex min-w-0 items-center gap-3">
+      <Cell className={cn("min-w-0", table ? "px-4 py-[9px]" : "flex items-center gap-3")}>
         {row.mark}
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -529,23 +551,24 @@ function Row({
             {row.meta}
           </div>
         </div>
-      </div>
+      </Cell>
       {row.columns ? (
         row.columns.map((cell) => (
-          <div key={cell.key} className="min-w-0 text-[13px] text-muted-foreground">
+          <Cell key={cell.key} className="min-w-0 px-4 py-[9px] text-[13px] text-muted-foreground">
             {cell.content}
-          </div>
+          </Cell>
         ))
       ) : (
         <>
           <div className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto">{row.state}</div>
           <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{row.fact}</div>
           <div className="relative z-10 col-start-1 row-start-3 flex justify-start @sm:col-start-2 @sm:row-span-2 @sm:row-start-1 @sm:justify-end @xl:col-start-auto @xl:row-span-1 @xl:row-start-auto">
+            {row.foot && <span className="mr-auto min-w-0 truncate text-xs text-muted-foreground">{row.foot}</span>}
             {row.action}
           </div>
         </>
       )}
-    </li>
+    </Container>
   );
 }
 

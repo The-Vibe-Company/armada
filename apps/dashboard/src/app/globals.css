@@ -280,42 +280,41 @@
   }
 }
 
-/* Variables are metadata in a compact table; values remain in the authorized reveal flow. */
+/* Variables retain metadata-only values and semantic table headers. */
 [data-variable-table] {
   display: flex;
   flex-direction: column;
   gap: 18px;
   min-width: 0;
 }
-[data-variable-table] > section > div:first-child {
-  overflow-x: auto;
+[data-variable-table] table th:first-child {
+  width: 22%;
 }
-[data-variable-table] [data-resource-columns],
-[data-variable-table] section > div > ul {
-  min-width: 760px;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.8fr) 84px minmax(0, 1fr) minmax(0, 1.2fr) 80px;
+[data-variable-table] table th:nth-child(2) {
+  width: 20%;
 }
-[data-variable-table] section > div > ul {
-  gap: 0;
-  border-radius: 0 0 10px 10px;
+[data-variable-table] table th:nth-child(3) {
+  width: 12%;
 }
-[data-variable-table] section > div > ul > li {
-  display: grid;
-  grid-template-columns: subgrid;
-  padding: 9px 16px;
+[data-variable-table] table th:nth-child(4) {
+  width: 20%;
 }
-[data-variable-table] section > div > ul > li > div:first-child > div > div:last-child,
-[data-variable-table] section > div > ul > li > div:first-child [data-slot="badge"] {
+[data-variable-table] table th:nth-child(5) {
+  width: 14%;
+}
+[data-variable-table] table th:nth-child(6) {
+  width: 12%;
+}
+[data-variable-table] td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-variable-table] td:first-child > div > div:last-child,
+[data-variable-table] td:first-child [data-slot="badge"] {
   display: none;
 }
-[data-variable-table] section > div > ul > li [data-select-item] {
+[data-variable-table] [data-select-item] {
   font-family: var(--font-geist-mono);
   font-size: 13px;
-}
-
-[data-variable-table] [data-resource-columns] {
-  margin-bottom: 0;
-}
-[data-variable-table] section > div > ul {
-  margin-top: 0;
 }
