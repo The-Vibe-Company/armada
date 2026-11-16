@@ -58,3 +58,47 @@ test("only authentic exact-SHA deployment plus smoke evidence permits reuse", ()
   expect(accepts(run, [job, job])).toBe(false);
   expect(authenticStagingEvidence(run, [job], "owner/repo", "a")).toBe(false);
 });
+
+test("quick Release completion coalesces only the push deployment admitted after it", async () => {
+  const { authenticWakeupEvidence } = await import("./staging-evidence");
+  const sha = "a".repeat(40);
+  const run = {
+    id: 42,
+    run_attempt: 1,
+    head_repository: { full_name: "owner/repo" },
+    path: ".github/workflows/staging-gated-production.yml",
+    event: "push",
+    head_branch: "main",
+    head_sha: sha,
+    status: "completed",
+    conclusion: "success",
+  };
+  const steps = ["Migrate then deploy pinned server and dashboard", "Smoke pinned staging"].map((name) => ({
+    name,
+    status: "completed",
+    conclusion: "success",
+    started_at: "2026-11-16T20:54:14Z",
+  }));
+  const job = {
+    name: "staging",
+    run_id: 42,
+    run_attempt: 1,
+    head_sha: sha,
+    status: "completed",
+    conclusion: "success",
+    steps,
+  };
+  const health = { ok: true, version: "2.49.6", commit: sha };
+  const accepts = (finished: string, live: unknown = health, jobs = [job]) =>
+    authenticWakeupEvidence(run, jobs, "owner/repo", sha, finished, live, "2.49.6");
+  expect(accepts("2026-11-16T20:54:10Z")).toBe(true);
+  // A deployment before Release, missing timing, failed smoke or overwritten
+  // live source cannot turn the completion into a no-deploy success.
+  expect(accepts("2026-11-16T20:54:15Z")).toBe(false);
+  expect(accepts("")).toBe(false);
+  expect(
+    accepts("2026-11-16T20:54:10Z", health, [{ ...job, steps: steps.map((step) => ({ ...step, started_at: "" })) }]),
+  ).toBe(false);
+  expect(accepts("2026-11-16T20:54:10Z", { ...health, commit: "b".repeat(40) })).toBe(false);
+  expect(accepts("2026-11-16T20:54:10Z", health, [{ ...job, conclusion: "failure" }])).toBe(false);
+});
