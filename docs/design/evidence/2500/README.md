@@ -4,15 +4,16 @@ Captured at 1440×900 and 390×844, light and dark. Prototype first; fixtures us
 
 API gaps: Skills exposes private-skill keys, not a synchronized skill catalog, versions, installation toggles or run counts. Vault lists metadata, so stored values are not shown in the table; authorized reveal remains in details. Tool attachment counts are unavailable. OpenCode remains a supported extra model filter. Existing service connection actions remain below Tools.
 
-Validation on source commit `e44bfe457fcc2ba3eca81c3892dfa338e0b8b71d`:
+Takeover validation after the normal merge of main:
 
-- `bun run lint` and `bun run typecheck`: passed.
-- Targeted unit tests (`models-page`, `variables`, `resource-list`, `skillpack-key`): 48 passed.
-- `bun run e2e tests/dashboard/models.e2e.ts tests/dashboard/resources.e2e.ts tests/dashboard/sandboxes.e2e.ts --grep 'inspect|filter|long account|fixture sign-in'`: 20 passed across desktop/phone, including fixture setup.
-- Full `bun run e2e`: 38 passed, 14 failed. Twelve failures match two existing “Launch a sandbox” buttons on unchanged Sandboxes; two desktop failures match duplicate sidebar/main sandbox links. This is an outstanding full-suite blocker, not a green journey run.
-- Independent Alibaba/OCR review: no outstanding findings. Every source file reviewed; image dimensions/references checked, visual comparisons sampled.
+- All 96 prototype states and 200 fixture captures were refreshed in this session. The eight extra fixture states cover OpenCode. Image commit: `5c11abf7769a33ed562d93acf490c4ca759cd67a`; rendered application source: `58a69ce6e2c3efe67480600bbd48e671d2e2cffc`.
+- `bun run lint` and `bun run typecheck`: passed with Node 24.
+- Eight targeted unit files covering models, resource rows/lists, connections, skills and variables: 183 passed.
+- Independent review-code-dev 2.1.0 / Alibaba OCR 1.12.1 review completed in this session, including responsive UI and account-action coverage. Merge regressions in shared catalog metadata and duplicate PageHeader props were fixed; no unresolved findings.
+- The later shared `SelectItem` fix changes click stacking only; captured layouts remain unchanged. Inline actions now sit above the stretched row link instead of having their taps intercepted.
+- Root journeys were updated to the login labels and collapsible launch/routine controls already on main, preserving their behavioral assertions. `bun run e2e --max-failures 1`: all 64 journeys passed across desktop and phone (12 files; 3m 42s), including the formerly intercepted mobile inline action.
 
-Local QA used Node 24 with Chromium libraries and fonts. No migrations or deployment prerequisites.
+Local QA used Node 24, Chromium libraries and a local fontconfig configuration. No migrations or deployment prerequisites. The production environment was not accessed.
 
 | State | Prototype | Acme | Large |
 | --- | --- | --- | --- |
