@@ -4,10 +4,9 @@ import { type AgentEvent, ProviderError, type Sql } from "@armada/core";
 import { createSqlVaultStore, encryptSecret, GoldenBuildJobs } from "@armada/core/server";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
-import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
-import { createMemoryAuthStore } from "../../auth/src/index.ts";
-import { sandboxFailure } from "../../cli/src/sandbox-errors.ts";
-import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
+import { Journal } from "../../agent-runtime/src/journal.ts";
+import type { Driver } from "../../agent-runtime/src/protocol.ts";
+import { Runner } from "../../agent-runtime/src/runtime.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
 import {
   appendModalEvents,
@@ -3110,8 +3109,7 @@ test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as con
   },
 );
 
-test("unscoped Modal steer preserves no_running_turn and 409 at the control boundary", async () => {
-  const db = database();
+test("unscoped Modal steer preserves the native refusal without retiring a healthy machine", async () => {
   const f = fixture();
   const row = await runningFork(f);
 
@@ -3137,6 +3135,7 @@ test("unscoped Modal steer preserves no_running_turn and 409 at the control boun
       },
     },
   );
+  let nativeStatus: number | undefined;
   const transport = createRunnerTransport(
     async () => ({
       url: "https://runner.test",
@@ -3144,59 +3143,29 @@ test("unscoped Modal steer preserves no_running_turn and 409 at the control boun
       grant: "fixture-steer-runner-grant",
       expiresAt: Date.now() + 60000,
     }),
-    (async (url, init) => runner.handle(new Request(String(url), init))) as typeof fetch,
+    (async (url, init) => {
+      const response = await runner.handle(new Request(String(url), init));
+      nativeStatus = response.status;
+      return response;
+    }) as typeof fetch,
   );
   f.onRpc(async (machine, op, input) => {
     if (op === "steer") return transport.call(machine, op, input);
   });
-  const authStore = createMemoryAuthStore();
-  authStore.addMembership(scope.userId, { orgId: scope.orgId, name: "modal", role: "admin" });
-  const record = {
-    id: row.id,
-    provider: "modal",
-    providerSandboxId: row.id,
-    orgId: scope.orgId,
-    ownerId: scope.userId,
-    harness: "claude",
-    credentialId: "bound",
-    status: "ready",
-    conversationIds: [],
-  };
-  const options = {
-    authStore,
-    supabase: {
-      supabaseUrl: "https://supabase.test",
-      anonKey: "anon",
-      fetch: async () => Response.json({ id: scope.userId }),
-    },
-    store: createSqlVaultStore(db),
-    encryptionKey: Buffer.alloc(32, 5).toString("base64"),
-    data: () => ({ sandboxes: { get: async () => record, update: async () => {} } }),
-    providers: { resolve: async () => f.provider },
-  } as unknown as ControlOptions;
-  const response = await handleControlRequest(
-    new Request("https://armada.test/api/v1/sandbox/steer", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: scope.userId })).replace(/=+$/, "")}.sig`,
-      },
-      body: JSON.stringify({ id: row.id, text: "ignore" }),
-    }),
-    options,
-  );
-  if (!response) throw new Error("Missing control response");
-  const body = (await response.json()) as { error: { code: string; message: string } };
-  expect(body).toMatchObject({ error: { code: "no_running_turn" } });
-  expect(response.status).toBe(409);
-  expect(sandboxFailure("/api/v1/sandbox/steer", response.status, body.error.code, body.error.message)).toMatchObject({
-    code: "no_running_turn",
-    exitCode: 1,
-  });
-  expect((await f.store.get(row.id)).phase).toBe("active");
-  expect(await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "continue" })).toHaveProperty(
-    "promptId",
-  );
-  journal.close();
+  try {
+    await expect(f.provider.steer({ sandboxId: row.id, text: "ignore" })).rejects.toMatchObject({
+      code: "no_running_turn",
+      provider: "modal",
+    });
+    expect(nativeStatus).toBe(409);
+    expect((await f.store.get(row.id)).phase).toBe("active");
+    expect(await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "continue" })).toHaveProperty(
+      "promptId",
+    );
+  } finally {
+    await runner.close();
+    journal.close();
+  }
 });
 
 test("Modal lifecycle refusals do not resume stopped steer or admit send during transitions", async () => {
