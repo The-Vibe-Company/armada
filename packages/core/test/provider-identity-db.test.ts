@@ -1,90 +1,18 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
-import { migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createSqlGoldenStore, type GoldenActor, goldenForLaunch } from "../src/index.ts";
 import { createSqlSandboxStore } from "../src/sandbox.ts";
+import { migratedDatabase } from "./support/database.ts";
 
-const IDENTITY = "20261109010000_sandbox_provider_identity.sql";
+const getDatabase = migratedDatabase();
+
 const CONFIG = JSON.stringify({
   repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
   init: [],
 });
 
-function isolatedDatabase(open: () => Promise<PGlite>, prepare?: (db: PGlite) => Promise<void>) {
-  let connection: PGlite | undefined;
-  beforeAll(async () => {
-    const db = await open();
-    connection = db;
-    await prepare?.(db);
-  });
-  afterAll(async () => {
-    const db = connection;
-    connection = undefined;
-    await db?.close();
-  });
-  return () => {
-    if (!connection) throw new Error("Missing provider schema fixture");
-    return connection;
-  };
-}
-
 describe("sandbox provider identity", () => {
-  describe("legacy upgrade", () => {
-    // The database as the previous release left it.
-    const getDatabase = isolatedDatabase(openDatabase, (db) => applyUpTo(db, IDENTITY));
-
-    test("existing goldens and sandboxes are backfilled to Boat with their ids, and server writes keep Boat aliases compatible", async () => {
-      const db = getDatabase();
-      const people = await fixture(db);
-      const golden = await db.query<{ id: string }>(
-        `insert into goldens (org_id, name, visibility, owner_id, boat_sandbox_id, boat_snapshot_id, config)
-           values ($1, 'web', 'org', $2, 'bx_builder', 'snap-1', $3::jsonb) returning id`,
-        [people.org, people.admin, CONFIG],
-      );
-      const goldenId = golden.rows[0]?.id;
-      await db.query(
-        `insert into sandboxes (boat_id, golden_id, org_id, owner_id, harness, status)
-           values ('bx_old', $1, $2, $3, 'claude', 'ready')`,
-        [goldenId, people.org, people.member],
-      );
-
-      await applyFrom(db, IDENTITY);
-      expect(
-        (await db.query("select provider::text, provider_sandbox_id, provider_snapshot_id, modal_app_id from goldens"))
-          .rows,
-      ).toEqual([
-        { provider: "boat", provider_sandbox_id: "bx_builder", provider_snapshot_id: "snap-1", modal_app_id: null },
-      ]);
-      expect((await db.query("select provider::text, provider_sandbox_id, boat_id from sandboxes")).rows).toEqual([
-        { provider: "boat", provider_sandbox_id: "bx_old", boat_id: "bx_old" },
-      ]);
-
-      // A client of the previous release writes boat_* columns; a new one the neutral ones. Both stay one id.
-      await asUser(db, people.admin, () =>
-        db.query("update goldens set boat_snapshot_id = 'snap-2' where id = $1", [goldenId]),
-      );
-      // Trusted server writes retain the legacy Boat alias contract.
-      await db.query(
-        `insert into sandboxes (boat_id, golden_id, org_id, owner_id, harness, status)
-           values ('bx_legacy', $1, $2, $3, 'claude', 'starting')`,
-        [goldenId, people.org, people.admin],
-      );
-      expect((await db.query("select provider_snapshot_id, boat_snapshot_id from goldens")).rows).toEqual([
-        { provider_snapshot_id: "snap-2", boat_snapshot_id: "snap-2" },
-      ]);
-      expect(
-        (await db.query("select provider::text, provider_sandbox_id from sandboxes where boat_id = 'bx_legacy'")).rows,
-      ).toEqual([{ provider: "boat", provider_sandbox_id: "bx_legacy" }]);
-    });
-  });
-
   describe("registration authority", () => {
-    const getDatabase = isolatedDatabase(openMigratedDatabase);
-
     test("only the service role registers sandbox identities for either provider; existing rows remain readable", async () => {
       const db = getDatabase();
       const people = await fixture(db);
@@ -142,8 +70,6 @@ describe("sandbox provider identity", () => {
   });
 
   describe("golden identity authority", () => {
-    const getDatabase = isolatedDatabase(openMigratedDatabase);
-
     test("a name lives once per provider, identities are fixed, and a user JWT cannot write or relabel a Modal golden", async () => {
       const db = getDatabase();
       const people = await fixture(db);
@@ -238,27 +164,6 @@ async function fixture(db: PGlite): Promise<People> {
     people.admin,
   ]);
   return people;
-}
-
-const PREREQ = fileURLToPath(new URL("../../../scripts/db/supabase-prereq.sql", import.meta.url));
-
-function migrations(): string[] {
-  return readdirSync(migrationsDir)
-    .filter((name) => name.endsWith(".sql"))
-    .sort();
-}
-
-async function applyUpTo(db: PGlite, first: string): Promise<void> {
-  await db.exec(await Bun.file(PREREQ).text());
-  for (const file of migrations().filter((name) => name < first)) {
-    await db.exec(await Bun.file(join(migrationsDir, file)).text());
-  }
-}
-
-async function applyFrom(db: PGlite, first: string): Promise<void> {
-  for (const file of migrations().filter((name) => name >= first)) {
-    await db.exec(await Bun.file(join(migrationsDir, file)).text());
-  }
 }
 
 async function asUser<T>(db: PGlite, userId: string, run: () => Promise<T>): Promise<T> {

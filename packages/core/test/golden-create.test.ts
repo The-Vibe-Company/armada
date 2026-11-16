@@ -4,12 +4,10 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { migrationsDir } from "../../../scripts/db/apply.ts";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { handleControlRequest } from "../../mcp-server/src/control.ts";
 import { providerRegistry } from "../../mcp-server/src/http.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
-import { rowOnlyConnection } from "../../mcp-server/test/row-only-database.ts";
 import helperManifest from "../helper/manifest.json";
 import {
   connectGolden,
@@ -28,11 +26,14 @@ import {
   type Sql,
 } from "../src/server.ts";
 
+import { migratedDatabase } from "./support/database.ts";
+
 const KEY = Buffer.alloc(32, 7).toString("base64");
 const APP = { clientId: "Iv1.test", clientSecret: "github-client-secret" };
 
+const connection = migratedDatabase();
+
 describe("createGoldenCreateService, wired to a real database", () => {
-  const connection = rowOnlyConnection();
   test("refuses a caller with no GitHub connection before touching the provider or the database", async () => {
     const db = await connection();
     const { actor } = await fixture(db);
@@ -415,7 +416,8 @@ describe("createGoldenCreateService, wired to a real database", () => {
 });
 
 test("rebuild retains last-good artifacts/config through scan, snapshot and SQL failures, then restores the committed revision", async () => {
-  const db = await openMigratedDatabase();
+  const db = await connection();
+  const originalTransaction = db.transaction;
   try {
     const { actor, userId } = await fixture(db);
     await connectGitHub(db, userId);
@@ -493,7 +495,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
         truncated: false,
       }),
     };
-    const transaction = db.transaction.bind(db);
+    const transaction = originalTransaction.bind(db);
     db.transaction = (async (work) => {
       let finalized = false;
       const result = await transaction(async (tx) => {
@@ -677,7 +679,8 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
       uuid.mockRestore();
     }
   } finally {
-    await db.close();
+    db.transaction = originalTransaction;
+    await db.exec("reset role; reset all; set search_path=public");
   }
 });
 
@@ -946,7 +949,7 @@ test.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)(
 test.each(["delayed", "timeout", "failed", "unknown"] as const)(
   "rebuild keeps its old canonical master until a confirmed stop (%s)",
   async (mode) => {
-    const db = await openMigratedDatabase();
+    const db = await connection();
     try {
       const { actor, userId } = await fixture(db);
       await connectGitHub(db, userId);
@@ -1046,7 +1049,7 @@ test.each(["delayed", "timeout", "failed", "unknown"] as const)(
       expect(artifacts.has(first.snapshot)).toBe(true);
       expect(deleted).not.toContain(first.snapshot);
     } finally {
-      await db.close();
+      await db.exec("reset role; reset all; set search_path=public");
     }
   },
 );

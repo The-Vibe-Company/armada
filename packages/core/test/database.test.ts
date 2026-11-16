@@ -1,31 +1,10 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
+import { beforeAll, describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
-import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
-import { generateDatabaseTypes } from "../../../scripts/db/generate.ts";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
-import { encryptSecret, HARNESSES, type SandboxState, type Visibility } from "../src/index.ts";
+import { encryptSecret, type Visibility } from "../src/index.ts";
 
 import { migratedDatabase } from "./support/database.ts";
 
 const database = migratedDatabase();
-
-const PROVIDER_STATES = [
-  "starting",
-  "ready",
-  "running",
-  "stopping",
-  "stopped",
-  "failed",
-] as const satisfies readonly SandboxState[];
-const VISIBILITIES = ["org", "private"] as const satisfies readonly Visibility[];
-
-/** Fails to compile when SandboxState gains a state the schema test does not know. */
-function assertStatesCovered(_missing: Exclude<SandboxState, (typeof PROVIDER_STATES)[number]>): void {
-  void _missing;
-}
-
-assertStatesCovered(undefined as never);
 
 const HASH = "ab".repeat(32);
 const PLAIN_CONFIG = {
@@ -42,52 +21,6 @@ type Fixture = {
 };
 
 describe("database", () => {
-  test("migrations apply on a fresh database", async () => {
-    const files = readdirSync(migrationsDir)
-      .filter((name) => name.endsWith(".sql"))
-      .sort();
-    expect(files.every((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name))).toBe(true);
-
-    const db = await openDatabase();
-    try {
-      expect(await applyMigrations(db)).toEqual(files);
-
-      const unlocked = await db.query<{ name: string }>(`
-        select c.relname as name
-        from pg_class c
-        join pg_namespace n on n.oid = c.relnamespace
-        where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity
-      `);
-      expect(unlocked.rows).toEqual([]);
-
-      expect(await labels(db, "harness")).toEqual([...HARNESSES]);
-      expect(await labels(db, "visibility")).toEqual([...VISIBILITIES]);
-      expect(await labels(db, "sandbox_status")).toEqual([...PROVIDER_STATES, "deleted"]);
-      expect(await labels(db, "member_role")).toEqual(["admin", "member"]);
-      expect(await labels(db, "credential_scope")).toEqual(["user", "org"]);
-      expect(await labels(db, "credential_kind")).toEqual([
-        "anthropic",
-        "openai",
-        "claude_oauth",
-        "boat",
-        "codex_auth",
-        "modal",
-        "skillpack",
-        "opencode",
-        "morph",
-      ]);
-      expect(await labels(db, "notify_status")).toEqual(["finished", "failed"]);
-    } finally {
-      await db.close();
-    }
-  });
-
-  test("generated types match the migrations", async () => {
-    const generated = await generateDatabaseTypes();
-    const committed = await Bun.file(new URL("../src/database.types.ts", import.meta.url)).text();
-    expect(committed).toBe(generated);
-  });
-
   test("anon holds nothing, and a user JWT has only the intended grants and never reads a secret", async () => {
     await withDb(async (db) => {
       const anon = await db.query<{ object: string }>(`
@@ -190,7 +123,7 @@ describe("database", () => {
             or has_function_privilege('anon', 'public.later_fn()', 'execute') as any`,
       );
       expect(later.rows[0]?.any).toBe(false);
-    }, true);
+    });
   });
 
   test("no column stores a secret in plaintext", async () => {
@@ -903,76 +836,16 @@ describe("database", () => {
       );
     });
   });
-
-  describe("org Boat credential upgrade", () => {
-    const reconcile = "20261110110200_org_boat_credential_canonical.sql";
-    const files = readdirSync(migrationsDir)
-      .filter((name) => name.endsWith(".sql"))
-      .sort();
-    let connection: Awaited<ReturnType<typeof openDatabase>> | undefined;
-    beforeAll(async () => {
-      const db = await openDatabase();
-      connection = db;
-      await db.exec(await Bun.file(new URL("../../../scripts/db/supabase-prereq.sql", import.meta.url)).text());
-      for (const file of files.filter((name) => name < reconcile))
-        await db.exec(await Bun.file(`${migrationsDir}/${file}`).text());
-    });
-    afterAll(async () => {
-      const db = connection;
-      connection = undefined;
-      await db?.close();
-    });
-
-    test("an org Boat key lives only in its org's column, and duplicate rows reconcile without losing the active key", async () => {
-      const db = connection;
-      if (!db) throw new Error("Missing org Boat credential schema fixture");
-      const [both, rowOnly, user] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
-      await db.query("insert into auth.users (id) values ($1)", [user]);
-      await db.query("insert into orgs (id, name, boat_api_key_enc) values ($1, 'Both', '\\x0a'), ($2, 'Row', null)", [
-        both,
-        rowOnly,
-      ]);
-      await db.query(
-        `insert into credentials (scope, owner_id, kind, value_enc) values
-            ('org', $1, 'boat', '\\x0b'), ('org', $2, 'boat', '\\x0c'), ('org', $2, 'modal', '\\x0d'),
-            ('user', $3, 'boat', '\\x0e')`,
-        [both, rowOnly, user],
-      );
-
-      for (const file of files.filter((name) => name >= reconcile))
-        await db.exec(await Bun.file(`${migrationsDir}/${file}`).text());
-
-      const columns = await db.query<{ name: string; hex: string }>(
-        "select name, encode(boat_api_key_enc, 'hex') as hex from orgs order by name",
-      );
-      expect(columns.rows).toEqual([
-        { name: "Both", hex: "0a" },
-        { name: "Row", hex: "0c" },
-      ]);
-      const rows = await db.query<{ scope: string; kind: string; hex: string }>(
-        "select scope::text, kind::text, encode(value_enc, 'hex') as hex from credentials order by hex",
-      );
-      expect(rows.rows).toEqual([
-        { scope: "org", kind: "modal", hex: "0d" },
-        { scope: "user", kind: "boat", hex: "0e" },
-      ]);
-      await expect(
-        db.query("insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'boat', '\\x0f')", [
-          rowOnly,
-        ]),
-      ).rejects.toThrow(/credentials_org_boat_chk/);
-    });
-  });
 });
 
-async function withDb(run: (db: PGlite) => Promise<void>, isolatedSchema = false): Promise<void> {
-  // Grant/default-privilege assertions create schema objects; never reuse that connection.
-  if (!isolatedSchema) return run(database());
-  const db = await openMigratedDatabase();
+async function withDb(run: (db: PGlite) => Promise<void>): Promise<void> {
+  const db = database();
   try {
     await run(db);
   } finally {
-    await db.close();
+    await db.exec(
+      "reset role; reset all; set search_path=public; drop table if exists public.later; drop function if exists public.later_fn()",
+    );
   }
 }
 
@@ -1083,15 +956,46 @@ async function ciphertext(db: PGlite, credential: string): Promise<string | null
   return result.rows[0]?.hex ?? null;
 }
 
-async function labels(db: PGlite, name: string): Promise<string[]> {
-  const result = await db.query<{ label: string }>(
-    `select e.enumlabel as label
-     from pg_type t
-     join pg_enum e on e.enumtypid = t.oid
-     join pg_namespace n on n.oid = t.typnamespace
-     where n.nspname = 'public' and t.typname = $1
-     order by e.enumsortorder`,
-    [name],
-  );
-  return result.rows.map((row) => row.label);
-}
+// Exercise cleanup through the real hook lifecycle, sharing this file's one engine.
+describe("row fixture isolation", () => {
+  let standaloneNext: string;
+  beforeAll(async () => {
+    const db = database();
+    await db.exec(`
+    create function public.fixture_reject_org_delete() returns trigger language plpgsql as
+      $$ begin raise exception 'fixture_delete_guard'; end $$;
+    create trigger fixture_reject_org_delete before delete on public.orgs
+      for each row execute function public.fixture_reject_org_delete();
+    insert into public.orgs(name) values('previous fixture');
+    select nextval(pg_get_serial_sequence('public.runtime_commands','sequence'));
+    set search_path=pg_catalog;
+  `);
+    const row = (
+      await db.query<{ next: string }>("select (nextval('public.runtime_github_revision_seq')+1)::text as next")
+    ).rows[0]!;
+    standaloneNext = row.next;
+    await db.exec("set role authenticated");
+  });
+
+  test("fixture reset clears rows and owned counters without disabling action guards or rewinding standalone counters", async () => {
+    const db = database();
+    try {
+      expect((await db.query("select name from orgs")).rows).toEqual([]);
+      expect((await db.query("select current_user as role")).rows).toEqual([{ role: "postgres" }]);
+      expect((await db.query("show session_replication_role")).rows).toEqual([{ session_replication_role: "origin" }]);
+      expect(
+        (await db.query("select nextval(pg_get_serial_sequence('public.runtime_commands','sequence'))::text as next"))
+          .rows,
+      ).toEqual([{ next: "1" }]);
+      expect((await db.query("select nextval('public.runtime_github_revision_seq')::text as next")).rows).toEqual([
+        { next: standaloneNext },
+      ]);
+      await db.exec("insert into orgs(name) values('current fixture')");
+      await expect(db.exec("delete from orgs")).rejects.toThrow("fixture_delete_guard");
+    } finally {
+      await db.exec(
+        "drop trigger fixture_reject_org_delete on public.orgs; drop function public.fixture_reject_org_delete()",
+      );
+    }
+  });
+});

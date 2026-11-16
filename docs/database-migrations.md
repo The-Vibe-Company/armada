@@ -50,6 +50,9 @@ Before opening a PR, and again against current main before merge:
   [operator-only reconciliation runbook](#reconcile-hand-applied-history-operator-only),
   not an author-side repair or automatic replay.
 
+After regenerating types, run `bun test ./packages/core/test/database-types.probe.ts`.
+This fresh-schema parity probe gates publishing, not ordinary PR unit discovery.
+
 ## One-time repository administrator setup
 
 Create the GitHub Actions environment named **production**. Restrict deployment

@@ -4,7 +4,11 @@ import { openMigratedDatabase } from "../../../scripts/test-support/migrated-dat
 
 // The migrated database owns these storage/security contracts; no provider or API is enabled.
 describe("Docker plain-image sandbox schema", () => {
-  let db: PGlite;
+  let connection: PGlite | undefined;
+  function database() {
+    if (!connection) throw new Error("Docker schema fixture is not open");
+    return connection;
+  }
   const org = crypto.randomUUID();
   const otherOrg = crypto.randomUUID();
   const issuer = crypto.randomUUID();
@@ -15,7 +19,8 @@ describe("Docker plain-image sandbox schema", () => {
   const image = `ubuntu@sha256:${"a".repeat(64)}`;
 
   beforeAll(async () => {
-    db = await openMigratedDatabase();
+    connection = await openMigratedDatabase();
+    const db = database();
     for (const id of [issuer, owner, other]) await db.query("insert into auth.users(id) values ($1)", [id]);
     for (const id of [org, otherOrg]) await db.query("insert into orgs(id,name) values ($1,$2)", [id, `Docker ${id}`]);
     for (const id of [issuer, owner, other]) {
@@ -28,6 +33,8 @@ describe("Docker plain-image sandbox schema", () => {
     );
   });
   afterAll(async () => {
+    const db = connection;
+    connection = undefined;
     await db?.close();
   });
 
@@ -55,6 +62,7 @@ describe("Docker plain-image sandbox schema", () => {
   }
 
   async function insert(row = record()) {
+    const db = database();
     const columns = Object.keys(row);
     await db.query(
       `insert into sandboxes (${columns.join(",")}) values (${columns.map((_, i) => `$${i + 1}`).join(",")})`,
@@ -64,6 +72,7 @@ describe("Docker plain-image sandbox schema", () => {
   }
 
   async function asRole<T>(role: "authenticated" | "anon", user: string, run: () => Promise<T>) {
+    const db = database();
     await db.exec("begin");
     try {
       await db.query("select set_config('request.jwt.claim.sub',$1,true)", [user]);
@@ -78,6 +87,7 @@ describe("Docker plain-image sandbox schema", () => {
   }
 
   test("registered hosts admit private Codex records without a golden or Boat alias", async () => {
+    const db = database();
     const id = await insert();
     expect(
       (
@@ -106,6 +116,7 @@ describe("Docker plain-image sandbox schema", () => {
   });
 
   test("admission rejects unavailable hosts, absent members and malformed Docker bindings", async () => {
+    const db = database();
     for (const [override, error] of [
       [{ org_id: otherOrg }, /Docker host unavailable/],
       [{ docker_host_id: crypto.randomUUID() }, /Docker host unavailable/],
@@ -144,6 +155,7 @@ describe("Docker plain-image sandbox schema", () => {
   });
 
   test("binding and lifecycle guards survive host revocation while trusted cleanup remains possible", async () => {
+    const db = database();
     const id = await insert();
     for (const [column, value] of [
       ["docker_host_id", crypto.randomUUID()],
@@ -190,6 +202,7 @@ describe("Docker plain-image sandbox schema", () => {
   });
 
   test("JWT writes cannot bypass service ownership through security-definer mutations", async () => {
+    const db = database();
     const id = await insert();
     // Model the existing privileged-RPC boundary; role must survive current_user elevation.
     await db.exec(`create function public.test_docker_update(target uuid) returns void language sql security definer as $$ update public.sandboxes set status='running' where id=target $$;
@@ -212,6 +225,7 @@ describe("Docker plain-image sandbox schema", () => {
   });
 
   test("Boat and Modal still require a golden and cannot receive Docker bindings; Docker goldens remain unsupported", async () => {
+    const db = database();
     for (const provider of ["boat", "modal"]) {
       await expect(
         insert({
