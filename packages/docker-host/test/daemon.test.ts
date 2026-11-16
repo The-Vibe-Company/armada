@@ -126,6 +126,11 @@ test.each(["create", "stop", "delete"] as const)(
 test("recovers a persisted pending operation after interruption without issuing a new identity", async () => {
   const f = fixture();
   let interrupted = false;
+  f.executor.isAbsent = async () => true;
+  f.executor.isStopped = async () => false;
+  f.api.cleaned = async () => {
+    throw new Error("unfinished admission must not be reported as loss");
+  };
   const store: Store = {
     load: f.store.load,
     async save(state) {
@@ -141,6 +146,7 @@ test("recovers a persisted pending operation after interruption without issuing 
   await tick(f.store, f.api, f.executor);
   expect(f.executed).toEqual(["create"]);
   expect(f.acknowledgements).toEqual(["completed"]);
+  expect((await f.store.load()).retention).toEqual([]);
 });
 
 test("a persisted pending create cannot allocate while polling is offline or denied", async () => {
@@ -1230,6 +1236,33 @@ test("a pre-disk server keeps retention and availability when refusing only disk
   expect(calls).toBe(2);
 });
 
+test.each([false, true])(
+  "complete allocation loss reconciles durable admission (failed create: %s)",
+  async (failed) => {
+    const f = fixture();
+    if (failed) f.failExecution();
+    await tick(f.store, f.api, f.executor);
+    let absent = false;
+    let online = false;
+    const reports: string[] = [];
+    f.executor.isAbsent = async () => absent;
+    f.executor.isStopped = async () => false;
+    f.api.cleaned = async (_state, requestId) => {
+      if (!online) throw Error("offline");
+      reports.push(requestId);
+    };
+    f.deny();
+    absent = true;
+    await tick(f.store, f.api, f.executor).catch(() => {});
+    expect((await f.store.load()).retention?.[0]?.deleted).toBe(true);
+    online = true;
+    await tick(f.store, f.api, f.executor).catch(() => {});
+    await tick(f.store, f.api, f.executor).catch(() => {});
+    expect(reports).toEqual([f.job.requestId]);
+    expect((await f.store.load()).retention).toEqual([]);
+    expect(f.executed).toEqual(["create"]);
+  },
+);
 test.each(["stop", "create", "resume"] as const)(
   "compacting %s receipts before discovery preserves every generation across restart",
   async (operation) => {
@@ -1359,4 +1392,26 @@ test("physical expiry stops every generation while create is stalled without rac
   // Only the serialized mailbox persists and publishes the physical proof.
   await tick(f.store, f.api, f.executor);
   expect(f.state().receipts.find((r) => r.requestId === second.job.requestId)?.expired).toBe(true);
+});
+
+test("compaction retires reconciled absence without dropping undiscovered allocations", async () => {
+  const f = fixture();
+  const state = await f.store.load();
+  state.receipts = [true, false].map((cleaned) => ({
+    requestId: crypto.randomUUID(),
+    operation: "create" as const,
+    outcome: "completed" as const,
+    expired: true as const,
+    expiryReported: true as const,
+    ...(cleaned ? { cleaned: true as const } : {}),
+    request: {
+      ...f.job.request,
+      generation: crypto.randomUUID(),
+      image: "x".repeat(600000),
+    },
+  }));
+  const [reconciled, undiscovered] = state.receipts;
+  compactReceipts(state);
+  expect(state.receipts.map((r) => r.requestId)).toEqual([undiscovered!.requestId]);
+  expect(state.retired?.map((r) => r[0])).toEqual([reconciled!.requestId]);
 });

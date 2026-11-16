@@ -13,7 +13,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
+import { clientMutation } from "@/lib/client-mutation";
 
 /** Confirm an existing server action; a refusal stays here to explain the problem and allow a retry. */
 export function ConfirmedAction({
@@ -38,12 +40,13 @@ export function ConfirmedAction({
   successFocusId: string;
   children?: ReactNode;
 }) {
+  const preserve = usePreservedActionForm();
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<{ message: string } | null>(null);
   const message = useRef<HTMLParagraphElement>(null);
   const succeeded = useRef(false);
   const [, submit, pending] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
-    const result = await action(previous, data);
+    const result = await clientMutation(() => action(previous, data));
     if (result.ok) {
       succeeded.current = true;
       setOpen(false);
@@ -89,7 +92,7 @@ export function ConfirmedAction({
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
-        <form action={submit} className="space-y-4" aria-busy={pending}>
+        <form ref={preserve} action={submit} className="space-y-4" aria-busy={pending}>
           {children}
           {error && (
             <p ref={message} tabIndex={-1} role="alert" className="text-sm text-destructive outline-none">

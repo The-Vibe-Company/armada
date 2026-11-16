@@ -145,7 +145,8 @@ describe("honest failures", () => {
     expect(attentionState("failed", turn("failed", "crash"), crash).kind).toBe("failed");
     expect(attentionState("failed", turn("finished"), crash).kind).toBe("failed");
     const ready = outcomeView({ state: "ready", prNumber: 7 });
-    expect(attentionState("failed", turn("finished"), crash, ready)).toMatchObject({ kind: "failed", outcome: ready });
+    for (const latest of [turn("finished"), null])
+      expect(attentionState("failed", latest, crash, ready)).toMatchObject({ kind: "failed", outcome: ready });
     expect(attentionState("failed", turn("failed", "crash"), crash, ready).outcome).toBeUndefined();
     // A failed turn followed by one that finished on a live machine is history.
     expect(attentionState("ready", turn("finished")).kind).toBe("finished");

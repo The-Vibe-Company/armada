@@ -2,7 +2,7 @@
 
 import { Clock3Icon, RefreshCwIcon } from "lucide-react";
 import Link from "next/link";
-import { useActionState, useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { createRoutine, routineHistory, setRoutineState } from "@/app/actions/routines";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CreateDialog } from "@/components/create-dialog";
@@ -14,6 +14,8 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { useMutationState } from "@/components/use-mutation-state";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import { type RoutineItem, runDescription } from "@/lib/routines";
 import type { TemplateHeader } from "@/lib/templates";
 
@@ -65,7 +67,8 @@ function RoutineForm({
   templates: TemplateHeader[];
   onDone: (message: string) => void;
 }) {
-  const [result, action, pending] = useActionState(createRoutine, null),
+  const preserve = usePreservedActionForm();
+  const [result, action, pending] = useMutationState(createRoutine),
     [scope, setScope] = useState("personal"),
     [template, setTemplate] = useState("");
   const base = useId(),
@@ -75,7 +78,7 @@ function RoutineForm({
   }, [result, onDone]);
   const available = templates.filter((x) => scope !== "org" || x.scope === "org");
   return (
-    <form action={action} className="space-y-4" data-routine-form>
+    <form ref={preserve} action={action} className="space-y-4" data-routine-form>
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="revision" value={selected?.currentRevision ?? ""} />
       <fieldset disabled={pending} className="space-y-4 text-sm">

@@ -3,6 +3,10 @@ import { boundedEnrichment } from "@/lib/bounded-enrichment";
 import type { Supabase } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 
+// Explicit JWT projection: schema additions must be reviewed before becoming dashboard data.
+const GOLDENS_COLUMNS =
+  "id,org_id,name,visibility,owner_id,boat_snapshot_id,config,created_at,boat_sandbox_id,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,removed_at,size_policy,build_warnings,helper_receipt";
+
 /**
  * A golden row as read here. `removed_at` (#566) is set once the golden is retired: the row stays readable as a
  * tombstone so the sandboxes started from it keep their history. Absent before that migration.
@@ -18,7 +22,7 @@ export async function listGoldens(supabase: Supabase): Promise<GoldenRow[]> {
   if (!selected) return [];
   const { data, error } = await supabase
     .from("goldens")
-    .select("*")
+    .select(GOLDENS_COLUMNS)
     .eq("org_id", selected.org.id)
     .is("removed_at", null)
     .order("name");
@@ -33,7 +37,11 @@ export async function listGoldens(supabase: Supabase): Promise<GoldenRow[]> {
 export async function listGoldenHistory(supabase: Supabase): Promise<GoldenRow[]> {
   const selected = await selectedOrganization();
   if (!selected) return [];
-  const { data, error } = await supabase.from("goldens").select("*").eq("org_id", selected.org.id).order("name");
+  const { data, error } = await supabase
+    .from("goldens")
+    .select(GOLDENS_COLUMNS)
+    .eq("org_id", selected.org.id)
+    .order("name");
   if (error) throw new Error(error.message);
   return data;
 }
@@ -60,7 +68,7 @@ export async function findRemovedGolden(supabase: Supabase, id: string): Promise
   if (!selected) return null;
   const { data, error } = await supabase
     .from("goldens")
-    .select("*")
+    .select(GOLDENS_COLUMNS)
     .eq("id", id)
     .eq("org_id", selected.org.id)
     .not("removed_at", "is", null)

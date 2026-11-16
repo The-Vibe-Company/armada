@@ -124,7 +124,7 @@ export function attentionState(
     const reason = (turn?.status === "failed" ? turn.reason : null) ?? recorded.statusReason ?? recorded.lifecycleError;
     const state = isRecoverableReason(reason) ? interrupted(reason) : failed(reason, "Sandbox failed");
     // The machine died after the agent reported its outcome: the pull request it names is still there to merge.
-    return outcome && turn?.status === "finished" ? { ...state, outcome } : state;
+    return outcome && settled ? { ...state, outcome } : state;
   }
   if (status === "stopping") return { kind: "stopped", label: "Stopping", failure: null };
   if (status === "starting") return { kind: "working", label: "Starting", failure: null };
