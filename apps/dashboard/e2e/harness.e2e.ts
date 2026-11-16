@@ -19,7 +19,7 @@ test("the old Credentials address lands on Harness, and the navigation names it"
 
 for (const provider of [
   { label: "OpenAI", kind: "openai", harness: "codex", key: OPENAI_KEY },
-  { label: "Anthropic", kind: "anthropic", harness: "claude", key: "sk-ant-api03-e2e-harness-key" },
+  { label: "Anthropic", kind: "anthropic", harness: "claude", key: "anthropic_e2e_key" },
   { label: "OpenCode", kind: "opencode", harness: "opencode", key: "fake-opencode-e2e-key" },
 ]) {
   test(`adding a ${provider.label} API key is a first-class dialog choice`, async ({ page }) => {

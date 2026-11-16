@@ -179,6 +179,19 @@ jobs:
     if: ${{ !cancelled() && needs.publication-intent.result == 'success' && (needs.publication-intent.outputs.publish != 'true' || needs.release-configuration.result == 'success') && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: release_fixture
+          POSTGRES_DB: armada_contracts
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     outputs:
       version: ${{ steps.version.outputs.version }}
       dist_tag: ${{ steps.version.outputs.dist_tag }}
@@ -229,19 +242,20 @@ jobs:
       - run: bun test --reporter=junit --reporter-outfile=/tmp/release-tests.xml
         env:
           CODEX_NATIVE_TEST_BINARY: ${{ github.workspace }}/packages/agent-runtime/dist/codex
-      - name: Require native release contracts to execute
+      - name: Migrate disposable release contract database
+        env:
+          PGURL: postgres://postgres:release_fixture@127.0.0.1:5432/armada_contracts
         run: |
-          python3 - <<'PYTHON'
-          import xml.etree.ElementTree as ET
-          report = ET.parse("/tmp/release-tests.xml").getroot()
-          for name in [
-              "actual runtime artifact accepts private bootstrap and scoped RPC, checkpoints and reopens journal",
-              "real Codex app-server reports the selected thread cwd",
-              "real Codex SAME process and thread resumes with rotated MCP credentials without model inference",
-          ]:
-              selected = [case for case in report.iter("testcase") if case.get("name") == name]
-              assert len(selected) == 1 and all(selected[0].find(tag) is None for tag in ["failure", "error", "skipped"]), f"Native contract did not execute exactly once without skips: {name}"
-          PYTHON
+          set -euo pipefail
+          psql "$PGURL" -v ON_ERROR_STOP=1 -f scripts/db/supabase-prereq.sql
+          for migration in supabase/migrations/*.sql; do
+            psql "$PGURL" -v ON_ERROR_STOP=1 -f "$migration"
+          done
+      - name: Require PostgreSQL, packaging and native release contracts without skips
+        env:
+          ARMADA_TEST_POSTGRES_URL: postgres://postgres:release_fixture@127.0.0.1:5432/armada_contracts
+          CODEX_NATIVE_TEST_BINARY: ${{ github.workspace }}/packages/agent-runtime/dist/codex
+        run: python3 scripts/validate-release-contracts.py
       - name: Real checkpoint process boundary
         run: |
           sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts

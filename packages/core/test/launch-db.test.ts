@@ -12,7 +12,7 @@ import {
 } from "../src/index.ts";
 import { serviceGoldenOperations } from "./support/service-golden-operations.ts";
 
-const TOKEN = "sk-ant-oat01-database-test-token";
+const TOKEN = "claude_database_token";
 
 describe("launch database", () => {
   test("sandbox interior is current owner/admin independently of source and legacy visibility", async () => {
