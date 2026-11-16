@@ -372,7 +372,7 @@ export async function resolveSkillpackCredential(
 }
 
 /** Ciphertext of the stored credentials. Only the server, as the service role, can read it. */
-export interface StoredCredential {
+interface StoredCredential {
   id?: string;
   kind: CredentialKind;
   valueEnc: Uint8Array;

@@ -25,7 +25,7 @@ export interface ServerConfig {
   databasePoolMax: number;
 }
 
-export const DEFAULT_DASHBOARD_URL = "https://armada.thevibecompany.co";
+const DEFAULT_DASHBOARD_URL = "https://armada.thevibecompany.co";
 
 /** Fixed deployment configuration, never taken from a request or OAuth return URL. */
 export function dashboardOrigin(value: string = DEFAULT_DASHBOARD_URL, development = false): string {
@@ -60,7 +60,7 @@ export const DEFAULT_PORT = 8080;
 const KEY_BYTES = 32;
 
 /** Throws when the key is not 32 bytes of base64. The message never holds the key. */
-export function checkEncryptionKey(base64Key: string): void {
+function checkEncryptionKey(base64Key: string): void {
   let length: number;
   try {
     length = Uint8Array.from(atob(base64Key.trim()), (char) => char.charCodeAt(0)).length;
