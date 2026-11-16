@@ -775,6 +775,59 @@ describe("launch", () => {
     }
   });
 
+  test.each(["ready", "prompted", "failed"] as const)(
+    "cleanup failures preserve the %s launch outcome and still release the fence",
+    async (outcome) => {
+      const world = setup({
+        golden: golden("org"),
+        ...(outcome === "failed" ? { promptError: new Error("original prompt refusal") } : {}),
+      });
+      let releases = 0;
+      let fences = 0;
+      world.stores.credentials.releaseAdmission = async () => {
+        releases++;
+        throw new Error("private cleanup details");
+      };
+      world.stores.goldens.beginOperation = async () => async () => {
+        fences++;
+        throw new Error("private fence details");
+      };
+      const warn = spyOn(console, "warn").mockImplementation(() => {
+        throw new Error("diagnostic sink unavailable");
+      });
+      try {
+        const launch = launchSandbox(world.provider, world.stores, owner, {
+          golden: "web",
+          harness: "claude",
+          ...(outcome !== "ready" ? { prompt: "go" } : {}),
+        });
+        if (outcome === "failed")
+          await expect(launch).rejects.toMatchObject({
+            code: "prompt_failed",
+            message: expect.stringContaining("original prompt refusal"),
+          });
+        else expect((await launch).sandbox.status).toBe(outcome === "ready" ? "ready" : "running");
+        expect(releases).toBe(2);
+        expect(fences).toBe(1);
+        expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  test("a transient admission release failure is reconciled without failing the launch", async () => {
+    const world = setup({ golden: golden("org") });
+    let reserved = true;
+    let attempts = 0;
+    world.stores.credentials.releaseAdmission = async () => {
+      if (++attempts === 1) throw new Error("temporary database failure");
+      reserved = false;
+    };
+    await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
+    expect(reserved).toBe(false);
+  });
+
   test("without a prompt the sandbox is ready, has no conversation and no prompt was sent", async () => {
     const world = setup({ golden: golden("org") });
     const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
@@ -1359,7 +1412,7 @@ describe("prompt outcome", () => {
         sandboxId: "s",
         promptId: "p1",
       }),
-    ).toEqual({ state: "failed", reason: "authentication_failed" });
+    ).toEqual({ state: "failed", reason: "Reconnect the agent account, then send the prompt again." });
     expect(
       await promptOutcome(outcomeProvider("interrupted", events([prompt("interrupted"), limit])), {
         sandboxId: "s",

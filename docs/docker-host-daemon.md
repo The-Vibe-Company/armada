@@ -577,7 +577,8 @@ a trusted confirmation arrives. Local TTL enforcement continues even while offli
 
 ## Host-list/discovery acceptance on a retained host
 
-After deploying this server revision on staging with the existing opt-ins, start
+After deploying on staging with all three staging inputs above and a valid runtime
+manifest from that deployed build, start
 the stopped daemon on the same host. No new registration or sandbox is needed.
 Use Bash and the same SSH configuration and staging org from the passed check.
 A live or stale daemon lock must be inspected, never deleted automatically.
@@ -605,13 +606,15 @@ def post(path, body):
         return json.load(response)
 options = post('launch/options', {})
 docker = next(p for p in options['providers'] if p['id'] == 'docker')
-assert docker['enabled'] and not docker['capabilities']['launch']
-assert docker['unsupportedReasons']['resume']
+assert docker['enabled']
+for capability in ('launch', 'followupPrompts', 'resume'):
+    assert docker['capabilities'][capability], (capability, docker['unsupportedReasons'])
+    assert capability not in docker['unsupportedReasons']
 for attempt in range(31):
     listing = post('docker/hosts/list', {'org':os.environ['ARMADA_ORG']})
     host = next(h for h in listing['hosts'] if h['id']==os.environ['DOCKER_HOST_ID'])
-    assert set(host)=={'id','name','state','createdAt','lastSeenAt','revokedAt','sandboxes'}
-    assert not listing['placement']  # until normal API/CLI integration lands
+    assert {'id','name','state','createdAt','lastSeenAt','revokedAt','sandboxes'} <= set(host)
+    assert listing['placement']
     if host['state']=='online': break
     if attempt==30: raise SystemExit('Host heartbeat not online within 60 seconds; inspect private daemon log')
     time.sleep(2)
@@ -621,12 +624,16 @@ unset ARMADA_TOKEN
 ```
 
 Expect the retained HOST_ID online with the existing inventory/count and no
-credential fields. Admin register/revoke behavior is unchanged; members can list
-but cannot mutate hosts. The daemon may be stopped by the coordinator afterward.
-At this stage, placement=false and capabilities.launch=false are intentional.
-Normal-launch acceptance requires its separately implemented backend; this
-read/discovery check does not enable it.
-No worker staging access, SSH, deployment, inference or remote migration was used.
+credential fields. Members can list; register/revoke remain admin-only.
+Host owners can manage limits and retention through their respective controls. The daemon may be stopped by the coordinator afterward.
+This checks the enabled normal-launch configuration: placement, launch, follow-up
+and resume must be true. With host support alone (placement disabled),
+placement and those capabilities are false; that is a separate configuration, not
+a pass for this check. Enabling placement without a valid runtime manifest fails
+server startup; it is not a disabled-capability fallback. Discovery describes installed support,
+not user authorization, capacity or runtime readiness. This read-only API check
+does not launch a sandbox or prove lifecycle acceptance; use the normal lifecycle
+procedure for that evidence. Coordinator-only: workers must not run this procedure.
 
 ### Normal follow-up and stop/resume (#1422)
 
@@ -1147,3 +1154,16 @@ locally and are refused safely. No privileged fallback, prune or unrelated
 resource deletion is performed. Deploy the additive schema/server support before
 upgrading daemons; older servers can still receive retention and capacity data
 without the new disk field.
+
+
+### Independent physical expiry
+
+The run process starts a physical-only sweep immediately and every ten seconds,
+independent of mailbox execution, image pulls, runtime installation and hourly
+image cleanup. Sweeps do not overlap. Each sweep checks all durable active
+generation identities concurrently through the executor's exact ownership and
+expiry checks; a failed inspection never authorizes a stop. Docker command
+latency and host/daemon downtime still bound enforcement, not a hard real-time
+deadline. This lane never writes the state file or contacts the server. The
+serialized mailbox subsequently observes the stop and persists/reports its proof;
+server acknowledgement can therefore lag physical enforcement during slow work.

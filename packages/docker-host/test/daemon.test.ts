@@ -9,6 +9,7 @@ import {
   type Api,
   compactReceipts,
   type Executor,
+  enforcePhysicalExpiry,
   type Job,
   register,
   type State,
@@ -1312,4 +1313,50 @@ test("expiry report compaction preserves an unobserved allocation across restart
   observed = true;
   for (let i = 0; i < 2; i++) await tick(store, api, executor, false, () => 1000);
   expect(deleted.sort()).toEqual(expected);
+});
+
+test("physical expiry stops every generation while create is stalled without racing state persistence", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  const second = fixture();
+  await f.store.save({
+    ...f.state(),
+    activeTtl: [f.job.requestId, second.job.requestId],
+    receipts: [
+      ...f.state().receipts,
+      { requestId: second.job.requestId, request: second.job.request, operation: "create", outcome: "completed" },
+    ],
+  });
+  const started = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const slowInspection = Promise.withResolvers<void>();
+  const blocked = fixture();
+  f.api.poll = async () => ({ job: blocked.job });
+  f.executor.create = async () => {
+    started.resolve();
+    await finish.promise;
+  };
+  const pending = tick(f.store, f.api, f.executor);
+  await started.promise;
+  const before = structuredClone(f.state());
+  const stopped: string[] = [];
+  const observed = Promise.withResolvers<void>();
+  f.executor.stopIfExpired = async (request) => {
+    if (request.generation === blocked.job.request.generation) await slowInspection.promise;
+    stopped.push(request.generation);
+    if (request.generation === second.job.request.generation) observed.resolve();
+    return true;
+  };
+  const sweeping = enforcePhysicalExpiry(f.store, f.executor);
+  await observed.promise;
+  expect(stopped).toContain(f.job.request.generation);
+  expect(stopped).toContain(second.job.request.generation);
+  expect(f.state()).toEqual(before);
+  slowInspection.resolve();
+  await sweeping;
+  finish.resolve();
+  await pending;
+  // Only the serialized mailbox persists and publishes the physical proof.
+  await tick(f.store, f.api, f.executor);
+  expect(f.state().receipts.find((r) => r.requestId === second.job.requestId)?.expired).toBe(true);
 });

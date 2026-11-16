@@ -7,7 +7,7 @@ import {
   type DockerJobFailureReason,
   type Sql,
 } from "@armada/core";
-import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { decryptSecret, encryptSecret, VaultError } from "@armada/core/server";
 import {
   type BootstrapDescriptor,
   canonicalDockerHostJob,
@@ -76,6 +76,12 @@ export class DockerHostDenied extends Error {
     this.name = "DockerHostDenied";
   }
 }
+export class DockerHostUnavailable extends Error {
+  constructor(cause: unknown) {
+    super("Docker host unavailable", { cause });
+    this.name = "DockerHostUnavailable";
+  }
+}
 function deny(): never {
   throw new DockerHostDenied();
 }
@@ -106,11 +112,17 @@ function input(job: Job): string {
 export function createDockerHostStore(sql: Sql, key: string) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
     try {
-      if (!sql.transaction) deny();
+      if (!sql.transaction) throw new Error("Docker host store requires transactions");
       return await sql.transaction(work);
     } catch (error) {
-      if (error instanceof DockerHostFull || error instanceof DockerLimitsRefused) throw error;
-      return deny();
+      if (
+        error instanceof DockerHostDenied ||
+        error instanceof DockerHostFull ||
+        error instanceof DockerLimitsRefused ||
+        error instanceof VaultError
+      )
+        throw error;
+      throw new DockerHostUnavailable(error);
     }
   }
   async function admin(tx: Sql, actor: Actor) {
@@ -170,7 +182,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     };
     await tx.query(
       `insert into public.docker_host_jobs(request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation,snapshot_id)
-       values($1,$2,$3,$4,$5,$6,$7,$8) on conflict(request_id) do nothing`,
+       values($1,$2,$3,$4,$5,$6,$7,$8) on conflict do nothing`,
       [
         job.requestId,
         hostId,
@@ -953,7 +965,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
             const job = await readJob(row);
             if (job.operation !== "buildSnapshot") deny();
             await authorizeSnapshotBuild(tx, host.id, installationId, job);
-          } catch {
+          } catch (error) {
+            if (!(error instanceof DockerHostDenied) && !(error instanceof VaultError && error.code === "forbidden"))
+              throw error;
             await tx.query(
               "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build authorization is no longer valid.' where id=$1 and status='building'",
               [row.snapshot_id],
@@ -1108,7 +1122,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
               try {
                 await authorizeSnapshotBuild(tx, host.id, installationId, parsed);
                 eligible = true;
-              } catch {}
+              } catch (error) {
+                if (!(error instanceof VaultError && error.code === "forbidden")) throw error;
+              }
             }
             await tx.query(
               "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4 where id=$1 and status='building'",

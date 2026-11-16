@@ -2914,3 +2914,52 @@ test("Docker normal launch uses the saved model unless explicitly overridden", a
     expect(replay.sandbox.model).toBe(result.sandbox.model);
   }
 });
+
+test.each(["poll", "complete"] as const)(
+  "snapshot %s infrastructure failure remains retryable without failing the build",
+  async (operation) => {
+    const f = await snapshotFixture(true);
+    const id = randomUUID();
+    await f.snapshots.command(f.caller, "create", {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: id,
+      name: "retryable-build",
+      visibility: "private",
+      config: f.config,
+    });
+    const cause = new Error("snapshot database unavailable");
+    const failing: Sql = {
+      query: (q, p) => sql.query(q, p),
+      transaction: (work) =>
+        sql.transaction!((tx) =>
+          work({
+            query: (q, p) => {
+              if (q.includes("select s.* from public.docker_snapshots s")) throw cause;
+              return tx.query(q, p);
+            },
+          }),
+        ),
+    };
+    const store = createDockerHostStore(failing, key);
+    const result = { requestId: id, outcome: "completed" as const, imageId: `sha256:${"a".repeat(64)}` };
+    await expect(
+      operation === "poll"
+        ? store.poll(f.hostToken, f.installationId)
+        : store.complete(f.hostToken, f.installationId, result),
+    ).rejects.toMatchObject({
+      name: "DockerHostUnavailable",
+      cause,
+    });
+    const snapshot = (
+      await database().query<{ status: string }>("select status from public.docker_snapshots where id=$1", [id])
+    ).rows[0];
+    expect(snapshot?.status).toBe("building");
+    expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(id);
+    await hosts.complete(f.hostToken, f.installationId, result);
+    expect(
+      (await database().query<{ status: string }>("select status from public.docker_snapshots where id=$1", [id]))
+        .rows[0]?.status,
+    ).toBe("ready");
+  },
+);
