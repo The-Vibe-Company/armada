@@ -36,7 +36,7 @@ for (const org of [
   { session: "alice", name: "Acme", id: "00000000-0000-4000-8000-000000000010" },
   { session: "large", name: "Large", id: "00000000-0000-4000-8000-000000000014" },
 ]) {
-  test(`${org.name}: snapshot groups and in-form capacity blockers`, { session: org.session }, async ({
+  test(`${org.name}: snapshot filters and in-form capacity blockers`, { session: org.session }, async ({
     app,
     screen,
     browser,
@@ -44,8 +44,10 @@ for (const org of [
     // Existing mock controls configure a connected Modal account, never a real provider credential.
     await ensureModal(org.id);
     await app.open("/snapshots");
-    await expect(screen.getByRole("heading", "Needs something first")).toBeVisible();
-    await expect(screen.getByRole("heading", "Ready", { exact: true })).toBeVisible();
+    await expect(screen.getByRole("button", /^All/)).toHaveAttribute("aria-pressed", "true");
+    await screen.getByRole("button", /^Modal \d/).tap();
+    await expect(browser.locator('li[data-golden-provider="boat"]')).toHaveCount(0);
+    await screen.getByRole("button", /^All/).tap();
     await screen.getByRole("button", "New snapshot", { exact: true }).tap();
     const dialog = screen.getByRole("dialog", "New snapshot");
     await dialog.getByRole("textbox", "Snapshot name").fill("capacity-check");

@@ -65,3 +65,68 @@ body:has(.catalog) [role="dialog"][aria-labelledby$="-panel-title"] aside {
   border-left: 1px solid var(--border);
   background: var(--card);
 }
+
+.catalog[data-fidelity] section > div > ul > li {
+  position: relative;
+  gap: 0;
+}
+
+.catalog[data-fidelity] section > div > ul > li > div:first-child {
+  align-items: flex-start;
+  padding-right: 108px;
+}
+
+.catalog[data-fidelity] [data-catalog-status] {
+  position: absolute;
+  top: 18px;
+  right: 16px;
+  font-size: 12px;
+}
+
+.catalog[data-fidelity] [data-catalog-status] p {
+  display: none;
+}
+
+.catalog[data-fidelity] section > div > ul > li > [data-catalog-body] {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 12px;
+  padding: 14px 0 16px;
+  font-size: 13px;
+}
+
+.catalog[data-fidelity] section > div > ul > li > [data-catalog-body] + div {
+  display: none;
+}
+
+.catalog[data-fidelity] section > div > ul > li > div:last-child button {
+  height: 26px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.catalog[data-fidelity] [data-catalog-status] > span,
+.catalog[data-fidelity] [data-catalog-status] > div > span {
+  max-width: 100px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.catalog[data-fidelity] [data-catalog-status] svg {
+  width: 8px;
+  height: 8px;
+  fill: currentColor;
+}
+
+.catalog[data-fidelity] [data-catalog-body] > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.catalog[data-fidelity] > div:first-child {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}

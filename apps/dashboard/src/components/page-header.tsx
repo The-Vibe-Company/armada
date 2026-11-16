@@ -3,11 +3,13 @@ import { ShellPageActions } from "@/components/shell-page-actions";
 
 /** The title of a page, one line saying what it holds, and its primary action on the right. */
 export function PageHeader({
+  inlineActions = false,
   title,
   description,
   meta,
   children,
 }: {
+  inlineActions?: boolean;
   title: string;
   description?: ReactNode;
   /** A quiet fact beside the title, such as how many items the page holds. */
@@ -23,7 +25,12 @@ export function PageHeader({
         </div>
         {description && <p className="text-sm text-pretty text-muted-foreground">{description}</p>}
       </div>
-      {children && <ShellPageActions>{children}</ShellPageActions>}
+      {children &&
+        (inlineActions ? (
+          <div className="flex shrink-0 items-center gap-2">{children}</div>
+        ) : (
+          <ShellPageActions>{children}</ShellPageActions>
+        ))}
     </div>
   );
 }
