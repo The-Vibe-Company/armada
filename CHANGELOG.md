@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.49.1](https://github.com/The-Vibe-Company/armada/compare/v2.49.0...v2.49.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **ci:** reject unsupported standalone migration applies ([#2424](https://github.com/The-Vibe-Company/armada/issues/2424)) ([6fbcfe1](https://github.com/The-Vibe-Company/armada/commit/6fbcfe18fbb3da64c3b22ab2ba480f0e47f13a34))
+* **dev:** reject occupied fixture servers before local test runs ([#2425](https://github.com/The-Vibe-Company/armada/issues/2425)) ([718f843](https://github.com/The-Vibe-Company/armada/commit/718f8436189e68370d0afc1031391eb8f8f9f79d))
+* **mcp:** accept durable runtime control request IDs ([#2426](https://github.com/The-Vibe-Company/armada/issues/2426)) ([c4f8779](https://github.com/The-Vibe-Company/armada/commit/c4f87794b7427a25bfd17ce545f1f6a94bb15c54))
+* **mcp:** preserve runtime log failure metadata ([#2427](https://github.com/The-Vibe-Company/armada/issues/2427)) ([4185d3f](https://github.com/The-Vibe-Company/armada/commit/4185d3f340ff881449e8e85b37d2c60093891fe4))
+* **release:** prove exact source commit at deployment health gate ([#2423](https://github.com/The-Vibe-Company/armada/issues/2423)) ([9680818](https://github.com/The-Vibe-Company/armada/commit/96808182f13cba47b6b35f7e2fcb40d044d3922f))
+* **test:** repair required PostgreSQL release contracts ([#2431](https://github.com/The-Vibe-Company/armada/issues/2431)) ([4e4c8cb](https://github.com/The-Vibe-Company/armada/commit/4e4c8cb45b54da909a774c81c71408324aa98e88))
+
 ## [2.49.0](https://github.com/The-Vibe-Company/armada/compare/v2.48.0...v2.49.0) (2026-11-16)
 
 
