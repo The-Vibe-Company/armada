@@ -676,9 +676,20 @@ function BlockerLink(props: ComponentProps<typeof Button>) {
 }
 
 /** A button that opens a row's panel (a row action whose fix lives there, a pointer to another row). */
-export function SelectItem({ item, ...props }: { item: string } & Omit<ComponentProps<typeof Button>, "onClick">) {
+export function SelectItem({
+  item,
+  className,
+  ...props
+}: { item: string } & Omit<ComponentProps<typeof Button>, "onClick">) {
   const { select, panelId } = useBrowser();
-  return <Button {...props} onClick={() => select(item)} aria-controls={panelId} />;
+  return (
+    <Button
+      {...props}
+      className={cn("relative z-10", className)}
+      onClick={() => select(item)}
+      aria-controls={panelId}
+    />
+  );
 }
 
 /** Focus handoffs from nested dialogs must target the current visible frame, never a retained route's ID. */

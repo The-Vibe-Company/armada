@@ -65,9 +65,9 @@ for (const org of [
     await app.open("/routines");
     await screen.getByRole("button", "New routine").tap();
     await screen.getByLabel("Interval in hours").fill("12");
-    await screen.getByLabel("Template", { exact: true }).selectOption({ label: org.routineTemplate });
-    await screen.getByLabel("with this task:").fill("Review the fixture changes");
-    await screen.getByLabel("Call it").fill(name);
+    await screen.getByRole("radio", org.routineTemplate, { exact: true }).check();
+    await screen.getByLabel("Task", { exact: true }).fill("Review the fixture changes");
+    await screen.getByLabel("Name", { exact: true }).fill(name);
     await screen.getByRole("button", "Create routine").tap();
     await expect(screen.getByRole("dialog", "New routine")).toBeHidden();
     await screen.getByRole("button", "Dismiss").first().tap();

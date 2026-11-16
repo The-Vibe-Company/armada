@@ -46,7 +46,7 @@ for (const organization of [
       await screen.getByRole("link", new RegExp(`^${tab} `)).tap();
       await expect(screen.getByRole("region", tab)).toBeVisible();
     }
-    await browser.locator(`a[href="/sandboxes/${organization.id}"]`).tap();
+    await browser.locator(`main a[href="/sandboxes/${organization.id}"]`).tap();
     await expect(browser).toHaveURL(`/sandboxes/${organization.id}`);
     await expect(browser.locator('[role="log"][aria-label="Messages"]')).toBeVisible();
   });

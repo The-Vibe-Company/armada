@@ -11,23 +11,28 @@ for (const organization of [
     browser,
   }) => {
     await app.open("/sandboxes");
-    await screen.getByRole("button", "Launch a sandbox").tap();
+    await screen.getByRole("button", "Launch a sandbox", { exact: true }).first().tap();
     await screen.getByLabel("Task").fill(`Inspect the ${organization.name} fixture`);
-    await screen.getByRole("button", /^Starts from:/).tap();
-    await screen.getByPlaceholder("Search starts from").fill(organization.source);
+    await screen.getByRole("button", "From settings", { exact: true }).tap();
+    await screen.getByRole("button", /^From:/).tap();
+    await screen.getByPlaceholder("Search from").fill(organization.source);
     await screen.getByRole("option", new RegExp(organization.source)).tap();
-    await expect(screen.getByRole("button", /^Agent settings:/)).toBeVisible();
+    await expect(screen.getByRole("button", "Agent settings", { exact: true })).toBeVisible();
+    await screen.getByRole("button", "Agent settings", { exact: true }).tap();
     await screen.getByRole("button", /^Account:/).tap();
     // Account and model are one picker; an enabled model pins both together.
     await screen
       .getByRole("option", /Claude Opus/, { disabled: false })
       .first()
       .tap();
-    await expect(screen.getByRole("button", /^Agent settings:/)).toContainText(/opus/i);
+    await expect(screen.getByRole("button", "Agent settings", { exact: true })).toContainText(/opus/i);
     await expect(screen.getByRole("button", /^Account:/)).not.toContainText("Choose an account");
+    // Changing provider remounts the starting-point settings in their closed state.
+    if (organization.name === "Large") await screen.getByRole("button", "From settings", { exact: true }).tap();
     await screen.getByRole("button", /^Folder:/).tap();
     await screen.getByRole("option", new RegExp(`^${organization.folder || "default"}(?: Selected)?$`)).tap();
-    await screen.getByRole("button", /^Runs for up to:/).tap();
+    await screen.getByRole("button", "Options settings", { exact: true }).tap();
+    await screen.getByRole("button", /^Stops after:/).tap();
     await screen.getByRole("option", "1 hour").tap();
     await screen.getByRole("button", "Launch", { exact: true }).tap();
     await expect(browser).toHaveURL(/\/sandboxes\/[0-9a-f-]+$/);
@@ -47,10 +52,11 @@ for (const organization of [
   });
 }
 
-test("Acme: an agent without an account cannot launch", { session: "alice" }, async ({ app, screen }) => {
+test("Acme: an agent without an account cannot launch a task", { session: "alice" }, async ({ app, screen }) => {
   await app.open("/sandboxes");
-  await screen.getByRole("button", "Launch a sandbox").tap();
-  await screen.getByRole("button", /^Agent settings:/).tap();
+  await screen.getByRole("button", "Launch a sandbox", { exact: true }).first().tap();
+  await screen.getByLabel("Task", { exact: true }).fill("Review the fixture");
+  await screen.getByRole("button", "Agent settings", { exact: true }).tap();
   await screen.getByRole("button", /^Agent:/).tap();
   await screen.getByRole("option", "Codex", { exact: true }).tap();
   await expect(screen.getByRole("button", "Launch", { exact: true })).toBeDisabled();
@@ -59,7 +65,8 @@ test("Acme: an agent without an account cannot launch", { session: "alice" }, as
 
 test("Large: a full account cannot be selected", { session: "large" }, async ({ app, screen, browser }) => {
   await app.open("/sandboxes");
-  await screen.getByRole("button", "Launch a sandbox").tap();
+  await screen.getByRole("button", "Launch a sandbox", { exact: true }).first().tap();
+  await screen.getByRole("button", "Agent settings", { exact: true }).tap();
   await screen.getByRole("button", /^Account:/).tap();
   const limited = browser.locator("[cmdk-group]").filter({ hasText: "model-account-0-international" });
   await expect(limited.getByRole("option").first()).toHaveAttribute("aria-disabled", "true");
@@ -68,11 +75,13 @@ test("Large: a full account cannot be selected", { session: "large" }, async ({ 
 
 test("Large: launch on the online Docker host", { session: "large" }, async ({ app, screen, browser }) => {
   await app.open("/sandboxes");
-  await screen.getByRole("button", "Launch a sandbox").tap();
-  await screen.getByRole("button", /^Starts from:/).tap();
-  await screen.getByPlaceholder("Search starts from").fill("Empty machine");
+  await screen.getByRole("button", "Launch a sandbox", { exact: true }).first().tap();
+  await screen.getByRole("button", "From settings", { exact: true }).tap();
+  await screen.getByRole("button", /^From:/).tap();
+  await screen.getByPlaceholder("Search from").fill("Empty machine");
   await screen.getByRole("option", /^Empty machine · Large platform/).tap();
   await screen.getByLabel("Task").fill("Inspect the Docker fixture");
+  await screen.getByRole("button", "Agent settings", { exact: true }).tap();
   await screen.getByRole("button", /^Account:/).tap();
   await screen
     .getByRole("option", /Claude Opus/, { disabled: false })
@@ -94,7 +103,7 @@ test("Large: launch on the online Docker host", { session: "large" }, async ({ a
 
 test("Acme: a disconnected tool cannot be selected", { session: "alice" }, async ({ app, screen }) => {
   await app.open("/sandboxes");
-  await screen.getByRole("button", "Launch a sandbox").tap();
-  await screen.getByRole("button", /^Tools/).tap();
+  await screen.getByRole("button", "Launch a sandbox", { exact: true }).first().tap();
+  await screen.getByRole("button", "Options settings", { exact: true }).tap();
   await expect(screen.getByRole("checkbox", "Acme Sentry")).toBeDisabled();
 });
