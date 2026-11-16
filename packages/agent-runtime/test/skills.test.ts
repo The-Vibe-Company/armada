@@ -32,7 +32,7 @@ const id=ref.includes('/')?'catalog:catalog':workspace;lock.workspaces[id]??={ap
 lock.workspaces[id].skills[slug]={version,pinned:version,...(ref.includes('/')?{catalogReference:ref}:{}),skillId:'22222222-2222-4222-8222-222222222222',checksum:'sha256:'+'b'.repeat(64),targets:[{tool,version,packageChecksum:'sha256:'+'b'.repeat(64)}]};fs.writeFileSync(lockpath,JSON.stringify(lock));console.log(JSON.stringify({installed:true}));
 `;
   await writeFile(join(bin, "skillpack"), cli, { mode: 0o755 });
-  const journal = new Journal(join(root, "journal"), (v) => v),
+  const journal = new Journal(":memory:", (v) => v),
     grant = { sandboxId: "skills", generation: "1", token: "a".repeat(32), expiresAt: Date.now() + 60000 };
   let starts = 0;
   const runner = new Runner(
