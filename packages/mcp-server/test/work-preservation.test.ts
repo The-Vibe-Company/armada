@@ -5,7 +5,7 @@ import { createSqlData } from "../src/data.ts";
 import { preserveBeforeStop } from "../src/work-preservation.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { bunLikeSql, database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { bunLikeSql, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
@@ -14,7 +14,7 @@ const sharedDatabase = rowOnlyDatabase();
 test("recovery receipts retain encrypted versions and only current interior owners/admins can retrieve them", async () => {
   const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
   process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
-  const { db, people } = await database();
+  const { db, people } = await sharedDatabase();
   try {
     const sql = bunLikeSql(db);
     const id = crypto.randomUUID();
@@ -113,7 +113,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
       await db.exec("reset role");
     }
   } finally {
-    await db.close();
+    await db.exec("reset role; reset all; set search_path=public");
     if (oldKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
     else process.env.ARMADA_ENCRYPTION_KEY = oldKey;
   }
@@ -124,7 +124,7 @@ test("recovery receipts retain encrypted versions and only current interior owne
 test.each(["observe", "quiesce", "capture", "known_capture"])(
   "the stop deadline fences late %s work",
   async (stage) => {
-    const { db, people } = await database();
+    const { db, people } = await sharedDatabase();
     const originalTimeout = globalThis.setTimeout;
     try {
       const sql = bunLikeSql(db);
@@ -231,22 +231,21 @@ test.each(["observe", "quiesce", "capture", "known_capture"])(
       expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(0);
     } finally {
       globalThis.setTimeout = originalTimeout;
-      await db.close();
+      await db.exec("reset role; reset all; set search_path=public");
     }
   },
 );
 
 async function withPreservationRow(
   work: (fixture: {
-    db: Awaited<ReturnType<typeof database>>["db"];
+    db: Awaited<ReturnType<typeof sharedDatabase>>["db"];
     sql: ReturnType<typeof bunLikeSql>;
     id: string;
     boat: ReturnType<typeof fakeBoat>;
     provider: ReturnType<typeof fakeBoat>["provider"];
   }) => Promise<void>,
-  { isolated = false } = {},
 ) {
-  const { db, people } = await (isolated ? database() : sharedDatabase());
+  const { db, people } = await sharedDatabase();
   try {
     const id = crypto.randomUUID();
     const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
@@ -270,7 +269,7 @@ async function withPreservationRow(
     };
     await work({ db, id, boat, provider, sql: bunLikeSql(db) });
   } finally {
-    if (isolated) await db.close();
+    await db.exec("reset role; reset all; set search_path=public");
   }
 }
 
@@ -436,22 +435,19 @@ test("a fresh stop epoch does not reuse an earlier clean capture", async () => {
 });
 
 test("a user JWT cannot forge stop receipts or write application-secret taint", async () => {
-  await withPreservationRow(
-    async ({ db }) => {
-      await db.exec("set role authenticated");
-      try {
-        await expect(db.query("insert into sandboxes(preservation_stop_generation) values(1)")).rejects.toThrow(
-          "permission denied",
-        );
-        await expect(db.query("update sandboxes set application_secret_tainted=true")).rejects.toThrow(
-          "permission denied",
-        );
-      } finally {
-        await db.exec("reset role");
-      }
-    },
-    { isolated: true },
-  );
+  await withPreservationRow(async ({ db }) => {
+    await db.exec("set role authenticated");
+    try {
+      await expect(db.query("insert into sandboxes(preservation_stop_generation) values(1)")).rejects.toThrow(
+        "permission denied",
+      );
+      await expect(db.query("update sandboxes set application_secret_tainted=true")).rejects.toThrow(
+        "permission denied",
+      );
+    } finally {
+      await db.exec("reset role");
+    }
+  });
 });
 
 test("an unavailable receipt lookup defers stop without provider work", async () => {

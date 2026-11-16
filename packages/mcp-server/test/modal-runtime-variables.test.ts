@@ -17,19 +17,18 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { readRuntimeVariables, runtimeConfigurationWithVariables } from "../src/runtime-readable-variables.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
 // Real template claims/manifests and HTTP authorization; only physical compute is fake.
 async function fixture(
-  isolated = false,
   harness: "codex" | "claude" = "codex",
   provider: "boat" | "modal" = "modal",
   idle = false,
   entry: "explicit" | "ordinary" | "default" = "explicit",
 ) {
-  const { db, people } = await (isolated ? database() : sharedDatabase());
+  const { db, people } = await sharedDatabase();
   const sql: Sql = { query: (q, v) => db.query(q, v), transaction: (work) => db.transaction((tx) => work(tx)) };
   const templates = createTemplateService(sql, ENCRYPTION_KEY);
   const application = createApplicationVault(sql, ENCRYPTION_KEY);
@@ -252,7 +251,7 @@ async function fixture(
 
 for (const entry of ["explicit", "default"] as const)
   test(`${entry} Modal template freezes variables and original runtime receipt across claim replay`, async () => {
-    const f = await fixture(false, "claude", "modal", false, entry);
+    const f = await fixture("claude", "modal", false, entry);
     const discovery = await f.api({}, "launch/options");
     expect(await discovery.json()).toMatchObject({
       modalRuntime: { variablesVersion: 1, defaultPath: entry === "default" ? "runtime" : "native" },
@@ -341,9 +340,9 @@ test("Modal template selection rejects secrets, foreign provider/harness, invali
 test.each(["modal", "boat"] as const)(
   "frozen %s environment rejects reserved keys and secret manifests even if internal storage is corrupted",
   async (provider) => {
-    // This test deliberately bypasses an immutable-row trigger in an isolated DB;
-    // settings/trigger mutations must never use the row-only shared fixture.
-    const f = await fixture(true, "codex", provider);
+    // Bypass the immutable-row trigger only while corrupting the fixture;
+    // restore replication settings before invoking the reader.
+    const f = await fixture("codex", provider);
     try {
       const template = await f.create();
       const response = await f.api(f.request(template.id));
@@ -389,7 +388,7 @@ test.each(["modal", "boat"] as const)(
         });
       }
     } finally {
-      await f.db.close();
+      await f.db.exec("reset role; reset all; set search_path=public");
     }
   },
 );
@@ -414,7 +413,7 @@ test("native template replay cannot adopt an enrolled request key", async () => 
 });
 
 test("promptless Modal template freezes its manifest and replays the empty launch without inference", async () => {
-  const f = await fixture(false, "claude", "modal", true);
+  const f = await fixture("claude", "modal", true);
   const template = await f.create();
   const { prompt: _prompt, ...request } = f.request(template.id);
   const send = f.options.runtimeSend;
@@ -458,7 +457,7 @@ test("promptless Modal template freezes its manifest and replays the empty launc
 
 for (const harness of ["codex", "claude"] as const)
   test(`Boat runtime template privately freezes readable variables (${harness})`, async () => {
-    const f = await fixture(false, harness, "boat");
+    const f = await fixture(harness, "boat");
     const template = await f.create();
     const request = f.request(template.id);
     const first = await f.api(request);
@@ -483,7 +482,7 @@ for (const harness of ["codex", "claude"] as const)
 
 for (const provider of ["boat", "modal"] as const)
   test(`${provider} runtime default refuses application secrets before allocation`, async () => {
-    const f = await fixture(false, "codex", provider, false, provider === "modal" ? "default" : "explicit");
+    const f = await fixture("codex", provider, false, provider === "modal" ? "default" : "explicit");
     const secret = (
       await f.db.query<{ id: string }>(
         "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
@@ -502,7 +501,7 @@ for (const provider of ["boat", "modal"] as const)
   });
 
 test("ordinary completed native template replay stays native after coordinator default selection", async () => {
-  const f = await fixture(false, "codex", "modal", false, "ordinary");
+  const f = await fixture("codex", "modal", false, "ordinary");
   const template = await f.create({ ...f.definition, variables: [] });
   const request = f.request(template.id);
   const first = await f.api(request);

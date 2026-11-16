@@ -35,7 +35,13 @@ still use `--revision` and `--expected-revision`).
 
 In **Routines**, choose **New routine** to schedule a task from a template.
 It keeps the template as it is at creation; later template versions do not update
-the routine. Routines cannot be edited: switch one on or off, or create a replacement.
+the routine. To edit it, use `armada routine update NAME|ID --expected-version N`:
+`--file config.json` replaces all mutable configuration (including name), while
+`--cron EXPRESSION --timezone IANA_ZONE` changes the schedule and retains the
+other fields. Copy the current version from `routine show` or `routine list`;
+conflicts are not retried. Updating an enabled routine selects its next matching
+occurrence. Enable/pause control new scheduled admissions; pause/delete do not
+stop already admitted runs. See `armada routine --help` for the complete JSON fields.
 
 ## 1. Install the CLI
 
@@ -234,7 +240,7 @@ armada creds limits ACCOUNT_UUID --max-agents 2
 ```
 
 Replace `ACCOUNT_UUID` with the ID returned by list. The same Morph account supports
-Claude Code and Codex, not OpenCode. On a Modal snapshot, choose it explicitly:
+Claude Code, Codex and OpenCode. On a Modal snapshot, choose it explicitly:
 
 ```sh
 armada launch first-modal --org my-team --provider modal --agent codex   --credential-id ACCOUNT_UUID --model morph-kimik31 "Summarize the repositories"
@@ -556,8 +562,8 @@ invocation retains its existing behavior.
 ### Script output, errors and exit codes
 
 Check a command's exit status before using its stdout. Exit `0` means the
-command succeeded; `1` covers authentication/server/operation failures and `2`
-covers usage or missing configuration. For example, an intentionally unknown
+command succeeded; `1` covers server/operation failures, `2` covers usage or
+missing configuration, and `3` means authentication is required. For example, an intentionally unknown
 command exits `2`, including when `--json` is requested. A pipeline's final
 parser status alone does not prove that Armada succeeded.
 
@@ -593,3 +599,10 @@ Do not adapt this into logging raw values: `vars read`, token creation and
 installer output can be sensitive. Never put credential values in arguments.
 For an uncertain launch outcome, inspect existing sandbox/receipt state before
 retrying; template launches must preserve their original request key and body.
+
+JSON selection commands return `{"org":<organization>}` when selecting and
+`{"org":null}` when clearing with `org use none --json`. Login and logout
+accept `--json` and return `{"authenticated":true|false}`. Host mutations
+accept `--json`: limits and retention return the host ID and requested policy,
+revoke returns the host ID and `revoked:true`, and add returns the registration
+receipt without waiting for check-in. Protect that short-lived installer receipt.

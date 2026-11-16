@@ -135,6 +135,7 @@ async function fixture() {
     env: { ARMADA_URL: "https://armada.test" },
     preferences: filePreferences(path),
     session: memorySessionStore({
+      armadaUrl: "https://armada.test",
       accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: me })).replace(/=+$/, "")}.sig`,
       refreshToken: "fixture",
       expiresAt: "2099-01-01T00:00:00Z",
@@ -167,6 +168,7 @@ async function fixture() {
     seed,
     async setActor(userId: string) {
       await auth.session.write({
+        armadaUrl: "https://armada.test",
         accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
         refreshToken: "fixture",
         expiresAt: "2099-01-01T00:00:00Z",

@@ -1,3 +1,5 @@
+import { describeNativeFailure } from "@armada/core";
+
 export type FailureHelp = {
   title: string;
   hint: string;
@@ -28,10 +30,6 @@ const HELP: Record<string, FailureHelp> = {
   },
   usage_limit: USAGE,
   payment_required: USAGE,
-  rate_limited: {
-    title: "Provider limit reached",
-    hint: "The provider account reached a rate or plan limit. Check its limits and wait until the provider says another attempt is available.",
-  },
   credential_refused: AUTH,
   provider_unavailable: {
     title: "Provider unavailable",
@@ -57,5 +55,5 @@ const HELP: Record<string, FailureHelp> = {
 /** A clear message for the reasons an agent or a call fails with. Unknown reasons have none: show them as they are. */
 export function describeFailure(reason: string | null | undefined): FailureHelp | null {
   if (!reason) return null;
-  return HELP[reason] ?? null;
+  return describeNativeFailure(reason) ?? HELP[reason] ?? null;
 }

@@ -1,5 +1,6 @@
 import type { Harness } from "./contract.ts";
 import type { CredentialKind } from "./database.types.ts";
+import { DOCKER_DISK_FLOOR_MESSAGE } from "./docker-disk-policy.ts";
 import { GITHUB_CALLER_NOT_CONNECTED } from "./github.ts";
 import type { GitHubLaunchInfo } from "./launch.ts";
 import type { MachineSize, MachineSizeEvidence } from "./machine-size.ts";
@@ -38,6 +39,8 @@ export interface DockerHostSummary {
   retentionSeconds?: number | null;
   retentionOverrideSeconds?: number | null;
   nextCleanupAt?: string | null;
+  /** Available bytes on the Docker data filesystem; absent/null on older or unreadable hosts. */
+  diskFreeBytes?: number | null;
   limitsSupported?: boolean;
   /** Retained sandboxes, including stopped/failed, excluding deleted. */
   sandboxes: number;
@@ -132,13 +135,14 @@ export interface LaunchOptionsResponse {
 }
 
 /** Why a host reports a failed machine operation, when the person can act on it (#1507). */
-export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable", "snapshot_build_failed"] as const;
+export const DOCKER_JOB_FAILURE_REASONS = ["image_unavailable", "snapshot_build_failed", "disk_full"] as const;
 export type DockerJobFailureReason = (typeof DOCKER_JOB_FAILURE_REASONS)[number];
 /** What a sandbox and its launch say when its host could not fetch the image. */
 export const DOCKER_IMAGE_UNAVAILABLE_MESSAGE =
   "Your host could not fetch the image. Check that the image exists and that the host can reach its registry, then launch again.";
 /** Public diagnostics for admitted launch preparation; never derive these from command output. */
 export const DOCKER_LAUNCH_FAILURE_MESSAGES = {
+  disk: DOCKER_DISK_FLOOR_MESSAGE,
   startup: "Docker sandbox startup failed. Check the host and retry with a new request.",
   github:
     "Repository authorization failed. Connect GitHub and grant access to the requested repositories, then launch again.",

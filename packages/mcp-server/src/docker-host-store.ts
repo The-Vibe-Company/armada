@@ -2,11 +2,12 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerHostSummary,
   type DockerJobFailureReason,
   type Sql,
 } from "@armada/core";
-import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { decryptSecret, encryptSecret, VaultError } from "@armada/core/server";
 import {
   type BootstrapDescriptor,
   canonicalDockerHostJob,
@@ -75,6 +76,12 @@ export class DockerHostDenied extends Error {
     this.name = "DockerHostDenied";
   }
 }
+export class DockerHostUnavailable extends Error {
+  constructor(cause: unknown) {
+    super("Docker host unavailable", { cause });
+    this.name = "DockerHostUnavailable";
+  }
+}
 function deny(): never {
   throw new DockerHostDenied();
 }
@@ -105,11 +112,17 @@ function input(job: Job): string {
 export function createDockerHostStore(sql: Sql, key: string) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
     try {
-      if (!sql.transaction) deny();
+      if (!sql.transaction) throw new Error("Docker host store requires transactions");
       return await sql.transaction(work);
     } catch (error) {
-      if (error instanceof DockerHostFull || error instanceof DockerLimitsRefused) throw error;
-      return deny();
+      if (
+        error instanceof DockerHostDenied ||
+        error instanceof DockerHostFull ||
+        error instanceof DockerLimitsRefused ||
+        error instanceof VaultError
+      )
+        throw error;
+      throw new DockerHostUnavailable(error);
     }
   }
   async function admin(tx: Sql, actor: Actor) {
@@ -169,7 +182,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     };
     await tx.query(
       `insert into public.docker_host_jobs(request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation,snapshot_id)
-       values($1,$2,$3,$4,$5,$6,$7,$8) on conflict(request_id) do nothing`,
+       values($1,$2,$3,$4,$5,$6,$7,$8) on conflict do nothing`,
       [
         job.requestId,
         hostId,
@@ -317,9 +330,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
        lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
       [
         row.id,
-        reason === "image_unavailable" && operation === "create"
-          ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
-          : "Docker sandbox startup failed.",
+        reason === "disk_full"
+          ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
+          : reason === "image_unavailable" && operation === "create"
+            ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
+            : "Docker sandbox startup failed.",
       ],
     );
   }
@@ -356,6 +371,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           retention_seconds: number | null;
           reported_retention_seconds: number | null;
           next_cleanup_at: Date | string | null;
+          disk_free_bytes: number | string | null;
         }>(
           `select h.id,
             case when h.revoked_at is not null then 'revoked'
@@ -364,7 +380,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
+            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.disk_free_bytes,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -390,6 +406,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               throw error;
             }
           })(),
+          diskFreeBytes: host.disk_free_bytes == null ? null : Number(host.disk_free_bytes),
           retentionSeconds: host.reported_retention_seconds ?? null,
           retentionOverrideSeconds: host.retention_seconds ?? null,
           nextCleanupAt: host.next_cleanup_at == null ? null : new Date(host.next_cleanup_at).toISOString(),
@@ -859,6 +876,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       skipSnapshots = false,
       resources?: DockerHostResources,
       resourcePolicyVersion?: 1,
+      diskFreeBytes?: number | null,
     ): Promise<Job | null> {
       return transaction(async (tx) => {
         // Cleanup bypasses queued startup/snapshot work; already executing native work remains serial.
@@ -873,8 +891,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         ).rows[0];
         const host = await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
         await tx.query(
-          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null where id=$1`,
-          [host.id, version ?? null, resourcePolicyVersion ?? null],
+          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4 where id=$1`,
+          [host.id, version ?? null, resourcePolicyVersion ?? null, diskFreeBytes ?? null],
         );
         if (resources) {
           await tx.query(
@@ -947,7 +965,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
             const job = await readJob(row);
             if (job.operation !== "buildSnapshot") deny();
             await authorizeSnapshotBuild(tx, host.id, installationId, job);
-          } catch {
+          } catch (error) {
+            if (!(error instanceof DockerHostDenied) && !(error instanceof VaultError && error.code === "forbidden"))
+              throw error;
             await tx.query(
               "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build authorization is no longer valid.' where id=$1 and status='building'",
               [row.snapshot_id],
@@ -1102,7 +1122,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
               try {
                 await authorizeSnapshotBuild(tx, host.id, installationId, parsed);
                 eligible = true;
-              } catch {}
+              } catch (error) {
+                if (!(error instanceof VaultError && error.code === "forbidden")) throw error;
+              }
             }
             await tx.query(
               "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4 where id=$1 and status='building'",
@@ -1114,7 +1136,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
                   ? null
                   : result.outcome === "completed"
                     ? "Snapshot build authorization is no longer valid."
-                    : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
+                    : result.reason === "disk_full"
+                      ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
+                      : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
               ],
             );
           }

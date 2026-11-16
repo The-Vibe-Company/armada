@@ -7,6 +7,16 @@ export type { GitHubRuntimeConfiguration as GitHubBrokerConfiguration } from "@a
 
 import type { GitHubRuntimeConfiguration as GitHubBrokerConfiguration } from "@armada/core";
 
+const acquisitionFailures = [
+  "github_credentials_denied",
+  "github_credentials_unavailable",
+  "github_credentials_http_denied",
+  "github_credentials_http_unavailable",
+  "github_credentials_oversized",
+  "github_credentials_invalid_json",
+  "github_credentials_invalid_token",
+] as const;
+
 /** GitHub-only capability. No vault, refresh-token, provider or model operations. */
 export class GitHubBroker {
   private configuration: GitHubBrokerConfiguration | undefined;
@@ -91,14 +101,27 @@ export class GitHubBroker {
         headers: { "content-type": "application/json", authorization: `Bearer ${configuration.capability}` },
         body: JSON.stringify({ version: 1, repository, operation }),
       });
-      if (!response.ok) throw Error("denied");
+      if (!response.ok)
+        throw Error(
+          response.status === 401 || response.status === 403
+            ? "github_credentials_http_denied"
+            : "github_credentials_http_unavailable",
+        );
       const body = await response.text();
-      if (body.length > 16384) throw Error("oversized");
-      token = (JSON.parse(body) as { token?: unknown }).token;
+      if (body.length > 16384) throw Error("github_credentials_oversized");
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        throw Error("github_credentials_invalid_json");
+      }
+      token = parsed && typeof parsed === "object" ? (parsed as { token?: unknown }).token : undefined;
       if (typeof token !== "string" || !token.length || token.length > 8192 || !/^[\x21-\x7e]+$/.test(token))
-        throw Error("invalid");
+        throw Error("github_credentials_invalid_token");
       this.remember([token]);
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && acquisitionFailures.some((code) => code === error.message))
+        throw Error(error.message);
       // HTTP diagnostics can contain credentials. Never propagate body, cause or error text.
       throw Error("github_credentials_unavailable");
     }
@@ -205,8 +228,12 @@ export class GitHubBroker {
           };
           const token = await this.acquire(value.repository, value.operation);
           return Response.json({ token }, { headers: { "cache-control": "no-store" } });
-        } catch {
-          return new Response(null, { status: 403 });
+        } catch (error) {
+          const code =
+            error instanceof Error && acquisitionFailures.some((code) => code === error.message)
+              ? error.message
+              : "github_credentials_denied";
+          return Response.json({ error: code }, { status: 403, headers: { "cache-control": "no-store" } });
         }
       },
     });

@@ -546,6 +546,7 @@ export type Database = {
           retention_seconds: number | null;
           reported_retention_seconds: number | null;
           next_cleanup_at: string | null;
+          disk_free_bytes: number | null;
         };
         Insert: {
           id: string;
@@ -572,6 +573,7 @@ export type Database = {
           retention_seconds?: number | null;
           reported_retention_seconds?: number | null;
           next_cleanup_at?: string | null;
+          disk_free_bytes?: number | null;
         };
         Update: {
           id?: string;
@@ -598,6 +600,7 @@ export type Database = {
           retention_seconds?: number | null;
           reported_retention_seconds?: number | null;
           next_cleanup_at?: string | null;
+          disk_free_bytes?: number | null;
         };
         Relationships: [
           {
@@ -3169,6 +3172,7 @@ export type Database = {
           response: Json | null;
           created_at: string;
           authority: Json | null;
+          failure: Json | null;
         };
         Insert: {
           id: string;
@@ -3179,6 +3183,7 @@ export type Database = {
           response?: Json | null;
           created_at?: string;
           authority?: Json | null;
+          failure?: Json | null;
         };
         Update: {
           id?: string;
@@ -3189,6 +3194,7 @@ export type Database = {
           response?: Json | null;
           created_at?: string;
           authority?: Json | null;
+          failure?: Json | null;
         };
         Relationships: [
           {

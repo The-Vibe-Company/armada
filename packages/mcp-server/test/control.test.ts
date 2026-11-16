@@ -24,7 +24,6 @@ import { createSkillDefaultsService, createSqlVaultStore } from "@armada/core/se
 import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
 import { AppService } from "modal";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { createCredentialBindingRecovery } from "../src/credential-binding-recovery.ts";
@@ -559,6 +558,7 @@ describe("armada org and armada creds against the control API", () => {
         now: () => new Date(),
         open: () => undefined,
         session: memorySessionStore({
+          armadaUrl: "https://armada.test",
           userId: STAN,
           accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
           refreshToken: "r",
@@ -752,7 +752,7 @@ describe("armada org and armada creds against the control API", () => {
       expect((await lost.run(["org", "list"])).err).toContain("Armada could not reach the server.");
       const refused = cli(STAN, { token: "revoked" });
       const result = await refused.run(["org", "list"]);
-      expect(result.code).toBe(1);
+      expect(result.code).toBe(3);
       expect(result.err).toContain("You are not signed in. Run armada login.");
     });
   });
@@ -1029,7 +1029,7 @@ describe("control API", () => {
 
   for (const repo of [undefined, "ACME/web"]) {
     test(`sandbox/launch uses scoped credentials and forwards repo (${repo ?? "omitted"})`, async () => {
-      const isolatedDb = await openMigratedDatabase();
+      const launchDb = await controlDatabase();
       const runLaunch = async ({ db, options }: Parameters<Parameters<typeof withServer>[0]>[0]) => {
         const org = (await options.store.createOrg("Launch", STAN)).id;
         options.authStore.addMembership(STAN, { orgId: org, name: "Launch", role: "admin" });
@@ -1119,9 +1119,9 @@ describe("control API", () => {
         expect(text).not.toContain("server-only-model-token");
       };
       try {
-        await withServer(runLaunch, isolatedDb);
+        await withServer(runLaunch, launchDb);
       } finally {
-        await isolatedDb.close();
+        await launchDb.exec("reset role; reset all; set search_path=public");
       }
     });
   }
@@ -1429,9 +1429,8 @@ async function withServer(
   }) => Promise<void>,
   callerDb?: PGlite,
 ): Promise<void> {
-  // Ordinary control cases use one raw migrated connection. rowOnlyConnection
-  // resets its rows before each fixture and owns closing it after the suite;
-  // callers supplying an isolated connection retain ownership of its close.
+  // All control cases share one file-owned engine. A supplied connection has
+  // already reset its rows; the caller restores any changed session identity.
   const db = callerDb ?? (await controlDatabase());
   try {
     await db.query("insert into auth.users (id, email) values ($1, 'stan@example.com'), ($2, 'ada@example.com')", [
@@ -1498,6 +1497,7 @@ async function withServer(
                     accessToken:
                       opts.token ??
                       `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
+                    armadaUrl: opts.armadaUrl === false ? "https://missing.armada.test" : "https://armada.test",
                     refreshToken: "refresh",
                     expiresAt: "2099-01-01T00:00:00.000Z",
                     supabaseUrl: "https://supabase.test",

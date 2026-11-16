@@ -76,7 +76,6 @@ test("private native resume verifies the persisted session without prompt/events
 
 // Owns admission serialization, not native continuity proof (the subprocess test does).
 test("native verification serializes prompts, epoch mutation and checkpoint even when a driver fails synchronously", async () => {
-  const root = await mkdtemp(join(tmpdir(), "armada-native-resume-race-"));
   const journal = new Journal(":memory:", (s) => s);
   let fail = true,
     release!: () => void,
@@ -157,13 +156,11 @@ test("native verification serializes prompts, epoch mutation and checkpoint even
   } finally {
     release?.();
     journal.close();
-    await rm(root, { recursive: true, force: true });
   }
 });
 
 // Actual604 RunnerExecutionOptions ABI: synchronous redactor refresh and async private publication.
 test("native no-text ACK preserves actual credential lifecycle hooks and refuses failed publication", async () => {
-  const root = await mkdtemp(join(tmpdir(), "armada-resume-auth-"));
   const journal = new Journal(":memory:", (s) => s);
   const order: string[] = [];
   let fail = false;
@@ -226,7 +223,6 @@ test("native no-text ACK preserves actual credential lifecycle hooks and refuses
     expect(await (await resume()).json()).toEqual({ error: "native_auth_state_unacknowledged" });
   } finally {
     journal.close();
-    await rm(root, { recursive: true, force: true });
   }
 });
 

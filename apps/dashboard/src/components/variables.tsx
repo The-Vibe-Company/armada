@@ -13,7 +13,7 @@ import {
   UserIcon,
   UsersIcon,
 } from "lucide-react";
-import { type ReactNode, useActionState, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
 import {
   addVaultItem,
   deleteVaultItem,
@@ -44,6 +44,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { useMutationState } from "@/components/use-mutation-state";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import { cn } from "@/lib/utils";
@@ -159,7 +160,7 @@ function AddVaultForm({
   isAdmin: boolean;
   onDone: (message: string) => void;
 }) {
-  const [state, formAction] = useActionState(addVaultItem, null);
+  const [state, formAction] = useMutationState(addVaultItem);
   const formRef = usePreservedActionForm();
   const [kind, setKind] = useState<VaultKind>("variable");
   const [scope, setScope] = useState<VaultScope>("personal");
@@ -594,7 +595,7 @@ function useDialogAction(action: Action, { onResult, onOpenChange }: Pick<Contro
     },
     [action, onResult, onOpenChange],
   );
-  const [state, formAction] = useActionState(run, null);
+  const [state, formAction] = useMutationState(run);
   return [state, formAction] as const;
 }
 

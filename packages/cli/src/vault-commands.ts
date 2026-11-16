@@ -52,7 +52,7 @@ export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<
       const ref = one(args.positionals, "armada org use <name|UUID|none>");
       if (ref === "none") {
         await preferences.write(origin, undefined);
-        io.auth.out("Organization selection cleared.\n");
+        io.auth.out(flag(args, "--json") ? '{"org":null}\n' : "Organization selection cleared.\n");
         return 0;
       }
       const { orgs } = await control<{ orgs: OrgSummary[] }>(io.auth, "org/list", {});
