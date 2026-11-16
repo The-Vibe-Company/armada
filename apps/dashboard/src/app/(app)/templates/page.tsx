@@ -2,18 +2,14 @@ import { MODEL_CATALOG } from "@armada/core";
 import { CircleAlertIcon, InfoIcon, LayoutTemplateIcon, TriangleAlertIcon, UserIcon, UsersIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { CatalogBrowser } from "@/components/catalog-browser";
+import { CatalogHarnessMark } from "@/components/catalog-harness-mark";
 import { CreatedAt } from "@/components/created-at";
 import { IngredientLink } from "@/components/ingredient-link";
 import { Empty, PageHeader } from "@/components/page-header";
-import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
+import type { ResourceRow } from "@/components/resource-browser";
 import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
-import {
-  CreateTemplateDialog,
-  NoSecretsNote,
-  TemplateLaunchDialog,
-  TemplateManage,
-  TemplateMark,
-} from "@/components/templates";
+import { CreateTemplateDialog, NoSecretsNote, TemplateLaunchDialog, TemplateManage } from "@/components/templates";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { listSelectedConnections } from "@/lib/data/connections";
@@ -149,7 +145,7 @@ export default async function TemplatesPage({ searchParams }: Props) {
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
 
   return (
-    <ResourceBrowser
+    <CatalogBrowser
       title={TITLE}
       description={DESCRIPTION}
       meta={rows.length > 0 ? rows.length : undefined}
@@ -389,7 +385,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
     tie: item.id,
     bucket: state.bucket,
     search: [item.name, item.scope, environment ?? "", definition ? agentSummary(definition) : ""].join(" "),
-    mark: <TemplateMark />,
+    mark: definition ? <CatalogHarnessMark harness={definition.harness} /> : undefined,
     tags: (
       <RowTag>
         {item.scope === "personal" ? <UserIcon aria-hidden /> : <UsersIcon aria-hidden />}

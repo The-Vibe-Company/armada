@@ -1,9 +1,10 @@
 import { CircleAlertIcon, CircleCheckIcon, InfoIcon, PlugIcon, UserIcon, UsersIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { CatalogBrowser } from "@/components/catalog-browser";
 import { AddServerDialog, ServiceCatalog, ServiceMark, ToolPanel, ToolRowAction } from "@/components/connections";
 import { Empty, PageHeader } from "@/components/page-header";
-import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
+import type { ResourceRow } from "@/components/resource-browser";
 import { ResourceTags } from "@/components/resource-tags";
 import { RowTag, StateCell } from "@/components/state-cell";
 import { TemplateUsage } from "@/components/template-usage";
@@ -121,7 +122,7 @@ export default async function ToolsPage({ searchParams }: Props) {
 
   return (
     <div className="max-sm:[&_[data-connection]>div:first-child]:col-span-full max-sm:[&_[data-connection]>div:nth-child(2)]:col-span-full max-sm:[&_[data-connection]>div:last-child]:col-span-full max-sm:[&_[data-connection]>div:last-child]:col-start-1 max-sm:[&_[data-connection]>div:last-child]:row-start-3 max-sm:[&_[data-connection]>div:last-child]:row-span-1 max-sm:[&_[data-connection]>div:last-child]:justify-start">
-      <ResourceBrowser
+      <CatalogBrowser
         title={TITLE}
         description={DESCRIPTION}
         meta={list.connections.length > 0 ? list.connections.length : undefined}

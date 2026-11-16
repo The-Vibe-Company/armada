@@ -5,12 +5,11 @@ import { expect } from "e2e";
 for (const session of ["alice", "large"]) {
   test(`${session}: inspect a provider and configure an API account`, { session }, async ({ app, screen, browser }) => {
     await app.open("/harness");
-    const row = browser.locator("[data-account]").first();
     const toggle = browser.locator("[data-account] button[aria-expanded]").first();
     await toggle.tap();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
-    await expect(row.getByText("Status", { exact: true })).toBeVisible();
-    await toggle.tap();
+    await expect(screen.getByRole("dialog").getByText("Status", { exact: true })).toBeVisible();
+    await screen.getByRole("button", "Close details", { exact: true }).tap();
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await screen.getByRole("button", "Add account", { exact: true }).first().tap();
     const dialog = screen.getByRole("dialog", "Add provider");
@@ -43,11 +42,14 @@ for (const session of ["alice", "large"]) {
     const added = browser.locator('[data-account="Journey model connection"]');
     await expect(added).toBeVisible();
     await added.getByRole("button", /^Journey model connection/).tap();
-    await added.getByLabel("Display name").fill("Journey renamed connection");
-    await added.getByRole("button", "Save name", { exact: true }).tap();
+    await screen.getByRole("dialog").getByLabel("Display name").fill("Journey renamed connection");
+    await screen.getByRole("dialog").getByRole("button", "Save name", { exact: true }).tap();
     const renamed = browser.locator('[data-account="Journey renamed connection"]');
     await expect(renamed).toBeVisible();
-    await renamed.getByRole("button", /^More actions for/).tap();
+    await screen
+      .getByRole("dialog")
+      .getByRole("button", /^More actions for/)
+      .tap();
     await screen.getByRole("menuitem", "Remove", { exact: true }).tap();
     await screen.getByRole("button", "Remove account", { exact: true }).tap();
     await expect(renamed).toHaveCount(0);
@@ -89,13 +91,17 @@ test("long account names and subscription fallback fit a phone", { session: "ali
   const row = browser.locator(`[data-account="${name}"]`);
   await row.getByRole("button", new RegExp(`^${name}`)).tap();
   for (const action of ["Agent limit", "Rename", "Test connection", "Replace key", "Remove"]) {
-    await row.getByRole("button", /^More actions for/).tap();
+    await screen
+      .getByRole("dialog")
+      .getByRole("button", /^More actions for/)
+      .tap();
     await screen.getByRole("menuitem", action, { exact: true }).tap();
     await expect(screen.getByRole(action === "Remove" ? "alertdialog" : "dialog")).toBeVisible();
     await fits();
     if (action === "Remove") await screen.getByRole("button", "Cancel", { exact: true }).tap();
     else await screen.getByRole("button", "Close", { exact: true }).tap();
   }
+  await screen.getByRole("button", "Close details", { exact: true }).tap();
   for (const provider of ["Claude", "ChatGPT"]) {
     await screen.getByRole("button", "Add account", { exact: true }).first().tap();
     dialog = screen.getByRole("dialog", "Add provider");

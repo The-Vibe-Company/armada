@@ -3,13 +3,14 @@ import { CircleAlertIcon, RotateCwIcon, ServerIcon, TriangleAlertIcon } from "lu
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { CatalogBrowser } from "@/components/catalog-browser";
 import { CopyButton } from "@/components/copy-button";
 import { CreatedAt } from "@/components/created-at";
 import { AddHostDialog, HostLimitsDialog, HostMark, HostRetention, RevokeHost } from "@/components/docker-hosts";
 import { DockerLaunchDialog } from "@/components/docker-launch";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderConnection, type ProviderRowState } from "@/components/provider-connection";
-import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
+import type { ResourceRow } from "@/components/resource-browser";
 import { PanelSection, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -207,7 +208,7 @@ async function OwnServers({
   );
 
   return (
-    <ResourceBrowser
+    <CatalogBrowser
       title={TITLE}
       description={DESCRIPTION}
       label="Your own servers"
