@@ -80,9 +80,8 @@ export async function operation(
     if (requestId !== undefined) uuid(requestId, "--request-id");
     body.request_id = requestId?.toLowerCase() ?? crypto.randomUUID();
   }
-  let route: string;
   if (command === "list") Object.assign(body, sandboxListFilters(args));
-  route = `sandbox/${command}`;
+  const route = `sandbox/${command}`;
   const [id, ...rest] = args.positionals;
   if (command !== "list") {
     if (!id) throw new GoldenError("invalid_config", `armada ${command} needs a sandbox id.`);

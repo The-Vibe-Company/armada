@@ -464,7 +464,7 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   expect(result.expiresAt).toBe(result.sandbox.expiresAt as string);
   expect(result.sandbox.model).toBeString();
   expect(result.sandbox.reasoningEffort).toBeString();
-  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 2 });
+  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 4 });
   expect(JSON.stringify(f.jobs)).not.toContain(f.body.prompt);
   expect(JSON.stringify(f.jobs)).not.toContain(f.secret);
   expect(JSON.stringify(result)).not.toContain(f.secret);
@@ -503,7 +503,7 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   expect(replay.promptId).toBe(f.receipt.promptId);
   expect(replay.runtime).toEqual(result.runtime);
   expect(f.resolutions()).toBe(1);
-  expect((await counts(f))?.commands).toBe(2);
+  expect((await counts(f))?.commands).toBe(4);
 });
 
 test("unknown timeout and response loss survive restart and concurrent exact retries without rotating phase IDs", async () => {
@@ -552,7 +552,7 @@ test("unknown timeout and response loss survive restart and concurrent exact ret
   ]);
   expect(concurrent).toEqual(replay);
   expect(replay).toMatchObject({ promptId: f.receipt.promptId, conversationId: f.receipt.conversationId });
-  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 2 });
+  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 4 });
   expect(f.resolutions()).toBe(1);
   const after = (
     await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
@@ -707,7 +707,7 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
       .service(sql, true, 10_000, `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"b".repeat(64)}`)
       .launch(f.caller, body),
   ).toEqual(result);
-  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 1 });
+  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 3 });
 });
 
 test("normal publication uses the runtime epoch rather than the independent lifecycle generation", async () => {
@@ -810,7 +810,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
       input: expect.objectContaining({ text: f.body.prompt, model: "normal-http-model", reasoningEffort: "high" }),
     }),
   );
-  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 2 });
+  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 4 });
   expect(await post("sandbox/launch", body)).toEqual(launched);
   const session = f.session();
   if (!session) throw Error("Normal launch did not enrol a runtime");
@@ -1715,6 +1715,8 @@ test("Docker freezes versioned readable bindings and re-delivers them before the
   expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
     "health",
     "configureReadableVariables",
+    "health",
+    "configureMcp",
     "prompt",
   ]);
   expect(JSON.stringify(launched)).not.toContain(value);
@@ -1792,6 +1794,8 @@ test("Docker delivers value-free secret references through native environment an
   expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
     "health",
     "configureReadableVariables",
+    "health",
+    "configureMcp",
     "prompt",
   ]);
   expect(f.native[1]).toMatchObject({ variables: { APP_TOKEN: canary } });
@@ -1905,7 +1909,10 @@ test("Docker freezes org/personal skill defaults and MCP defaults, verifies rece
   expect(install).toMatchObject({ input: { references: ["catalog/org@1.0.0", "catalog/notes@2.0.0"] } });
   const configuration = native.find((request) => request.op === "configureMcp");
   if (configuration?.op !== "configureMcp") throw Error("missing native MCP configuration");
-  expect(Object.keys(configuration.configuration.servers)).toEqual([`armada_${remote.id.replaceAll("-", "_")}`]);
+  expect(Object.keys(configuration.configuration.servers)).toEqual([
+    `armada_${remote.id.replaceAll("-", "_")}`,
+    "armada_self",
+  ]);
   expect(native.indexOf(install!)).toBeLessThan(native.findIndex((request) => request.op === "prompt"));
   expect(native.indexOf(configuration)).toBeLessThan(native.findIndex((request) => request.op === "prompt"));
   const stored = (
@@ -2444,6 +2451,8 @@ test.each(["private", "org"] as const)(
       "health",
       "configureGitHub",
       "workspaceExec",
+      "health",
+      "configureMcp",
       "prompt",
     ]);
     const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
@@ -2561,7 +2570,7 @@ test.each([false, true])(
       expect(result.sandbox.status).toBe("running");
       expect(result.github.status).toBe("not_connected");
       const operations = (f.native as { op: string }[]).map((command) => command.op);
-      expect(operations).toEqual(["health", "workspaceExec", "prompt"]);
+      expect(operations).toEqual(["health", "workspaceExec", "health", "configureMcp", "prompt"]);
       const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
         (command) => command.op === "workspaceExec",
       );
@@ -2639,6 +2648,8 @@ test.each(["auth", "auth-deferred", "network"] as const)(
           "health",
           "configureGitHub",
           "workspaceExec",
+          "health",
+          "configureMcp",
           "prompt",
         ]);
       } else {

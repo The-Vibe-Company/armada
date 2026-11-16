@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import {
   createSqlMcpRegistry,
   createSqlSandboxStore,
@@ -9,14 +9,19 @@ import {
 } from "@armada/core/server";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { createSandboxChildren } from "../src/sandbox-access-children.ts";
+import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, SECRETS } from "./support.ts";
 
+let db: Awaited<ReturnType<typeof migratedDatabase>>;
+beforeAll(async () => {
+  db = await migratedDatabase();
+});
+
 // Primary contract: an ordinary parent obtains only delegated child authority;
 // no managed-orchestrator identity is needed, and checkpointing fails closed.
 test("ordinary sandbox opt-in bounds child admission and scrubs authority before stop without hiding the parent", async () => {
-  const db = await migratedDatabase();
   const people = { org: crypto.randomUUID(), owner: crypto.randomUUID(), admin: crypto.randomUUID() };
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
@@ -109,6 +114,13 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
     expect((await db.query("select id from orchestrators")).rows).toHaveLength(0);
     expect((await db.query("select id from sandboxes where id=$1", [saved.id])).rows).toHaveLength(1);
     const authority = new DelegatedAuthority(sql, async () => {});
+    // Completion is self-only: stop scope may not select a child or unrelated target.
+    expect(await authority.admit(token, { method: "finish" }, async (_tx, principal) => principal.ownerId)).toBe(
+      people.owner,
+    );
+    await expect(authority.admit(token, { method: "finish", childId: saved.id }, async () => true)).rejects.toThrow(
+      "denied",
+    );
     let allocations = 0;
     const children = createSandboxChildren(sql, authority, {
       launch: async () => {
@@ -187,6 +199,43 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
       (await db.query<{ conversation_ids: string[] }>("select conversation_ids from sandboxes where id=$1", [saved.id]))
         .rows[0]?.conversation_ids,
     ).toEqual(["remembered-conversation"]);
+    const services = createSandboxAccessServices({
+      sql,
+      encryptionKey: ENCRYPTION_KEY,
+      scopedMcpUrl: PUBLIC_URL,
+      providers: {
+        resolve: async () => {
+          throw Error("Completion must not call a provider before replying");
+        },
+      },
+      credentials: {
+        resolve: async () => {
+          throw Error("Completion must not request model credentials");
+        },
+      },
+      connections: undefined,
+    });
+    const finish = (body: object) =>
+      services.scopedToolsRoute(
+        new Request(`${PUBLIC_URL}/api/v1/orchestrator-tools/finish`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        }),
+      );
+    expect((await finish({ sandboxId: saved.id }))?.status).toBe(400);
+    const reply = await finish({});
+    expect(reply?.status).toBe(200);
+    expect(await reply?.json()).toEqual({ result: { id: saved.id, status: "stopping" } });
+    expect(
+      (
+        await db.query(
+          "select status,status_reason,stop_requested_at is not null as requested from sandboxes where id=$1",
+          [saved.id],
+        )
+      ).rows[0],
+    ).toEqual({ status: "stopping", status_reason: "agent_finished", requested: true });
+    expect((await finish({}))?.status).toBe(403);
   } finally {
     await db.close();
   }
