@@ -14,11 +14,14 @@ import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
+const sharedDatabase = rowOnlyDatabase();
+
 async function fixture(provider: "boat" | "modal" = "boat") {
-  const f = await runtimeFixture(undefined, provider),
+  const f = await runtimeFixture(await sharedDatabase(), provider),
     registry = createSqlMcpRegistry(f.sql, ENCRYPTION_KEY);
   const secret = `upstream-private-${crypto.randomUUID()}`;
   const c = await registry.save(f.people.owner, f.people.org, {

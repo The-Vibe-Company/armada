@@ -14,7 +14,7 @@ import {
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 // Existing terminal-state cases explicitly drain; tick itself only admits work.
 function createRoutineScheduler(...args: Parameters<typeof scheduler>) {
@@ -30,8 +30,8 @@ function createRoutineScheduler(...args: Parameters<typeof scheduler>) {
 const sharedDatabase = rowOnlyDatabase();
 
 // Owns durable scheduler behavior through real SQL + template admission; only physical provider is fake.
-async function fixture({ isolated = false } = {}) {
-  const { db, people } = await (isolated ? database() : sharedDatabase());
+async function fixture() {
+  const { db, people } = await sharedDatabase();
   const sql: Sql = { query: (s, p) => db.query(s, p), transaction: (work) => db.transaction((tx) => work(tx)) };
   const actor = { userId: people.owner, orgs: [{ orgId: people.org }] };
   const service = createRoutineService(sql),
@@ -149,7 +149,7 @@ async function fixture({ isolated = false } = {}) {
     due,
     runs,
     close: async () => {
-      if (isolated) await db.close();
+      await db.exec("reset role; reset all; set search_path=public");
     },
   };
 }
@@ -392,7 +392,7 @@ test("restart after occurrence admission launches the frozen snapshot with the o
 });
 
 test("run input snapshots and sandbox links stay outside JWT history grants", async () => {
-  const f = await fixture({ isolated: true });
+  const f = await fixture();
   try {
     await f.due();
     await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();

@@ -1,32 +1,17 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createSqlGoldenStore, launchSandbox, ProviderError } from "@armada/core/server";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
-import { database, fakeBoat } from "./support.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+import { fakeBoat } from "./support.ts";
 
-function isolatedFixture() {
-  let fixture: Awaited<ReturnType<typeof database>> | undefined;
-  beforeAll(async () => {
-    fixture = await database();
-  });
-  afterAll(async () => {
-    const current = fixture;
-    fixture = undefined;
-    await current?.db.close();
-  });
-  return () => {
-    if (!fixture) throw new Error("Missing golden removal database fixture");
-    return fixture;
-  };
-}
+const getFixture = rowOnlyDatabase();
 
 // Owning SQL boundary: protects authorization, retained provenance and durable admission
 // from regressions that a provider-only mock or UI test cannot detect.
 describe("golden removal authority", () => {
-  const getFixture = isolatedFixture();
-
   test("removal preserves child access and bindings, hides selection, and checks live authority", async () => {
-    const { db, people } = getFixture();
+    const { db, people } = await getFixture();
     const caller = (userId: string, orgId = people.org): Caller => ({
       userId,
       orgs: [{ orgId, role: "admin" }],
@@ -104,10 +89,8 @@ describe("golden removal authority", () => {
 });
 
 describe("golden removal during launch", () => {
-  const getFixture = isolatedFixture();
-
   test("actual launch admission blocks removal during fork; lost provider outcomes never retire artifacts", async () => {
-    const { db, people } = getFixture();
+    const { db, people } = await getFixture();
     const caller: Caller = { userId: people.admin, orgs: [{ orgId: people.org, role: "admin" }], via: "supabase" };
     const data = createSqlData(db)(caller);
     const golden = (await data.goldens.findByName(people.org, "shared"))[0]!;
@@ -198,10 +181,8 @@ describe("golden removal during launch", () => {
 });
 
 describe("known launch refusal", () => {
-  const getFixture = isolatedFixture();
-
   test("known non-mutating launch refusal releases admission", async () => {
-    const { db, people } = getFixture();
+    const { db, people } = await getFixture();
     const actor = { userId: people.admin, orgId: people.org, role: "admin" as const };
     const data = createSqlData(db)({
       userId: people.admin,
@@ -232,10 +213,8 @@ describe("known launch refusal", () => {
 });
 
 describe("JWT fence authority", () => {
-  const getFixture = isolatedFixture();
-
   test("JWTs cannot forge or release service fences, including after revocation or demotion", async () => {
-    const { db, people } = getFixture();
+    const { db, people } = await getFixture();
     const actor = { userId: people.admin, orgId: people.org, role: "admin" as const };
     const data = createSqlData(db)({
       userId: people.admin,
