@@ -720,8 +720,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         await acknowledged(request.requestId);
         await live();
         await admission?.beforeStart();
+        reason = "runtime_bootstrap";
         await options.bootstrap.bootstrap(actor, request.requestId, manifest.bootstrapId);
         await acknowledged(manifest.bootstrapId);
+        reason = "runtime_readiness";
         let receipt: Receipt;
         for (;;) {
           await live();

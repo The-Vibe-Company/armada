@@ -1,3 +1,4 @@
+import { isRuntimeStartupFailure, RUNTIME_STARTUP_FAILURES } from "../../core/src/runtime-startup-failure.ts";
 import type { Route } from "./http.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeSessionScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
@@ -5,10 +6,16 @@ import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 const bootstrap = new Set(["bootstrap_started", "artifact_verified", "bootstrap_failed"]);
 const runtime = new Set(["enrolled", "harness_started", "runtime_failed"]);
 /** Only fixed stage names and authenticated identities; never request/exception text. */
-export function logRuntimeStage(scope: RuntimeSessionScope, stage: string) {
+export function logRuntimeStage(scope: RuntimeSessionScope, stage: string, reason?: string) {
   try {
     console.info(
-      JSON.stringify({ event: "armada.runtime.stage", sandboxId: scope.sandboxId, epoch: scope.epoch, stage }),
+      JSON.stringify({
+        event: "armada.runtime.stage",
+        sandboxId: scope.sandboxId,
+        epoch: scope.epoch,
+        stage,
+        ...(reason ? { reason } : {}),
+      }),
     );
   } catch {
     /* Diagnostics cannot change accepted work. */
@@ -30,10 +37,20 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
         chunks.push(chunk);
       }
       const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join() !== "stage")
+      if (
+        !body ||
+        typeof body !== "object" ||
+        Array.isArray(body) ||
+        Object.keys(body).some((key) => !["stage", "reason"].includes(key))
+      )
         throw Error();
       const stage = (body as { stage: unknown }).stage;
       if (typeof stage !== "string" || (!bootstrap.has(stage) && !runtime.has(stage))) throw Error();
+      const reason = (body as { reason?: unknown }).reason;
+      if (reason !== undefined && (stage !== "runtime_failed" || !isRuntimeStartupFailure(reason))) throw Error();
+      const message = isRuntimeStartupFailure(reason)
+        ? RUNTIME_STARTUP_FAILURES[reason]
+        : "Armada runtime process failed. Ask the server operator to inspect runtime startup before launching again.";
       const token = request.headers.get("authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? "";
       const scope = await (bootstrap.has(stage)
         ? authority.withBootstrap(token, async (tx, scope) => {
@@ -46,13 +63,13 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
           })
         : authority.withSession(token, request.headers.get("x-armada-runtime-epoch") ?? "", async (tx, scope) => {
             if (stage === "runtime_failed")
-              await tx.query(
-                "update public.sandboxes set status='failed',status_reason='Armada runtime process failed.' where id=$1",
-                [scope.sandboxId],
-              );
+              await tx.query("update public.sandboxes set status='failed',status_reason=$2 where id=$1", [
+                scope.sandboxId,
+                message,
+              ]);
             return scope;
           }));
-      logRuntimeStage(scope, stage);
+      logRuntimeStage(scope, stage, typeof reason === "string" ? reason : undefined);
       return Response.json({ accepted: true, epoch: scope.epoch }, { headers });
     } catch (error) {
       return runtimeHttpFailure(error instanceof RuntimeEnrolmentDenied ? 401 : 400, "runtime_progress_refused");
