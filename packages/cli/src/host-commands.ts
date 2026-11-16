@@ -13,7 +13,7 @@ import type { AuthIo } from "./auth-commands.ts";
 
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const HELP =
-  "Usage: armada host add [--name NAME] [--org UUID] | list [--json] [--org UUID] | show HOST [--json] [--org UUID] | limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID] | revoke UUID [--org UUID]\n";
+  "Usage: armada host add [--name NAME] [--org UUID] | list [--json] [--org UUID] | show HOST [--json] [--org UUID] | limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID] | retention HOST --retention 24h [--org UUID] | revoke UUID [--org UUID]\n";
 const invalid = (message: string): never => {
   throw new GoldenError("invalid_config", message);
 };
@@ -67,21 +67,23 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
     auth.out(HELP);
     return operation ? 0 : 2;
   }
-  const args = parseArgs(rest, ["--cpus", "--memory", "--max-sandboxes"], ["--auto"]);
+  const args = parseArgs(rest, ["--cpus", "--memory", "--max-sandboxes", "--retention"], ["--auto"]);
   const allowed =
     operation === "add"
       ? ["--org", "--name"]
       : operation === "list" || operation === "show"
         ? ["--org", "--json"]
-        : operation === "limits"
-          ? ["--org", "--cpus", "--memory", "--max-sandboxes", "--auto"]
-          : operation === "revoke"
-            ? ["--org"]
-            : [];
+        : operation === "retention"
+          ? ["--org", "--retention"]
+          : operation === "limits"
+            ? ["--org", "--cpus", "--memory", "--max-sandboxes", "--auto"]
+            : operation === "revoke"
+              ? ["--org"]
+              : [];
   if (
     !allowed.length ||
     [...args.options.keys()].some((key) => !allowed.includes(key)) ||
-    args.positionals.length !== (["revoke", "show", "limits"].includes(operation) ? 1 : 0)
+    args.positionals.length !== (["revoke", "show", "limits", "retention"].includes(operation) ? 1 : 0)
   )
     return invalid(HELP.trim());
   const org = single(args, "--org");
@@ -110,14 +112,33 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
         auth.out(
           `${host.id}\t${host.name ?? "—"}\t${host.state}\t${host.lastSeenAt ?? "never"}\t${host.version ?? "unknown"}\t${host.sandboxes}\t${resources.machine}\t${resources.limits}\t${resources.usage}\n`,
         );
+        if (operation === "show")
+          auth.out(`Retention: ${host.retentionSeconds == null ? "unknown (upgrade host)" : `${host.retentionSeconds}s`}
+Requested retention: ${host.retentionOverrideSeconds == null ? "host default" : `${host.retentionOverrideSeconds}s`}
+Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.lastSeenAt ?? "never"})
+`);
       }
     }
+    return 0;
+  }
+  if (operation === "retention") {
+    const raw = single(args, "--retention") ?? "";
+    const match = /^(0|[0-9]+)(s|m|h|d)?$/.exec(raw);
+    const seconds = match ? Number(match[1]) * ({ s: 1, m: 60, h: 3600, d: 86400 }[match[2] ?? "s"] ?? 1) : NaN;
+    if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > 31536000)
+      return invalid("--retention requires 0 or a duration such as 24h (maximum 365d).");
+    const resolved = await resolveHost(client, org, hostId!);
+    await client.request("/api/v1/docker/hosts/retention", {
+      method: "POST",
+      body: JSON.stringify({ org, hostId: resolved, retentionSeconds: seconds }),
+    });
+    auth.out("Retention saved. The host applies it on its next check-in; inspect with armada host show.\n");
     return 0;
   }
   if (operation === "limits") {
     const patch: { cpus?: number; memoryBytes?: number; maxSandboxes?: number; auto?: true } = {};
     if (args.options.has("--auto")) {
-      if (["--cpus", "--memory", "--max-sandboxes"].some((key) => args.options.has(key)))
+      if (["--cpus", "--memory", "--max-sandboxes", "--retention"].some((key) => args.options.has(key)))
         return invalid("--auto resets all limits and cannot be combined with overrides.");
       patch.auto = true;
     } else {

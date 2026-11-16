@@ -805,3 +805,23 @@ test("retention cleanup authenticates the bound host and permanently fences runt
   expect(await lifecycle(a.sandboxId)).toEqual(deleted);
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
 });
+
+test("retention belongs to the adding member and reports physical cleanup deadlines, not server estimates", async () => {
+  const a = await fixture();
+  await denied(store.setRetention({ ...a.actor, userId: a.backupAdmin }, a.hostId, 0));
+  await db.query("update members set role='member' where org_id=$1 and user_id=$2", [a.actor.orgId, a.actor.userId]);
+  await expect(store.setRetention(a.actor, a.hostId, 0)).resolves.toEqual({ retentionSeconds: 0 });
+  const deadline = "2026-11-20T12:00:00.000Z";
+  expect(
+    await store.retentionForHost(a.hostToken, a.installationId, { retentionSeconds: 86400, nextCleanupAt: deadline }),
+  ).toBe(0);
+  let host = (await store.list(a.actor)).find((h) => h.id === a.hostId)!;
+  expect(host.retentionSeconds).toBe(86400);
+  expect(host.nextCleanupAt).toBeNull();
+  await store.retentionForHost(a.hostToken, a.installationId, { retentionSeconds: 0, nextCleanupAt: deadline });
+  host = (await store.list(a.actor)).find((h) => h.id === a.hostId)!;
+  expect(host.nextCleanupAt).toBe(deadline);
+  await store.setRetention(a.actor, a.hostId, 3600);
+  expect((await store.list(a.actor)).find((h) => h.id === a.hostId)!.nextCleanupAt).toBeNull();
+  expect(() => store.setRetention(a.actor, a.hostId, -1)).toThrow();
+});

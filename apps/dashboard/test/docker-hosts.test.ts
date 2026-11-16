@@ -245,3 +245,21 @@ test("host action recovery distinguishes unavailable setup, ownership and uncert
   expect(dockerHostActionFailure(undefined, "limits")).toContain("could not be confirmed");
   expect(dockerHostActionFailure(409, "launch")).toContain("capacity and model account");
 });
+
+test("retention observations preserve explicit nulls and zero while malformed values exclude a host", () => {
+  const fields = { retentionSeconds: 0, retentionOverrideSeconds: null, nextCleanupAt: "2026-11-14T12:00:00Z" };
+  const parse = (fields: Record<string, unknown>) =>
+    parseDockerHostList({ placement: true, hosts: [{ ...host(), ...fields }] });
+  expect(parse(fields)?.hosts[0]).toMatchObject(fields);
+  expect(parse({ retentionSeconds: null, nextCleanupAt: null })?.hosts[0]).toMatchObject({
+    retentionSeconds: null,
+    nextCleanupAt: null,
+  });
+  for (const fields of [
+    { retentionSeconds: -1 },
+    { retentionSeconds: 31536001 },
+    { retentionOverrideSeconds: "24h" },
+    { nextCleanupAt: "soon" },
+  ])
+    expect(parse(fields)).toMatchObject({ hosts: [], skipped: 1 });
+});
