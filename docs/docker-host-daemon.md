@@ -997,3 +997,49 @@ installer while staging remains connected; check both dashboards, launch one
 sandbox from each and verify distinct ownership labels and state. Stop/delete
 through each server, uninstall production with `--server`, and confirm staging
 still runs. No production mutation or deployment was performed by this change.
+
+### Diagnosing an immediate normal-launch refusal (#2239)
+
+Normal CLI launch goes through `sandbox/launch` in `control.ts`, then
+`docker-normal-launch.ts`: retained receipt lookup, official image, personal
+account defaults, membership/actor epoch, credential resolution, skill/MCP
+defaults, and finally the transaction that reserves the sandbox and queues
+the host create job. Only after that commit can the daemon see work.
+The former outer catch silently wrapped dependency exceptions and most
+`LaunchError` credential refusals in a receipt-bearing `unavailable` error;
+`api-failure.ts` projected that as `outcome_unknown`, even before allocation.
+This explains the fast, silent symptom but does not identify which production
+dependency threw without production evidence.
+
+Look for `docker_launch_failed` with its stable `reason`, typed `code` and
+`dispatchPossible` fields. Raw dependency diagnostics are deliberately omitted.
+Pre-reservation errors now retain definite categories; an uncertain reservation
+commit or an existing receipt still requires inspection with the same request ID.
+
+Production prerequisites to compare with the passing staging environment:
+
+- Both Docker flags and the same-build architecture-specific manifest above;
+  placement advertised true implies bootstrap construction succeeded at startup.
+- The release's generated `packages/core/src/official-sandbox-image.json` must
+  match the server version and contain the published GHCR digest. A source build
+  deliberately uses the immutable source fallback, not a per-org image setting.
+- Same-build runtime artifacts under `ARMADA_RUNTIME_ARTIFACT_DIR` (default
+  `/opt/armada/runtime-artifacts`), manifest digests and published harness bundles.
+  Bootstrap/enrolment needs the normal encryption key and public HTTPS server
+  origin, reachable from the container for artifact download, enrolment and
+  runtime WebSocket dial-out. Docker does not use Modal's authenticated tunnel
+  or require `ARMADA_MODAL_DIALOUT`.
+- Applied existing schema and matching `members`/`mcp_actor_epochs` rows for the
+  launching user/org; active host installation in that org; usable user/org
+  model account and current revision; skill/MCP defaults and their referenced
+  resources. No Docker-specific first-launch organization seed is required.
+  Do not repair rows blindly: diagnose the logged phase first.
+- Staging smoke supplies its own org, account and registered host and explicit
+  image for historical preview probes. Those do not configure production.
+  Normal launch uses the server's official image. An online fresh registration
+  proves polling/authentication, not any of the above runtime prerequisites.
+
+After release, the coordinator must retry the owner's normal CLI launch with
+its original body/request ID, inspect any retained reservation first, then verify
+host create, runtime enrolment/readiness and an actual harness reply. Neither
+unit tests nor passing staging probes establish that production is configured.
