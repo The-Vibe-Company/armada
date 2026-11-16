@@ -192,24 +192,37 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       );
     },
     // Keep provider journals and accounting native; translate only at the public boundary.
-    async publicPromptIds(caller: Caller, sandboxId: string, nativeIds: string[]) {
-      const ids = new Map<string, string>();
-      if (!nativeIds.length) return ids;
+    async publicPromptIdsBatch(caller: Caller, requests: { sandboxId: string; nativeIds: string[] }[]) {
+      const ids = new Map<string, Map<string, string>>();
+      const wanted = new Map(
+        requests.filter((r) => r.nativeIds.length).map((r) => [r.sandboxId, new Set(r.nativeIds)]),
+      );
+      if (!wanted.size) return ids;
       const rows = (
         await sql.query<Entry>(
           `select q.* from public.account_turn_queue q
          join public.members m on m.org_id=q.org_id and m.user_id=$2
          join public.sandboxes s on s.id=q.sandbox_id
-         where q.sandbox_id=$1 and (s.visibility='org' or s.owner_id=$2) and q.org_id=any($3::uuid[])
+         where q.sandbox_id=any($1::uuid[]) and (s.visibility='org' or s.owner_id=$2) and q.org_id=any($3::uuid[])
          and q.result_enc is not null order by q.sequence`,
-          [sandboxId, caller.userId, caller.orgs.map((org) => org.orgId)],
+          [[...wanted.keys()], caller.userId, caller.orgs.map((org) => org.orgId)],
         )
       ).rows;
       for (const row of rows) {
         const receipt = JSON.parse(await decryptSecret(row.result_enc!, key));
-        if (nativeIds.includes(receipt.promptId)) ids.set(receipt.promptId, row.request_id);
+        if (wanted.get(row.sandbox_id)?.has(receipt.promptId)) {
+          const aliases = ids.get(row.sandbox_id) ?? new Map<string, string>();
+          aliases.set(receipt.promptId, row.request_id);
+          ids.set(row.sandbox_id, aliases);
+        }
       }
       return ids;
+    },
+    async publicPromptIds(caller: Caller, sandboxId: string, nativeIds: string[]) {
+      return (
+        (await this.publicPromptIdsBatch(caller, [{ sandboxId, nativeIds }])).get(sandboxId) ??
+        new Map<string, string>()
+      );
     },
     async status(caller: Caller, sandboxId: string, promptId?: string) {
       promptId = promptId?.toLowerCase();
