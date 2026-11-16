@@ -100,7 +100,9 @@ export function createGitHubRuntime(options: {
     async prepare(provider: Provider, id: string): Promise<void> {
       if (!options.sql.transaction) return denied();
       if (!options.github.app) return;
-      const before = await snapshot(id).catch(() => null);
+      // No matching authority is optional; a failed authority lookup is not.
+      // In particular, never turn a SQL outage into a successful launch without helpers.
+      const before = (await options.sql.query<Snapshot>(SELECT, [id])).rows[0];
       if (!before) return;
       if (!provider.configureGitHub) throw Error("github_runtime_unsupported");
       const native = await physical(provider, before.identity);

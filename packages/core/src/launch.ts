@@ -703,6 +703,22 @@ export async function launchSandbox(
       }
       if (runtime) await stores.connections?.prepare?.(provider, record, actor, signal);
       if (runtimeWorkspace) await options.beforeStart?.(provider, record);
+      try {
+        console.info(
+          JSON.stringify({
+            event: "launch_github_prepared",
+            sandboxId: record.id,
+            goldenId: golden.id,
+            provider: provider.id,
+            path: runtime ? "enrolled" : "native",
+            status: launchGithub.status,
+            repositorySelected: repositoryDir !== null,
+            configuredRepositories: golden.config.repos.length,
+          }),
+        );
+      } catch {
+        // Safe diagnostics must not change launch outcomes. Never include tokens or helper contents.
+      }
       const provenance = agent ? { kind: "armada" as const, epoch: agent.epoch } : undefined;
       // Boat goldens carry the native CLI. A restored fork can be ready while its
       // executable cannot even boot; probe the installed wrapper (including its
