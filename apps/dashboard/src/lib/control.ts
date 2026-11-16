@@ -109,7 +109,7 @@ export function createControlClient(options: Options): ControlClient {
             typeof failure.code === "string" ? failure.code : undefined,
           );
         if (typeof failure === "string") throw new ControlError(failure, response.status);
-        throw new ControlError(`The Armada server answered ${response.status}.`, response.status);
+        throw new ControlError(controlFallback(response.status), response.status);
       }
       return parsed as T;
     },
@@ -377,8 +377,8 @@ function failure(status: number, payload: Record<string, unknown> | null, featur
   if ((status === 404 || status === 405) && (!message || message === "Unknown route.") && !detail.reason) {
     return make(`This Armada server does not offer ${feature} yet.`, false);
   }
-  if (status >= 500) return make(message ?? "The Armada server could not complete the request.");
-  return make(message ?? `The Armada server answered ${status}.`);
+  if (status >= 500) return make(message ?? controlFallback(status));
+  return make(message ?? controlFallback(status));
 }
 
 /** A golden build job receipt or status (`golden/create`, `golden/update`, `golden/build/status`). */
@@ -593,4 +593,11 @@ export function createRoutineControl(options: ArmadaApiOptions) {
       return items.filter((x): x is NonNullable<typeof x> => !!x);
     },
   };
+}
+
+/** No upstream body is safe to display when the control error envelope is missing. */
+function controlFallback(status: number): string {
+  return status >= 500 || status === 408
+    ? "The request could not be confirmed because the Armada server returned an unreadable error. Reload to check the current state before retrying."
+    : "The Armada server refused the request without a readable reason. Reload and check your selection and access before retrying.";
 }

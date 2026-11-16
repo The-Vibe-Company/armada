@@ -42,7 +42,10 @@ for (const completion of ["link", "code"] as const) {
           expect(createHash("sha256").update(body.verifier).digest("base64url")).toBe(start.code_challenge);
           return completion === "link"
             ? Response.json({ ...session, armadaUrl: "https://untrusted.example", unexpected: "ignored" })
-            : Response.json({}, { status: 401 });
+            : Response.json(
+                { error: { code: "unavailable", message: "Sign-in service is unavailable. Try again later." } },
+                { status: 503 },
+              );
         }
         expect(path).toBe("/api/v1/auth/email/verify");
         expect(JSON.parse(String(init?.body))).toEqual({ email: "user@example.test", code: "123456" });
@@ -74,7 +77,9 @@ for (const completion of ["link", "code"] as const) {
         const refused = new URL(start.redirect_uri);
         refused.searchParams.set("state", start.state);
         refused.searchParams.set("code", "authorization-code");
-        expect((await handler(new Request(refused.toString()))).status).toBe(400);
+        const unavailable = await handler(new Request(refused.toString()));
+        expect(unavailable.status).toBe(503);
+        expect(await unavailable.text()).toBe("Sign-in service is unavailable. Try again later.");
         return "123456";
       },
     };
@@ -170,6 +175,52 @@ test("email login timeout cancels code input and closes its listener", async () 
     expect(stops).toBe(1);
   } finally {
     timer.mockRestore();
+    listener.mockRestore();
+  }
+});
+
+test("email verification preserves typed failures and treats malformed sessions as service failures", async () => {
+  const listener = spyOn(Bun, "serve").mockReturnValue({ port: 43123, stop: async () => undefined } as never);
+  try {
+    for (const [payload, status, code, message] of [
+      [
+        { error: { code: "unavailable", message: "Sign-in service is unavailable. Try again later." } },
+        503,
+        "unavailable",
+        "Sign-in service is unavailable. Try again later.",
+      ],
+      [
+        { error: { code: "unauthorized", message: "Sign-in code expired. Request a new code." } },
+        401,
+        "unauthorized",
+        "Sign-in code expired. Request a new code.",
+      ],
+      [
+        { internal: "private_diagnostic" },
+        200,
+        "unavailable",
+        "Email sign-in could not finish because Armada returned an invalid session. Try signing in again; if this continues, contact the server operator.",
+      ],
+    ] as const) {
+      await expect(
+        emailLogin(
+          {
+            env: {},
+            out: () => undefined,
+            err: () => undefined,
+            now: () => new Date(0),
+            open: () => undefined,
+            session: memorySessionStore(),
+            readCode: async () => "123456",
+            fetch: async (input) =>
+              String(input).endsWith("/start") ? Response.json({}) : Response.json(payload, { status }),
+          },
+          "user@example.test",
+          "https://armada.example",
+        ),
+      ).rejects.toMatchObject({ code, message });
+    }
+  } finally {
     listener.mockRestore();
   }
 });

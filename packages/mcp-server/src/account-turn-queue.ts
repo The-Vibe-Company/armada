@@ -95,6 +95,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         await tx.query<{
           status: string;
           status_reason: string | null;
+          preservation_note: string | null;
           expires_at: string | null;
           harness: Harness;
           provider: string;
@@ -107,7 +108,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           org_id: string;
           conversation_ids: string[];
         }>(
-          `select s.status,s.status_reason,s.expires_at,s.harness,s.provider,s.boat_runtime,s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,s.conversation_ids from public.sandboxes s
+          `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,s.conversation_ids from public.sandboxes s
          join public.members m on m.org_id=s.org_id and m.user_id=$2
          where s.id=$1 and s.owner_id=$2 and s.deleted_at is null`,
           [input.id, caller.userId],
@@ -119,6 +120,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         {
           ...target,
           statusReason: target.status_reason,
+          preservationNote: target.preservation_note,
           expiresAt: target.expires_at,
           boatRuntime: target.boat_runtime,
           runtimeTransport: target.runtime_transport,
@@ -178,7 +180,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         throw new VaultError("conflict", "Reuse the original request_id and identical input.");
       if (!saved) {
         const sandbox = await tx.query<Record<string, unknown>>(
-          `select id,status,provider,status_reason,expires_at,boat_runtime,runtime_transport from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3
+          `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3
            and deleted_at is null and expires_at>now() and stop_requested_at is null
            and status in ('ready','running','stopped') for update`,
           [input.id, target.credential_id, target.credential_version],
@@ -190,6 +192,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             status: String(locked.status),
             provider: String(locked.provider),
             statusReason: locked.status_reason as string | null,
+            preservationNote: locked.preservation_note as string | null,
             expiresAt: locked.expires_at as string | null,
             boatRuntime: !!locked.boat_runtime,
             runtimeTransport: locked.runtime_transport as string | null,

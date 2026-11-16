@@ -589,7 +589,7 @@ describe("tools", () => {
       "interrupted",
       "interrupted_by_harness_exit",
     ],
-    ["Agent request failed", "failed", "Agent request failed"],
+    ["Agent request failed", "failed", "Agent failed. Check the agent configuration before retrying."],
   ] as const) {
     test(`turn error does not fail the machine: ${reason}`, async () => {
       const { token, client, people, boat, db } = await start();
@@ -710,7 +710,7 @@ describe("tools", () => {
       status: "ready",
       prompt: {
         state: "failed",
-        reason: `Plan limit reached. Resets at ${resetsAt}.`,
+        reason: `Plan limit reached. Resets at ${resetsAt}. Wait for the limit to reset, or switch to another account before sending the prompt again.`,
         limit: { code: "usage_limit_exceeded", resetsAt },
       },
     });
@@ -1145,6 +1145,22 @@ describe("tools", () => {
     expect(boat.steers).toHaveLength(steerCount);
   });
 
+  test("a stop without a retained recovery disk remains terminal on later sends", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "codex" });
+    const get = boat.provider.get.bind(boat.provider);
+    boat.provider.get = async (id) => {
+      const info = await get(id);
+      return info.state === "stopped" ? { ...info, stopNote: "checkpoint_failed_disk_not_retained" } : info;
+    };
+    const stopped = await call(mcp, "stop", { id: launched.data.id });
+    expect(stopped.data).toMatchObject({ status: "failed" });
+    const sent = await call(mcp, "send", { id: launched.data.id, prompt: "must not resume" });
+    expect(sent.text).toContain("sandbox_terminal");
+    expect(boat.prompts).toHaveLength(0);
+  });
+
   test("an idle launch keeps its model and effort for every send, across stop, and an override lasts one turn", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
@@ -1164,8 +1180,6 @@ describe("tools", () => {
 
     await call(mcp, "send", { id: launched.data.id, prompt: "first" });
     await call(mcp, "stop", { id: launched.data.id });
-    expect((await call(mcp, "send", { id: launched.data.id, prompt: "terminal refusal" })).isError).toBe(true);
-    await db.query("update sandboxes set status_reason='idle_paused' where id=$1", [launched.data.id]);
     await call(mcp, "send", { id: launched.data.id, prompt: "after stop" });
     await call(mcp, "send", { id: launched.data.id, prompt: "once", model: "gpt-6-luna", reasoning_effort: "low" });
     await call(mcp, "send", { id: launched.data.id, prompt: "back" });

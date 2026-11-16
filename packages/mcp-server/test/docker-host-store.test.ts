@@ -748,7 +748,7 @@ test("failed startup ACK or rejected admission fails logical startup without cla
       const failed = await lifecycle(a.sandboxId);
       if (!failed) throw Error("missing failed sandbox");
       expect(failed.status).toBe("failed");
-      expect(failed?.status_reason).toBe("Docker sandbox startup failed.");
+      expect(failed?.status_reason).toBe("Docker sandbox startup failed. Check the host and retry with a new request.");
       expect(failed?.stopped_at).toBeNull();
       expect(Number(failed?.lifecycle_generation)).toBe(Number(before?.lifecycle_generation) + 1);
       await expect(a.authority.withSession(a.runtime.runtimeToken, a.runtime.epoch, async () => true)).rejects.toThrow(
@@ -789,7 +789,9 @@ test("a host that could not fetch the image fails the sandbox in plain words; a 
     expect(failed?.status).toBe("failed");
     // Only a create fetches the image; another operation's reason is not believed.
     expect(failed?.status_reason).toBe(
-      operation === "create" ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE : "Docker sandbox startup failed.",
+      operation === "create"
+        ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
+        : "Docker sandbox startup failed. Check the host and retry with a new request.",
     );
   }
 });

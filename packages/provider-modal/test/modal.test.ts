@@ -2748,8 +2748,9 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
         [id],
       )
     ).rows[0];
-    expect(row?.status).toBe(hardExit ? "failed" : "stopped");
+    expect(row?.status).toBe(hardExit || mode === "legacy_scrub_failure" ? "failed" : "stopped");
     expect(row?.stopped_at).not.toBeNull();
+    if (mode === "legacy_scrub_failure") expect(row?.status_reason).toBe("expired");
     expect(f.log).not.toContain("delete-image");
     if (hardExit) {
       expect(row?.status_reason).toContain("without a new verified recovery checkpoint");

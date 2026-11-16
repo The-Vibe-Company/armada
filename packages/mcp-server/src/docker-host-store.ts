@@ -351,7 +351,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
           : reason === "image_unavailable" && operation === "create"
             ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
-            : "Docker sandbox startup failed.",
+            : DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
       ],
     );
   }

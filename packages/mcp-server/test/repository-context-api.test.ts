@@ -140,13 +140,11 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
     const first = await call(client, "send", { id: launched.id, prompt: "first" });
     expect(first.isError).toBe(false);
     await call(client, "stop", { id: launched.id });
-    expect((await call(client, "send", { id: launched.id, prompt: "terminal refusal" })).isError).toBe(true);
-    await db.query("update sandboxes set status_reason='idle_paused' where id=$1", [launched.id]);
     // A later golden edit must not change the immutable context of an existing sandbox.
     await db.query("update goldens set config = $1::jsonb where name = 'shared'", [
       JSON.stringify({ repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] }),
     ]);
-    await call(client, "send", { id: launched.id, prompt: "resume" });
+    expect((await call(client, "send", { id: launched.id, prompt: "resume" })).isError).toBe(false);
     await call(client, "send", {
       id: launched.id,
       prompt: "new conversation",

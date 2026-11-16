@@ -453,7 +453,7 @@ test("failed/expired cleanup preserves failure facts and unfinished prompt outco
     providerState: null,
     statusReason: "expired",
     settled: true,
-    prompt: { state: "failed", reason: "The agent failed." },
+    prompt: { state: "failed", reason: "Agent failed. Check the agent configuration before retrying." },
   });
   let now = 0,
     outcome: "completed" | "failed" = "failed";
@@ -949,4 +949,19 @@ test("cancelled account dispatch cannot admit a Docker prompt or resume", async 
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   await expect(bootstrap.resume(f.actor, f.sandbox.id, requestId)).rejects.toThrow("Docker bootstrap denied");
   expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+});
+
+test("Docker status preserves safe native prompt diagnoses instead of replacing them", async () => {
+  const f = await fixture(),
+    session = await ready(f),
+    promptId = randomUUID();
+  await publish(f, session, [
+    { id: "failed", at: 1, kind: "prompt", text: "begin", status: "failed", promptId, reason: "model_unavailable" },
+  ]);
+  expect(await invoke(caller(f.actor), "status", { id: f.sandbox.id })).toMatchObject({
+    prompt: {
+      state: "failed",
+      reason: "Model unavailable. Choose a model available to this account, then send the prompt again.",
+    },
+  });
 });

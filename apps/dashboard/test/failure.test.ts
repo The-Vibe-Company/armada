@@ -26,3 +26,14 @@ test("recoverable interruption codes offer manual resend advice", () => {
   expect(describeFailure("interrupted_by_provider_move")?.hint).toContain("Send the prompt again");
   expect(describeFailure("interrupted_by_harness_exit")?.hint).toContain("fresh agent process");
 });
+
+test("plan limits retain the reset and offer an account action", () => {
+  expect(describeFailure("Plan limit reached. Resets at 2026-11-17T00:00:00.000Z.")).toMatchObject({
+    title: "Plan limit reached",
+    hint: expect.stringContaining("2026-11-17T00:00:00.000Z"),
+    fix: { href: "/harness" },
+  });
+  expect(describeFailure("Plan limit reached. Resets at 2026-11-17T00:00:00.000Z.")?.hint).toContain(
+    "switch to another account",
+  );
+});

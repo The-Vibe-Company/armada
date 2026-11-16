@@ -1234,31 +1234,47 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
     parts[0] = "snapshot";
   if (parts.length === 1 && parts[0] === "golden") parts[0] = "snapshot";
   const command = parts.join(" ");
-  if (command === "template create") return templateDefinitionHelp("create");
-  if (command === "template publish") return templateDefinitionHelp("publish");
-  if (command === "routine enable") return routineStateHelp("enable");
-  if (command === "routine pause") return routineStateHelp("pause");
-  if (command === "routine delete") return routineStateHelp("delete");
-  if (command === "routine create") return routineDefinitionHelp("create");
-  if (command === "routine update") return routineDefinitionHelp("update");
-  if (command === "vars set") return vaultSetHelp("vars");
-  if (command === "secrets set") return vaultSetHelp("secrets");
-  if (command === "secrets rotate") return secretLifecycleHelp("rotate");
-  if (command === "secrets revoke") return secretLifecycleHelp("revoke");
-  if (command === "secrets delete") return secretLifecycleHelp("delete");
-  if (command === "vars") return vaultFamilyHelp("vars");
-  if (command === "secrets") return vaultFamilyHelp("secrets");
-  if (command === "completion") return completionHelp();
-  if (command === "completion bash") return completionHelp("bash");
-  if (command === "completion zsh") return completionHelp("zsh");
-  if (command === "completion fish") return completionHelp("fish");
-  if (command === "mcp connect") return mcpAuthorizationHelp("connect");
-  if (command === "mcp reconnect") return mcpAuthorizationHelp("reconnect");
-  if (command === "github connect") return githubAuthorizationHelp("connect");
-  if (command === "github reconnect") return githubAuthorizationHelp("reconnect");
-  if (command === "github install") return githubAuthorizationHelp("install");
-  if (command === "creds import") return importHelp();
-  if (command === "creds import claude") return importHelp("claude");
-  if (command === "creds import codex") return importHelp("codex");
-  return Object.hasOwn(HELP, command) ? HELP[command] : undefined;
+  return Object.hasOwn(GENERATED_HELP, command)
+    ? GENERATED_HELP[command]
+    : Object.hasOwn(HELP, command)
+      ? HELP[command]
+      : undefined;
 }
+
+const GENERATED_HELP: Record<string, string> = {
+  "template create": templateDefinitionHelp("create"),
+  "template publish": templateDefinitionHelp("publish"),
+  "routine enable": routineStateHelp("enable"),
+  "routine pause": routineStateHelp("pause"),
+  "routine delete": routineStateHelp("delete"),
+  "routine create": routineDefinitionHelp("create"),
+  "routine update": routineDefinitionHelp("update"),
+  "vars set": vaultSetHelp("vars"),
+  "secrets set": vaultSetHelp("secrets"),
+  "secrets rotate": secretLifecycleHelp("rotate"),
+  "secrets revoke": secretLifecycleHelp("revoke"),
+  "secrets delete": secretLifecycleHelp("delete"),
+  vars: vaultFamilyHelp("vars"),
+  secrets: vaultFamilyHelp("secrets"),
+  completion: completionHelp(),
+  "completion bash": completionHelp("bash"),
+  "completion zsh": completionHelp("zsh"),
+  "completion fish": completionHelp("fish"),
+  "mcp connect": mcpAuthorizationHelp("connect"),
+  "mcp reconnect": mcpAuthorizationHelp("reconnect"),
+  "github connect": githubAuthorizationHelp("connect"),
+  "github reconnect": githubAuthorizationHelp("reconnect"),
+  "github install": githubAuthorizationHelp("install"),
+  "creds import": importHelp(),
+  "creds import claude": importHelp("claude"),
+  "creds import codex": importHelp("codex"),
+};
+
+/** Flags from the command help registry also drive shell discovery. */
+export const helpOptionWords = [
+  ...new Set(
+    [...Object.values(HELP), ...Object.values(GENERATED_HELP)].flatMap((text) =>
+      [...text.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0]),
+    ),
+  ),
+];
