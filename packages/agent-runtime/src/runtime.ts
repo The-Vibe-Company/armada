@@ -502,7 +502,7 @@ export class Runner {
       workspaceEvent("running");
       const work = (async () => {
         await this.execution.prepareWorkspace?.();
-        return executeWorkspace(input, this.journal, this.execEnvironment, signal);
+        return executeWorkspace(input, this.journal, this.execEnvironment, signal, this.execution.workspaceHost);
       })();
       this.commands.add(work);
       try {
