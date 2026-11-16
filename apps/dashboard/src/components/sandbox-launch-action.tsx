@@ -9,7 +9,7 @@ import { LaunchDialogContent } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
-export function SandboxLaunchAction() {
+export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }) {
   const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -29,8 +29,16 @@ export function SandboxLaunchAction() {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button>
+        <Button
+          onKeyDown={(event) => {
+            if (shortcut && event.key.toLowerCase() === "l" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+              event.preventDefault();
+              void onOpenChange(true);
+            }
+          }}
+        >
           <RocketIcon /> Launch a sandbox
+          {shortcut && <kbd className="ml-auto text-xs text-muted-foreground">L</kbd>}
         </Button>
       </DialogTrigger>
       <LaunchDialogContent>

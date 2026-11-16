@@ -148,6 +148,14 @@ export function NavLinks({
                             <Icon />
                           </LinkPendingIcon>
                           <span className="truncate">{label}</span>
+                          {href === "/sandboxes" && sandboxes.length > 0 && (
+                            <span
+                              className="ml-auto rounded bg-[var(--accent-tint)] px-1.5 text-xs tabular-nums text-[var(--accent-text)]"
+                              title={`${sandboxes.length} live sandboxes`}
+                            >
+                              {sandboxes.length}
+                            </span>
+                          )}
                         </Link>
                       </SidebarMenuButton>
                       {href === "/sandboxes" && sandboxes.length > 0 && (
