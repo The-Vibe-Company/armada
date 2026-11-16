@@ -248,7 +248,9 @@ Examples:
 For other commands and authentication settings: armada --help.
 `;
 
-export const commandWords = [...new Set([...HELP.matchAll(/armada ([a-z][a-z-]*)/g)].map((match) => match[1]))];
+export const commandWords = [
+  ...new Set([...HELP.matchAll(/armada ([a-z][a-z|-]*)/g)].flatMap((match) => match[1]!.split("|"))),
+];
 export const optionWords = [
   ...new Set([
     ...helpOptionWords,
