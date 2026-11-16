@@ -21,6 +21,8 @@ on:
 permissions:
   contents: read
 
+# Reserve staging through publication, production and npm. Ordinary staging
+# shares this lock; pinned child smoke must use its separate lock.
 concurrency:
   group: release-production
   queue: max
