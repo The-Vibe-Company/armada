@@ -17,7 +17,7 @@ export function PageHeader({
     <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
       <div className="max-w-2xl space-y-1.5">
         <div className="flex items-baseline gap-2.5">
-          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+          <h1 className="text-[22px] font-semibold tracking-tight">{title}</h1>
           {meta !== undefined && <span className="text-sm text-muted-foreground tabular-nums">{meta}</span>}
         </div>
         {description && <p className="text-sm text-pretty text-muted-foreground">{description}</p>}
@@ -65,7 +65,7 @@ export function Empty({
   icon?: ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-dashed bg-card/50 px-6 py-10 text-center">
+    <div className="rounded-xl border bg-card px-6 py-10 text-center">
       {icon && (
         <div
           aria-hidden="true"

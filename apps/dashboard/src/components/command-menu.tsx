@@ -26,8 +26,16 @@ export function CommandMenu() {
         setOpen((value) => !value);
       }
     }
+    function onSearch() {
+      openingFocus.current = document.activeElement as HTMLElement | null;
+      setOpen(true);
+    }
+    window.addEventListener("armada:open-search", onSearch);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("armada:open-search", onSearch);
+    };
   }, [open]);
 
   return (

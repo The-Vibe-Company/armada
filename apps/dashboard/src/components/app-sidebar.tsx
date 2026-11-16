@@ -36,7 +36,7 @@ export function AppSidebar({
           </SidebarHeader>
         )}
         {children}
-        {isMobile === false && state !== "collapsed" && (
+        {(isMobile || state !== "collapsed") && (
           <SidebarFooter className="mt-auto gap-0 border-t px-3 py-3">{footer}</SidebarFooter>
         )}
       </Sidebar>

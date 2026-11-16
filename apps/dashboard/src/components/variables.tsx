@@ -69,7 +69,9 @@ export function VaultMark({ kind }: { kind: VaultKind }) {
       aria-hidden
       className={cn(
         "flex size-8 shrink-0 items-center justify-center rounded-md border [&_svg]:size-4",
-        kind === "secret" ? "border-primary/25 bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
+        kind === "secret"
+          ? "border-primary/25 bg-primary/10 text-[var(--accent-text)]"
+          : "bg-muted text-muted-foreground",
       )}
     >
       <Icon />
@@ -409,7 +411,7 @@ export function VaultPanel({
           </p>
         ) : item.kind === "secret" ? (
           <div className="flex gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm" data-write-only>
-            <LockKeyholeIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />
+            <LockKeyholeIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--accent-text)]" />
             <p>
               <span className="font-medium">Never shown again.</span>{" "}
               <span className="text-muted-foreground">
