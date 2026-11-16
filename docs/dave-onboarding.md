@@ -556,8 +556,8 @@ invocation retains its existing behavior.
 ### Script output, errors and exit codes
 
 Check a command's exit status before using its stdout. Exit `0` means the
-command succeeded; `1` covers authentication/server/operation failures and `2`
-covers usage or missing configuration. For example, an intentionally unknown
+command succeeded; `1` covers server/operation failures, `2` covers usage or
+missing configuration, and `3` means authentication is required. For example, an intentionally unknown
 command exits `2`, including when `--json` is requested. A pipeline's final
 parser status alone does not prove that Armada succeeded.
 
@@ -593,3 +593,10 @@ Do not adapt this into logging raw values: `vars read`, token creation and
 installer output can be sensitive. Never put credential values in arguments.
 For an uncertain launch outcome, inspect existing sandbox/receipt state before
 retrying; template launches must preserve their original request key and body.
+
+JSON selection commands return `{"org":<organization>}` when selecting and
+`{"org":null}` when clearing with `org use none --json`. Login and logout
+accept `--json` and return `{"authenticated":true|false}`. Host mutations
+accept `--json`: limits and retention return the host ID and requested policy,
+revoke returns the host ID and `revoked:true`, and add returns the registration
+receipt without waiting for check-in. Protect that short-lived installer receipt.

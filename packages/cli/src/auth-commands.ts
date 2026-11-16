@@ -91,7 +91,7 @@ function promptCode(signal: AbortSignal): Promise<string> {
 
 export async function loginCommand(
   io: AuthIo,
-  how: { provider?: Provider | undefined; email?: string | undefined; url?: string | undefined } = {},
+  how: { provider?: Provider | undefined; email?: string | undefined; url?: string | undefined; json?: boolean } = {},
 ): Promise<void> {
   const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_API_URL;
   const cli = io.env.ARMADA_PROFILE ? `armada --profile ${io.env.ARMADA_PROFILE}` : "armada";
@@ -142,7 +142,7 @@ export async function loginCommand(
     const result = await emailLogin(io, email, origin);
     await io.session.write({ loginId: crypto.randomUUID(), armadaUrl: origin, ...result });
     await io.emailPreferences?.write(origin, email);
-    io.out("Logged in.\n");
+    io.out(how.json ? '{"authenticated":true}\n' : "Logged in.\n");
     io.err(
       `Next: run ${cli} launch for guided setup, or ${cli} host add to connect your own machine. Check setup with ${cli} doctor.\n`,
     );
@@ -166,7 +166,7 @@ export async function loginCommand(
         refreshToken: result.refreshToken,
         expiresAt: result.expiresAt,
       });
-      io.out("Logged in.\n");
+      io.out(how.json ? '{"authenticated":true}\n' : "Logged in.\n");
       io.err(
         `Next: run ${cli} launch for guided setup, or ${cli} host add to connect your own machine. Check setup with ${cli} doctor.\n`,
       );
@@ -178,9 +178,9 @@ export async function loginCommand(
   throw new AuthError("Sign in with --provider github or google.", "usage");
 }
 
-export async function logoutCommand(io: AuthIo): Promise<void> {
+export async function logoutCommand(io: AuthIo, json = false): Promise<void> {
   await io.session.clear();
-  io.out("Logged out.\n");
+  io.out(json ? '{"authenticated":false}\n' : "Logged out.\n");
 }
 
 export async function tokenCreate(
