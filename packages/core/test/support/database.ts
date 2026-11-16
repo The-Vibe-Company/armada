@@ -23,7 +23,10 @@ export function migratedDatabase(): () => PGlite {
     await resetMigratedDatabaseRows(db!, reset);
   });
   afterAll(async () => {
-    await db?.close();
+    // Bun retains hook closures; release the closed instance and its WASM heap.
+    const connection = db;
+    db = undefined;
+    await connection?.close();
   });
   return () => {
     if (!db) throw new Error("Database requested before beforeAll");
