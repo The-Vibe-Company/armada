@@ -129,7 +129,7 @@ describe("database", () => {
         "application_vault_audit SELECT",
         "credentials DELETE",
         "credentials INSERT(created_at,id,kind,owner_id,scope,value_enc)",
-        "credentials SELECT(created_at,expires_at,id,is_default,kind,max_agents,name,owner_id,scope,status,updated_at,version)",
+        "credentials SELECT(created_at,expires_at,id,is_default,kind,max_agents,model_limits,name,owner_id,scope,status,updated_at,version)",
         "credentials UPDATE(value_enc)",
         "docker_snapshots SELECT",
         "github_connections DELETE",
