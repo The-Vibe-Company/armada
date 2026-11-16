@@ -2,9 +2,9 @@
 
 import type { Harness, MachineSize, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
 import { MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
-import { CircleAlertIcon, PlugIcon, RocketIcon, ServerIcon } from "lucide-react";
+import { CircleAlertIcon, RocketIcon } from "lucide-react";
 import Link from "next/link";
-import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { launchFromGolden, readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
@@ -13,10 +13,12 @@ import { DockerLaunchForm } from "@/components/docker-launch";
 import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
 import {
   LaunchAdvanced,
+  LaunchChoice,
   LaunchDialogContent,
   LaunchDialogHeader,
   LaunchFields,
   LaunchLocation,
+  LaunchSetting,
   LaunchTaskField,
   useLaunchSurface,
 } from "@/components/launch-surface";
@@ -27,7 +29,7 @@ import { SkillPicker } from "@/components/skill-picker";
 import { TemplateLaunchForm } from "@/components/templates";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogClose, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import {
   CONNECTION_CHOICE_FIELD,
@@ -38,10 +40,9 @@ import {
 } from "@/lib/connections";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
-import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
-
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
+import { ttlOptions } from "@/lib/templates";
 import { cn } from "@/lib/utils";
 
 /** The selected org's connections for the launch dialog, or why they are not listed. */
@@ -307,6 +308,7 @@ function LaunchForm({
   const root = useRef<HTMLDivElement>(null);
   const launchKey = useRef<LaunchKey | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [ttl, setTtl] = useState("");
   const [skills, setSkills] = useState<string[]>([]);
   useLaunchSurface(root);
 
@@ -345,14 +347,7 @@ function LaunchForm({
   // The selected project: the machine size default follows it, and a single repository's choice is summarized.
   const [project, setProject] = useState(repositories.length === 1 ? (repositories[0] ?? "") : "");
   // The size that will be requested, null while the provider decides.
-  const [size, setSize] = useState<MachineSize | null>(null);
-  const summary: { key: string; icon: ReactNode; text: string }[] = [
-    ...(sizing ? [{ key: "size", icon: <ServerIcon />, text: sizeFact(size) }] : []),
-    { key: "mcp", icon: <PlugIcon />, text: mcpFact(access) },
-    ...(armadaAccess && canDelegate
-      ? [{ key: "armada", icon: <RocketIcon />, text: "Let this agent launch other sandboxes" }]
-      : []),
-  ];
+  const [, setSize] = useState<MachineSize | null>(null);
 
   return (
     <div ref={root} className="flex min-h-0 flex-1 flex-col">
@@ -381,6 +376,11 @@ function LaunchForm({
             {access.alerts(() => {
               focusLaunch.current = true;
             }, id)}
+            <DialogClose asChild>
+              <Button type="button" variant="ghost">
+                Cancel
+              </Button>
+            </DialogClose>
             {/* Only set when blocked: preserve SubmitButton's own pending lock otherwise. */}
             <SubmitButton
               className="max-sm:ml-auto"
@@ -395,12 +395,9 @@ function LaunchForm({
                   }
                 : {})}
             >
-              <RocketIcon /> Launch
+              {task?.trim() ? "Launch" : "Launch idle"}
               <SubmitShortcut />
             </SubmitButton>
-            <p className="basis-full text-right text-xs text-muted-foreground">
-              Opens the sandbox page and its conversation.
-            </p>
           </div>
         }
       >
@@ -412,28 +409,12 @@ function LaunchForm({
         <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
         <LaunchFields>
           <LaunchTaskField idPrefix={id} value={task} onChange={onTask} />
-          {templateChooser}
+          {!task?.trim() && templateChooser}
           <div className="space-y-2">
             <p className="text-[13px] font-medium">Settings</p>
             <div className="divide-y overflow-hidden rounded-[10px] border [&_section]:border-0 [&_section>div]:rounded-none [&_section>div]:border-0 [&_[data-launch-location]>div]:rounded-none [&_[data-launch-location]>div]:border-0">
-              <LaunchSentence
-                idPrefix={id}
-                onBlocked={setAccountBlocked}
-                harness={harness}
-                onHarness={(next) => {
-                  setHarness(next);
-                  setArmadaAccess(false);
-                }}
-                account={credential}
-                onAccount={(next) => {
-                  setCredential(next);
-                  setArmadaAccess(false);
-                }}
-                accounts={accounts}
-                catalog={catalog}
-                boatOpenCodeDisabled={provider === "boat" && !boatOpenCodeAvailable}
-              />
               <LaunchLocation
+                compact
                 provider={provider}
                 start={
                   selectedStart ??
@@ -451,74 +432,82 @@ function LaunchForm({
                 project={project}
                 onProject={setProject}
               />
-              <div className="space-y-3 p-3.5">
-                {provider !== "docker" && sizing && (
-                  <MachineSizeField
-                    composer
-                    idPrefix={id}
-                    provider={provider}
-                    policy={sizing.policy}
-                    repositoryDir={project}
-                    onSize={setSize}
-                  />
-                )}
-                <details>
-                  <summary className="cursor-pointer py-2 text-[13px]">
-                    Tools <span className="ml-3 text-muted-foreground">{mcpFact(access)}</span>
-                  </summary>
-                  <div className="pt-2">{access.fields(id)}</div>
-                </details>
-              </div>
+              <LaunchSentence
+                idPrefix={id}
+                onBlocked={setAccountBlocked}
+                harness={harness}
+                onHarness={(next) => {
+                  setHarness(next);
+                  setArmadaAccess(false);
+                }}
+                account={credential}
+                onAccount={(next) => {
+                  setCredential(next);
+                  setArmadaAccess(false);
+                }}
+                accounts={accounts}
+                catalog={catalog}
+                boatOpenCodeDisabled={provider === "boat" && !boatOpenCodeAvailable}
+              />
+              {provider !== "docker" && sizing && (
+                <MachineSizeField
+                  composer
+                  idPrefix={id}
+                  provider={provider}
+                  policy={sizing.policy}
+                  repositoryDir={project}
+                  onSize={setSize}
+                />
+              )}
+              {(!sizing || provider === "docker") && (
+                <LaunchSetting
+                  label="Machine"
+                  value="Provider default"
+                  description="Uses the selected snapshot’s machine configuration"
+                >
+                  <p className="text-sm text-muted-foreground">
+                    Machine overrides are not available for this starting point.
+                  </p>
+                </LaunchSetting>
+              )}
+              <LaunchSetting
+                label="Options"
+                value={`Stops after ${
+                  ttlOptions(provider)
+                    .find((x) => x.value === ttl)
+                    ?.label.replace("Default (", "")
+                    .replace(")", "") ?? "4 hours"
+                }`}
+                description={`Private sandbox · ${mcpFact(access)}`}
+              >
+                <LaunchChoice label="Stops after" value={ttl} options={ttlOptions(provider)} onChange={setTtl} />
+                <input type="hidden" name="ttl" value={ttl} />
+                {access.fields(id)}
+                <p className="mt-3 text-xs text-muted-foreground">
+                  The machine pauses without activity and wakes on your next message, until the time is up.
+                </p>
+                <LaunchAdvanced open={advancedOpen} onOpenChange={setAdvancedOpen}>
+                  <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
+                  {provider !== "docker" && (
+                    <Label className="flex min-h-11 items-center gap-2">
+                      <Checkbox
+                        name="armada_access"
+                        checked={armadaAccess && canDelegate}
+                        onCheckedChange={(checked) => setArmadaAccess(checked === true)}
+                        disabled={!canDelegate}
+                      />
+                      Let this agent launch other sandboxes
+                      <span className="sr-only">
+                        {canDelegate
+                          ? "Manage up to 3 child sandboxes in this organization using the selected snapshot and account."
+                          : "Choose Codex and an active account to enable."}
+                      </span>
+                    </Label>
+                  )}
+                </LaunchAdvanced>
+              </LaunchSetting>
             </div>
           </div>
-          <LaunchAdvanced
-            open={advancedOpen}
-            onOpenChange={setAdvancedOpen}
-            summary={
-              <span
-                data-launch-summary
-                className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground sm:flex-1 sm:justify-end"
-              >
-                {summary.map((fact, index) => (
-                  <Fragment key={fact.key}>
-                    {index > 0 && <span className="sr-only"> · </span>}
-                    <span
-                      data-launch-fact={fact.key}
-                      className="inline-flex max-w-full items-center gap-1 rounded-full border bg-background px-2 py-0.5 dark:bg-input/30 [&_svg]:size-3 [&_svg]:shrink-0"
-                    >
-                      <span aria-hidden="true" className="contents">
-                        {fact.icon}
-                      </span>
-                      <span className="truncate">{fact.text}</span>
-                    </span>
-                  </Fragment>
-                ))}
-              </span>
-            }
-          >
-            <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
-
-            {provider !== "docker" && (
-              <div className="space-y-1.5">
-                <Label htmlFor={`${id}-armada-access`} className="flex min-h-11 items-center gap-2">
-                  <Checkbox
-                    id={`${id}-armada-access`}
-                    name="armada_access"
-                    checked={armadaAccess && canDelegate}
-                    onCheckedChange={(checked) => setArmadaAccess(checked === true)}
-                    disabled={!canDelegate}
-                    aria-describedby={`${id}-armada-access-hint`}
-                  />
-                  Let this agent launch other sandboxes
-                </Label>
-                <p id={`${id}-armada-access-hint`} className="text-xs text-pretty text-muted-foreground">
-                  {canDelegate
-                    ? "Let this private sandbox launch and manage up to 3 child sandboxes in this organization, using the selected snapshot and account."
-                    : "Choose Codex and an active account to let this agent launch other sandboxes."}
-                </p>
-              </div>
-            )}
-          </LaunchAdvanced>
         </LaunchFields>
       </ActionForm>
     </div>
@@ -716,9 +705,4 @@ export function mcpFact(access: { unavailable: boolean; selected: number; select
   if (access.unavailable) return "Tools unavailable";
   if (access.selected === 1 && access.selectedName) return `${access.selectedName} connected`;
   return access.selected === 0 ? "No tools" : `${access.selected} ${access.selected === 1 ? "tool" : "tools"}`;
-}
-
-/** The machine size a launch requests, as one summary fact named apart from effort; without one the provider decides. */
-function sizeFact(size: MachineSize | null): string {
-  return `${size ? MACHINE_SIZE_LABELS[size] : "Default"} machine`;
 }

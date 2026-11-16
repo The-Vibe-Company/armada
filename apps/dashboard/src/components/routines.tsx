@@ -51,8 +51,9 @@ export function CreateRoutineDialog(props: { orgId: string; isAdmin: boolean; te
         if (next) setGeneration((x) => x + 1);
       }}
       triggerAttrs={{ "data-new-routine": "" }}
+      className="sm:max-w-[560px]"
     >
-      <RoutineForm key={generation} {...props} onDone={onDone} />
+      <RoutineForm key={generation} {...props} onDone={onDone} onCancel={() => setOpen(false)} />
     </CreateDialog>
   );
 }
@@ -61,11 +62,13 @@ function RoutineForm({
   isAdmin,
   templates,
   onDone,
+  onCancel,
 }: {
   orgId: string;
   isAdmin: boolean;
   templates: TemplateHeader[];
   onDone: (message: string) => void;
+  onCancel: () => void;
 }) {
   const preserve = usePreservedActionForm();
   const [result, action, pending] = useMutationState(createRoutine),
@@ -82,104 +85,117 @@ function RoutineForm({
       <input type="hidden" name="org" value={orgId} />
       <input type="hidden" name="revision" value={selected?.currentRevision ?? ""} />
       <fieldset disabled={pending} className="space-y-4 text-sm">
-        <div className="flex flex-wrap items-center gap-2">
-          <Label htmlFor={`${base}-interval`}>Every</Label>
-          <Input
-            id={`${base}-interval`}
-            aria-label="Interval in hours"
-            className="w-20"
-            type="number"
-            name="interval"
-            min={1}
-            max={720}
-            step={1}
-            defaultValue={24}
-            required
-          />
-          <span>hours, launch</span>
-          <NativeSelect
-            id={`${base}-template`}
-            aria-label="Template"
-            className="w-full sm:w-auto sm:max-w-64"
-            name="template"
-            required
-            value={template}
-            onChange={(e) => setTemplate(e.target.value)}
-          >
-            <option value="" disabled>
-              Choose a template
-            </option>
-            {available.map((x) => (
-              <option key={x.id} value={x.id}>
-                {x.name}
-              </option>
-            ))}
-          </NativeSelect>
-          <Label htmlFor={`${base}-prompt`}>with this task:</Label>
-        </div>
-        {!available.length && (
-          <p>
-            No eligible templates.{" "}
-            <Link href="/templates" className="underline">
-              Create a template
-            </Link>{" "}
-            first.
-          </p>
-        )}
-        <Textarea
-          id={`${base}-prompt`}
-          name="prompt"
-          required
-          maxLength={32000}
-          rows={3}
-          placeholder="What should the agent do each time?"
-        />
-        <div className="flex flex-wrap items-center gap-2">
-          <Label htmlFor={`${base}-name`}>Call it</Label>
+        <div className="space-y-2">
+          <Label htmlFor={`${base}-name`}>Name</Label>
           <Input
             id={`${base}-name`}
-            className="w-full sm:w-52"
             name="name"
             required
             maxLength={200}
-            placeholder="Daily code review"
+            placeholder="Nightly dependency audit"
             autoComplete="off"
           />
-          <span>for</span>
-          {isAdmin ? (
-            <NativeSelect
-              aria-label="Visibility (permanent)"
-              className="w-auto"
-              name="scope"
-              value={scope}
-              onChange={(e) => {
-                setScope(e.target.value);
-                setTemplate("");
-              }}
-            >
-              <option value="personal">only you</option>
-              <option value="org">the organization</option>
-            </NativeSelect>
-          ) : (
-            <>
-              <input type="hidden" name="scope" value="personal" />
-              <span>only you</span>
-            </>
-          )}
-          <Label htmlFor={`${base}-ttl`}>. Each run lasts up to</Label>
-          <Input
-            id={`${base}-ttl`}
-            className="w-24"
-            type="number"
-            name="ttl"
-            required
-            min={5}
-            max={1440}
-            step={1}
-            defaultValue={60}
-          />
-          <span>minutes.</span>
         </div>
+        <fieldset className="space-y-2">
+          <legend className="mb-2 text-[13px] font-medium">Template</legend>
+          <input type="hidden" name="template" value={template} />
+          <div className="divide-y overflow-hidden rounded-[10px] border">
+            {available.map((item) => (
+              <label
+                key={item.id}
+                className="flex cursor-pointer items-center gap-3 px-3 py-3 has-checked:bg-primary/10"
+              >
+                <input
+                  type="radio"
+                  name={`${base}-template-choice`}
+                  value={item.id}
+                  checked={template === item.id}
+                  onChange={() => setTemplate(item.id)}
+                  required
+                  className="accent-primary"
+                />
+                <span className="text-sm font-medium">{item.name}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <div className="space-y-2">
+          <Label htmlFor={`${base}-interval`}>Schedule</Label>
+          <div className="flex items-center gap-2">
+            <span>Every</span>
+            <Input
+              id={`${base}-interval`}
+              aria-label="Interval in hours"
+              className="w-20"
+              type="number"
+              name="interval"
+              min={1}
+              max={720}
+              step={1}
+              defaultValue={24}
+              required
+            />
+            <span>hours</span>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`${base}-prompt`}>Task</Label>
+          {!available.length && (
+            <p>
+              No eligible templates.{" "}
+              <Link href="/templates" className="underline">
+                Create a template
+              </Link>{" "}
+              first.
+            </p>
+          )}
+          <Textarea
+            id={`${base}-prompt`}
+            name="prompt"
+            required
+            maxLength={32000}
+            rows={3}
+            placeholder="What should the agent do each time?"
+          />
+        </div>
+        <details>
+          <summary className="cursor-pointer text-[13px]">Options</summary>
+          <div className="mt-3 space-y-3">
+            <Label>Visible to</Label>
+            {isAdmin ? (
+              <NativeSelect
+                aria-label="Visibility (permanent)"
+                className="w-auto"
+                name="scope"
+                value={scope}
+                onChange={(e) => {
+                  setScope(e.target.value);
+                  setTemplate("");
+                }}
+              >
+                <option value="personal">only you</option>
+                <option value="org">the organization</option>
+              </NativeSelect>
+            ) : (
+              <>
+                <input type="hidden" name="scope" value="personal" />
+                <span>only you</span>
+              </>
+            )}
+            <Label htmlFor={`${base}-ttl`}>Each run lasts up to (minutes)</Label>
+            <Input
+              id={`${base}-ttl`}
+              className="w-24"
+              type="number"
+              name="ttl"
+              required
+              min={5}
+              max={1440}
+              step={1}
+              defaultValue={60}
+            />
+          </div>
+        </details>
         <details>
           <summary className="cursor-pointer text-muted-foreground">Safety limit</summary>
           <div className="mt-3 flex items-center gap-2">
@@ -199,12 +215,7 @@ function RoutineForm({
           </div>
         </details>
         <p className="text-xs text-muted-foreground">
-          The task is readable by anyone who can see the routine: no password or key in it. It keeps the template as it
-          is today, even if the template changes later. A routine cannot be edited after creation: you can only switch
-          it on or off, or delete it. Visibility is permanent.
-        </p>
-        <p className="text-xs text-muted-foreground">
-          The first run comes one interval after you turn it on. It runs as you, with your accounts and access.
+          Starts paused, using your accounts and the template’s current revision. Visibility is permanent.
         </p>
       </fieldset>
       {result && !result.ok && (
@@ -212,8 +223,10 @@ function RoutineForm({
           {result.error}
         </p>
       )}
-      <div className="flex items-center justify-between gap-3 border-t pt-4">
-        <p className="text-xs text-muted-foreground">Created switched off; turn it on from the list.</p>
+      <div className="flex items-center justify-end gap-3 border-t pt-4">
+        <Button type="button" variant="ghost" disabled={pending} onClick={onCancel}>
+          Cancel
+        </Button>
         <SubmitButton disabled={pending || !available.length}>Create routine</SubmitButton>
       </div>
     </form>

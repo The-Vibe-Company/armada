@@ -8,7 +8,7 @@ const row = (page: Page, name: string) => page.locator(`[data-routine="${name}"]
 const shownPanel = (page: Page, name: string) => page.locator(`[data-routine-panel="${name}"]`);
 async function panel(page: Page, name: string) {
   const target = shownPanel(page, name);
-  if (!(await target.isVisible())) await row(page, name).locator("[data-select-item]").click();
+  if (!(await target.isVisible())) await row(page, name).locator("[data-select-item]").first().click();
   await expect(target).toBeVisible();
   return target;
 }
@@ -75,7 +75,7 @@ for (const mobile of [false, true]) {
     await page.getByRole("button", { name: "New routine", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "New routine" });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByLabel("with this task:", { exact: true })).toBeVisible();
+    await expect(dialog.getByLabel("Task", { exact: true })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeInViewport();
     await page.screenshot({
       path: `test-results/routines-create-${mobile ? "phone" : "desktop"}.png`,
@@ -92,10 +92,10 @@ test("create pins a revision and preserves the prompt; enable/pause submit fresh
   await signIn(page, "alice@example.com", "/routines");
   await page.getByRole("button", { name: "New routine", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "New routine" });
-  await dialog.getByLabel("Call it", { exact: true }).fill("Weekly notes");
-  await dialog.getByLabel("Template", { exact: true }).selectOption(MODAL_TEMPLATE);
+  await dialog.getByLabel("Name", { exact: true }).fill("Weekly notes");
+  await dialog.getByRole("radio", { name: "Modal quick fix", exact: true }).check();
   const prompt = "  Summarize this week's changes.\nDo not edit files.  ";
-  await dialog.getByLabel("with this task:", { exact: true }).fill(prompt);
+  await dialog.getByLabel("Task", { exact: true }).fill(prompt);
   await dialog.getByLabel("Interval in hours", { exact: true }).fill("1");
   await dialog.getByRole("button", { name: "Create routine", exact: true }).click();
   await expect(dialog).toBeHidden();
@@ -128,13 +128,13 @@ test("create cannot be resubmitted while the server is still accepting its first
   await signIn(page, "alice@example.com", "/routines");
   await page.getByRole("button", { name: "New routine", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "New routine" });
-  await dialog.getByLabel("Call it", { exact: true }).fill("Pending review");
-  await dialog.getByLabel("Template", { exact: true }).selectOption(MODAL_TEMPLATE);
-  await dialog.getByLabel("with this task:", { exact: true }).fill("Read-only review.");
+  await dialog.getByLabel("Name", { exact: true }).fill("Pending review");
+  await dialog.getByRole("radio", { name: "Modal quick fix", exact: true }).check();
+  await dialog.getByLabel("Task", { exact: true }).fill("Read-only review.");
   await configure({ holdCreate: true });
   try {
     await dialog.getByRole("button", { name: "Create routine", exact: true }).click();
-    await expect(dialog.getByLabel("Call it", { exact: true })).toBeDisabled();
+    await expect(dialog.getByLabel("Name", { exact: true })).toBeDisabled();
     await expect(dialog.getByRole("button", { name: "Create routine", exact: true })).toBeDisabled();
   } finally {
     await configure({ holdCreate: false });
