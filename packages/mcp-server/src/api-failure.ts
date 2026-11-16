@@ -4,6 +4,7 @@ import {
   EncryptionKeyError,
   GitHubHydrationError,
   LaunchError,
+  launchFailureHelp,
   ProviderError,
   providerRateLimitDetails,
   providerRateLimitMessage,
@@ -51,7 +52,7 @@ export function providerFailureResponse(error: ProviderError) {
     status: category ? API_FAILURE_STATUS[category] : (statuses.get(error.code) ?? 503),
     error: {
       code: category ?? error.code,
-      message: limit ? providerRateLimitMessage(limit) : error.message,
+      message: limit ? providerRateLimitMessage(limit) : (launchFailureHelp(error.code) ?? error.message),
       ...(limit
         ? { details: limit }
         : error.details?.keepSource === true

@@ -1,4 +1,4 @@
-import { SIZED_LAUNCH_ROUTE_V1 } from "@armada/core";
+import { launchFailureHelp, SIZED_LAUNCH_ROUTE_V1 } from "@armada/core";
 import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost, LAUNCH_TIMEOUT_MS } from "./control.ts";
 import type { LaunchArgs } from "./model-choice.ts";
@@ -144,7 +144,11 @@ export function decodeLaunchAttempt(value: string | undefined): LaunchAttempt | 
 }
 
 /** Only curated guidance reaches the launch dialog; followLaunch owns uncertain outcomes and request keys. */
-export function launchFailureMessage(error: Pick<ControlError, "status" | "code" | "message">): string {
+export function launchFailureMessage(
+  error: Pick<ControlError, "status" | "code" | "message"> & { details?: unknown },
+): string {
+  const help = launchFailureHelp(error.code, error.details, error.message);
+  if (help) return help;
   if (error.code?.startsWith("skillpack_")) return skillLaunchFailure(error.code);
   if (
     error.code?.startsWith("model_account_") ||
@@ -162,10 +166,6 @@ export function launchFailureMessage(error: Pick<ControlError, "status" | "code"
         return `${known} Ask an Armada administrator to finish setup, then reload Snapshots.`;
     }
   }
-  if (error.code === "payment_required")
-    return "Check the provider account's plan or billing limits before launching again.";
-  if (error.code === "rate_limited")
-    return "The provider reached a limit. Wait for its limits to reset before launching again.";
   if (error.status === 401) return "Your session ended. Sign in again, then reload Snapshots.";
   if (error.status === 403 || error.code === "forbidden")
     return "Launch access was refused. Check provider and organization permissions.";

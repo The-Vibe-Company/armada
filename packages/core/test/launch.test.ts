@@ -1109,7 +1109,11 @@ exit 1
       log.mockRestore();
     }
     expect(waits).toEqual([1000]);
-    expect(diagnostics.map((line) => JSON.parse(line))).toEqual([
+    expect(
+      diagnostics
+        .map((line) => JSON.parse(line))
+        .filter((entry) => entry.event === "launch_repository_ownership_retry"),
+    ).toEqual([
       {
         event: "launch_repository_ownership_retry",
         sandboxId: [...world.rows.keys()][0],

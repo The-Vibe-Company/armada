@@ -1,4 +1,4 @@
-import { describeNativeFailure, planLimitFromMessage, planLimitMessage } from "@armada/core";
+import { API_FAILURE_HELP, describeNativeFailure, planLimitFromMessage, planLimitMessage } from "@armada/core";
 
 export type FailureHelp = {
   title: string;
@@ -45,6 +45,10 @@ const HELP: Record<string, FailureHelp> = {
   },
   auth_expiry: AUTH,
   unauthorized: AUTH,
+  provider_routing_unavailable: {
+    title: "Server provider setup incomplete",
+    hint: API_FAILURE_HELP.provider_routing_unavailable,
+  },
   provider_not_configured: {
     title: "No subscription for this agent",
     hint: "Neither you nor the org has a subscription or API key for this agent. Add one, then launch again.",

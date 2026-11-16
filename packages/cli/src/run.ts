@@ -438,7 +438,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     }
     const printFailure = (message: string) =>
       io.err(
-        `armada: ${snapshotText(message)}\n${argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? "") ? "" : "Next step: run armada doctor to check setup or armada --help for usage. For uncertain launch outcomes, inspect armada list before retrying.\n"}`,
+        `armada: ${snapshotText(message)}\n${(error instanceof ArmadaApiError && argv[0] === "launch") || (argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? "")) ? "" : "Next step: run armada doctor to check setup or armada --help for usage. For uncertain launch outcomes, inspect armada list before retrying.\n"}`,
       );
     if (error instanceof GoldenError) {
       printFailure(error.message);

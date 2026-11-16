@@ -6,6 +6,7 @@ export {
   GitHubHydrationError,
   type GitHubHydrationPhase,
   githubHydrationPhase,
+  launchFailureHelp,
 } from "./api-failure.ts";
 export { type ApplicationSecretBinding, parseApplicationSecretBindings } from "./application-secret-bindings.ts";
 export {
@@ -323,7 +324,7 @@ export {
   type SteerRequest,
   type ToolCall,
 } from "./provider.ts";
-export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
+export { type ProviderRateLimitDetails, providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
 export {
   goldenCompatibilityIds,
   goldenResponse,

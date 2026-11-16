@@ -90,7 +90,7 @@ export interface HandlerOptions {
   /**
    * The Modal provider for a Modal golden or sandbox, given the caller's resolved Modal token pair and the
    * golden's pinned binding. Absent until the Modal adapter (#513): a Modal record then gets a typed
-   * `provider_not_configured`, never a Boat provider. The adapter must refuse tokens of another workspace
+   * `provider_routing_unavailable`, never a Boat provider. The adapter must refuse tokens of another workspace
    * than `binding.workspace`, so a rotated or replaced token pair cannot redirect a pinned golden.
    */
   modalProviderFor?: (
@@ -258,7 +258,11 @@ export function providerRegistry(
     boat: async (target, caller) => {
       const runtime = target.boatRuntime ? options.runtimeProviderFor : undefined;
       if (target.boatRuntime && (!target.id || !runtime))
-        throw new ProviderRoutingError("provider_not_configured", "boat", "Armada runtime routing is not configured.");
+        throw new ProviderRoutingError(
+          "provider_routing_unavailable",
+          "boat",
+          "Armada runtime routing is not configured.",
+        );
       const { key, scope } = await resolveBoatKey(options.vault, options.encryptionKey, {
         userId: caller.userId,
         orgId: target.orgId,

@@ -67,7 +67,7 @@ describe("provider routing", () => {
     expect(ambiguous.text).toContain("exists on boat and modal");
     const unconfigured = await call(mcp, "launch", { golden: "shared", provider: "modal", harness: "claude" });
     expect(unconfigured.isError).toBe(true);
-    expect(unconfigured.text).toContain("error code: provider_not_configured");
+    expect(unconfigured.text).toContain("error code: provider_routing_unavailable");
     expect(server.boat.forks).toEqual([]);
 
     const onBoat = await call(mcp, "launch", { golden: "shared", provider: "boat", harness: "claude" });

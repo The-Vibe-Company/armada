@@ -340,3 +340,29 @@ test("a template replay's confirmed refusal is not reported as still pending", a
   ).rejects.toMatchObject({ status: 400, code: "launch_unavailable" });
   expect(calls).toBe(2);
 });
+
+test("typed launch causes override misleading HTTP statuses without exposing diagnostics", () => {
+  const repositoryHelp = "Repository private needs a GitHub connection with read access. Run armada github connect.";
+  expect(launchFailureMessage(new ControlError(repositoryHelp, 400, "no_credentials"))).toBe(repositoryHelp);
+  for (const [code, status, expected] of [
+    ["provider_routing_unavailable", 503, "administrator"],
+    ["provider_not_configured", 503, "model account"],
+    ["start_failed", 400, "could not start"],
+    ["init_failed", 400, "initialization"],
+    ["prompt_failed", 400, "first prompt"],
+    ["host_full", 409, "slots"],
+    ["dependency_unavailable", 503, "dependency"],
+  ] as const) {
+    const message = launchFailureMessage(new ControlError("private_diagnostic", status, code));
+    expect(message).toContain(expected);
+    expect(message).not.toContain("private_diagnostic");
+    expect(message).not.toContain("could not be confirmed");
+  }
+  expect(
+    launchFailureMessage(
+      new ControlError("private_diagnostic", 429, "rate_limited", {
+        details: { nextStartAt: "2026-11-17T00:00:00.000Z" },
+      }),
+    ),
+  ).toContain("2026-11-17T00:00:00.000Z");
+});
