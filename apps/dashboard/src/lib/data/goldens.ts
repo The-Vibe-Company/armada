@@ -1,4 +1,5 @@
 import type { Golden } from "@armada/core";
+import { boundedEnrichment } from "@/lib/bounded-enrichment";
 import type { Supabase } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 
@@ -44,14 +45,10 @@ export async function findGoldenLabel(
 ): Promise<Pick<GoldenRow, "id" | "name" | "removed_at"> | null> {
   const selected = await selectedOrganization();
   if (!selected) return null;
-  const { data, error } = await supabase
-    .from("goldens")
-    .select("id,name,removed_at")
-    .eq("id", id)
-    .eq("org_id", selected.org.id)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  return data;
+  const data = await boundedEnrichment("findGoldenLabel", [id], (ids) =>
+    supabase.from("goldens").select("id,name,removed_at").in("id", ids).eq("org_id", selected.org.id),
+  );
+  return data[0] ?? null;
 }
 
 /**

@@ -1,6 +1,7 @@
 import type { CredentialKind, Sandbox, SandboxCost, SandboxListMetadata } from "@armada/core";
 import { isUuid } from "@/lib/action";
 import type { BillingAccountMetadata } from "@/lib/billing-account";
+import { boundedEnrichment } from "@/lib/bounded-enrichment";
 import type { DockerHostList } from "@/lib/docker-hosts";
 import { parseSandboxListMetadata, type SkippedSandboxRow } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
@@ -107,8 +108,9 @@ export async function credentialKinds(supabase: Supabase, ids: readonly (string 
   const wanted = [...new Set(ids.filter((id): id is string => typeof id === "string"))];
   const kinds = new Map<string, CredentialKind>();
   if (wanted.length === 0) return kinds;
-  const { data, error } = await supabase.from("credentials").select("id,kind").in("id", wanted);
-  if (error) throw new Error(error.message);
+  const data = await boundedEnrichment("credentialKinds", wanted, (ids) =>
+    supabase.from("credentials").select("id,kind").in("id", ids),
+  );
   for (const row of data ?? []) kinds.set(row.id, row.kind);
   return kinds;
 }
@@ -121,8 +123,9 @@ export async function credentialMetadata(
   const wanted = [...new Set(ids.filter((id): id is string => typeof id === "string"))];
   const accounts = new Map<string, BillingAccountMetadata>();
   if (wanted.length === 0) return accounts;
-  const { data, error } = await supabase.from("credentials").select("id,name,kind").in("id", wanted);
-  if (error) return accounts;
+  const data = await boundedEnrichment("credentialMetadata", wanted, (ids) =>
+    supabase.from("credentials").select("id,name,kind").in("id", ids),
+  );
   for (const row of data ?? []) accounts.set(row.id, { id: row.id, name: row.name, kind: row.kind });
   return accounts;
 }
@@ -147,11 +150,12 @@ export async function sandboxCosts(supabase: Supabase, ids: readonly string[]): 
   // A malformed sandbox id is never queried.
   const wanted = [...new Set(ids)].filter(isUuid);
   if (wanted.length === 0) return costs;
-  const { data, error } = await supabase
-    .from("sandboxes")
-    .select("id,harness,credential_id,usage_turns,usage_runtime_seconds,usage_running_since")
-    .in("id", wanted);
-  if (error) throw new Error(error.message);
+  const data = await boundedEnrichment("sandboxCosts", wanted, (ids) =>
+    supabase
+      .from("sandboxes")
+      .select("id,harness,credential_id,usage_turns,usage_runtime_seconds,usage_running_since")
+      .in("id", ids),
+  );
   const kinds = await credentialKinds(
     supabase,
     (data ?? []).map((row) => row.credential_id),
@@ -171,14 +175,14 @@ export async function listSandboxHostNames(
   if (wanted.length === 0 || hosts === null) return names;
   const selected = await selectedOrganization();
   if (!selected) return names;
-  const { data, error } = await supabase
-    .from("sandboxes")
-    .select("id,docker_host_id")
-    .eq("org_id", selected.org.id)
-    .eq("provider", "docker")
-    .in("id", wanted);
-  // A failed/partial read is not a claim that the host was removed or never existed.
-  if (error) return names;
+  const data = await boundedEnrichment("listSandboxHostNames", wanted, (ids) =>
+    supabase
+      .from("sandboxes")
+      .select("id,docker_host_id")
+      .eq("org_id", selected.org.id)
+      .eq("provider", "docker")
+      .in("id", ids),
+  );
   const byId = new Map(hosts.hosts.map((host) => [host.id, host]));
   for (const row of data ?? []) {
     const host = row.docker_host_id ? byId.get(row.docker_host_id) : undefined;

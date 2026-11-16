@@ -24,6 +24,7 @@ import { SandboxToolbar } from "@/components/sandbox-toolbar";
 import LoadingSandboxes from "@/components/sandboxes-skeleton";
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
+import { boundedEnrichment } from "@/lib/bounded-enrichment";
 import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
 import { listSandboxCosts, listSandboxHostNames } from "@/lib/data/sandboxes";
@@ -102,17 +103,15 @@ async function SandboxesContent({ searchParams }: Props) {
     const readableIds = rows.filter((row) => row.canOpen).map((row) => row.id);
     const snapshots = new Map<string, string>();
     if (readableIds.length) {
-      const { data, error } = await supabase.from("sandboxes").select("id,golden_id").in("id", readableIds);
-      if (error) throw new Error(error.message);
+      const data = await boundedEnrichment("sandboxSnapshotBindings", readableIds, (ids) =>
+        supabase.from("sandboxes").select("id,golden_id").in("id", ids),
+      );
       const goldenIds = [...new Set((data ?? []).flatMap((row) => (row.golden_id ? [row.golden_id] : [])))];
       const labels = new Map<string, string>();
       if (goldenIds.length) {
-        const { data: goldens, error } = await supabase
-          .from("goldens")
-          .select("id,name")
-          .eq("org_id", selected.org.id)
-          .in("id", goldenIds);
-        if (error) throw new Error(error.message);
+        const goldens = await boundedEnrichment("sandboxSnapshotLabels", goldenIds, (ids) =>
+          supabase.from("goldens").select("id,name").eq("org_id", selected.org.id).in("id", ids),
+        );
         for (const golden of goldens ?? []) labels.set(golden.id, golden.name);
       }
       for (const row of data ?? [])
