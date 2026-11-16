@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.49.6](https://github.com/The-Vibe-Company/armada/compare/v2.49.5...v2.49.6) (2026-11-16)
+
+
+### Bug Fixes
+
+* **errors:** preserve runtime and email sign-in diagnoses ([#2479](https://github.com/The-Vibe-Company/armada/issues/2479)) ([42632f7](https://github.com/The-Vibe-Company/armada/commit/42632f712a1f639fa07ed90202cec2f6fba8defb))
+* **server:** settle managed child stops after physical closure ([#2481](https://github.com/The-Vibe-Company/armada/issues/2481)) ([1884cc0](https://github.com/The-Vibe-Company/armada/commit/1884cc04ade339c4c7745f5c3b3127dffc8df41e))
+
 ## [2.49.5](https://github.com/The-Vibe-Company/armada/compare/v2.49.4...v2.49.5) (2026-11-16)
 
 
