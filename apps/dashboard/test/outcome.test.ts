@@ -79,12 +79,11 @@ describe("outcomeView", () => {
 });
 
 describe("settledOutcome", () => {
-  test("a failed, deleted, starting or stopping sandbox reads as that, not as an earlier outcome", () => {
+  test("a deleted, starting or stopping sandbox reads as that, not as an earlier outcome", () => {
     const ready = { state: "ready" } as const;
-    for (const status of ["ready", "running", "stopped"] as const)
+    for (const status of ["ready", "running", "stopped", "failed"] as const)
       expect(settledOutcome(status, ready)?.kind).toBe("ready");
-    for (const status of ["failed", "deleted", "starting", "stopping"] as const)
-      expect(settledOutcome(status, ready)).toBeNull();
+    for (const status of ["deleted", "starting", "stopping"] as const) expect(settledOutcome(status, ready)).toBeNull();
   });
 });
 

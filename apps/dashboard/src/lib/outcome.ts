@@ -81,13 +81,11 @@ export function safeHref(value: string | undefined): string | null {
 }
 
 /**
- * The outcome a list row or a conversation header shows, by the board's rule: a failed, deleted, starting or stopping
+ * The outcome a list row or a conversation header shows, by the board's rule: a deleted, starting or stopping
  * sandbox reads as that, never as the outcome of a turn before it.
  */
 export function settledOutcome(status: SandboxStatus, outcome: TaskOutcome | null | undefined): OutcomeView | null {
-  return status === "failed" || status === "deleted" || status === "starting" || status === "stopping"
-    ? null
-    : outcomeView(outcome);
+  return status === "deleted" || status === "starting" || status === "stopping" ? null : outcomeView(outcome);
 }
 
 /** The command that retrieves the latest recovery archive; its output is sensitive, so it goes to a private file. */
