@@ -1,5 +1,5 @@
 import { BodyTooLargeError } from "@armada/auth";
-import { API_FAILURE_STATUS, GitHubHydrationError } from "@armada/core";
+import { API_FAILURE_STATUS, GitHubHydrationError, launchFailureHelp } from "@armada/core";
 import {
   ENCRYPTION_KEY_ENV,
   EncryptionKeyError,
@@ -54,12 +54,13 @@ export function controlFailureResponse(error: unknown): Response {
   if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
   if (error instanceof AuthUnavailable)
     return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
-  if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
+  if (error instanceof ProviderRoutingError)
+    return fail(503, error.code, launchFailureHelp(error.code, undefined, error.message) ?? error.message);
   if (error instanceof LaunchError)
     return fail(
-      400,
+      ["start_failed", "init_failed", "prompt_failed"].includes(error.code) ? 502 : 400,
       error.code,
-      error.message,
+      launchFailureHelp(error.code, undefined, error.message) ?? error.message,
       error.reason
         ? { reason: error.reason, action: error.action, ...(error.stage ? { stage: error.stage } : {}) }
         : undefined,
