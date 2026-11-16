@@ -12,10 +12,15 @@ import {
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createSubscriptionBroker } from "../src/subscription-broker.ts";
-import { database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
+import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+
+const database = rowOnlyDatabase();
 
 test("three subscription launches prompt despite trapped history and share one refresh across replicas", async () => {
   const { db, people } = await database();
+  let release: (() => void) | undefined;
+  const pending: Promise<unknown>[] = [];
   try {
     const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
     const raw = JSON.stringify({
@@ -46,7 +51,6 @@ test("three subscription launches prompt despite trapped history and share one r
       crypto.randomUUID(),
     ]);
     let requests = 0;
-    let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
@@ -132,9 +136,12 @@ test("three subscription launches prompt despite trapped history and share one r
       revision: 0,
     });
     const first = broker.route(request(0, 0));
+    pending.push(first);
     await started;
     const second = replica.route(request(1, 0));
+    pending.push(second);
     const third = broker.route(request(2, 0));
+    pending.push(third);
     // A late authenticated guest observation updates only the sealed registry
     // while the vendor response is pending, not the broker's auth revision.
     await db.transaction(async (tx) => {
@@ -152,7 +159,7 @@ test("three subscription launches prompt despite trapped history and share one r
         await encryptSecret(JSON.stringify(observed), ENCRYPTION_KEY),
       ]);
     });
-    release();
+    release?.();
     for (const response of await Promise.all([first, second, third])) {
       expect(response?.status).toBe(200);
       const body = await response!.text();
@@ -181,91 +188,89 @@ test("three subscription launches prompt despite trapped history and share one r
     ]);
     expect((await broker.route(request(1)))?.status).toBe(403);
   } finally {
-    await db.close();
+    release?.();
+    await Promise.allSettled(pending);
   }
 });
 
 test("uncertain upstream refresh is never replayed", async () => {
   const { db, people } = await database();
-  try {
-    const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
-    const raw = JSON.stringify({
-      tokens: { access_token: "legacy-access", refresh_token: "legacy-refresh", account_id: "legacy-account" },
-    });
-    const original = (
-      await db.query<{ id: string }>(
-        "insert into credentials(scope,owner_id,kind,value_enc,name) values('user',$1,'codex_auth',$2,'Original') returning id",
-        [people.owner, await encryptSecret(raw, ENCRYPTION_KEY)],
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const raw = JSON.stringify({
+    tokens: { access_token: "legacy-access", refresh_token: "legacy-refresh", account_id: "legacy-account" },
+  });
+  const original = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc,name) values('user',$1,'codex_auth',$2,'Original') returning id",
+      [people.owner, await encryptSecret(raw, ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  let requests = 0;
+  let reply: "lost" | "temporary" | "success" = "lost";
+  const broker = createSubscriptionBroker(db, ENCRYPTION_KEY, "https://armada.example", (async () => {
+    requests++;
+    if (reply === "temporary") return Response.json({ error: "upstream_private_detail" }, { status: 503 });
+    if (reply === "success")
+      return Response.json({ access_token: "recovered-access", refresh_token: "recovered-refresh" });
+    throw Error("network lost after dispatch");
+  }) as unknown as typeof fetch);
+  await broker.enroll(actor, original.id, 1);
+  await expect(broker.access(actor, original.id, 1, 0)).rejects.toMatchObject({
+    code: "unavailable",
+    message: "Sign in again to this ChatGPT account.",
+  });
+  expect(requests).toBe(1);
+  expect(
+    (
+      await db.query<{ source_generation: string }>(
+        "select source_generation from model_auth_state where account_id=$1",
+        [original.id],
       )
-    ).rows[0]!;
-    let requests = 0;
-    let reply: "lost" | "temporary" | "success" = "lost";
-    const broker = createSubscriptionBroker(db, ENCRYPTION_KEY, "https://armada.example", (async () => {
-      requests++;
-      if (reply === "temporary") return Response.json({ error: "upstream_private_detail" }, { status: 503 });
-      if (reply === "success")
-        return Response.json({ access_token: "recovered-access", refresh_token: "recovered-refresh" });
-      throw Error("network lost after dispatch");
-    }) as unknown as typeof fetch);
-    await broker.enroll(actor, original.id, 1);
-    await expect(broker.access(actor, original.id, 1, 0)).rejects.toMatchObject({
-      code: "unavailable",
-      message: "Sign in again to this ChatGPT account.",
-    });
-    expect(requests).toBe(1);
-    expect(
-      (
-        await db.query<{ source_generation: string }>(
-          "select source_generation from model_auth_state where account_id=$1",
-          [original.id],
-        )
-      ).rows[0]!.source_generation,
-    ).toBe("server:uncertain");
-    await expect(broker.access(actor, original.id, 1, 0)).rejects.toMatchObject({
-      code: "unavailable",
-      message: "Sign in again to this ChatGPT account.",
-    });
-    expect(requests).toBe(1);
-    await expect(broker.enroll(actor, original.id, 1)).rejects.toMatchObject({
-      code: "unavailable",
-      message: "Sign in again to this ChatGPT account.",
-    });
-    expect(requests).toBe(1);
-    // Explicit replacement may reconnect, never a hidden retry with the spent token.
-    await db.query("update credentials set value_enc=$2 where id=$1", [
-      original.id,
-      await encryptSecret(raw, ENCRYPTION_KEY),
-    ]);
-    await expect(broker.access(actor, original.id, 1, 0)).rejects.toMatchObject({ code: "credential_refused" });
-    expect(requests).toBe(1);
-    await broker.enroll(actor, original.id, 2);
-    reply = "temporary";
-    await expect(broker.access(actor, original.id, 2, 0)).rejects.toMatchObject({
-      code: "unavailable",
-      message: "Model sign-in is temporarily unavailable. Try again.",
-    });
-    expect(
-      (
-        await db.query<{ source_generation: string }>(
-          "select source_generation from model_auth_state where account_id=$1 and account_version=2",
-          [original.id],
-        )
-      ).rows[0]?.source_generation,
-    ).toBe("server:ready");
-    reply = "success";
-    expect(await broker.access(actor, original.id, 2, 0)).toMatchObject({
-      accessToken: "recovered-access",
-      revision: 1,
-    });
-    expect(requests).toBe(3);
-  } finally {
-    await db.close();
-  }
+    ).rows[0]!.source_generation,
+  ).toBe("server:uncertain");
+  await expect(broker.access(actor, original.id, 1, 0)).rejects.toMatchObject({
+    code: "unavailable",
+    message: "Sign in again to this ChatGPT account.",
+  });
+  expect(requests).toBe(1);
+  await expect(broker.enroll(actor, original.id, 1)).rejects.toMatchObject({
+    code: "unavailable",
+    message: "Sign in again to this ChatGPT account.",
+  });
+  expect(requests).toBe(1);
+  // Explicit replacement may reconnect, never a hidden retry with the spent token.
+  await db.query("update credentials set value_enc=$2 where id=$1", [
+    original.id,
+    await encryptSecret(raw, ENCRYPTION_KEY),
+  ]);
+  await expect(broker.access(actor, original.id, 1, 0)).rejects.toMatchObject({ code: "credential_refused" });
+  expect(requests).toBe(1);
+  await broker.enroll(actor, original.id, 2);
+  reply = "temporary";
+  await expect(broker.access(actor, original.id, 2, 0)).rejects.toMatchObject({
+    code: "unavailable",
+    message: "Model sign-in is temporarily unavailable. Try again.",
+  });
+  expect(
+    (
+      await db.query<{ source_generation: string }>(
+        "select source_generation from model_auth_state where account_id=$1 and account_version=2",
+        [original.id],
+      )
+    ).rows[0]?.source_generation,
+  ).toBe("server:ready");
+  reply = "success";
+  expect(await broker.access(actor, original.id, 2, 0)).toMatchObject({
+    accessToken: "recovered-access",
+    revision: 1,
+  });
+  expect(requests).toBe(3);
 });
 
 test("an unauthorized refresh overlapping an ordinary access read still rotates the rejected revision", async () => {
   const { db, people } = await database();
-  let release!: () => void;
+  let release: (() => void) | undefined;
+  const pending: Promise<unknown>[] = [];
   try {
     const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
     const raw = JSON.stringify({
@@ -310,15 +315,17 @@ test("an unauthorized refresh overlapping an ordinary access read still rotates 
       return Response.json({ access_token: "overlap-after", refresh_token: "overlap-next-refresh" });
     }) as unknown as typeof fetch);
     const ordinary = broker.access(actor, account.id, 1);
+    pending.push(ordinary);
     await selecting;
     const rejected = broker.access(actor, account.id, 1, 0);
+    pending.push(rejected);
     await admitted;
-    release();
+    release?.();
     expect((await ordinary).accessToken).toBe("overlap-before");
     expect(await rejected).toMatchObject({ accessToken: "overlap-after", revision: 1 });
     expect(rotations).toBe(1);
   } finally {
     release?.();
-    await db.close();
+    await Promise.allSettled(pending);
   }
 });
