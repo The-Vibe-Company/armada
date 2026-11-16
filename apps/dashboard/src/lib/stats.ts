@@ -74,7 +74,11 @@ export async function statsRoute(
     console.error("armada dashboard: stats query failed", {
       name: typeof error?.name === "string" ? error.name : undefined,
       code: typeof error?.code === "string" ? error.code : undefined,
+      // This query has exactly one relation. Do not log driver messages:
+      // they can include connection credentials or arbitrary query values.
+      ...(error?.code === "42P01" ? { relation: "auth.users" } : {}),
+      ...(error?.code === "28P01" ? { setting: "ARMADA_DATABASE_URL" } : {}),
     });
-    return Response.json({ error: "stats unavailable" }, { status: 503, headers: NO_STORE });
+    return Response.json({ error: "statistics unavailable" }, { status: 503, headers: NO_STORE });
   }
 }

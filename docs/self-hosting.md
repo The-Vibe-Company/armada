@@ -203,3 +203,41 @@ See [releasing](releasing.md) for publication boundaries and operator prerequisi
 
 Dashboard browser tests are manual-only: run `bun run e2e` against the local mock.
 They do not gate PRs or the merge queue.
+
+### Diagnosing statistics database failures
+
+`/api/stats` uses the dashboard deployment's server-only
+`ARMADA_DATABASE_URL` via `src/lib/stats-db.ts` (not the browser's
+`NEXT_PUBLIC_SUPABASE_URL`, and not an MCP server deployment's environment).
+It must connect to the **same Supabase project's Postgres database** as dashboard
+authentication, with a privileged role able to read `auth.users`.
+Changing the setting requires restarting/redeploying the dashboard: the SQL
+client is cached for the process lifetime.
+
+For incident #2302, the complete relation inventory in `src/lib/stats.ts` is
+**`auth.users` only**. The initial Armada migration
+`20261108120000_schema.sql` explicitly requires that Supabase-owned relation;
+Armada does not create it. Neither the Otto retirement nor the turn-queue
+migrations rename or drop it. No other dashboard server-side SQL read references
+`auth.users`; ordinary dashboard authentication uses the Supabase client.
+
+Consequently a `42P01` from this statement identifies `auth.users` as missing
+in the connected database, not a missing Armada/Otto migration. Do not create
+a replacement users table or apply an unrelated migration. The logs now name the
+relation without logging SQL values or driver messages. The repository alone
+cannot establish the production connection target or whether its schema was
+altered: the owner must verify that `ARMADA_DATABASE_URL` targets the intended
+Supabase database and that `auth.users` exists there. If it targets a different
+database, correct that setting rather than changing this query.
+
+`28P01` means the same connection's credentials were rejected. The owner must
+check the password, role, project/pooler target and URL encoding in the dashboard's
+`ARMADA_DATABASE_URL`; code cannot repair or infer the secret. Both failures
+return HTTP 503, `Cache-Control: no-store`, and
+`{"error":"statistics unavailable"}`, never fabricated zero counts.
+
+After the owner corrects the connection, verify an authorized `GET /api/stats`
+returns 200 with confirmed-user counts for the intended Supabase project and no
+new `42P01`/`28P01` logs. Use an invalid database target only in an isolated
+staging configuration to verify the 503 response; never break production to test
+degradation. Do not expose the bearer or database URL in command arguments/logs.
