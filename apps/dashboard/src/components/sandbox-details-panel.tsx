@@ -48,6 +48,7 @@ export function SandboxDetailsPanel({ children }: { children: ReactNode }) {
   const panel = (
     <Collapsible open={open} onOpenChange={toggle} asChild>
       <section
+        style={headerTarget && !open ? { display: "none" } : undefined}
         data-details-open={open}
         ref={section}
         aria-label="About"

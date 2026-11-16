@@ -180,26 +180,20 @@ export default async function SandboxPage({ params }: Props) {
 
   return (
     <div data-fit-viewport className="space-y-3 md:space-y-4">
-      <div className="space-y-3">
-        {/* On a phone the navigation above already leads back to the sandboxes; the conversation needs the room. */}
-        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
-          <Link href="/sandboxes">
-            <LinkPendingIcon>
-              <ArrowLeftIcon />
-            </LinkPendingIcon>
-            Sandboxes
-          </Link>
-        </Button>
-        {/* One row on every width: a long name wraps inside its heading, the machine's action stays on the right. */}
-        <div className="flex items-center justify-between gap-3">
+      <div className="border-b pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
-              {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {golden?.name ?? "snapshot"}
-            </h1>
-            <p className="w-full text-sm break-words text-muted-foreground">
-              running {sandbox.model ?? "the provider default model"} on {account.name} ·{" "}
-              {sandbox.provider === "boat" ? "Boat cloud" : "Modal cloud"}
-            </p>
+            {/* On a phone the navigation above already leads back to the sandboxes; the conversation needs the room. */}
+            <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
+              <Link href="/sandboxes">
+                <LinkPendingIcon>
+                  <ArrowLeftIcon />
+                </LinkPendingIcon>
+                Sandboxes <span aria-hidden>/</span>
+                <span className="font-mono text-xs">{sandbox.id.slice(0, 8)}</span>
+              </Link>
+            </Button>
+            {/* One row on every width: a long name wraps inside its heading, the machine's action stays on the right. */}
             <SandboxState
               viewerOwns={owner}
               status={sandbox.status}
@@ -239,6 +233,15 @@ export default async function SandboxPage({ params }: Props) {
         className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
       >
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
+          <div className="mx-auto w-full max-w-[780px] space-y-1 px-4 pt-4 sm:px-7">
+            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
+              {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {golden?.name ?? "snapshot"}
+            </h1>
+            <p className="w-full text-sm break-words text-muted-foreground">
+              running {sandbox.model ?? "the provider default model"} on {account.name} ·{" "}
+              {sandbox.provider === "boat" ? "Boat cloud" : "Modal cloud"}
+            </p>
+          </div>
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
@@ -437,23 +440,18 @@ function DockerSandbox({
   ];
   return (
     <div data-fit-viewport data-docker-sandbox className="space-y-3 md:space-y-4">
-      <div className="space-y-3">
-        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
-          <Link href="/sandboxes">
-            <LinkPendingIcon>
-              <ArrowLeftIcon />
-            </LinkPendingIcon>
-            Sandboxes
-          </Link>
-        </Button>
-        <div className="flex items-center justify-between gap-3">
+      <div className="border-b pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
-              {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {host}
-            </h1>
-            <p className="w-full text-sm break-words text-muted-foreground">
-              running {sandbox.model ?? "the provider default model"} on {billing.name} · your server {host}
-            </p>
+            <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
+              <Link href="/sandboxes">
+                <LinkPendingIcon>
+                  <ArrowLeftIcon />
+                </LinkPendingIcon>
+                Sandboxes <span aria-hidden>/</span>
+                <span className="font-mono text-xs">{sandbox.id.slice(0, 8)}</span>
+              </Link>
+            </Button>
             <SandboxState
               viewerOwns={sandbox.owner_id === viewer.id}
               status={sandbox.status}
@@ -494,6 +492,14 @@ function DockerSandbox({
         className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
       >
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
+          <div className="mx-auto w-full max-w-[780px] space-y-1 px-4 pt-4 sm:px-7">
+            <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
+              {HARNESS_LABELS[sandbox.harness] ?? "Agent"} on {host}
+            </h1>
+            <p className="w-full text-sm break-words text-muted-foreground">
+              running {sandbox.model ?? "the provider default model"} on {billing.name} · your server {host}
+            </p>
+          </div>
           {ownerCanChange && (sandbox.status === "ready" || sandbox.status === "stopped") && (
             <SandboxAccountChoice
               sandboxId={sandbox.id}
@@ -650,7 +656,8 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
             <LinkPendingIcon>
               <ArrowLeftIcon />
             </LinkPendingIcon>
-            Sandboxes
+            Sandboxes <span aria-hidden>/</span>
+            <span className="font-mono text-xs">{sandbox.id.slice(0, 8)}</span>
           </Link>
         </Button>
         <div className="flex min-w-0 flex-wrap items-center gap-3">
