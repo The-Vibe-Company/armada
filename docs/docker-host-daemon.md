@@ -389,6 +389,34 @@ consumed/live ticket; deployment changes are not upgrades to an admitted operati
 `ARMADA_DOCKER_HOSTS=1` for retained metadata/journal, cleanup and daemon polling.
 Removing the host flag unmounts both Docker API families; other providers are unaffected.
 
+## Agent-declared completion
+
+The sandbox-scoped Armada MCP surface exposes `finish`. Unlike the owner-facing
+`report` tool (which records the latest finished turn's outcome only), `finish`
+declares that the calling sandbox is no longer needed. It accepts no sandbox ID:
+the current acknowledged epoch binds it to itself, never a sibling or child.
+It requires the existing `worker:stop` grant; it does not grant owner authority.
+
+The report durably requests shutdown. Boat and Modal use their existing
+work-preservation and stop lifecycle. Docker records the runtime preservation
+limitation before dispatching stop, then dispatches permanent deletion as soon
+as the owned stop is acknowledged, without waiting for the retention deadline.
+The response and persisted preservation note warn that runtime Git work is not
+archived: push work before calling `finish`. This is not a claim that a runtime
+checkpoint backs up unpushed Git changes. The diagnostic remains after cleanup.
+Only the exact registration-owned container and home volume are removed; user
+snapshots, shared images/caches and unrelated workloads remain untouched.
+
+Coordinator acceptance on staging: from a scoped Docker agent call `finish`,
+confirm the warning is returned, then confirm stop followed by delete ACKs,
+released account capacity and immediate disappearance of that sandbox's container
+and home volume despite nonzero retention. Confirm the preservation diagnostic
+remains visible and another sandbox/volume and a user snapshot are unchanged.
+From a Modal agent confirm the same scoped report stops its machine through the
+normal lifecycle. Boat is not part of the release gate; any Boat production
+verification is coordinator-only and on demand. Revoked/stale epochs and a
+request containing another sandbox ID must be refused.
+
 ## Host inspection and uninstall (coordinator only)
 
 After ACKed deletion, compare inventories with the recorded baseline. The owned
@@ -410,7 +438,7 @@ hosts; old servers reject the additive report and the daemon retries it safely.
 
 This backend slice does not yet add `armada host --retention`, dashboard retention
 controls or cleanup-deadline display. Those owner-facing surfaces remain follow-up
-work for #2154, as do agent-declared completion, old-image cleanup and disk floors.
+work for #2154, as do old-image cleanup and disk floors.
 To uninstall, first confirm every retained sandbox for this host is deleted; then
 revoke `POST /api/v1/docker/hosts/revoke` with `{"org":"<org>","hostId":"<HOST_ID>"}`
 using normal private bearer delivery. Verify the saved PID belongs to the exact

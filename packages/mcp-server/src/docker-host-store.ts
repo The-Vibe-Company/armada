@@ -57,6 +57,7 @@ type Sandbox = {
   effective_ttl_seconds: number;
   expires_at: Date | string;
   status: string;
+  status_reason?: string | null;
   stop_requested_at: unknown;
   deleted_at: unknown;
 };
@@ -1081,6 +1082,39 @@ export function createDockerHostStore(sql: Sql, key: string) {
                stopped_at=coalesce(stopped_at,now()) where id=$1 and status in ('stopping','failed','stopped')`,
               [job.bound_sandbox_id],
             );
+          // A self-finish stop is a durable cleanup intent, not retained idle compute.
+          // Enqueue removal in this same ACK transaction; a lost ACK can safely repair it.
+          if (job.bound_operation === "stop" && logical?.status_reason === "agent_finished") {
+            const current = await sandbox(tx, logical.id, host, installationId);
+            const known = await tx.query(
+              `select 1 from public.docker_host_jobs where bound_sandbox_id=$1
+               and bound_operation='delete' and outcome is distinct from 'failed' limit 1`,
+              [logical.id],
+            );
+            if (current.status === "stopped" && !known.rows.length) {
+              const epoch = await permission(
+                tx,
+                { userId: logical.owner_id, orgId: logical.org_id },
+                current,
+                "delete",
+              );
+              await insert(
+                tx,
+                host.id,
+                {
+                  requestId: randomUUID(),
+                  operation: "delete",
+                  request: await machine(tx, current, "delete"),
+                },
+                {
+                  bound_sandbox_id: current.id,
+                  bound_actor_id: current.owner_id,
+                  bound_actor_epoch: epoch,
+                  bound_operation: "delete",
+                },
+              );
+            }
+          }
           if (job.bound_operation === "delete")
             await tx.query(
               `update public.sandboxes set status='deleted',status_reason=null,deleted_at=coalesce(deleted_at,now())
