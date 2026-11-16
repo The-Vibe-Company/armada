@@ -557,3 +557,22 @@ test("retention deletion refuses running or foreign allocations and preserves sn
   expect(f.volumes.size).toBe(0);
   expect(f.images.size).toBe(1);
 });
+
+test("absence requires successful owned inventories and container-only loss still proves expiry", async () => {
+  const f = fixture();
+  await f.executor.create(request);
+  expect(await f.executor.isAbsent(request)).toBe(false);
+  f.containers.clear();
+  expect(await f.executor.isAbsent(request)).toBe(false);
+  expect(await f.executor.isStopped(request)).toBe(true);
+  expect(await f.executor.stopIfExpired(request)).toBe(false);
+  f.setTime(61000);
+  expect(await f.executor.stopIfExpired(request)).toBe(true);
+  const volume = [...f.volumes.values()][0];
+  volume.Labels["dev.armada.machine.host"] = "foreign";
+  await expect(f.executor.isAbsent(request)).rejects.toThrow();
+  f.volumes.clear();
+  expect(await f.executor.isAbsent(request)).toBe(true);
+  f.fail("volume ls");
+  await expect(f.executor.isAbsent(request)).rejects.toThrow();
+});
