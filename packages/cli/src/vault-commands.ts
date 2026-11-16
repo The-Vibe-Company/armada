@@ -21,7 +21,7 @@ import {
   VaultError,
 } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { armadaApiUrl } from "./armada-api.ts";
+import { resolveArmadaOrigin } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { invitationCommand } from "./invitation-commands.ts";
@@ -41,7 +41,7 @@ export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<
     case "use":
     case "current": {
       const args = parseArgs(rest);
-      const origin = armadaApiUrl(io.auth.env.ARMADA_URL);
+      const origin = await resolveArmadaOrigin(io.auth);
       const preferences = io.auth.preferences;
       if (!preferences) throw usage("Organization preferences are not available.");
       if (sub === "current") {

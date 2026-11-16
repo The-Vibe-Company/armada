@@ -28,7 +28,7 @@ import {
 import { accountCommand } from "./account-commands.ts";
 import { applicationVaultCommand } from "./application-vault-commands.ts";
 import { flag, parseArgs, providerFlag, single, values } from "./args.ts";
-import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
+import { ArmadaApiError, createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import {
   type AuthIo,
   loginCommand,
@@ -372,17 +372,9 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         const login = argv[0] === "login";
         const explicitLoginOrigin = login && argv.some((arg) => arg === "--url" || arg.startsWith("--url="));
         const saved = explicitLoginOrigin ? null : await stores.session.read();
-        if (
-          !login &&
-          env.ARMADA_URL &&
-          saved?.armadaUrl &&
-          armadaApiUrl(env.ARMADA_URL) !== armadaApiUrl(saved.armadaUrl)
-        )
-          throw new AuthError(
-            "Profile login belongs to another server. Choose its server or log in to a different profile.",
-            "usage",
-          );
-        env.ARMADA_URL ??= saved?.armadaUrl;
+        if (login) env.ARMADA_URL ??= saved?.armadaUrl;
+        else if (saved || env.ARMADA_URL)
+          env.ARMADA_URL = await resolveArmadaOrigin({ env, session: stores.session }, undefined, saved);
         if (!env.ARMADA_URL && !(login && argv.some((arg) => arg === "--url" || arg.startsWith("--url="))))
           throw new AuthError(
             `Configure this profile first: armada --profile ${env.ARMADA_PROFILE} login --url <server-origin>.`,
@@ -554,7 +546,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     !optionArgs.some((arg) => arg === "--org" || arg.startsWith("--org="))
   ) {
     const auth = authOf(io, deps);
-    const selected = await auth.preferences?.read(armadaApiUrl(auth.env.ARMADA_URL));
+    const selected = await auth.preferences?.read(await resolveArmadaOrigin(auth));
     if (selected) {
       const split = rest.indexOf("--");
       rest =

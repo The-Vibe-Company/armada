@@ -426,3 +426,80 @@ test("a pending request never switches to a replacement login at the same origin
   expect(calls).toBe(1);
   expect(await state.session.read()).toEqual(replacement);
 });
+
+describe("saved login server binding", () => {
+  test.each(["fresh", "expired", "rejected"])(
+    "routes %s login requests and refresh only to the saved origin",
+    async (mode) => {
+      const state = io();
+      if (mode === "expired") {
+        const saved = await state.session.read();
+        await state.session.write({ ...saved!, expiresAt: "2000-01-01" });
+      }
+      const paths: string[] = [];
+      let rejected = false;
+      state.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const url = new URL(String(input));
+        expect(url.origin).toBe("https://saved.armada.test");
+        paths.push(url.pathname);
+        if (url.pathname.endsWith("/refresh")) {
+          expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "refresh" });
+          return Response.json({
+            accessToken: "rotated_access",
+            refreshToken: "rotated_refresh",
+            expiresAt: "2099-01-01",
+          });
+        }
+        if (mode === "rejected" && !rejected) {
+          rejected = true;
+          return new Response(null, { status: 401 });
+        }
+        return Response.json({});
+      }) as unknown as typeof fetch;
+      const client = await createArmadaApiClient(state);
+      await client.request("/api/v1/example");
+      expect(paths.filter((path) => path.endsWith("/refresh"))).toHaveLength(mode === "fresh" ? 0 : 1);
+    },
+  );
+
+  test.each(["environment", "option"])(
+    "rejects a different %s origin before sending any saved credential",
+    async (source) => {
+      const state = io(source === "environment" ? { ARMADA_URL: "https://other.test" } : {});
+      let calls = 0;
+      state.fetch = (async () => {
+        calls++;
+        return Response.json({});
+      }) as unknown as typeof fetch;
+      await expect(
+        createArmadaApiClient(state, source === "option" ? { url: "https://other.test" } : {}),
+      ).rejects.toThrow("another server");
+      expect(calls).toBe(0);
+    },
+  );
+
+  test("legacy unbound logins cannot be redirected away from the historical default", async () => {
+    const state = io({ ARMADA_URL: "https://other.test" });
+    await state.session.write({
+      accessToken: "legacy_access",
+      refreshToken: "legacy_refresh",
+      expiresAt: "2099-01-01",
+    });
+    await expect(createArmadaApiClient(state)).rejects.toThrow("another server");
+  });
+});
+
+test("refresh refuses a replacement unbound legacy login under the session lock", async () => {
+  const state = io();
+  const client = await createArmadaApiClient({
+    ...state,
+    fetch: async () => new Response(null, { status: 401 }),
+  });
+  // Old sessions may lack loginId; the binding must still identify a replacement.
+  await state.session.write({
+    accessToken: "replacement_access",
+    refreshToken: "replacement_refresh",
+    expiresAt: "2000-01-01",
+  });
+  await expect(client.request("/api/v1/example")).rejects.toThrow("saved login changed");
+});
