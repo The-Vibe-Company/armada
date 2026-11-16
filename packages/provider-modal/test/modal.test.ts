@@ -26,7 +26,11 @@ import {
   type Scope,
 } from "../src/index.ts";
 
-let db: Awaited<ReturnType<typeof openDatabase>>;
+let connection: Awaited<ReturnType<typeof openDatabase>> | undefined;
+function database() {
+  if (!connection) throw new Error("Modal database fixture is not open");
+  return connection;
+}
 const scope: Scope = {
   orgId: "00000000-0000-0000-0000-000000000001",
   userId: "00000000-0000-0000-0000-000000000002",
@@ -34,7 +38,8 @@ const scope: Scope = {
   binding: { workspace: "label-only", environment: "main", appId: "ap_pinned" },
 };
 beforeAll(async () => {
-  db = await openDatabase();
+  connection = await openDatabase();
+  const db = database();
   await applyMigrations(db);
   await db.query("insert into auth.users(id) values($1)", [scope.userId]);
   await db.query("insert into auth.users(id) values($1)", ["00000000-0000-0000-0000-000000000004"]);
@@ -46,15 +51,17 @@ beforeAll(async () => {
   ]);
 });
 afterAll(async () => {
-  await db.close();
+  const db = connection;
+  connection = undefined;
+  await db?.close();
 });
 function fixture(
   accessScope: Scope = scope,
-  sql: Sql = db,
+  sql: Sql = database(),
   beforePrompt?: ModalProviderOptions["beforePrompt"],
   beforeResume?: ModalProviderOptions["beforeResume"],
   commonRuntime?: true,
-  admissionSleep: NonNullable<ModalProviderOptions["admissionSleep"]> = Bun.sleep,
+  admissionSleep: NonNullable<ModalProviderOptions["admissionSleep"]> = async () => {},
 ) {
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
@@ -301,6 +308,7 @@ function fixture(
   };
 }
 test("stored composition reads ingested turns without any live SDK, runner or lifecycle lease", async () => {
+  const db = database();
   const f = fixture();
   const row = await runningFork(f);
   const event = {
@@ -426,6 +434,7 @@ test("detail verifies the App once per read and still rejects a changed binding"
 });
 
 test("durable golden recovery persists an interrupted Modal builder before exact owned cleanup, never replays create", async () => {
+  const db = database();
   const f = fixture();
   const key = Buffer.alloc(32, 61).toString("base64");
   // Admission now verifies repository access before reserving work. Seed a cached
@@ -712,6 +721,7 @@ async function runningFork(f: ReturnType<typeof fixture>) {
   return f.provider.fork({ from: name });
 }
 test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
+  const db = database();
   const f = fixture(scope, db, undefined, undefined, true);
   const row = await runningFork(f);
   expect(await f.store.get(row.id)).toMatchObject({ commonRuntime: true, phase: "active" });
@@ -754,6 +764,7 @@ test("enrolled Modal host forks never start or call the tunnel and stop without 
 });
 
 test("retained enrolled Modal stop snapshots only after quiescence and resumes its exact checkpoint without tunnel or history purge", async () => {
+  const db = database();
   const f = fixture(scope, db, undefined, undefined, true);
   const worker = await runningFork(f);
   const original = await f.store.get(worker.id);
@@ -814,6 +825,7 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
 });
 
 test("cleanup reconciles an unknown enrolled Modal resume create without activating or allocating again", async () => {
+  const db = database();
   const f = fixture(scope, db, undefined, undefined, true);
   const worker = await runningFork(f);
   await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 });
@@ -838,6 +850,7 @@ test("cleanup reconciles an unknown enrolled Modal resume create without activat
 });
 
 test("uncertain enrolled Modal snapshot refuses retry or resume and compute fallback drops retention", async () => {
+  const db = database();
   const f = fixture(scope, db, undefined, undefined, true);
   const worker = await runningFork(f);
   const proof = { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 };
@@ -867,6 +880,7 @@ function compositionOptions(
   target: Scope = scope,
   sourceScope: Scope = target,
 ): ComposedModalOptions {
+  const db = database();
   const bundle = new TextEncoder().encode("credential-free fixture bundle");
   return {
     scope: target,
@@ -952,6 +966,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect((await f.store.get(row.info.id)).phase).toBe("deleted");
   });
   test("SQL crashes before create are known absent, while crashes after SDK create reconcile ownership before delete", async () => {
+    const db = database();
     for (const crashPhase of ["creating", "booting"] as const) {
       let crash = true;
       const sql: Sql = {
@@ -1026,6 +1041,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.provisioned).toBe(false);
   });
   test("native resume refusal fences restoration under the provider lifecycle lease", async () => {
+    const db = database();
     const f = fixture(scope, db, undefined, async () => {
       throw new ProviderError({ provider: "modal", code: "conflict", message: "credential_busy", retryable: false });
     });
@@ -1104,6 +1120,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(resumed.physicalId).not.toBe(stopped.physicalId);
   });
   test("stopped prompt reads preserve durable outcomes without restoring compute", async () => {
+    const db = database();
     const f = fixture();
     const row = await runningFork(f);
     const statuses = ["queued", "running", "finished", "failed", "interrupted"] as const;
@@ -1148,6 +1165,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect((await f.store.get(row.id)).generation).toBe(2);
   });
   test("durable event pages cross cursor digit widths in numeric order after compute stops", async () => {
+    const db = database();
     // Real migrations + PostgreSQL execution own this regression: the old ORDER BY
     // resolves the text output name, not the bigint used by the resume predicate.
     const f = fixture();
@@ -1303,6 +1321,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log).toContain("delete-image");
   });
   test("snapshot provenance projection never substitutes cached info for missing canonical image or authority", async () => {
+    const db = database();
     const f = fixture();
     const builder = await f.provider.createGolden({});
     const name = crypto.randomUUID();
@@ -1319,6 +1338,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   test.each(["current", "retained"])(
     "saved-handle collection protects shared physical recovery references across tenant scopes (%s)",
     async (mode) => {
+      const db = database();
       const otherOrg = crypto.randomUUID();
       await db.query("insert into orgs(id,name) values($1,$2)", [otherOrg, "shared-ref-" + otherOrg]);
       const otherUser = "00000000-0000-0000-0000-000000000004";
@@ -1378,6 +1398,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
   });
   test("HTTP ingest retains message semantics through SQL replay, pagination and conversation filtering", async () => {
+    const db = database();
     const f = fixture();
     const row = await f.provider.createGolden({});
     const handler = createModalIngestHandler({
@@ -1443,6 +1464,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect((await f.provider.events({ sandboxId: row.id, conversationId: "b" })).events).toEqual(events.slice(1, 2));
   });
   test("native outbox drains large UTF-8 conversations through HTTP ingest and remains readable after stop", async () => {
+    const db = database();
     const f = fixture();
     const row = await f.provider.createGolden({});
     const grant = {
@@ -1550,6 +1572,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     }
   });
   test("tail history, older history and live follow stitch without gaps or duplicates", async () => {
+    const db = database();
     const f = fixture();
     const row = await f.provider.createGolden({});
     expect(await f.provider.events({ sandboxId: row.id, direction: "backward" })).toEqual({
@@ -1602,6 +1625,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(follow.events.map((e) => e.id)).toEqual(["history-5"]);
   });
   test("events dedupe, acknowledge only contiguous commit and fence old generation", async () => {
+    const db = database();
     const f = fixture();
     const row = await f.provider.createGolden({});
     const event = { id: "event", at: 1, kind: "other" as const, type: "test", data: {} };
@@ -1618,6 +1642,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
   });
   test("restored producer sequences continue checkpoint watermark instead of waiting for sequence one", async () => {
+    const db = database();
     const f = fixture();
     const row = await f.provider.createGolden({});
     await f.store.lease(row.id, async (current, save) => {
@@ -1631,6 +1656,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect((await f.provider.events({ sandboxId: row.id })).events).toHaveLength(1);
   });
   test("actual composition forks ORG snapshot into owner-private access while management authority stays ORG and GC counts private references", async () => {
+    const db = database();
     const orgScope: Scope = { ...scope, visibility: "org" };
     const f = fixture(orgScope);
     const builder = await f.provider.createGolden({});
@@ -1775,6 +1801,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
   });
   test("private golden with explicit org fallback authority stays owner-private across fork/restore and rejects scope/key substitution", async () => {
+    const db = database();
     const f = fixture();
     const requested = { credentialScope: "org" as const, credentialOwnerId: scope.orgId };
     const seen: ModalManagementAuthority[] = [];
@@ -1869,6 +1896,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     close();
   });
   test("actual bootstrap separates GitHub exec credentials from model env, disables them explicitly, and re-resolves on restore without persisting values", async () => {
+    const db = database();
     const f = fixture();
     const builder = await f.provider.createGolden({});
     const name = crypto.randomUUID();
@@ -2008,6 +2036,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log.filter((x) => x.startsWith("fresh-"))).toHaveLength(before);
   });
   test("golden restore recovers a lost final active commit without replacing its runner or losing edits", async () => {
+    const db = database();
     let fail = false;
     const sql: Sql = {
       async query<T>(statement: string, params?: unknown[]) {
@@ -2144,6 +2173,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log).toContain("terminate");
   });
   test("known completed Image survives a failed SQL commit in the failure receipt without terminating source", async () => {
+    const db = database();
     let fail = false;
     const sql: Sql = {
       async query<T>(statement: string, params?: unknown[]) {
@@ -2182,6 +2212,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(merged.find((x) => x.sandboxId === builder.id)?.snapshotImages).toEqual(receipt.snapshotImages);
   });
   test.each([true, false])("prompt performs one final health probe after preparation (healthy=%s)", async (healthy) => {
+    const db = database();
     let prepared = false;
     const f = fixture(scope, db, async () => {
       prepared = true;
@@ -2199,6 +2230,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log.filter((op) => op === "prompt")).toHaveLength(healthy ? 1 : 0);
   });
   test("beforePrompt sees ready first/restored generation outside the lease, configures before native submission, and supports parallel stable turns", async () => {
+    const db = database();
     const observed: string[] = [];
     const hydrated: { generation: number; variables: unknown }[] = [];
     const f = fixture(scope, db, async (provider, id) => {
@@ -2239,6 +2271,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log.lastIndexOf("configureReadableVariables")).toBeLessThan(f.log.lastIndexOf("prompt"));
   });
   test("beforePrompt failure or an intervening checkpoint/restore refuses submission; goldens never call the hook", async () => {
+    const db = database();
     let fail = true,
       calls = 0;
     const f = fixture(scope, db, async (provider, id) => {
@@ -2266,6 +2299,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(calls).toBe(before);
   });
   test("beforePrompt fence is rechecked after healthyAdmission mutates the runner incarnation", async () => {
+    const db = database();
     let prepared = false;
     const f = fixture(scope, db, async () => {
       prepared = true;
@@ -2283,6 +2317,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log).not.toContain("prompt");
   });
   test("golden exec alone takes scoped leased SDK root control, worker exec stays journaled runner, and unsupported/closed requests refuse", async () => {
+    const db = database();
     const delays: number[] = [];
     const f = fixture(scope, db, undefined, undefined, undefined, async (ms) => {
       delays.push(ms);
@@ -2320,6 +2355,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log.filter((x) => x === "root-exec")).toHaveLength(count);
   });
   test("admission never retries a busy-shaped error after entering the callback", async () => {
+    const db = database();
     const delays: number[] = [];
     const f = fixture(scope, db, undefined, undefined, undefined, async (ms) => {
       delays.push(ms);
@@ -2402,6 +2438,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
   });
   test("native cwd preparation validates path data and owner/admission while unprepared prompts use runtime defaults", async () => {
+    const db = database();
     const f = fixture();
     const row = await runningFork(f);
     for (const cwd of [
@@ -2442,6 +2479,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     ).rejects.toMatchObject({ code: "invalid_request" });
   });
   test("GitHub private configuration binds an active native generation and never restores stopped machines or persists capabilities", async () => {
+    const db = database();
     const f = fixture();
     const row = await runningFork(f);
     const machine = await f.store.get(row.id);
@@ -2473,6 +2511,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.creates).toBe(allocations);
   });
   test("configureMcp serializes transient authority with turn admission, returns only revision and never persists config", async () => {
+    const db = database();
     const f = fixture();
     const row = await runningFork(f);
     const entered = deferred(),
@@ -2623,6 +2662,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(calls).toBe(before);
   });
   test("tenant and membership isolation; user roles cannot read control or event tables", async () => {
+    const db = database();
     const f = fixture();
     const row = await f.provider.createGolden({});
     const other = createSqlModalStore(db, { ...scope, binding: { ...scope.binding, appId: "ap_other" } });
@@ -2637,6 +2677,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     }
   });
   test("expired and wrong-generation ingest grants never append", async () => {
+    const db = database();
     const handler = createModalIngestHandler({
       sql: db,
       verifyGrant: async () => ({
@@ -2683,6 +2724,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
 
 for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
   test(`server deadline reconciler settles Modal after ${mode}`, async () => {
+    const db = database();
     const hardExit = mode === "hard_exit";
     const f = fixture();
     const machine = await runningFork(f);
@@ -3024,6 +3066,7 @@ test.each([
 test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as const)(
   "boot stage %s preserves the normalized error and durable booting receipt",
   async (stage) => {
+    const db = database();
     const f = fixture();
     const fail = async () => {
       throw new ProviderError({
@@ -3068,6 +3111,7 @@ test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as con
 );
 
 test("unscoped Modal steer preserves no_running_turn and 409 at the control boundary", async () => {
+  const db = database();
   const f = fixture();
   const row = await runningFork(f);
 
@@ -3189,6 +3233,7 @@ test("Modal lifecycle refusals do not resume stopped steer or admit send during 
 });
 
 test("connection probe uses only the active runtime and validates its receipt without restoring stopped machines", async () => {
+  const db = database();
   const f = fixture(scope, db);
   const row = await runningFork(f);
   const expected = { ok: false, status: 401, error: "provider_rejected", code: "invalid_api_key" } as const;

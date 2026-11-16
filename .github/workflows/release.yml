@@ -226,20 +226,23 @@ jobs:
       - run: bun packages/agent-runtime/build.ts
       - run: bun scripts/validate-runtime-native.ts
       - run: bun run typecheck
-      - run: bun test --reporter=junit --reporter-outfile=/tmp/release-tests.xml
+      - run: |
+          bun test --reporter=junit --reporter-outfile=/tmp/release-tests.xml
+          bun test ./packages/provider-modal/test/artifact.probe.ts --reporter=junit --reporter-outfile=/tmp/release-native-tests.xml
         env:
           CODEX_NATIVE_TEST_BINARY: ${{ github.workspace }}/packages/agent-runtime/dist/codex
       - name: Require native release contracts to execute
         run: |
           python3 - <<'PYTHON'
           import xml.etree.ElementTree as ET
-          report = ET.parse("/tmp/release-tests.xml").getroot()
+          reports = [ET.parse(path).getroot() for path in ["/tmp/release-tests.xml", "/tmp/release-native-tests.xml"]
+          cases = [case for report in reports for case in report.iter("testcase")]
           for name in [
               "actual runtime artifact accepts private bootstrap and scoped RPC, checkpoints and reopens journal",
               "real Codex app-server reports the selected thread cwd",
               "real Codex SAME process and thread resumes with rotated MCP credentials without model inference",
           ]:
-              selected = [case for case in report.iter("testcase") if case.get("name") == name]
+              selected = [case for case in cases if case.get("name") == name]
               assert len(selected) == 1 and all(selected[0].find(tag) is None for tag in ["failure", "error", "skipped"]), f"Native contract did not execute exactly once without skips: {name}"
           PYTHON
       - name: Real checkpoint process boundary

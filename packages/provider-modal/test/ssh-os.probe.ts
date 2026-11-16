@@ -1,3 +1,5 @@
+// Manual OS diagnostic only; never a PR, merge-queue or publishing acceptance gate.
+// With a disposable ARMADA_GOLDEN_OS_IMAGE configured: bun test ./packages/provider-modal/test/ssh-os.probe.ts
 import { expect, test } from "bun:test";
 import type { Sandbox } from "modal";
 import type { Provider } from "../../core/src/provider.ts";
