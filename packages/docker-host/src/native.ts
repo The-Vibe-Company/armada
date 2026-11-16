@@ -237,15 +237,36 @@ export function httpApi(
         version: VERSION,
         ...(options?.skipSnapshots ? { skipSnapshots: true } : {}),
       };
+      const retention = {
+        retentionSeconds: state.retentionSeconds ?? 86400,
+        nextCleanupAt: (state.retention ?? [])
+          .filter((entry) => !entry.deleted)
+          .reduce<string | null>((next, entry) => {
+            const at = new Date(entry.deadline).toISOString();
+            return next === null || at < next ? at : next;
+          }, null),
+      };
+      const sampledResources = resources ? await resources(state) : dockerHostResources();
       try {
         return (await post(state.server, "poll", state.hostToken, {
           ...body,
-          resources: resources ? await resources(state) : dockerHostResources(),
+          ...retention,
+          resources: sampledResources,
           resourcePolicyVersion: 1,
         })) as Awaited<ReturnType<Api["poll"]>>;
       } catch (error) {
         // Older servers reject the additive resource field before claiming a job.
         if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
+        try {
+          return (await post(state.server, "poll", state.hostToken, {
+            ...body,
+            resources: sampledResources,
+            resourcePolicyVersion: 1,
+          })) as Awaited<ReturnType<Api["poll"]>>;
+        } catch (compatibilityError) {
+          if (!(compatibilityError instanceof HostRequestDenied) || compatibilityError.status !== 400)
+            throw compatibilityError;
+        }
         try {
           // The preceding policy-capable server knows quotas but not availability.
           // Keep its handshake so manual-limit hosts can still receive work.

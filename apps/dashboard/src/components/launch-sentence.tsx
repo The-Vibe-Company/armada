@@ -254,7 +254,7 @@ export function LaunchSentence({
           </PopoverContent>
         </Popover>
         <span className="max-sm:hidden"> on </span>
-        <span className="whitespace-nowrap max-sm:block">
+        <span className="max-w-full whitespace-nowrap max-sm:block">
           <button
             type="button"
             aria-label={`Account: ${chosen?.name ?? "Choose an account"}`}
@@ -262,8 +262,12 @@ export function LaunchSentence({
             className={`inline-flex max-w-full items-center justify-between gap-2 rounded-md border bg-background px-2 py-0.5 text-sm hover:bg-accent max-sm:min-h-11 max-sm:w-full max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-transparent max-sm:px-0 ${selectedProblem ? "border-warning text-warning" : ""}`}
             onClick={() => setOpen(true)}
           >
-            <span className="text-muted-foreground sm:hidden">Account</span>
-            <span className={selectedProblem ? "text-warning" : ""}>{chosen?.name ?? "Choose an account"} ⌄</span>
+            <span className="shrink-0 text-muted-foreground sm:hidden">Account</span>
+            <span
+              className={`min-w-0 whitespace-normal break-words text-right ${selectedProblem ? "text-warning" : ""}`}
+            >
+              {chosen?.name ?? "Choose an account"} ⌄
+            </span>
           </button>
           <span className="max-sm:hidden">,</span>
         </span>

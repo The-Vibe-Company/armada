@@ -14,6 +14,7 @@ import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
+import { createRuntimeSelfFinish } from "../src/sandbox-finish.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
@@ -371,7 +372,18 @@ describe("automatic MCP authority updates", () => {
     expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
     await x.registry.revoke(f.people.owner, f.people.org, x.c.id, true);
     await x.send(f.caller, f.input("after connection removal"));
-    expect(f.mcpSnapshots.at(-1)?.servers).toEqual({});
+    const self = f.mcpSnapshots.at(-1)?.servers.armada_self;
+    expect(Object.keys(f.mcpSnapshots.at(-1)?.servers ?? {})).toEqual(["armada_self"]);
+    if (!self || self.type !== "http") throw Error("Missing self completion capability");
+    const token = self.headers!.Authorization!.slice(7);
+    expect(f.journal.redact(token).includes(token)).toBe(false);
+    const finish = createRuntimeSelfFinish(f.sql, ENCRYPTION_KEY);
+    await expect(finish(`${token.slice(0, -1)}!`)).rejects.toThrow();
+    await f.db.query("update sandboxes set mcp_generation=mcp_generation+1 where id=$1", [f.row.id]);
+    await expect(finish(token)).rejects.toThrow("denied");
+    await f.db.query("update sandboxes set mcp_generation=mcp_generation-1 where id=$1", [f.row.id]);
+    expect(await finish(token)).toMatchObject({ id: f.row.id, status: "stopping" });
+    await expect(finish(token)).rejects.toThrow();
   });
 });
 
@@ -499,4 +511,32 @@ test("native Modal MCP leases stay epoch-free and usable without an enrolled run
   } finally {
     await f.close();
   }
+});
+
+describe("model-only runtime completion", () => {
+  test("the first prompt receives only self completion when no remote MCP connections were selected", async () => {
+    const f = await runtimeFixture(await sharedDatabase());
+    try {
+      const service = createRuntimeMcp({
+        sql: f.sql,
+        key: ENCRYPTION_KEY,
+        origin: "https://armada.test",
+        commands: f.bridge,
+      });
+      await createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare)(f.caller, f.input());
+      const snapshot = f.mcpSnapshots.at(-1);
+      expect(Object.keys(snapshot?.servers ?? {})).toEqual(["armada_self"]);
+      const self = snapshot?.servers.armada_self;
+      if (!self || self.type !== "http") throw Error("Missing private self capability");
+      expect(self.url).toBe("https://armada.test/api/v1/orchestrator-tools/mcp");
+      const token = self.headers!.Authorization!.slice(7);
+      expect(f.journal.redact(token).includes(token)).toBe(false);
+      expect(await createRuntimeSelfFinish(f.sql, ENCRYPTION_KEY)(token)).toMatchObject({
+        id: f.row.id,
+        status: "stopping",
+      });
+    } finally {
+      await f.close();
+    }
+  });
 });

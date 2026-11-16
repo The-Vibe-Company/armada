@@ -20,6 +20,7 @@ import type { SandboxChildExecutor } from "./sandbox-access-children.ts";
 import { createSandboxChildren } from "./sandbox-access-children.ts";
 import { createSandboxScopedGateway } from "./sandbox-access-scoped-gateway.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
+import { createRuntimeSelfFinish, requestSandboxFinish } from "./sandbox-finish.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 class DelegatedAccessError extends Error {
@@ -212,5 +213,20 @@ export function createSandboxAccessServices(input: {
     },
   };
   const children = createSandboxChildren(sql, authority, executor);
-  return { scopedToolsRoute: createSandboxScopedGateway(children), childWorker: children };
+  async function finish(token: string) {
+    return authority.admit(token, { method: "finish" }, async (tx, principal) => {
+      const row = (
+        await tx.query<{ sandbox_id: string }>(
+          "select sandbox_id from public.armada_access_parents where id=$1 and kind='sandbox'",
+          [principal.orchestratorId],
+        )
+      ).rows[0];
+      if (!row) throw new DelegatedAccessError("not_found");
+      return requestSandboxFinish(tx, input.encryptionKey, row.sandbox_id, principal.ownerId);
+    });
+  }
+  return {
+    scopedToolsRoute: createSandboxScopedGateway(children, finish, createRuntimeSelfFinish(sql, input.encryptionKey)),
+    childWorker: children,
+  };
 }

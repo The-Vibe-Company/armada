@@ -5,7 +5,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { CopyButton } from "@/components/copy-button";
 import { CreatedAt } from "@/components/created-at";
-import { AddHostDialog, HostLimitsDialog, HostMark, RevokeHost } from "@/components/docker-hosts";
+import { AddHostDialog, HostLimitsDialog, HostMark, HostRetention, RevokeHost } from "@/components/docker-hosts";
 import { DockerLaunchDialog } from "@/components/docker-launch";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderConnection, type ProviderRowState } from "@/components/provider-connection";
@@ -365,6 +365,9 @@ function row(
               initialHarness={launch.harnesses.initial ?? "codex"}
             />
           )}
+        </PanelSection>
+        <PanelSection title="Cleanup retention">
+          <HostRetention orgId={orgId} host={host} />
         </PanelSection>
         <PanelSection title="Per sandbox and at the same time">
           <HostLimitsDialog orgId={orgId} host={host} />

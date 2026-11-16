@@ -54,6 +54,9 @@ export async function viewerDockerHosts() {
       if (!validDockerHostResources(answer.resources))
         throw new ControlError("The Armada server did not confirm the host limits.");
     },
+    async retention(org: string, hostId: string, retentionSeconds: number): Promise<void> {
+      await post(DOCKER_HOST_ROUTES.retention, { org, hostId, retentionSeconds });
+    },
     async revoke(org: string, hostId: string): Promise<void> {
       const answer = await post(DOCKER_HOST_ROUTES.revoke, { org, hostId });
       if (answer.revoked !== true) throw new ControlError("The Armada server did not confirm the revocation.");

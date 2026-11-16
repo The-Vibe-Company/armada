@@ -11,6 +11,7 @@ import {
 import { VERSION } from "../../core/src/version.ts";
 import { createAvailabilitySampler } from "./availability.ts";
 import { register, serverOrigin, tick, validToken } from "./daemon.ts";
+import { cleanupOfficialImages } from "./image-retention.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
@@ -200,10 +201,12 @@ async function main(args: string[]) {
         cacheDir: join(directory, "runtime-cache"),
       }),
     };
-    if (process.env.ARMADA_DOCKER_RETENTION_SECONDS !== undefined) {
+    if (process.env.ARMADA_DOCKER_RETENTION_SECONDS !== undefined && !state.retentionPolicyFromServer) {
       const seconds = Number(process.env.ARMADA_DOCKER_RETENTION_SECONDS);
       if (!/^\d+$/.test(process.env.ARMADA_DOCKER_RETENTION_SECONDS) || !Number.isSafeInteger(seconds))
         throw new Error("Invalid ARMADA_DOCKER_RETENTION_SECONDS");
+      const previous = state.retentionSeconds ?? 86400;
+      for (const entry of state.retention ?? []) if (!entry.deleted) entry.deadline += (seconds - previous) * 1000;
       state.retentionSeconds = seconds;
       await store.save(state);
     }
@@ -213,7 +216,16 @@ async function main(args: string[]) {
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
+    let nextImageCleanup = 0;
     while (!stopping) {
+      if (Date.now() >= nextImageCleanup) {
+        nextImageCleanup = Date.now() + 60 * 60_000;
+        try {
+          await cleanupOfficialImages(dockerCli);
+        } catch {
+          /* Fail closed; retry next hour. */
+        }
+      }
       try {
         await tick(store, api, runtime);
       } catch {

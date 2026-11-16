@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, type Sql } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
+import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
+import { createFinishedDockerCleanup, selfFinishToken } from "../src/sandbox-finish.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
@@ -827,4 +829,103 @@ test("retention cleanup authenticates the bound host and permanently fences runt
   await store.cleaned(a.hostToken, a.installationId, { requestId: a.startup.requestId });
   expect(await lifecycle(a.sandboxId)).toEqual(deleted);
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+});
+
+test("runtime self completion needs no child access and retries failed stop/delete without retaining its home", async () => {
+  const db = database();
+  const a = await boundStartup("bootstrap");
+  await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "completed" });
+  await db.query("update public.sandboxes set status='ready' where id=$1", [a.sandboxId]);
+  const generation = (
+    await db.query<{ mcp_generation: number }>("select mcp_generation from public.sandboxes where id=$1", [a.sandboxId])
+  ).rows[0]!.mcp_generation;
+  const token = selfFinishToken(key, {
+    sandboxId: a.sandboxId,
+    ownerId: a.owner.userId,
+    epoch: a.runtime.epoch,
+    generation,
+  });
+  const services = createSandboxAccessServices({
+    sql,
+    encryptionKey: key,
+    scopedMcpUrl: "https://armada.example/api/v1/orchestrator-tools/mcp",
+    providers: {
+      resolve: async () => {
+        throw Error("No provider I/O on self report");
+      },
+    },
+    credentials: {
+      resolve: async () => {
+        throw Error("No model credentials on self report");
+      },
+    },
+    connections: undefined,
+  });
+  const response = await services.scopedToolsRoute(
+    new Request("https://armada.example/api/v1/orchestrator-tools/finish", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: "{}",
+    }),
+  );
+  expect(response?.status).toBe(200);
+  const report = (await response?.json()) as { result: { preservationNote: string } };
+  expect(report.result.preservationNote).toContain("Unpushed Git work is not preserved");
+  const stop = await store.poll(a.hostToken, a.installationId);
+  expect(stop?.operation).toBe("stop");
+  if (!stop) throw Error("Missing stop");
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "failed" });
+  const retry = createFinishedDockerCleanup(sql, key);
+  expect(await retry.reconcileOne(new AbortController().signal)).toBe(true);
+  const retryStop = await store.poll(a.hostToken, a.installationId);
+  expect(retryStop?.operation).toBe("stop");
+  if (!retryStop) throw Error("Missing retry stop");
+  // A racing host expiry must not cancel the explicit immediate-cleanup intent.
+  await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+  expect((await lifecycle(a.sandboxId))?.status_reason).toBe("agent_finished");
+  await store.complete(a.hostToken, a.installationId, { requestId: retryStop.requestId, outcome: "completed" });
+  const remove = await store.poll(a.hostToken, a.installationId);
+  expect(remove?.operation).toBe("delete");
+  if (!remove) throw Error("Missing immediate cleanup");
+  await store.complete(a.hostToken, a.installationId, { requestId: retryStop.requestId, outcome: "completed" });
+  expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(remove.requestId);
+  await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "failed" });
+  // Persistent retry deadline prevents a hot loop; fake the DB clock at the decision boundary.
+  expect(await retry.reconcileOne(new AbortController().signal)).toBe(false);
+  await db.query("update public.sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [a.sandboxId]);
+  expect(await retry.reconcileOne(new AbortController().signal)).toBe(true);
+  const retryDelete = await store.poll(a.hostToken, a.installationId);
+  expect(retryDelete?.operation).toBe("delete");
+  if (!retryDelete) throw Error("Missing retry delete");
+  await store.complete(a.hostToken, a.installationId, { requestId: retryDelete.requestId, outcome: "completed" });
+  const saved = (
+    await db.query<{ status: string; preservation_note: string }>(
+      "select status,preservation_note from public.sandboxes where id=$1",
+      [a.sandboxId],
+    )
+  ).rows[0];
+  expect(saved?.status).toBe("deleted");
+  expect(saved?.preservation_note).toBe(report.result.preservationNote);
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+});
+
+test("retention belongs to the adding member and reports physical cleanup deadlines, not server estimates", async () => {
+  const db = database();
+  const a = await fixture();
+  await denied(store.setRetention({ ...a.actor, userId: a.backupAdmin }, a.hostId, 0));
+  await db.query("update members set role='member' where org_id=$1 and user_id=$2", [a.actor.orgId, a.actor.userId]);
+  await expect(store.setRetention(a.actor, a.hostId, 0)).resolves.toEqual({ retentionSeconds: 0 });
+  const deadline = "2026-11-20T12:00:00.000Z";
+  expect(
+    await store.retentionForHost(a.hostToken, a.installationId, { retentionSeconds: 86400, nextCleanupAt: deadline }),
+  ).toBe(0);
+  let host = (await store.list(a.actor)).find((h) => h.id === a.hostId)!;
+  expect(host.retentionSeconds).toBe(86400);
+  expect(host.nextCleanupAt).toBeNull();
+  await store.retentionForHost(a.hostToken, a.installationId, { retentionSeconds: 0, nextCleanupAt: deadline });
+  host = (await store.list(a.actor)).find((h) => h.id === a.hostId)!;
+  expect(host.nextCleanupAt).toBe(deadline);
+  await store.setRetention(a.actor, a.hostId, 3600);
+  expect((await store.list(a.actor)).find((h) => h.id === a.hostId)!.nextCleanupAt).toBeNull();
+  expect(() => store.setRetention(a.actor, a.hostId, -1)).toThrow();
 });

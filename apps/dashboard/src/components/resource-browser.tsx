@@ -375,7 +375,7 @@ export function ResourceBrowser({
                     data-resource-panel-title
                     ref={titleRef}
                     tabIndex={-1}
-                    className="truncate text-base font-semibold tracking-tight outline-none"
+                    className="break-words text-base font-semibold tracking-tight outline-none"
                   >
                     {current?.name}
                   </h2>
@@ -441,15 +441,15 @@ function Row({
       className={cn(
         // From @xl the list owns the column tracks and every row shares them (subgrid), so a wider action in one
         // row does not shift the state and fact columns of the others (a row without one keeps that column empty).
-        // Narrower, each row keeps its own two columns: a row without an action keeps the whole width for its name.
-        "relative col-span-full grid grid-cols-[minmax(0,1fr)_auto] items-center @xl:grid-cols-subgrid gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-accent/50 has-[[data-select-item]:focus-visible]:bg-accent/60 has-[[data-select-item]:focus-visible]:ring-[3px] has-[[data-select-item]:focus-visible]:ring-ring/50 has-[[data-select-item]:focus-visible]:ring-inset",
+        // On phones actions follow the name and state; wider rows can share space without squeezing long names.
+        "relative col-span-full grid grid-cols-1 items-center @sm:grid-cols-[minmax(0,1fr)_auto] @xl:grid-cols-subgrid gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-accent/50 has-[[data-select-item]:focus-visible]:bg-accent/60 has-[[data-select-item]:focus-visible]:ring-[3px] has-[[data-select-item]:focus-visible]:ring-ring/50 has-[[data-select-item]:focus-visible]:ring-inset",
         selected && "bg-accent/70 shadow-[inset_3px_0_0_var(--color-primary)] hover:bg-accent/70",
       )}
     >
       <div className="flex min-w-0 items-center gap-3">
         {row.mark}
         <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Button
               variant="ghost"
               asChild
@@ -475,7 +475,7 @@ function Row({
       </div>
       <div className="col-start-1 row-start-2 min-w-0 @xl:col-start-auto @xl:row-start-auto">{row.state}</div>
       <div className="hidden min-w-0 truncate text-sm text-muted-foreground @3xl:block">{row.fact}</div>
-      <div className="relative z-10 col-start-2 row-span-2 row-start-1 flex justify-end @xl:col-start-auto @xl:row-span-1 @xl:row-start-auto">
+      <div className="relative z-10 col-start-1 row-start-3 flex justify-start @sm:col-start-2 @sm:row-span-2 @sm:row-start-1 @sm:justify-end @xl:col-start-auto @xl:row-span-1 @xl:row-start-auto">
         {row.action}
       </div>
     </li>

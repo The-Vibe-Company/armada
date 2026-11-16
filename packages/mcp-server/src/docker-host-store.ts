@@ -57,6 +57,7 @@ type Sandbox = {
   effective_ttl_seconds: number;
   expires_at: Date | string;
   status: string;
+  status_reason?: string | null;
   stop_requested_at: unknown;
   deleted_at: unknown;
 };
@@ -352,6 +353,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
           running: number;
           daemon_version: string | null;
           name: string | null;
+          retention_seconds: number | null;
+          reported_retention_seconds: number | null;
+          next_cleanup_at: Date | string | null;
         }>(
           `select h.id,
             case when h.revoked_at is not null then 'revoked'
@@ -360,7 +364,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
+            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -386,11 +390,56 @@ export function createDockerHostStore(sql: Sql, key: string) {
               throw error;
             }
           })(),
+          retentionSeconds: host.reported_retention_seconds ?? null,
+          retentionOverrideSeconds: host.retention_seconds ?? null,
+          nextCleanupAt: host.next_cleanup_at == null ? null : new Date(host.next_cleanup_at).toISOString(),
           canManageLimits: host.owner_id === actor.userId,
           limitsSupported: host.resource_policy_version === 1,
           sandboxes: host.sandboxes,
           version: host.daemon_version,
         }));
+      });
+    },
+    setRetention(actor: Actor, hostId: string, retentionSeconds: number) {
+      if (!Number.isInteger(retentionSeconds) || retentionSeconds < 0 || retentionSeconds > 31536000)
+        throw new DockerLimitsRefused("invalid_request", "Retention must be 0..31536000 seconds.");
+      return transaction(async (tx) => {
+        id(actor.userId);
+        id(actor.orgId);
+        id(hostId);
+        const member = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [
+          actor.orgId,
+          actor.userId,
+        ]);
+        if (!member.rows.length) deny();
+        const changed = await tx.query(
+          "update public.docker_hosts set retention_seconds=$4,next_cleanup_at=null where id=$1 and org_id=$2 and owner_id=$3 and revoked_at is null returning id",
+          [hostId, actor.orgId, actor.userId, retentionSeconds],
+        );
+        if (!changed.rows.length) deny();
+        return { retentionSeconds };
+      });
+    },
+    retentionForHost(
+      hostToken: string,
+      installationId: string,
+      report?: { retentionSeconds: number; nextCleanupAt: string | null },
+    ) {
+      return transaction(async (tx) => {
+        const host = await authenticate(tx, hostToken, installationId);
+        if (report)
+          await tx.query(
+            "update public.docker_hosts set reported_retention_seconds=$2,next_cleanup_at=case when retention_seconds is null or retention_seconds=$2 then $3::timestamptz else null end where id=$1",
+            [host.id, report.retentionSeconds, report.nextCleanupAt],
+          );
+        return (
+          (
+            await tx.query<{ retention_seconds: number | null }>(
+              "select retention_seconds from public.docker_hosts where id=$1",
+              [host.id],
+            )
+          ).rows[0]?.retention_seconds ?? undefined
+        );
       });
     },
     limitsForHost(hostToken: string, installationId: string) {
@@ -953,7 +1002,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const logical = await boundMachine(tx, job, host, installationId);
         // Physical cleanup is an authenticated machine fact, not owner delete intent.
         await tx.query(
-          `update public.sandboxes set status='deleted',deleted_at=coalesce(deleted_at,now()),
+          `update public.sandboxes set status='deleted',status_reason=null,deleted_at=coalesce(deleted_at,now()),
            stopped_at=coalesce(stopped_at,now()),lifecycle_generation=lifecycle_generation+case when status='deleted' then 0 else 1 end
            where id=$1`,
           [logical.id],
@@ -980,7 +1029,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         await tx.query(
           `update public.sandboxes set
            status=case when status='failed' then status else 'stopped' end,
-           status_reason=case when status='failed' then status_reason else 'expired' end,
+           status_reason=case when status='failed' or status_reason='agent_finished' then status_reason else 'expired' end,
            stopped_at=coalesce(stopped_at,now()),stop_requested_at=coalesce(stop_requested_at,now()),
            lifecycle_generation=lifecycle_generation+case when status in ('starting','ready','running','stopping') then 1 else 0 end
            where id=$1 and status in ('starting','ready','running','stopping','stopped','failed')`,
@@ -1081,6 +1130,39 @@ export function createDockerHostStore(sql: Sql, key: string) {
                stopped_at=coalesce(stopped_at,now()) where id=$1 and status in ('stopping','failed','stopped')`,
               [job.bound_sandbox_id],
             );
+          // A self-finish stop is a durable cleanup intent, not retained idle compute.
+          // Enqueue removal in this same ACK transaction; a lost ACK can safely repair it.
+          if (job.bound_operation === "stop" && logical?.status_reason === "agent_finished") {
+            const current = await sandbox(tx, logical.id, host, installationId);
+            const known = await tx.query(
+              `select 1 from public.docker_host_jobs where bound_sandbox_id=$1
+               and bound_operation='delete' and outcome is distinct from 'failed' limit 1`,
+              [logical.id],
+            );
+            if (current.status === "stopped" && !known.rows.length) {
+              const epoch = await permission(
+                tx,
+                { userId: logical.owner_id, orgId: logical.org_id },
+                current,
+                "delete",
+              );
+              await insert(
+                tx,
+                host.id,
+                {
+                  requestId: randomUUID(),
+                  operation: "delete",
+                  request: await machine(tx, current, "delete"),
+                },
+                {
+                  bound_sandbox_id: current.id,
+                  bound_actor_id: current.owner_id,
+                  bound_actor_epoch: epoch,
+                  bound_operation: "delete",
+                },
+              );
+            }
+          }
           if (job.bound_operation === "delete")
             await tx.query(
               `update public.sandboxes set status='deleted',status_reason=null,deleted_at=coalesce(deleted_at,now())

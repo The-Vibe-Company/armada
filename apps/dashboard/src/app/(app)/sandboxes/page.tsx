@@ -36,6 +36,7 @@ import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycl
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
 import { machineSizeLabel, parseSandboxListMetadata, skippedRowsNote } from "@/lib/sandbox-access";
+import { sandboxActivityPage } from "@/lib/sandbox-activity";
 import {
   FACETS,
   type Facet,
@@ -91,7 +92,7 @@ async function SandboxesContent({ searchParams }: Props) {
         </Empty>
       </>
     );
-  const inventory = loadInventory(supabase, selected.org.id, filters, viewer.id);
+  const inventory = loadInventory(supabase, selected.org.id, filters, viewer.id, query.activity);
   const hosts = readSelectedDockerHosts();
   // Enrich rows as soon as their actual dependencies resolve, not after unrelated setup/directory reads.
   const costsRead = inventory.then(({ rows }) => listSandboxCosts(supabase, rows));
@@ -120,23 +121,30 @@ async function SandboxesContent({ searchParams }: Props) {
 
     return snapshots;
   });
-  const [{ rows, total, inventoryTotal, skipped, facets }, directory, setup, hostRead, costs, hostNames, snapshots] =
-    await Promise.all([
-      inventory,
-      listMemberships(supabase, viewer.id)
-        .then((items) => items.filter((item) => item.org.id === selected?.org.id))
-        .then((memberships) =>
-          memberDirectory(
-            supabase,
-            memberships.map((item) => item.org.id),
-          ),
+  const [
+    { rows, total, inventoryTotal, skipped, facets, activity, counts, page },
+    directory,
+    setup,
+    hostRead,
+    costs,
+    hostNames,
+    snapshots,
+  ] = await Promise.all([
+    inventory,
+    listMemberships(supabase, viewer.id)
+      .then((items) => items.filter((item) => item.org.id === selected?.org.id))
+      .then((memberships) =>
+        memberDirectory(
+          supabase,
+          memberships.map((item) => item.org.id),
         ),
-      selected ? readProviderSetup(selected.org.id) : null,
-      hosts,
-      costsRead,
-      namesRead,
-      snapshotsRead,
-    ]);
+      ),
+    selected ? readProviderSetup(selected.org.id) : null,
+    hosts,
+    costsRead,
+    namesRead,
+    snapshotsRead,
+  ]);
 
   const now = new Date();
   const filtered = hasSandboxFilters(filters);
@@ -213,14 +221,8 @@ async function SandboxesContent({ searchParams }: Props) {
         </p>
       )}
 
-      {rows.length === 0 ? (
-        total > 0 ? (
-          <Empty title="This page is past the last one" icon={<SearchXIcon />}>
-            <Link href={`/sandboxes${filtersToSearch({ ...filters, page: 1 })}`} className="underline">
-              Go to the first page
-            </Link>
-          </Empty>
-        ) : skipped > 0 ? (
+      {total === 0 ? (
+        skipped > 0 ? (
           <Empty
             title="Sandboxes are not fully loaded"
             icon={<SearchXIcon />}
@@ -252,6 +254,10 @@ async function SandboxesContent({ searchParams }: Props) {
         )
       ) : (
         <SandboxListTabs
+          counts={counts}
+          tab={activity}
+          page={page}
+          search={filtersToSearch(filters)}
           rows={rows.map((sandbox) => {
             const life = lifecycleView(sandbox.status, readLifecycle(sandbox), now);
             const paused = Boolean(idlePauseMessage(sandbox, now));
@@ -442,6 +448,7 @@ async function loadInventory(
   orgId: string,
   filters: ReturnType<typeof parseSandboxFilters>,
   viewerId: string,
+  requestedActivity: string | string[] | undefined,
 ) {
   const inventory: SandboxListMetadata[] = [];
   let skipped = 0;
@@ -459,8 +466,9 @@ async function loadInventory(
     if (parsed.rows.length + parsed.skipped.length < 500) break;
   }
   const rows = sortSandboxes(filterSandboxes(inventory, filters, viewerId), filters.sort);
+  const activityPage = sandboxActivityPage(rows, viewerId, requestedActivity, filters.page);
   return {
-    rows,
+    ...activityPage,
     total: rows.length,
     inventoryTotal: inventory.filter((row) => row.status !== "deleted").length,
     skipped,
