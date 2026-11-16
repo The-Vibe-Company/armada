@@ -42,3 +42,62 @@ for (const session of ["alice", "large"]) {
     await expect(renamed).toHaveCount(0);
   });
 }
+
+// Geometry is asserted at the rendered boundary: visibility alone misses clipped text.
+test("long account names and subscription fallback fit a phone", { session: "alice" }, async ({
+  app,
+  screen,
+  browser,
+}) => {
+  const name = "a".repeat(120);
+  const fits = async () => {
+    const overflow = await browser.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"], [role="alertdialog"]');
+      if (!(dialog instanceof HTMLElement)) return true;
+      const rect = dialog.getBoundingClientRect();
+      return (
+        rect.left < 0 ||
+        rect.right > innerWidth ||
+        rect.top < 0 ||
+        rect.bottom > innerHeight ||
+        dialog.scrollWidth > dialog.clientWidth
+      );
+    });
+    expect(overflow).toBe(false);
+  };
+  await app.open("/harness");
+  await screen.getByRole("button", "Add account", { exact: true }).first().tap();
+  let dialog = screen.getByRole("dialog", "Add provider");
+  await dialog.getByRole("button", "OpenAI API key").tap();
+  await dialog.getByRole("button", "Continue", { exact: true }).tap();
+  await dialog.getByLabel("Name", { exact: true }).fill(name);
+  await dialog.getByRole("button", "Continue to configuration").tap();
+  await dialog.getByLabel("API key", { exact: true }).fill("example_api_key");
+  await dialog.getByRole("button", "Add account", { exact: true }).tap();
+  await expect(dialog).toBeHidden();
+  const row = browser.locator(`[data-account="${name}"]`);
+  await row.getByRole("button", new RegExp(`^${name}`)).tap();
+  for (const action of ["Agent limit", "Rename", "Test connection", "Replace key", "Remove"]) {
+    await row.getByRole("button", /^More actions for/).tap();
+    await screen.getByRole("menuitem", action, { exact: true }).tap();
+    await expect(screen.getByRole(action === "Remove" ? "alertdialog" : "dialog")).toBeVisible();
+    await fits();
+    if (action === "Remove") await screen.getByRole("button", "Cancel", { exact: true }).tap();
+    else await screen.getByRole("button", "Close", { exact: true }).tap();
+  }
+  for (const provider of ["Claude", "ChatGPT"]) {
+    await screen.getByRole("button", "Add account", { exact: true }).first().tap();
+    dialog = screen.getByRole("dialog", "Add provider");
+    await dialog.getByRole("button", new RegExp(`^${provider} Subscription`)).tap();
+    await dialog.getByRole("button", `Continue with ${provider}`, { exact: true }).tap();
+    await dialog.getByRole("button", `Continue with ${provider}`, { exact: true }).tap();
+    const fallback = dialog.getByRole("button", /No terminal here, or on a phone/);
+    await expect(fallback).toBeVisible();
+    await fits();
+    const box = await fallback.boundingBox();
+    expect(box !== null && box.x >= 0 && box.x + box.width <= (await browser.evaluate(() => innerWidth))).toBe(true);
+    await fallback.tap();
+    await expect(fallback).toHaveAttribute("aria-expanded", "true");
+    await dialog.getByRole("button", "Close", { exact: true }).tap();
+  }
+});
