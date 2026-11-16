@@ -312,9 +312,7 @@ export class ClaudeDriver implements Driver {
         throw Error("claude_stream_closed_without_result");
       } catch (error) {
         if (interrupted || c.signal.aborted) return "interrupted" as const;
-        throw error instanceof HarnessError
-          ? error
-          : nativeHarnessError(error, c.sessionId ? "session/load" : "session/prompt");
+        throw error instanceof HarnessError ? error : nativeHarnessError(error, "session/prompt");
       } finally {
         closed = true;
         wake?.();
