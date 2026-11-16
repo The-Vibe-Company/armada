@@ -446,7 +446,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               repositoryAccessMessage(row.status_reason) ||
               Object.values(DOCKER_LAUNCH_FAILURE_MESSAGES).some((message) => message === row.status_reason)
             ? row.status_reason
-            : "Docker sandbox failed.",
+            : DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
       repositoryDir: null,
       model: row.model,
       reasoningEffort: row.reasoning_effort,
@@ -520,7 +520,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       } catch {
         throw new ProviderError({
           provider: "docker",
-          code: "provider_not_configured",
+          code: "provider_routing_unavailable",
           retryable: false,
           message:
             "Armada's sandbox image configuration is invalid. Ask the server operator to deploy a matching release image pin. No sandbox was created.",

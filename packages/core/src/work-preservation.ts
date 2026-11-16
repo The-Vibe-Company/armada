@@ -27,6 +27,7 @@ const ERROR_CLASSES = [
   "not_found",
   "invalid_request",
   "provider_not_configured",
+  "provider_routing_unavailable",
   "no_running_turn",
   "sandbox_not_ready",
   "conflict",

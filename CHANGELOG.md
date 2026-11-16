@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.49.3](https://github.com/The-Vibe-Company/armada/compare/v2.49.2...v2.49.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **auth:** restore login through the default dashboard origin ([#2457](https://github.com/The-Vibe-Company/armada/issues/2457)) ([f382f6b](https://github.com/The-Vibe-Company/armada/commit/f382f6bc2e4ba8fd611e1ad06bb28bf788f510a2))
+* **test:** restore bigint release contract admission precondition ([#2458](https://github.com/The-Vibe-Company/armada/issues/2458)) ([9cec4e5](https://github.com/The-Vibe-Company/armada/commit/9cec4e5360907f24cd2cbe30ec1e10997c97e45b))
+
 ## [2.49.2](https://github.com/The-Vibe-Company/armada/compare/v2.49.1...v2.49.2) (2026-11-16)
 
 

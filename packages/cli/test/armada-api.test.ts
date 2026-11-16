@@ -238,6 +238,9 @@ for (const path of ["launch", "launch-sized-v1", "launch-access-v1"]) {
   for (const [status, code] of [
     [429, "rate_limited"],
     [402, "payment_required"],
+    [503, "provider_routing_unavailable"],
+    [503, "provider_not_configured"],
+    [400, "start_failed"],
   ] as const) {
     test(`known allocation refusal keeps its code and closed help (${path}, ${code})`, async () => {
       const client = await createArmadaApiClient({
@@ -542,4 +545,24 @@ test("session renewal preserves typed auth failures and rejects malformed sessio
     state.fetch = (async () => Response.json(payload, { status })) as unknown as typeof fetch;
     await expect(createArmadaApiClient(state)).rejects.toMatchObject({ code, message });
   }
+});
+
+test("launch validation retains its typed code and specific public validation reason", async () => {
+  const client = await createArmadaApiClient({
+    ...io({ ARMADA_TOKEN: token }),
+    fetch: async () =>
+      Response.json(
+        {
+          error: {
+            code: "invalid_request",
+            message: "The selected model is not available for this account. Choose another model.",
+          },
+        },
+        { status: 400 },
+      ),
+  });
+  const error = await client.request("/api/v1/sandbox/launch", { method: "POST" }).catch((error) => error);
+  expect(error).toBeInstanceOf(ArmadaApiError);
+  expect((error as ArmadaApiError).serverCode).toBe("invalid_request");
+  expect((error as Error).message).toContain("selected model");
 });

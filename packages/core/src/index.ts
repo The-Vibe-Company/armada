@@ -6,6 +6,7 @@ export {
   GitHubHydrationError,
   type GitHubHydrationPhase,
   githubHydrationPhase,
+  launchFailureHelp,
 } from "./api-failure.ts";
 export { type ApplicationSecretBinding, parseApplicationSecretBindings } from "./application-secret-bindings.ts";
 export {
@@ -268,7 +269,7 @@ export {
   type ModelOption,
   resolveModelChoice,
 } from "./models.ts";
-export { describeNativeFailure } from "./native-failure.ts";
+export { describeNativeFailure, describeSandboxFailure, promptFailureReason } from "./native-failure.ts";
 export { OFFICIAL_SANDBOX_IMAGE, officialSandboxImage } from "./official-sandbox-image.ts";
 export {
   CONNECTION_MODEL_ID,
@@ -323,7 +324,7 @@ export {
   type SteerRequest,
   type ToolCall,
 } from "./provider.ts";
-export { providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
+export { type ProviderRateLimitDetails, providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
 export {
   goldenCompatibilityIds,
   goldenResponse,

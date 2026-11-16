@@ -1,4 +1,5 @@
 import type { PromptStatus, Sandbox, SandboxStatus } from "@armada/core";
+import { describeSandboxFailure } from "@armada/core";
 import { projectChat } from "./chat.ts";
 import { type ChatEvent, isActiveStatus } from "./events.ts";
 import { describeFailure } from "./failure.ts";
@@ -122,7 +123,14 @@ export function attentionState(
   const settled = turn?.status !== "queued" && turn?.status !== "running" && turn?.status !== "failed";
   if (status === "failed") {
     const reason = (turn?.status === "failed" ? turn.reason : null) ?? recorded.statusReason ?? recorded.lifecycleError;
-    const state = isRecoverableReason(reason) ? interrupted(reason) : failed(reason, "Sandbox failed");
+    const help: import("./failure.ts").FailureHelp = describeFailure(reason) ?? describeSandboxFailure(reason);
+    const state: AttentionState = isRecoverableReason(reason)
+      ? interrupted("The sandbox was interrupted. Launch a new sandbox to continue.")
+      : {
+          kind: "failed",
+          label: "Failed",
+          failure: { ...help, fix: help.fix ?? null },
+        };
     // The machine died after the agent reported its outcome: the pull request it names is still there to merge.
     return outcome && settled ? { ...state, outcome } : state;
   }

@@ -1,4 +1,4 @@
-import { describeNativeFailure } from "@armada/core";
+import { API_FAILURE_HELP, describeNativeFailure, planLimitFromMessage, planLimitMessage } from "@armada/core";
 
 export type FailureHelp = {
   title: string;
@@ -45,6 +45,10 @@ const HELP: Record<string, FailureHelp> = {
   },
   auth_expiry: AUTH,
   unauthorized: AUTH,
+  provider_routing_unavailable: {
+    title: "Server provider setup incomplete",
+    hint: API_FAILURE_HELP.provider_routing_unavailable,
+  },
   provider_not_configured: {
     title: "No subscription for this agent",
     hint: "Neither you nor the org has a subscription or API key for this agent. Add one, then launch again.",
@@ -55,5 +59,12 @@ const HELP: Record<string, FailureHelp> = {
 /** A clear message for the reasons an agent or a call fails with. Unknown reasons have none: show them as they are. */
 export function describeFailure(reason: string | null | undefined): FailureHelp | null {
   if (!reason) return null;
+  const limit = planLimitFromMessage(reason);
+  if (limit)
+    return {
+      ...USAGE,
+      title: limit.code === "rate_limited" ? "Rate limit reached" : "Plan limit reached",
+      hint: planLimitMessage(limit),
+    };
   return describeNativeFailure(reason) ?? HELP[reason] ?? null;
 }
