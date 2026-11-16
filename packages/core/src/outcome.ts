@@ -1,3 +1,4 @@
+import { describeNativeFailure } from "./native-failure.ts";
 import { type PlanLimit, planLimitData, planLimitFromMessage, planLimitMessage } from "./plan-limit.ts";
 import type { AgentEvent, PromptState, Provider } from "./provider.ts";
 
@@ -69,7 +70,7 @@ export async function promptOutcome(
     if (interruption) return { state: "interrupted", reason: interruption };
     if (state.status === "interrupted") return { state: "interrupted" };
     if (
-      message !== "authentication_failed" &&
+      message?.split(":")[0] !== "authentication_failed" &&
       !events.some((event) => event.kind === "other" && event.type === "auth_expiry")
     ) {
       const limit =
@@ -85,7 +86,7 @@ export async function promptOutcome(
     }
     return {
       state: "failed",
-      reason: reason?.kind === "prompt" && reason.reason ? reason.reason : "The agent failed.",
+      reason: describeNativeFailure(message)?.hint ?? (message || "The agent failed."),
     };
   }
   if (state.status !== "finished") return { state: "running" };

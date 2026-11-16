@@ -18,8 +18,7 @@ const unused: Driver = {
 };
 function setup(drivers = { claude: unused, codex: unused }) {
   const dir = mkdtempSync(join(tmpdir(), "armada-runner-"));
-  const path = join(dir, "journal");
-  const journal = new Journal(path, (t) => t.replaceAll(grant.token, "[REDACTED]"));
+  const journal = new Journal(":memory:", (t) => t.replaceAll(grant.token, "[REDACTED]"));
   const runner = new Runner(journal, grant, drivers);
   return {
     dir,
@@ -278,5 +277,40 @@ test("revoking a dial-out request kills its synchronous exec before returning", 
     watcher.close();
     stop.abort();
     s.close();
+  }
+});
+
+test("Runner preserves safe harness failures in synchronous start and asynchronous completion", async () => {
+  const { HarnessError } = await import("../src/errors.ts");
+  for (const synchronous of [true, false]) {
+    const journal = new Journal(":memory:", (text) => text);
+    const driver: Driver = {
+      start() {
+        if (synchronous) throw new HarnessError("authentication_failed", "session_restore");
+        return {
+          done: Promise.reject(new HarnessError("authentication_failed", "session_restore")),
+          async interrupt() {},
+          async steer() {},
+        };
+      },
+      async close() {},
+    };
+    const runner = new Runner(journal, grant, { claude: driver, codex: driver });
+    try {
+      const reply = await payload(
+        await call(runner, {
+          op: "prompt",
+          input: { sandboxId: "logical", harness: "claude", text: "fixture" },
+        }),
+      );
+      await Promise.resolve();
+      const events = await payload(await call(runner, { op: "events" }));
+      expect(JSON.stringify(events.result.events)).toContain('"reason":"authentication_failed:session_restore"');
+      expect(
+        (await payload(await call(runner, { op: "getPrompt", promptId: reply.result.promptId }))).result.status,
+      ).toBe("failed");
+    } finally {
+      journal.close();
+    }
   }
 });

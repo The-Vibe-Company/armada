@@ -118,7 +118,10 @@ test("OpenCode does not reuse a preceding throttle when the resumed process fail
         }
       },
     });
-    await expect(turn.done).rejects.toThrow("harness_failed");
+    await expect(turn.done).rejects.toMatchObject({
+      code: "harness_initialization_failed",
+      phase: "initialization",
+    });
     expect(retries).toBe(1);
   } finally {
     jest.useRealTimers();

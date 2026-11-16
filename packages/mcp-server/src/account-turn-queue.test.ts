@@ -233,7 +233,7 @@ test("queued public receipts remain usable across server reads, evidence, outcom
   });
   expect(waiting).toMatchObject({
     settled: false,
-    statusMessage: "Waiting for a free agent slot on account Shared account (0/1).",
+    statusMessage: "Prompt accepted; waiting for sandbox dispatch, not an account slot.",
   });
   expect(
     await callSharedTool(context, "wait", { id: input.id, prompt_id: input.request_id, timeout_seconds: 0 }),
@@ -352,7 +352,7 @@ test("a proven pre-dispatch rejection requeues without leaking the account reser
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
   expect((await db.query("select * from account_agent_reservations")).rows).toEqual([]);
-  expect((await queue.status(caller, input.id, input.request_id))?.message).toContain("Waiting for a free agent slot");
+  expect((await queue.status(caller, input.id, input.request_id))?.message).toContain("waiting for sandbox dispatch");
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
   expect(calls).toBe(2);
@@ -618,9 +618,51 @@ test.each(["boat", "modal"])("native %s restart releases only proven pre-dispatc
   await db.exec("delete from runtime_commands");
   expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
   expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(0);
-  expect((await restarted.status(caller, input.id, input.request_id))?.message).toContain("Waiting");
+  expect((await restarted.status(caller, input.id, input.request_id))?.message).toBe(
+    "Prompt accepted; waiting for sandbox dispatch, not an account slot.",
+  );
   expect(await restarted.reconcileOne(new AbortController().signal)).toBe(true);
   await restarted.drain();
   expect(calls).toBe(1);
   expect(await restarted.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "recovered_native" });
+});
+
+test.each([
+  {
+    name: "spare capacity",
+    busy: false,
+    limit: 3,
+    occupied: false,
+    expected: "Prompt accepted; waiting for sandbox dispatch, not an account slot.",
+  },
+  {
+    name: "same sandbox turn",
+    busy: true,
+    limit: 3,
+    occupied: false,
+    expected: "Prompt accepted; waiting for the current sandbox turn or dispatch to finish.",
+  },
+  {
+    name: "account exhaustion",
+    busy: false,
+    limit: 1,
+    occupied: true,
+    expected: "Waiting for a free agent slot on account Shared account (1/1).",
+  },
+  {
+    name: "same sandbox at full capacity",
+    busy: true,
+    limit: 1,
+    occupied: false,
+    expected: "Prompt accepted; waiting for the current sandbox turn or dispatch to finish.",
+  },
+])("queue messages identify $name in acceptance and status", async ({ busy, limit, occupied, expected }) => {
+  await db.query("update credentials set max_agents=$1", [limit]);
+  if (busy || occupied)
+    await db.query("update sandboxes set status='running',task_prompt_id='active_turn' where id=$1", [
+      busy ? ids[1] : ids[0],
+    ]);
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "queued instruction" };
+  expect(await queue.accept(caller, input)).toMatchObject({ statusMessage: expected });
+  expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ message: expected });
 });

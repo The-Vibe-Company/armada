@@ -466,7 +466,6 @@ export async function launchSandbox(
   });
   let childRecorded = false;
   let noAllocation = true;
-  let failed = false;
   try {
     await stores.credentials.admit?.(actor, credentials, id);
     await options.beforeFork?.(id);
@@ -828,18 +827,29 @@ export async function launchSandbox(
       await quietly(() => provider.stop({ sandboxId: forked.id }));
       throw failure;
     }
-  } catch (error) {
-    failed = true;
-    throw error;
   } finally {
-    // Model auth is delivered only after the sandbox row is recorded; an unknown fork has no account access.
-    await stores.credentials.releaseAdmission?.(id);
+    // Coordination cleanup must not replace accepted work or the original launch error.
+    // DELETE is idempotent; retry once after a transient failure. Published lifecycle
+    // state also reconciles reservations through release_account_agent_reservation.
+    try {
+      await stores.credentials.releaseAdmission?.(id);
+    } catch {
+      try {
+        await stores.credentials.releaseAdmission?.(id);
+      } catch {
+        // Never log exception text: database/provider errors may contain credentials.
+        await quietly(async () =>
+          console.warn("Launch admission cleanup failed; reservation reconciliation is required."),
+        );
+      }
+    }
     // An unrecorded physical outcome remains owned by this durable fence.
     if (childRecorded || noAllocation) {
-      await releaseOperation?.().catch((error) => {
-        // Preserve an original provider/publication failure if release also loses transport.
-        if (!failed) throw error;
-      });
+      try {
+        await releaseOperation?.();
+      } catch {
+        await quietly(async () => console.warn("Launch operation cleanup failed; fence reconciliation is required."));
+      }
     }
   }
 }
