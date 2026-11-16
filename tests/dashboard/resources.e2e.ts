@@ -37,6 +37,6 @@ for (const session of ["alice", "large"]) {
     await expect(screen.getByRole("dialog")).toBeVisible();
     await screen.getByRole("button", "Close details", { exact: true }).tap();
     await screen.getByRole("button", "Add a variable", { exact: true }).tap();
-    await expect(screen.getByRole("dialog", "Add a variable or secret")).toBeVisible();
+    await expect(screen.getByRole("dialog", "Add a setting or a secret")).toBeVisible();
   });
 }
