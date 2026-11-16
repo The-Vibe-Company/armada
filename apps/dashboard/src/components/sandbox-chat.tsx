@@ -4,6 +4,7 @@ import { type Harness, idlePauseMessage, type SandboxStatus, sandboxControlRefus
 import {
   AlertTriangleIcon,
   ArrowDownIcon,
+  ArrowUpIcon,
   CheckIcon,
   ChevronRightIcon,
   CircleSlashIcon,
@@ -419,7 +420,7 @@ export function SandboxChat(props: Props) {
 
   return (
     <div data-fit="chat" className="space-y-2 sm:space-y-4">
-      <Card data-fit="card" className="gap-0 overflow-hidden py-0">
+      <Card data-fit="card" className="gap-0 overflow-hidden rounded-none border-0 bg-transparent py-0 shadow-none">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:px-6">
           <div className="flex min-w-0 items-center gap-3">
             <h2 className="text-sm leading-none font-semibold">Conversation</h2>
@@ -684,7 +685,7 @@ export function Transcript({
         // biome-ignore lint/a11y/noNoninteractiveTabindex: the history scrolls on its own; the keyboard must reach it.
         tabIndex={0}
         data-fit="history-scroll"
-        className="max-h-[min(68vh,46rem)] min-h-40 overflow-y-auto overscroll-contain px-4 py-5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset sm:px-6"
+        className="max-h-[min(68vh,46rem)] min-h-40 overflow-y-auto overscroll-contain px-4 py-5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset sm:px-7"
       >
         {items.length === 0 ? (
           loaded || !poll.configured || poll.error ? (
@@ -693,7 +694,7 @@ export function Transcript({
             </p>
           ) : (
             // The shape of a conversation while it loads: nothing jumps when the messages arrive.
-            <div className="mx-auto flex max-w-3xl flex-col gap-5" data-testid="history-loading">
+            <div className="mx-auto flex max-w-[780px] flex-col gap-[22px]" data-testid="history-loading">
               <span className="sr-only">Loading…</span>
               <Skeleton className="h-10 w-2/5 self-end rounded-2xl" />
               <div className="space-y-2">
@@ -705,7 +706,7 @@ export function Transcript({
             </div>
           )
         ) : (
-          <ol className="mx-auto flex max-w-3xl flex-col gap-5">
+          <ol className="mx-auto flex max-w-[780px] flex-col gap-[22px]">
             {groups.map((group) =>
               group.kind === "tools" ? (
                 <li key={group.key}>
@@ -775,7 +776,7 @@ function ChatEntry({ item }: { item: ChatItem }) {
       return (
         <div className="flex flex-col items-end gap-1">
           <div
-            className="max-w-[min(85%,36rem)] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap text-primary-foreground shadow-xs"
+            className="max-w-[min(85%,36rem)] rounded-2xl border bg-muted px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap"
             title={title}
           >
             {item.text || <span className="opacity-75">(empty prompt)</span>}
@@ -787,7 +788,7 @@ function ChatEntry({ item }: { item: ChatItem }) {
       return (
         <div className="flex flex-col items-end gap-1">
           <div
-            className="max-w-[min(85%,36rem)] rounded-2xl rounded-br-md border border-dashed border-foreground/25 px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap"
+            className="max-w-[min(85%,36rem)] rounded-2xl border bg-muted px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap"
             title={title}
           >
             {item.text}
@@ -841,12 +842,38 @@ function Outcome({ status, reason }: { status: "failed" | "interrupted"; reason:
 }
 
 function ToolGroup({ tools, running }: { tools: ToolActivity[]; running: boolean }) {
+  const complete = tools.every((tool) => tool.result);
+  const [open, setOpen] = useState(false);
   return (
-    <ul className="divide-y overflow-hidden rounded-lg border bg-muted/20" aria-label="Tool calls">
-      {tools.map((tool) => (
-        <ToolRow key={tool.id} tool={tool} running={running} />
-      ))}
-    </ul>
+    <Collapsible
+      open={!complete || open}
+      onOpenChange={setOpen}
+      className="overflow-hidden rounded-[10px] border bg-card"
+    >
+      <CollapsibleTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-auto w-full justify-start gap-2 rounded-none px-3 py-2 text-[13px] text-muted-foreground"
+        >
+          <ChevronRightIcon
+            aria-hidden
+            className={cn("size-3.5 transition-transform", (!complete || open) && "rotate-90")}
+          />
+          <span className="font-medium text-foreground">{complete ? "Worked" : running ? "Working" : "Activity"}</span>
+          <span>
+            · {tools.length} {tools.length === 1 ? "step" : "steps"}
+          </span>
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <ul className="border-t" aria-label="Tool calls">
+          {tools.map((tool) => (
+            <ToolRow key={tool.id} tool={tool} running={running} />
+          ))}
+        </ul>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -856,6 +883,15 @@ function ToolRow({ tool, running }: { tool: ToolActivity; running: boolean }) {
   const [open, setOpen] = useState(false);
   const summary = toolSummary(tool.input);
   const failed = tool.result?.isError === true;
+  const edit =
+    isRecord(tool.input) &&
+    typeof tool.input.file_path === "string" &&
+    typeof tool.input.old_string === "string" &&
+    typeof tool.input.new_string === "string" &&
+    tool.result &&
+    !failed
+      ? tool.input
+      : null;
   const state = tool.result ? (failed ? "error" : "done") : running ? "running" : "unknown";
   return (
     <Collapsible open={open} onOpenChange={setOpen} asChild>
@@ -871,13 +907,34 @@ function ToolRow({ tool, running }: { tool: ToolActivity; running: boolean }) {
               aria-hidden="true"
             />
             <ToolState state={state} />
-            <span className="shrink-0 font-mono font-medium">{tool.name}</span>
+            <span className="shrink-0 font-mono font-medium">{edit ? "Edited" : tool.name}</span>
             {summary && <span className="min-w-0 truncate font-mono text-muted-foreground">{summary}</span>}
+            {edit && <span className="ml-auto shrink-0 text-muted-foreground">{open ? "Hide diff" : "View diff"}</span>}
           </Button>
         </CollapsibleTrigger>
         <CollapsibleContent className="space-y-2 border-t bg-background/60 px-3 py-2">
           {open && (
             <>
+              {edit && (
+                <section
+                  className="overflow-x-auto rounded-md border bg-muted/30 font-mono text-xs leading-relaxed"
+                  aria-label={`Changes to ${edit.file_path}`}
+                >
+                  <p className="border-b px-3 py-2 font-medium">{String(edit.file_path)}</p>
+                  <pre className="bg-destructive/10 px-3 text-destructive">
+                    {String(edit.old_string)
+                      .split("\n")
+                      .map((line) => `− ${line}`)
+                      .join("\n")}
+                  </pre>
+                  <pre className="bg-success/10 px-3 text-success">
+                    {String(edit.new_string)
+                      .split("\n")
+                      .map((line) => `+ ${line}`)
+                      .join("\n")}
+                  </pre>
+                </section>
+              )}
               <ToolBlock label="Input" text={toolText(tool.input)} empty="No input recorded." />
               {tool.result ? (
                 <ToolBlock
@@ -1085,7 +1142,7 @@ function Composer({
       noValidate
       onSubmit={onSubmit}
       onChange={readOverride}
-      className="space-y-3 border-t bg-muted/40 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6"
+      className="mx-4 mb-[max(0.75rem,env(safe-area-inset-bottom))] space-y-2 rounded-2xl border border-border bg-card px-2.5 pt-2 pb-2 shadow-md sm:mx-7"
       aria-label="Message the agent"
     >
       <input type="hidden" name="sandbox" value={sandboxId} />
@@ -1105,12 +1162,12 @@ function Composer({
         onKeyDown={onKeyDown}
         placeholder={
           running
-            ? "Steer the running turn, or send the next one"
+            ? "Steer the running turn…"
             : status === "stopped"
-              ? "Send a message to resume the sandbox"
-              : "What should the agent do next?"
+              ? "Send a prompt to resume this sandbox…"
+              : "Send the next prompt…"
         }
-        className="max-h-60 min-h-14 resize-y bg-card shadow-xs sm:min-h-20 dark:bg-card"
+        className="max-h-60 min-h-14 resize-y rounded-none border-0 bg-transparent px-1.5 py-1.5 shadow-none focus-visible:ring-0 sm:min-h-20 dark:bg-transparent"
       />
       <Collapsible open={showModel} onOpenChange={setShowModel} className="space-y-3">
         {!pinnedModel && (
@@ -1127,6 +1184,9 @@ function Composer({
           </CollapsibleContent>
         )}
         <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+          <span className="px-1 text-xs font-medium">
+            {harness === "claude" ? "Claude Code" : harness === "codex" ? "Codex" : "OpenCode"}
+          </span>
           {pinnedModel ? (
             // No model picker on Docker: the launch model serves every message, said plainly instead of refused.
             <p className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground" title={PINNED_MODEL}>
@@ -1242,7 +1302,7 @@ function Composer({
               ) : (
                 "Send"
               )}
-              {primary === "send" && <SubmitShortcut />}
+              {primary === "send" && <ArrowUpIcon className="size-3.5" aria-hidden />}
             </Button>
           </div>
         </div>
