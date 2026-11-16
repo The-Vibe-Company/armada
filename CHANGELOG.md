@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.46.2](https://github.com/The-Vibe-Company/armada/compare/v2.46.1...v2.46.2) (2026-11-16)
+
+
+### Bug Fixes
+
+* **docker:** identify reservation database failures safely ([#2256](https://github.com/The-Vibe-Company/armada/issues/2256)) ([3a0ca28](https://github.com/The-Vibe-Company/armada/commit/3a0ca28cfeee136f2e9fe2998b895c777a1b270b))
+
 ## [2.46.1](https://github.com/The-Vibe-Company/armada/compare/v2.46.0...v2.46.1) (2026-11-16)
 
 
