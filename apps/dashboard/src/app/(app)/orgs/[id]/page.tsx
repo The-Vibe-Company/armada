@@ -1,6 +1,5 @@
 import { CircleAlertIcon } from "lucide-react";
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { inviteMember, resendInvitation, revokeInvitation } from "@/app/actions/invitations";
 import { InvitationList } from "@/components/invitations";
@@ -18,8 +17,6 @@ import { listMemberships, requireViewer, type Viewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { type InvitationView, pendingInvitations } from "@/lib/invitations";
 import { initialOf } from "@/lib/members";
-import { HARNESS_PATH } from "@/lib/model-accounts";
-import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Organization" };
@@ -68,12 +65,6 @@ export default async function OrgPage({ params, searchParams }: Props) {
     <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-7">
       <PageHeader title={membership.org.name}>
         {isAdmin && <InviteMemberDialog org={id} action={inviteMember} />}
-        <Button variant="outline" asChild>
-          <Link href={CLOUD_PROVIDERS_PATH}>Machines</Link>
-        </Button>
-        <Button variant="outline" asChild>
-          <Link href={HARNESS_PATH}>Models</Link>
-        </Button>
       </PageHeader>
 
       {joined && (
@@ -83,22 +74,13 @@ export default async function OrgPage({ params, searchParams }: Props) {
       )}
 
       <section className="space-y-3" aria-labelledby="members-heading">
-        <SectionHeader
-          id="members-heading"
-          title="Members"
-          description={
-            isAdmin
-              ? "Admins invite people, connect machines and shared accounts, and manage shared snapshots, templates and tools. Members launch and use them."
-              : "Members launch and use shared resources. Ask an admin to invite people or change members."
-          }
-        >
-          <span className="text-sm text-muted-foreground tabular-nums">
-            {roster.data.length} {roster.data.length === 1 ? "member" : "members"}
-          </span>
-        </SectionHeader>
+        <h2 id="members-heading" className="text-base font-semibold">
+          Members{" "}
+          <span className="ml-1 font-mono text-[13px] font-normal text-muted-foreground">{roster.data.length}</span>
+        </h2>
         <div className="overflow-hidden rounded-[10px] border bg-card">
           <Table>
-            <TableHeader className="max-sm:sr-only">
+            <TableHeader className="sr-only">
               <TableRow className="hover:bg-transparent">
                 <TableHead className="pl-3 sm:pl-4">Member</TableHead>
                 <TableHead>Role</TableHead>

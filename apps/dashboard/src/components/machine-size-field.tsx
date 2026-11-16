@@ -2,7 +2,7 @@
 
 import type { MachineSize, MachineSizePolicy, SandboxProviderId } from "@armada/core";
 import { useEffect, useRef, useState } from "react";
-import { LaunchChoice } from "@/components/launch-surface";
+import { LaunchChoice, LaunchSetting } from "@/components/launch-surface";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import {
@@ -10,6 +10,7 @@ import {
   defaultOptionLabel,
   describeDefault,
   launchDefault,
+  MACHINE_SIZE_LABELS,
   sizeCaveat,
   sizeOptions,
   sizeSpec,
@@ -57,12 +58,21 @@ export function MachineSizeField({
       {composer ? (
         <>
           <input type="hidden" name="size" value={override} />
-          <LaunchChoice
-            label="Machine size"
-            value={override}
-            options={[{ value: DEFAULT_SIZE, label: defaultOptionLabel(provider, resolved) }, ...sizeOptions(provider)]}
-            onChange={(value) => setOverride(value as MachineSize | typeof DEFAULT_SIZE)}
-          />
+          <LaunchSetting
+            label="Machine"
+            value={chosen ? MACHINE_SIZE_LABELS[chosen] : "Provider default"}
+            description={`${chosen ? sizeSpec(provider, chosen) + " · " : ""}${override ? "launch override" : describeDefault(provider, resolved)}`}
+          >
+            <LaunchChoice
+              label="Machine size"
+              value={override}
+              options={[
+                { value: DEFAULT_SIZE, label: defaultOptionLabel(provider, resolved) },
+                ...sizeOptions(provider),
+              ]}
+              onChange={(value) => setOverride(value as MachineSize | typeof DEFAULT_SIZE)}
+            />
+          </LaunchSetting>
         </>
       ) : (
         <>
@@ -83,7 +93,12 @@ export function MachineSizeField({
           </NativeSelect>
         </>
       )}
-      <p id={`${idPrefix}-size-hint`} className="text-xs text-muted-foreground" data-size-source={resolved.source}>
+      <p
+        hidden={composer}
+        id={`${idPrefix}-size-hint`}
+        className="text-xs text-muted-foreground"
+        data-size-source={resolved.source}
+      >
         {override
           ? `Overrides the default (${describeDefault(provider, resolved)}).`
           : `${describeDefault(provider, resolved)}.`}

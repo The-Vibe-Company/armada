@@ -2,7 +2,9 @@
 
 import type { SandboxPlacementProviderId } from "@armada/core";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
+import { Popover as PopoverPrimitive } from "radix-ui";
 import { type ReactNode, type RefObject, useEffect, useState } from "react";
+import { ProviderMark } from "@/components/provider-mark";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -69,8 +71,8 @@ export function LaunchTaskField({
         name="prompt"
         value={value}
         onChange={onChange ? (event) => onChange(event.target.value) : undefined}
-        rows={2}
-        className="max-h-[40dvh] min-h-[72px] resize-y rounded-[10px] bg-background px-3.5 py-3 text-[14.5px] leading-[1.55]"
+        rows={5}
+        className="max-h-[40dvh] min-h-[138px] resize-y rounded-[10px] bg-background px-3.5 py-3 text-[14.5px] leading-[1.55]"
         placeholder="What should the agent do? Leave it empty to start the sandbox idle."
       />
     </div>
@@ -107,6 +109,54 @@ export function LaunchAdvanced({
         {children}
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+/** Keep picker fields inside the form and mounted, so closed settings still submit. */
+export function LaunchSetting({
+  label,
+  value,
+  description,
+  mark,
+  children,
+}: {
+  label: string;
+  value: ReactNode;
+  description?: ReactNode;
+  mark?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <PopoverPrimitive.Root>
+      <PopoverPrimitive.Trigger asChild>
+        <button
+          type="button"
+          aria-label={`${label} settings`}
+          className="grid min-h-[53px] w-full grid-cols-[84px_minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2 text-left text-[13px] hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="text-muted-foreground">{label}</span>
+          <span className="flex min-w-0 items-center gap-2.5">
+            {mark}
+            <span className="min-w-0">
+              <span className="block truncate font-medium">{value}</span>
+              <span className="block truncate text-xs text-muted-foreground">{description}</span>
+            </span>
+          </span>
+          <span aria-hidden className="flex items-center gap-1 text-xs text-muted-foreground">
+            Change <ChevronDownIcon className="size-3.5" />
+          </span>
+        </button>
+      </PopoverPrimitive.Trigger>
+      <PopoverPrimitive.Content
+        forceMount
+        align="start"
+        sideOffset={4}
+        collisionPadding={16}
+        className="z-50 max-h-[60dvh] w-[min(460px,calc(100vw-2rem))] overflow-y-auto rounded-[10px] border bg-popover p-3 text-popover-foreground shadow-lg data-[state=closed]:hidden"
+      >
+        {children}
+      </PopoverPrimitive.Content>
+    </PopoverPrimitive.Root>
   );
 }
 
@@ -301,7 +351,9 @@ export function LaunchLocation({
   starts,
   onStart,
   lockedStart = false,
+  compact = false,
 }: {
+  compact?: boolean;
   provider: SandboxPlacementProviderId;
   lockedStart?: boolean;
   start: string;
@@ -315,6 +367,34 @@ export function LaunchLocation({
   onStart?: ((value: string) => void) | undefined;
 }) {
   const [ttl, setTtl] = useState("");
+  if (compact)
+    return (
+      <LaunchSetting
+        label="From"
+        value={starts?.find((x) => x.value === start)?.label ?? start}
+        description={`${repositories.join(", ")} · ${provider}`}
+        mark={<ProviderMark provider={provider} />}
+      >
+        <LaunchChoice
+          disabled={lockedStart}
+          label="From"
+          value={start}
+          options={starts ?? [{ value: start, label: start }]}
+          onChange={(value) => onStart?.(value)}
+        />
+        {provider !== "docker" && (
+          <>
+            <LaunchChoice
+              label="Folder"
+              value={project}
+              options={[{ value: "", label: "default" }, ...repositories.map((value) => ({ value, label: value }))]}
+              onChange={(value) => onProject?.(value)}
+            />
+            <input type="hidden" name="repo" value={project} />
+          </>
+        )}
+      </LaunchSetting>
+    );
   return (
     <div data-launch-location className="space-y-2">
       <div className="overflow-hidden rounded-[10px] border [&>button]:border-b [&>button:last-of-type]:border-b-0">

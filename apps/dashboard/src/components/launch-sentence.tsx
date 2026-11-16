@@ -4,7 +4,8 @@ import type { Harness } from "@armada/core";
 import { ChevronDownIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { LaunchChoice } from "@/components/launch-surface";
+import { CatalogHarnessMark } from "@/components/catalog-harness-mark";
+import { LaunchChoice, LaunchSetting } from "@/components/launch-surface";
 import type { ModelCatalog } from "@/components/model-fields";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -43,7 +44,6 @@ export function LaunchSentence({
   const [model, setModel] = useState(() => initialLaunchSelection(accounts, catalog, harness).model);
   const [effort, setEffort] = useState(catalog[harness].defaultReasoningEffort);
   const [other, setOther] = useState(false);
-  const [agentOpen, setAgentOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [pickerSource, setPickerSource] = useState<"model" | "account">("model");
@@ -227,27 +227,16 @@ export function LaunchSentence({
       />
       {showHeading && <p className="text-[13px] font-medium">Settings</p>}
       <div className="overflow-hidden rounded-[10px] border [&>button]:border-b [&>span]:border-b [&>span:last-child]:border-b-0">
-        <button
-          type="button"
-          aria-label={`Agent settings: ${HARNESS_LABELS[harness]}`}
-          aria-expanded={agentOpen}
-          onClick={() => setAgentOpen(!agentOpen)}
-          className="grid min-h-[52px] w-full grid-cols-[84px_minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2 text-left text-[13px] hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="text-muted-foreground">Agent</span>
-          <span className="min-w-0">
-            <span className="block truncate font-medium">{HARNESS_LABELS[harness]}</span>
-            <span className="block truncate text-xs text-muted-foreground">
-              {model} · {EFFORT_LABEL[efforts.includes(effort) ? effort : entry.defaultReasoningEffort] ?? effort}{" "}
-              effort
+        <LaunchSetting
+          label="Agent"
+          value={HARNESS_LABELS[harness]}
+          description={`${model} · ${EFFORT_LABEL[efforts.includes(effort) ? effort : entry.defaultReasoningEffort] ?? effort} effort`}
+          mark={
+            <span className="[&_svg]:size-6">
+              <CatalogHarnessMark harness={harness} />
             </span>
-          </span>
-          <span aria-hidden="true" className="flex items-center gap-1 text-xs text-muted-foreground">
-            <span className="max-sm:sr-only">Change</span>
-            <ChevronDownIcon className={`size-3.5 ${agentOpen ? "rotate-180" : ""}`} />
-          </span>
-        </button>
-        <div hidden={!agentOpen} className="border-b bg-muted/30">
+          }
+        >
           <LaunchChoice
             label="Agent"
             value={harness}
@@ -297,7 +286,7 @@ export function LaunchSentence({
               onChange={setEffort}
             />
           </span>
-        </div>
+        </LaunchSetting>
         <Popover open={open && !phone && pickerSource === "account"} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
             <button
@@ -312,7 +301,19 @@ export function LaunchSentence({
             >
               <span className="text-muted-foreground">Account</span>
               <span className={`min-w-0 truncate font-medium ${selectedProblem ? "text-warning" : ""}`}>
-                {chosen?.name ?? "Choose an account"}
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <span className="[&_svg]:size-6">
+                    <CatalogHarnessMark harness={harness} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate">{chosen?.name ?? "Choose an account"}</span>
+                    <span className="block truncate text-xs font-normal text-muted-foreground">
+                      {chosen
+                        ? `${KIND_INFO[chosen.kind].label} · ${chosen.scope === "org" ? "Organization" : "Only you"}`
+                        : "Connect an account to continue"}
+                    </span>
+                  </span>
+                </span>
               </span>
               <span aria-hidden="true" className="flex items-center gap-1 text-xs text-muted-foreground">
                 <span className="max-sm:sr-only">Change</span>

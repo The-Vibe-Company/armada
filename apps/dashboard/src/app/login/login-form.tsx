@@ -68,7 +68,7 @@ export function LoginForm({ next, providers, initialError }: Props) {
       )}
 
       {step === "email" ? (
-        <form action={sendAction} className="space-y-3">
+        <form action={sendAction} className="space-y-2">
           <input type="hidden" name="next" value={next} />
           <div className="space-y-2">
             <Label htmlFor={emailId}>Work email</Label>
@@ -76,6 +76,7 @@ export function LoginForm({ next, providers, initialError }: Props) {
               ref={emailInput}
               id={emailId}
               name="email"
+              className="h-10 rounded-lg bg-card"
               type="email"
               autoComplete="email"
               placeholder="you@company.com"
@@ -88,7 +89,7 @@ export function LoginForm({ next, providers, initialError }: Props) {
           </SubmitButton>
         </form>
       ) : (
-        <form action={verifyAction} className="space-y-3">
+        <form action={verifyAction} className="space-y-2">
           <input type="hidden" name="next" value={next} />
           <input type="hidden" name="email" value={email} />
           <p id={codeHintId} className="text-sm text-muted-foreground">
