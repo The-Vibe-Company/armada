@@ -289,9 +289,15 @@ The fixture sign-in is saved once per target for the duration of the run; sessio
 state is encrypted and removed by the runner. Only setup resets the mock because
 reset invalidates saved authentication tokens.
 
-Run one journey with `bun run e2e -- tests/dashboard/sandboxes.e2e.ts:24 --target desktop`.
+Run one journey with `bun run e2e -- tests/dashboard/sandboxes.e2e.ts:39 --target desktop`.
 Trace pages and Markdown traces are in `.e2e/results/`; the machine-readable
 report is `.e2e/report.json` and app output is `.e2e/logs/dashboard.log`. These
 artifacts are ignored. There are no agent steps or replay recordings in slice 1.
 [Legacy spec retirement plan](docs/e2e-retirement.md) tracks the later slices.
 
+
+The sandbox journeys run for both Acme and the existing **Large** fixture (600
+sandboxes, including the mock request-target limit). Setup saves separate
+organization sessions using the validated organization-preference cookie; no
+fixture resources are replaced. Release gating is reserved for issue #2313
+slice 4, per the owner decision; no CI job is added in this slice.
