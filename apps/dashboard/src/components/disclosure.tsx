@@ -26,12 +26,15 @@ export function Disclosure({
         <Button
           type="button"
           variant="ghost"
-          className={cn("h-auto justify-start gap-1 px-0 text-sm", hidden && "hidden")}
+          className={cn(
+            "h-auto max-w-full min-w-0 shrink justify-start gap-1 whitespace-normal px-0 text-left text-sm",
+            hidden && "hidden",
+          )}
           tabIndex={hidden ? -1 : undefined}
           aria-hidden={hidden || undefined}
         >
           <ChevronRightIcon aria-hidden className={cn("size-3", open && "rotate-90")} />
-          {summary}
+          <span className="min-w-0 [overflow-wrap:anywhere]">{summary}</span>
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent forceMount className={cn("data-[state=closed]:hidden", !hidden && "pt-4")}>
