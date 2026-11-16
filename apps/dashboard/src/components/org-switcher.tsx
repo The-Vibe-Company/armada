@@ -102,7 +102,7 @@ function SelectedOrg({
     refocusOn = document.activeElement === element ? org : null;
     const data = new FormData();
     data.set("org", org);
-    data.set("section", section.split("/")[1] ?? "");
+    data.set("section", section);
     startTransition(() => switchTo(data));
   }
 
