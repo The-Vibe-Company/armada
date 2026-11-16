@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
 import { createSqlSandboxStore, type SandboxStore, type Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { database } from "./support.ts";
 
-async function fixture() {
-  const { db, people } = await database();
+const sharedDatabase = rowOnlyDatabase();
+
+async function fixture(seed = database) {
+  const { db, people } = await seed();
   const golden = (
     await db.query<{ id: string }>("select id from goldens where owner_id=$1 and visibility='private' limit 1", [
       people.owner,
@@ -37,24 +40,20 @@ async function fixture() {
 test.each(["core", "scoped"] as const)(
   "%s store retains an explicit runtime choice while native DTOs stay unchanged",
   async (surface) => {
-    const f = await fixture();
-    try {
-      const store = f[surface];
-      const native = await store.insert(f.input());
-      expect(native.boatRuntime).toBeUndefined();
-      expect((await f.db.query("select boat_runtime from sandboxes where id=$1", [native.id])).rows).toEqual([
-        { boat_runtime: false },
-      ]);
-      const runtime = await store.insert({ ...f.input(), boatRuntime: true });
-      expect(runtime.boatRuntime).toBe(true);
-      expect((await f.scoped.get(runtime.id))?.boatRuntime).toBe(true);
-      await store.update(runtime.id, { status: "stopped", stoppedAt: new Date().toISOString() });
-      expect((await f.db.query("select boat_runtime from sandboxes where id=$1", [runtime.id])).rows).toEqual([
-        { boat_runtime: true },
-      ]);
-    } finally {
-      await f.db.close();
-    }
+    const f = await fixture(sharedDatabase);
+    const store = f[surface];
+    const native = await store.insert(f.input());
+    expect(native.boatRuntime).toBeUndefined();
+    expect((await f.db.query("select boat_runtime from sandboxes where id=$1", [native.id])).rows).toEqual([
+      { boat_runtime: false },
+    ]);
+    const runtime = await store.insert({ ...f.input(), boatRuntime: true });
+    expect(runtime.boatRuntime).toBe(true);
+    expect((await f.scoped.get(runtime.id))?.boatRuntime).toBe(true);
+    await store.update(runtime.id, { status: "stopped", stoppedAt: new Date().toISOString() });
+    expect((await f.db.query("select boat_runtime from sandboxes where id=$1", [runtime.id])).rows).toEqual([
+      { boat_runtime: true },
+    ]);
   },
 );
 
