@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.46.3](https://github.com/The-Vibe-Company/armada/compare/v2.46.2...v2.46.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* **server:** unblock unlimited account turn dispatch ([#2270](https://github.com/The-Vibe-Company/armada/issues/2270)) ([db2667f](https://github.com/The-Vibe-Company/armada/commit/db2667fc2a8a769b17f4d996c63a7334ec0e9ea8))
+* **test:** release shared PGlite heaps after file teardown ([#2271](https://github.com/The-Vibe-Company/armada/issues/2271)) ([48d236a](https://github.com/The-Vibe-Company/armada/commit/48d236a2e53340c07633a1e3db091a9f0df88061))
+
 ## [2.46.2](https://github.com/The-Vibe-Company/armada/compare/v2.46.1...v2.46.2) (2026-11-16)
 
 
