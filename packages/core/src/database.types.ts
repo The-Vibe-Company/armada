@@ -46,6 +46,7 @@ export type Database = {
           conversation_id: string;
           sequence: number;
           state: string;
+          queued_generation: number;
           dispatch_generation: number | null;
           dispatch_until: string | null;
           result_enc: string | null;
@@ -64,6 +65,7 @@ export type Database = {
           conversation_id: string;
           sequence: number;
           state?: string;
+          queued_generation?: number;
           dispatch_generation?: number | null;
           dispatch_until?: string | null;
           result_enc?: string | null;
@@ -82,6 +84,7 @@ export type Database = {
           conversation_id?: string;
           sequence?: number;
           state?: string;
+          queued_generation?: number;
           dispatch_generation?: number | null;
           dispatch_until?: string | null;
           result_enc?: string | null;
