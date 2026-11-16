@@ -1,7 +1,8 @@
 import { CircleAlertIcon, InfoIcon, UserIcon, UsersIcon, VariableIcon } from "lucide-react";
 import Link from "next/link";
+import { CatalogBrowser } from "@/components/catalog-browser";
 import { Empty, PageHeader } from "@/components/page-header";
-import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
+import type { ResourceRow } from "@/components/resource-browser";
 import { RowTag, StateCell } from "@/components/state-cell";
 import { TemplateUsage } from "@/components/template-usage";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -100,7 +101,7 @@ export default async function VariablesContent({ searchParams }: Props) {
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
 
   return (
-    <ResourceBrowser
+    <CatalogBrowser
       title={TITLE}
       description={DESCRIPTION}
       meta={rows.length > 0 ? rows.length : undefined}
