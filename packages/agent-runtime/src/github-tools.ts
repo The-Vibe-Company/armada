@@ -266,6 +266,8 @@ async function installGitHubTools(input: {
 const GITHUB_CLIENT = `import os,sys,json,socket,http.client,subprocess,re,threading,pwd,signal,time,errno,shlex
 def diagnostic(error,stage):
     # Never interpolate exception text, paths, request bodies or inherited values.
+    if stage=='repository_selection':
+        sys.stderr.write('No repository selected or unsupported GitHub command: run inside a checkout or pass -R owner/repo.\\n');sys.stderr.flush();return
     reason='invalid_response'
     if isinstance(error,FileNotFoundError): reason='socket_missing'
     elif isinstance(error,PermissionError): reason='socket_permission_denied'
@@ -481,6 +483,18 @@ try:
             if arg=='--hostname' and (i+1>=len(args) or args[i+1].lower()!='github.com'): raise ValueError()
             if arg.startswith('--hostname=') and arg.split('=',1)[1].lower()!='github.com': raise ValueError()
             if arg.startswith(('http://','https://')) and not arg.startswith(('https://github.com/','https://api.github.com/')): raise ValueError()
+        if command_args[:2]==['auth','status']:
+            stage='broker_request'
+            selection=Connection('private')
+            selection.request('POST','/repositories','{}',{'Content-Type':'application/json'})
+            reply=selection.getresponse()
+            if reply.status!=200: raise ConnectionError()
+            repositories=json.loads(reply.read(262144))['repositories']
+            selection.close()
+            if not repositories:
+                sys.stderr.write('This sandbox has no repository authorization; launch with --repo owner/repo.\\n');sys.exit(1)
+            sys.stdout.write('Managed GitHub authorization is scoped to: '+', '.join(repository(value) for value in repositories)+'\\n')
+            sys.exit(0)
         if command_args and command_args[0]=='api':
             repo=api_repository(args[:command_index]+command_args[1:])
         else:
@@ -488,29 +502,50 @@ try:
             for i,arg in enumerate(args):
                 if arg in ('-R','--repo') and i+1<len(args): repo=args[i+1]
                 if arg.startswith('--repo='): repo=arg.split('=',1)[1]
+            if command_args[:1]==['repo'] and (len(command_args)<2 or command_args[1] not in ('clone','view','fork')): raise ValueError()
+            positional=None
+            rest=command_args[2:]
+            values={'-R','--repo','--json','--jq','-q','--template','-t','--branch','-b','--remote-name','--upstream-remote-name','--body','--body-file','--title','--author','--assignee','--label','--search','--limit','-L','--head','--base','--state'}
+            operands=[]
+            i=0
+            while i<len(rest):
+                arg=rest[i]
+                if arg=='--':
+                    operands.extend(rest[i+1:]);break
+                if arg in values:
+                    if i+1>=len(rest): raise ValueError()
+                    i+=2;continue
+                if arg.startswith('-'): i+=1;continue
+                operands.append(arg);i+=1
+            if command_args[:1]==['repo'] and operands:
+                positional=repository(operands[0])
+            if command_args[:1] in (['pr'],['issue']):
+                for arg in operands:
+                    if arg.startswith('https://github.com/'):
+                        match=re.fullmatch(r'https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:pull|issues)/[0-9]+/?',arg)
+                        if not match: raise ValueError()
+                        target=repository(match.group(1))
+                        if positional and positional.lower()!=target.lower(): raise ValueError()
+                        positional=target
+            if positional:
+                if repo and repository(repo).lower()!=positional.lower(): raise ValueError()
+                repo=positional
             if not repo:
                 result=subprocess.run([GIT_EXECUTABLE,'config','--get','remote.origin.url'],capture_output=True,text=True)
-                if result.returncode: raise ValueError()
-                repo=result.stdout
+                if not result.returncode: repo=result.stdout
+            if not repo:
+                stage='broker_request'
+                selection=Connection('private')
+                selection.request('POST','/repositories','{}',{'Content-Type':'application/json'})
+                reply=selection.getresponse()
+                if reply.status!=200: raise ConnectionError()
+                repositories=json.loads(reply.read(262144))['repositories']
+                selection.close()
+                if not repositories:
+                    sys.stderr.write('This sandbox was launched without --repo; launch with an authorized repository.\\n');sys.exit(1)
+                stage='repository_selection'
+                raise ValueError()
             repo=repository(repo)
-            for arg in args:
-                if arg.startswith('https://github.com/'):
-                    selected=re.match(r'^https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/|$)',arg)
-                    if not selected or repository(selected.group(1)).lower()!=repo.lower(): raise ValueError()
-            if command_args and command_args[0]=='repo':
-                # Only exact repository view selectors are supported; other repo mutations fail closed.
-                if len(command_args)<2 or command_args[1]!='view': raise ValueError()
-                rest=command_args[2:]
-                flags_with_values={'--json','--jq','-q','--template','-t','--branch','-b'}
-                i=0
-                while i<len(rest):
-                    arg=rest[i]
-                    if arg in flags_with_values:
-                        if i+1>=len(rest): raise ValueError()
-                        i+=2; continue
-                    if any(arg.startswith(flag+'=') for flag in flags_with_values) or arg in ('--web','-w'): i+=1; continue
-                    if repository(arg).lower()!=repo.lower(): raise ValueError()
-                    i+=1
     else: raise ValueError()
     stage='broker_request'
     connection=Connection('private')

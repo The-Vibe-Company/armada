@@ -400,7 +400,7 @@ async function main(dialout = false) {
   };
   // Previous-epoch wrappers cannot point at a dead socket during native restore.
   // Rebind redaction-only IPC first; no GitHub credential authority is restored.
-  if (enrolled && (await Bun.file(`${config.root}/github-socket`).exists())) await ensureGitHubTools();
+  if (enrolled) await ensureGitHubTools();
   const opencodeExecutable =
     opencodeEnv.OPENCODE_CONFIG_CONTENT || opencodeEnv.OPENCODE_API_KEY
       ? await prepareOpenCode({

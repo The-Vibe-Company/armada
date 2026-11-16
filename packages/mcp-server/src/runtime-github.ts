@@ -306,6 +306,11 @@ export function createRuntimeGitHub(options: {
           capability: issuedCap.capability,
           url: new URL(path, options.origin).href,
           retired,
+          repositories: before.binding.repositories.map(({ url }) =>
+            url
+              .replace(/^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/, "")
+              .replace(/\.git$/, ""),
+          ),
           identity: { name: identity.name, email: identity.email },
         },
         `github_${issuedCap.epoch}_${issuedCap.revision}`,

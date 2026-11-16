@@ -430,7 +430,12 @@ def main():
         launch["repos"] = [{"url": "https://github.com/" + args.repository + ".git",
                             "branch": args.branch, "dir": args.repository.split("/")[1]}]
         initial_task = first + f"Run git -C {shlex.quote(directory)} log -1 --format=%H using your command tool. Then reply with exactly DOCKER_OK."
-    github_task = f"Run gh api repos/{args.repository} --jq .full_name using your command tool. " if args.github else ""
+    github_task = (f"Run one shell command: set -eu; cd /tmp; gh auth status; "
+                   f"gh repo clone {shlex.quote(args.repository or '')} \"$(mktemp -d)/checkout\" -- --depth=1; "
+                   f"gh repo view {shlex.quote(args.repository or '')} --json nameWithOwner; "
+                   f"gh pr list -R {shlex.quote(args.repository or '')}; "
+                   f"gh api repos/{args.repository} --jq .full_name; printf '\\nGH_SELECTION_OK\\n'. "
+                   if args.github else "")
     if args.github:
         initial_task = first + f"Run git -C {shlex.quote(directory)} log -1 --format=%H using your command tool. " + github_task + "Then reply with exactly DOCKER_OK."
     variable_task = f"Run printenv {variable_binding['key']} using your command tool. " if variable_binding else ""
@@ -644,7 +649,9 @@ def main():
                             command = (tool.get("input") or {}).get("command", "")
                             result = tool.get("result") or {}
                             if (tool.get("name") == "commandExecution" and isinstance(command, str)
-                                    and "gh api" in command and "repos/" + args.repository in command
+                                    and all(shape in command for shape in ("gh auth status", "gh repo clone", "gh repo view", "gh pr list", "gh api", "cd /tmp"))
+                                    and "repos/" + args.repository in command
+                                    and "GH_SELECTION_OK" in str(result.get("output", ""))
                                     and result.get("isError") is False
                                     and args.repository.lower() in str(result.get("output", "")).lower()):
                                 github_proven = True
