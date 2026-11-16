@@ -13,7 +13,8 @@ test("account capacity refuses a full account and admits available or unlimited 
     let reserved = false;
     const tx = {
       query: async (query: string) => {
-        if (query.startsWith("select name")) return { rows: [{ name: "Shared Morph", max_agents: max }] };
+        if (query.startsWith("select name"))
+          return { rows: [{ name: "Shared Morph", max_agents: max, model_limits: {} }] };
         if (query.endsWith(" as running")) return { rows: [{ running }] };
         if (query.startsWith("select s.id")) return { rows: [] };
         reserved = true;
@@ -46,6 +47,9 @@ beforeAll(async () => {
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean,primary key(sandbox_id,prompt_id));
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
   await db.query("insert into credentials values($1,'Shared account',2)", [account]);
+  await db.exec(
+    "alter table credentials add column model_limits jsonb not null default '{}'::jsonb; alter table sandboxes add column model text; alter table account_turn_queue add column model text; alter table account_turn_queue add column sequence bigint; alter table account_agent_reservations add column model text",
+  );
   for (const id of ids)
     await db.query("insert into sandboxes(id,credential_id,status) values($1,$2,'ready')", [id, account]);
 });
@@ -94,7 +98,9 @@ test("pending Docker prompt retains capacity until its receipt transfers ownersh
   for (const id of ids)
     await db.query("insert into sandboxes(id,credential_id,status) values($1,$2,'ready')", [id, account]);
   await admitAccountCapacity(sql, account, ids[0]!);
-  await db.query("insert into account_turn_queue values($1,'dispatching',1)", [ids[0]]);
+  await db.query("insert into account_turn_queue(sandbox_id,state,dispatch_generation) values($1,'dispatching',1)", [
+    ids[0],
+  ]);
   await db.query("update sandboxes set status='ready' where id=$1", [ids[0]]);
   await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
   // A queued paused Docker wake advances its generation before ready/prompt.
@@ -113,4 +119,26 @@ test("pending Docker prompt retains capacity until its receipt transfers ownersh
   await admitAccountCapacity(sql, account, ids[0]!);
   await db.query("update sandboxes set status='running' where id=$1", [ids[0]]);
   await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
+});
+
+test("model admission shares account locking but enforces each model independently", async () => {
+  await db.exec(
+    'truncate sandboxes,account_agent_reservations,runtime_idle_turns,account_turn_queue; update credentials set max_agents=3,model_limits=\'{"armada/morph-kimik31":1,"deepseek":2}\'',
+  );
+  const admit = (id: string, model: string) =>
+    db.transaction((tx) => admitAccountCapacity({ query: (q, v) => tx.query(q, v) } as Sql, account, id, model));
+  const outcomes = await Promise.allSettled([
+    admit(ids[0]!, "armada/morph-kimik31"),
+    admit(ids[1]!, "armada/morph-kimik31"),
+  ]);
+  expect(outcomes.map((x) => x.status)).toEqual(["fulfilled", "rejected"]);
+  await admit(ids[1]!, "deepseek");
+  await admit(ids[2]!, "deepseek");
+  await expect(admit("20000000-0000-4000-8000-000000000004", "other")).rejects.toThrow("3/3 agents working");
+  await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[0]]);
+  await admit(ids[0]!, "armada/morph-kimik31");
+  await db.exec("update credentials set max_agents=null");
+  await expect(admit("20000000-0000-4000-8000-000000000004", "armada/morph-kimik31")).rejects.toThrow(
+    "1/1 agents working",
+  );
 });

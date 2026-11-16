@@ -115,7 +115,7 @@ export interface LaunchCredentialResolver {
   /** Server-owned native credential admission, before provider allocation/hydration. */
   enrollAccount?(actor: GoldenActor, credentials: HarnessCredentials): Promise<void>;
   releaseAdmission?(sandboxId: string): Promise<void>;
-  admit?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
+  admit?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string, model?: string): Promise<void>;
   hydrateNative?(
     actor: GoldenActor,
     credentials: HarnessCredentials,
@@ -467,7 +467,7 @@ export async function launchSandbox(
   let childRecorded = false;
   let noAllocation = true;
   try {
-    await stores.credentials.admit?.(actor, credentials, id);
+    await stores.credentials.admit?.(actor, credentials, id, choice.model);
     await options.beforeFork?.(id);
     noAllocation = false;
     const forked = await provider

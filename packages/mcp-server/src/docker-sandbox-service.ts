@@ -257,7 +257,8 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           if (!managed.rows.length) deny();
           return record(row);
         }
-        if (request.credentialId) await admitAccountCapacity(tx, request.credentialId, request.requestId);
+        if (request.credentialId)
+          await admitAccountCapacity(tx, request.credentialId, request.requestId, request.model);
         await admitDockerDisk(tx, request.hostId);
         await admitDockerCapacity(tx, request.hostId);
         const generation = randomUUID();

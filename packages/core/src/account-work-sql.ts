@@ -9,12 +9,12 @@ export const ACCOUNT_WORKING_PREDICATE = `s.deleted_at is null and s.stopped_at 
       where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled)))`;
 
 /** Expressions are static trusted SQL supplied by server code, never user input. */
-export function accountWorkingCountSql(account: string, exclude = "null::uuid"): string {
+export function accountWorkingCountSql(account: string, exclude = "null::uuid", model?: string): string {
   return `(select count(*) from (
     select s.id from public.sandboxes s where s.credential_id=${account}
-      and s.id is distinct from ${exclude} and ${ACCOUNT_WORKING_PREDICATE}
+      ${model ? `and coalesce((select active.model from public.account_turn_queue active where active.sandbox_id=s.id and active.state in ('admitted','dispatching') order by active.sequence desc limit 1),s.model)=${model}` : ""} and s.id is distinct from ${exclude} and ${ACCOUNT_WORKING_PREDICATE}
     union select r.sandbox_id from public.account_agent_reservations r
-      where r.account_id=${account} and r.sandbox_id is distinct from ${exclude}
+      where r.account_id=${account} ${model ? `and coalesce(r.model,(select model from public.sandboxes where id=r.sandbox_id))=${model}` : ""} and r.sandbox_id is distinct from ${exclude}
         and not exists(select 1 from public.sandboxes ended where ended.id=r.sandbox_id
           and (ended.deleted_at is not null or ended.stopped_at is not null)
           and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=ended.id
@@ -23,10 +23,11 @@ export function accountWorkingCountSql(account: string, exclude = "null::uuid"):
 }
 
 /** A queue receipt is not itself evidence of waiting for account capacity. */
-export function accountWaitingCountSql(account: string, limit: string): string {
+export function accountWaitingCountSql(account: string, limit: string, model?: string): string {
   return `(select count(*) from public.account_turn_queue q join public.sandboxes waiting on waiting.id=q.sandbox_id
-    where q.account_id=${account} and q.state='queued' and ${limit} is not null
-    and ${accountWorkingCountSql(account)}>=${limit}
+    where q.account_id=${account} and q.state='queued' ${model ? `and q.model=${model}` : ""}
+    and ((${limit} is not null and ${accountWorkingCountSql(account)}>=${limit})
+      or (select (c.model_limits->>q.model)::integer from public.credentials c where c.id=q.account_id)<=${accountWorkingCountSql(account, "null::uuid", "q.model")})
     and waiting.credential_id=q.account_id and waiting.credential_version=q.credential_version
     and not exists(select 1 from public.account_agent_reservations own_slot where own_slot.sandbox_id=waiting.id and own_slot.account_id=q.account_id)
     and not (${ACCOUNT_WORKING_PREDICATE.replaceAll("s.", "waiting.")})
@@ -34,4 +35,13 @@ export function accountWaitingCountSql(account: string, limit: string): string {
     and waiting.deleted_at is null and waiting.expires_at>now() and waiting.stop_requested_at is null
     and waiting.status in ('ready','running','stopped')
     and (waiting.status<>'stopped' or waiting.lifecycle_generation=q.queued_generation))`;
+}
+
+/** Model usage includes models with work as well as configured limits. */
+export function accountModelCountsSql(account: string, limits: string): string {
+  return `(select coalesce(jsonb_object_agg(models.model,jsonb_build_object('runningAgents',${accountWorkingCountSql(account, "null::uuid", "models.model")},'waitingAgents',${accountWaitingCountSql(account, `(select model_count_account.max_agents from public.credentials model_count_account where model_count_account.id=${account})`, "models.model")})),'{}'::jsonb) from (
+    select jsonb_object_keys(${limits}) as model union select s.model from public.sandboxes s where s.credential_id=${account} and s.model is not null
+    union select q.model from public.account_turn_queue q where q.account_id=${account} and q.model is not null
+    union select r.model from public.account_agent_reservations r where r.account_id=${account} and r.model is not null
+  ) models)`;
 }

@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
-import { accountWaitingCountSql, accountWorkingCountSql } from "./account-work-sql.ts";
+import { accountModelCountsSql, accountWaitingCountSql, accountWorkingCountSql } from "./account-work-sql.ts";
+import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 import { type AgentDefault, HARNESS_KINDS } from "./credentials.ts";
+import { decryptSecret } from "./crypto.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore, GitHubUser, StoredGitHubConnection } from "./github.ts";
 import type { Sql } from "./golden-store.ts";
-import { harnessForCredential, MODEL_CREDENTIAL_KINDS } from "./harnesses.ts";
+import { HARNESS_CATALOG, harnessForCredential, MODEL_CREDENTIAL_KINDS } from "./harnesses.ts";
 import type { CredentialInfo, MemberInfo, OrgSummary, VaultStore } from "./vault.ts";
 import { VaultError } from "./vault-error.ts";
 
@@ -55,7 +57,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         );
       });
     },
-    async mutateAccount(userId, input, valueEnc) {
+    async mutateAccount(userId, input, valueEnc, encryptionKey) {
       if (!sql.transaction) throw new VaultError("unavailable", "Account mutations require a transaction.");
       return sql.transaction(async (tx) => {
         const owner = input.scope === "user" ? userId : input.org;
@@ -69,8 +71,8 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
           if (!admin.rows.length) throw new VaultError("forbidden", "Only an org admin can do that.");
         }
         const existing = input.id
-          ? await tx.query<{ kind: CredentialKind; version: number }>(
-              `select kind, version from public.credentials where id=$1 and scope=$2::public.credential_scope and owner_id=$3 and kind in (${MODEL_KIND_SQL}) and status <> 'deleted' for update`,
+          ? await tx.query<{ kind: CredentialKind; version: number; value_enc: Uint8Array }>(
+              `select kind, version, value_enc from public.credentials where id=$1 and scope=$2::public.credential_scope and owner_id=$3 and kind in (${MODEL_KIND_SQL}) and status <> 'deleted' for update`,
               [input.id, input.scope, owner],
             )
           : { rows: [] };
@@ -98,7 +100,37 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
             id = created.rows[0]?.id;
           }
         }
-        if (input.maxAgents !== undefined || (input.action === "set" && !input.id))
+        if (input.model !== undefined) {
+          let models: readonly string[] =
+            kind === "morph"
+              ? COMPATIBLE_MODEL_PROVIDERS.morph.models.flatMap((model) => [model, `armada/${model}`])
+              : Object.values(HARNESS_CATALOG)
+                  .filter((h) => (h.credentialKinds as readonly string[]).includes(kind))
+                  .flatMap((h) => h.models.map((m) => m.id));
+          const encrypted = existing.rows[0]?.value_enc;
+          if (encrypted && (kind === "openai" || kind === "anthropic" || kind === "opencode")) {
+            const raw = await decryptSecret(new Uint8Array(encrypted), encryptionKey);
+            if (raw.startsWith("{")) {
+              const connection = JSON.parse(raw);
+              if (kind === "opencode") models = connection.endpoint.models.map((model: string) => `armada/${model}`);
+              else if (Array.isArray(connection.models)) models = connection.models;
+              // Uncatalogued gateways accept any well-formed identifier, as launch does.
+              else if (connection.endpoint)
+                models = /^[A-Za-z0-9][A-Za-z0-9._:/[\]-]{0,199}$/.test(input.model) ? [input.model] : [];
+            } else if (kind === "opencode") {
+              models = /^(opencode|opencode-go)\/[A-Za-z0-9][A-Za-z0-9._:/[\]-]{0,199}$/.test(input.model)
+                ? [input.model]
+                : [];
+            }
+          }
+          if (!models.includes(input.model))
+            throw new VaultError("invalid", `Account cannot serve model ${input.model}.`);
+          await tx.query(
+            "update public.credentials set model_limits=case when $3::integer is null then model_limits-$2::text else jsonb_set(model_limits,array[$2::text],to_jsonb($3::integer)) end where id=$1",
+            [id, input.model, input.maxAgents],
+          );
+        }
+        if (input.model === undefined && (input.maxAgents !== undefined || (input.action === "set" && !input.id)))
           await tx.query("update public.credentials set max_agents=$2 where id=$1", [
             id,
             input.maxAgents === undefined ? (kind === "morph" ? 2 : null) : input.maxAgents,
@@ -308,6 +340,8 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         id: string;
         name: string;
         max_agents: number | null;
+        model_limits: Record<string, number>;
+        model_counts: Record<string, { runningAgents: number; waitingAgents: number }>;
         running_agents: string;
         waiting_agents: string;
         is_default: boolean;
@@ -318,7 +352,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         kind: string;
         created_at: string | Date;
       }>(
-        `select id,name,max_agents,${accountWorkingCountSql("credentials.id")} as running_agents,${accountWaitingCountSql("credentials.id", "credentials.max_agents")} as waiting_agents,is_default,status,expires_at,updated_at,version,kind::text as kind, created_at from public.credentials
+        `select id,name,max_agents,model_limits,${accountModelCountsSql("credentials.id", "credentials.model_limits")} as model_counts,${accountWorkingCountSql("credentials.id")} as running_agents,${accountWaitingCountSql("credentials.id", "credentials.max_agents")} as waiting_agents,is_default,status,expires_at,updated_at,version,kind::text as kind, created_at from public.credentials
          where scope = $1::public.credential_scope and owner_id = $2
          order by kind`,
         [scope, ownerId],
@@ -327,6 +361,8 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         id: row.id,
         name: row.name,
         maxAgents: row.max_agents,
+        modelLimits: row.model_limits ?? {},
+        modelCounts: row.model_counts ?? {},
         runningAgents: Number(row.running_agents ?? 0),
         waitingAgents: Number(row.waiting_agents ?? 0),
         isDefault: row.is_default,
