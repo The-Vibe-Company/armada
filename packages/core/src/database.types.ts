@@ -50,6 +50,7 @@ export type Database = {
           dispatch_until: string | null;
           result_enc: string | null;
           failure_reason: string | null;
+          queued_generation: number;
         };
         Insert: {
           sandbox_id: string;
@@ -68,6 +69,7 @@ export type Database = {
           dispatch_until?: string | null;
           result_enc?: string | null;
           failure_reason?: string | null;
+          queued_generation: number;
         };
         Update: {
           sandbox_id?: string;
@@ -86,6 +88,7 @@ export type Database = {
           dispatch_until?: string | null;
           result_enc?: string | null;
           failure_reason?: string | null;
+          queued_generation?: number;
         };
         Relationships: [
           {
