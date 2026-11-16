@@ -342,10 +342,11 @@ test("a template replay's confirmed refusal is not reported as still pending", a
 });
 
 test("typed launch causes override misleading HTTP statuses without exposing diagnostics", () => {
+  const repositoryHelp = "Repository private needs a GitHub connection with read access. Run armada github connect.";
+  expect(launchFailureMessage(new ControlError(repositoryHelp, 400, "no_credentials"))).toBe(repositoryHelp);
   for (const [code, status, expected] of [
     ["provider_routing_unavailable", 503, "administrator"],
     ["provider_not_configured", 503, "model account"],
-    ["no_credentials", 400, "GitHub"],
     ["start_failed", 400, "could not start"],
     ["init_failed", 400, "initialization"],
     ["prompt_failed", 400, "first prompt"],

@@ -83,7 +83,7 @@ export function launchFailureHelp(
 ): string | undefined {
   if (!code) return undefined;
   // Request validation messages are authored by Armada, not provider or guest diagnostics.
-  if (["invalid_request", "unsupported"].includes(code) && publicMessage) return publicMessage;
+  if (["invalid_request", "unsupported", "no_credentials"].includes(code) && publicMessage) return publicMessage;
   if (code === "rate_limited") return providerRateLimitMessage(details);
   if (Object.hasOwn(LAUNCH_FAILURE_HELP, code)) return LAUNCH_FAILURE_HELP[code];
   if (Object.hasOwn(API_FAILURE_HELP, code)) return API_FAILURE_HELP[code as ApiFailureCode];
