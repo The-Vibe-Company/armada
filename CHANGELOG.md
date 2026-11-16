@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.46.1](https://github.com/The-Vibe-Company/armada/compare/v2.46.0...v2.46.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **docker:** report pre-dispatch launch failures with safe reasons ([#2241](https://github.com/The-Vibe-Company/armada/issues/2241)) ([7e7e62a](https://github.com/The-Vibe-Company/armada/commit/7e7e62afa71f0887b5b9170cafc645b24e9a5b15))
+
 ## [2.46.0](https://github.com/The-Vibe-Company/armada/compare/v2.45.0...v2.46.0) (2026-11-16)
 
 
