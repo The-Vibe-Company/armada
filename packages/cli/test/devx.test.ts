@@ -97,16 +97,16 @@ test.each([
   },
 );
 
-test("doctor reports personal-login GitHub requirement when a service bearer is refused", async () => {
+test("doctor reports token permissions when a bearer is refused", async () => {
   const f = fixture({
     "/api/v1/account/status": { version: VERSION, orgs: [] },
     "/api/v1/github/status": Response.json({ error: "forbidden" }, { status: 403 }),
   });
   expect(await doctor(["--json"], f.auth)).toBe(0);
-  expect(f.output()).toContain("Unset ARMADA_TOKEN");
+  expect(f.output()).toContain("ARMADA_TOKEN");
   expect(JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "GitHub")).toMatchObject({
     status: "unknown",
-    detail: expect.stringContaining("sign in as a person with armada login (not a service token)"),
+    detail: expect.stringContaining("token permissions"),
   });
 });
 
@@ -118,7 +118,7 @@ test("doctor fails honestly when health and session cannot be confirmed", async 
       expect.objectContaining({
         check: "Session",
         status: "failed",
-        detail: expect.stringContaining("Run armada login"),
+        detail: expect.stringContaining("server connection"),
       }),
       expect.objectContaining({ check: "Hosts", status: "unknown" }),
     ]),

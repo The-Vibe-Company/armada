@@ -9,21 +9,25 @@ import {
 import { flag, parseArgs, single } from "./args.ts";
 import { createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { COMPLETION_WORDS } from "./command-catalog.ts";
 import { control } from "./control.ts";
+import { failureHint } from "./failure-hint.ts";
 import { listHosts } from "./host-commands.ts";
 
-const commands =
-  "login logout launch list detail status logs send steer stop wait exec snapshot host account creds org doctor completion template routine";
 export function completion(argv: readonly string[], auth: Pick<AuthIo, "out">): number {
   if (argv.length !== 1 || !["bash", "zsh", "fish"].includes(argv[0] ?? ""))
     throw new AuthError("Run armada completion bash|zsh|fish, then source the generated script.", "usage");
-  const words = `${commands} --help --version --json --org --provider --agent --credential-id --host --model --ttl`;
+  const words = COMPLETION_WORDS.join(" ");
   auth.out(
     argv[0] === "bash"
       ? `complete -W '${words}' armada\n`
       : argv[0] === "zsh"
         ? `#compdef armada\n_armada() { compadd -- ${words}; }\ncompdef _armada armada\n`
-        : `complete -c armada -f -a '${commands}'\n`,
+        : `complete -c armada -f -a '${COMPLETION_WORDS.filter((word) => !word.startsWith("--")).join(" ")}'${COMPLETION_WORDS.filter(
+            (word) => word.startsWith("--"),
+          )
+            .map((word) => `\ncomplete -c armada -l ${word.slice(2)}`)
+            .join("")}\n`,
   );
   return 0;
 }
@@ -162,8 +166,8 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
           : `CLI ${VERSION}; server ${account.version}. Update CLI: npm i -g @the-vibe-company/armada (if CLI is newer, ask the server operator to update).`,
     );
     org ??= account.orgs.length === 1 ? account.orgs[0]?.orgId : undefined;
-  } catch {
-    add("Session", "failed", "Run armada login; check ARMADA_URL and your network if already signed in.");
+  } catch (error) {
+    add("Session", "failed", failureHint(error, ["doctor"], auth.env));
     add("Server", "unknown", "Could not read server version. Restore the session/connection and run armada doctor.");
   }
   try {
@@ -218,12 +222,8 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
         "Could not confirm GitHub access. Run armada github status; reconnect only if it reports an expired or revoked connection.",
       );
     }
-  } catch {
-    add(
-      "GitHub",
-      "unknown",
-      "Could not read GitHub connection. Unset ARMADA_TOKEN and sign in as a person with armada login (not a service token), then run armada github status; check the server connection if already signed in.",
-    );
+  } catch (error) {
+    add("GitHub", "unknown", failureHint(error, ["github", "status"], auth.env));
   }
   if (!org) {
     add("Hosts", "unknown", "Select an organization: armada org list, then armada org use NAME.");

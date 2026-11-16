@@ -11,6 +11,7 @@ import {
   resolveModelChoice,
   validateSkillPins,
 } from "@armada/core";
+import { agentHint } from "./agent-hint.ts";
 import { type Args, flag, single, values } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
@@ -43,7 +44,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   if ([...args.options.keys()].some((key) => !allowed.has(key)) || args.positionals.length > 1)
     throw new GoldenError("invalid_config", "Docker launch takes at most one prompt and no snapshot or size.");
   const harness = (single(args, "--agent") ?? "codex") as Harness;
-  if (!HARNESSES.includes(harness)) throw new GoldenError("invalid_config", "Unknown Docker harness.");
+  if (!HARNESSES.includes(harness)) throw new GoldenError("invalid_config", agentHint());
   const requiredId = (flag: string) => {
     const value = single(args, flag);
     if (!value || !uuid.test(value))
@@ -56,7 +57,9 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   if (snapshotId !== undefined && !uuid.test(snapshotId))
     throw new GoldenError("invalid_config", "--golden requires a Docker snapshot UUID.");
   const selector = single(args, "--host");
-  if ((!snapshotId && !selector) || (selector !== undefined && (selector.length > 64 || /[\p{C}]/u.test(selector))))
+  if (!snapshotId && selector === undefined)
+    throw new GoldenError("invalid_config", "Docker launch requires --host UUID|NAME or --golden SNAPSHOT_UUID.");
+  if (selector !== undefined && (!selector.length || selector.length > 64 || /[\p{C}]/u.test(selector)))
     throw new GoldenError("invalid_config", "--host requires a UUID or exact host name.");
   if (snapshotId && values(args, "--repo").length)
     throw new GoldenError("invalid_config", "A snapshot cannot be combined with --repo.");

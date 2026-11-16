@@ -406,3 +406,16 @@ test("Docker launch text exposes snapshot refresh warnings", async () => {
   expect(result.out).toContain("Note: Warning: repository private");
   expect(result.out).toContain("snapshot checkout");
 });
+
+test("Docker placement distinguishes missing placement from a malformed host", async () => {
+  const base = ["launch", "--provider", "docker", "--org", org];
+  const noRequest = async () => {
+    throw new Error("must not request");
+  };
+  const missing = await capture(base, noRequest);
+  expect(missing.code).toBe(2);
+  expect(missing.err).toContain("requires --host UUID|NAME or --golden SNAPSHOT_UUID");
+  const malformed = await capture([...base, "--host", "bad\nname"], noRequest);
+  expect(malformed.code).toBe(2);
+  expect(malformed.err).toContain("--host requires a UUID or exact host name");
+});

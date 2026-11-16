@@ -1,5 +1,6 @@
 import { AuthError } from "@armada/auth";
 import { GoldenError, HARNESSES } from "@armada/core";
+import { agentHint } from "./agent-hint.ts";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
@@ -248,8 +249,7 @@ function sandboxListFilters(args: ReturnType<typeof parseArgs>): Record<string, 
     throw new GoldenError("invalid_config", "Use --agent or --harness, not both.");
   const selected = agent ?? harness;
   if (selected !== undefined) {
-    if (!HARNESSES.some((value) => value === selected))
-      throw new GoldenError("invalid_config", "Agent must be claude or codex.");
+    if (!HARNESSES.some((value) => value === selected)) throw new GoldenError("invalid_config", agentHint());
     body.harness = selected;
   }
   const golden = single(args, "--golden"),
