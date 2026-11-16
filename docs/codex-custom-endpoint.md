@@ -44,7 +44,7 @@ Actual endpoint compatibility remains a staging check, not a unit-test claim.
 ## Coordinator staging check (real key stays with coordinator)
 
 1. On staging create the named account using the private JSON input above,
-   choose a Modal golden, and launch Codex using its account ID and the
+   choose a Modal snapshot, and launch Codex using its account ID and the
    owner-provided Azure deployment/model. Ask “Reply exactly MODEL_OK”.
    Expect MODEL_OK; listing accounts must contain neither key nor JSON value.
 2. Send a second prompt, then stop/resume and send another. Expect MODEL_OK on
@@ -79,7 +79,7 @@ for the owner-verified Foundry v1 route. To replace an account, use `--id UUID
 write-only `{ok:true}` output. Keys are never command-line options.
 
 Coordinator staging addition: run the command above with the owner-held key
-file, list the ID, launch a Modal golden using that `--credential-id` and
+file, list the ID, launch a Modal snapshot using that `--credential-id` and
 Azure deployment `--model`, and request MODEL_OK. Expect MODEL_OK on initial
 and later turns. Repeat with the base URL without `/responses`, omit
 api-version in both cases, and expect identical success. Inspect output and
@@ -87,12 +87,12 @@ argv: no key. No schema migration or new deployment prerequisite for the CLI.
 
 ## Dashboard creation fields
 
-On Models/Harness, open **Add a model account**, select **OpenAI API key**,
+Under **What agents have → Models**, open **Add account**, select **OpenAI** (API key),
 and name the account. Check **Use a custom
 endpoint (Modal)**. Paste the Foundry base URL (with or without `/responses`),
 leave API version empty for v1, and paste the key in the password field.
-Save with **Add API key**; the named account is available in existing launch
-and template account selectors. Choose a Modal golden and supply your Azure
+Save with **Add account**; the named account is available in existing launch
+and template account selectors. Choose a Modal snapshot and supply your Azure
 model/deployment name at launch.
 
 Coordinator staging check: repeat that creation flow for both pasted URL

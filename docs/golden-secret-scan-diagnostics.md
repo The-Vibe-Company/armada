@@ -65,7 +65,8 @@ armada snapshot update two-repos-prod-test --provider boat --org <org-id> --conf
 ```
 
 Review `golden.json` before the final mutating command. In the dashboard, open
-Snapshots → Edit and rebuild and set **History → Latest commit only** on the
+**Launch from → Snapshots**, select the snapshot, expand **Rebuild → Edit and rebuild**,
+and set **History to download → Latest commit only** on the
 Armada row; other rows retain their modes. If a failed build is still tracked,
 choose **New build request** first to use a fresh admission key. Existing stored modes survive editing
 and additive updates; the immutable build request hash includes the field.
