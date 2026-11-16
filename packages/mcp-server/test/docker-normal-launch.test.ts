@@ -14,6 +14,7 @@ import {
   ProviderError,
   type SandboxListMetadata,
   type Sql,
+  VaultError,
   VERSION,
 } from "@armada/core";
 import {
@@ -29,6 +30,7 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
+import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -585,10 +587,22 @@ test("admission and bound create roll back together when claim persistence fails
       );
     },
   };
-  await rejected(f.service(failClaim).launch(f.caller, f.body), "unavailable");
+  async function rejectedBeforeDispatch(work: Promise<unknown>) {
+    let error: unknown;
+    try {
+      await work;
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(VaultError);
+    expect(apiFailureCode(error)).toBe("dependency_unavailable");
+    expect((error as Error).message).toContain("before dispatch (reservation)");
+    expect((error as Error).message).not.toContain("private failure");
+  }
+  await rejectedBeforeDispatch(f.service(failClaim).launch(f.caller, f.body));
   expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
   await hosts.revoke(f.admin, f.hostId);
-  await rejected(f.service().launch(f.caller, f.body), "unavailable");
+  await rejectedBeforeDispatch(f.service().launch(f.caller, f.body));
   expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
 });
 

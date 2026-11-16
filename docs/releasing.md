@@ -406,3 +406,16 @@ deployment and smoke. Tags created with `GITHUB_TOKEN` need no tag-triggered run
 Official-image releases always use direct smoke because the generated image pin
 is not part of an ordinary source checkout. This reuses historical acceptance,
 not a claim that staging still serves that SHA after later main deployments.
+
+### Docker normal-launch production prerequisite check
+
+Before accepting Docker launch after a release, compare production with the
+[normal-launch diagnostic checklist](docker-host-daemon.md#diagnosing-an-immediate-normal-launch-refusal-2239):
+Docker flags, matching architecture manifest/artifacts and release image pin,
+public HTTPS runtime enrolment/WebSocket reachability, encryption/model accounts,
+and membership/actor-epoch/default-resource rows in the production org.
+Staging's smoke org, registration and preview image do not seed production.
+An online host with placement enabled is not runtime readiness. For #2239 the
+specific missing production dependency remains unverified without the new
+phase-coded refusal; the coordinator must capture that reason and re-run the
+owner's normal launch after release. Do not infer a production pass from CI.

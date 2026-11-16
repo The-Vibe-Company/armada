@@ -482,11 +482,16 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     },
     workerId?: string,
   ): Promise<DockerLaunchResult> {
+    let dispatchPossible = false;
+    let reason = "request_validation";
     try {
       const snapshotId = body.snapshotId === undefined ? undefined : identifier(body.snapshotId);
       if (snapshotId && (body.image !== undefined || body.repos !== undefined)) throw failure("invalid_request");
       const org = identifier(body.org);
       if (!caller.orgs.some((member) => member.orgId === org)) throw failure("not_found");
+      reason = "launch_receipt_lookup";
+      // Until the read succeeds, a retry may refer to an already dispatched launch.
+      dispatchPossible = true;
       const retained = (
         await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
           `select d.request_enc from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
@@ -496,6 +501,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           [identifier(body.requestId), caller.userId, org, snapshotId ?? null],
         )
       ).rows[0];
+      dispatchPossible = Boolean(retained);
       const frozen = retained
         ? (JSON.parse(await decryptSecret(retained.request_enc, key)) as Manifest).request
         : undefined;
@@ -506,6 +512,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const sourceHost = snapshotId ? (frozen?.hostId ?? source?.host_id) : undefined,
         sourceImage = snapshotId ? (frozen?.image ?? source?.image_id) : undefined;
       if (sourceHost && body.hostId !== undefined && identifier(body.hostId) !== sourceHost) throw failure("not_found");
+      reason = "official_image";
       let image: string;
       try {
         image = sourceImage ?? options.officialImage ?? officialSandboxImage();
@@ -520,6 +527,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       }
       // Resolve personal choices before normalization supplies catalog defaults. Explicit
       // account/model selections and replayed frozen manifests retain their authority.
+      reason = "account_defaults";
       let selected = body;
       if (HARNESSES.includes(body.harness as Harness)) {
         const preference = frozen
@@ -542,14 +550,18 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const actor = { userId: identifier(caller.userId), orgId: request.org };
       if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
       const hash = dockerLaunchRequestHash(request);
+      reason = "membership_and_launch_state";
       let state = await transaction((tx) => load(tx, actor, request, hash));
+      dispatchPossible ||= Boolean(state.row);
       if (state.row && state.receipt) return envelope(state.row, state.receipt);
+      reason = "runtime_configuration";
       if (options.enabled !== true || !options.bootstrap) throw failure("unavailable");
       if (!state.manifest) {
         const needsRepositoryPreflight = Boolean(
           (request.repos && (!options.deferLaunch || admission)) || source?.config.repos.length,
         );
         // Resolve outside the reservation transaction; only the binding is retained.
+        reason = "credential_resolution";
         const { resolved, binding } = await resolveDockerLaunchAccount(
           options.credentials,
           { ...actor, role: state.membership.role },
@@ -564,6 +576,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             await options.github.preflightRepositories(caller, request.org, repositories);
           }
         }
+        reason = "skill_defaults";
         const defaults = request.skipSkillDefaults
           ? { org: [], personal: [] }
           : await createSkillDefaultsService(sql).resolve(launchActor, null);
@@ -573,6 +586,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         } catch {
           throw failure("invalid_request");
         }
+        reason = "mcp_defaults";
         const connections =
           request.connections ??
           (await createSqlMcpLaunchPort(sql, createSqlMcpRegistry(sql, key)).defaults(actor, "private"));
@@ -592,6 +606,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           preparation: { skills, connections },
         };
 
+        // The transaction queues host work atomically; a lost commit reply is ambiguous.
+        reason = "reservation";
         state = await transaction(async (tx) => {
           await tx.query(`select pg_advisory_xact_lock(hashtextextended($1,0))`, [
             `docker-normal-launch:${request.requestId}`,
@@ -600,7 +616,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           // reserve owns the sorted member UPDATE/credential/host lock order.
           const exists =
             (await tx.query(`select id from public.sandboxes where id=$1`, [request.requestId])).rows.length > 0;
-          if (exists) return load(tx, actor, request, hash);
+          if (exists) {
+            dispatchPossible = true;
+            return load(tx, actor, request, hash);
+          }
           await createDockerSandboxService(scopedRuntimeSql(tx), key, { enabled: true }).reserve(
             actor,
             {
@@ -643,7 +662,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc,async_launch) values($1,$2,$3,$4,$5)`,
             [request.requestId, current.epoch, hash, encrypted, options.deferLaunch === true && !admission],
           );
-          return load(tx, actor, request, hash);
+          const reserved = await load(tx, actor, request, hash);
+          // Only a fully completed callback can reach COMMIT. Earlier failures roll back host work.
+          dispatchPossible = true;
+          return reserved;
         });
       }
       if (state.row && state.receipt) return envelope(state.row, state.receipt);
@@ -927,12 +949,33 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         throw error;
       }
     } catch (error) {
-      if (
-        error instanceof ProviderError ||
-        error instanceof VaultError ||
-        (error instanceof LaunchError && error.code === "no_credentials" && repositoryAccessMessage(error.message))
-      )
-        throw error;
+      // Never log raw exception messages: account/provider errors can contain secrets.
+      console.warn("docker_launch_failed", {
+        reason,
+        dispatchPossible,
+        code:
+          error instanceof ProviderError || error instanceof VaultError || error instanceof LaunchError
+            ? error.code
+            : "dependency_unavailable",
+      });
+      if (!dispatchPossible) {
+        if (error instanceof ProviderError) {
+          const { resourceReceipt: _receipt, keepSource: _source, ...details } = error.details ?? {};
+          throw new ProviderError({
+            provider: "docker",
+            code: error.code,
+            message: error.message,
+            retryable: error.retryable,
+            details,
+          });
+        }
+        if (error instanceof VaultError || error instanceof LaunchError) throw error;
+        throw new VaultError(
+          "unavailable",
+          `Docker launch failed before dispatch (${reason}). Ask the server operator to check this prerequisite; no host work was queued by this attempt.`,
+        );
+      }
+      if (error instanceof ProviderError || error instanceof VaultError || error instanceof LaunchError) throw error;
       throw failure("unavailable");
     }
   }
