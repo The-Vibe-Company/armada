@@ -652,7 +652,7 @@ export class Runner {
           async (error: unknown) => {
             active.terminal = true;
             await this.publishNativeAuth?.();
-            this.journal.transition(p, "failed", error instanceof HarnessError ? error.code : "harness_failed");
+            this.journal.transition(p, "failed", error instanceof HarnessError ? error.reason : "harness_failed");
           },
         )
         .catch(() => this.journal.transition(p, "failed", "native_auth_state_unacknowledged"))
@@ -662,8 +662,8 @@ export class Runner {
         });
       active.done = done;
       this.active.set(p.conversationId, active);
-    } catch {
-      this.journal.transition(p, "failed", "harness_start_failed");
+    } catch (error) {
+      this.journal.transition(p, "failed", error instanceof HarnessError ? error.reason : "harness_start_failed");
     }
   }
   private flushing: Promise<void> | undefined;
