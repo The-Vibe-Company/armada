@@ -304,27 +304,3 @@ export const ACK_COOKIE = "armada-fleet-ack";
 
 /** Set on the legacy path when sandbox views write preferences, so a later import cannot replace newer choices. */
 export const ACK_MIGRATION_COOKIE = "armada-sandbox-attention-migrated";
-
-/** The most acknowledgements the cookie keeps, the newest last: each is 45 bytes, well under a cookie's 4 KB. */
-export const ACK_MAX = 60;
-
-const ACK = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[0-9a-f]{8}$/i;
-
-export function isAckKey(value: unknown): value is string {
-  return typeof value === "string" && ACK.test(value);
-}
-
-/** The keys the viewer acknowledged; a cookie written for someone else on this browser holds none for them. */
-export function readAcks(value: string | undefined, viewerId: string): string[] {
-  if (!value) return [];
-  const [owner, list = ""] = value.split("|");
-  if (owner !== viewerId) return [];
-  return list.split(",").filter(isAckKey);
-}
-
-/** The cookie with `key` acknowledged (or no longer, with `remove`), the oldest dropped past {@link ACK_MAX}. */
-export function writeAcks(value: string | undefined, viewerId: string, key: string, remove = false): string {
-  const keys = readAcks(value, viewerId).filter((known) => known !== key);
-  if (!remove) keys.push(key);
-  return `${viewerId}|${keys.slice(-ACK_MAX).join(",")}`;
-}

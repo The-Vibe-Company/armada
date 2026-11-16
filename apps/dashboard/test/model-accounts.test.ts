@@ -407,7 +407,7 @@ test("the terminal sign-in is only the command the server reports, with the name
     codex: { login: "armada creds login codex --name <name>" },
   });
   expect(reported?.hostedOAuth).toBe(false);
-  expect(terminalLogin(reported, "codex_auth", "Work")).toBe("armada creds login codex --name Work");
+  expect(terminalLogin(reported, "codex_auth", "Work")).toBe("armada creds login codex --name 'Work'");
   expect(terminalLogin(reported, "codex_auth", `Bob's $HOME`)).toBe(
     `armada creds login codex --name 'Bob'\\''s $HOME'`,
   );

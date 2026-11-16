@@ -2,16 +2,13 @@ import { describe, expect, test } from "bun:test";
 import type { ChatEvent } from "../src/lib/events.ts";
 import { outcomeView } from "../src/lib/outcome.ts";
 import {
-  ACK_MAX,
   attentionOf,
   attentionState,
   expiryView,
   isRecoverableReason,
-  readAcks,
   sandboxAttention,
   summarizeEvents,
   type TurnSummary,
-  writeAcks,
 } from "../src/lib/sandbox-attention.ts";
 
 const NOW = new Date("2026-11-10T12:00:00.000Z");
@@ -189,25 +186,6 @@ describe("attentionOf", () => {
     expect(
       attentionOf(attentionState("stopped", turn("finished")), "stopped", turn("finished"), null, preserved),
     ).toBeNull();
-  });
-});
-
-describe("acknowledgements", () => {
-  const key = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}.0a1b2c3d`;
-  test("are the viewer's own, bounded, and can be taken back", () => {
-    const one = writeAcks(undefined, "u1", key(1));
-    expect(readAcks(one, "u1")).toEqual([key(1)]);
-    expect(readAcks(one, "u2")).toEqual([]);
-    expect(readAcks(writeAcks(one, "u1", key(1), true), "u1")).toEqual([]);
-    // Another viewer on the same browser starts from nothing.
-    expect(readAcks(writeAcks(one, "u2", key(2)), "u2")).toEqual([key(2)]);
-    let many: string | undefined;
-    for (let n = 1; n <= ACK_MAX + 5; n++) many = writeAcks(many, "u1", key(n));
-    const kept = readAcks(many, "u1");
-    expect(kept).toHaveLength(ACK_MAX);
-    expect(kept[0]).toBe(key(6));
-    expect(many?.length).toBeLessThan(4000);
-    expect(readAcks("u1|not-a-key,../x", "u1")).toEqual([]);
   });
 });
 
