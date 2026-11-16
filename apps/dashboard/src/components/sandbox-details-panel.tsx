@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDownIcon } from "lucide-react";
+import { PanelRightIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,7 @@ export function SandboxDetailsPanel({ children }: { children: ReactNode }) {
   const section = useRef<HTMLElement>(null);
   const [mobileTarget, setMobileTarget] = useState<HTMLElement | null>(null);
   useEffect(() => {
-    setHeaderTarget(document.getElementById("sandbox-details-toggle"));
+    setHeaderTarget(document.getElementById("shell-page-actions"));
     setOpen(window.matchMedia("(min-width: 64rem)").matches);
     const media = window.matchMedia("(max-width: 63.99rem)");
     const update = () => setMobileTarget(media.matches ? document.getElementById("sandbox-mobile-about") : null);
@@ -39,9 +39,8 @@ export function SandboxDetailsPanel({ children }: { children: ReactNode }) {
 
   const trigger = (
     <CollapsibleTrigger asChild>
-      <Button type="button" variant="outline" size="sm" className="w-full justify-between ">
-        Sandbox details
-        <ChevronDownIcon className={cn("transition-transform", open && "rotate-180")} aria-hidden="true" />
+      <Button type="button" variant="outline" size="icon-sm" aria-label="Sandbox details" title="Sandbox details">
+        <PanelRightIcon className="size-4" aria-hidden="true" />
       </Button>
     </CollapsibleTrigger>
   );

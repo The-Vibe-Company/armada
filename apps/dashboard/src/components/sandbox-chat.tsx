@@ -174,7 +174,7 @@ function accessEndedMessage(status: number): string {
  * by cursor (every couple of seconds while the sandbox is active), with a composer for the next message.
  */
 export function SandboxChat(props: Props) {
-  const { sandboxId, initialStatus, live } = props;
+  const { sandboxId, initialStatus } = props;
   const router = useRouter();
   const [events, setEvents] = useState<ChatEvent[]>([]);
   const [status, setStatus] = useState(initialStatus);
@@ -421,25 +421,11 @@ export function SandboxChat(props: Props) {
   return (
     <div data-fit="chat" className="space-y-2 sm:space-y-4">
       <Card data-fit="card" className="gap-0 overflow-hidden rounded-none border-0 bg-transparent py-0 shadow-none">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:px-6">
-          <div className="flex min-w-0 items-center gap-3">
-            <h2 className="text-sm leading-none font-semibold">Conversation</h2>
-            {conversations.length > 1 && (
-              <ConversationPicker conversations={conversations} selected={selected} onChange={(id) => setChosen(id)} />
-            )}
+        {conversations.length > 1 && (
+          <div className="px-4 py-3 sm:px-6">
+            <ConversationPicker conversations={conversations} selected={selected} onChange={(id) => setChosen(id)} />
           </div>
-          <div className="flex items-center gap-3 text-sm">
-            {live && isActiveStatus(status) && (
-              <span
-                className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"
-                data-testid="live-indicator"
-                title="New messages appear as they arrive"
-              >
-                <StatusDot tone="success" pulse /> Live
-              </span>
-            )}
-          </div>
-        </div>
+        )}
 
         {status === "running" && statusMessage && (
           <p className="px-4 py-2 text-xs text-muted-foreground sm:px-6">{statusMessage}</p>
