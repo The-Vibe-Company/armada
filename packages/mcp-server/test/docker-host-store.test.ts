@@ -952,3 +952,56 @@ test("reported Docker filesystem bytes gate new reservations below 10 GB and unk
     else await expect(admission).resolves.toBeUndefined();
   }
 });
+
+test("retired registrants retain only bound reconciliation and admin cleanup", async () => {
+  const db = database();
+  for (const retired of ["removed", "revoked"] as const) {
+    const a = await boundStartup("bootstrap");
+    await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "completed" });
+    if (retired === "removed") {
+      await db.query("delete from members where org_id=$1 and user_id=$2", [a.actor.orgId, a.actor.userId]);
+    } else {
+      await store.revoke(a.actor, a.hostId);
+    }
+    await denied(store.poll(a.hostToken, a.installationId));
+    // The HTTP poll composes these policy endpoints around mailbox delivery.
+    await expect(
+      store.retentionForHost(a.hostToken, a.installationId, { retentionSeconds: 86400, nextCleanupAt: null }),
+    ).resolves.toBeUndefined();
+    await expect(store.limitsForHost(a.hostToken, a.installationId)).resolves.toBeUndefined();
+    await denied(store.expired(a.hostToken, randomUUID(), { requestId: a.startup.requestId }));
+    await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+    expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
+    const remove = { requestId: randomUUID(), operation: "delete" as const };
+    await store.enqueueSandbox({ userId: a.backupAdmin, orgId: a.actor.orgId }, a.sandboxId, remove);
+    expect((await store.poll(a.hostToken, a.installationId))?.operation).toBe("delete");
+    await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+    await store.cleaned(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+    expect((await lifecycle(a.sandboxId))?.status).toBe("deleted");
+    expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+  }
+});
+
+test("retirement cancels undispatchable startup without claiming physical cleanup", async () => {
+  const db = database();
+  for (const retired of ["removed", "revoked"] as const) {
+    const a = await boundFixture();
+    await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+    if (retired === "removed") {
+      await db.query("delete from members where org_id=$1 and user_id=$2", [a.actor.orgId, a.actor.userId]);
+    } else {
+      await store.revoke(a.actor, a.hostId);
+    }
+    expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
+    expect((await lifecycle(a.sandboxId))?.status).not.toBe("deleted");
+    await store.cleaned(a.hostToken, a.installationId, { requestId: a.create.requestId });
+    // Active registrants may have admitted a stop during drain; acknowledge it.
+    const cleanup = await db.query<{ request_id: string }>(
+      "select request_id from docker_host_jobs where host_id=$1 and outcome is null",
+      [a.hostId],
+    );
+    for (const job of cleanup.rows)
+      await store.complete(a.hostToken, a.installationId, { requestId: job.request_id, outcome: "completed" });
+    expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+  }
+});
