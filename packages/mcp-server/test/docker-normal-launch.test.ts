@@ -1637,9 +1637,9 @@ for (const checkoutExitCode of [0, 1])
     expect(native.find((command) => command.op === "prompt")?.input?.cwd).toBe("/home/user/project");
     expect(
       await createDockerSandboxControls(sql, key, { clock: f.clock }).invoke(f.caller, "status", {
-        sandboxId: body.requestId,
+        id: body.requestId,
       }),
-    ).toMatchObject({ repositoryDir: "project" });
+    ).toMatchObject({ handled: true, result: { repositoryDir: "project" } });
     // Retained pre-upgrade command IDs must keep their original home cwd.
     const retained = (
       await database().query<{ request_id: string; request_enc: Uint8Array<ArrayBuffer> }>(

@@ -106,8 +106,8 @@ class Opener:
                    "result": {"isError": False, "output": "a" * 40}}] if mode == "repository" else
                  [{"name": "commandExecution", "input": {"command": "git -C /home/user/project log -1 --format=%H"},
                    "result": {"isError": False, "output": "a" * 40}}] +
-                 ([{"name": "commandExecution", "input": {"command": "gh api repos/example/project --jq .full_name"},
-                   "result": {"isError": False, "output": "example/project"}}] if mode != "github-no-proof" else []) if mode.startswith("github") else
+                 ([{"name": "commandExecution", "input": {"command": "set -eu; cd /tmp; gh auth status; gh repo clone example/project checkout -- --depth=1; gh repo view example/project --json nameWithOwner; gh pr list -R example/project; gh api repos/example/project --jq .full_name; printf GH_SELECTION_OK"},
+                   "result": {"isError": False, "output": "example/project GH_SELECTION_OK"}}] if mode != "github-no-proof" else []) if mode.startswith("github") else
                  [{"name": "commandExecution", "input": {"command": "printenv APP_REGION"}, "result": {"isError": False, "output": "offline-region\\n"}}] if mode in ("variable", "variable-whitespace", "variable-mcp") else
                  [{"name": "commandExecution", "input": {"command": "python3 -c hashlib.sha256(os.environ['APP_TOKEN'].encode())"},
                    "result": {"isError": False, "output": ("b" if mode == "secret-wrong-digest" else "a") * 64 + "\\n"}}] if mode in ("secret", "secret-wrong-digest", "secret-mcp") else
