@@ -856,8 +856,11 @@ One account supports Claude Code, Codex and OpenCode. At launch choose --credent
 and --model morph-kimik31, morph-dsv41flash or morph-dsv41flash-1017.
 Example: armada creds connect openai --name personal --file /private/api-key
 `,
-  "creds limits": `Usage: armada creds limits <account-id> --max-agents N | --unlimited [--org <name>] [--json]
+  "creds limits": `Usage: armada creds limits <account-id> [--model <model-id>] --max-agents N | --unlimited [--org <name>] [--json]
 Set the maximum agents running at the same time across sandbox providers.
+With --model, set that exact launch model ID instead; --unlimited clears its override.
+Accounts without a model override use only their account-wide cap.
+creds list --json exposes modelLimits and modelCounts.
 Stopped and idle-paused sandboxes do not count. New starts beyond the cap are refused before allocation.
 Existing running agents are not stopped when lowering the cap.
 `,

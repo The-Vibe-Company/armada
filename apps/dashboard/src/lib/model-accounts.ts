@@ -24,6 +24,8 @@ export type AccountScope = (typeof ACCOUNT_SCOPES)[number];
 
 export interface ModelAccount {
   maxAgents?: number | null;
+  modelLimits?: Record<string, number>;
+  modelCounts?: Record<string, { runningAgents: number; waitingAgents: number }>;
   runningAgents?: number;
   waitingAgents?: number;
   rateLimited?: boolean;
@@ -156,6 +158,23 @@ export function parseAccount(value: unknown): ModelAccount | null {
     updatedAt,
     version: value.version,
     maxAgents: typeof value.maxAgents === "number" ? value.maxAgents : null,
+    modelLimits: isRow(value.modelLimits)
+      ? Object.fromEntries(
+          Object.entries(value.modelLimits).filter(
+            (entry): entry is [string, number] =>
+              typeof entry[1] === "number" && Number.isSafeInteger(entry[1]) && entry[1] > 0,
+          ),
+        )
+      : {},
+    modelCounts: isRow(value.modelCounts)
+      ? Object.fromEntries(
+          Object.entries(value.modelCounts).flatMap(([model, counts]) =>
+            isRow(counts) && typeof counts.runningAgents === "number" && typeof counts.waitingAgents === "number"
+              ? [[model, { runningAgents: counts.runningAgents, waitingAgents: counts.waitingAgents }]]
+              : [],
+          ),
+        )
+      : {},
     runningAgents: typeof value.runningAgents === "number" ? value.runningAgents : 0,
     ...(typeof value.waitingAgents === "number" ? { waitingAgents: value.waitingAgents } : {}),
     ...(typeof value.rateLimited === "boolean" ? { rateLimited: value.rateLimited } : {}),
