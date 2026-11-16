@@ -125,7 +125,7 @@ describe("auth commands", () => {
 
   test("token commands without a session ask for login", async () => {
     const result = await capture(["token", "list"], io());
-    expect(result.code).toBe(1);
+    expect(result.code).toBe(3);
     expect(result.err).toContain("You are not signed in. Run armada login.");
   });
 
@@ -275,8 +275,12 @@ describe("auth commands", () => {
       throw new Error(`Unexpected request: ${url}`);
     };
 
-    const result = await capture(["login", "--email", "ada@example.com"], auth);
-    expect(result).toMatchObject({ code: 0, out: "Logged in.\n", err: expect.stringContaining("type the code") });
+    const result = await capture(["login", "--email", "ada@example.com", "--json"], auth);
+    expect(result).toMatchObject({
+      code: 0,
+      out: '{"authenticated":true}\n',
+      err: expect.stringContaining("type the code"),
+    });
     expect(calls.map(({ url }) => url)).toEqual([
       `${ORIGIN}/api/v1/auth/email/start`,
       `${ORIGIN}/api/v1/auth/email/verify`,

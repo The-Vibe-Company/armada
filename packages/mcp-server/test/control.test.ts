@@ -751,7 +751,7 @@ describe("armada org and armada creds against the control API", () => {
       expect((await lost.run(["org", "list"])).err).toContain("Armada could not reach the server.");
       const refused = cli(STAN, { token: "revoked" });
       const result = await refused.run(["org", "list"]);
-      expect(result.code).toBe(1);
+      expect(result.code).toBe(3);
       expect(result.err).toContain("You are not signed in. Run armada login.");
     });
   });

@@ -6,8 +6,7 @@ import { redirect } from "next/navigation";
 import { type ActionResult, fail, formString } from "@/lib/action";
 import { SELECTED_ORG_COOKIE } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
-import { HARNESS_PATH } from "@/lib/model-accounts";
-import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
+import { organizationSwitchDestination } from "@/lib/navigation";
 import { createClient } from "@/lib/supabase/server";
 
 export async function switchOrganization(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
@@ -24,20 +23,7 @@ export async function switchOrganization(_previous: ActionResult | null, data: F
     maxAge: 60 * 60 * 24 * 365,
   });
   const section = formString(data, "section");
-  const destination =
-    section === "setup"
-      ? CLOUD_PROVIDERS_PATH
-      : section === "orgs"
-        ? `/orgs/${id}`
-        : section === "snapshots" || section === "environments" || section === "goldens"
-          ? "/snapshots"
-          : section === "harness" || section === "credentials"
-            ? HARNESS_PATH
-            : section === "tools" || section === "connections"
-              ? "/tools"
-              : section === "settings"
-                ? "/settings"
-                : "/sandboxes";
+  const destination = organizationSwitchDestination(section, id);
   revalidatePath("/", "layout");
   redirect(destination);
 }
