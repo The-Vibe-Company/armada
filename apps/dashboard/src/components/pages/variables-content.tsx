@@ -105,21 +105,12 @@ export default async function VariablesContent({ searchParams }: Props) {
       <ResourceBrowser
         title={TITLE}
         description={DESCRIPTION}
-        columns={["Name", "Value", "Kind", "Shared with", "Updated", "Status"]}
+        columns={["Name", "Value", "Kind", "Shared with", "Updated", "Actions"]}
         label="Settings and secrets"
         rows={rows}
         blockers={[]}
         initial={requested}
         actions={<AddVaultDialog orgId={selected.org.id} orgName={orgName} isAdmin={isAdmin} />}
-        footer={
-          <p className="text-xs text-pretty text-muted-foreground">
-            Personal entries are visible only to you in Armada. Org entries are shared with every member of {orgName};{" "}
-            {isAdmin ? "you manage them." : "only an admin changes them."} Settings are readable configuration, not
-            secrets. Stored secret values cannot be read back from this page. Attach entries to a template. Revoke stops
-            handing a value out; Delete removes the entry. Delivered values can be inspected by people or agents with
-            access to the sandbox; changing or revoking an entry does not erase copies already delivered.
-          </p>
-        }
         empty={
           <Empty title="No settings or secrets yet" icon={<VariableIcon />}>
             Add a setting or a secret, then attach it to a template.
@@ -144,7 +135,7 @@ function row(
     key: itemKey(item),
     columns: [
       { key: "value", content: "Not shown" },
-      { key: "kind", content: item.kind === "secret" ? "Secret" : "Variable" },
+      { key: "kind", content: item.status === "revoked" ? "Revoked" : item.kind === "secret" ? "Secret" : "Variable" },
       { key: "scope", content: audience(item, orgName) },
       {
         key: "updated",
@@ -154,7 +145,7 @@ function row(
           </time>
         ),
       },
-      { key: "status", content: <StateCell tone={state.tone} label={state.label} /> },
+      { key: "actions", content: <VaultPanel item={item} orgName={orgName} canManage={manage} now={now} inline /> },
     ],
     name: item.name,
     tie: item.kind,

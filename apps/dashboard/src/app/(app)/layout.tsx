@@ -27,15 +27,16 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const selected = await selectedOrganization();
   const header = (
     <div className="space-y-2 px-3 pt-3 pb-2">
-      <div className="flex items-center justify-end gap-2.5 px-1.5">
-        <span className="flex-1" />
+      <div className="flex items-center gap-1">
+        <div className="min-w-0 flex-1">
+          <OrgSwitcher memberships={memberships} selected={selected?.org.id ?? null} role={selected?.role ?? null} />
+        </div>
         <DesktopSidebarTrigger />
         <div className="flex items-center gap-1 md:hidden">
           <ThemeToggle />
           <SignOut compact />
         </div>
       </div>
-      <OrgSwitcher memberships={memberships} selected={selected?.org.id ?? null} role={selected?.role ?? null} />
       <ShellSearch />
       <div className="[&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none [&_button:hover]:bg-[var(--raised)]">
         <SandboxLaunchAction shortcut />
@@ -70,8 +71,16 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </div>
         }
       >
-        <Suspense fallback={<NavLinks className="px-3 pb-4" optIns={{ dockerHosts: dockerHostsEnabled() }} />}>
-          <ShellNavigation sandboxes={liveSandboxes} />
+        <Suspense
+          fallback={
+            <NavLinks
+              organizationId={selected?.org.id ?? null}
+              className="px-3 pb-4"
+              optIns={{ dockerHosts: dockerHostsEnabled() }}
+            />
+          }
+        >
+          <ShellNavigation organizationId={selected?.org.id ?? null} sandboxes={liveSandboxes} />
         </Suspense>
       </AppSidebar>
       <CommandMenu />
@@ -118,6 +127,19 @@ async function loadLiveSandboxes(orgId: string) {
   return rows;
 }
 
-async function ShellNavigation({ sandboxes }: { sandboxes: ReturnType<typeof loadLiveSandboxes> }) {
-  return <NavLinks className="px-3 pb-4" optIns={{ dockerHosts: dockerHostsEnabled() }} sandboxes={await sandboxes} />;
+async function ShellNavigation({
+  sandboxes,
+  organizationId,
+}: {
+  sandboxes: ReturnType<typeof loadLiveSandboxes>;
+  organizationId: string | null;
+}) {
+  return (
+    <NavLinks
+      organizationId={organizationId}
+      className="px-3 pb-4"
+      optIns={{ dockerHosts: dockerHostsEnabled() }}
+      sandboxes={await sandboxes}
+    />
+  );
 }

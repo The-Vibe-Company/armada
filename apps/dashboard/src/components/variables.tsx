@@ -312,7 +312,9 @@ export function VaultPanel({
   orgName,
   canManage,
   now,
+  inline = false,
 }: {
+  inline?: boolean;
   item: VaultItem;
   orgName: string;
   canManage: boolean;
@@ -320,7 +322,8 @@ export function VaultPanel({
 }) {
   const [result, setResult] = useState<ActionResult | null>(null);
   const [dialog, setDialog] = useState<PanelDialog>(null);
-  const selected = useResourceSelected(itemKey(item));
+  const panelSelected = useResourceSelected(itemKey(item));
+  const selected = inline || panelSelected;
   const selectedRef = useRef(selected);
   const editRequest = useRef(0);
   selectedRef.current = selected;
@@ -376,57 +379,68 @@ export function VaultPanel({
   }
 
   return (
-    <div className="space-y-4" data-vault-panel={item.name} data-vault-kind={item.kind}>
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
-        <dt className="text-muted-foreground">Kind</dt>
-        <dd>{item.kind === "secret" ? "Secret · never shown again" : "Setting · readable"}</dd>
-        <dt className="text-muted-foreground">Status</dt>
-        <dd data-vault-status={item.status}>{active ? "Active" : "Revoked"}</dd>
-        <dt className="text-muted-foreground">Who can use it</dt>
-        <dd>{audience(item, orgName)}</dd>
-        <dt className="text-muted-foreground">Who can change it</dt>
-        <dd>{item.scope === "personal" ? "Only you" : `${orgName}'s admins`}</dd>
-        <dt className="text-muted-foreground">Version</dt>
-        <dd className="tabular-nums">{item.version}</dd>
-        <dt className="text-muted-foreground">Created</dt>
-        <dd>
-          <CreatedAt iso={item.createdAt} now={now} />
-        </dd>
-        <dt className="text-muted-foreground">Last changed</dt>
-        <dd>
-          <CreatedAt iso={item.updatedAt} now={now} />
-        </dd>
-        {item.expiresAt && (
-          <>
-            <dt className="text-muted-foreground">Expires</dt>
-            <dd>{expiryLabel(item.expiresAt, now)}</dd>
-          </>
-        )}
-      </dl>
+    <div
+      className={inline ? "relative z-10" : "space-y-4"}
+      data-vault-panel={inline ? undefined : item.name}
+      data-vault-kind={item.kind}
+    >
+      {!inline && (
+        <>
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
+            <dt className="text-muted-foreground">Kind</dt>
+            <dd>{item.kind === "secret" ? "Secret · never shown again" : "Setting · readable"}</dd>
+            <dt className="text-muted-foreground">Status</dt>
+            <dd data-vault-status={item.status}>{active ? "Active" : "Revoked"}</dd>
+            <dt className="text-muted-foreground">Who can use it</dt>
+            <dd>{audience(item, orgName)}</dd>
+            <dt className="text-muted-foreground">Who can change it</dt>
+            <dd>{item.scope === "personal" ? "Only you" : `${orgName}'s admins`}</dd>
+            <dt className="text-muted-foreground">Version</dt>
+            <dd className="tabular-nums">{item.version}</dd>
+            <dt className="text-muted-foreground">Created</dt>
+            <dd>
+              <CreatedAt iso={item.createdAt} now={now} />
+            </dd>
+            <dt className="text-muted-foreground">Last changed</dt>
+            <dd>
+              <CreatedAt iso={item.updatedAt} now={now} />
+            </dd>
+            {item.expiresAt && (
+              <>
+                <dt className="text-muted-foreground">Expires</dt>
+                <dd>{expiryLabel(item.expiresAt, now)}</dd>
+              </>
+            )}
+          </dl>
 
-      <section aria-label="Value" className="space-y-2 border-t pt-4">
-        {!active ? (
-          <p className="text-sm text-muted-foreground">
-            Revoked: its value was erased and it cannot be restored. Delete it to reuse the name.
-          </p>
-        ) : item.kind === "secret" ? (
-          <div className="flex gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm" data-write-only>
-            <LockKeyholeIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--accent-text)]" />
-            <p>
-              <span className="font-medium">Never shown again.</span>{" "}
-              <span className="text-muted-foreground">
-                The value is stored encrypted and is never shown, copied or exported, to you or to admins. To change it,
-                replace it.
-              </span>
-            </p>
-          </div>
-        ) : (
-          <VariableValue name={item.name} value={value} />
-        )}
-      </section>
-
+          <section aria-label="Value" className="space-y-2 border-t pt-4">
+            {!active ? (
+              <p className="text-sm text-muted-foreground">
+                Revoked: its value was erased and it cannot be restored. Delete it to reuse the name.
+              </p>
+            ) : item.kind === "secret" ? (
+              <div className="flex gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm" data-write-only>
+                <LockKeyholeIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--accent-text)]" />
+                <p>
+                  <span className="font-medium">Never shown again.</span>{" "}
+                  <span className="text-muted-foreground">
+                    The value is stored encrypted and is never shown, copied or exported, to you or to admins. To change
+                    it, replace it.
+                  </span>
+                </p>
+              </div>
+            ) : (
+              <VariableValue name={item.name} value={value} />
+            )}
+          </section>
+        </>
+      )}
       {canManage ? (
-        <div className="flex flex-wrap gap-2 border-t pt-4">
+        <div
+          className={
+            inline ? "flex flex-wrap gap-1 [&_button]:h-7 [&_button]:px-2" : "flex flex-wrap gap-2 border-t pt-4"
+          }
+        >
           {active && item.kind === "variable" && (
             <Button
               variant="outline"
@@ -449,7 +463,7 @@ export function VaultPanel({
               <KeyRoundIcon /> Replace value
             </Button>
           )}
-          {active && (
+          {active && !inline && (
             <Button variant="destructive-outline" size="sm" onClick={open("revoke")}>
               Revoke
             </Button>
@@ -460,6 +474,11 @@ export function VaultPanel({
         </div>
       ) : (
         <p className="border-t pt-4 text-xs text-muted-foreground">Managed by {orgName}'s admins.</p>
+      )}
+      {inline && value.state.status === "failed" && (
+        <p role="alert" className="text-xs text-destructive">
+          {value.state.error}
+        </p>
       )}
       <div className="empty:hidden">
         <ResultLine result={result} />
