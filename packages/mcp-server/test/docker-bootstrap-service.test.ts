@@ -608,14 +608,13 @@ test("resume is refused once the host's local retention deadline has passed", as
   const f = await fixture(true, "codex");
   await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
-  await db.query(`update public.sandboxes set status='stopped',stopped_at=now() where id=$1`, [f.sandbox.id]);
-  await db.query(
-    `update public.docker_hosts set reported_retention_seconds=60,next_cleanup_at=now()-interval '1 second' where id=$1`,
-    [f.hostId],
-  );
+  await db.query(`update public.sandboxes set status='stopped',stopped_at=now()-interval '2 minutes' where id=$1`, [
+    f.sandbox.id,
+  ]);
+  await db.query(`update public.docker_hosts set reported_retention_seconds=60 where id=$1`, [f.hostId]);
   // The daemon is now authorized to delete this stopped workspace locally.
   await denied(service.resume(f.actor, f.sandbox.id, randomUUID()));
-  // A deadline still in the future admits the resume.
-  await db.query(`update public.docker_hosts set next_cleanup_at=now()+interval '1 hour' where id=$1`, [f.hostId]);
+  // Stopped only moments ago under the same retention policy still admits it.
+  await db.query(`update public.sandboxes set stopped_at=now() where id=$1`, [f.sandbox.id]);
   expect((await service.resume(f.actor, f.sandbox.id, randomUUID())).operation).toBe("resume");
 });

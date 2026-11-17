@@ -176,18 +176,29 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           );
           if (!credential.rows.length) deny();
         }
-        // A fresh resume must be admitted before the host's reported cleanup
-        // deadline; after it the daemon is authorized to remove the stopped
-        // workspace, so accepting the resume could only race a deletion. A
-        // retried resume keeps its already persisted mailbox identity.
-        const retentionFenced = resume && !known;
         const host = await tx.query(
           `select id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and installation_id=$4
-             and hash is not null and registration_hash is null and revoked_at is null
-             and (not $5::boolean or next_cleanup_at is null or next_cleanup_at>now()) for update`,
-          [snapshot.hostId, actor.orgId, hint.issuer_id, snapshot.installationId, retentionFenced],
+             and hash is not null and registration_hash is null and revoked_at is null for update`,
+          [snapshot.hostId, actor.orgId, hint.issuer_id, snapshot.installationId],
         );
         if (!host.rows.length) deny();
+        // A fresh resume must be admitted before this stopped sandbox's local
+        // cleanup deadline: once it passes, the daemon may already be deleting
+        // that exact workspace, so the resume could only race the deletion. The
+        // deadline is the stop age plus the host's reported retention policy;
+        // host-wide next_cleanup_at is a minimum across every retained sandbox
+        // and would wrongly fence unrelated resumes. A retried resume keeps its
+        // already persisted mailbox identity.
+        if (resume && !known) {
+          const deadline = await tx.query(
+            `select 1 from public.docker_hosts h join public.sandboxes s on s.docker_host_id=h.id
+             where h.id=$1 and s.id=$2 and h.reported_retention_seconds is not null
+             and s.stopped_at is not null
+             and s.stopped_at + h.reported_retention_seconds*interval '1 second' <= now()`,
+            [snapshot.hostId, sandboxId],
+          );
+          if (deadline.rows.length) deny();
+        }
         await tx.query(`select id from public.sandboxes where id=$1 for update`, [sandboxId]);
         const scoped = scopedRuntimeSql(tx);
         const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
