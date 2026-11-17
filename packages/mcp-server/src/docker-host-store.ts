@@ -342,6 +342,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if ((operation === "bootstrap" || operation === "resume") && original.outcome !== "completed") deny();
     return saved.request;
   }
+  async function supersededLifecycle(tx: Sql, job: StoredJob) {
+    const later = await tx.query(
+      `select 1 from public.docker_host_jobs where bound_sandbox_id=$1
+       and bound_operation in ('resume','bootstrap') and request_id<>$2 and position>$3
+       and outcome is distinct from 'failed' limit 1`,
+      [job.bound_sandbox_id, job.request_id, job.position],
+    );
+    return later.rows.length > 0;
+  }
+
   async function boundMachine(tx: Sql, job: StoredJob, host: Host, installationId: string) {
     const logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
     const delivered = await readJob(job);
@@ -1225,19 +1235,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ).rows[0] ?? deny();
         if (!job.bound_sandbox_id || job.bound_operation === "buildSnapshot") deny();
         const logical = await boundMachine(tx, job, host, installationId);
-        // A resume admitted after this stopped generation began cleanup sets the
-        // sandbox starting again. This older cleanup fact must not then mark that
-        // live resumed sandbox deleted. An unconsumed cleanup on an already
-        // stopped/failed row still reconciles normally.
-        if (["starting", "ready", "running", "stopping"].includes(logical.status)) {
-          const superseded = await tx.query(
-            `select 1 from public.docker_host_jobs where bound_sandbox_id=$1
-             and bound_operation in ('resume','bootstrap') and request_id<>$2 and position>$3
-             and outcome is distinct from 'failed' limit 1`,
-            [logical.id, job.request_id, job.position],
-          );
-          if (superseded.rows.length) return;
-        }
+        // Status repeats across lifecycles; mailbox ordering identifies which
+        // lifecycle owns this fact even after a later resume has stopped again.
+        if (await supersededLifecycle(tx, job)) return;
         // Physical cleanup is an authenticated machine fact, not owner delete intent.
         await tx.query(
           `update public.sandboxes set status='deleted',status_reason=null,deleted_at=coalesce(deleted_at,now()),
@@ -1383,7 +1383,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
         // missed by an earlier server; conflicting facts still fail above.
         if (result.outcome === "failed" && logical)
           await startupFailed(tx, logical, job.bound_operation, result.reason);
-        if (result.outcome === "completed" && job.bound_sandbox_id) {
+        // Persist terminal receipts below, but never replay old stop/delete
+        // effects onto a lifecycle admitted after that job.
+        const staleCleanup =
+          (job.bound_operation === "stop" || job.bound_operation === "delete") &&
+          (await supersededLifecycle(tx, job));
+        if (result.outcome === "completed" && job.bound_sandbox_id && !staleCleanup) {
           if (job.bound_operation === "stop")
             await tx.query(
               `update public.sandboxes set status=case when status='failed' then status else 'stopped' end,
