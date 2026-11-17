@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createHmac } from "node:crypto";
+import { webhookSignature } from "../../mcp-server/src/outbound-webhooks.ts";
 import { Armada, ArmadaError, verifyWebhookSignature } from "../src/index.ts";
 
 test("service-token methods use the REST routes and preserve wire field names", async () => {
@@ -116,13 +116,13 @@ test("file helpers quote paths and reject truncated exec receipts", async () => 
   await expect(client.files.read({ id: "sandbox_placeholder", path: "file" })).rejects.toBeInstanceOf(ArmadaError);
 });
 
-test("webhook verification binds exact body, timestamp and delivery id and rejects stale signatures", async () => {
+test("webhook verification accepts the server signer and binds exact body, timestamp and delivery id and rejects stale signatures", async () => {
   const body = '{"status":"finished"}';
   const secret = "webhook_placeholder";
   const headers = new Headers({
     "Armada-Webhook-Timestamp": "1000",
     "Armada-Webhook-Id": "delivery_placeholder",
-    "Armada-Webhook-Signature": `v1=${createHmac("sha256", secret).update(`1000.delivery_placeholder.${body}`).digest("hex")}`,
+    "Armada-Webhook-Signature": webhookSignature(secret, "1000", "delivery_placeholder", body),
   });
   const input = { body, secret, headers, now: 1000000 };
   expect(await verifyWebhookSignature(input)).toBe(true);
@@ -170,4 +170,33 @@ test("template launch exposes the HTTP 200 pre-admission refusal without a reque
   expect(() => result.requestId.toUpperCase()).toThrow(TypeError);
   if (result.requestId !== undefined) throw new Error("Expected a refusal");
   expect(result).toEqual({ state: "failed", reason: "conflict", message: "Golden has no snapshot." });
+});
+
+test("a draining server's refusal is a typed, admitted-nothing failure carrying Retry-After", async () => {
+  let count = 0;
+  const client = new Armada({
+    token: "service_placeholder",
+    readRetries: 3,
+    fetch: (async () => {
+      count++;
+      return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
+    }) as import("../src/index.ts").Fetch,
+  });
+  for (const call of [
+    () => client.send({ id: "sandbox_placeholder", prompt: "Work" }),
+    () => client.status({ id: "sandbox_placeholder" }),
+  ]) {
+    const error = await call().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ArmadaError);
+    expect(error).toMatchObject({ code: "unavailable", status: 503, outcomeUnknown: false, retryAfterSeconds: 5 });
+  }
+  // The caller owns the delay that Retry-After asks for: no immediate replay.
+  expect(count).toBe(2);
+});
+
+test("the SDK browser bundle reaches no Node builtin, server entry point or workspace package", async () => {
+  const built = await Bun.build({ entrypoints: [`${import.meta.dir}/../src/index.ts`], target: "browser" });
+  expect(built.success).toBe(true);
+  const bundle = await built.outputs[0]!.text();
+  expect(bundle).not.toMatch(/from\s*["'](node:|@armada\/)|require\(|supabase|postgres/i);
 });

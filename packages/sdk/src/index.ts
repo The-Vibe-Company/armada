@@ -35,6 +35,8 @@ export class ArmadaError extends Error {
     readonly status: number,
     readonly serverCode: string | undefined,
     readonly outcomeUnknown: boolean,
+    /** Server's `Retry-After` delay. Wait at least this long before calling again. */
+    readonly retryAfterSeconds?: number,
   ) {
     super(
       code in API_FAILURE_HELP
@@ -105,7 +107,8 @@ export interface TemplateLaunchReceipt {
   requestId: string;
   state: string;
   id: string;
-  reason?: string;
+  /** Set on failed requests; `null` while a replayed request is still in progress. */
+  reason?: string | null;
   message?: string;
   status?: string;
   promptId?: string | null;
@@ -347,6 +350,17 @@ export class Armada {
         continue;
       }
       const value: unknown = await response.json().catch(() => null);
+      const retryAfter = response.headers.get("retry-after");
+      const retryAfterSeconds = retryAfter && /^\d{1,6}$/.test(retryAfter) ? Number(retryAfter) : undefined;
+      // A draining or auth-unavailable server refuses with this body before dispatching anything.
+      if (
+        response.status === 503 &&
+        value &&
+        typeof value === "object" &&
+        "error" in value &&
+        value.error === "temporarily_unavailable"
+      )
+        throw new ArmadaError("unavailable", 503, "temporarily_unavailable", false, retryAfterSeconds);
       if (response.ok) {
         if (!value || typeof value !== "object" || Array.isArray(value))
           throw new ArmadaError("unknown_response", response.status, undefined, !readOnly);
@@ -368,6 +382,7 @@ export class Armada {
         response.status,
         serverCode,
         !readOnly && (response.status >= 500 || code === "outcome_unknown"),
+        retryAfterSeconds,
       );
     }
   }

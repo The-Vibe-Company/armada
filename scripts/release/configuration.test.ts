@@ -236,9 +236,9 @@ test("the production consumer rechecks its configuration in its actual first ste
   }
 });
 
-test("npm publication installs workspace dependencies before staging bundles the SDK", () => {
+test("npm publication installs workspace dependencies without lifecycle scripts before staging bundles the SDK", () => {
   const steps = workflow.jobs.publish?.steps ?? [];
-  const install = steps.findIndex((step) => step.run === "bun install --frozen-lockfile");
+  const install = steps.findIndex((step) => step.run === "bun install --frozen-lockfile --ignore-scripts");
   const stage = steps.findIndex((step) => step.name === "Stage and pack every package");
   expect(stage).toBeGreaterThan(-1);
   expect(install).toBeGreaterThan(-1);
