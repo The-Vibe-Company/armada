@@ -1701,7 +1701,17 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       // The machine deletion is durable. Collection is shared scope work: a concurrent
       // collector's lease or a transient SDK error must not turn it into a failed delete,
       // which retains the caller's activity lease. The next collection retries.
-      await collectImages().catch(() => {});
+      await collectImages().catch((error) => {
+        const safe = modalError(error);
+        console.warn(
+          JSON.stringify({
+            event: "modal_image_collection_deferred",
+            sandboxId,
+            code: safe.code,
+            ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
+          }),
+        );
+      });
       return { status: "deleted" };
     },
     async resourceReceipts() {
