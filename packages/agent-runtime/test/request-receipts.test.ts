@@ -56,7 +56,7 @@ test("definite refusals replay their status while ambiguous failures retain the 
 
 // Real CodexDriver + local wire peer: a completed turn stays active while auth publication awaits,
 // so the steer is refused before any continuation begins. The identical retry must replay the 409.
-test("a driver-level steer refusal replays its definite status instead of the crash fence", async () => {
+test("a steer refused while a completed turn awaits auth publication replays its definite status", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-steer-receipt-"));
   const journal = new Journal(":memory:", (value) => value);
   const driver = new CodexDriver({

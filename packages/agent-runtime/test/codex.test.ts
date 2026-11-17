@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AgentEvent, type Provider, promptOutcome } from "@armada/core";
+import { RequestRefused } from "../src/errors.ts";
 import { CodexDriver, createRedactor, type DriverEvent, type Turn } from "../src/index.ts";
 import { removeNativeCodexAuth } from "../src/native-auth.ts";
 
@@ -847,3 +848,24 @@ nativeTest.each(["interrupt", "steer"] as const)(
     }
   },
 );
+
+// Definite pre-side-effect refusal at the driver boundary: the app-server turn is closed.
+nativeTest("Codex refuses a steer after its turn closed with a replayable refusal", async () => {
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "codex", text: "message-semantics" },
+      signal: new AbortController().signal,
+      session: () => {},
+      emit: () => {},
+    });
+    expect(await turn.done).toBe("finished");
+    await expect(turn.steer("too-late")).rejects.toBeInstanceOf(RequestRefused);
+  } finally {
+    await driver.close();
+  }
+});
