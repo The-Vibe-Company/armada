@@ -176,10 +176,16 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           );
           if (!credential.rows.length) deny();
         }
+        // A fresh resume must be admitted before the host's reported cleanup
+        // deadline; after it the daemon is authorized to remove the stopped
+        // workspace, so accepting the resume could only race a deletion. A
+        // retried resume keeps its already persisted mailbox identity.
+        const retentionFenced = resume && !known;
         const host = await tx.query(
           `select id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and installation_id=$4
-             and hash is not null and registration_hash is null and revoked_at is null for update`,
-          [snapshot.hostId, actor.orgId, hint.issuer_id, snapshot.installationId],
+             and hash is not null and registration_hash is null and revoked_at is null
+             and (not $5::boolean or next_cleanup_at is null or next_cleanup_at>now()) for update`,
+          [snapshot.hostId, actor.orgId, hint.issuer_id, snapshot.installationId, retentionFenced],
         );
         if (!host.rows.length) deny();
         await tx.query(`select id from public.sandboxes where id=$1 for update`, [sandboxId]);

@@ -1446,3 +1446,42 @@ test("compaction retires reconciled absence without dropping undiscovered alloca
   expect(state.receipts.map((r) => r.requestId)).toEqual([undiscovered!.requestId]);
   expect(state.retired?.map((r) => r[0])).toEqual([reconciled!.requestId]);
 });
+
+test("a queued resume is observed before a due local retention deletion", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  const order: string[] = [];
+  const executor: Executor = {
+    ...f.executor,
+    async resume() {
+      order.push("resume");
+    },
+    async deleteStopped() {
+      order.push("delete");
+    },
+    startRuntime: async () => {
+      order.push("startRuntime");
+    },
+  };
+  const state = await f.store.load();
+  state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 0 }];
+  await f.store.save(state);
+  const resume: Job = {
+    requestId: crypto.randomUUID(),
+    operation: "resume",
+    request: f.job.request,
+    bootstrap: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
+    },
+  };
+  f.api.poll = async () => {
+    order.push("poll");
+    return { job: resume };
+  };
+  await tick(f.store, f.api, executor, false, () => 0);
+  // The resume claims the stopped generation before retention may delete it.
+  expect(order).toEqual(["poll", "resume", "startRuntime"]);
+  expect((await f.store.load()).retention).toEqual([]);
+});

@@ -40,6 +40,7 @@ type Bound = {
 type StoredJob = Bound & {
   request_id: string;
   host_id: string;
+  position: number | string;
   input_enc: Uint8Array<ArrayBuffer>;
   outcome: string | null;
   result_image_id?: string | null;
@@ -1051,6 +1052,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ).rows[0] ?? deny();
         if (!job.bound_sandbox_id || job.bound_operation === "buildSnapshot") deny();
         const logical = await boundMachine(tx, job, host, installationId);
+        // A later admitted resume/bootstrap supersedes this generation. Its
+        // cleanup fact must not mark the live resumed sandbox deleted.
+        const superseded = await tx.query(
+          `select 1 from public.docker_host_jobs where bound_sandbox_id=$1
+           and bound_operation in ('resume','bootstrap') and request_id<>$2 and position>$3
+           and outcome is distinct from 'failed' limit 1`,
+          [logical.id, job.request_id, job.position],
+        );
+        if (superseded.rows.length) return;
         // Physical cleanup is an authenticated machine fact, not owner delete intent.
         await tx.query(
           `update public.sandboxes set status='deleted',status_reason=null,deleted_at=coalesce(deleted_at,now()),

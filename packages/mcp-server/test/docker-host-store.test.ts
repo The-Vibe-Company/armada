@@ -1007,3 +1007,25 @@ test("retirement cancels undispatchable startup without claiming physical cleanu
     expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
   }
 });
+
+test("a stale cleaned ACK cannot delete a sandbox with a later admitted resume", async () => {
+  const db = database();
+  const a = await boundStartup("bootstrap");
+  await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "completed" });
+  await db.query(`update public.sandboxes set status='stopped',stopped_at=now() where id=$1`, [a.sandboxId]);
+  // The resume admission marks the retained allocation starting before enqueue.
+  await db.query(`update public.sandboxes set status='starting',stopped_at=null where id=$1`, [a.sandboxId]);
+  const ticket = await a.authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
+  const resume = { requestId: randomUUID(), operation: "resume" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, {
+    ...resume,
+    bootstrapDescriptor: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: ticket.enrolmentToken,
+    },
+  });
+  // The original create's physical cleanup arrives after the resume was admitted.
+  await store.cleaned(a.hostToken, a.installationId, { requestId: a.create.requestId });
+  expect((await lifecycle(a.sandboxId))?.status).toBe("starting");
+});

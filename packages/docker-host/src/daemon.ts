@@ -237,6 +237,43 @@ export async function tick(
       }
     }
   }
+  // Poll once before local retention deletion. A resume already admitted by the
+  // server is only observable from the mailbox, and deleting its stopped
+  // allocation first would destroy the workspace the resume is claiming. Local
+  // retention still runs while offline: the poll error is rethrown after it.
+  let polled: Awaited<ReturnType<Api["poll"]>> | undefined;
+  let pollError: unknown;
+  try {
+    polled = await api.poll(state, { skipSnapshots });
+  } catch (error) {
+    pollError = error;
+  }
+  // Resume intent cancels this generation's local cleanup deadline before the
+  // deletion pass; a later failed resume is rediscovered as a stopped receipt.
+  if (polled?.job) {
+    try {
+      const observed = parseDockerHostJob(polled.job);
+      if (observed.operation === "bootstrap" || observed.operation === "resume") {
+        const key = generationKey(observed.request);
+        state.retention = state.retention.filter((entry) => generationKey(entry.request) !== key);
+      }
+    } catch {
+      // An invalid mailbox payload is rejected when it is executed below.
+    }
+  }
+  if (polled) {
+    executor.configureLimits?.(polled.limits);
+    if (polled.retentionSeconds !== undefined) {
+      const seconds = polled.retentionSeconds;
+      if (!Number.isSafeInteger(seconds) || seconds < 0) throw Error("Invalid retention policy");
+      const previous = state.retentionSeconds ?? 86400;
+      for (const entry of state.retention ?? []) if (!entry.deleted) entry.deadline += (seconds - previous) * 1000;
+      state.retentionSeconds = seconds;
+      state.retentionPolicyFromServer = true;
+      await store.save(state);
+    }
+    state.lastPollAt = new Date().toISOString();
+  }
   // One physical cleanup per tick, rotated durably even when Docker refuses it.
   // Reporting is deliberately deferred until after all local physical TTL work.
   const deleteAfter = state.retention.findIndex((entry) => entry.requestId === state.retentionDeleteAfter);
@@ -398,18 +435,7 @@ export async function tick(
     Object.assign(state, latest);
     await store.save(state);
   }
-  const polled = await api.poll(state, { skipSnapshots });
-  executor.configureLimits?.(polled.limits);
-  if (polled.retentionSeconds !== undefined) {
-    const seconds = polled.retentionSeconds;
-    if (!Number.isSafeInteger(seconds) || seconds < 0) throw Error("Invalid retention policy");
-    const previous = state.retentionSeconds ?? 86400;
-    for (const entry of state.retention ?? []) if (!entry.deleted) entry.deadline += (seconds - previous) * 1000;
-    state.retentionSeconds = seconds;
-    state.retentionPolicyFromServer = true;
-    await store.save(state);
-  }
-  state.lastPollAt = new Date().toISOString();
+  if (!polled) throw pollError ?? new Error("Host poll unavailable");
   if (!polled.job) {
     await store.save(state);
     return;

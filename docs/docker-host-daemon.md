@@ -433,9 +433,13 @@ the deadline, even when the server is unreachable. Shared runtime artifact cache
 and user snapshot images are not sandbox files and remain untouched. Set
 `ARMADA_DOCKER_RETENTION_SECONDS` in this host daemon's environment before starting
 it to configure the period (`0` means the next local sweep); this setting persists
-in its private state. Policy changes shift existing deadlines, preserving stopped age. A resume observed
-before deletion cancels the deadline; cleanup refuses a running allocation. Missing
-resources are safe to retry. Authenticated physical-cleanup reports reconcile the
+in its private state. Policy changes shift existing deadlines, preserving stopped age. Each tick polls the
+mailbox before the local deletion pass, so a resume already admitted by the server
+cancels that generation's deadline before its stopped container and home volume can
+be removed; cleanup still runs while the server is unreachable. The server also
+refuses a fresh resume once the host's reported next cleanup deadline has passed,
+because the daemon is then authorized to delete the workspace. Cleanup refuses a
+running allocation. Missing resources are safe to retry. Authenticated physical-cleanup reports reconcile the
 server to `deleted` after reconnection. Deploy the server support before upgrading
 hosts; old servers reject the additive report and the daemon retries it safely.
 
