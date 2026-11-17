@@ -46,6 +46,7 @@ import { createSqlGoldenList } from "./golden-list.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { idlePauseDelayMs } from "./idle-pause-policy.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
+import { createLangfuse } from "./langfuse.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
@@ -552,10 +553,12 @@ export async function startServer(
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
+  const langfuse = createLangfuse(sql, config.encryptionKey);
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
     config.encryptionKey,
     createRuntimeNativeAuth(sql, config.encryptionKey),
+    langfuse.enqueue,
   );
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const commitSha = sourceIdentity.commit ?? env.RAILWAY_GIT_COMMIT_SHA;
@@ -642,6 +645,13 @@ export async function startServer(
       createRuntimeProgress(runtimeEnrolments),
       createRuntimeModelAccess(sql, config.encryptionKey, modelAuth.broker),
       runtimeEvents.route,
+      langfuse.route((request) =>
+        authenticateCaller(request.headers.get("authorization"), {
+          store: authStore,
+          supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+          now: new Date(),
+        }),
+      ),
       runtimeCommands.route,
       ...(runtimeGitHub ? [runtimeGitHub.route] : []),
       delegatedAccess.scopedToolsRoute,
