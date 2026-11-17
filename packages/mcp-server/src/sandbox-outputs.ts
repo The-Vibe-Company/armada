@@ -31,7 +31,7 @@ async function collect(
     : "retained_unreadable";
   if (read === "retained_unreadable") {
     // The backend can never read this stop's retained disk without compute (Modal recovery image,
-    // failed stop snapshot): keep the snapshot captured before it; no polling until the next stop.
+    // truncated snapshot listing): keep the snapshot captured before it; no polling until the next stop.
     if (stopped)
       await sql.query(
         `update public.sandboxes set outputs_retained_at=now() where id=$1 and outputs_checked_at::text=$2`,

@@ -35,7 +35,7 @@ export interface Provider {
    * Live disk while active; the retained disk once stopped, where the backend can read it without
    * compute. Null means unavailable now: callers keep their previous snapshot and retry.
    * "retained_unreadable" means this stop's retained disk can never be read without compute
-   * (Modal recovery image, failed stop snapshot): callers keep the pre-stop capture, no retry. */
+   * (Modal recovery image, truncated snapshot listing): callers keep the pre-stop capture, no retry. */
   readOutputs?(request: {
     sandboxId: string;
     signal?: AbortSignal;

@@ -1309,9 +1309,10 @@ test("declared outputs of a stopped sandbox are read from its retained disk snap
       },
     },
   );
-  expect(await truncated.provider.readOutputs?.({ sandboxId: ID })).toBeNull();
-  // The latest completed snapshot predates a stop whose own snapshot is pending (retry later) or
-  // failed (keep the pre-stop capture): it is never read in place of the stopped disk.
+  // A completed snapshot's truncated listing never becomes complete: final for this stop.
+  expect(await truncated.provider.readOutputs?.({ sandboxId: ID })).toBe("retained_unreadable");
+  // The latest completed snapshot predates a stop whose own snapshot is pending or failed (Boat may
+  // retry it): unavailable now, never read in place of the stopped disk.
   const pending = fakeBoat({
     body: { ok: true, sandbox: sandbox({ state: "archived", lastSnapshotStatus: "in_progress" }) },
   });
@@ -1319,6 +1320,6 @@ test("declared outputs of a stopped sandbox are read from its retained disk snap
   const failed = fakeBoat({
     body: { ok: true, sandbox: sandbox({ state: "archived", lastSnapshotStatus: "failed" }) },
   });
-  expect(await failed.provider.readOutputs?.({ sandboxId: ID })).toBe("retained_unreadable");
+  expect(await failed.provider.readOutputs?.({ sandboxId: ID })).toBeNull();
   expect([pending.remaining(), failed.remaining()]).toEqual([0, 0]);
 });

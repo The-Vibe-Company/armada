@@ -445,13 +445,16 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
           message: "The stop snapshot is not complete yet.",
           retryable: true,
         });
-      // A failed stop snapshot is final for this stop: the caller keeps its pre-stop capture.
-      if (attempt && attempt !== "completed") return "retained_unreadable";
+      // A failed latest attempt may still be retried by Boat: unavailable now (one cheap read per scan),
+      // the caller keeps its pre-stop capture meanwhile.
+      if (attempt && attempt !== "completed") return null;
       const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal: read }));
       const snapshot = latest.snapshot;
       if (!snapshot || snapshot.sandboxId !== sandboxId || snapshot.status !== "completed") return null;
       const tree = await call(() => api.getSnapshotTree({ snapshotId: snapshot.id }, { signal: read }));
       if (tree.snapshotId !== snapshot.id) return null;
+      // A completed snapshot never changes: its truncated listing will never cover the directory.
+      if (tree.treeAvailable && tree.truncated) return "retained_unreadable";
       const selected = selectRetainedOutputs(tree.entries ?? [], tree.treeAvailable && !tree.truncated);
       if (!selected) return null;
       const files: OutputFile[] = [];
