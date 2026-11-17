@@ -26,8 +26,9 @@ export class ClaudeDriver implements Driver {
   }
   /** The native CLI loads --resume before acknowledging initialize; no user input is sent. */
   async resumeSession(c: DriverResumeContext): Promise<{ sessionId: string }> {
+    // Definite refusal before any native work starts: replaying the same request ID is safe.
     if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(c.sessionId) || !c.request.model)
-      throw Error("invalid_native_resume");
+      throw new RequestRefused("invalid_native_resume");
     c.signal.throwIfAborted();
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
     let finish!: () => void;
@@ -83,9 +84,9 @@ export class ClaudeDriver implements Driver {
   start(c: DriverContext): Turn {
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
     if (c.request.fast && (c.request.model ?? "claude-opus-5-5") !== "claude-opus-5-5")
-      throw Error("unsupported_fast_model");
+      throw new RequestRefused("unsupported_fast_model");
     const effort = c.request.reasoningEffort ?? "medium";
-    if (!["low", "medium", "high", "xhigh", "max"].includes(effort)) throw Error("invalid_effort");
+    if (!["low", "medium", "high", "xhigh", "max"].includes(effort)) throw new RequestRefused("invalid_effort");
     let wake: (() => void) | undefined;
     let closed = false;
     let interrupted = false;

@@ -45,8 +45,9 @@ export class CodexDriver implements Driver {
     return this.open(c, false);
   }
   async resumeSession(c: DriverResumeContext): Promise<{ sessionId: string }> {
+    // Definite refusal before any native work starts: replaying the same request ID is safe.
     if (!c.sessionId || c.sessionId.length > 256 || !c.request.model || c.signal.aborted)
-      throw Error("invalid_native_resume");
+      throw new RequestRefused("invalid_native_resume");
     let confirmed = false;
     const connection = this.open(
       {
@@ -75,8 +76,8 @@ export class CodexDriver implements Driver {
     };
     const effort = c.request.reasoningEffort ?? "medium";
     if (!["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))
-      throw Error("invalid_effort");
-    if (this.options.exclusiveAuth && this.nativeWriter) throw Error("native_auth_writer_busy");
+      throw new RequestRefused("invalid_effort");
+    if (this.options.exclusiveAuth && this.nativeWriter) throw new RequestRefused("native_auth_writer_busy");
     if (this.options.exclusiveAuth) this.nativeWriter = true;
     const child = this.children.spawn(
       this.options.executable,

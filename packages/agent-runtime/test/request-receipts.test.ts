@@ -163,3 +163,46 @@ test("steer refuses an already-terminal admitted turn before the driver is calle
     journal.close();
   }
 });
+
+// Driver preflight refusals (here: an unsupported reasoning effort) happen before any native work.
+// The identical retry must replay the definite 409 instead of the uncertainty fence.
+test("a native-resume preflight refusal replays its definite status for the same request ID", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-native-refusal-"));
+  const journal = new Journal(":memory:", (value) => value);
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: root,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  });
+  const grant = { token: crypto.randomUUID(), sandboxId: "s", generation: "g", expiresAt: Date.now() + 60000 };
+  const runner = new Runner(journal, grant, { codex: driver });
+  journal.saveSession("logical", "codex", "saved-native");
+  const call = () =>
+    runner.handle(
+      new Request("https://runner", {
+        method: "POST",
+        headers: { [AUTH_HEADER]: grant.token },
+        body: JSON.stringify({
+          version: 1,
+          requestId: "resume",
+          sandboxId: "s",
+          op: "resumeNativeSession",
+          conversationId: "logical",
+          expectedSessionId: "saved-native",
+          input: { sandboxId: "s", harness: "codex", model: "gpt-6.1-sol", reasoningEffort: "invalid" },
+        }),
+      }),
+    );
+  try {
+    const first = await call();
+    expect(first.status).toBe(409);
+    expect(await first.json()).toEqual({ error: "invalid_effort" });
+    const retry = await call();
+    expect(retry.status).toBe(409);
+    expect(await retry.json()).toEqual({ error: "invalid_effort" });
+  } finally {
+    await runner.close();
+    journal.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

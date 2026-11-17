@@ -534,3 +534,31 @@ nativeTest("Claude refuses a steer after its stream closed with a replayable ref
     await driver.close();
   }
 });
+
+// Preflight validation runs before the SDK spawns anything, so the refusal is definite.
+test("Claude refuses an unsupported reasoning effort before starting native work", async () => {
+  const driver = new ClaudeDriver({
+    executable: `${import.meta.dir}/fixtures/claude-process.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  });
+  try {
+    expect(() =>
+      driver.start({
+        request: { sandboxId: "s", harness: "claude", text: "hello", reasoningEffort: "invalid" },
+        signal: new AbortController().signal,
+        session: () => {},
+        emit: () => {},
+      }),
+    ).toThrow(RequestRefused);
+    await expect(
+      driver.resumeSession({
+        request: { sandboxId: "s", harness: "claude", model: "claude-opus-5-5" },
+        sessionId: "not-a-uuid",
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toBeInstanceOf(RequestRefused);
+  } finally {
+    await driver.close();
+  }
+});
