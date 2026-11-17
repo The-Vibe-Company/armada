@@ -52,6 +52,7 @@ import { routineCommand } from "./routine-commands.ts";
 import { promptSecret } from "./secret-input.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
+import { snapshotText } from "./snapshot-text.ts";
 import { templateCommand } from "./template-commands.ts";
 import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
 
@@ -71,14 +72,6 @@ export interface Deps {
   localHost?: LocalHostIo;
   /** Set by auth tests. Otherwise login stores an Armada API session on this machine. */
   auth?: AuthIo;
-}
-
-/** Legacy API identifiers stay untouched; only diagnostic prose is renamed. */
-function snapshotText(text: string): string {
-  return text.replace(
-    /(?<![-/\w])(Golden|golden)(s?)\b/g,
-    (_, word: string, plural: string) => `${word === "Golden" ? "Snapshot" : "snapshot"}${plural}`,
-  );
 }
 
 /** Runs one command line and returns the process exit code. */

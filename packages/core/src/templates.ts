@@ -50,8 +50,7 @@ export const TEMPLATE_REFUSAL_HELP = {
     "Template environment is removed, unavailable or inaccessible. Check the golden or Docker host.",
   environment_binding_changed:
     "Template environment provider binding changed. Publish a revision with the current environment binding.",
-  environment_snapshot_unavailable:
-    "Template golden snapshot is unavailable or retired. Check the golden before retrying.",
+  environment_snapshot_unavailable: "Template snapshot is unavailable or retired. Check the snapshot before retrying.",
   environment_admission_unavailable:
     "Template golden became unavailable during admission. Check the golden before retrying.",
   connection_unavailable:

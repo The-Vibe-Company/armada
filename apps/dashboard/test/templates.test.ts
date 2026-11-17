@@ -499,5 +499,6 @@ test("host template pins the exact selected snapshot and rejects private organiz
 test("template launch reasons distinguish unavailable and uncertain outcomes without raw diagnostics", () => {
   expect(launchReason("launch_unavailable")).toContain("Docker host");
   expect(launchReason("allocation_or_start_unknown")).toContain("uncertain");
+  expect(launchReason("environment_snapshot_unavailable")).toContain("Template snapshot is unavailable or retired");
   expect(launchReason("private_value")).not.toContain("private_value");
 });

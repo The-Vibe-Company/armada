@@ -6,6 +6,8 @@ import {
   routineReasonHelp,
   templateRefusalHelp,
 } from "@armada/core";
+import { snapshotText } from "./action.ts";
+import { skillLaunchFailure } from "./skills.ts";
 import type { TemplateHeader } from "./templates.ts";
 
 export type RoutineItem = Omit<Routine, "createdAt" | "updatedAt" | "nextDueAt"> & {
@@ -133,8 +135,15 @@ export function routineFailure(status?: number): string {
   return "Routines are unavailable. Refresh to check the saved state before trying again.";
 }
 export function runDescription(run: RoutineRun): string {
+  const refusal = run.launchRefusal
+    ? snapshotText(
+        run.launchRefusal.startsWith("skillpack_")
+          ? skillLaunchFailure(run.launchRefusal)
+          : templateRefusalHelp(run.launchRefusal),
+      )
+    : null;
   return (
-    (run.launchRefusal ? templateRefusalHelp(run.launchRefusal) : null) ??
+    refusal ??
     routineReasonHelp(run.reason) ??
     (run.state === "succeeded"
       ? "Sandbox launched. Agent outcome is shown separately."

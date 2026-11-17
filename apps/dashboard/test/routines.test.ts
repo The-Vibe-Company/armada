@@ -114,6 +114,12 @@ test("routine DTOs reject unsafe links and unknown states, and do not carry raw 
   expect(runDescription({ ...parsed, launchRefusal: "variable_version_changed" })).toContain(
     "Readable variable version changed",
   );
+  expect(runDescription({ ...parsed, launchRefusal: "environment_unavailable" })).toContain(
+    "Check the snapshot or Docker host",
+  );
+  expect(runDescription({ ...parsed, launchRefusal: "skillpack_credential_missing" })).toContain(
+    "Connect a usable Skillpack key in Skills",
+  );
   expect(parseRoutineRun({ ...run, launchRefusal: "private_value" })?.launchRefusal).toBeNull();
   expect(runDescription(parsed)).toContain("previous sandbox is still alive");
   expect(parsed).not.toHaveProperty("reasonHelp");

@@ -255,7 +255,7 @@ test("template failures use closed actionable diagnostics without echoing untrus
     ["Template launch refused: environment_unavailable.", "snapshot"],
     ["Template launch refused: connection_unavailable.", "connection"],
     ["Template launch refused: environment_binding_changed.", "provider binding changed"],
-    ["Template launch refused: environment_snapshot_unavailable.", "snapshot"],
+    ["Template launch refused: environment_snapshot_unavailable.", "Template snapshot is unavailable or retired"],
     ["Template launch refused: connection_version_changed.", "grant changed"],
     ["Template launch refused: model_account_unavailable.", "Add one in Models"],
     ["Template launch refused: model_account_ambiguous.", "Set a default"],
