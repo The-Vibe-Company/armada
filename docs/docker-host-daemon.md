@@ -1177,3 +1177,35 @@ latency and host/daemon downtime still bound enforcement, not a hard real-time
 deadline. This lane never writes the state file or contacts the server. The
 serialized mailbox subsequently observes the stop and persists/reports its proof;
 server acknowledgement can therefore lag physical enforcement during slow work.
+
+### Diagnosing older daemons (#2540)
+
+A server deployment does not upgrade installed host executables. Upgrade on the
+Docker machine with `armada host install --server HTTPS_ORIGIN` using the current
+CLI. The installer verifies the published binary, preserves the registration and
+private state, and restarts the existing user service. A service restart alone
+runs the same installed binary. Until upgraded, a host continues its old policy.
+
+Source audit of tag `v2.46.0` against the incident report:
+
+- `daemon.ts` already defaults retention to 86,400 seconds. It schedules deletion
+  from the first physical stopped observation, not from creation or TTL expiry.
+  `docker-machine.ts:stopIfExpired` only stops the container; it does not remove
+  the container or home volume. Therefore expiry is not a deletion deadline,
+  and a sandbox stopped the previous morning can legitimately remain the next
+  morning until that separate retention deadline. The deterministic offline
+  retention test in `packages/docker-host/test/daemon.test.ts` proves this
+  distinction and deletion only at the deadline.
+- That tag's `native.ts` poll has no retention or disk telemetry; its `main.ts`
+  does not wire a disk sampler and its machine executor has no disk floor.
+  Thus a 2.49.6 server cannot enforce a disk floor from that host's null report.
+  Null retention telemetry is not evidence that retention cleanup is absent.
+- The reported count of 52 expired stopped sandboxes alone cannot prove that
+  their 24-hour stopped-observation deadline passed. Establishing why any
+  particular allocation exceeded that deadline requires its daemon state,
+  receipts, labels and ownership/cleanup errors. Do not infer deletion authority
+  from server expiry or shorten retention to mask missing evidence.
+
+This change leaves all deletion policy unchanged, including the known queued
+resume race tracked in #2525 / PR #2534. No disk-pressure deletion is enabled.
+A host upgrade is explicit operator work; there is no automatic daemon update.
