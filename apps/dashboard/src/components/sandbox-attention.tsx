@@ -18,7 +18,7 @@ import { sandboxAttention, summarizeEvents, type TurnSummary } from "@/lib/sandb
 import { createClient } from "@/lib/supabase/server";
 
 /** One bounded, authorized event read; the highest-priority recovery owns the single banner. */
-export async function SandboxAttention({ sandbox, viewer }: { sandbox: Sandbox; viewer: Viewer }) {
+export async function SandboxAttention({ sandbox, viewer }: { sandbox: Omit<Sandbox, "docker_retention_deadline">; viewer: Viewer }) {
   const gateway = viewerGateway(viewer);
   let turn: TurnSummary | null = null;
   if (gateway) {

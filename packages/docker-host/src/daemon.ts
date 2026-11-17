@@ -215,6 +215,22 @@ export async function tick(
   state.retention ??= [];
   const retentionSeconds = state.retentionSeconds ?? 86400;
   if (!Number.isSafeInteger(retentionSeconds) || retentionSeconds < 0) throw Error("Invalid retention policy");
+  // Claims cannot outlive the allocation's immutable physical expiry. A
+  // server cannot admit a resume beyond this same frozen expiry, so releasing
+  // the hold here is safe even while offline. Retain its historical ACK.
+  const expiredGenerations = new Set(
+    [...state.receipts, ...state.retention]
+      .filter((receipt) => receipt.request.expiresAt !== undefined && receipt.request.expiresAt <= now())
+      .map((receipt) => generationKey(receipt.request)),
+  );
+  let releasedClaim = false;
+  for (const claim of state.resumeClaims ?? []) {
+    if (claim.active && expiredGenerations.has(generationKey(claim))) {
+      claim.active = false;
+      releasedClaim = true;
+    }
+  }
+  if (releasedClaim) await store.save(state);
   // Observe exact owned allocations even while disconnected. Never infer physical exit from a failed RPC.
   if (executor.isStopped) {
     const candidates = new Map<string, Receipt>();
@@ -276,6 +292,7 @@ export async function tick(
     if (!claim) {
       const key = generationKey(intent);
       const lost =
+        expiredGenerations.has(key) ||
         state.cleanupGenerations?.includes(key) ||
         state.retention.some(
           (entry) => generationKey(entry.request) === key && (entry.cleanupAuthorized || entry.deleted),
@@ -289,6 +306,7 @@ export async function tick(
       if (claim.accepted) state.retention = state.retention.filter((entry) => generationKey(entry.request) !== key);
       await store.save(state); // fsync before acknowledging; crashes cannot resurrect cleanup.
     }
+    if (expiredGenerations.has(generationKey(claim))) continue;
     try {
       await api.claim?.(state, claim.requestId, claim.accepted);
     } catch (error) {
@@ -304,12 +322,15 @@ export async function tick(
   // An entry already physically deleted keeps its pending cleaned report: the
   // workspace is gone, so the server must still learn that fact.
   const claimed = new Set<string>();
-  for (const request of polled?.pendingStarts ?? []) claimed.add(generationKey(request));
+  for (const request of polled?.pendingStarts ?? []) {
+    const key = generationKey(request);
+    if (!expiredGenerations.has(key)) claimed.add(key);
+  }
   if (polled?.job) {
     try {
       const observed = parseDockerHostJob(polled.job);
       if (observed.operation === "bootstrap" || observed.operation === "resume")
-        claimed.add(generationKey(observed.request));
+        if (!expiredGenerations.has(generationKey(observed.request))) claimed.add(generationKey(observed.request));
     } catch {
       // An invalid mailbox payload is rejected when it is executed below.
     }

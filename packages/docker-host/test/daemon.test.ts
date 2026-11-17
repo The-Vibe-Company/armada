@@ -1568,3 +1568,66 @@ test("a resume behind another mailbox job still cancels its generation's due ret
   expect(order).not.toContain("delete");
   expect((await f.store.load()).retention).toEqual([]);
 });
+
+test("an abandoned resume claim releases only at immutable expiry and keeps the normal offline retention delay", async () => {
+  const f = fixture();
+  f.job.request.expiresAt = 1000;
+  await tick(f.store, f.api, f.executor, false, () => 0);
+  const state = await f.store.load();
+  state.retentionSeconds = 1;
+  state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 10 }];
+  await f.store.save(state);
+  const requestId = crypto.randomUUID();
+  let offline = false;
+  const acknowledgements: boolean[] = [];
+  let deleted = false;
+  f.api.poll = async () => {
+    if (offline) throw Error("offline");
+    return {
+      job: null,
+      pendingStarts: [{ sandboxId: f.job.request.sandboxId, generation: f.job.request.generation }],
+      resumeClaims: [{ requestId, sandboxId: f.job.request.sandboxId, generation: f.job.request.generation }],
+    };
+  };
+  f.api.claim = async (_state, _requestId, accepted) => {
+    acknowledgements.push(accepted);
+  };
+  f.executor.isStopped = async () => true;
+  f.executor.deleteStopped = async () => {
+    deleted = true;
+  };
+  await tick(f.store, f.api, f.executor, false, () => 9);
+  expect(acknowledgements).toEqual([true]);
+  offline = true;
+  await expect(tick(f.store, f.api, f.executor, false, () => 999)).rejects.toThrow("offline");
+  expect((await f.store.load()).retention).toEqual([]);
+  // A fresh load on each tick represents restart; expiry retires the durable
+  // hold, then discovery grants the complete configured retention period.
+  await expect(tick(f.store, f.api, f.executor, false, () => 1000)).rejects.toThrow("offline");
+  expect((await f.store.load()).resumeClaims?.[0]?.active).toBe(false);
+  expect((await f.store.load()).retention?.[0]?.deadline).toBe(2000);
+  expect(deleted).toBe(false);
+  const compacted = await f.store.load();
+  const original = compacted.receipts.find((receipt) => receipt.requestId === f.job.requestId)!;
+  original.expired = true;
+  original.expiryReported = true;
+  // A completed unrelated snapshot supplies the ledger pressure that triggers
+  // real compaction; its opaque image bytes are never sent to Docker.
+  compacted.receipts.push({
+    requestId: crypto.randomUUID(),
+    operation: "buildSnapshot",
+    inputHash: "c".repeat(64),
+    request: { ...f.job.request, sandboxId: crypto.randomUUID(), image: "x".repeat(1100000) },
+    outcome: "completed",
+  });
+  compactReceipts(compacted);
+  expect(compacted.receipts.some((receipt) => receipt.requestId === f.job.requestId)).toBe(false);
+  await f.store.save(compacted);
+  offline = false;
+  await tick(f.store, f.api, f.executor, false, () => 1999);
+  expect(acknowledgements).toEqual([true]); // expired replays cannot renew the claim
+  expect(deleted).toBe(false);
+  offline = true;
+  await expect(tick(f.store, f.api, f.executor, false, () => 2000)).rejects.toThrow("offline");
+  expect(deleted).toBe(true);
+});

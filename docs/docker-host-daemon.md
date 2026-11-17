@@ -440,7 +440,9 @@ claim; it does not start the sandbox until the host acknowledges that claim.
 The host serializes claim acceptance with local cleanup authorization and saves
 the winner before acknowledging a claim or physically deleting the workspace.
 An accepted claim survives daemon restarts and protects the generation while its
-resume waits behind other mailbox work. If cleanup won, the host refuses the claim
+resume waits behind other mailbox work. Once the machine’s immutable absolute
+expiry is reached, an unexecuted claim stops protecting it and normal retention
+scheduling resumes; this is not a claim timeout. If cleanup won, the host refuses the claim
 and the caller receives non-retryable `sandbox_retention_ended` (HTTP 409), with
 instructions to launch a new sandbox. A request sent before the deadline remains
 pending if its poll fails; it cannot promise preservation until the host accepts.
