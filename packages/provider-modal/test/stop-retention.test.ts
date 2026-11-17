@@ -187,6 +187,8 @@ test("a failing retired image never withholds the receipt of a completed delete"
   await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
   expect(f.state().phase).toBe("deleted");
   expect(f.deletedImages).toEqual(["prior-recovery", "fresh-recovery"]);
+  // Another source's failure is not retried inside this delete.
+  expect(f.cleanupDelays).toEqual([]);
   // The tombstone keeps its durable retry record for the next collection in scope.
   expect(
     f

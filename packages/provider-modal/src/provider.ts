@@ -1753,8 +1753,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
       // The target's compute and recovery images are gone and durably recorded. Retired images
       // of other sources are collected on a best-effort basis: their tombstones stay durable
-      // for the next collection in scope, and their failure never withholds this receipt.
-      await cleanupStep(sandboxId, () => collectImages(true)).catch((error) => {
+      // for the next collection in scope, and their failure never withholds this receipt. One
+      // attempt only: retrying another source's failure would only delay this deletion.
+      await collectImages(true).catch((error) => {
         const safe = modalError(error);
         console.warn(
           JSON.stringify({
