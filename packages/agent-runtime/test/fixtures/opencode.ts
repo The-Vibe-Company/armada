@@ -21,7 +21,7 @@ else if (command === "export" && process.env.OPENCODE_THROTTLE_STATE) {
                     name: "APIError",
                     data: {
                       statusCode: Number(process.env.OPENCODE_THROTTLE_STATUS),
-                      responseHeaders: { "retry-after": "20" },
+                      responseHeaders: { "retry-after": process.env.OPENCODE_THROTTLE_RETRY_AFTER ?? "20" },
                     },
                   },
                 }

@@ -162,8 +162,19 @@ export class Runner {
     return this.shutdown;
   }
   private async drain(): Promise<void> {
+    // A driver close only terminates processes alive now. A turn waiting out a native backoff
+    // has no live child, so cancel it first; otherwise it can start fresh inference after close
+    // and record a success during shutdown. Keep already-terminal turns untouched so failures
+    // observed before the stop retain their original classification.
+    const cancellations = [...this.active.values()]
+      .filter((active) => !active.terminal)
+      .map((active) => {
+        active.controller.abort();
+        return active.turn.interrupt().catch(() => {});
+      });
     const releases = await Promise.allSettled([...this.execReleases]);
     const owners = await Promise.allSettled([
+      ...cancellations,
       this.execChildren.close(),
       ...Object.values(this.drivers).map((driver) => driver.close()),
     ]);
