@@ -525,6 +525,50 @@ test("child stop overlaps slow parent deletion and child delete keeps its own ob
   expect(clock).toBe(720_000);
 });
 
+test("scoped cleanup re-stops a child observed running after parent deletion", async () => {
+  const child = {
+    ...row,
+    id: "33333333-3333-4333-8333-333333333333",
+    requestKey: "smoke-scoped-11111111-1111-4111-8111-111111111111",
+  };
+  const childActions: string[] = [];
+  let clock = 0;
+  let parentDeleted = false;
+  let childRunning = false;
+  const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, "token", [row, child], {
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    out: () => {},
+    fetch: async (url, init) => {
+      const deleting = init.method === "DELETE";
+      const id = deleting ? new URL(url).pathname.split("/").at(-1) : JSON.parse(String(init.body)).id;
+      const action = deleting ? "delete" : url.split("/").at(-1)!;
+      if (id === row.id) {
+        if (deleting && !childActions.includes("stop"))
+          return Response.json({ error: { code: "sandbox_not_ready" } }, { status: 409 });
+        if (deleting) {
+          parentDeleted = true;
+          childRunning = true;
+        }
+        return Response.json({ id, status: deleting ? "deleted" : "stopped" });
+      }
+      childActions.push(action);
+      if (action === "stop") {
+        childRunning = false;
+        return Response.json({ id, status: "stopped" });
+      }
+      if (action === "status") return Response.json({ id, status: childRunning ? "running" : "stopped" });
+      expect(parentDeleted).toBe(true);
+      if (childRunning) return Response.json({ error: { code: "conflict" } }, { status: 409 });
+      return Response.json({ id, status: "deleted" });
+    },
+  });
+  expect(remaining).toEqual([]);
+  expect(childActions).toEqual(["stop", "delete", "status", "stop", "delete"]);
+});
+
 test("a definite busy stop admission is retried only after the sandbox is ready", async () => {
   let clock = 0,
     stops = 0;

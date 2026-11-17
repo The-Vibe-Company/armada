@@ -186,42 +186,47 @@ export async function deleteSmokeReceipts(
           retryStopAdmission = false;
         }
       }
-      await dispatchStop();
-      while (!terminalStop && !alreadyDeleted) {
-        let status: Awaited<ReturnType<typeof request>>;
-        try {
-          status = await request("status");
-        } catch (error) {
-          if (code !== "request_failed") throw error;
+      async function stopAndObserve() {
+        terminalStop = false;
+        await dispatchStop();
+        while (!terminalStop && !alreadyDeleted) {
+          let status: Awaited<ReturnType<typeof request>>;
+          try {
+            status = await request("status");
+          } catch (error) {
+            if (code !== "request_failed") throw error;
+            await pause();
+            continue;
+          }
+          if (!status.ok && httpStatus === 404 && code === "not_found") {
+            alreadyDeleted = true;
+            break;
+          }
+          if (!status.ok) {
+            if (!RETRY_CODES.has(code)) throw Error(code);
+            await pause();
+            continue;
+          }
+          if (status.body?.id !== row.id) throw Error(code);
+          if (status.body?.status === "deleted") {
+            alreadyDeleted = true;
+            break;
+          }
+          if (status.body?.status === "stopped" || status.body?.status === "failed") break;
+          if (!["starting", "ready", "running", "stopping"].includes(String(status.body?.status))) throw Error(code);
+          code = "stop_not_terminal";
           await pause();
-          continue;
+          if (retryStopAdmission && (status.body?.status === "ready" || status.body?.status === "running"))
+            await dispatchStop();
+          if (status.body?.status === "stopping") retryStopAdmission = false;
         }
-        if (!status.ok && httpStatus === 404 && code === "not_found") {
-          alreadyDeleted = true;
-          break;
-        }
-        if (!status.ok) {
-          if (!RETRY_CODES.has(code)) throw Error(code);
-          await pause();
-          continue;
-        }
-        if (status.body?.id !== row.id) throw Error(code);
-        if (status.body?.status === "deleted") {
-          alreadyDeleted = true;
-          break;
-        }
-        if (status.body?.status === "stopped" || status.body?.status === "failed") break;
-        if (!["starting", "ready", "running", "stopping"].includes(String(status.body?.status))) throw Error(code);
-        code = "stop_not_terminal";
-        await pause();
-        if (retryStopAdmission && (status.body?.status === "ready" || status.body?.status === "running"))
-          await dispatchStop();
-        if (status.body?.status === "stopping") retryStopAdmission = false;
       }
+      await stopAndObserve();
       onStopped?.();
       if (!alreadyDeleted) {
         // Child delete needs the durable authority fence from parent deletion.
         if (scoped) await parentWave;
+        let recheckedStop = false;
         while (true) {
           let deleted: Awaited<ReturnType<typeof request>>;
           try {
@@ -234,9 +239,22 @@ export async function deleteSmokeReceipts(
           if (!deleted.ok && httpStatus === 404 && code === "not_found") break;
           if (deleted.ok && deleted.body?.id === row.id && deleted.body.status === "deleted") break;
           if (!RETRY_CODES.has(code) && !(deleted.ok && deleted.body?.id === row.id)) throw Error(code);
-          // A pending delete retains a two-minute activity lease. Do not refresh
-          // provider status or replay stop; reconcile this same idempotent delete.
           io.out(JSON.stringify({ step: "delete_smoke_sandbox_retry", ...row, phase, httpStatus, code }));
+          // A delegated message dispatched before parent stop can still resume a child
+          // during overlapping cleanup. Re-stop only after observing renewed activity.
+          if (scoped && !recheckedStop && httpStatus === 409 && code === "conflict") {
+            recheckedStop = true;
+            const status = await request("status").catch(() => null);
+            if (status?.ok && status.body?.id === row.id && ["ready", "running"].includes(String(status.body.status))) {
+              await stopAndObserve();
+              if (alreadyDeleted) break;
+              continue;
+            }
+            phase = "delete";
+            httpStatus = 409;
+            code = "conflict";
+          }
+          // Pending deletes are reconciled by repeating the same idempotent delete.
           await pause();
         }
       }
