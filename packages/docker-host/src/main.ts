@@ -203,6 +203,8 @@ async function main(args: string[]) {
     const runtime = withDiskFloor(
       {
         ...executor,
+        diskFreeBytes: sampleDisk,
+        cleanupImages: () => cleanupOfficialImages(dockerCli),
         configureLimits(next: DockerSandboxLimits | undefined) {
           if (next && next.pids !== 4096) throw new Error("Invalid process policy");
           limits = dockerResourceLimits(dockerHostResources(), next);

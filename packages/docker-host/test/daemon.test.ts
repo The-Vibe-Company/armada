@@ -1662,3 +1662,30 @@ test("an abandoned resume claim releases only at immutable expiry and keeps the 
   await expect(tick(f.store, f.api, f.executor, false, () => 2000)).rejects.toThrow("offline");
   expect(deleted).toBe(true);
 });
+
+test("disk pressure reclaims oldest eligible workspaces until the floor, preserving claims and uncertain ownership", async () => {
+  const f = fixture();
+  const state = await f.store.load();
+  const requests = Array.from({ length: 7 }, () => ({ ...f.job.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() }));
+  state.receipts = requests.map((request) => ({ requestId: crypto.randomUUID(), request, operation: "stop", outcome: "completed" }));
+  state.retention = state.receipts.map((receipt, i) => ({ request: receipt.request, requestId: receipt.requestId, deadline: 10000 + i }));
+  state.resumeClaims = [{ requestId: crypto.randomUUID(), ...requests[0]!, accepted: true, active: true }];
+  await f.store.save(state);
+  f.api.poll = async () => ({ job: null, pendingStarts: [requests[1]!] });
+  let free = 1;
+  const removed: string[] = [];
+  f.executor.diskFreeBytes = async () => free;
+  f.executor.isStopped = async (request) => {
+    if (request === undefined) throw Error("missing request");
+    if (request.generation === requests[2]!.generation) throw Error("foreign ownership");
+    return request.generation !== requests[3]!.generation; // running/starting
+  };
+  f.executor.deleteStopped = async (request) => {
+    expect((await f.store.load()).retention?.find((entry) => entry.request.generation === request.generation)?.cleanupAuthorized).toBe(true);
+    removed.push(request.generation);
+    if (removed.length === 2) free = 10_000_000_000;
+  };
+  await tick(f.store, f.api, f.executor, false, () => 100);
+  expect(removed).toEqual([requests[4]!.generation, requests[5]!.generation]);
+  expect((await f.store.load()).retention?.filter((entry) => entry.deleted).map((entry) => entry.cleanupReason)).toEqual(["disk_pressure", "disk_pressure"]);
+});
