@@ -754,10 +754,26 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
       const snapshot = await source.store.image(r.from);
       assertAuthority(snapshot);
-      return source.store.lease(snapshot.sourceId, async (sourceRow) => {
-        if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
-        return launch(r, false);
-      });
+      let admitted = false;
+      try {
+        return await source.store.lease(snapshot.sourceId, async (sourceRow) => {
+          admitted = true;
+          if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
+          return launch(r, false);
+        });
+      } catch (error) {
+        // Only acquisition refusal proves no child was reserved. Once entered,
+        // preserve launch receipts and uncertainty rather than permitting a replay.
+        if (!admitted && modalError(error).providerCode === "lifecycle_lease_busy")
+          throw new ProviderError({
+            provider: "modal",
+            code: "conflict",
+            providerCode: "fork_source_busy",
+            message: "The Modal snapshot source is busy. No sandbox was created; retry after the current operation.",
+            retryable: true,
+          });
+        throw error;
+      }
     },
     async startRuntime(input) {
       const server = new URL(input.serverUrl);
