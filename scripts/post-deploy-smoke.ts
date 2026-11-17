@@ -190,16 +190,22 @@ export function createLaunchTracker() {
 
 /**
  * Runs actions that share a key one after another, in call order; different keys stay concurrent.
- * A failed action releases the key like a successful one.
+ * A failed action releases the key like a successful one. An action may call `release` to let
+ * the next action with its key start before it finishes.
  */
 export function createKeyedQueue() {
   const tails = new Map<string, Promise<unknown>>();
-  return <T>(key: string, action: () => Promise<T>): Promise<T> => {
-    const result = (tails.get(key) ?? Promise.resolve()).then(action);
-    const tail = result.then(
-      () => {},
-      () => {},
-    );
+  return <T>(key: string, action: (release: () => void) => Promise<T>): Promise<T> => {
+    let release = () => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const result = (tails.get(key) ?? Promise.resolve()).then(() => action(release));
+    const tail = Promise.race([
+      released,
+      result.then(
+        () => {},
+        () => {},
+      ),
+    ]);
     tails.set(key, tail);
     void tail.then(() => {
       if (tails.get(key) === tail) tails.delete(key);
@@ -619,17 +625,29 @@ async function runPostDeploySmoke(
   }
   function expiryUnit(index: number, item: SmokeCase): Promise<boolean> {
     const { request, withCleanup, out, step } = unit(index, "expiry");
-    return runExpiryCase(item, { request, now: io.now, sleep: io.sleep, out, step, withCleanup });
+    // A ready sandbox with no task no longer counts against its model account, so the expiry
+    // lane gives the account back before its TTL wait, which then overlaps the other lanes.
+    return accountSlot(item.modelAccountId, (release) =>
+      runExpiryCase(item, { request, now: io.now, sleep: io.sleep, out, step, withCleanup, idle: release }),
+    );
   }
   // Every probe owns its sandbox, so the per-case lanes run concurrently: the expiry TTL
   // wait and template launches overlap the lifecycle work instead of adding to it. Each
   // lane keeps its own receipts, failure report and cleanup; the run passes only if all do.
-  const templateUnits = templatesSkills ? cases.map((item, index) => templateUnit(index, item)) : [];
+  // A model account admits a bounded number of working agents (possibly one), and every launch
+  // reserves a slot before its fork: units that occupy the same account take turns across
+  // lanes, in creation order, so no lane is refused with a conflict caused by its sibling.
+  // Distinct accounts stay concurrent. Expiry is queued first because it holds its account
+  // only until its sandbox is ready.
+  const accountSlot = createKeyedQueue();
+  const expiryUnits = expiry ? cases.map((item, index) => expiryUnit(index, item)) : [];
+  if (expiry && args.length === 1) return settled(expiryUnits);
+  const templateUnits = templatesSkills
+    ? cases.map((item, index) => accountSlot(item.modelAccountId, () => templateUnit(index, item)))
+    : [];
   // This mode is independently runnable; combined staging runs keep the existing
   // preservation baseline as well, under the same shared deadline.
   if (templatesSkills && !preservation && !lifecycle) return (await settled(templateUnits)) && vaultPassed;
-  const expiryUnits = expiry ? cases.map((item, index) => expiryUnit(index, item)) : [];
-  if (expiry && args.length === 1) return settled(expiryUnits);
   // A case's clean lifecycle and its preservation (dirty) run stay ordered in one lane:
   // they share the case's step names, and the expiry lane bounds the run anyway.
   // A scoped probe diffs the owner's inventory for its golden from before launch to after
@@ -642,7 +660,8 @@ async function runPostDeploySmoke(
     const scopedPair = scopedAccess && item.harness === "codex";
     let passed = true;
     for (const dirty of preservation ? [false, true] : [false]) {
-      const run = () => lifecycleUnit(index, item, dirty, lane);
+      // The account is taken inside the scoped window, never held while waiting for one.
+      const run = () => accountSlot(item.modelAccountId, () => lifecycleUnit(index, item, dirty, lane));
       // Scoped Codex cases are normalized to lowercase UUIDs at configuration; others never key.
       if (!(await (scopedPair ? scopedWindow(`${item.org}\n${item.goldenId}`, run) : run()))) passed = false;
     }

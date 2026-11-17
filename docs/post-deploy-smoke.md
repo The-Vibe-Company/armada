@@ -195,6 +195,14 @@ child: scoped Codex lifecycle runs that share an org and golden run one after
 another, from the baseline snapshot through scoped cleanup. Expiry, templates
 and scoped runs on other goldens stay concurrent.
 
+A model account admits a bounded number of working agents, possibly one, and
+every launch reserves a slot before its fork. Work that occupies the same
+`modelAccountId` therefore takes turns across lanes, in this order: the expiry
+lane (it holds the account only until its sandbox is ready and idle, so its TTL
+wait still overlaps everything else), then the template case, then the clean
+and dirty lifecycle runs. A lane is never refused with a conflict caused by its
+sibling. Cases on distinct model accounts stay concurrent.
+
 ### Pair prerequisites
 
 All selected pairs share staging `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN` and
