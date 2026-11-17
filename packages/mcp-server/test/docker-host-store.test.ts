@@ -1511,4 +1511,12 @@ test("docker launch stages come from host pickup and create ACK, not from ticket
     configuration: {},
   });
   expect((await stages()).filter((stage) => stage.startsWith("2:"))).toEqual(["2:accepted"]);
+  // A replayed ACK of the launch's create job is idempotent and stays on the launch: it never dates the resume.
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  expect((await stages()).filter((stage) => stage.startsWith("2:"))).toEqual(["2:accepted"]);
+  expect((await stages()).filter((stage) => stage.startsWith("1:"))).toEqual([
+    "1:accepted",
+    "1:provider_claimed",
+    "1:machine_started",
+  ]);
 });

@@ -28,7 +28,7 @@ import {
 
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
-import { recordLaunchStage } from "./launch-stage-record.ts";
+import { recordLaunchStage, recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -1255,9 +1255,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
             );
             await state(tx, logical, row.bound_operation ?? deny());
             await machine(tx, logical, row.bound_operation ?? deny());
-            // #2560: the authenticated host took this activation's machine work.
-            if (row.bound_operation === "create" || row.bound_operation === "resume")
-              await recordLaunchStage(tx, logical.id, "provider_claimed");
+            // #2560: the authenticated host took this activation's machine work. A create job belongs to the launch
+            // (activation 1); a resume job is admitted only for the current lifecycle.
+            if (row.bound_operation === "create")
+              await recordLaunchStageForActivation(tx, logical.id, 1, "provider_claimed");
+            if (row.bound_operation === "resume") await recordLaunchStage(tx, logical.id, "provider_claimed");
           } catch (error) {
             if (!(error instanceof DockerHostDenied)) throw error;
             if (verified) await startupFailed(tx, verified, row.bound_operation);
@@ -1447,9 +1449,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const staleCleanup =
           (job.bound_operation === "stop" || job.bound_operation === "delete") && (await supersededLifecycle(tx, job));
         if (result.outcome === "completed" && job.bound_sandbox_id && !staleCleanup) {
-          // #2560: the host created and started the container. A resume restores inside its bootstrap job, so its
-          // machine start is the bootstrap's first report instead (see runtime-progress).
-          if (job.bound_operation === "create") await recordLaunchStage(tx, job.bound_sandbox_id, "machine_started");
+          // #2560: the host created and started the container. A create job only exists for the inserted row, so it
+          // belongs to the launch (activation 1): a replayed or late create ACK must never date a later resume. A
+          // resume restores inside its bootstrap job, so its machine start is the bootstrap's first report instead
+          // (see runtime-progress).
+          if (job.bound_operation === "create")
+            await recordLaunchStageForActivation(tx, job.bound_sandbox_id, 1, "machine_started");
           if (job.bound_operation === "stop")
             await tx.query(
               `update public.sandboxes set status=case when status='failed' then status else 'stopped' end,

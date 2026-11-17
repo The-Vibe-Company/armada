@@ -9,6 +9,26 @@ export async function recordLaunchStage(tx: Pick<Sql, "query">, sandboxId: strin
   await recordLaunchStageSql(tx, sandboxId, stage);
 }
 
+/**
+ * #2560: persist a stage observed by a job that belongs to one known activation, not to whichever activation is
+ * current. A replayed or late observation from an earlier activation therefore lands on that activation (earliest
+ * wins) and never dates a later resume. Nothing is written when the activation was never opened.
+ */
+export async function recordLaunchStageForActivation(
+  tx: Pick<Sql, "query">,
+  sandboxId: string,
+  activation: number,
+  stage: LaunchStage,
+) {
+  await tx.query(
+    `insert into public.sandbox_launch_stages(sandbox_id,activation,stage,at)
+     select a.sandbox_id,a.activation,$3,clock_timestamp() from public.sandbox_launch_stages a
+      where a.sandbox_id=$1::uuid and a.activation=$2 and a.stage='accepted'
+     on conflict(sandbox_id,activation,stage) do update set at=least(sandbox_launch_stages.at,excluded.at)`,
+    [sandboxId, activation, stage],
+  );
+}
+
 /** Measurement outside a lifecycle transaction must never change the outcome it measures. */
 export async function recordLaunchStageQuietly(sql: Pick<Sql, "query">, sandboxId: string, stage: LaunchStage) {
   try {
