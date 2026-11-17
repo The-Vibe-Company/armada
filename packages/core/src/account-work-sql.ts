@@ -13,6 +13,23 @@ export function accountWorkingCountSql(account: string, exclude = "null::uuid", 
   return `(select count(*) from (
     select s.id from public.sandboxes s where s.credential_id=${account}
       ${model ? `and (exists(select 1 from public.account_turn_queue unknown_turn where unknown_turn.sandbox_id=s.id and unknown_turn.state in ('admitted','dispatching') and unknown_turn.model is null) or coalesce((select active.model from public.account_turn_queue active where active.sandbox_id=s.id and active.state in ('admitted','dispatching') order by active.sequence desc limit 1),s.model)=${model})` : ""} and s.id is distinct from ${exclude} and ${ACCOUNT_WORKING_PREDICATE}
+    -- A terminal uncertain native receipt still owns capacity, including its requested
+    -- model, after ordinary admission cleanup removes the transient reservation.
+    -- Pre-dispatch failures clear dispatch_generation; other terminalizations retain
+    -- their dispatch deadline. Confirmed physical stop/delete releases this charge.
+    union select q.sandbox_id from public.account_turn_queue q
+      join public.sandboxes uncertain on uncertain.id=q.sandbox_id
+      where q.account_id=${account} and uncertain.credential_id=q.account_id
+        and q.state='failed' and q.dispatch_generation is not null and q.dispatch_until is null
+        and uncertain.stopped_at is null and uncertain.deleted_at is null
+        and uncertain.status in ('starting','ready','running','stopping')
+        and (uncertain.lifecycle_generation=q.dispatch_generation+1
+          or (uncertain.lifecycle_generation=q.dispatch_generation+2
+            and uncertain.task_prompt_id is not null and not exists(
+              select 1 from public.runtime_idle_turns settled where settled.sandbox_id=uncertain.id
+                and settled.prompt_id=uncertain.task_prompt_id and settled.settled)))
+        ${model ? `and (q.model is null or q.model=${model})` : ""}
+        and q.sandbox_id is distinct from ${exclude}
     union select r.sandbox_id from public.account_agent_reservations r
       where r.account_id=${account} ${model ? `and (r.model is null or r.model=${model})` : ""} and r.sandbox_id is distinct from ${exclude}
         and not exists(select 1 from public.sandboxes ended where ended.id=r.sandbox_id

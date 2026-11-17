@@ -108,14 +108,17 @@ test("queued sends recheck actor revocation without dispatching or reserving a s
 });
 
 test("uncertain native dispatch is not retried and confirmed stop releases the account for the next queued turn", async () => {
-  const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction" };
-  const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction" };
+  const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction", model: "gpt-5.4" };
+  const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction", model: "gpt-5.4" };
+  await db.exec("update credentials set max_agents=null,model_limits='{\"gpt-5.4\":1}'::jsonb");
   await queue.accept(caller, first);
   await queue.accept(caller, second);
   let calls = 0;
   queue.setDispatch(async () => {
     calls++;
     await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [ids[1]]);
+    // Normal dispatch cleanup releases the transient reservation even on error.
+    await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
     throw Error("uncertain");
   });
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
@@ -128,6 +131,11 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
   ]);
   await db.query(
     "update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=lifecycle_generation+1 where id=$1",
+    [ids[1]],
+  );
+  // A later resume must not resurrect the old uncertain model charge.
+  await db.query(
+    "update sandboxes set status='ready',stopped_at=null,lifecycle_generation=lifecycle_generation+1 where id=$1",
     [ids[1]],
   );
   queue.setDispatch(async (_caller, input) => ({
