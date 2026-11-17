@@ -4423,6 +4423,11 @@ export type Database = {
           docker_snapshot_id: string | null;
           docker_retention_deadline: string | null;
           external_ref: string | null;
+          pull_requests: Json;
+          pull_request_reports: Json;
+          pull_request_check_after: string;
+          pull_request_merge_proof: Json | null;
+          stop_when_work_merged: boolean;
         };
         Insert: {
           id?: string;
@@ -4485,6 +4490,11 @@ export type Database = {
           docker_snapshot_id?: string | null;
           docker_retention_deadline?: string | null;
           external_ref?: string | null;
+          pull_requests?: Json;
+          pull_request_reports?: Json;
+          pull_request_check_after?: string;
+          pull_request_merge_proof?: Json | null;
+          stop_when_work_merged?: boolean;
         };
         Update: {
           id?: string;
@@ -4547,6 +4557,11 @@ export type Database = {
           docker_snapshot_id?: string | null;
           docker_retention_deadline?: string | null;
           external_ref?: string | null;
+          pull_requests?: Json;
+          pull_request_reports?: Json;
+          pull_request_check_after?: string;
+          pull_request_merge_proof?: Json | null;
+          stop_when_work_merged?: boolean;
         };
         Relationships: [
           {

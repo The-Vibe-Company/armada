@@ -773,7 +773,13 @@ export function createSqlData(
       },
       async reportTaskOutcome(id, promptId, outcome, expectedGeneration) {
         const result = await sql.query(
-          `update public.sandboxes s set task_outcome=$5::text::jsonb
+          `update public.sandboxes s set task_outcome=$5::text::jsonb,
+             pull_request_reports=case when $5::text::jsonb->>'state'='ready'
+               and ($5::text::jsonb ? 'prNumber' or $5::text::jsonb ? 'prUrl')
+               then s.pull_request_reports || jsonb_build_object(
+                 coalesce($5::text::jsonb->>'prUrl', $5::text::jsonb->>'prNumber'), $5::text::jsonb)
+               else s.pull_request_reports end,
+             pull_request_merge_proof=null
            where ${SANDBOX_VISIBLE} and s.id=$3::uuid and s.task_prompt_id=$4::text
            and ($6::bigint is null or s.lifecycle_generation=$6::bigint)
            and (s.activity_until is null or s.activity_until < now())
