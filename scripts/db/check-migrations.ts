@@ -14,13 +14,25 @@ function migrations(ref: string): Map<string, string> {
   return result;
 }
 
-function suggestedVersion(latest: string): string | undefined {
-  const iso = latest.replace(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/, "$1-$2-$3T$4:$5:$6Z");
-  const afterLatest = Date.parse(iso) + 1000;
-  if (!Number.isFinite(afterLatest)) return undefined;
-  const next = new Date(Math.max(Date.now(), afterLatest));
+function formatVersion(date: Date): string {
+  return date.toISOString().split(".")[0]!.replace(/\D/g, "");
+}
+
+function parseVersion(version: string): number | undefined {
+  const iso = version.replace(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/, "$1-$2-$3T$4:$5:$6Z");
+  const date = new Date(iso);
+  if (Number.isFinite(date.getTime()) && formatVersion(date) === version) return date.getTime();
+}
+
+function suggestedVersion(versions: Iterable<string>): string | undefined {
+  let time = Date.now();
+  for (const version of versions) {
+    const timestamp = parseVersion(version);
+    if (timestamp !== undefined) time = Math.max(time, timestamp + 1000);
+  }
+  const next = new Date(time);
   if (next.getUTCSeconds() === 0) next.setUTCSeconds(1);
-  return next.toISOString().slice(0, 19).replace(/\D/g, "");
+  if (next.getUTCFullYear() <= 9999) return formatVersion(next);
 }
 
 try {
@@ -31,23 +43,25 @@ try {
   const errors: string[] = [];
   const versions = new Map<string, string>();
   const latest = [...baseline.values()].sort().at(-1);
-  const rounded: string[] = [];
+  let needsTimestamp = false;
   for (const [path, version] of head) {
     const previous = versions.get(version);
     if (previous) errors.push(`Duplicate migration version ${version}: ${previous}, ${path}`);
     versions.set(version, path);
     if (baseline.has(path)) continue;
-    if (version.endsWith("00")) rounded.push(path);
+    if (parseVersion(version) === undefined) {
+      errors.push(`New migration ${path} must have a valid UTC timestamp as its version.`);
+      needsTimestamp = true;
+    } else if (version.endsWith("00")) {
+      errors.push(`New migration ${path} has a minute-rounded version. Use UTC seconds other than 00.`);
+      needsTimestamp = true;
+    }
     if (latest && version <= latest) {
       errors.push(`New migration ${path} must have a version strictly greater than ${latest} on ${base}`);
     }
   }
-  if (rounded.length) {
-    const highest = [...baseline.values(), ...head.values()].sort().at(-1)!;
-    const suggestion = suggestedVersion(highest);
-    for (const path of rounded) {
-      errors.push(`New migration ${path} has a minute-rounded version. Use UTC seconds other than 00.`);
-    }
+  if (needsTimestamp) {
+    const suggestion = suggestedVersion([...baseline.values(), ...head.values()]);
     if (suggestion) errors.push(`Use migration version ${suggestion} for the first rename, then rerun the guard.`);
   }
   if (errors.length) throw new Error(errors.join("\n"));
