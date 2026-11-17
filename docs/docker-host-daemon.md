@@ -1192,6 +1192,18 @@ allocations. Unregister waits for physical cleanup; it is not proof of removal.
 If polling is denied, ask an organization admin to restore membership for normal
 operation or request cleanup of retained allocations; do not erase daemon state.
 
+Revocation and registrant removal also retire queued work the server can no
+longer dispatch, so a sandbox cannot stay `starting` with its capacity slot held
+forever. The server marks a queued create/bootstrap/resume `failed` with
+`DOCKER_LAUNCH_FAILURE_MESSAGES.hostUnavailable` and releases its reservation;
+a queued snapshot build fails as `Host retired before snapshot publication.`.
+Cancellation is server intent, not machine evidence: it never writes
+`stopped_at`/`deleted_at`, and a later host receipt still wins (a completed
+create restores the reservation until a stop, delete or expiry proves physical
+exit). Queued stop/delete jobs stay dispatchable through the retained credential.
+The same retirement runs from a denied poll, so a host removed from the
+organization reaches this state without an admin action.
+
 ### Independent physical expiry
 
 The run process starts a physical-only sweep immediately and every ten seconds,

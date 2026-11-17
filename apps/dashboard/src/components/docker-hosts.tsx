@@ -284,8 +284,8 @@ function Registration({
 }
 
 /**
- * Revoke from a host's row. The host's credential stops working at once, so it can no longer stop or delete what
- * still runs there: the confirmation says so when the host has sandboxes.
+ * Revoke from a host's row. The host takes no new work; queued starts are retired without claiming physical
+ * cleanup, and an admin can still request stop/delete for what still runs there.
  */
 export function RevokeHost({
   orgId,

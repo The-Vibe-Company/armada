@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import type { Harness, Sql } from "@armada/core";
-import { DockerRetentionEnded } from "@armada/core";
+import { DOCKER_LAUNCH_FAILURE_MESSAGES, DockerRetentionEnded, type Harness, type Sql } from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
 import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
@@ -354,6 +353,36 @@ test("new issuance rechecks current pin, lifecycle, host authority and original 
   const original = await pending(occupied.sandbox.id);
   await denied(service.bootstrap(occupied.actor, occupied.sandbox.id, occupied.requestId));
   expect(await pending(occupied.sandbox.id)).toEqual(original);
+});
+
+test("revoking a host retires a queued resume and releases the slot its completed create still held", async () => {
+  const db = database();
+  const f = await fixture(true);
+  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  const first = await hosts.poll(f.hostToken, f.installationId);
+  if (first?.operation !== "bootstrap") throw Error("missing initial bootstrap");
+  await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+  await db.query(`update public.sandboxes set status='ready' where id=$1`, [f.sandbox.id]);
+  const stopId = randomUUID();
+  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
+  expect((await hosts.list(f.admin))[0]?.running).toBe(0);
+  const resumeId = randomUUID();
+  await service.resume(f.actor, f.sandbox.id, resumeId);
+  // The queued resume reserves a slot even though the earlier create is complete.
+  expect((await hosts.list(f.admin))[0]?.running).toBe(1);
+  await hosts.revoke(f.admin, f.hostId);
+  const failed = (
+    await db.query<{ status: string; status_reason: string | null; stopped_at: unknown }>(
+      "select status,status_reason,stopped_at from sandboxes where id=$1",
+      [f.sandbox.id],
+    )
+  ).rows[0];
+  expect(failed?.status).toBe("failed");
+  expect(failed?.status_reason).toBe(DOCKER_LAUNCH_FAILURE_MESSAGES.hostUnavailable);
+  expect(failed?.stopped_at).toBeNull();
+  // Cancelling the resume releases capacity; the completed create no longer counts.
+  expect((await hosts.list(f.admin))[0]?.running).toBe(0);
 });
 
 test.each(["codex", "claude", "opencode"] as const)(

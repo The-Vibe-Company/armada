@@ -467,6 +467,7 @@ export type Database = {
           bound_operation: string | null;
           snapshot_id: string | null;
           result_image_id: string | null;
+          cancelled_at: string | null;
         };
         Insert: {
           request_id: string;
@@ -482,6 +483,7 @@ export type Database = {
           bound_operation?: string | null;
           snapshot_id?: string | null;
           result_image_id?: string | null;
+          cancelled_at?: string | null;
         };
         Update: {
           request_id?: string;
@@ -497,6 +499,7 @@ export type Database = {
           bound_operation?: string | null;
           snapshot_id?: string | null;
           result_image_id?: string | null;
+          cancelled_at?: string | null;
         };
         Relationships: [
           {

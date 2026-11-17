@@ -268,6 +268,7 @@ export function createDockerSandboxControls(
     initial: Row,
     promptId?: string,
     includeQueue = true,
+    includeRepository = true,
   ): Promise<DockerSandboxStatus> {
     const queued = includeQueue ? await queuedPrompts(initial.id) : [];
     const latestQueue = queued.at(-1);
@@ -386,12 +387,14 @@ export function createDockerSandboxControls(
         admitted.sequence === row.prompt_sequence &&
         (!admitted.receipt || latest?.promptId === admitted.receipt.promptId) &&
         (newestCursor ?? `ar1_${row.id}_0`) === `ar1_${row.id}_${row.journal_sequence}`);
-    const launch = (
-      await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-        "select request_enc from public.docker_launch_requests where sandbox_id=$1",
-        [row.id],
-      )
-    ).rows[0];
+    const launch = includeRepository
+      ? (
+          await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+            "select request_enc from public.docker_launch_requests where sandbox_id=$1",
+            [row.id],
+          )
+        ).rows[0]
+      : undefined;
     const manifest = launch ? JSON.parse(await decryptSecret(launch.request_enc, key)) : null;
     const repositoryDir = (manifest?.request?.repos ?? manifest?.snapshotConfig?.repos)?.[0]?.dir ?? null;
     return {
@@ -476,7 +479,8 @@ export function createDockerSandboxControls(
     );
     const events = new Map<string, AgentEvent>();
     for (const event of rawEvents) if (!isPrivateModelEvent(event)) events.set(event.id, event);
-    const summary = await status(caller, row);
+    // Log metadata does not expose repositoryDir; avoid loading/decrypting its launch manifest.
+    const summary = await status(caller, row, undefined, true, false);
     const queueOnly =
       summary.prompt &&
       (await queuedPrompts(row.id)).some((q) => q.prompt_id === summary.prompt?.promptId && !q.native_prompt_id);
