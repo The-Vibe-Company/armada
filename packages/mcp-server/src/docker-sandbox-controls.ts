@@ -60,6 +60,8 @@ type Row = {
   usage_turns: unknown;
   prompt_sequence: string;
   journal_sequence: string;
+  prompt_projection_sequence: string | null;
+  latest_prompt_enc: Uint8Array<ArrayBuffer> | null;
 };
 interface Clock {
   now(): number;
@@ -118,10 +120,11 @@ export function createDockerSandboxControls(
     const row = (
       await sql.query<Row>(
         `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.docker_snapshot_id,s.harness,s.status,s.status_reason,
-        s.stopped_at,s.model,s.reasoning_effort,s.conversation_ids,s.expires_at,s.usage_turns,m.role,
+        s.stopped_at,s.model,s.reasoning_effort,s.conversation_ids,s.expires_at,s.usage_turns,m.role,e.prompt_projection_sequence::text,e.latest_prompt_enc,
        (select coalesce(max(c.sequence),0)::text from public.runtime_commands c where c.sandbox_id=s.id and starts_with(c.request_id,'docker_prompt_')) as prompt_sequence,
        (select coalesce(max(e.sequence),0)::text from public.runtime_events e where e.sandbox_id=s.id) as journal_sequence
        from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2
+       left join public.runtime_idle_evidence e on e.sandbox_id=s.id
        where s.id=$1 and s.org_id=any($3::uuid[])`,
         [id, caller.userId, caller.orgs.map((org) => org.orgId)],
       )
@@ -129,14 +132,25 @@ export function createDockerSandboxControls(
     if (!row || (row.provider === "docker" && row.owner_id !== caller.userId && row.role !== "admin")) throw denied();
     return row;
   }
-  const nativeHistory = createRuntimeHistory(sql, key, {
-    provider: "docker",
-    async authorize(caller, id) {
-      const row = await visible(caller, id);
-      if (row.provider !== "docker") throw denied();
-      return { status: row.status, statusReason: reason(row) };
-    },
-  });
+  async function nativeHistory(
+    caller: Caller,
+    id: string,
+    request: Parameters<ReturnType<typeof createRuntimeHistory>>[2],
+    initial?: Row,
+  ) {
+    let authorized = initial;
+    return createRuntimeHistory(sql, key, {
+      provider: "docker",
+      async authorize(viewer, sandboxId) {
+        // invoke already authorized this snapshot. The history reader still
+        // revalidates membership after decryption before returning the page.
+        const row = authorized ?? (await visible(viewer, sandboxId));
+        authorized = undefined;
+        if (row.provider !== "docker") throw denied();
+        return { status: row.status, statusReason: reason(row) };
+      },
+    })(caller, id, request);
+  }
   type QueuedPrompt = {
     prompt_id: string;
     request_id: string;
@@ -182,9 +196,15 @@ export function createDockerSandboxControls(
   }
   const aliases = (rows: readonly QueuedPrompt[]) =>
     new Map(rows.flatMap((row) => (row.native_prompt_id ? [[row.native_prompt_id, row.prompt_id] as const] : [])));
-  const history: typeof nativeHistory = async (caller, id, request) => {
-    const page = await nativeHistory(caller, id, request);
+  const history = async (
+    caller: Caller,
+    id: string,
+    request: Parameters<typeof nativeHistory>[2],
+    snapshot?: { row: Row; queued?: QueuedPrompt[] },
+  ) => {
+    const page = await nativeHistory(caller, id, request, snapshot?.row);
     const queued = await queuedPrompts(id);
+    if (snapshot) snapshot.queued = queued;
     // Native journal events may beat the command ACK. Do not advance a forward reader past
     // an unlinked native prompt: the next read must publish its stable accepted prompt ID.
     if (queued.some((row) => !row.native_prompt_id && row.command_pending)) {
@@ -206,8 +226,8 @@ export function createDockerSandboxControls(
       }),
     };
   };
-  async function admission(sandboxId: string, project = true) {
-    const ids = project ? aliases(await queuedPrompts(sandboxId)) : new Map<string, string>();
+  async function admission(sandboxId: string, project = true, queued?: QueuedPrompt[]) {
+    const ids = project ? aliases(queued ?? (await queuedPrompts(sandboxId))) : new Map<string, string>();
     const commands = (
       await sql.query<{
         sequence: string;
@@ -269,8 +289,9 @@ export function createDockerSandboxControls(
     promptId?: string,
     includeQueue = true,
     includeRepository = true,
+    queueState?: { queued?: QueuedPrompt[]; final?: QueuedPrompt[] },
   ): Promise<DockerSandboxStatus> {
-    const queued = includeQueue ? await queuedPrompts(initial.id) : [];
+    const queued = includeQueue ? (queueState?.queued ?? (await queuedPrompts(initial.id))) : [];
     const latestQueue = queued.at(-1);
     // A failed server admission remains the latest visible turn until a newer native
     // command is admitted. Do not let an older queue failure hide later ordinary sends.
@@ -286,20 +307,28 @@ export function createDockerSandboxControls(
       : latestQueueIsCurrent
         ? latestQueue
         : undefined;
-    const admitted = await admission(initial.id, includeQueue);
+    const admitted = await admission(initial.id, includeQueue, queued);
     const selectedPrompt = selectedQueue?.prompt_id ?? promptId ?? admitted.receipt?.promptId;
     const queueOnly = selectedQueue && !selectedQueue.native_prompt_id;
     const readHistory = includeQueue ? history : nativeHistory;
-    // Status is a bounded observation, not an archive search. Busy turns can emit
-    // thousands of output events; scanning back to their prompt makes every status
-    // (and logs tail) read pay for the full turn, including after the host stops.
+    // Latest status uses ingest's durable projection. Missing/stale evidence is
+    // reported explicitly; reads never rebuild it by decrypting output history.
     const events: AgentEvent[] = [];
     let newestCursor: string | undefined;
     let cursor: string | undefined;
     let complete = false;
-    // Explicit historical lookups retain archive search semantics. Latest-turn
-    // reads already have an admission receipt and need only the newest page.
-    const pageBudget = promptId && selectedPrompt !== admitted.receipt?.promptId && !queueOnly ? 100 : 1;
+    // Explicit historical lookups retain archive search semantics.
+    const historical = promptId && selectedPrompt !== admitted.receipt?.promptId && !queueOnly;
+    const pageBudget = historical ? 100 : 0;
+    if (!historical) {
+      complete = initial.prompt_projection_sequence === initial.journal_sequence || initial.journal_sequence === "0";
+      newestCursor = `ar1_${initial.id}_${initial.prompt_projection_sequence ?? "0"}`;
+      if (initial.latest_prompt_enc) {
+        const projected = JSON.parse(await decryptSecret(initial.latest_prompt_enc, key)) as AgentEvent;
+        const stableId = includeQueue ? aliases(queued).get(projected.promptId ?? "") : undefined;
+        events.push(stableId ? { ...projected, promptId: stableId } : projected);
+      }
+    }
     for (let count = 0; count < pageBudget; count++) {
       const page = await readHistory(caller, initial.id, {
         direction: "backward",
@@ -320,6 +349,7 @@ export function createDockerSandboxControls(
       cursor = page.olderCursor;
     }
     const row = await visible(caller, initial.id);
+    if (!historical && newestCursor !== `ar1_${row.id}_${row.journal_sequence}`) complete = false;
     const conversations = new Set(row.conversation_ids ?? []);
     for (const event of events) if (event.conversationId) conversations.add(event.conversationId);
     if (admitted.receipt) conversations.add(admitted.receipt.conversationId);
@@ -374,6 +404,7 @@ export function createDockerSandboxControls(
     const idle = latest?.kind === "prompt" ? !["queued", "running"].includes(latest.status) : row.status === "ready";
     // Usage may have arrived after the initial queue snapshot. Never publish transient native IDs.
     const finalQueue = includeQueue ? await queuedPrompts(row.id) : [];
+    if (queueState) queueState.final = finalQueue;
     const ids = aliases(finalQueue);
     if (prompt && ids.has(prompt.promptId)) prompt = { ...prompt, promptId: ids.get(prompt.promptId)! };
     const nativeUsage = finalQueue.some((entry) => !entry.native_prompt_id && entry.command_pending)
@@ -439,7 +470,7 @@ export function createDockerSandboxControls(
       prompt,
       settled:
         nativeSettled &&
-        !queued.some(
+        !finalQueue.some(
           (entry) =>
             (entry.status === "queued" || entry.status === "dispatching") &&
             !terminal(row) &&
@@ -459,6 +490,7 @@ export function createDockerSandboxControls(
       (args.conversation_id !== undefined && (typeof args.conversation_id !== "string" || !args.conversation_id))
     )
       throw invalid();
+    const snapshot: { row: Row; queued?: QueuedPrompt[]; final?: QueuedPrompt[] } = { row };
     const {
       events: rawEvents,
       cursor,
@@ -466,30 +498,41 @@ export function createDockerSandboxControls(
       olderCursor,
     } = await readEventPages(
       (cursor) =>
-        history(caller, row.id, {
-          ...(cursor !== undefined ? { cursor } : {}),
-          ...(args.conversation_id !== undefined ? { conversationId: args.conversation_id as string } : {}),
-          ...(args.limit !== undefined ? { limit: args.limit as number } : {}),
-          ...(args.direction !== undefined ? { direction: args.direction as "forward" | "backward" } : {}),
-          ...(args.maxBytes !== undefined ? { maxBytes: args.maxBytes as number } : {}),
-          ...(args.coalesce !== undefined ? { coalesce: args.coalesce as boolean } : {}),
-        }),
+        history(
+          caller,
+          row.id,
+          {
+            ...(cursor !== undefined ? { cursor } : {}),
+            ...(args.conversation_id !== undefined ? { conversationId: args.conversation_id as string } : {}),
+            ...(args.limit !== undefined ? { limit: args.limit as number } : {}),
+            ...(args.direction !== undefined ? { direction: args.direction as "forward" | "backward" } : {}),
+            ...(args.maxBytes !== undefined ? { maxBytes: args.maxBytes as number } : {}),
+            ...(args.coalesce !== undefined ? { coalesce: args.coalesce as boolean } : {}),
+          },
+          snapshot,
+        ),
       args.since_cursor as string | undefined,
       args.all === true,
     );
     const events = new Map<string, AgentEvent>();
     for (const event of rawEvents) if (!isPrivateModelEvent(event)) events.set(event.id, event);
     // Log metadata does not expose repositoryDir; avoid loading/decrypting its launch manifest.
-    const summary = await status(caller, row, undefined, true, false);
+    const summary = await status(caller, row, undefined, true, false, snapshot);
     const queueOnly =
       summary.prompt &&
-      (await queuedPrompts(row.id)).some((q) => q.prompt_id === summary.prompt?.promptId && !q.native_prompt_id);
+      (snapshot.final ?? []).some((q) => q.prompt_id === summary.prompt?.promptId && !q.native_prompt_id);
     return {
       events: [...events.values()],
       cursor,
       ...(olderCursor ? { olderCursor } : {}),
       hasMore,
       source: "armada-runtime",
+      threadStatus: {
+        status: summary.status,
+        statusMessage: summary.statusMessage,
+        prompt: summary.prompt,
+        usage: summary.usage,
+      },
       settled: summary.settled,
       ...(summary.prompt?.state === "queued" || (summary.prompt?.state === "failed" && queueOnly)
         ? { queuedPrompt: summary.prompt }

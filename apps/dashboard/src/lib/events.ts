@@ -31,7 +31,12 @@ export type MessageEvent = Extract<AgentEvent, { kind: "message" }>;
 export type ChatEvent = AgentEvent;
 
 /** The page the logs endpoint returns, from whatever the gateway sent. Events it cannot read are dropped. */
-export function parseEventPage(value: unknown): { events: ChatEvent[]; cursor: string | null; hasMore: boolean } {
+export function parseEventPage(value: unknown): {
+  events: ChatEvent[];
+  cursor: string | null;
+  hasMore: boolean;
+  olderCursor?: string;
+} {
   const record = isRecord(value) ? value : {};
   const rawEvents = Array.isArray(record.events) ? record.events : [];
   const events = rawEvents.flatMap((raw) => {
@@ -42,6 +47,7 @@ export function parseEventPage(value: unknown): { events: ChatEvent[]; cursor: s
     events,
     cursor: typeof record.cursor === "string" ? record.cursor : null,
     hasMore: record.hasMore === true,
+    ...(typeof record.olderCursor === "string" ? { olderCursor: record.olderCursor } : {}),
   };
 }
 

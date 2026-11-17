@@ -1,4 +1,4 @@
-import { type AgentEvent, decryptSecret, isFinalPromptStatus, type Sql } from "@armada/core/server";
+import { type AgentEvent, decryptSecret, encryptSecret, isFinalPromptStatus, type Sql } from "@armada/core/server";
 
 /** Called only inside event admission's sandbox/epoch transaction. Existing archives
  * are projected once, in bounded pages; sweeps never decrypt historical events.
@@ -14,7 +14,7 @@ export async function projectRuntimeIdle(
   await tx.query("insert into public.runtime_idle_evidence(sandbox_id) values($1) on conflict do nothing", [id]);
   const state = (
     await tx.query<{ sequence: string }>(
-      "select sequence::text from public.runtime_idle_evidence where sandbox_id=$1 for update",
+      "select least(sequence,prompt_projection_sequence)::text as sequence from public.runtime_idle_evidence where sandbox_id=$1 for update",
       [id],
     )
   ).rows[0];
@@ -44,10 +44,13 @@ export async function projectRuntimeIdle(
          on conflict(sandbox_id,prompt_id) do update set settled=excluded.settled`,
         [id, [...turns.keys()], [...turns.values()]],
       );
+    const latestPrompt = events.findLast((event) => event.kind === "prompt");
+    const promptEnc = latestPrompt ? await encryptSecret(JSON.stringify(latestPrompt), key) : null;
     await tx.query(
       `update public.runtime_idle_evidence set sequence=$2,last_activity=greatest(last_activity,$3),
-       unknown_turn=unknown_turn or $4 where sandbox_id=$1`,
-      [id, watermark, last, unknown],
+       unknown_turn=unknown_turn or $4,prompt_projection_sequence=$2,
+       latest_prompt_enc=coalesce($5,latest_prompt_enc) where sandbox_id=$1`,
+      [id, watermark, last, unknown, promptEnc],
     );
   }
   while (cursor < archiveSequence) {

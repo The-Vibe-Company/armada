@@ -47,6 +47,8 @@ const sql = {
           harness: "codex",
           prompt_sequence: "0",
           journal_sequence: "50000",
+          prompt_projection_sequence: "50000",
+          latest_prompt_enc: null,
           conversation_ids: [],
         },
       ];
@@ -68,17 +70,12 @@ const controls = createDockerSandboxControls(sql, key, {
   },
 });
 const caller = { userId, orgs: [{ orgId, role: "member" as const }], via: "supabase" as const };
+let targetsFailed = false;
 for (const [name, operations] of Object.entries({
-  threadOpen: [
-    ["status", {}],
-    ["logs", {}],
-  ],
+  threadOpen: [["logs", { direction: "backward" }]],
   status: [["status", {}]],
   logsPage: [["logs", { since_cursor: `ar1_${id}_10000` }]],
-  liveTail: [
-    ["status", {}],
-    ["logs", { since_cursor: `ar1_${id}_50000` }],
-  ],
+  liveTail: [["logs", { since_cursor: `ar1_${id}_50000` }]],
 } satisfies Record<string, [string, Record<string, unknown>][]>)) {
   queries = ciphertextRows = now = 0;
   for (const [operation, args] of operations) {
@@ -86,4 +83,9 @@ for (const [name, operations] of Object.entries({
     if (!reply.handled) throw Error("Benchmark did not reach Docker controls");
   }
   console.log(JSON.stringify({ name, queries, decryptions: ciphertextRows, logicalSqlWork: now }));
+  if (name === "liveTail" && (queries > 7 || ciphertextRows > 1)) targetsFailed = true;
+}
+
+if (process.argv.includes("--assert-targets") && targetsFailed) {
+  throw Error("Unchanged tail exceeds target: at most 7 SQL statements and 1 decryption.");
 }
