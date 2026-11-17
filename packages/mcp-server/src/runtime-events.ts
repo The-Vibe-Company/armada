@@ -10,6 +10,7 @@ import {
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
+import { recordLaunchStage } from "./launch-stage-record.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, runtimeTransaction } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
@@ -278,6 +279,8 @@ export function createRuntimeEvents(
             : {}),
         });
       }
+      // #2560: first stored event of this activation (launch or resume); later batches are no-ops.
+      if (fresh.length) await recordLaunchStage(tx, scope, "first_event");
       if (initialAck === 0 && fresh.length) first = scope;
       return { acknowledgedSequence: ack };
     });

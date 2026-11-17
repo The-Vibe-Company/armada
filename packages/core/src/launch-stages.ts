@@ -54,10 +54,7 @@ export function summarizeLaunch(rows: readonly LaunchStageRow[]): LaunchTiming |
   const epoch = valid.map((row) => BigInt(row.epoch)).reduce((max, value) => (value > max ? value : max));
   const ordered = valid
     .filter((row) => BigInt(row.epoch) === epoch)
-    .sort(
-      (a, b) =>
-        LAUNCH_STAGES.indexOf(a.stage as LaunchStage) - LAUNCH_STAGES.indexOf(b.stage as LaunchStage),
-    );
+    .sort((a, b) => LAUNCH_STAGES.indexOf(a.stage as LaunchStage) - LAUNCH_STAGES.indexOf(b.stage as LaunchStage));
   let slowest: LaunchTiming["slowest"] = null;
   const stages = ordered.map((row, index) => {
     const previous = ordered[index - 1];

@@ -3,6 +3,7 @@ import {
   goldenForSettings,
   goldenResponse,
   idlePauseMessage,
+  LAUNCH_STAGES,
   launchFailureHelp,
   launchResponse,
   MACHINE_SIZES,
@@ -341,8 +342,21 @@ const skillReceipts = z
   )
   .optional();
 
+/** #2560: latest activation (launch or resume), stages in order; ms is the time since the previous stage. */
+const launchTiming = z
+  .object({
+    epoch: z.string(),
+    stages: z.array(z.object({ stage: z.enum(LAUNCH_STAGES), at: z.string(), ms: z.number().nullable() })),
+    totalMs: z.number().nullable(),
+    slowest: z.object({ stage: z.enum(LAUNCH_STAGES), ms: z.number() }).nullable(),
+  })
+  .nullable()
+  .optional()
+  .describe("Launch time per stage for the latest launch or resume; null before any stage is recorded.");
+
 const status = {
   ...expiryOutput,
+  launch: launchTiming,
   providerExpiresAt: z
     .string()
     .nullable()
@@ -1499,7 +1513,12 @@ export function createArmadaServer(context: ToolContext, version: string, option
       output: status,
       readOnly: true,
     },
-    (args) => statusOf(args.id, args.prompt_id, args.recorded === undefined, true, args.recorded === true),
+    async (args) => {
+      const report = await statusOf(args.id, args.prompt_id, args.recorded === undefined, true, args.recorded === true);
+      // Read after statusOf so an invisible sandbox has already been refused.
+      const launch = data.sandboxes.launchTiming ? await data.sandboxes.launchTiming(report.id) : undefined;
+      return launch === undefined ? report : { ...report, launch };
+    },
   );
 
   tool(

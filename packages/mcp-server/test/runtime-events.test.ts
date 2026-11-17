@@ -238,6 +238,21 @@ test("a resumed epoch continues the persistent producer sequence and rejects the
       acknowledgedSequence: 2,
     });
     expect((await f.rows()).map((r) => r.epoch)).toEqual([old.epoch, current.epoch]);
+    // #2560: each activation records its own first event; only the first launch dates from creation.
+    expect(
+      (
+        await f.db.query<{ epoch: string; stage: string }>(
+          "select epoch::text,stage from sandbox_launch_stages where sandbox_id=$1 order by epoch,stage",
+          [f.id],
+        )
+      ).rows,
+    ).toEqual([
+      { epoch: old.epoch, stage: "created" },
+      { epoch: old.epoch, stage: "first_event" },
+      { epoch: old.epoch, stage: "machine_started" },
+      { epoch: current.epoch, stage: "first_event" },
+      { epoch: current.epoch, stage: "machine_started" },
+    ]);
     expect((await f.publish(current, [item], { sandboxId: crypto.randomUUID() })).status).toBe(401);
     expect((await f.publish(current, [item], { generation: old.epoch })).status).toBe(401);
     await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);

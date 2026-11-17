@@ -4,6 +4,7 @@ import {
   type GoldenRow,
   type GoldenStore,
   type Harness,
+  type LaunchTiming,
   type ModalBinding,
   mapGoldenRow,
   mapSandboxRow,
@@ -18,6 +19,7 @@ import {
   type Sql,
   sandboxRowModalBinding,
   statusReasonOf,
+  summarizeLaunch,
   type TaskOutcome,
   type TurnPriceContext,
   type TurnTokenUsage,
@@ -60,6 +62,8 @@ export interface ServerSandboxStore extends SandboxStore {
     | "credentialId"
   > | null>;
   recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
+  /** #2560: latest activation's recorded launch stages, for a visible sandbox; null before any. */
+  launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
   /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
@@ -296,6 +300,16 @@ export function createSqlData(
 
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
+      async launchTiming(id) {
+        const rows = await sql.query<{ epoch: string; stage: string; at: string }>(
+          `select st.epoch::text as epoch,st.stage,to_json(st.at)#>>'{}' as at from public.sandbox_launch_stages st
+           join public.sandboxes s on s.id=st.sandbox_id
+           where ${SANDBOX_VISIBLE} and s.id=$3::uuid
+           and st.epoch=(select max(l.epoch) from public.sandbox_launch_stages l where l.sandbox_id=s.id)`,
+          [...scope, id],
+        );
+        return summarizeLaunch(rows.rows);
+      },
       async recordUsagePricingContext(id, context) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
         await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext!(id, context);
