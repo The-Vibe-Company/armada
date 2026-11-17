@@ -214,6 +214,17 @@ const taskOutcome = z.discriminatedUnion("state", [
   z.object({ state: z.literal("blocked"), reason: z.string().trim().min(1).max(1000) }).strict(),
 ]);
 
+const pullRequests = z.array(
+  z.object({
+    repository: z.string(),
+    number: z.number().int().positive(),
+    url: z.url(),
+    headBranch: z.string(),
+    state: z.enum(["open", "merged", "closed"]),
+    checkedAt: z.string(),
+  }),
+);
+
 const sandboxUsage = z
   .object({
     computeSeconds: z.number().nullable(),
@@ -314,6 +325,7 @@ const sandboxListMetadata = z.object({
   machineSize: z.enum(["small", "medium", "large", "xlarge"]).nullable(),
   displayLabel: z.string(),
   taskOutcome: taskOutcome.nullable().optional(),
+  pullRequests: pullRequests.nullable().optional(),
   externalRef: externalRefOutput,
   canOpen: z.boolean(),
   canManage: z.boolean(),
@@ -409,6 +421,7 @@ const status = {
   statusReason: z.string().nullable(),
   statusMessage: z.string().nullable().optional(),
   taskOutcome: taskOutcome.nullable().optional(),
+  pullRequests: pullRequests.nullable().optional(),
   providerState: z.string().nullable(),
   conversationIds: z.array(z.string()),
   expiresAt: z.string().nullable(),

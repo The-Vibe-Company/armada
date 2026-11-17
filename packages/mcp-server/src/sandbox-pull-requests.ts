@@ -1,3 +1,4 @@
+import type { SandboxPullRequest } from "@armada/core";
 import {
   type ExecRequest,
   type ExecResult,
@@ -22,14 +23,6 @@ const githubPull = z.object({
   base: z.object({ repo: z.object({ full_name: z.string() }) }),
 });
 
-type PullRequest = {
-  repository: string;
-  number: number;
-  url: string;
-  headBranch: string;
-  state: "open" | "merged" | "closed";
-  checkedAt: string;
-};
 type Report = { prNumber?: number; prUrl?: string };
 type Target = {
   id: string;
@@ -45,7 +38,7 @@ type Target = {
   github_id: string;
   membership_epoch: string;
   repositories: unknown;
-  pull_requests: PullRequest[];
+  pull_requests: SandboxPullRequest[];
   pull_request_reports: Record<string, Report>;
 };
 
@@ -166,7 +159,7 @@ export function createSandboxPullRequests(
         numbers.set(`https://github.com/${repository}/pull/${number}`, { repository, number });
       }
       if ([...branches.values()].reduce((sum, refs) => sum + refs.size, numbers.size) > maxBranches) return;
-      const found = new Map<string, PullRequest>();
+      const found = new Map<string, SandboxPullRequest>();
       const checkedAt = new Date().toISOString();
       if (numbers.size || [...branches.values()].some((refs) => refs.size)) {
         const request = github.fetch ?? fetch;

@@ -125,7 +125,7 @@ const SANDBOX_USAGE = `(public.sandbox_usage(s) || jsonb_build_object('turnCount
     select prompt_id from public.sandbox_turn_models where sandbox_id=s.id
     union select value->>'promptId' from jsonb_array_elements(coalesce(s.usage_turns->'turns','[]'::jsonb))
   ) admitted_prompts))))`;
-const SANDBOX_COLUMNS = `${SANDBOX_USAGE} as usage, s.runtime_transport,s.boat_runtime, s.preservation_note, s.task_outcome, s.task_prompt_id, s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
+const SANDBOX_COLUMNS = `${SANDBOX_USAGE} as usage, s.runtime_transport,s.boat_runtime, s.preservation_note, s.pull_requests, s.task_outcome, s.task_prompt_id, s.credential_id, s.credential_version, s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
   s.skills,s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.stop_requested_at,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
   s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,
@@ -156,6 +156,7 @@ const SANDBOX_LIST_COLUMNS = `case when (s.owner_id=$2::uuid or exists(select 1 
   case when s.machine_size->>'effective' in ('small','medium','large','xlarge') then s.machine_size->>'effective' else null end as "machineSize",
   'Sandbox ' || s.id::text as "displayLabel",
   case when (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) then s.task_outcome else null end as "taskOutcome",
+  case when ${SANDBOX_INTERIOR} then s.pull_requests else null end as "pullRequests",
   case when ${SANDBOX_INTERIOR} then s.external_ref else null end as "externalRef",
   (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) as "canOpen",
   (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) as "canManage"`;

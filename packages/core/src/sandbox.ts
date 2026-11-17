@@ -7,7 +7,7 @@ import type { LaunchStage } from "./launch-stages.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
 import { type SandboxUsage, withUsageTotals } from "./sandbox-usage.ts";
-import type { TaskOutcome } from "./task-outcome.ts";
+import type { SandboxPullRequest, TaskOutcome } from "./task-outcome.ts";
 import type { UsagePricingContext } from "./usage-pricing.ts";
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
@@ -26,6 +26,7 @@ export interface SandboxRecord {
   usage?: SandboxUsage | null;
   preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
+  pullRequests?: SandboxPullRequest[] | null;
   /** Actual accepted run ID; empty only after successful steer (resolve via events), null when unreportable. */
   taskPromptId?: string | null;
   resourceProject?: ResourceProject | null;
@@ -169,6 +170,7 @@ export interface SandboxRow {
   usage?: SandboxUsage | null;
   preservation_note?: string | null;
   task_outcome?: TaskOutcome | null;
+  pull_requests?: SandboxPullRequest[];
   task_prompt_id?: string | null;
   machine_size?: MachineSizeEvidence | null;
   resource_project?: ResourceProject | null;
@@ -306,6 +308,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
     usage: withUsageTotals(row.usage),
     preservationNote: row.preservation_note ?? null,
     taskOutcome: row.task_outcome ?? null,
+    ...(row.pull_requests ? { pullRequests: row.pull_requests } : {}),
     taskPromptId: row.task_prompt_id ?? null,
     id: row.id,
     provider: row.provider,
