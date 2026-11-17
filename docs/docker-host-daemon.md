@@ -358,7 +358,7 @@ health, enqueues one durable Codex prompt and reads the **acknowledged server jo
 until answer, finished status and token counters are present. Missing usage is
 unknown, never estimated; it fails the smoke rather than inventing a count.
 It then waits for stop and delete ACKs. Stages have a bounded ten-minute budget;
-the daemon polls every 20 seconds and cold artifacts can take time. No CI polling.
+the server holds each daemon poll up to 20 seconds and cold artifacts can take time. No CI polling.
 After failure it attempts only this sandbox's stop/delete; offline/uncertain cleanup
 stays unconfirmed, and printed IDs must be retained for reconciliation. Inspect the
 private daemon log, not tokens or credential state. No readiness is inferred from
@@ -581,9 +581,11 @@ failed create result carries `reason: "image_unavailable"`:
 - **Older servers:** they refuse the extra field with a 400. The host then sends
   the plain failed outcome again, so the result is never left pending. Any other
   error keeps the reason for the next attempt.
-- **Known limit:** the daemon is serial. While it pulls, it does not sweep expired
-  sandboxes or take other jobs, and the host can show as offline (no poll for
-  more than 60 seconds) until the pull ends.
+- **Known limit:** each sandbox's jobs are serial. A pull blocks only that
+  sandbox; the daemon keeps polling and runs other sandboxes' jobs (see
+  [Mailbox latency](#mailbox-latency-2561)). If all concurrent slots are busy
+  pulling, the host can show as offline (no poll for more than 60 seconds) until
+  a slot frees.
 
 The server validates the current host/installation and the original frozen machine
 identity, then records a terminal stop and revokes runtime authority. Server time
@@ -977,7 +979,7 @@ twice. Unrelated containers and host processes consume the remaining headroom.
 Snapshot builders are conservatively treated as other work during their build.
 
 Headroom decreases immediately and recovers through a quarter-weight EWMA
-on successful polls (normally every 20 seconds), snapping within 0.05 CPU /
+on successful polls (at least every 20 seconds while idle), snapping within 0.05 CPU /
 16 MiB to avoid permanently losing an integer boundary slot. This deliberately
 favors safety over instant recovery after a load spike. Sampling errors report
 zero headroom, not invented free hardware; cleanup remains available.
@@ -1213,7 +1215,7 @@ generation identities concurrently through the executor's exact ownership and
 expiry checks; a failed inspection never authorizes a stop. Docker command
 latency and host/daemon downtime still bound enforcement, not a hard real-time
 deadline. This lane never writes the state file or contacts the server. The
-serialized mailbox subsequently observes the stop and persists/reports its proof;
+mailbox subsequently observes the stop and persists/reports its proof;
 server acknowledgement can therefore lag physical enforcement during slow work.
 
 ### Diagnosing older daemons (#2540)
@@ -1294,3 +1296,53 @@ Modal stops retain workspace storage for resume under its existing lifecycle;
 Boat stop retains disk/conversations as described in the provider contract.
 Neither provider shares this host's local disk admission boundary; no provider
 lifecycle changes are included here.
+
+### Mailbox latency (#2561)
+
+**Root cause.** The daemon slept 20 seconds after every iteration and handled
+one job per poll. A launch is two jobs (create, then bootstrap), so it waited up
+to 20 seconds for the create and another 20 seconds after it for the bootstrap.
+All jobs on a host ran one after another, so concurrent launches on one host
+started about a minute apart.
+
+**What changed.** The host still opens no inbound port.
+
+- **Held poll.** The daemon sends `waitSeconds: 20`. The server rechecks the
+  mailbox every second and answers as soon as a job or an unacknowledged resume
+  claim exists, or after 20 seconds with `job: null`. The response carries
+  `held: true`. Older servers refuse the field with a 400; the daemon then uses
+  the previous poll body and keeps its 20-second idle period.
+- **Drain.** After taking a job, or after a held poll ends, the daemon polls
+  again at once. It pauses 20 seconds only after a failed iteration, against a
+  server that cannot hold a poll, or when the server can only re-deliver work
+  that is already running here.
+- **Concurrency.** Up to four machine operations run at once
+  (`DOCKER_HOST_CONCURRENT_JOBS`). The daemon reports their request IDs as
+  `running`. The server never hands out a running job, a later job of the same
+  sandbox, or a second snapshot build while one runs, so each sandbox stays
+  serial. Docker's per-container limits and the server's capacity admission
+  still bound what runs.
+- **Durable protocol unchanged.** Every ledger read-modify-write (admission
+  receipt, resume-claim acknowledgement, retention, TTL, completion) is
+  serialized per state file. Only the machine operation and the held poll run
+  outside that section, and the ledger is reloaded after a poll while jobs are
+  running. A receipt is still saved before its operation starts, replay fences
+  and the resume-claim protocol (#2534) are untouched, and a job re-delivered
+  while it is still running here is skipped, never recovered as uncertain.
+
+**Why create and bootstrap stay two jobs.** Bootstrap admission requires the
+completed create job as its authority, runs capacity admission, and only then
+issues the single-use enrolment ticket. Merging them would change the receipt
+identity and the replay fences. With a held poll, the bootstrap is taken within
+about a second of its enqueue, so the merge would save little.
+
+**Before and after (idle mailbox wait, from the protocol, not a measurement).**
+
+| Stage | Before | After |
+| --- | --- | --- |
+| Create picked up after enqueue | 0 to 20 s (10 s on average) | up to 1 s (server recheck) |
+| Bootstrap picked up after create completes | 20 s (daemon sleep), plus the launcher's 250 ms check | up to 1 s, plus the launcher's 250 ms check |
+| Second launch on the same host | waits for the first launch's jobs and sleeps | runs alongside, up to four operations |
+
+The per-stage launch timings of #2560 measure the real effect on staging once
+that ticket lands; this change does not add its own timing.
