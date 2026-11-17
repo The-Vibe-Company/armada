@@ -14,7 +14,7 @@ Supported providers are Boat and Modal, both native and enrolled-runtime sandbox
 
 ### Known limit
 
-Files written or changed after the last capture are not collected. This covers files written between the last 30-second sample and a stop Armada did not initiate (Boat TTL or a provider-initiated stop), and a background writer that finishes after the final pre-stop capture. Reading a retained workspace after stop (Boat disk snapshots, Modal recovery images) is a separate follow-up; until then, finish writing deliverables before the agent's turn ends.
+Files written or changed after the last capture are not collected. This covers files written between the last 30-second sample and a stop Armada did not initiate (Boat TTL or a provider-initiated stop), and a background writer that finishes after the final pre-stop capture. Armada does not reread a stopped sandbox's retained workspace (Boat disk snapshots, Modal recovery images); that is tracked in #2609. Until then, finish writing deliverables before the agent's turn ends.
 
 Application-secret exposed (tainted) sandboxes are never read. Their existing snapshots are purged when taint is recorded, and their outputs routes return 404, matching the exec and work-recovery refusal.
 
