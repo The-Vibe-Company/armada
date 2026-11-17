@@ -471,9 +471,11 @@ test("calendar admission counts missed occurrences once and pauses unavailable s
     );
     await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
     expect(f.boat.forks).toHaveLength(1);
+    // The run's created_at and the scheduler's clock come from the same transaction.
     const row = (
       await f.db.query<{ next_due_at: Date; expected: Date }>(
-        "select next_due_at,date_trunc('hour',now())+interval '1 hour' as expected from routines where id=$1",
+        `select r.next_due_at,date_trunc('hour',run.created_at,'UTC')+interval '1 hour' as expected
+         from routines r join routine_runs run on run.routine_id=r.id where r.id=$1`,
         [f.routine.id],
       )
     ).rows[0]!;

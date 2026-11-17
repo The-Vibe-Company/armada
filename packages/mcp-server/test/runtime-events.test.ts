@@ -264,11 +264,17 @@ test("first model output of an activation is recorded once as its first token, d
     expect(await firstToken()).toEqual([buffered]);
     // A runtime clock ahead of the server never dates output in the future.
     await f.db.query("delete from sandbox_launch_stages where sandbox_id=$1 and stage='first_token'", [f.id]);
-    const before = Date.now();
+    // The server clamps to its database clock, so bound it with samples of that
+    // clock taken around the publish rather than the runner's wall clock.
+    const dbNow = async () =>
+      (await f.db.query<{ ms: number }>("select (extract(epoch from clock_timestamp()) * 1000)::float8 as ms")).rows[0]!
+        .ms;
+    const before = await dbNow();
     await f.publish(active, [{ sequence: 7, event: message("skewed", before + 3_600_000) }]);
+    const after = await dbNow();
     const [skewed] = await firstToken();
-    expect(skewed).toBeGreaterThanOrEqual(before - 1000);
-    expect(skewed).toBeLessThanOrEqual(Date.now() + 1000);
+    expect(skewed).toBeGreaterThanOrEqual(Math.floor(before));
+    expect(skewed).toBeLessThanOrEqual(Math.ceil(after));
   } finally {
     await f.close();
   }
