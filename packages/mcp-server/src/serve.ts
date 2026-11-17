@@ -242,6 +242,7 @@ export async function startServer(
     sandboxArmadaAccess.wrap(await modal.modalProviderFor(...args));
   const runtimeProviderFor = createRuntimeServing(sql, config.encryptionKey);
   const providers = providerRegistry({
+    launchStageSql: sql,
     runtimeProviderFor,
     vault: store,
     encryptionKey: config.encryptionKey,
@@ -566,6 +567,7 @@ export async function startServer(
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     ...(control.sandboxBillingAccount ? { sandboxBillingAccount: control.sandboxBillingAccount } : {}),
     ready: createDatabaseReadiness(sql),
+    launchStageSql: sql,
     idlePauseDelayMs: idleDelayMs,
     ...(commitSha ? { commitSha } : {}),
     runtimeProviderFor,

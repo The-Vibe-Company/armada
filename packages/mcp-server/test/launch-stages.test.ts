@@ -1,6 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
-import { createSqlSandboxStore, type Sql } from "@armada/core/server";
+import { type AgentEvent, LAUNCH_STAGES, type Provider, type ProviderTarget } from "@armada/core";
+import { createSqlSandboxStore, createSqlVaultStore, type Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { providerRegistry } from "../src/http.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
@@ -42,7 +44,9 @@ test("launch stages persist per activation and status reads only the latest, vis
   const stages = async () =>
     (
       await db.query<{ activation: string; stage: string; at: string }>(
-        "select activation::text,stage,at::text from sandbox_launch_stages where sandbox_id=$1 order by activation,at,stage",
+        // Ties keep catalog order, as summarizeLaunch does: one report can record two stages in the same microsecond.
+        `select activation::text,stage,at::text from sandbox_launch_stages where sandbox_id=$1
+          order by activation,at,array_position(array[${LAUNCH_STAGES.map((stage) => `'${stage}'`).join(",")}],stage)`,
         [sandbox.id],
       )
     ).rows;
@@ -104,6 +108,118 @@ test("launch stages persist per activation and status reads only the latest, vis
     expect((await stages()).filter((row) => row.activation === "2").map((row) => row.stage)).toEqual(["accepted"]);
   } finally {
     log.mockRestore();
+    await db.close();
+  }
+});
+
+// #2560: native Boat/Modal output reaches the server only through provider event reads, never the runtime upload.
+test("native Boat and Modal event reads record first_token per activation at the event's own time", async () => {
+  const { db, people } = await database();
+  const sql: Sql = { query: (q, v) => db.query(q, v) };
+  const golden = (
+    await db.query<{ id: string }>("select id from goldens where org_id=$1 and visibility='org'", [people.org])
+  ).rows[0]!;
+  // The seeded golden is Boat; the Modal case exercises the Modal registry route with that sandbox identity.
+  const insert = (provider: "boat" | "modal") =>
+    createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: `physical-${provider}`,
+      goldenId: golden.id,
+      orgId: people.org,
+      ownerId: people.owner,
+      harness: "claude",
+      status: "starting",
+      visibility: "org",
+      model: "claude-opus-4-5",
+      reasoningEffort: "high",
+    });
+  let events: AgentEvent[] = [];
+  const native = (id: "boat" | "modal") =>
+    ({ id, events: async () => ({ events, hasMore: false, cursor: "c" }) }) as unknown as Provider;
+  const registry = providerRegistry({
+    launchStageSql: sql,
+    vault: createSqlVaultStore(sql),
+    encryptionKey: ENCRYPTION_KEY,
+    providerFor: () => native("boat"),
+    modalTokensFor: async () => ({ tokenId: "id", tokenSecret: "secret", scope: "org" }),
+    modalProviderFor: () => native("modal"),
+  });
+  const firstToken = async (id: string) =>
+    (
+      await db.query<{ activation: string; at: Date }>(
+        "select activation::text,at from sandbox_launch_stages where sandbox_id=$1 and stage='first_token' order by activation",
+        [id],
+      )
+    ).rows.map((row) => `${row.activation}:${new Date(row.at).getTime()}`);
+  const message = (at: number, extra: Partial<AgentEvent> = {}) =>
+    ({ id: `e${at}`, at, kind: "message", text: "hi", partial: false, tools: [], ...extra }) as AgentEvent;
+  try {
+    for (const provider of ["boat", "modal"] as const) {
+      const sandbox = await insert(provider);
+      const target: ProviderTarget = {
+        id: sandbox.id,
+        provider,
+        orgId: people.org,
+        visibility: "org",
+        modal: provider === "modal" ? { workspace: "w", environment: "main", app: "armada" } : null,
+      } as ProviderTarget;
+      // The launch was accepted an hour ago, so its output predates the resume below.
+      const accepted = Date.parse(
+        (
+          await db.query<{ at: string }>(
+            "update sandbox_launch_stages set at=at-interval '1 hour' where sandbox_id=$1 and stage='accepted' returning at::text",
+            [sandbox.id],
+          )
+        ).rows[0]!.at,
+      );
+      const read = async () =>
+        (await registry.resolve(target, { userId: people.owner })).events({ sandboxId: sandbox.providerSandboxId });
+      // Prompt echoes, tool results and retracted output are not model output.
+      events = [
+        { id: "p", at: accepted + 1000, kind: "prompt", text: "go", status: "running" } as AgentEvent,
+        message(accepted + 1500, { responseKind: "tool_result" }),
+        message(accepted + 1700, { retracted: true }),
+      ];
+      expect((await read()).events).toBe(events);
+      expect(await firstToken(sandbox.id)).toEqual([]);
+      events = [message(accepted + 3000), message(accepted + 2000)];
+      await read();
+      events = [message(accepted + 1800)];
+      await read();
+      expect(await firstToken(sandbox.id)).toEqual([`1:${accepted + 1800}`]);
+      // A resume: rereading the launch's history never dates the new activation.
+      await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [sandbox.id]);
+      await db.query("update sandboxes set status='starting',stopped_at=null where id=$1", [sandbox.id]);
+      await read();
+      expect(await firstToken(sandbox.id)).toEqual([`1:${accepted + 1800}`]);
+      const resumed = Date.now() + 60_000;
+      events = [message(accepted + 1800), message(resumed)];
+      await read();
+      expect(await firstToken(sandbox.id)).toEqual([`1:${accepted + 1800}`, `2:${resumed}`]);
+    }
+    // A failed record never fails the read it observes.
+    const broken = providerRegistry({
+      launchStageSql: {
+        query: async () => {
+          throw Error("db down");
+        },
+      },
+      vault: createSqlVaultStore(sql),
+      encryptionKey: ENCRYPTION_KEY,
+      providerFor: () => native("boat"),
+    });
+    const quiet = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const provider = await broken.resolve(
+        { id: crypto.randomUUID(), provider: "boat", orgId: people.org, visibility: "org", modal: null },
+        { userId: people.owner },
+      );
+      expect((await provider.events({ sandboxId: "x" })).events).toBe(events);
+    } finally {
+      quiet.mockRestore();
+    }
+  } finally {
     await db.close();
   }
 });

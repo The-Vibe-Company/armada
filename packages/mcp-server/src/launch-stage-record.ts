@@ -1,4 +1,4 @@
-import { type LaunchStage, recordLaunchStageSql } from "@armada/core";
+import { type LaunchStage, type Provider, recordFirstTokenSql, recordLaunchStageSql } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 
 /**
@@ -14,10 +14,38 @@ export async function recordLaunchStageQuietly(sql: Pick<Sql, "query">, sandboxI
   try {
     await recordLaunchStageSql(sql, sandboxId, stage);
   } catch {
-    try {
-      console.error(`armada: launch stage ${stage} unavailable; the launch continues.`);
-    } catch {
-      /* Logging must not change accepted work. */
-    }
+    quietFailure(stage);
   }
+}
+
+function quietFailure(stage: LaunchStage) {
+  try {
+    console.error(`armada: launch stage ${stage} unavailable; the launch continues.`);
+  } catch {
+    /* Logging must not change accepted work. */
+  }
+}
+
+/**
+ * #2560: native Boat/Modal model output never reaches the runtime upload path; the server sees it only when it reads
+ * the provider's events. Record first_token for Armada sandbox `sandboxId` from every page read, dated by the event's
+ * own time. The page returned to the caller is unchanged, and a failed record never fails the read.
+ */
+export function observeNativeFirstToken(provider: Provider, sandboxId: string, sql: Pick<Sql, "query">): Provider {
+  return new Proxy(provider, {
+    get(instance, property, receiver) {
+      const value = Reflect.get(instance, property, receiver);
+      if (typeof value !== "function") return value;
+      if (property !== "events") return value.bind(instance);
+      return async (...args: Parameters<Provider["events"]>) => {
+        const page = await (value as Provider["events"]).apply(instance, args);
+        try {
+          await recordFirstTokenSql(sql, sandboxId, page.events);
+        } catch {
+          quietFailure("first_token");
+        }
+        return page;
+      };
+    },
+  });
 }

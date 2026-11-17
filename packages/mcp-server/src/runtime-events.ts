@@ -1,6 +1,7 @@
 import {
   type AgentEvent,
   type Harness,
+  isModelOutput,
   type MemberRole,
   modelRateLimit,
   PROMPT_STATUSES,
@@ -11,17 +12,12 @@ import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
 import { recordLaunchStage } from "./launch-stage-record.ts";
-
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, runtimeTransaction } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
 import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
 import { admittedTurnContexts } from "./turn-pricing.ts";
-
-/** Assistant output (text or tool calls) from the model, not a prompt echo, tool result or retracted response. */
-const isModelOutput = (event: AgentEvent) =>
-  event.kind === "message" && event.responseKind !== "tool_result" && event.retracted !== true;
 
 class InvalidEvents extends Error {}
 class ConflictingEvent extends Error {}

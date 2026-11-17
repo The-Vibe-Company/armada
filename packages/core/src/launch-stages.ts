@@ -3,6 +3,8 @@
  * activation) of a sandbox, on every provider and path. Each stage keeps its earliest recorded time.
  * Browser-safe: no I/O.
  */
+import type { AgentEvent } from "./provider.ts";
+
 export const LAUNCH_STAGES = [
   /** The launch or resume request was accepted. */
   "accepted",
@@ -172,5 +174,37 @@ export async function recordLaunchStageSql(
        from public.sandbox_launch_stages l where l.sandbox_id=$1::uuid having max(l.activation) is not null
      on conflict(sandbox_id,activation,stage) do update set at=least(sandbox_launch_stages.at,excluded.at)`,
     [sandboxId, stage, Math.max(0, Math.round(elapsedMs))],
+  );
+}
+
+/** Assistant output (text or tool calls) from the model, not a prompt echo, tool result or retracted response. */
+export const isModelOutput = (event: AgentEvent): boolean =>
+  event.kind === "message" && event.responseKind !== "tool_result" && event.retracted !== true;
+
+/**
+ * Server-only SQL: record first_token for the sandbox's latest activation from model output observed outside the
+ * runtime upload path (native Boat/Modal event reads), dated by the event's own time. Only output at or after the
+ * activation was accepted counts, so reading an earlier activation's history never dates a resume. Earliest wins.
+ */
+export async function recordFirstTokenSql(
+  sql: { query(text: string, values?: unknown[]): Promise<unknown> },
+  sandboxId: string,
+  events: readonly AgentEvent[],
+): Promise<void> {
+  const times = events.filter(isModelOutput).flatMap((event) => (Number.isFinite(event.at) ? [event.at] : []));
+  if (!times.length) return;
+  await sql.query(
+    `with latest as (
+       select sandbox_id,activation,at from public.sandbox_launch_stages
+        where sandbox_id=$1::uuid and stage='accepted' order by activation desc limit 1),
+     observed as (
+       select l.sandbox_id,l.activation,min(to_timestamp(t.ms/1000.0)) as at
+         from latest l cross join unnest($2::double precision[]) as t(ms)
+        where to_timestamp(t.ms/1000.0)>=l.at
+        group by l.sandbox_id,l.activation)
+     insert into public.sandbox_launch_stages(sandbox_id,activation,stage,at)
+     select sandbox_id,activation,'first_token',at from observed
+     on conflict(sandbox_id,activation,stage) do update set at=least(sandbox_launch_stages.at,excluded.at)`,
+    [sandboxId, times],
   );
 }

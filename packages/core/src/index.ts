@@ -247,6 +247,7 @@ export {
 export {
   formatLaunchDuration,
   isLaunchStage,
+  isModelOutput,
   LAUNCH_STAGE_LABELS,
   LAUNCH_STAGES,
   type LaunchPercentiles,
@@ -255,6 +256,7 @@ export {
   type LaunchTiming,
   launchReadyPercentiles,
   percentile,
+  recordFirstTokenSql,
   recordLaunchStageSql,
   summarizeLaunch,
 } from "./launch-stages.ts";
