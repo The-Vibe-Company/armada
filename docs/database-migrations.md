@@ -22,6 +22,8 @@ Before opening a PR, and again against current main before merge:
 - Name each new file `<14-digit-version>_<description>.sql`. The version must
   be unique across `supabase/migrations` and strictly newer than the largest
   version on current `origin/main`, not just the branch's original base.
+  Use a UTC timestamp with nonzero seconds. The migration guard rejects new
+  minute-rounded versions and suggests a replacement.
 - Fetch current main and compare its migration versions with your additions:
 
   ```sh

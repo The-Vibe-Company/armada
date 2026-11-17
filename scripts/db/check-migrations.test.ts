@@ -9,6 +9,7 @@ test("migration CLI rejects collisions and non-increasing additions against the 
   const cases = [
     { files: ["20261112000001_next.sql"], ok: true },
     { files: [], ok: true },
+    { files: ["20261117120000_rounded.sql"], ok: false, message: "Use migration version" },
     { files: ["20261112000001_a.sql", "20261112000001_b.sql"], ok: false, message: "Duplicate migration version" },
     { files: ["20261112000000_equal.sql"], ok: false, message: "strictly greater" },
     { files: ["20261111000000_old.sql"], ok: false, message: "strictly greater" },
