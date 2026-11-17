@@ -18,6 +18,8 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
     forbidden:
       "Sandbox access denied. Check your organization membership and ask the sandbox owner or an org admin for access.",
     invalid_request: `The server rejected the sandbox request. Check arguments with armada COMMAND --help (replace COMMAND with the command you ran). ${inspect}`,
+    sandbox_retention_ended:
+      "This sandbox's local retention period has ended, so its disk was removed. Launch a new sandbox.",
     conflict: `The sandbox state conflicts with this operation. ${inspect} Wait for any start/stop operation to settle before retrying.`,
     sandbox_not_ready: `The sandbox is not ready for this operation. ${inspect} Wait until it is ready before sending another request.`,
     no_running_turn:

@@ -1,5 +1,5 @@
 import type { GoldenActor, LaunchCredentialResolver, Sql } from "@armada/core";
-import { HARNESS_KINDS } from "@armada/core";
+import { DockerRetentionEnded, HARNESS_KINDS } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
 import { type BootstrapDescriptor, parseDockerHostJob } from "../../core/src/docker-host-job.ts";
@@ -123,6 +123,13 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         );
         if (!acknowledged.rows.length) deny();
       }
+      if (resume && !known) {
+        const refused = await sql.query(
+          `select 1 from public.docker_resume_claims where request_id=$1 and sandbox_id=$2 and actor_id=$3 and accepted=false`,
+          [requestId, sandboxId, actor.userId],
+        );
+        if (refused.rows.length) throw new DockerRetentionEnded();
+      }
       const restore = resume && !known ? await restoreCheckpoint(sql, sandboxId) : undefined;
       let projected: Awaited<ReturnType<typeof dockerRuntimeConfiguration>> | undefined;
       if (!known) {
@@ -176,12 +183,38 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           );
           if (!credential.rows.length) deny();
         }
-        const host = await tx.query(
-          `select id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and installation_id=$4
+        const host = await tx.query<{ id: string; draining_at: string | null }>(
+          `select id,draining_at from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and installation_id=$4
              and hash is not null and registration_hash is null and revoked_at is null for update`,
           [snapshot.hostId, actor.orgId, hint.issuer_id, snapshot.installationId],
         );
         if (!host.rows.length) deny();
+        if (host.rows[0]!.draining_at) throw new DockerHostDraining();
+        // A stopped generation is only admitted after the host has durably
+        // excluded cleanup. Until then this is a request, not a lifecycle change.
+        if (resume && !known) {
+          const cancelled = await tx.query(
+            "select 1 from public.account_turn_queue where sandbox_id=$1 and request_id=$2 and state='failed'",
+            [sandboxId, requestId],
+          );
+          if (cancelled.rows.length) deny();
+          await admitDockerCapacity(tx, snapshot.hostId);
+          const claim = await tx.query<{ accepted: boolean | null }>(
+            `insert into public.docker_resume_claims(request_id,sandbox_id,host_id,installation_id,generation,actor_id,lifecycle_generation)
+             select $1,id,docker_host_id,docker_installation_id,docker_generation,$3,lifecycle_generation from public.sandboxes
+             where id=$2 and owner_id=$3 and status='stopped' and deleted_at is null and expires_at>now()
+             on conflict(request_id) do update set request_id=excluded.request_id
+             where docker_resume_claims.sandbox_id=excluded.sandbox_id and docker_resume_claims.actor_id=excluded.actor_id and docker_resume_claims.host_id=excluded.host_id
+             and docker_resume_claims.installation_id=excluded.installation_id and docker_resume_claims.generation=excluded.generation
+             and docker_resume_claims.lifecycle_generation=excluded.lifecycle_generation
+             returning accepted`,
+            [requestId, sandboxId, actor.userId],
+          );
+          if (!claim.rows.length) deny();
+          if (claim.rows[0]!.accepted === false) throw new DockerRetentionEnded();
+          if (claim.rows[0]!.accepted !== true)
+            return { requestId, operation: "resume" as const, state: "claiming" as const };
+        }
         await tx.query(`select id from public.sandboxes where id=$1 for update`, [sandboxId]);
         const scoped = scopedRuntimeSql(tx);
         const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
@@ -225,9 +258,10 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           if (resume) {
             await admitDockerCapacity(tx, current.hostId);
             if (JSON.stringify(await restoreCheckpoint(tx, sandboxId)) !== JSON.stringify(restore)) deny();
+            // The host has already persisted the claim and cancelled cleanup.
             const restarted = await tx.query(
               `update public.sandboxes set status='starting',status_reason=null,stop_requested_at=null,stopped_at=null,
-                 lifecycle_generation=lifecycle_generation+1
+                 docker_retention_deadline=null,lifecycle_generation=lifecycle_generation+1
                  where id=$1 and status='stopped' and deleted_at is null and expires_at>now() returning id`,
               [sandboxId],
             );
@@ -252,11 +286,11 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         };
       });
     } catch (error) {
-      // A drain is a state refusal with its own reason, not a permission failure.
       if (
         error instanceof DockerHostDraining ||
         error instanceof DockerHostFull ||
-        error instanceof DockerLimitsRefused
+        error instanceof DockerLimitsRefused ||
+        error instanceof DockerRetentionEnded
       )
         throw error;
       return deny();

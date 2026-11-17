@@ -439,9 +439,25 @@ the deadline, even when the server is unreachable. Shared runtime artifact cache
 and user snapshot images are not sandbox files and remain untouched. Set
 `ARMADA_DOCKER_RETENTION_SECONDS` in this host daemon's environment before starting
 it to configure the period (`0` means the next local sweep); this setting persists
-in its private state. Policy changes shift existing deadlines, preserving stopped age. A resume observed
-before deletion cancels the deadline; cleanup refuses a running allocation. Missing
-resources are safe to retry. Authenticated physical-cleanup reports reconcile the
+in its private state. Policy changes shift existing deadlines, preserving stopped age.
+Resume admission uses a durable host claim, rather than server intent or a
+successful mailbox poll alone. A resume request first waits for its generation's
+claim; it does not start the sandbox until the host acknowledges that claim.
+The host serializes claim acceptance with local cleanup authorization and saves
+the winner before acknowledging a claim or physically deleting the workspace.
+An accepted claim survives daemon restarts and protects the generation while its
+resume waits behind other mailbox work. Once the machine’s immutable absolute
+expiry is reached, an unexecuted claim stops protecting it and normal retention
+scheduling resumes; this is not a claim timeout. If cleanup won, the host refuses the claim
+and the caller receives non-retryable `sandbox_retention_ended` (HTTP 409), with
+instructions to launch a new sandbox. A request sent before the deadline remains
+pending if its poll fails; it cannot promise preservation until the host accepts.
+Offline retention continues for generations without an accepted claim.
+The daemon reports each retained generation's local deadline for inspection;
+that deadline alone is not proof that a workspace was removed.
+Deploy the claim schema and server before upgrading hosts. Older daemons cannot
+acknowledge claims, so resume requests remain pending until the host is upgraded.
+Cleanup refuses a running allocation. Missing resources are safe to retry. Authenticated physical-cleanup reports reconcile the
 server to `deleted` after reconnection. Deploy the server support before upgrading
 hosts; old servers reject the additive report and the daemon retries it safely.
 

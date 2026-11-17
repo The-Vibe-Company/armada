@@ -43,6 +43,7 @@ type Bound = {
 type StoredJob = Bound & {
   request_id: string;
   host_id: string;
+  position: number | string;
   input_enc: Uint8Array<ArrayBuffer>;
   outcome: string | null;
   result_image_id?: string | null;
@@ -341,6 +342,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if ((operation === "bootstrap" || operation === "resume") && original.outcome !== "completed") deny();
     return saved.request;
   }
+  async function supersededLifecycle(tx: Sql, job: StoredJob) {
+    const later = await tx.query(
+      `select 1 from public.docker_host_jobs where bound_sandbox_id=$1
+       and bound_operation in ('resume','bootstrap') and request_id<>$2 and position>$3
+       and outcome is distinct from 'failed' limit 1`,
+      [job.bound_sandbox_id, job.request_id, job.position],
+    );
+    return later.rows.length > 0;
+  }
+
   async function boundMachine(tx: Sql, job: StoredJob, host: Host, installationId: string) {
     const logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
     const delivered = await readJob(job);
@@ -498,15 +509,52 @@ export function createDockerHostStore(sql: Sql, key: string) {
     retentionForHost(
       hostToken: string,
       installationId: string,
-      report?: { retentionSeconds: number; nextCleanupAt: string | null },
+      report?: {
+        retentionSeconds: number;
+        nextCleanupAt: string | null;
+        /** The daemon's authoritative per-generation local cleanup deadlines. */
+        deadlines?: { sandboxId: string; generation: string; deadline: string }[];
+      },
     ) {
       return transaction(async (tx) => {
         const host = await reconcileHost(tx, hostToken, installationId);
-        if (report)
+        if (report) {
           await tx.query(
             "update public.docker_hosts set reported_retention_seconds=$2,next_cleanup_at=case when retention_seconds is null or retention_seconds=$2 then $3::timestamptz else null end where id=$1",
             [host.id, report.retentionSeconds, report.nextCleanupAt],
           );
+          // A host that speaks this protocol reports every obligation it holds.
+          // Clear deadlines it no longer holds (resumed, deleted, lost state) so a
+          // stale one cannot fence a resume the daemon would never delete.
+          if (report.deadlines) {
+            await tx.query(
+              `update public.sandboxes set docker_retention_deadline=null
+               where docker_host_id=$1 and docker_retention_deadline is not null
+                 and not exists (
+                   select 1 from unnest($2::uuid[],$3::uuid[]) as held(sandbox_id,generation)
+                   where held.sandbox_id=sandboxes.id and held.generation=sandboxes.docker_generation
+                 )`,
+              [
+                host.id,
+                report.deadlines.map((entry) => entry.sandboxId),
+                report.deadlines.map((entry) => entry.generation),
+              ],
+            );
+          }
+          // Persist the exact deadline the daemon will delete at, keyed to the
+          // generation it belongs to. A stale report for a superseded generation
+          // must not fence a newer one, so match on the current generation.
+          for (const entry of report.deadlines ?? []) {
+            id(entry.sandboxId);
+            id(entry.generation);
+            if (!Number.isFinite(Date.parse(entry.deadline))) deny();
+            await tx.query(
+              `update public.sandboxes set docker_retention_deadline=$3::timestamptz
+               where id=$1 and docker_host_id=$2 and docker_generation=$4 and provider='docker'`,
+              [entry.sandboxId, host.id, entry.deadline, entry.generation],
+            );
+          }
+        }
         return (
           (
             await tx.query<{ retention_seconds: number | null }>(
@@ -515,6 +563,53 @@ export function createDockerHostStore(sql: Sql, key: string) {
             )
           ).rows[0]?.retention_seconds ?? undefined
         );
+      });
+    },
+    resumeClaimsForHost(hostToken: string, installationId: string) {
+      return transaction(async (tx) => {
+        const host = await reconcileHost(tx, hostToken, installationId);
+        const result = await tx.query<{ request_id: string; sandbox_id: string; generation: string }>(
+          `select c.request_id,c.sandbox_id,c.generation from public.docker_resume_claims c
+           join public.sandboxes s on s.id=c.sandbox_id
+           where c.host_id=$1 and c.installation_id=$2 and c.accepted is null
+             and s.docker_generation=c.generation and s.lifecycle_generation=c.lifecycle_generation
+             and s.status='stopped' and s.deleted_at is null and s.expires_at>now()`,
+          [host.id, installationId],
+        );
+        return result.rows.map((row) => ({
+          requestId: row.request_id,
+          sandboxId: row.sandbox_id,
+          generation: row.generation,
+        }));
+      });
+    },
+    claimResume(hostToken: string, installationId: string, requestId: string, accepted: boolean) {
+      return transaction(async (tx) => {
+        id(requestId);
+        const host = await reconcileHost(tx, hostToken, installationId);
+        const result = await tx.query(
+          `update public.docker_resume_claims set accepted=$4 where request_id=$3 and host_id=$1 and installation_id=$2
+           and (accepted is null or accepted=$4) returning request_id`,
+          [host.id, installationId, requestId, accepted],
+        );
+        if (!result.rows.length) deny();
+      });
+    },
+    /** Every generation with a queued resume/bootstrap, so the daemon fences all of them, not only the head job. */
+    pendingStartsForHost(hostToken: string, installationId: string) {
+      return transaction(async (tx) => {
+        const host = await reconcileHost(tx, hostToken, installationId);
+        const rows = (
+          await tx.query<{ bound_sandbox_id: string; docker_generation: string }>(
+            `select distinct s.id as bound_sandbox_id,s.docker_generation
+             from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
+             where j.host_id=$1 and j.outcome is null and j.bound_operation in ('resume','bootstrap')
+               and s.provider='docker' and s.docker_host_id=$1 and s.docker_installation_id=$2
+             order by s.id`,
+            [host.id, installationId],
+          )
+        ).rows;
+        return rows.map((row) => ({ sandboxId: row.bound_sandbox_id, generation: row.docker_generation }));
       });
     },
     limitsForHost(hostToken: string, installationId: string) {
@@ -1140,6 +1235,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ).rows[0] ?? deny();
         if (!job.bound_sandbox_id || job.bound_operation === "buildSnapshot") deny();
         const logical = await boundMachine(tx, job, host, installationId);
+        // Status repeats across lifecycles; mailbox ordering identifies which
+        // lifecycle owns this fact even after a later resume has stopped again.
+        if (await supersededLifecycle(tx, job)) return;
         // Physical cleanup is an authenticated machine fact, not owner delete intent.
         await tx.query(
           `update public.sandboxes set status='deleted',status_reason=null,deleted_at=coalesce(deleted_at,now()),
@@ -1285,7 +1383,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
         // missed by an earlier server; conflicting facts still fail above.
         if (result.outcome === "failed" && logical)
           await startupFailed(tx, logical, job.bound_operation, result.reason);
-        if (result.outcome === "completed" && job.bound_sandbox_id) {
+        // Persist terminal receipts below, but never replay old stop/delete
+        // effects onto a lifecycle admitted after that job.
+        const staleCleanup =
+          (job.bound_operation === "stop" || job.bound_operation === "delete") && (await supersededLifecycle(tx, job));
+        if (result.outcome === "completed" && job.bound_sandbox_id && !staleCleanup) {
           if (job.bound_operation === "stop")
             await tx.query(
               `update public.sandboxes set status=case when status='failed' then status else 'stopped' end,

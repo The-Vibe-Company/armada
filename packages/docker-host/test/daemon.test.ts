@@ -920,7 +920,7 @@ test("native poll retains sampled availability when an older server rejects rete
     async () => resources,
   );
   expect(await api.poll(await f.store.load())).toEqual({ job: null });
-  expect(calls).toBe(2);
+  expect(calls).toBe(3);
 });
 
 test("older policy-capable servers retain the quota handshake when availability fields are refused", async () => {
@@ -940,7 +940,7 @@ test("older policy-capable servers retain the quota handshake when availability 
     async () => ({ cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 2, availableMemoryBytes: 10 * 1024 ** 3 }),
   );
   expect(await api.poll(await f.store.load())).toMatchObject({ limits: { cpus: 1 } });
-  expect(calls).toBe(3);
+  expect(calls).toBe(4);
 });
 
 test("TTL index deduplicates active receipts, retires terminal history and rotates uncertain failures before mailbox polling", async () => {
@@ -1233,36 +1233,39 @@ test("a pre-disk server keeps retention and availability when refusing only disk
     async () => 123,
   );
   expect(await api.poll(await f.store.load())).toEqual({ job: null, retentionSeconds: 3600 });
-  expect(calls).toBe(2);
+  expect(calls).toBe(3);
 });
 
-test("a pre-stopped-space server keeps disk telemetry when refusing only stopped usage", async () => {
-  const f = fixture();
-  const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
-  let calls = 0;
-  const api = httpApi(
-    Object.assign(
-      async (_url: string | URL | Request, init?: RequestInit) => {
-        calls++;
-        const body = JSON.parse(String(init?.body));
-        expect(body.resources).toEqual(resources);
-        expect(body.retentionSeconds).toBe(86400);
-        expect(body.diskFreeBytes).toBe(123);
-        if ("stoppedSandboxBytes" in body) {
-          expect(body.stoppedSandboxBytes).toBe(456);
-          return new Response(null, { status: 400 });
-        }
-        return Response.json({ job: null, retentionSeconds: 3600 });
-      },
-      { preconnect: fetch.preconnect },
-    ),
-    async () => resources,
-    async () => 123,
-    async () => 456,
-  );
-  expect(await api.poll(await f.store.load())).toEqual({ job: null, retentionSeconds: 3600 });
-  expect(calls).toBe(2);
-});
+test.each(["resumeClaimProtocol", "stoppedSandboxBytes"])(
+  "an older server keeps disk telemetry when refusing %s",
+  async (unsupported) => {
+    const f = fixture();
+    const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
+    let calls = 0;
+    const api = httpApi(
+      Object.assign(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          calls++;
+          const body = JSON.parse(String(init?.body));
+          expect(body.resources).toEqual(resources);
+          expect(body.retentionSeconds).toBe(86400);
+          expect(body.diskFreeBytes).toBe(123);
+          if (unsupported in body || (unsupported === "resumeClaimProtocol" && "deadlines" in body)) {
+            if (unsupported === "stoppedSandboxBytes") expect(body.stoppedSandboxBytes).toBe(456);
+            return new Response(null, { status: 400 });
+          }
+          return Response.json({ job: null, retentionSeconds: 3600 });
+        },
+        { preconnect: fetch.preconnect },
+      ),
+      async () => resources,
+      async () => 123,
+      async () => 456,
+    );
+    expect(await api.poll(await f.store.load())).toEqual({ job: null, retentionSeconds: 3600 });
+    expect(calls).toBe(unsupported === "resumeClaimProtocol" ? 2 : 3);
+  },
+);
 
 test.each([false, true])(
   "complete allocation loss reconciles durable admission (failed create: %s)",
@@ -1473,4 +1476,189 @@ test("compaction retires reconciled absence without dropping undiscovered alloca
   compactReceipts(state);
   expect(state.receipts.map((r) => r.requestId)).toEqual([undiscovered!.requestId]);
   expect(state.retired?.map((r) => r[0])).toEqual([reconciled!.requestId]);
+});
+
+test("a queued resume is observed before a due local retention deletion", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  const order: string[] = [];
+  const executor: Executor = {
+    ...f.executor,
+    async resume() {
+      order.push("resume");
+    },
+    async deleteStopped() {
+      order.push("delete");
+    },
+    startRuntime: async () => {
+      order.push("startRuntime");
+    },
+  };
+  const state = await f.store.load();
+  state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 0 }];
+  await f.store.save(state);
+  const resume: Job = {
+    requestId: crypto.randomUUID(),
+    operation: "resume",
+    request: f.job.request,
+    bootstrap: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
+    },
+  };
+  f.api.poll = async () => {
+    order.push("poll");
+    return { job: resume };
+  };
+  await tick(f.store, f.api, executor, false, () => 0);
+  // The resume claims the stopped generation before retention may delete it.
+  expect(order).toEqual(["poll", "resume", "startRuntime"]);
+  expect((await f.store.load()).retention).toEqual([]);
+});
+
+test("a resume does not drop an already deleted entry's pending cleaned report", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  const state = await f.store.load();
+  state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 0, deleted: true }];
+  await f.store.save(state);
+  const reports: string[] = [];
+  const resume: Job = {
+    requestId: crypto.randomUUID(),
+    operation: "resume",
+    request: f.job.request,
+    bootstrap: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
+    },
+  };
+  f.api.poll = async () => ({ job: resume });
+  f.api.cleaned = async (_state, requestId) => {
+    reports.push(requestId);
+  };
+  await tick(f.store, f.api, f.executor, false, () => 0);
+  expect(reports).toEqual([f.job.requestId]);
+  expect((await f.store.load()).retention).toEqual([]);
+});
+
+test("a resume behind another mailbox job still cancels its generation's due retention deletion", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  const order: string[] = [];
+  const executor: Executor = {
+    ...f.executor,
+    async resume() {
+      order.push("resume");
+    },
+    async deleteStopped() {
+      order.push("delete");
+    },
+    async stop() {
+      order.push("stop");
+    },
+    startRuntime: async () => {
+      order.push("startRuntime");
+    },
+  };
+  const state = await f.store.load();
+  state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 0 }];
+  await f.store.save(state);
+  const resume: Job = {
+    requestId: crypto.randomUUID(),
+    operation: "resume",
+    request: f.job.request,
+    bootstrap: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
+    },
+  };
+  // The server serves one job per poll, ordered so every stop/delete precedes
+  // startup work. An unrelated stop is therefore handed out first, and the
+  // resume for this generation is only visible as pending intent.
+  const unrelated: Job = {
+    requestId: crypto.randomUUID(),
+    operation: "stop",
+    request: { ...f.job.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() },
+  };
+  let polls = 0;
+  f.api.poll = async () => {
+    order.push("poll");
+    polls++;
+    // The server reports every held generation with the poll, including a
+    // resume queued behind this stop, not only the single job it hands out.
+    return {
+      job: polls === 1 ? unrelated : resume,
+      pendingStarts: [{ sandboxId: resume.request.sandboxId, generation: resume.request.generation }],
+    };
+  };
+  await tick(f.store, f.api, executor, false, () => 0);
+  // The due generation is not deleted while a resume for it is queued behind the stop.
+  expect(order).not.toContain("delete");
+  expect((await f.store.load()).retention).toEqual([]);
+});
+
+test("an abandoned resume claim releases only at immutable expiry and keeps the normal offline retention delay", async () => {
+  const f = fixture();
+  f.job.request.expiresAt = 1000;
+  await tick(f.store, f.api, f.executor, false, () => 0);
+  const state = await f.store.load();
+  state.retentionSeconds = 1;
+  state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 10 }];
+  await f.store.save(state);
+  const requestId = crypto.randomUUID();
+  let offline = false;
+  const acknowledgements: boolean[] = [];
+  let deleted = false;
+  f.api.poll = async () => {
+    if (offline) throw Error("offline");
+    return {
+      job: null,
+      pendingStarts: [{ sandboxId: f.job.request.sandboxId, generation: f.job.request.generation }],
+      resumeClaims: [{ requestId, sandboxId: f.job.request.sandboxId, generation: f.job.request.generation }],
+    };
+  };
+  f.api.claim = async (_state, _requestId, accepted) => {
+    acknowledgements.push(accepted);
+  };
+  f.executor.isStopped = async () => true;
+  f.executor.deleteStopped = async () => {
+    deleted = true;
+  };
+  await tick(f.store, f.api, f.executor, false, () => 9);
+  expect(acknowledgements).toEqual([true]);
+  offline = true;
+  await expect(tick(f.store, f.api, f.executor, false, () => 999)).rejects.toThrow("offline");
+  expect((await f.store.load()).retention).toEqual([]);
+  // A fresh load on each tick represents restart; expiry retires the durable
+  // hold, then discovery grants the complete configured retention period.
+  await expect(tick(f.store, f.api, f.executor, false, () => 1000)).rejects.toThrow("offline");
+  expect((await f.store.load()).resumeClaims?.[0]?.active).toBe(false);
+  expect((await f.store.load()).retention?.[0]?.deadline).toBe(2000);
+  expect(deleted).toBe(false);
+  const compacted = await f.store.load();
+  const original = compacted.receipts.find((receipt) => receipt.requestId === f.job.requestId)!;
+  original.expired = true;
+  original.expiryReported = true;
+  // A completed unrelated snapshot supplies the ledger pressure that triggers
+  // real compaction; its opaque image bytes are never sent to Docker.
+  compacted.receipts.push({
+    requestId: crypto.randomUUID(),
+    operation: "buildSnapshot",
+    inputHash: "c".repeat(64),
+    request: { ...f.job.request, sandboxId: crypto.randomUUID(), image: "x".repeat(1100000) },
+    outcome: "completed",
+  });
+  compactReceipts(compacted);
+  expect(compacted.receipts.some((receipt) => receipt.requestId === f.job.requestId)).toBe(false);
+  await f.store.save(compacted);
+  offline = false;
+  await tick(f.store, f.api, f.executor, false, () => 1999);
+  expect(acknowledgements).toEqual([true]); // expired replays cannot renew the claim
+  expect(deleted).toBe(false);
+  offline = true;
+  await expect(tick(f.store, f.api, f.executor, false, () => 2000)).rejects.toThrow("offline");
+  expect(deleted).toBe(true);
 });

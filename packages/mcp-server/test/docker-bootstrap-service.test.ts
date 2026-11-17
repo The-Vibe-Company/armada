@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { DOCKER_LAUNCH_FAILURE_MESSAGES, type Harness, type Sql } from "@armada/core";
+import { DOCKER_LAUNCH_FAILURE_MESSAGES, DockerRetentionEnded, type Harness, type Sql } from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
+import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -52,6 +53,14 @@ afterAll(async () => {
   connection = undefined;
   await db?.close();
 });
+async function admittedResume(f: Awaited<ReturnType<typeof fixture>>, requestId: string) {
+  const requested = await service.resume(f.actor, f.sandbox.id, requestId);
+  if (requested.state === "claiming") {
+    await hosts.claimResume(f.hostToken, f.installationId, requestId, true);
+    return service.resume(f.actor, f.sandbox.id, requestId);
+  }
+  return requested;
+}
 async function fixture(ack = true, harness: Harness = "codex") {
   const db = database();
   const orgId = randomUUID(),
@@ -359,7 +368,7 @@ test("revoking a host retires a queued resume and releases the slot its complete
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   expect((await hosts.list(f.admin))[0]?.running).toBe(0);
   const resumeId = randomUUID();
-  await service.resume(f.actor, f.sandbox.id, resumeId);
+  await admittedResume(f, resumeId);
   // The queued resume reserves a slot even though the earlier create is complete.
   expect((await hosts.list(f.admin))[0]?.running).toBe(1);
   await hosts.revoke(f.admin, f.hostId);
@@ -412,7 +421,7 @@ test.each(["codex", "claude", "opencode"] as const)(
     ]);
     const resumeId = randomUUID();
     await denied(service.resume(f.admin, f.sandbox.id, resumeId));
-    expect(await service.resume(f.actor, f.sandbox.id, resumeId)).toEqual({
+    expect(await admittedResume(f, resumeId)).toEqual({
       requestId: resumeId,
       operation: "resume",
       state: "pending",
@@ -433,7 +442,7 @@ test.each(["codex", "claude", "opencode"] as const)(
       ).rows[0]?.conversation_ids,
     ).toEqual([conversationId]);
     await hosts.complete(f.hostToken, f.installationId, { requestId: resumeId, outcome: "completed" });
-    expect(await service.resume(f.actor, f.sandbox.id, resumeId)).toEqual({
+    expect(await admittedResume(f, resumeId)).toEqual({
       requestId: resumeId,
       operation: "resume",
       state: "completed",
@@ -593,7 +602,7 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
     f.hostId,
     6 * 1024 ** 3,
   ]);
-  await expect(service.resume(f.actor, f.sandbox.id, randomUUID())).rejects.toThrow("Host hardware changed");
+  await expect(admittedResume(f, randomUUID())).rejects.toThrow("Host hardware changed");
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
   await db.query("update public.docker_hosts set sandbox_cpus=null where id=$1", [f.hostId]);
   const resumeId = randomUUID();
@@ -605,11 +614,11 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
     credentialVersion: 1,
     requestId: randomUUID(),
   });
-  await expect(service.resume(f.actor, f.sandbox.id, resumeId)).rejects.toThrow("is full");
+  await expect(admittedResume(f, resumeId)).rejects.toThrow("is full");
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
   await hosts.complete(f.hostToken, f.installationId, { requestId: occupied.id, outcome: "completed" });
   await hosts.expired(f.hostToken, f.installationId, { requestId: occupied.id });
-  await service.resume(f.actor, f.sandbox.id, resumeId);
+  await admittedResume(f, resumeId);
   const resume = await hosts.poll(f.hostToken, f.installationId);
   if (resume?.operation !== "resume") throw Error("missing resume");
   const resumed = await authority.enrol(resume.bootstrap.enrolmentToken);
@@ -644,3 +653,101 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
   expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "ready", epoch: resumed.epoch });
   expect((await reservations.get(f.actor, f.sandbox.id)).expiresAt).toBe(new Date(stored.expires_at).toISOString());
 });
+
+test.each(["cleanup", "claim"] as const)(
+  "resume request before deadline, failed poll and reconnect: %s wins",
+  async (winner) => {
+    const db = database();
+    const f = await fixture();
+    await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+    await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+    const stored = (
+      await db.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
+        "select input_enc from public.docker_host_jobs where request_id=$1",
+        [f.sandbox.id],
+      )
+    ).rows[0]!;
+    const request = JSON.parse(await decryptSecret(stored.input_enc, key)).job.request;
+    await db.query(
+      "update public.sandboxes set status='stopped',stopped_at=now(),docker_retention_deadline=now()+interval '1 second' where id=$1",
+      [f.sandbox.id],
+    );
+    let durable: State = {
+      server: "https://armada.example",
+      installationId: f.installationId,
+      hostId: f.hostId,
+      hostToken: f.hostToken,
+      receipts: [{ requestId: f.sandbox.id, operation: "create", request, outcome: "completed" }],
+      retention: [{ requestId: f.sandbox.id, request, deadline: 1000 }],
+    };
+    const store: Store = {
+      load: async () => structuredClone(durable),
+      save: async (next) => {
+        durable = structuredClone(next);
+      },
+    };
+    let deleted = false;
+    let resumed = false;
+    let offline = false;
+    const api: Api = {
+      register: async () => {
+        throw Error("unused");
+      },
+      poll: async () => {
+        if (offline) throw Error("network unavailable");
+        return { job: null, resumeClaims: await hosts.resumeClaimsForHost(f.hostToken, f.installationId) };
+      },
+      claim: async (_state, requestId, accepted) =>
+        hosts.claimResume(f.hostToken, f.installationId, requestId, accepted),
+      result: async () => {},
+    };
+    const executor: Executor = {
+      create: async () => {},
+      stop: async () => {},
+      delete: async () => {},
+      stopIfExpired: async () => false,
+      isStopped: async () => true,
+      deleteStopped: async () => {
+        deleted = true;
+      },
+      resume: async () => {
+        if (deleted) throw Error("not_found");
+        resumed = true;
+      },
+      startRuntime: async () => {},
+    };
+    const requestId = randomUUID();
+    expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("claiming");
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
+    if (winner === "claim") {
+      await tick(store, api, executor, false, () => 999);
+      // An abandoned request cannot reserve this lifecycle against a new caller
+      // request. The replacement must get its own durable host acknowledgement.
+      const replacementId = randomUUID();
+      expect((await service.resume(f.actor, f.sandbox.id, replacementId)).state).toBe("claiming");
+      await tick(store, api, executor, false, () => 999);
+    }
+    offline = true;
+    await expect(tick(store, api, executor, false, () => 1001)).rejects.toThrow("network unavailable");
+    offline = false;
+    await tick(store, api, executor, false, () => 1002);
+    if (winner === "cleanup") {
+      expect(deleted).toBe(true);
+      await expect(service.resume(f.actor, f.sandbox.id, requestId)).rejects.toBeInstanceOf(DockerRetentionEnded);
+      expect(resumed).toBe(false);
+    } else {
+      expect(deleted).toBe(false);
+      const lateId = randomUUID();
+      expect((await service.resume(f.actor, f.sandbox.id, lateId)).state).toBe("claiming");
+      expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+      expect(await hosts.resumeClaimsForHost(f.hostToken, f.installationId)).toEqual([]);
+      const job = await hosts.poll(f.hostToken, f.installationId);
+      if (job?.operation !== "resume") throw Error("missing resume");
+      api.poll = async () => ({ job });
+      await tick(store, api, executor, false, () => 1003);
+      expect(resumed).toBe(true);
+      expect(deleted).toBe(false);
+      expect(durable.resumeClaims?.every((claim) => !claim.active)).toBe(true);
+    }
+  },
+);
