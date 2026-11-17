@@ -178,7 +178,7 @@ jobs:
   check:
     name: Check the version and the tests
     needs: [publication-intent, release-configuration, release-please]
-    if: &run-release-check ${{ !cancelled() && needs.publication-intent.result == 'success' && (needs.publication-intent.outputs.publish != 'true' || needs.release-configuration.result == 'success') && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created == 'true') }}
+    if: ${{ !cancelled() && needs.publication-intent.result == 'success' && (needs.publication-intent.outputs.publish != 'true' || needs.release-configuration.result == 'success') && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -200,14 +200,11 @@ jobs:
       publish: ${{ steps.version.outputs.publish }}
       sha: ${{ steps.version.outputs.sha }}
     steps:
-      - &checkout-release
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          ref: ${{ needs.release-please.outputs.tag_name || inputs.tag || github.sha }}
-          persist-credentials: false
-      - &validate-release-version
-        id: version
+          ref: ${{ needs.release-please.outputs.tag_name || inputs.tag || github.ref }}
+      - id: version
         name: The tag, the version and the dist-tag
         env:
           RELEASE_TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
@@ -244,9 +241,11 @@ jobs:
       - run: bun packages/agent-runtime/build.ts
       - run: bun scripts/validate-runtime-native.ts
       - run: bun run typecheck
-      - run: |
-          bun test --reporter=junit --reporter-outfile=/tmp/release-tests.xml
-          bun test ./packages/core/test/database-types.probe.ts ./packages/core/test/private-skill.probe.ts ./packages/core/test/golden-scan.probe.ts ./packages/core/test/work-preservation.probe.ts --reporter=junit --reporter-outfile=/tmp/release-native-tests.xml
+      - name: Run release unit tests and retained probes
+        run: |
+          # The broker fixture rewrites a shared runtime artifact. Run it outside the worker pool.
+          bun test --parallel=2 --path-ignore-patterns=packages/mcp-server/test/github-boat.test.ts --reporter=junit --reporter-outfile=/tmp/release-tests.xml
+          bun test ./packages/mcp-server/test/github-boat.test.ts ./packages/core/test/database-types.probe.ts ./packages/core/test/private-skill.probe.ts ./packages/core/test/golden-scan.probe.ts ./packages/core/test/work-preservation.probe.ts --reporter=junit --reporter-outfile=/tmp/release-native-tests.xml
         env:
           CODEX_NATIVE_TEST_BINARY: ${{ github.workspace }}/packages/agent-runtime/dist/codex
       - name: Migrate disposable release contract database
@@ -288,20 +287,20 @@ jobs:
   sandbox-image:
     name: Publish official sandbox image (linux/amd64)
     outputs:
-      sha: ${{ steps.version.outputs.sha }}
       enabled: ${{ steps.foundation.outputs.enabled }}
-    needs: [publication-intent, release-configuration, release-please]
-    if: *run-release-check
+    needs: check
+    if: ${{ !cancelled() && needs.check.result == 'success' && needs.check.outputs.publish == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
       packages: write
     steps:
-      - *checkout-release
-      - *validate-release-version
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          persist-credentials: false
       - id: foundation
-        if: steps.version.outputs.publish == 'true'
         name: Preserve recovery of releases predating the official image
         run: |
           if [ -f images/sandbox/Dockerfile ]; then
@@ -311,7 +310,7 @@ jobs:
         if: steps.foundation.outputs.enabled == 'true'
         env:
           GHCR_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
           set -euo pipefail
           registry=ghcr.io/the-vibe-company/armada-sandbox
@@ -338,7 +337,8 @@ jobs:
   # As in CI, each binary is compiled and run on its own platform (macOS signs it ad hoc there).
   binary:
     name: Binary (${{ matrix.target }})
-    needs: sandbox-image
+    needs: [check, sandbox-image]
+    if: ${{ !cancelled() && needs.check.result == 'success' && (needs.sandbox-image.result == 'success' || needs.check.outputs.publish != 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -356,7 +356,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ needs.sandbox-image.outputs.sha }}
+          ref: ${{ needs.check.outputs.sha }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
