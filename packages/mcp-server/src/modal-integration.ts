@@ -26,6 +26,7 @@ import { loadEmbeddedRunnerArtifact } from "@armada/provider-modal/embedded";
 import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
+import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import { projectModalEventUsage } from "./modal-event-usage.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
@@ -282,7 +283,9 @@ export async function createModalIntegration(options: {
       const provider =
         target.runtimeTransport === "dialout"
           ? await createRuntimeServing(options.sql, options.encryptionKey!)(host, target, caller)
-          : host;
+          : target.id
+            ? observeNativeFirstToken(host, target.id, options.sql)
+            : host;
       // Do not let a stored observation adapter accidentally drive admission.
       const reads = new Set<PropertyKey>(["get", "getPrompt", "events"]);
       return new Proxy(provider, {

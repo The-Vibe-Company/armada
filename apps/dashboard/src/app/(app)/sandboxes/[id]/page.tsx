@@ -35,7 +35,7 @@ import { type AccountChoices, readAccountChoices } from "@/lib/data/account-reco
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
 import { hostListForPage, readDockerLaunchOption } from "@/lib/data/docker-hosts";
 import { findGoldenLabel } from "@/lib/data/goldens";
-import { credentialMetadata, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
+import { credentialMetadata, getLaunchTiming, getSandbox, getSandboxMetadata } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer, type Viewer } from "@/lib/data/viewer";
 import { sandboxHostLabel } from "@/lib/docker-hosts";
@@ -43,6 +43,7 @@ import { type DockerSandboxControls, dockerImageLabel, dockerSandboxControls } f
 import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
 import { HARNESS_LABELS } from "@/lib/labels";
+import { launchTimingFact } from "@/lib/launch-timing";
 import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
 import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
@@ -97,7 +98,7 @@ export default async function SandboxPage({ params }: Props) {
     ]);
     return { bindingAvailability, recovery, owner, golden, applied, accounts, choices };
   });
-  const [sandbox, memberships, directory, docker, cloud] = await Promise.all([
+  const [sandbox, memberships, directory, docker, cloud, launchTiming] = await Promise.all([
     sandboxRead,
     pending,
     pending.then((items) =>
@@ -108,7 +109,10 @@ export default async function SandboxPage({ params }: Props) {
     ),
     dockerRead,
     cloudRead,
+    // Same row level security as the interior: nothing is returned for a sandbox the viewer may not open.
+    getLaunchTiming(supabase, id),
   ]);
+  const launchFact = launchTimingFact(launchTiming);
   if (!sandbox) {
     // The interior read is refused to a member who is neither the owner nor an admin (#680). Only then is the safe
     // metadata read, so nothing of the interior is fetched and hidden; a sandbox the server does not list is not found.
@@ -134,6 +138,7 @@ export default async function SandboxPage({ params }: Props) {
         ownerCanChange={sandbox.owner_id === viewer.id && sandbox.status !== "deleted"}
         {...(choices ? { choices } : {})}
         host={sandboxHostLabel(hosts, sandbox.docker_host_id)}
+        launchFact={launchFact}
       />
     );
   }
@@ -165,6 +170,7 @@ export default async function SandboxPage({ params }: Props) {
     ...(machineSize ? [["Machine size", machineSize] as [string, string]] : []),
     ["Owner", displayUser(directory, sandbox.owner_id, viewer.id)],
     ["Created", formatDate(sandbox.created_at)],
+    ...(launchFact ? [launchFact] : []),
     ...(life.lifetime ? [["Lifetime", life.lifetime] as [string, string]] : []),
     ...(lifecycle.expiresAt
       ? [
@@ -385,6 +391,7 @@ function DockerSandbox({
   ownerCanChange,
   choices,
   host,
+  launchFact,
 }: {
   sandbox: Omit<Sandbox, "docker_retention_deadline" | "external_ref">;
   viewer: Viewer;
@@ -396,6 +403,7 @@ function DockerSandbox({
   ownerCanChange: boolean;
   choices?: AccountChoices;
   host: string;
+  launchFact: [string, string] | null;
 }) {
   const configured = mcpUrl() !== null;
   const lifecycle = readLifecycle(sandbox);
@@ -416,6 +424,7 @@ function DockerSandbox({
     ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
     ["Owner", owner],
     ["Created", formatDate(sandbox.created_at)],
+    ...(launchFact ? [launchFact as Fact] : []),
     ...(life.lifetime ? [["Lifetime", life.lifetime] as [string, string]] : []),
     ...(lifecycle.expiresAt
       ? [
