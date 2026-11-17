@@ -21,7 +21,7 @@ beforeAll(async () => {
     create table sandboxes(id uuid primary key,credential_id uuid,model text,status text,
       deleted_at timestamptz,stopped_at timestamptz,activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean);
-    create table account_turn_queue(sandbox_id uuid,request_id uuid,input_enc bytea,state text,sequence bigint,dispatch_generation bigint);
+    create table account_turn_queue(sandbox_id uuid,request_id uuid,input_enc bytea,state text,sequence bigint,dispatch_generation bigint,account_id uuid,dispatch_until timestamptz);
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
   await query("insert into credentials values($1,'Upgrade account',10)", [account]);
   for (const [i, id] of ids.entries()) {
@@ -34,12 +34,10 @@ beforeAll(async () => {
   }
   const sealed = await encryptSecret(JSON.stringify({ model: "kimi", prompt: "override turn" }), key);
   for (const [i, id] of ids.slice(0, 2).entries())
-    await query("insert into account_turn_queue values($1,$1,$2,$3,$4,null)", [
-      id,
-      sealed,
-      i === 0 ? "admitted" : "queued",
-      i + 1,
-    ]);
+    await query(
+      "insert into account_turn_queue(sandbox_id,request_id,input_enc,state,sequence,dispatch_generation) values($1,$1,$2,$3,$4,null)",
+      [id, sealed, i === 0 ? "admitted" : "queued", i + 1],
+    );
   await query("insert into account_agent_reservations values($1,$2)", [ids[0], account]);
   await db.exec(readFileSync("supabase/migrations/20261116180000_account_model_limits.sql", "utf8"));
 });

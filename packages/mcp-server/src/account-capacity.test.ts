@@ -42,7 +42,7 @@ beforeAll(async () => {
   await db.exec(`create table credentials(id uuid primary key,name text,max_agents integer);
     create table sandboxes(id uuid primary key,credential_id uuid,deleted_at timestamptz,stopped_at timestamptz,
       status text,activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1);
-    create table account_turn_queue(sandbox_id uuid,state text,dispatch_generation bigint);
+    create table account_turn_queue(sandbox_id uuid,state text,dispatch_generation bigint,account_id uuid,dispatch_until timestamptz);
     create table runtime_commands(sandbox_id uuid,request_id text,result_enc bytea);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean,primary key(sandbox_id,prompt_id));
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);

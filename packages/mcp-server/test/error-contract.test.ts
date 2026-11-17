@@ -183,3 +183,23 @@ test.each([
   expect(response.status).toBe(status);
   expect(await response.json()).toMatchObject({ error: { code } });
 });
+
+test.each([
+  ["conflict", "conflict"],
+  ["invalid", "invalid"],
+  ["not_found", "not_found"],
+  ["forbidden", "forbidden"],
+  ["credential_refused", "credential_refused"],
+  ["missing_credential", "missing_credential"],
+  ["unavailable", "dependency_unavailable"],
+  ["credential_busy", "credential_busy"],
+  ["credential_binding_required", "credential_binding_required"],
+  ["credential_binding_unsafe", "credential_binding_unsafe"],
+  ["credential_binding_unsupported", "credential_binding_unsupported"],
+] as const)("shared tool preserves VaultError %s category", async (code, expected) => {
+  await expect(
+    callSharedTool(toolContext(new VaultError(code, "public explanation")), "github_refresh", {
+      id: "sandbox",
+    }),
+  ).rejects.toMatchObject({ code: expected, message: "public explanation" });
+});

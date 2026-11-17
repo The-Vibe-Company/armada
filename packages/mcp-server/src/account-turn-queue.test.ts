@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import { accountModelCountsSql, accountWaitingCountSql, type Sql, VaultError } from "@armada/core/server";
+import {
+  accountModelCountsSql,
+  accountWaitingCountSql,
+  accountWorkingCountSql,
+  type Sql,
+  VaultError,
+} from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
@@ -46,6 +52,11 @@ beforeAll(async () => {
   await db.exec(
     "alter table credentials add column model_limits jsonb not null default '{}'::jsonb; alter table account_agent_reservations add column model text; alter table account_turn_queue add column model text",
   );
+  await db.exec(
+    await Bun.file(
+      new URL("../../../supabase/migrations/20261117190000_resolve_uncertain_native_capacity.sql", import.meta.url),
+    ).text(),
+  );
   await db.query("insert into orgs values($1)", [org]);
   await db.query("insert into members values($1,$2,'member')", [org, owner]);
   await db.query("insert into mcp_actor_epochs values($1,$2,1)", [org, owner]);
@@ -58,7 +69,7 @@ beforeAll(async () => {
 afterAll(() => db.close());
 beforeEach(async () => {
   await db.exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -108,33 +119,130 @@ test("queued sends recheck actor revocation without dispatching or reserving a s
 });
 
 test("uncertain native dispatch is not retried and confirmed stop releases the account for the next queued turn", async () => {
-  const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction" };
-  const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction" };
+  for (const stopBeforeFailure of [false, true]) {
+    await db.exec(
+      "delete from account_turn_queue; delete from account_agent_reservations; update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,lifecycle_generation=0,activity_lease_id=null,model=null",
+    );
+    const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction", model: "gpt-5.4" };
+    const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction", model: "gpt-5.4" };
+    await db.exec("update credentials set max_agents=null,model_limits='{\"gpt-5.4\":1}'::jsonb");
+    await queue.accept(caller, first);
+    await queue.accept(caller, second);
+    let calls = 0;
+    queue.setDispatch(async () => {
+      calls++;
+      await db.query(
+        "update sandboxes set lifecycle_generation=lifecycle_generation+1,model='default_model',activity_lease_id=id where id=$1",
+        [ids[1]],
+      );
+      // Normal dispatch cleanup releases the transient reservation even on error.
+      await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
+      if (stopBeforeFailure)
+        await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
+      throw Error("uncertain");
+    });
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await queue.drain();
+    if (!stopBeforeFailure) {
+      const usage = await db.query<{ total: number; default_model: number; override_model: number }>(
+        `select ${accountWorkingCountSql("$1")} as total,
+          ${accountWorkingCountSql("$1", "null::uuid", "'default_model'")} as default_model,
+          ${accountWorkingCountSql("$1", "null::uuid", "'gpt-5.4'")} as override_model`,
+        [account],
+      );
+      expect(
+        usage.rows.map((row) => [Number(row.total), Number(row.default_model), Number(row.override_model)]),
+      ).toEqual([[1, 0, 1]]);
+      expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+      expect(calls).toBe(1);
+      // Exec/steer can advance generations without resolving the uncertain prompt.
+      await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+2 where id=$1", [ids[1]]);
+      expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+      expect((await queue.status(caller, first.id, first.request_id))?.failed).toBe(true);
+      expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [first.id])).rows).toEqual([
+        { state: "failed" },
+      ]);
+      await db.query(
+        "update sandboxes set status='stopping',stop_requested_at=now(),lifecycle_generation=lifecycle_generation+2 where id=$1",
+        [ids[1]],
+      );
+      expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+      expect(calls).toBe(1);
+      await db.query("update sandboxes set status='failed' where id=$1", [ids[1]]);
+      expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+      expect(calls).toBe(1);
+      await db.query(
+        "update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=lifecycle_generation+1 where id=$1",
+        [ids[1]],
+      );
+    }
+    // A later resume must not resurrect the old uncertain model charge.
+    await db.query(
+      "update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,activity_lease_id=null,lifecycle_generation=lifecycle_generation+1 where id=$1",
+      [ids[1]],
+    );
+    queue.setDispatch(async (_caller, input) => ({
+      id: input.id,
+      promptId: "actual_next",
+      conversationId: "history",
+      status: "running",
+    }));
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await queue.drain();
+    expect(await queue.status(caller, ids[2]!, requests[1])).toEqual({ nativePromptId: "actual_next" });
+  }
+});
+
+// Cancellation can win the race against the dispatch error handler. The receipt is
+// terminalized by the sweep while the handler still owns the claim, so the handler's
+// update matches zero rows. Uncertainty must not depend on which path wrote last.
+test("cancellation during dispatch keeps the uncertain model charge until physical stop", async () => {
+  const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction", model: "gpt-5.4" };
+  const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction", model: "gpt-5.4" };
+  await db.exec("update credentials set max_agents=null,model_limits='{\"gpt-5.4\":1}'::jsonb");
   await queue.accept(caller, first);
   await queue.accept(caller, second);
-  let calls = 0;
   queue.setDispatch(async () => {
-    calls++;
-    await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [ids[1]]);
+    // Admission advances the generation, then ordinary cleanup releases the reservation.
+    await db.query(
+      "update sandboxes set lifecycle_generation=lifecycle_generation+1,model='default_model',activity_lease_id=id where id=$1",
+      [ids[1]],
+    );
+    await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
+    // A stop becomes pending while the dispatch handler is still running.
+    await db.query(
+      "update sandboxes set status='stopping',stop_requested_at=now(),activity_lease_id=null where id=$1",
+      [ids[1]],
+    );
+    // A concurrent reconciliation terminalizes the receipt before the handler completes.
+    await queue.reconcileOne(new AbortController().signal);
     throw Error("uncertain");
   });
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  expect(calls).toBe(1);
-  await db.query(
-    "update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=lifecycle_generation+1 where id=$1",
-    [ids[1]],
+  const usage = await db.query<{ total: number; default_model: number; override_model: number }>(
+    `select ${accountWorkingCountSql("$1")} as total,
+      ${accountWorkingCountSql("$1", "null::uuid", "'default_model'")} as default_model,
+      ${accountWorkingCountSql("$1", "null::uuid", "'gpt-5.4'")} as override_model`,
+    [account],
   );
-  queue.setDispatch(async (_caller, input) => ({
-    id: input.id,
-    promptId: "actual_next",
-    conversationId: "history",
-    status: "running",
-  }));
+  expect(usage.rows.map((row) => [Number(row.total), Number(row.default_model), Number(row.override_model)])).toEqual([
+    [1, 0, 1],
+  ]);
+  // The second request must stay blocked while physical stop is unconfirmed.
+  let calls = 0;
+  queue.setDispatch(async () => {
+    calls++;
+    throw Error("must not dispatch");
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  await queue.drain();
+  expect(calls).toBe(0);
+  // Confirmed physical stop releases the charge.
+  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
-  expect(await queue.status(caller, ids[2]!, requests[1])).toEqual({ nativePromptId: "actual_next" });
+  expect(calls).toBe(1);
 });
 
 test("queued public receipts remain usable across server reads, evidence, outcome and conversation controls", async () => {
@@ -614,15 +722,6 @@ test.each(["boat", "modal"])("native %s restart releases only proven pre-dispatc
     calls++;
     return { promptId: "recovered_native" };
   });
-  // An expired lease is not enough: durable provider admission must remain fenced.
-  await db.query("update sandboxes set lifecycle_generation=1 where id=$1", [input.id]);
-  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
-  expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(1);
-  await db.query("update sandboxes set lifecycle_generation=0 where id=$1", [input.id]);
-  await db.query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
-  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
-  expect(calls).toBe(0);
-  await db.exec("delete from runtime_commands");
   expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
   expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(0);
   expect((await restarted.status(caller, input.id, input.request_id))?.message).toBe(
@@ -796,4 +895,21 @@ test.each(["boat", "modal"] as const)("stopped %s native send reaches account ad
     await queue.accept(caller, { id: ids[1]!, request_id: requests[0]!, prompt: "continue preserved work" }),
   ).toMatchObject({ status: "queued" });
   expect((await db.query("select * from account_turn_queue")).rows).toHaveLength(1);
+});
+
+test("expired native post-admission claims fail visibly without replay after restart", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain after restart" };
+  await queue.accept(caller, input);
+  await db.query(
+    "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
+    [input.id],
+  );
+  await db.query("update sandboxes set lifecycle_generation=1 where id=$1", [input.id]);
+  let calls = 0;
+  queue.setDispatch(async () => {
+    calls++;
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(calls).toBe(0);
+  expect((await queue.status(caller, input.id, input.request_id))?.failed).toBe(true);
 });

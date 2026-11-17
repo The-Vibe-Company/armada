@@ -1083,6 +1083,18 @@ test("a resume refused by host cleanup is a non-retryable conflict, not a provid
   }
 });
 
+test("Docker status retains the agent finish reason after physical stop", async () => {
+  const f = await fixture();
+  await database().query(
+    "update sandboxes set status='stopped',status_reason='agent_finished',stopped_at=now() where id=$1",
+    [f.sandbox.id],
+  );
+  expect(await invoke(caller(f.actor), "status", { id: f.sandbox.id })).toMatchObject({
+    status: "stopped",
+    statusReason: "agent_finished",
+  });
+});
+
 test("reclaimed workspace status and resume report the durable disk cause", async () => {
   const f = await fixture();
   await ready(f);

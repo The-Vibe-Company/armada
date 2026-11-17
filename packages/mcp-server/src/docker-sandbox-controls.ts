@@ -78,7 +78,11 @@ const terminal = (row: Row) => ["stopped", "deleted", "failed"].includes(row.sta
 function reason(row: Row) {
   if (row.status === "deleted" && dockerWorkspaceReclaimedMessage(row.status_reason)) return row.status_reason;
   if (row.status_reason === "expired") return "expired";
-  if (row.status_reason === "idle_paused" && ["stopping", "stopped"].includes(row.status)) return "idle_paused";
+  if (
+    ["idle_paused", "agent_finished"].includes(row.status_reason ?? "") &&
+    ["stopping", "stopped"].includes(row.status)
+  )
+    return row.status_reason;
   if (row.status !== "failed") return null;
   return dockerSandboxFailureReason(row.status_reason);
 }
