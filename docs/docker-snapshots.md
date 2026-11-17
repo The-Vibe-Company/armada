@@ -190,10 +190,11 @@ A fresh public `git/git` checkout on this Linux sandbox measured:
 | --- | ---: | ---: | ---: |
 | Full single branch | 28.899 | 326,704 | 83,045 |
 | Depth-one single branch (current default) | 2.270 | 13,856 | 1 |
+| Depth-one plus `--filter=blob:none` | 8.855 | 14,024 | 1 |
 
-Both resolved `master` to `e1ec09b23c8e0deb21a0b95ac5996422277395d4`.
-This is a one-run checkout comparison, full first then shallow, with fresh
-local destinations and an uncontrolled network/server cache. It is not an
+All three resolved `master` to `e1ec09b23c8e0deb21a0b95ac5996422277395d4`.
+This is a one-run checkout comparison, full first, shallow second and partial
+third, with fresh local destinations and an uncontrolled network/server cache. It is not an
 end-to-end Docker launch benchmark or provider acceptance evidence. The shallow
 run took 92.1% less time and 95.8% less Git metadata disk space; the checked-out
 files were identical (`diff -qr --exclude=.git`). Disk usage is not transferred
@@ -202,20 +203,25 @@ bytes. Reproduce outside unit CI with Python's `time.monotonic()` around each:
 ```sh
 git clone --quiet --single-branch --branch master https://github.com/git/git.git full
 git clone --quiet --single-branch --branch master --depth=1 https://github.com/git/git.git shallow
+git clone --quiet --single-branch --branch master --depth=1 --filter=blob:none https://github.com/git/git.git partial
 git -C full rev-parse HEAD
 git -C shallow rev-parse HEAD
+git -C partial rev-parse HEAD
 git -C full rev-list --count HEAD
 git -C shallow rev-list --count HEAD
-du -sk full/.git shallow/.git
+du -sk full/.git shallow/.git partial/.git
 diff -qr --exclude=.git full shallow
+diff -qr --exclude=.git shallow partial
 ```
 
 Do not add a host-wide mirror/alternates cache: it requires private-repository
 access isolation, eviction and object-lifetime management. Do not automatically
 substitute a snapshot for `--repo`: snapshot selection carries host, ownership,
-recipe and initialization semantics. A partial clone still needs the working
-tree's blobs and adds lazy-fetch behavior; the current shallow checkout already
-omits historical blobs. These alternatives were not benchmarked here.
+recipe and initialization semantics. The measured shallow partial clone still needs
+the working tree's blobs and adds lazy-fetch behavior: it took 8.855 seconds
+versus 2.270 for the existing shallow path, with identical checked-out files.
+Retain shallow alone; the measurement provides no reason to add partial clone.
+Mirror and automatic snapshot alternatives were not benchmarked here.
 
 This decision changes no checkout authorization, source/image pinning or scan
 boundary. Snapshot builds retain their immutable host/provider binding,
