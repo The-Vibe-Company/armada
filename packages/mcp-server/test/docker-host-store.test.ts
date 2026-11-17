@@ -1368,6 +1368,11 @@ test("a stale cleaned ACK cannot delete a sandbox with a later admitted resume",
   const a = await boundStartup("bootstrap");
   await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "completed" });
   await db.query(`update public.sandboxes set status='stopped',stopped_at=now() where id=$1`, [a.sandboxId]);
+  const oldStop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, oldStop);
+  await store.complete(a.hostToken, a.installationId, { requestId: oldStop.requestId, outcome: "completed" });
+  const oldDelete = { requestId: randomUUID(), operation: "delete" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, oldDelete);
   // The resume admission marks the retained allocation starting before enqueue.
   await db.query(`update public.sandboxes set status='starting',stopped_at=null where id=$1`, [a.sandboxId]);
   const ticket = await a.authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
@@ -1383,6 +1388,20 @@ test("a stale cleaned ACK cannot delete a sandbox with a later admitted resume",
   // The original create's physical cleanup arrives after the resume was admitted.
   await store.cleaned(a.hostToken, a.installationId, { requestId: a.create.requestId });
   expect((await lifecycle(a.sandboxId))?.status).toBe("starting");
+  await store.complete(a.hostToken, a.installationId, { requestId: resume.requestId, outcome: "completed" });
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+  expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
+  await store.cleaned(a.hostToken, a.installationId, { requestId: a.create.requestId });
+  expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
+  for (const oldJob of [oldStop, oldDelete]) {
+    await store.complete(a.hostToken, a.installationId, { requestId: oldJob.requestId, outcome: "completed" });
+    expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
+  }
+  // Cleanup of the latest lifecycle is still authoritative.
+  await store.cleaned(a.hostToken, a.installationId, { requestId: resume.requestId });
+  expect((await lifecycle(a.sandboxId))?.status).toBe("deleted");
 });
 
 test("poll reports every generation with pending start intent, and per-generation deadlines persist", async () => {
