@@ -1035,8 +1035,13 @@ test("a late completed create ACK after cancellation restores the reservation in
     ).rows[0],
   ).toEqual({ outcome: "completed", cancelled_at: null });
   expect((await store.list(a.actor))[0]?.running).toBe(1);
+  // The sandbox stays failed until a physical fact proves the machine stopped;
+  // the restored reservation is what keeps capacity honest in the meantime.
+  expect((await lifecycle(a.sandboxId))?.status).toBe("failed");
+  expect((await lifecycle(a.sandboxId))?.stopped_at).toBeNull();
   await store.expired(a.hostToken, a.installationId, { requestId: a.create.requestId });
   expect((await store.list(a.actor))[0]?.running).toBe(0);
+  expect((await lifecycle(a.sandboxId))?.stopped_at).not.toBeNull();
 });
 
 test("removing the host owner retires queued startup before the denied poll", async () => {

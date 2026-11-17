@@ -13,5 +13,6 @@ alter table public.docker_snapshots add constraint docker_snapshots_failure_reas
     'Snapshot build expired before an image was published.',
     'Snapshot build authorization is no longer valid.',
     'Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.',
+    'Host disk free space is below the required 10 GB floor or unavailable; free space and retry.',
     'Host retired before snapshot publication.'
   ));

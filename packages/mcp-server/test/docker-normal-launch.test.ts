@@ -2937,6 +2937,33 @@ test("failed snapshot machine facts persist a safe reason in get and list respon
   });
 });
 
+test("a disk-floor snapshot build failure persists its actionable reason instead of aborting the ACK", async () => {
+  const f = await snapshotFixture(),
+    id = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: id,
+    name: "disk-full-build",
+    visibility: "private",
+    config: f.config,
+  });
+  expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: id,
+    outcome: "failed",
+    reason: "disk_full",
+  });
+  expect(
+    (
+      await database().query<{ status: string; failure_reason: string | null }>(
+        "select status,failure_reason from public.docker_snapshots where id=$1",
+        [id],
+      )
+    ).rows[0],
+  ).toEqual({ status: "failed", failure_reason: DOCKER_LAUNCH_FAILURE_MESSAGES.disk });
+});
+
 test("Docker normal launch uses the saved model unless explicitly overridden", async () => {
   for (const explicit of [false, true]) {
     const f = await fixture();
