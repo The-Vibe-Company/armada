@@ -619,111 +619,130 @@ test("unregister distinguishes a pending drain from confirmed revocation and rej
   }
 });
 
-test("snapshot builds keep ordinary stop/TTL work responsive and merge durable receipts without retaining credentials", async () => {
-  const hostId = crypto.randomUUID(),
-    installationId = crypto.randomUUID(),
-    snapshotId = crypto.randomUUID();
-  const normal = {
-    sandboxId: crypto.randomUUID(),
-    generation: crypto.randomUUID(),
-    image: `base@sha256:${"a".repeat(64)}`,
-    ttlSeconds: 60,
-    expiresAt: 10000,
-  };
-  const priorId = crypto.randomUUID(),
-    stopId = crypto.randomUUID();
-  const token = "offline-build-token";
-  const build: Job = {
-    requestId: snapshotId,
-    operation: "buildSnapshot",
-    request: { ...normal, sandboxId: snapshotId, generation: crypto.randomUUID() },
-    build: {
-      armadaVersion: "2.28.0",
-      id: snapshotId,
-      ownerId: crypto.randomUUID(),
-      visibility: "private",
-      token,
-      config: { repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }], init: [] },
+// The daemon's loop passes `dispatch`, but an older server never holds a poll, so
+// the build still runs inline and must keep the other work moving (#2561).
+for (const [caller, options] of [
+  ["a serial caller", {}],
+  [
+    "the job loop against a server that cannot hold a poll",
+    {
+      waitSeconds: 20,
+      running: new Set<string>(),
+      sandboxes: new Set<string>(),
+      dispatch: () => {
+        throw Error("A poll that was not held must not dispatch.");
+      },
     },
-  };
-  const stop: Job = { requestId: stopId, operation: "stop", request: normal };
-  let state: State = {
-    server: "https://armada.example",
-    hostId,
-    installationId,
-    hostToken: "a".repeat(64),
-    receipts: [{ requestId: priorId, request: normal, operation: "create", outcome: "completed" }],
-  };
-  const store: Store = {
-    load: async () => structuredClone(state),
-    save: async (next) => {
-      state = structuredClone(next);
-    },
-  };
-  const started = Promise.withResolvers<void>(),
-    finish = Promise.withResolvers<string>();
-  let building = false,
-    physicalExpiryDuringBuild = false,
-    stops = 0,
-    builds = 0;
-  const api: Api = {
-    register: async () => {
-      throw Error("unused");
-    },
-    poll: async (_state, options) => ({ job: options?.skipSnapshots ? stop : build }),
-    result: async () => {},
-  };
-  const executor: Executor = {
-    create: async () => {},
-    delete: async () => {},
-    stop: async () => {
-      stops++;
-    },
-    stopIfExpired: async () => {
-      physicalExpiryDuringBuild ||= building;
-      return building;
-    },
-    buildSnapshot: async () => {
-      builds++;
-      building = true;
-      started.resolve();
-      return finish.promise;
-    },
-  };
-  const interval = globalThis.setInterval,
-    clear = globalThis.clearInterval;
-  let pump: (() => void | Promise<void>) | undefined, running: Promise<unknown> | undefined;
-  globalThis.setInterval = ((callback: () => void | Promise<void>) => {
-    pump = callback;
-    return 1;
-  }) as unknown as typeof setInterval;
-  globalThis.clearInterval = (() => {}) as typeof clearInterval;
-  try {
-    running = tick(store, api, executor);
-    await started.promise;
-    if (!pump) throw Error("missing build work pump");
-    await pump();
-    expect(physicalExpiryDuringBuild).toBe(true);
-    expect(stops).toBe(1);
-    finish.resolve(`sha256:${"b".repeat(64)}`);
-    await running;
-    expect(state.receipts.find((r) => r.requestId === snapshotId)).toMatchObject({
+  ],
+] as const)
+  test(`snapshot builds keep ordinary stop/TTL work responsive and merge durable receipts without retaining credentials (${caller})`, async () => {
+    const hostId = crypto.randomUUID(),
+      installationId = crypto.randomUUID(),
+      snapshotId = crypto.randomUUID();
+    const normal = {
+      sandboxId: crypto.randomUUID(),
+      generation: crypto.randomUUID(),
+      image: `base@sha256:${"a".repeat(64)}`,
+      ttlSeconds: 60,
+      expiresAt: 10000,
+    };
+    const priorId = crypto.randomUUID(),
+      stopId = crypto.randomUUID();
+    const token = "offline-build-token";
+    const build: Job = {
+      requestId: snapshotId,
       operation: "buildSnapshot",
-      outcome: "completed",
-      imageId: `sha256:${"b".repeat(64)}`,
-    });
-    expect(state.receipts.find((r) => r.requestId === stopId)?.outcome).toBe("completed");
-    expect(state.receipts.find((r) => r.requestId === priorId)?.expired).toBe(true);
-    expect(JSON.stringify(state)).not.toContain(token);
-    await tick(store, api, executor);
-    expect(builds).toBe(1);
-  } finally {
-    finish.resolve(`sha256:${"b".repeat(64)}`);
-    await running?.catch(() => {});
-    globalThis.setInterval = interval;
-    globalThis.clearInterval = clear;
-  }
-});
+      request: { ...normal, sandboxId: snapshotId, generation: crypto.randomUUID() },
+      build: {
+        armadaVersion: "2.28.0",
+        id: snapshotId,
+        ownerId: crypto.randomUUID(),
+        visibility: "private",
+        token,
+        config: {
+          repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
+          init: [],
+        },
+      },
+    };
+    const stop: Job = { requestId: stopId, operation: "stop", request: normal };
+    let state: State = {
+      server: "https://armada.example",
+      hostId,
+      installationId,
+      hostToken: "a".repeat(64),
+      receipts: [{ requestId: priorId, request: normal, operation: "create", outcome: "completed" }],
+    };
+    const store: Store = {
+      load: async () => structuredClone(state),
+      save: async (next) => {
+        state = structuredClone(next);
+      },
+    };
+    const started = Promise.withResolvers<void>(),
+      finish = Promise.withResolvers<string>();
+    let building = false,
+      physicalExpiryDuringBuild = false,
+      stops = 0,
+      builds = 0;
+    const api: Api = {
+      register: async () => {
+        throw Error("unused");
+      },
+      poll: async (_state, options) => ({ job: options?.skipSnapshots ? stop : build }),
+      result: async () => {},
+    };
+    const executor: Executor = {
+      create: async () => {},
+      delete: async () => {},
+      stop: async () => {
+        stops++;
+      },
+      stopIfExpired: async () => {
+        physicalExpiryDuringBuild ||= building;
+        return building;
+      },
+      buildSnapshot: async () => {
+        builds++;
+        building = true;
+        started.resolve();
+        return finish.promise;
+      },
+    };
+    const interval = globalThis.setInterval,
+      clear = globalThis.clearInterval;
+    let pump: (() => void | Promise<void>) | undefined, running: Promise<unknown> | undefined;
+    globalThis.setInterval = ((callback: () => void | Promise<void>) => {
+      pump = callback;
+      return 1;
+    }) as unknown as typeof setInterval;
+    globalThis.clearInterval = (() => {}) as typeof clearInterval;
+    try {
+      running = tick(store, api, executor, false, Date.now, options);
+      await started.promise;
+      if (!pump) throw Error("missing build work pump");
+      await pump();
+      expect(physicalExpiryDuringBuild).toBe(true);
+      expect(stops).toBe(1);
+      finish.resolve(`sha256:${"b".repeat(64)}`);
+      await running;
+      expect(state.receipts.find((r) => r.requestId === snapshotId)).toMatchObject({
+        operation: "buildSnapshot",
+        outcome: "completed",
+        imageId: `sha256:${"b".repeat(64)}`,
+      });
+      expect(state.receipts.find((r) => r.requestId === stopId)?.outcome).toBe("completed");
+      expect(state.receipts.find((r) => r.requestId === priorId)?.expired).toBe(true);
+      expect(JSON.stringify(state)).not.toContain(token);
+      await tick(store, api, executor);
+      expect(builds).toBe(1);
+    } finally {
+      finish.resolve(`sha256:${"b".repeat(64)}`);
+      await running?.catch(() => {});
+      globalThis.setInterval = interval;
+      globalThis.clearInterval = clear;
+    }
+  });
 
 // The no-Node fallback must not label arbitrary HTTP output as a canceled ticket/name.
 test("HTTP reuse authenticates only with the fresh ticket and validates public identity before confirmation", async () => {
@@ -1813,6 +1832,84 @@ test("the mailbox loop drains ready jobs without idling and runs another sandbox
   expect(state.receipts.map((receipt) => receipt.outcome)).toEqual(["completed", "completed"]);
 });
 
+test("runJobs admits the job a held poll returns once its sandbox's running job completed during the hold", async () => {
+  const request = {
+    sandboxId: crypto.randomUUID(),
+    generation: crypto.randomUUID(),
+    image: `debian@sha256:${"a".repeat(64)}`,
+    ttlSeconds: 60,
+  };
+  const create: Job = { requestId: crypto.randomUUID(), operation: "create", request };
+  const stop: Job = { requestId: crypto.randomUUID(), operation: "stop", request };
+  let state: State = {
+    server: "https://armada.example",
+    installationId: crypto.randomUUID(),
+    hostId: crypto.randomUUID(),
+    hostToken: "a".repeat(64),
+    receipts: [],
+  };
+  const store: Store = {
+    load: async () => structuredClone(state),
+    save: async (next) => {
+      state = structuredClone(next);
+    },
+  };
+  const acknowledged: string[] = [];
+  let changed = Promise.withResolvers<void>();
+  const held = Promise.withResolvers<void>();
+  const delivered: string[] = [];
+  const api: Api = {
+    async register() {
+      throw new Error("unused");
+    },
+    // Like the server: a sandbox is blocked only until its running job's outcome is recorded.
+    async poll(_state, options) {
+      const running = options?.running ?? [];
+      if (running.length) held.resolve();
+      for (;;) {
+        const blocked = (job: Job) =>
+          [create, stop].some(
+            (other) =>
+              running.includes(other.requestId) &&
+              !acknowledged.includes(other.requestId) &&
+              other.request.sandboxId === job.request.sandboxId,
+          );
+        const job = [create, stop].find((item) => !acknowledged.includes(item.requestId) && !blocked(item));
+        if (job) {
+          delivered.push(job.requestId);
+          return { job: structuredClone(job), held: true };
+        }
+        if (acknowledged.length === 2) return { job: null, held: true };
+        await changed.promise;
+      }
+    },
+    async result(_state, receipt) {
+      acknowledged.push(receipt.requestId);
+      changed.resolve();
+      changed = Promise.withResolvers<void>();
+    },
+  };
+  const executor: Executor = {
+    // The create completes while the next poll is held, which then returns the stop.
+    create: async () => held.promise,
+    stop: async () => {},
+    delete: async () => {},
+    stopIfExpired: async () => {},
+  };
+  const sleeps: number[] = [];
+  await runJobs(store, api, executor, {
+    stopping: () => acknowledged.length === 2,
+    async sleep(ms) {
+      sleeps.push(ms);
+    },
+  });
+  expect(sleeps).toEqual([]);
+  expect(acknowledged).toEqual([create.requestId, stop.requestId]);
+  // The stop is admitted from the hold that returned it, not refused and polled for again.
+  expect(delivered).toEqual([create.requestId, stop.requestId]);
+  expect(state.receipts.map((receipt) => receipt.outcome)).toEqual(["completed", "completed"]);
+});
+
 test("a re-delivered job that is still executing here is neither run again nor recovered as uncertain", async () => {
   const f = fixture();
   const api: Api = {
@@ -1953,50 +2050,4 @@ test("a job of a sandbox whose operation still runs here waits, even if the serv
   expect(await tick(f.store, api, f.executor, false, Date.now, options)).toBe("busy");
   expect(f.state().receipts).toEqual([]);
   expect(f.executed).toEqual([]);
-});
-
-test("a job that completes during a held poll frees its sandbox's next job at once", async () => {
-  const f = fixture();
-  const stop: Job = { ...structuredClone(f.job), requestId: crypto.randomUUID(), operation: "stop" };
-  const acknowledged: string[] = [];
-  const executed: string[] = [];
-  const created = Promise.withResolvers<void>();
-  const createAcknowledged = Promise.withResolvers<void>();
-  const api: Api = {
-    ...f.api,
-    async poll(_state, options) {
-      if (!acknowledged.includes(f.job.requestId) && !options?.running?.includes(f.job.requestId))
-        return { job: structuredClone(f.job), held: true };
-      // The server holds the poll while create runs, and hands out the stop once create's outcome is recorded.
-      created.resolve();
-      await createAcknowledged.promise;
-      return acknowledged.includes(stop.requestId)
-        ? { job: null, held: true }
-        : { job: structuredClone(stop), held: true };
-    },
-    async result(state, receipt, ...rest) {
-      await f.api.result(state, receipt, ...rest);
-      acknowledged.push(receipt.requestId);
-      if (receipt.requestId === f.job.requestId) createAcknowledged.resolve();
-    },
-  };
-  const executor: Executor = {
-    ...f.executor,
-    async create() {
-      await created.promise;
-      executed.push("create");
-    },
-    async stop() {
-      executed.push("stop");
-    },
-  };
-  const sleeps: number[] = [];
-  await runJobs(f.store, api, executor, {
-    stopping: () => acknowledged.includes(stop.requestId),
-    async sleep(ms) {
-      sleeps.push(ms);
-    },
-  });
-  expect(executed).toEqual(["create", "stop"]);
-  expect(sleeps).toEqual([]);
 });
