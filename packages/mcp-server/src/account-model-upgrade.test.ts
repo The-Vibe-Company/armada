@@ -34,12 +34,10 @@ beforeAll(async () => {
   }
   const sealed = await encryptSecret(JSON.stringify({ model: "kimi", prompt: "override turn" }), key);
   for (const [i, id] of ids.slice(0, 2).entries())
-    await query("insert into account_turn_queue(sandbox_id,request_id,input_enc,state,sequence,dispatch_generation) values($1,$1,$2,$3,$4,null)", [
-      id,
-      sealed,
-      i === 0 ? "admitted" : "queued",
-      i + 1,
-    ]);
+    await query(
+      "insert into account_turn_queue(sandbox_id,request_id,input_enc,state,sequence,dispatch_generation) values($1,$1,$2,$3,$4,null)",
+      [id, sealed, i === 0 ? "admitted" : "queued", i + 1],
+    );
   await query("insert into account_agent_reservations values($1,$2)", [ids[0], account]);
   await db.exec(readFileSync("supabase/migrations/20261116180000_account_model_limits.sql", "utf8"));
 });
