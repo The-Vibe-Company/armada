@@ -445,7 +445,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
           message: "The stop snapshot is not complete yet.",
           retryable: true,
         });
-      if (attempt && attempt !== "completed") return null;
+      // A failed stop snapshot is final for this stop: the caller keeps its pre-stop capture.
+      if (attempt && attempt !== "completed") return "retained_unreadable";
       const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal: read }));
       const snapshot = latest.snapshot;
       if (!snapshot || snapshot.sandboxId !== sandboxId || snapshot.status !== "completed") return null;

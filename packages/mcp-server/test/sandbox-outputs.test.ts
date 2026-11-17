@@ -37,7 +37,13 @@ async function fixture(options: { boatId: string; boatRuntime?: boolean } = { bo
 
 /** A provider stand-in: a live disk while running, the retained disk once stopped. */
 function disks() {
-  const state = { live: [] as OutputFile[], retained: null as OutputFile[] | null, stopped: false, reads: 0 };
+  const state = {
+    live: [] as OutputFile[],
+    // null: unavailable now (retryable); "retained_unreadable": never readable for this stop.
+    retained: null as OutputFile[] | "retained_unreadable" | null,
+    stopped: false,
+    reads: 0,
+  };
   const provider = {
     id: "boat",
     get: async (sandboxId: string) => ({ id: sandboxId, state: state.stopped ? "stopped" : "ready" }),
@@ -46,7 +52,8 @@ function disks() {
     readOutputs: async () => {
       state.reads++;
       if (!state.stopped) return { files: state.live, retained: false };
-      return state.retained ? { files: state.retained, retained: true } : null;
+      if (!state.retained || state.retained === "retained_unreadable") return state.retained;
+      return { files: state.retained, retained: true };
     },
   } as unknown as Provider;
   return { state, provider };
@@ -109,13 +116,38 @@ test("a stop without the pre-stop hook publishes the retained disk's files writt
   expect(state.reads).toBe(2);
 });
 
-test("an unreadable retained disk keeps the pre-stop snapshot and is not polled again for that stop", async () => {
+test("a retained disk that is unavailable at first is read again and publishes its final files once readable", async () => {
+  const { db, people, id, sql } = await fixture();
+  const { state, provider } = disks();
+  state.live = [file("memo.txt", "draft")];
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  expect(await service.reconcileOne(signal())).toBe(true);
+  // Provider-initiated stop after the last sample; its snapshot tree is not readable yet (null).
+  state.stopped = true;
+  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
+  expect(await service.reconcileOne(signal())).toBe(true);
+  // The retained disk becomes readable; the next scan after the 30 s fence publishes it.
+  state.retained = [file("final.pdf", "final"), file("memo.txt", "final tender")];
+  await db.query(`update sandboxes set outputs_checked_at=now()-interval '31 seconds' where id=$1`, [id]);
+  expect(await service.reconcileOne(signal())).toBe(true);
+  expect(state.reads).toBe(3);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+  const route = routeFor(service, people.owner, people.org);
+  expect(await (await route(new Request(`${url}/final.pdf`)))?.text()).toBe("final");
+  expect(await (await route(new Request(`${url}/memo.txt`)))?.text()).toBe("final tender");
+  // Successful retained read completes collection for this stop.
+  await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
+  expect(await service.reconcileOne(signal())).toBe(false);
+});
+
+test("a retained disk the provider can never read keeps the pre-stop snapshot and is not polled again for that stop", async () => {
   const { db, people, id, sql } = await fixture();
   const { state, provider } = disks();
   state.live = [file("memo.txt", "captured")];
   const service = createSandboxOutputs(sql, KEY, async () => provider);
   expect(await service.reconcileOne(signal())).toBe(true);
-  state.stopped = true; // retained stays null: e.g. a Modal recovery image needs compute to read
+  state.stopped = true;
+  state.retained = "retained_unreadable"; // e.g. a Modal recovery image needs compute to read
   await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
   expect(await service.reconcileOne(signal())).toBe(true);
   await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);

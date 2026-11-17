@@ -28,17 +28,20 @@ async function collect(
 ) {
   const read = provider.readOutputs
     ? await provider.readOutputs({ sandboxId: providerId, ...(signal ? { signal } : {}) })
-    : null;
-  if (!read) {
-    // Stopped: the backend cannot read this retained disk without compute (Modal recovery image),
-    // so this stop keeps the snapshot captured before it. Do not poll it again until the next stop.
+    : "retained_unreadable";
+  if (read === "retained_unreadable") {
+    // The backend can never read this stop's retained disk without compute (Modal recovery image,
+    // failed stop snapshot): keep the snapshot captured before it; no polling until the next stop.
     if (stopped)
       await sql.query(
         `update public.sandboxes set outputs_retained_at=now() where id=$1 and outputs_checked_at::text=$2`,
         [id, scan],
       );
-    throw Error("output_collection_unavailable");
+    throw Error("output_collection_unsupported");
   }
+  // Unavailable now (incomplete snapshot tree, transient failure): keep the previous snapshot and
+  // retry after the scan fence. Only a successful retained read completes collection for a stop.
+  if (!read) throw Error("output_collection_unavailable");
   const files = admitOutputs(read.files).map((file) => ({
     name: file.name,
     bytes: Buffer.from(file.bytes),

@@ -986,6 +986,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       assertMachineSource(row);
       // Live compute only: a stopped Modal workspace is a recovery image, readable only by
       // starting compute, which this read never does. Armada stops capture first instead.
+      if (!row.golden && row.phase === "stopped") return "retained_unreadable";
       if (row.golden || row.phase !== "active" || !row.physicalId) return null;
       const sb = await physical(row);
       signal?.throwIfAborted();

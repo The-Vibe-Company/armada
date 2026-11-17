@@ -1284,6 +1284,7 @@ test("declared outputs of a stopped sandbox are read from its retained disk snap
     { raw: "final", headers: { "x-snapshot-entry-kind": "file" } },
   );
   const read = await boat.provider.readOutputs?.({ sandboxId: ID });
+  if (!read || read === "retained_unreadable") throw Error("expected a retained read");
   expect(read?.retained).toBe(true);
   expect(read?.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
   expect(boat.requests.every((request) => request.method === "GET")).toBe(true);
@@ -1318,6 +1319,6 @@ test("declared outputs of a stopped sandbox are read from its retained disk snap
   const failed = fakeBoat({
     body: { ok: true, sandbox: sandbox({ state: "archived", lastSnapshotStatus: "failed" }) },
   });
-  expect(await failed.provider.readOutputs?.({ sandboxId: ID })).toBeNull();
+  expect(await failed.provider.readOutputs?.({ sandboxId: ID })).toBe("retained_unreadable");
   expect([pending.remaining(), failed.remaining()]).toEqual([0, 0]);
 });
