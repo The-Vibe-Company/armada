@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { privateHarnessHome } from "../src/exec-env.ts";
 
-const harnesses = ["claude", "codex", "opencode"] as const;
+const harnesses: ("claude" | "codex" | "opencode")[] = ["claude", "codex", "opencode"];
 const token = "fixture_github_credential";
 
 // Launch writes identity and the credential helper with `git config --global` through exec.

@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { GitHubHydrationError, VERSION } from "@armada/core";
+import { GITHUB_REFRESH_MODAL_NATIVE, GitHubHydrationError, VERSION } from "@armada/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { callSharedTool } from "../src/tool-api.ts";
@@ -47,7 +47,7 @@ test.each([
   } else {
     await expect(callSharedTool(context, "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
       code: expected,
-      ...(expected === "unsupported" ? { status: 400 } : {}),
+      ...(expected === "unsupported" ? { status: 400, message: GITHUB_REFRESH_MODAL_NATIVE } : {}),
     });
     expect(calls).toEqual([]);
   }
