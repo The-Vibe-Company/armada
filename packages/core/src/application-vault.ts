@@ -1,7 +1,7 @@
-import { isApplicationVariableName } from "./readable-variables.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { encryptSecret } from "./crypto.ts";
 import type { Sql } from "./golden-store.ts";
+import { isApplicationVariableName } from "./readable-variables.ts";
 import { APPLICATION_VAULT_CONFLICT_MESSAGES, VaultError } from "./vault-error.ts";
 
 type Kind = "variable" | "secret";

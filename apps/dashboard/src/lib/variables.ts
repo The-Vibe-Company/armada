@@ -1,5 +1,4 @@
-import { isApplicationVariableName } from "@armada/core";
-import { isRecord } from "@armada/core";
+import { isApplicationVariableName, isRecord } from "@armada/core";
 import type { Bucket, ResourceState } from "./resource-list.ts";
 
 /**

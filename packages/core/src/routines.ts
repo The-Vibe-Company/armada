@@ -1,5 +1,5 @@
-import { TEMPLATE_REFUSAL_HELP } from "./templates.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
+import { TEMPLATE_REFUSAL_HELP } from "./templates.ts";
 
 /** A scheduled owner-scoped template launch definition. */
 export interface Routine {

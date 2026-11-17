@@ -1,4 +1,11 @@
-import { ROUTINE_REASON_HELP, type Routine, isRecord as record, routineReasonHelp, routineLaunchRefusal, templateRefusalHelp } from "@armada/core";
+import {
+  ROUTINE_REASON_HELP,
+  type Routine,
+  isRecord as record,
+  routineLaunchRefusal,
+  routineReasonHelp,
+  templateRefusalHelp,
+} from "@armada/core";
 import type { TemplateHeader } from "./templates.ts";
 
 export type RoutineItem = Omit<Routine, "createdAt" | "updatedAt" | "nextDueAt"> & {

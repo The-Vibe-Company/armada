@@ -1,8 +1,12 @@
 /** Names reserved by the runtime cannot be application bindings. */
 export function isApplicationVariableName(key: string): boolean {
-  return /^[A-Z][A-Z0-9_]{0,127}$/.test(key) &&
+  return (
+    /^[A-Z][A-Z0-9_]{0,127}$/.test(key) &&
     !/^(ARMADA_|BOAT_|MODAL_|ANTHROPIC_|OPENAI_|OPENCODE_|CLAUDE_|CODEX_|GH_|GITHUB_|MCP_|LD_|DYLD_)/i.test(key) &&
-    !/^(PATH|HOME|XDG_DATA_HOME|XDG_CONFIG_HOME|XDG_CACHE_HOME|XDG_STATE_HOME|SHELL|ENV|BASH_ENV|NODE_OPTIONS|PYTHONPATH|SSL_CERT_FILE|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)$/.test(key);
+    !/^(PATH|HOME|XDG_DATA_HOME|XDG_CONFIG_HOME|XDG_CACHE_HOME|XDG_STATE_HOME|SHELL|ENV|BASH_ENV|NODE_OPTIONS|PYTHONPATH|SSL_CERT_FILE|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)$/.test(
+      key,
+    )
+  );
 }
 
 /** Intentionally readable configuration, never application/model credentials. */

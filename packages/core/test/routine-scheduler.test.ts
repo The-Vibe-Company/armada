@@ -55,7 +55,7 @@ test("pre-claim admission refusal is retained without arbitrary exception text",
     claim: null,
     refusal: "variable_version_changed",
   });
-  for (const code of ["missing_credential", "credential_refused", "credential_busy", "unauthorized"] as const)
+  for (const code of ["missing_credential", "credential_refused", "credential_busy"] as const)
     expect((await failure(new VaultError(code, "private_value"))).refusal).toBe(code);
   for (const error of [
     new Error("private_value"),

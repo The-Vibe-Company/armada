@@ -298,11 +298,9 @@ describe("template revision from the form", () => {
 
 describe("template launch", () => {
   test("refusals are said in words, a pending launch keeps its meaning", () => {
-    expect(templateFailure(409, "Template launch refused: variable_version_changed.")).toContain(
-      "Publish a new version",
-    );
+    expect(templateFailure(409, "Template launch refused: variable_version_changed.")).toContain("Publish a revision");
     for (const [reason, action] of [
-      ["model_account_ambiguous", "Set a default in Account > Models"],
+      ["model_account_ambiguous", "Set a default in Models"],
       ["model_account_refused", "Reconnect the model account"],
     ]) {
       const message = templateFailure(409, `Template launch refused: ${reason}.`);

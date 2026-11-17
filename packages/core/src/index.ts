@@ -342,6 +342,7 @@ export {
 } from "./provider-response.ts";
 export { PUBLIC_CONTROL_ROUTES } from "./public-control-routes.ts";
 export {
+  isApplicationVariableName,
   parseReadableVariableBindings,
   type ReadableVariableBinding,
   validateReadableVariables,
@@ -359,7 +360,7 @@ export type {
   ProviderResourceObservation,
   VmResourceReading,
 } from "./resource-observation.ts";
-export { ROUTINE_REASON_HELP, type Routine, routineReasonHelp } from "./routines.ts";
+export { ROUTINE_REASON_HELP, type Routine, routineLaunchRefusal, routineReasonHelp } from "./routines.ts";
 export {
   createSqlSandboxStore,
   MAX_STATUS_REASON_LENGTH,
@@ -463,5 +464,3 @@ export {
   type VaultErrorCode,
 } from "./vault-error.ts";
 export { VERSION } from "./version.ts";
-
-export { isApplicationVariableName } from "./readable-variables.ts";
