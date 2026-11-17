@@ -150,7 +150,7 @@ export function createDockerHostRoutes(
               ...("claimed" in body
                 ? ["claimed"]
                 : "cleaned" in body
-                  ? ["cleaned"]
+                  ? ["cleaned", ...("cleanupReason" in body ? ["cleanupReason"] : [])]
                   : "expired" in body
                     ? ["expired"]
                     : "reason" in body
@@ -267,7 +267,16 @@ export function createDockerHostRoutes(
       if ("cleaned" in body) {
         if (body.cleaned !== true) throw new InvalidInput();
         const requestId = string(body.requestId);
-        await store.cleaned(token, installationId, { requestId });
+        if (
+          body.cleanupReason !== undefined &&
+          body.cleanupReason !== "retention_elapsed" &&
+          body.cleanupReason !== "disk_pressure"
+        )
+          throw new InvalidInput();
+        await store.cleaned(token, installationId, {
+          requestId,
+          ...(body.cleanupReason === undefined ? {} : { cleanupReason: body.cleanupReason }),
+        });
         return Response.json({ requestId }, { headers });
       }
       if ("expired" in body) {

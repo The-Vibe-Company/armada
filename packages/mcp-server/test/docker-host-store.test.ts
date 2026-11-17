@@ -905,9 +905,13 @@ test("retention cleanup authenticates the bound host and permanently fences runt
   const a = await boundStartup("bootstrap");
   await denied(store.cleaned(a.hostToken, randomUUID(), { requestId: a.startup.requestId }));
   await denied(store.cleaned(a.hostToken, a.installationId, { requestId: randomUUID() }));
-  await store.cleaned(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+  await store.cleaned(a.hostToken, a.installationId, {
+    requestId: a.startup.requestId,
+    cleanupReason: "disk_pressure",
+  });
   const deleted = await lifecycle(a.sandboxId);
   expect(deleted?.status).toBe("deleted");
+  expect(deleted?.status_reason).toBe("disk_pressure");
   await expect(a.authority.withSession(a.runtime.runtimeToken, a.runtime.epoch, async () => true)).rejects.toThrow(
     "runtime_enrolment_denied",
   );

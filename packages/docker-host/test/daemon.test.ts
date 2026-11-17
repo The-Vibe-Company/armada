@@ -1110,6 +1110,21 @@ test("durable retention cleans only stopped allocations after the deadline while
   expect((await f.store.load()).retention).toEqual([]);
 });
 
+test("default retention reclaims expired stopped workspaces with ample free disk", async () => {
+  const f = fixture("stop");
+  f.job.request.expiresAt = 1000;
+  await tick(f.store, f.api, f.executor, false, () => 0);
+  f.api.poll = async () => ({ job: null });
+  f.executor.isStopped = async () => true;
+  f.executor.diskFreeBytes = async () => 20_000_000_000;
+  let deletes = 0;
+  f.executor.deleteStopped = async () => {
+    deletes++;
+  };
+  await tick(f.store, f.api, f.executor, false, () => 2000);
+  expect(deletes).toBe(1);
+});
+
 test("physical resume cancels retention even when its RPC outcome was uncertain", async () => {
   const f = fixture();
   let stopped = true;
@@ -1197,7 +1212,8 @@ test("retention rotates failed deletions and runs local TTL before bounded offli
 
 test("server retention override persists and shifts pending deadlines without resetting their stopped age", async () => {
   const f = fixture();
-  await tick(f.store, f.api, f.executor);
+  f.job.request.expiresAt = 15000000;
+  await tick(f.store, f.api, f.executor, false, () => 0);
   const state = await f.store.load();
   state.retentionSeconds = 86400;
   state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 100000000 }];
@@ -1600,7 +1616,7 @@ test("a resume behind another mailbox job still cancels its generation's due ret
   expect((await f.store.load()).retention).toEqual([]);
 });
 
-test("an abandoned resume claim releases only at immutable expiry and keeps the normal offline retention delay", async () => {
+test("an abandoned resume claim releases at immutable expiry for default cleanup", async () => {
   const f = fixture();
   f.job.request.expiresAt = 1000;
   await tick(f.store, f.api, f.executor, false, () => 0);
@@ -1633,11 +1649,11 @@ test("an abandoned resume claim releases only at immutable expiry and keeps the 
   await expect(tick(f.store, f.api, f.executor, false, () => 999)).rejects.toThrow("offline");
   expect((await f.store.load()).retention).toEqual([]);
   // A fresh load on each tick represents restart; expiry retires the durable
-  // hold, then discovery grants the complete configured retention period.
+  // hold, then default discovery reclaims the expired workspace.
   await expect(tick(f.store, f.api, f.executor, false, () => 1000)).rejects.toThrow("offline");
   expect((await f.store.load()).resumeClaims?.[0]?.active).toBe(false);
-  expect((await f.store.load()).retention?.[0]?.deadline).toBe(2000);
-  expect(deleted).toBe(false);
+  expect((await f.store.load()).retention?.[0]?.deadline).toBe(1000);
+  expect(deleted).toBe(true);
   const compacted = await f.store.load();
   const original = compacted.receipts.find((receipt) => receipt.requestId === f.job.requestId)!;
   original.expired = true;
@@ -1657,8 +1673,75 @@ test("an abandoned resume claim releases only at immutable expiry and keeps the 
   offline = false;
   await tick(f.store, f.api, f.executor, false, () => 1999);
   expect(acknowledgements).toEqual([true]); // expired replays cannot renew the claim
-  expect(deleted).toBe(false);
+  expect(deleted).toBe(true);
   offline = true;
   await expect(tick(f.store, f.api, f.executor, false, () => 2000)).rejects.toThrow("offline");
   expect(deleted).toBe(true);
+});
+
+test("disk pressure reclaims oldest eligible workspaces until the floor, preserving claims and uncertain ownership", async () => {
+  const f = fixture();
+  const state = await f.store.load();
+  const requests = Array.from({ length: 7 }, () => ({
+    ...f.job.request,
+    sandboxId: crypto.randomUUID(),
+    generation: crypto.randomUUID(),
+  }));
+  state.receipts = requests.map((request) => ({
+    requestId: crypto.randomUUID(),
+    request,
+    operation: "stop",
+    outcome: "completed",
+  }));
+  state.retention = state.receipts.map((receipt, i) => ({
+    request: receipt.request,
+    requestId: receipt.requestId,
+    deadline: 10000 + i,
+  }));
+  state.resumeClaims = [{ requestId: crypto.randomUUID(), ...requests[0]!, accepted: true, active: true }];
+  await f.store.save(state);
+  f.api.poll = async () => ({ job: null, pendingStarts: [requests[1]!] });
+  let free = 1;
+  const removed: string[] = [];
+  f.executor.diskFreeBytes = async () => free;
+  f.executor.stoppedAt = async (request) => (request.generation === requests[5]!.generation ? 1 : 2);
+  f.executor.isStopped = async (request) => {
+    if (request === undefined) throw Error("missing request");
+    if (request.generation === requests[2]!.generation) throw Error("foreign ownership");
+    return request.generation !== requests[3]!.generation; // running/starting
+  };
+  f.executor.deleteStopped = async (request) => {
+    expect(
+      (await f.store.load()).retention?.find((entry) => entry.request.generation === request.generation)
+        ?.cleanupAuthorized,
+    ).toBe(true);
+    removed.push(request.generation);
+    if (removed.length === 2) free = 10_000_000_000;
+  };
+  await tick(f.store, f.api, f.executor, false, () => 100);
+  expect(removed).toEqual([requests[5]!.generation, requests[4]!.generation]);
+  expect(
+    (await f.store.load()).retention?.filter((entry) => entry.deleted).map((entry) => entry.cleanupReason),
+  ).toEqual(["disk_pressure", "disk_pressure"]);
+});
+
+test("failed pressure image cleanup cannot suppress durable workspace-loss reporting", async () => {
+  const f = fixture();
+  const state = await f.store.load();
+  state.retention = [
+    { request: f.job.request, requestId: f.job.requestId, deadline: 0, deleted: true, cleanupReason: "disk_pressure" },
+  ];
+  await f.store.save(state);
+  f.api.poll = async () => ({ job: null });
+  f.executor.diskFreeBytes = async () => 0;
+  f.executor.cleanupImages = async () => {
+    throw Error("inventory unavailable");
+  };
+  const reasons: (string | undefined)[] = [];
+  f.api.cleaned = async (_state, _id, reason) => {
+    reasons.push(reason);
+  };
+  await tick(f.store, f.api, f.executor, false, () => 100);
+  expect(reasons).toEqual(["disk_pressure"]);
+  expect((await f.store.load()).retention).toEqual([]);
 });

@@ -49,6 +49,7 @@ type Row = {
   harness: Harness;
   visibility: string;
   status: SandboxRecord["status"];
+  status_reason: string | null;
   deleted_at: Date | string | null;
   stop_requested_at: Date | string | null;
   expires_at: Date | string;
@@ -130,6 +131,7 @@ function record(row: Row) {
     harness: row.harness,
     visibility: "private" as const,
     status: row.status,
+    statusReason: row.status_reason ?? null,
     deletedAt: row.deleted_at === null ? null : new Date(row.deleted_at).toISOString(),
     stopRequestedAt: row.stop_requested_at === null ? null : new Date(row.stop_requested_at).toISOString(),
     expiresAt: new Date(row.expires_at).toISOString(),
