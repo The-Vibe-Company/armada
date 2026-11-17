@@ -46,6 +46,11 @@ beforeAll(async () => {
   await db.exec(
     "alter table credentials add column model_limits jsonb not null default '{}'::jsonb; alter table account_agent_reservations add column model text; alter table account_turn_queue add column model text",
   );
+  await db.exec(
+    await Bun.file(
+      new URL("../../../supabase/migrations/20261117190000_resolve_uncertain_native_capacity.sql", import.meta.url),
+    ).text(),
+  );
   await db.query("insert into orgs values($1)", [org]);
   await db.query("insert into members values($1,$2,'member')", [org, owner]);
   await db.query("insert into mcp_actor_epochs values($1,$2,1)", [org, owner]);
@@ -125,6 +130,9 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
   await queue.drain();
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
   expect(calls).toBe(1);
+  // Exec/steer can advance generations without resolving the uncertain prompt.
+  await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+2 where id=$1", [ids[1]]);
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
   expect((await queue.status(caller, first.id, first.request_id))?.failed).toBe(true);
   expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [first.id])).rows).toEqual([
     { state: "failed" },
@@ -133,6 +141,9 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
     "update sandboxes set status='stopping',stop_requested_at=now(),lifecycle_generation=lifecycle_generation+2 where id=$1",
     [ids[1]],
   );
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(calls).toBe(1);
+  await db.query("update sandboxes set status='failed' where id=$1", [ids[1]]);
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
   expect(calls).toBe(1);
   await db.query(
