@@ -19,6 +19,8 @@ interface Io {
   sleep(ms: number): Promise<void>;
   now(): number;
   out(line: string): void;
+  /** Called once the sandbox is ready and idle, when it no longer occupies model-account capacity. */
+  idle?(): void;
 }
 interface Status {
   id: string;
@@ -99,6 +101,7 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
         return status.status === "ready";
       }, 120),
     );
+    io.idle?.();
     io.out(
       JSON.stringify({
         step: "expiry_time_to_ready",
