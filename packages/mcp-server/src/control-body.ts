@@ -3,8 +3,8 @@ import { VaultError } from "@armada/core/server";
 
 const MAX_BODY_BYTES = 128 * 1024;
 
-export async function readBody(request: Request): Promise<Record<string, unknown>> {
-  return readJsonBody(request, false);
+export async function readBody(request: Request, maxBytes = MAX_BODY_BYTES): Promise<Record<string, unknown>> {
+  return readJsonBody(request, false, maxBytes);
 }
 
 /** Both policies count bytes before decoding; vault bodies additionally require valid UTF-8. */
@@ -12,12 +12,16 @@ export async function readVaultBody(request: Request): Promise<Record<string, un
   return readJsonBody(request, true);
 }
 
-async function readJsonBody(request: Request, vault: boolean): Promise<Record<string, unknown>> {
+async function readJsonBody(
+  request: Request,
+  vault: boolean,
+  maxBytes = MAX_BODY_BYTES,
+): Promise<Record<string, unknown>> {
   const invalid = (message: string) =>
     new VaultError("invalid", vault ? "Invalid application vault request." : message);
   const reader = vault ? request.body?.getReader() : undefined;
   const decoder = new TextDecoder("utf-8", { fatal: vault });
-  let text = vault ? "" : await readBoundedText(request, MAX_BODY_BYTES),
+  let text = vault ? "" : await readBoundedText(request, maxBytes),
     bytes = 0;
   try {
     if (reader) {
