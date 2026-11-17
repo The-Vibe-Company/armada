@@ -348,11 +348,12 @@ export function httpApi(
         claimed: accepted,
       });
     },
-    async cleaned(state, requestId) {
+    async cleaned(state, requestId, reason) {
       await post(state.server, "results", state.hostToken, {
         installationId: state.installationId,
         requestId,
         cleaned: true,
+        ...(reason ? { cleanupReason: reason } : {}),
       });
     },
     async result(state, receipt, expired) {

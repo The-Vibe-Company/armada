@@ -29,10 +29,18 @@ export async function dockerDiskFreeBytes(cli: DockerMachineCli): Promise<number
 }
 
 /** Fresh local proof closes the heartbeat-to-dispatch race for allocations/builds.
- * Retained resume and cleanup reuse owned resources and never require new disk proof. */
+ * Cleanup remains available even when admission cannot prove enough free space. */
 export function withDiskFloor(executor: Executor, sample: () => Promise<number | null>): Executor {
   return {
     ...executor,
+    ...(executor.resume
+      ? {
+          async resume(request: Parameters<NonNullable<Executor["resume"]>>[0]) {
+            requireDockerDiskSpace(await sample());
+            return executor.resume!(request);
+          },
+        }
+      : {}),
     async create(request) {
       requireDockerDiskSpace(await sample());
       return executor.create(request);

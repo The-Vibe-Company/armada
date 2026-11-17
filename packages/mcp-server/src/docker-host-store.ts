@@ -1221,9 +1221,18 @@ export function createDockerHostStore(sql: Sql, key: string) {
         return readJob(row);
       });
     },
-    cleaned(hostToken: string, installationId: string, result: { requestId: string }) {
+    cleaned(
+      hostToken: string,
+      installationId: string,
+      result: { requestId: string; cleanupReason?: "retention_elapsed" | "disk_pressure" },
+    ) {
       return transaction(async (tx) => {
-        exact(result, ["requestId"]);
+        exact(result, ["requestId", ...(result.cleanupReason === undefined ? [] : ["cleanupReason"])]);
+        if (
+          result.cleanupReason !== undefined &&
+          !["retention_elapsed", "disk_pressure"].includes(result.cleanupReason)
+        )
+          deny();
         id(result.requestId);
         const host = await reconcileHost(tx, hostToken, installationId);
         const job =
@@ -1240,10 +1249,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (await supersededLifecycle(tx, job)) return;
         // Physical cleanup is an authenticated machine fact, not owner delete intent.
         await tx.query(
-          `update public.sandboxes set status='deleted',status_reason=null,deleted_at=coalesce(deleted_at,now()),
+          `update public.sandboxes set status='deleted',status_reason=case when status='deleted' and status_reason in ('retention_elapsed','disk_pressure') then status_reason else $2 end,deleted_at=coalesce(deleted_at,now()),
            stopped_at=coalesce(stopped_at,now()),lifecycle_generation=lifecycle_generation+case when status='deleted' then 0 else 1 end
            where id=$1`,
-          [logical.id],
+          [logical.id, result.cleanupReason ?? "retention_elapsed"],
         );
       });
     },

@@ -4,6 +4,7 @@ import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
   API_FAILURE_STATUS,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerSandboxStatus,
   isSandboxPlacementProvider,
   ProviderError,
@@ -1092,4 +1093,54 @@ test("Docker status retains the agent finish reason after physical stop", async 
     status: "stopped",
     statusReason: "agent_finished",
   });
+});
+
+test("reclaimed workspace status and resume report the durable disk cause", async () => {
+  const f = await fixture();
+  await ready(f);
+  await database().query(
+    "update public.sandboxes set status='deleted',deleted_at=now(),status_reason='disk_pressure' where id=$1",
+    [f.sandbox.id],
+  );
+  const controller = createDockerSandboxControls(sql, key, { resume: bootstrap });
+  const status = await invoke(caller(f.actor), "status", { id: f.sandbox.id }, controller);
+  expect(status).toMatchObject({ status: "deleted", statusReason: "disk_pressure" });
+  expect(status).toHaveProperty("statusMessage", expect.stringContaining("low on disk space"));
+  await expect(
+    invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller),
+  ).rejects.toThrow("low on disk space");
+  await expect(bootstrap.resume(f.actor, f.sandbox.id, randomUUID())).rejects.toThrow("low on disk space");
+});
+
+test("a resume refused by the host disk floor returns the actionable disk cause", async () => {
+  const f = await fixture();
+  await ready(f);
+  await database().query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  const stopId = randomUUID();
+  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
+  let now = 0;
+  const controller = createDockerSandboxControls(sql, key, {
+    resume: bootstrap,
+    clock: {
+      now: () => now,
+      async wait(ms) {
+        now += ms;
+        for (const claim of await hosts.resumeClaimsForHost(f.hostToken, f.installationId))
+          await hosts.claimResume(f.hostToken, f.installationId, claim.requestId, true);
+        const job = await hosts.poll(f.hostToken, f.installationId, "2.28.0");
+        if (job) {
+          expect(job.operation).toBe("resume");
+          await hosts.complete(f.hostToken, f.installationId, {
+            requestId: job.requestId,
+            outcome: "failed",
+            reason: "disk_full",
+          });
+        }
+      },
+    },
+  });
+  await expect(
+    invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller),
+  ).rejects.toThrow(DOCKER_LAUNCH_FAILURE_MESSAGES.disk);
 });
