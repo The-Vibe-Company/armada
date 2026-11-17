@@ -10,10 +10,10 @@ test("migration CLI rejects collisions, placeholder versions and non-increasing 
     { files: ["20261112000001_next.sql"], ok: true },
     { files: [], ok: true },
     {
-      files: ["20261117120000_rounded.sql", "20261117120059_other.sql"],
+      files: ["99981231235900_rounded.sql", "99981231235959_other.sql"],
       ok: false,
       message: "minute-rounded version",
-      suggestAbove: "20261117120059",
+      suggestion: "99990101000001",
     },
     {
       files: ["99999999999999_placeholder.sql"],
@@ -44,6 +44,7 @@ test("migration CLI rejects collisions, placeholder versions and non-increasing 
       const result = spawnSync(process.execPath, [script, base], { cwd, encoding: "utf8" });
       expect(result.status).toBe(scenario.ok ? 0 : 1);
       if (scenario.message) expect(result.stderr).toContain(scenario.message);
+      if (scenario.suggestion) expect(result.stderr).toContain(`Use migration version ${scenario.suggestion}`);
       if (scenario.suggestAbove) {
         const suggested = /Use migration version (\d{14})/.exec(result.stderr)?.[1];
         expect(suggested).toBeDefined();
