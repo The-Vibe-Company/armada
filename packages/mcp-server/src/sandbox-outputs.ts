@@ -78,7 +78,7 @@ async function collect(
       [id, scan],
     );
     // A newer read (e.g. a pre-stop capture claimed after this sample) already committed: never go
-    // back. An older read whose newer rival failed or was skipped still publishes what live compute held.
+    // back. An older read whose newer rival failed still publishes what live compute held.
     if (!authority.rows.length) return;
     signal?.throwIfAborted();
     await tx.query(
@@ -106,7 +106,7 @@ export async function drainFinalOutputs(): Promise<void> {
 /** Final capture on Armada's stop path: after quiesce, before provider stop revokes compute.
  * Stopped workspaces are never read, so this is the last snapshot a stopped sandbox exposes.
  * Once it commits, its newer scan prevents an older in-flight sample from replacing it; if it
- * fails or is skipped (a busy Docker runtime queue), that older sample still publishes. Never resumes compute. */
+ * fails, that older sample still publishes while it is within its own deadline. Never resumes compute. */
 export async function captureFinalOutputs(
   sql: Sql,
   provider: OutputReader,

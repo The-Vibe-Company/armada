@@ -407,3 +407,31 @@ test("an in-flight sample publishes unless a newer final capture commits first",
   expect(periodic.state.reads).toBe(1);
   expect(await read(service)).toBe("final");
 });
+
+test("an in-flight sample still publishes when the newer final capture fails", async () => {
+  const { people, id, sql } = await fixture({ boatId: "sample_after_failed_final" });
+  const periodic = disks();
+  let release = () => {};
+  periodic.state.hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    periodic.state.entered = resolve;
+  });
+  const service = createSandboxOutputs(sql, KEY, async () => periodic.provider);
+  expect(await service.reconcileOne(signal())).toBe(true);
+  await entered;
+  // The newer pre-stop capture claims a later scan but its read fails.
+  const final = disks();
+  final.state.stopped = true;
+  await expect(captureFinalOutputs(sql, final.provider, id, { key: KEY, signal: signal() })).rejects.toThrow(
+    "output_collection_unavailable",
+  );
+  periodic.state.live = [file("memo.txt", "draft")];
+  release();
+  await service.drain();
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/memo.txt`;
+  const response = await routeFor(service, people.owner, people.org)(new Request(url));
+  expect(response?.status).toBe(200);
+  expect(await response?.text()).toBe("draft");
+});

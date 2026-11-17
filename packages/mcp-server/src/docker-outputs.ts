@@ -34,14 +34,18 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
           `with current as (select epoch from public.runtime_enrolments where sandbox_id=$1),
           removed as (delete from public.runtime_commands c where c.sandbox_id=$1 and starts_with(c.request_id,'outputs_')
             and (c.epoch is distinct from (select epoch from current)
-              or (c.result_enc is not null and split_part(c.request_id,'_',2)::bigint<$2::bigint)))
-          select exists(select 1 from public.runtime_commands c where c.sandbox_id=$1
-            and c.epoch=(select epoch from current) and c.result_enc is null) as busy`,
+              or (c.result_enc is not null and split_part(c.request_id,'_',2)::bigint<$2::bigint))),
+          pending as (select starts_with(c.request_id,'outputs_') as read from public.runtime_commands c
+            where c.sandbox_id=$1 and c.epoch=(select epoch from current) and c.result_enc is null)
+          select exists(select 1 from pending where not read) or (select count(*) from pending where read)>1 as busy`,
           [id, String(started - ANSWERED_GRACE_MS)],
         )
       ).rows[0];
       // The runtime answers its queue in order: never wait behind an unanswered command (a long
       // exec, a prompt a stop is about to cancel) or pile reads up. The previous snapshot stays.
+      // One in-flight read is not busy: reads are fast and read-only, so a pre-stop capture queues
+      // behind a periodic sample and takes its own fresh read before the stop is admitted (after
+      // admission the runtime fence refuses the sample's reply, which would otherwise be lost).
       if (queue?.busy) return null;
       const requestId = `outputs_${started}_${randomUUID().replaceAll("-", "")}`;
       try {
