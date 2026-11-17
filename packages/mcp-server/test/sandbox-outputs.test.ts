@@ -94,3 +94,86 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   expect(await service.reconcileOne(new AbortController().signal)).toBe(false);
   expect(calls).toBe(2);
 });
+
+import { OUTPUT_COLLECTOR } from "../src/sandbox-outputs.ts";
+import { preserveBeforeStop } from "../src/work-preservation.ts";
+
+test("stop captures files written after the last sample; enrolled runtimes are never collected", async () => {
+  const { db, people } = await database();
+  const insert = async (runtime: boolean) => {
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime)
+      select $1,id,org_id,owner_id,$2,'codex','ready',$3 from goldens
+      where owner_id=$4 and visibility='private' limit 1`,
+      [id, `final_${runtime}`, runtime, people.owner],
+    );
+    return id;
+  };
+  const id = await insert(false);
+  const enrolled = await insert(true);
+  const sql: Sql = {
+    query: (q, p) => db.query(q, p),
+    transaction: async (work) => {
+      await db.exec("begin");
+      try {
+        const result = await work(sql);
+        await db.exec("commit");
+        return result;
+      } catch (e) {
+        await db.exec("rollback");
+        throw e;
+      }
+    },
+  };
+  let files: { name: string; base64: string }[] = [];
+  const collected: string[] = [];
+  const provider = {
+    id: "boat",
+    get: async (sandboxId: string) => ({ id: sandboxId, state: "ready" }),
+    interrupt: async () => {},
+    exec: async (request: { sandboxId: string; command: string }) => {
+      if (request.command === OUTPUT_COLLECTOR) collected.push(request.sandboxId);
+      return {
+        detached: false,
+        exitCode: 0,
+        timedOut: false,
+        truncated: false,
+        stderr: "",
+        stdout: request.command === OUTPUT_COLLECTOR ? JSON.stringify(files) : '{"status":"clean"}',
+      };
+    },
+  } as unknown as Provider;
+  const key = Buffer.alloc(32, 7).toString("base64");
+  const previous = process.env.ARMADA_ENCRYPTION_KEY;
+  process.env.ARMADA_ENCRYPTION_KEY = key;
+  try {
+    const service = createSandboxOutputs(sql, key, async () => provider);
+    // The last periodic sample sees an empty directory; the agent then writes its deliverable.
+    expect(await service.reconcileOne(new AbortController().signal)).toBe(true);
+    expect(await service.reconcileOne(new AbortController().signal)).toBe(false);
+    expect(collected).toEqual(["final_false"]);
+    files = [{ name: "final.pdf", base64: Buffer.from("final").toString("base64") }];
+    await db.query(
+      `update sandboxes set status='stopping',stop_requested_at=now(),stop_generation=stop_generation+1 where id = any($1)`,
+      [[id, enrolled]],
+    );
+    await preserveBeforeStop(sql, provider, id, "final_false");
+    await preserveBeforeStop(sql, provider, enrolled, "final_true");
+    expect(collected).toEqual(["final_false", "final_false"]);
+    await db.query(`update sandboxes set status='stopped',stopped_at=now(),stop_requested_at=null where id=$1`, [id]);
+    const route = service.route(async () => ({
+      ok: true,
+      caller: { userId: people.owner, via: "service", orgs: [{ orgId: people.org, role: "member" }] },
+    }));
+    const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+    const listed = (await (await route(new Request(url)))?.json()) as { files: { name: string }[] };
+    expect(listed.files.map((file) => file.name)).toEqual(["final.pdf"]);
+    const download = await route(new Request(`${url}/final.pdf`));
+    expect(download?.status).toBe(200);
+    expect(await download?.text()).toBe("final");
+  } finally {
+    if (previous === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
+    else process.env.ARMADA_ENCRYPTION_KEY = previous;
+  }
+});

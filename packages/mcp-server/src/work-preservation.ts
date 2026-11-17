@@ -8,6 +8,7 @@ import {
   type Sql,
   workPreservationError,
 } from "@armada/core/server";
+import { captureFinalOutputs } from "./sandbox-outputs.ts";
 
 function closedFailure(stage: string, reason: string, diagnostic?: ReturnType<typeof workPreservationError>): string {
   return `${stage}_${reason}${diagnostic ? `_${diagnostic.errorClass === reason ? "" : `${diagnostic.errorClass}_`}${diagnostic.providerStatus === null ? "no_status" : `http_${diagnostic.providerStatus}`}` : ""}`;
@@ -66,8 +67,38 @@ export function recordStopDispatch(sandboxId: string, providerSandboxId: string,
   }
 }
 
-/** Never return command output or SDK errors: archives may contain credentials. */
+/** Never return command output or SDK errors: archives may contain credentials.
+ * Every stop admission runs this before provider stop, so it also takes the final
+ * declared-output snapshot while compute is still active (after quiesce). */
 export async function preserveBeforeStop(
+  sql: Sql,
+  provider: Provider,
+  id: string,
+  providerId: string,
+  source: StopSource = "unspecified",
+): Promise<"pending" | void> {
+  let outcome: "pending" | void;
+  try {
+    outcome = await preserveGitWork(sql, provider, id, providerId, source);
+  } catch (error) {
+    await finalOutputs(sql, provider, id);
+    throw error;
+  }
+  // A pending stop retries later; its final capture runs on that pass.
+  if (outcome !== "pending") await finalOutputs(sql, provider, id);
+  return outcome;
+}
+
+async function finalOutputs(sql: Sql, provider: Provider, id: string): Promise<void> {
+  try {
+    await captureFinalOutputs(sql, provider, id, { signal: AbortSignal.timeout(12_000) });
+  } catch {
+    // The previous snapshot stays readable; never block a stop on optional deliverables.
+    console.warn(JSON.stringify({ event: "sandbox_output_final_capture_failed", sandboxId: id }));
+  }
+}
+
+async function preserveGitWork(
   sql: Sql,
   provider: Provider,
   id: string,

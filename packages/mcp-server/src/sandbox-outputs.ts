@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { decryptSecret, encryptSecret, type Provider, type Sql } from "@armada/core/server";
+import { decryptSecret, encryptionKey, encryptSecret, type Provider, type Sql } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import type { Route } from "./http.ts";
 
@@ -59,52 +59,86 @@ export function parseOutputs(stdout: string): { name: string; bytes: Buffer; dig
   });
 }
 
-export function createSandboxOutputs(
+// Native Boat/Modal only: enrolled runtimes refuse server exec, so neither sampling nor final capture applies.
+const ELIGIBLE = `provider in ('boat','modal') and not boat_runtime and runtime_transport is distinct from 'dialout'`;
+
+async function collect(
   sql: Sql,
-  key: string | undefined,
-  providerFor: (id: string) => Promise<Provider>,
+  provider: Provider,
+  id: string,
+  providerId: string,
+  scan: string,
+  key: string,
+  signal?: AbortSignal,
 ) {
-  async function collect(id: string, providerId: string, scan: string, signal?: AbortSignal) {
-    if (!key) throw Error("output_encryption_unavailable");
-    const provider = await providerFor(id);
-    const result = await provider.exec({
-      sandboxId: providerId,
-      command: OUTPUT_COLLECTOR,
-      onlyIfRunning: true,
-      timeoutSeconds: 10,
-      ...(signal ? { signal } : {}),
-    });
-    if (result.detached || result.exitCode !== 0 || result.truncated || result.timedOut)
-      throw Error("output_collection_unavailable");
-    const files = parseOutputs(result.stdout);
-    // Replace the bounded snapshot atomically. Readers retain the last successful snapshot on collection failure.
-    const payload = await Promise.all(
-      files.map(async (file) => ({
-        name: file.name,
-        digest: file.digest,
-        size: file.bytes.length,
-        content: Buffer.from(await encryptSecret(file.bytes.toString("base64"), key)).toString("hex"),
-      })),
-    );
-    if (!sql.transaction) throw Error("output_transaction_unavailable");
-    await sql.transaction(async (tx) => {
-      const authority = await tx.query(
-        `select id from public.sandboxes where id=$1 and status<>'deleted'
+  const result = await provider.exec({
+    sandboxId: providerId,
+    command: OUTPUT_COLLECTOR,
+    onlyIfRunning: true,
+    timeoutSeconds: 10,
+    ...(signal ? { signal } : {}),
+  });
+  if (result.detached || result.exitCode !== 0 || result.truncated || result.timedOut)
+    throw Error("output_collection_unavailable");
+  const files = parseOutputs(result.stdout);
+  // Replace the bounded snapshot atomically. Readers retain the last successful snapshot on collection failure.
+  const payload = await Promise.all(
+    files.map(async (file) => ({
+      name: file.name,
+      digest: file.digest,
+      size: file.bytes.length,
+      content: Buffer.from(await encryptSecret(file.bytes.toString("base64"), key)).toString("hex"),
+    })),
+  );
+  if (!sql.transaction) throw Error("output_transaction_unavailable");
+  await sql.transaction(async (tx) => {
+    const authority = await tx.query(
+      `select id from public.sandboxes where id=$1 and status<>'deleted'
         and outputs_checked_at::text=$2 for update`,
-        [id, scan],
-      );
-      if (!authority.rows.length) return;
-      await tx.query(
-        `with incoming as (select * from jsonb_to_recordset($2::jsonb) as f(name text,digest text,size integer,content text)),
+      [id, scan],
+    );
+    if (!authority.rows.length) return;
+    await tx.query(
+      `with incoming as (select * from jsonb_to_recordset($2::jsonb) as f(name text,digest text,size integer,content text)),
       removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming))
       insert into public.sandbox_outputs(sandbox_id,name,digest,size,content_enc)
       select $1,name,digest,size,decode(content,'hex') from incoming
       on conflict(sandbox_id,name) do update set digest=excluded.digest,size=excluded.size,content_enc=excluded.content_enc,updated_at=now()
       where sandbox_outputs.digest<>excluded.digest`,
-        [id, JSON.stringify(payload)],
-      );
-    });
-  }
+      [id, JSON.stringify(payload)],
+    );
+  });
+}
+
+/** Final capture on the stop path: after quiesce, before provider stop revokes compute.
+ * Periodic sampling alone misses files written after its last pass. Taking a new scan
+ * fence prevents an older in-flight sample from replacing this snapshot. Exec is
+ * onlyIfRunning, so this never resumes stopped compute. */
+export async function captureFinalOutputs(
+  sql: Sql,
+  provider: Provider,
+  id: string,
+  options: { key?: string | undefined; signal?: AbortSignal } = {},
+): Promise<void> {
+  const key = options.key ?? encryptionKey();
+  if (!key) return;
+  const row = (
+    await sql.query<{ provider_sandbox_id: string; scan: string }>(
+      `update public.sandboxes set outputs_checked_at=clock_timestamp()
+      where id=$1 and status in ('ready','running','stopping') and provider_sandbox_id is not null and ${ELIGIBLE}
+      returning provider_sandbox_id,outputs_checked_at::text as scan`,
+      [id],
+    )
+  ).rows[0];
+  if (!row) return;
+  await collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, options.signal);
+}
+
+export function createSandboxOutputs(
+  sql: Sql,
+  key: string | undefined,
+  providerFor: (id: string) => Promise<Provider>,
+) {
   const pending = new Set<Promise<boolean>>();
   return {
     async reconcileOne(signal: AbortSignal): Promise<boolean> {
@@ -115,12 +149,14 @@ export function createSandboxOutputs(
           provider_sandbox_id: string;
           scan: string;
         }>(`update public.sandboxes set outputs_checked_at=now()
-        where id=(select id from public.sandboxes where status in ('running','ready') and provider in ('boat','modal')
+        where id=(select id from public.sandboxes where status in ('running','ready') and ${ELIGIBLE}
         and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds')
         order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider_sandbox_id,outputs_checked_at::text as scan`)
       ).rows[0];
       if (!row) return false;
-      const work = collect(row.id, row.provider_sandbox_id, row.scan, signal).then(() => true);
+      const work = providerFor(row.id)
+        .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, signal))
+        .then(() => true);
       pending.add(work);
       try {
         return await work;
