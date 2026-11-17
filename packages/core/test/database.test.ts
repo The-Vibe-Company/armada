@@ -199,6 +199,7 @@ describe("database", () => {
         "mcp_pending_oauth.payload_enc",
         "model_auth_state.state_enc",
         "notify_subscriptions.secret_enc",
+        "org_langfuse.config_enc",
         "organization_invitations.token_enc",
         "orgs.boat_api_key_enc",
         "runtime_commands.request_enc",
