@@ -317,6 +317,11 @@ export async function runJobs(
   },
 ): Promise<void> {
   const running = new Map<string, { sandboxId: string; snapshot: boolean; done: Promise<void> }>();
+  // Counts finished operations. A tick checks the job it receives against the
+  // work running when it started; if some of that work finished meanwhile (a
+  // create completing during the held poll that returns its bootstrap), the
+  // refused job may now be admissible, so the loop polls again at once.
+  let finished = 0;
   const settled = () => Promise.race([...running.values()].map((job) => job.done));
   try {
     while (!loop.stopping()) {
@@ -325,6 +330,7 @@ export async function runJobs(
         await settled();
         continue;
       }
+      const finishedBefore = finished;
       let outcome: TickOutcome;
       try {
         outcome = await tick(
@@ -342,6 +348,7 @@ export async function runJobs(
                 .catch(() => loop.failed?.("job"))
                 .finally(() => {
                   running.delete(job.requestId);
+                  finished++;
                 });
               running.set(job.requestId, {
                 sandboxId: job.request.sandboxId,
@@ -356,6 +363,7 @@ export async function runJobs(
         outcome = "idle";
       }
       if (loop.stopping()) break;
+      if (outcome === "busy" && finished !== finishedBefore) continue;
       if (outcome === "busy" && running.size) await Promise.race([settled(), loop.sleep(DOCKER_HOST_IDLE_MS)]);
       else if (outcome === "busy" || outcome === "idle") await loop.sleep(DOCKER_HOST_IDLE_MS);
     }
@@ -783,14 +791,16 @@ async function admitLocked(
     }
   }
   /** The machine operation itself, outside the serialized ledger section. */
+  const dispatched = Boolean(options.dispatch && polled?.held);
   async function perform(receipt: Receipt, job: Job, admitted: boolean, refusal: unknown) {
     try {
       if (refusal) throw refusal;
       if (receipt.operation === "buildSnapshot") {
         if (job.operation !== "buildSnapshot" || !executor.buildSnapshot) throw Error("Snapshot builds unavailable.");
         let sweeping: Promise<unknown> | undefined;
-        // A concurrent caller keeps ticking itself; a serial one sweeps from here.
-        const timer = options.dispatch
+        // A caller that dispatched this build keeps ticking itself; a build run
+        // inline (serial caller, or a server that cannot hold a poll) sweeps from here.
+        const timer = dispatched
           ? undefined
           : setInterval(async () => {
               if (sweeping) return;

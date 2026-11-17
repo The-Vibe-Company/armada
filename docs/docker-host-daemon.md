@@ -1323,7 +1323,12 @@ started about a minute apart.
 - **Drain.** After taking a job, or after a held poll ends, the daemon polls
   again at once. It pauses 20 seconds only after a failed iteration, against a
   server that cannot hold a poll, or when the server can only re-deliver work
-  that is already running here.
+  that is already running here. A job it refused because its sandbox (or a
+  build) was running is polled for again at once if that operation finished
+  during the poll, so a bootstrap behind a create is not held back.
+- **Snapshot builds against an older server** run inline as before and keep
+  the 10-second background tick, so stop, TTL and retention work continue
+  during the build.
 - **Concurrency.** Up to four machine operations run at once
   (`DOCKER_HOST_CONCURRENT_JOBS`). The daemon reports their request IDs as
   `running`. The server never hands out a running job, a later job of the same
