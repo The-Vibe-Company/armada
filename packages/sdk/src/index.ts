@@ -35,6 +35,8 @@ export class ArmadaError extends Error {
     readonly status: number,
     readonly serverCode: string | undefined,
     readonly outcomeUnknown: boolean,
+    /** Server-requested delay before retrying, from `Retry-After` or the failure body; schedule retries no sooner. */
+    readonly retryAfterSeconds?: number,
   ) {
     super(
       code in API_FAILURE_HELP
@@ -336,16 +338,6 @@ export class Armada {
         // No automatic transport replay: acceptance may already have happened.
         throw new ArmadaError("transport_error", 0, undefined, !readOnly);
       }
-      if (
-        readOnly &&
-        retryStatuses.has(response.status) &&
-        attempt < this.retries &&
-        !response.headers.has("retry-after") &&
-        !signal.aborted
-      ) {
-        await response.body?.cancel();
-        continue;
-      }
       const value: unknown = await response.json().catch(() => null);
       if (response.ok) {
         if (!value || typeof value !== "object" || Array.isArray(value))
@@ -353,6 +345,17 @@ export class Armada {
         return value as T;
       }
       const error = value && typeof value === "object" && "error" in value ? value.error : undefined;
+      const retryAfterSeconds = retryAfter(response.headers.get("retry-after"), error);
+      // A server-requested delay belongs to the caller's scheduler: never replay early.
+      if (
+        readOnly &&
+        retryStatuses.has(response.status) &&
+        attempt < this.retries &&
+        retryAfterSeconds === undefined &&
+        !response.headers.has("retry-after") &&
+        !signal.aborted
+      )
+        continue;
       const rawCode =
         error && typeof error === "object" && "code" in error && typeof error.code === "string"
           ? error.code
@@ -368,9 +371,31 @@ export class Armada {
         response.status,
         serverCode,
         !readOnly && (response.status >= 500 || code === "outcome_unknown"),
+        retryAfterSeconds,
       );
     }
   }
+}
+const MAX_RETRY_AFTER_SECONDS = 86_400;
+/** Accept only a delay in seconds or an HTTP date (header), or a whole number of seconds (failure body). */
+function retryAfter(header: string | null, error: unknown): number | undefined {
+  const seconds = (value: number) =>
+    Number.isFinite(value) && value >= 0 ? Math.min(Math.ceil(value), MAX_RETRY_AFTER_SECONDS) : undefined;
+  if (header !== null) {
+    const text = header.trim();
+    if (/^\d{1,10}$/.test(text)) return seconds(Number(text));
+    const date = /[a-z]{3}, \d{2} [a-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/i.test(text) ? Date.parse(text) : Number.NaN;
+    if (Number.isFinite(date)) return seconds(Math.max(0, (date - Date.now()) / 1000));
+  }
+  if (!error || typeof error !== "object") return undefined;
+  const details = "details" in error && error.details && typeof error.details === "object" ? error.details : undefined;
+  const value =
+    "retryAfterSeconds" in error
+      ? error.retryAfterSeconds
+      : details && "retryAfterSeconds" in details
+        ? details.retryAfterSeconds
+        : undefined;
+  return typeof value === "number" && Number.isSafeInteger(value) ? seconds(value) : undefined;
 }
 function shellPath(path: string): string {
   if (!path || path.includes("\0")) throw new TypeError("A nonempty file path without NUL is required.");

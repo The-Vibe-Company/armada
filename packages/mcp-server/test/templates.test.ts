@@ -29,6 +29,7 @@ import { createSqlData } from "../src/data.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { createArmadaServer } from "../src/tools.ts";
+import { publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -160,6 +161,7 @@ test("Modal template placement retains the real golden snapshot fence and provid
     });
     const result = await f.launch((created.item as LaunchTemplate).id);
     expect(result).toMatchObject({ state: "succeeded", provider: "modal" });
+    publishedResponse("templates/launch").parse(result);
     expect(
       (
         await f.db.query<{ golden_operation_fence_id: string }>(
@@ -1385,6 +1387,7 @@ test("template launch preserves public account and provider refusals and their r
       };
       const result = await f.launch(t.id, key);
       expect(result).toMatchObject({ state: "failed", reason, message: error.message });
+      publishedResponse("templates/launch").parse(result);
       expect(await f.launch(t.id, key)).toEqual(result);
     }
     expect(f.boat.forks).toHaveLength(0);
@@ -1406,11 +1409,10 @@ test("template golden admission preserves direct-launch public classifications",
         "boat",
       ),
     ).rejects.toMatchObject({ code: "conflict", message: "Golden 'shared' has no snapshot yet." });
-    expect(await f.launch(t.id, "no-snapshot")).toMatchObject({
-      state: "failed",
-      reason: "conflict",
-      message: "Golden 'shared' has no snapshot yet.",
-    });
+    // HTTP 200 without a durable request: the published refusal variant, not a receipt.
+    const refusal = await f.launch(t.id, "no-snapshot");
+    expect(refusal).toEqual({ state: "failed", reason: "conflict", message: "Golden 'shared' has no snapshot yet." });
+    publishedResponse("templates/launch").parse(refusal);
     await f.db.query("update goldens set removed_at=now() where id=$1", [f.goldenId]);
     expect(await f.launch(t.id, "removed-golden")).toMatchObject({
       state: "failed",

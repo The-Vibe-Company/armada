@@ -5071,8 +5071,125 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
-                  "description": "REST launch receipt: sandbox, golden, promptId, conversationId, ttlSeconds, expiresAt, github and helper. Provider records may carry additional fields."
+                  "properties": {
+                    "sandbox": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Armada sandbox ID: pass it as `id` to status, send, wait, logs, exec and stop."
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "providerSandboxId": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "provider",
+                        "providerSandboxId",
+                        "status"
+                      ],
+                      "additionalProperties": {}
+                    },
+                    "golden": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name"
+                          ],
+                          "additionalProperties": {}
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Null for Docker launches, which have no golden."
+                    },
+                    "promptId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "conversationId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "ttlSeconds": {
+                      "type": "number"
+                    },
+                    "expiresAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "github": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ],
+                      "additionalProperties": {}
+                    },
+                    "helper": {},
+                    "runtime": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "armada"
+                            },
+                            "epoch": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "epoch"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sandbox",
+                    "golden",
+                    "ttlSeconds",
+                    "expiresAt",
+                    "github"
+                  ],
+                  "additionalProperties": {}
                 }
               }
             }
@@ -5172,10 +5289,101 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {},
                   "$schema": "http://json-schema.org/draft-07/schema#",
-                  "additionalProperties": {}
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": "string",
+                          "description": "The durable request. Replay the same requestKey to read it again."
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "claimed",
+                            "allocating",
+                            "succeeded",
+                            "failed",
+                            "reconciling"
+                          ]
+                        },
+                        "id": {
+                          "type": "string",
+                          "description": "Armada sandbox ID reserved for this request."
+                        },
+                        "reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "providerSandboxId": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "promptId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "conversationId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "state",
+                        "id"
+                      ],
+                      "additionalProperties": {},
+                      "description": "A recorded launch request."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "const": "failed"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_config",
+                            "forbidden",
+                            "not_found",
+                            "conflict",
+                            "setup_failed",
+                            "snapshot_failed",
+                            "build_failed"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "reason",
+                        "message"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Golden admission refused the launch before a request was recorded. Nothing was launched."
+                    }
+                  ],
+                  "description": "A receipt has requestId; a pre-admission refusal has none."
                 }
               }
             }

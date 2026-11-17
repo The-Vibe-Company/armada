@@ -2,6 +2,7 @@ import { API_FAILURE_STATUS, VERSION } from "@armada/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
+import { REST_LAUNCH_RESPONSE, responseJsonSchema, TEMPLATE_LAUNCH_RESPONSE } from "./launch-response-schemas.ts";
 import { createArmadaServer, type ToolContext } from "./tools.ts";
 
 /** MCP input names that the REST adapters (`control.ts`, `control-logs.ts`) accept under another name. */
@@ -76,12 +77,10 @@ export async function generateOpenApi() {
                 "application/json": {
                   schema:
                     route === "sandbox/launch"
-                      ? {
-                          type: "object",
-                          description:
-                            "REST launch receipt: sandbox, golden, promptId, conversationId, ttlSeconds, expiresAt, github and helper. Provider records may carry additional fields.",
-                        }
-                      : (tool.outputSchema ?? {}),
+                      ? responseJsonSchema(REST_LAUNCH_RESPONSE)
+                      : route === "templates/launch"
+                        ? responseJsonSchema(TEMPLATE_LAUNCH_RESPONSE)
+                        : (tool.outputSchema ?? {}),
                 },
               },
             },

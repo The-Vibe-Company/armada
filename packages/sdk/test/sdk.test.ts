@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
+import { createServerRequestDrain } from "../../mcp-server/src/server-request-drain.ts";
 import { Armada, ArmadaError, verifyWebhookSignature } from "../src/index.ts";
 
 test("service-token methods use the REST routes and preserve wire field names", async () => {
@@ -78,17 +79,65 @@ test("retry policy replays only eligible reads and retains typed safe failures",
       serverCode: code,
     });
   }
-  let count = 0;
-  const client = new Armada({
+});
+
+test("server-requested retry delays reach the caller and suppress early replays", async () => {
+  // The real drain handler: 503 with Retry-After while the server shuts down.
+  const drain = createServerRequestDrain(async () => Response.json({}));
+  drain.beginDrain();
+  const failures = [
+    { fetch: async (request: Request) => drain.fetch(request), retryAfterSeconds: 5 },
+    // The public provider rate-limit failure carries its delay in details, without a header.
+    {
+      fetch: async () =>
+        Response.json(
+          {
+            error: {
+              code: "rate_limited",
+              message: "secret_echo",
+              details: { provider: "boat", retryAfterSeconds: 120 },
+            },
+          },
+          { status: 429 },
+        ),
+      retryAfterSeconds: 120,
+    },
+    {
+      fetch: async () =>
+        Response.json(
+          { error: { code: "unavailable" } },
+          { status: 503, headers: { "retry-after": new Date(Date.now() + 61_000).toUTCString() } },
+        ),
+      retryAfterSeconds: 61,
+    },
+  ];
+  for (const failure of failures) {
+    let count = 0;
+    const client = new Armada({
+      token: "service_placeholder",
+      readRetries: 3,
+      fetch: (async (url, init) => {
+        count++;
+        return failure.fetch(new Request(String(url), init));
+      }) as import("../src/index.ts").Fetch,
+    });
+    const error = await client.status({ id: "sandbox_placeholder" }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(ArmadaError);
+    // HTTP dates round to whole seconds, so the delay is within one second of the date.
+    expect((error as ArmadaError).retryAfterSeconds).toBeWithin(
+      failure.retryAfterSeconds - 1,
+      failure.retryAfterSeconds + 1,
+    );
+    expect(count).toBe(1);
+  }
+  const unscheduled = new Armada({
     token: "service_placeholder",
-    readRetries: 3,
-    fetch: (async () => {
-      count++;
-      return Response.json({ error: { code: "rate_limited" } }, { status: 429, headers: { "retry-after": "30" } });
-    }) as import("../src/index.ts").Fetch,
+    fetch: async () =>
+      Response.json({ error: { code: "unavailable" } }, { status: 503, headers: { "retry-after": "soon" } }),
   });
-  await expect(client.status({ id: "sandbox_placeholder" })).rejects.toBeInstanceOf(ArmadaError);
-  expect(count).toBe(1);
+  await expect(unscheduled.status({ id: "sandbox_placeholder" })).rejects.toMatchObject({
+    retryAfterSeconds: undefined,
+  });
 });
 
 test("file helpers quote paths and reject truncated exec receipts", async () => {

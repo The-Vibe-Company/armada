@@ -41,6 +41,7 @@ import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { publishedResponse } from "./published-response.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
 
@@ -1182,7 +1183,9 @@ describe("control API", () => {
       };
       const first = await call("sandbox/launch", request);
       expect(first?.status).toBe(200);
-      const launched = ((await first!.json()) as { sandbox: { id: string; externalRef?: string } }).sandbox;
+      const receipt = await first!.json();
+      publishedResponse("sandbox/launch").parse(receipt);
+      const launched = (receipt as { sandbox: { id: string; externalRef?: string } }).sandbox;
       expect(launched.externalRef).toBe("tender:1");
       const replay = await call("sandbox/launch", request);
       expect(replay?.status).toBe(200);
