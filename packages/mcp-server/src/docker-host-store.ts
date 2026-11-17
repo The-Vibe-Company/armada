@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  DOCKER_HOST_DRAINING_MESSAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
@@ -18,6 +19,7 @@ import type { DockerHostResources } from "../../core/src/docker-resources.ts";
 import { type DockerResourceOverrides, dockerResourcePolicy } from "../../core/src/docker-resources.ts";
 import {
   DOCKER_CAPACITY_USAGE_SQL,
+  DockerHostDraining,
   DockerHostFull,
   DockerLimitsRefused,
   type DockerPolicyRow,
@@ -118,6 +120,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     } catch (error) {
       if (
         error instanceof DockerHostDenied ||
+        error instanceof DockerHostDraining ||
         error instanceof DockerHostFull ||
         error instanceof DockerLimitsRefused ||
         error instanceof VaultError
@@ -301,8 +304,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
     ).rows[0];
     if (!original) {
       if (operation !== "create") deny();
+      // Cleanup and replay validate an existing sandbox's identity; a drain must not hide its source.
       const source = row.docker_snapshot_id
-        ? await resolveDockerSnapshot(tx, { userId: row.owner_id, orgId: row.org_id }, row.docker_snapshot_id)
+        ? await resolveDockerSnapshot(tx, { userId: row.owner_id, orgId: row.org_id }, row.docker_snapshot_id, {
+            allowDraining: true,
+          })
         : undefined;
       if (
         source &&
@@ -1002,11 +1008,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
             if (job.operation !== "buildSnapshot") deny();
             await authorizeSnapshotBuild(tx, host.id, installationId, job);
           } catch (error) {
-            if (!(error instanceof DockerHostDenied) && !(error instanceof VaultError && error.code === "forbidden"))
+            // A drain is a state refusal, not lost authorization: persist the uninstall reason the user can act on.
+            const draining = error instanceof DockerHostDraining;
+            if (
+              !draining &&
+              !(error instanceof DockerHostDenied) &&
+              !(error instanceof VaultError && error.code === "forbidden")
+            )
               throw error;
             await tx.query(
-              "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build authorization is no longer valid.' where id=$1 and status='building'",
-              [row.snapshot_id],
+              "update public.docker_snapshots set status='failed',image_id=null,failure_reason=$2 where id=$1 and status='building'",
+              [
+                row.snapshot_id,
+                draining ? DOCKER_HOST_DRAINING_MESSAGE : "Snapshot build authorization is no longer valid.",
+              ],
             );
             await tx.query(
               "update public.docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1 and outcome is null",
@@ -1155,13 +1170,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
           )
             deny();
           if (job.outcome === null) {
-            let eligible = false;
+            let eligible = false,
+              draining = false;
             if (result.outcome === "completed") {
               try {
                 await authorizeSnapshotBuild(tx, host.id, installationId, parsed);
                 eligible = true;
               } catch (error) {
-                if (!(error instanceof VaultError && error.code === "forbidden")) throw error;
+                if (error instanceof DockerHostDraining) draining = true;
+                else if (!(error instanceof VaultError && error.code === "forbidden")) throw error;
               }
             }
             await tx.query(
@@ -1172,11 +1189,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 eligible ? result.imageId : null,
                 eligible
                   ? null
-                  : result.outcome === "completed"
-                    ? "Snapshot build authorization is no longer valid."
-                    : result.reason === "disk_full"
-                      ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
-                      : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
+                  : draining
+                    ? DOCKER_HOST_DRAINING_MESSAGE
+                    : result.outcome === "completed"
+                      ? "Snapshot build authorization is no longer valid."
+                      : result.reason === "disk_full"
+                        ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
+                        : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
               ],
             );
           }

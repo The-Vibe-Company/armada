@@ -1,4 +1,6 @@
 import { type DockerSnapshotRecord, snapshotUpdateAvailable } from "@armada/core";
+import type { DockerHost } from "./docker-hosts";
+import { hostBuildBlocker } from "./docker-hosts";
 import type { ResourceState } from "./resource-list";
 
 /**
@@ -16,6 +18,16 @@ export function snapshotState(
     return { bucket: "rest", tone: "warning", label: hostState === "draining" ? "Host draining" : "Host unavailable" };
   if (!launchEnabled) return { bucket: "rest", tone: "neutral", label: "Launch unavailable" };
   return { bucket: "ready", tone: "success", label: "Ready" };
+}
+
+/**
+ * The build form's selected host, or the refusal to show. A stale form may still name a host that has since started
+ * draining; that reason is the uninstall, not a generic "choose an online host".
+ */
+export function snapshotBuildHostBlocker(hosts: readonly DockerHost[], hostId: string): string | null {
+  const host = hosts.find((candidate) => candidate.id === hostId);
+  if (!host || host.state === "revoked") return "Choose an online host with snapshot support.";
+  return hostBuildBlocker(host);
 }
 
 /** Owned-host-only organizations already have a provider: do not send them to cloud onboarding. */

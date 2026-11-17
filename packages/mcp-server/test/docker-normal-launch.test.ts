@@ -2849,10 +2849,88 @@ test("a draining host refuses a snapshot build with the uninstall reason, not Ho
       visibility: "private",
       config: f.config,
     }),
-  ).rejects.toMatchObject({ code: "conflict", message: expect.stringContaining("draining for uninstall") });
+  ).rejects.toMatchObject({ code: "host_draining", message: expect.stringContaining("draining for uninstall") });
   expect((await db.query("select id from public.docker_snapshots where org_id=$1", [f.actor.orgId])).rows).toHaveLength(
     0,
   );
+});
+
+test("launching a saved snapshot on a draining host names the uninstall, not an unavailable snapshot", async () => {
+  const db = database();
+  const f = await snapshotFixture(),
+    id = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: id,
+    name: "draining-source",
+    visibility: "private",
+    config: f.config,
+  });
+  const build = await hosts.poll(f.hostToken, f.installationId);
+  if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: id,
+    outcome: "completed",
+    imageId: `sha256:${"b".repeat(64)}`,
+  });
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
+  const { hostId: _, ...body } = f.body;
+  await expect(f.service().launch(f.caller, { ...body, snapshotId: id })).rejects.toMatchObject({
+    code: "host_draining",
+    message: expect.stringContaining("draining for uninstall"),
+  });
+  expect(f.jobs).toEqual([]);
+});
+
+test("rebuilding a snapshot on a draining host names the uninstall, not a missing original host", async () => {
+  const db = database();
+  const f = await snapshotFixture(),
+    id = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: id,
+    name: "draining-rebuild",
+    visibility: "private",
+    config: f.config,
+  });
+  const build = await hosts.poll(f.hostToken, f.installationId);
+  if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: id,
+    outcome: "completed",
+    imageId: `sha256:${"c".repeat(64)}`,
+  });
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
+  await expect(
+    f.snapshots.command(f.caller, "rebuild", { org: f.actor.orgId, id, requestId: randomUUID() }),
+  ).rejects.toMatchObject({ code: "host_draining", message: expect.stringContaining("draining for uninstall") });
+});
+
+test("a queued snapshot build interrupted by a drain persists the uninstall reason, not lost authorization", async () => {
+  const db = database();
+  const f = await snapshotFixture(),
+    id = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: id,
+    name: "queued-drain",
+    visibility: "private",
+    config: f.config,
+  });
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
+  // The daemon's next poll cannot take the queued build: the build fails with the action the user can take.
+  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect(
+    (
+      await db.query<{ status: string; failure_reason: string }>(
+        "select status,failure_reason from public.docker_snapshots where id=$1",
+        [id],
+      )
+    ).rows[0],
+  ).toMatchObject({ status: "failed", failure_reason: expect.stringContaining("draining for uninstall") });
 });
 
 test("old or unreported Docker daemons get an actionable resume refusal before any job is queued", async () => {
@@ -2996,7 +3074,7 @@ test.each(["poll", "complete"] as const)(
         sql.transaction!((tx) =>
           work({
             query: (q, p) => {
-              if (q.includes("select s.* from public.docker_snapshots s")) throw cause;
+              if (q.includes("for update of s")) throw cause;
               return tx.query(q, p);
             },
           }),

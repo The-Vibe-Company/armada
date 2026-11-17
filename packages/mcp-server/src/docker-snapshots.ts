@@ -1,11 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  DOCKER_HOST_DRAINING_MESSAGE,
-  normalizeGitHubGoldenConfig,
-  officialSandboxImage,
-  parseGoldenConfig,
-  VERSION,
-} from "@armada/core";
+import { normalizeGitHubGoldenConfig, officialSandboxImage, parseGoldenConfig, VERSION } from "@armada/core";
 import {
   type GitHubInstallationApp,
   type GitHubResolveDeps,
@@ -15,6 +9,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
+import { DockerHostDraining } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { SNAPSHOT_COLUMNS, type SnapshotRow, snapshotRecord } from "./docker-snapshot-data.ts";
@@ -74,6 +69,8 @@ export function createDockerSnapshots(
         throw invalid();
       const source = (await read(body.id))[0];
       if (!source) throw new VaultError("not_found", "Snapshot not found.");
+      // A retried request already exists and is replayed; a new rebuild on a draining host names the uninstall.
+      if (source.host_draining && !(await read(body.requestId)).length) throw new DockerHostDraining();
       if (source.status !== "ready" || (!snapshotRecord(source).hostAvailable && !(await read(body.requestId)).length))
         throw new VaultError("conflict", "Rebuild needs a ready snapshot on its original available host.");
       // Reuse all authorization, current GitHub access, secret scan and publication fences.
@@ -130,7 +127,7 @@ export function createDockerSnapshots(
       )
     ).rows[0];
     if (!target) throw new VaultError("not_found", "Host unavailable.");
-    if (target.draining) throw new VaultError("conflict", DOCKER_HOST_DRAINING_MESSAGE);
+    if (target.draining) throw new DockerHostDraining();
     const authorizer = goldenGitHubAdapter({
       app: options.installationApp,
       ...(options.github.fetch ? { fetch: options.github.fetch } : {}),
@@ -185,7 +182,7 @@ export function createDockerSnapshots(
         )
       ).rows[0];
       if (!host) throw new VaultError("not_found", "Host unavailable.");
-      if (host.draining) throw new VaultError("conflict", DOCKER_HOST_DRAINING_MESSAGE);
+      if (host.draining) throw new DockerHostDraining();
       const previous = (await tx.query<SnapshotRow>("select * from public.docker_snapshots where id=$1", [id])).rows[0];
       if (previous) {
         if (previous.owner_id !== caller.userId || previous.org_id !== org || previous.request_hash !== digest)

@@ -71,8 +71,11 @@ state, createdAt, lastSeenAt, revokedAt and retained non-deleted sandbox count.
 Pending means unregistered; online requires current registration/issuer membership
 and a heartbeat within 60 seconds; otherwise offline, with revoked taking priority.
 A host inside an active uninstall drain is `draining`, not online: it takes no new
-launch or snapshot build and the list, launch dialog and snapshots name the
-uninstall to finish or retry rather than reporting a permission failure.
+launch, snapshot create or rebuild, and a launch from a saved snapshot names the
+drain rather than "Snapshot is unavailable". The list, launch dialog, snapshots,
+CLI and doctor name the uninstall to finish or retry rather than reporting a
+permission failure. A queued snapshot build interrupted by a drain fails with the
+same uninstall reason, not "authorization is no longer valid".
 Online is not scheduling eligibility, capacity or runtime readiness. SQL current
 membership scopes every list; no credentials, token hashes or installation secrets
 are returned and no direct user-JWT host-table grant is added.

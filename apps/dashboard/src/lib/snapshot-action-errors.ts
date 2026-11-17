@@ -28,6 +28,8 @@ export function snapshotActionFailure(
       ["Unknown route.", "not_found"].includes(error.message));
   if ((error.status === 404 || error.status === 405) && absent)
     return `This Armada server does not offer ${FEATURES[action]} yet. Ask an Armada administrator to finish setup, then reload Snapshots.`;
+  if (error.code === "host_draining")
+    return "This host is draining for uninstall. Finish or retry the uninstall on the machine; it can take new work again after the uninstall completes or an abandoned drain expires.";
   if (provider === "boat" && action === "build" && error.code === "conflict" && /golden capacity/i.test(error.message))
     return "Snapshot capacity has been reached. Rebuild an existing snapshot or review active builds before creating another.";
   if (error.code === "payment_required")
