@@ -654,7 +654,7 @@ export function goldenCheckoutScript(
     ...repos.map(
       (r, index) =>
         `armada_clone ${index + 1} git clone ${r.history === "shallow" || (r.history === undefined && options.shallow) ? "--depth=1 " : ""}--branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}
- git -C ${GOLDEN_ROOT}/${safe(r.dir)} config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'`,
+ git -C ${GOLDEN_ROOT}/${safe(r.dir)} config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 || :`,
     ),
     "unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_TERMINAL_PROMPT GIT_ASKPASS",
     "unset ARMADA_GIT_TOKEN",

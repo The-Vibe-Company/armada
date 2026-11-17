@@ -1341,7 +1341,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         await tx.query(
           `update public.sandboxes set
            status=case when status='failed' then status else 'stopped' end,
-           status_reason=case when status='failed' or status_reason='agent_finished' then status_reason else 'expired' end,
+           status_reason=case when status='failed' or status_reason in ('agent_finished','work_merged') then status_reason else 'expired' end,
            stopped_at=coalesce(stopped_at,now()),stop_requested_at=coalesce(stop_requested_at,now()),
            lifecycle_generation=lifecycle_generation+case when status in ('starting','ready','running','stopping') then 1 else 0 end
            where id=$1 and status in ('starting','ready','running','stopping','stopped','failed')`,

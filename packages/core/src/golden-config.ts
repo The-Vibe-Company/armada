@@ -255,7 +255,7 @@ export const REPOSITORY_FETCH_FAILED_MARKER = "ARMADA_REPOSITORY_FETCH_FAILED";
 export function pullCommand(repo: GoldenRepo): ShellCommand {
   // Fetch cannot mutate the checkout. Only its completed failures may safely
   // fall back to the snapshot; merge/filter failures can have partial effects.
-  const command = `if env GIT_TERMINAL_PROMPT=0 git fetch origin ${shQuote(repo.branch)}; then env GIT_TERMINAL_PROMPT=0 git merge --ff-only FETCH_HEAD; else printf '%s\\n' ${REPOSITORY_FETCH_FAILED_MARKER} >&2; exit ${REPOSITORY_FETCH_FAILED_EXIT}; fi`;
+  const command = `git config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 || :; if env GIT_TERMINAL_PROMPT=0 git fetch origin ${shQuote(repo.branch)}; then env GIT_TERMINAL_PROMPT=0 git merge --ff-only FETCH_HEAD; else printf '%s\\n' ${REPOSITORY_FETCH_FAILED_MARKER} >&2; exit ${REPOSITORY_FETCH_FAILED_EXIT}; fi`;
   return { command, cwd: `${GOLDEN_ROOT}/${repo.dir}`, timeoutSeconds: CLONE_TIMEOUT_SECONDS };
 }
 

@@ -80,7 +80,7 @@ function reason(row: Row) {
   if (row.status === "deleted" && dockerWorkspaceReclaimedMessage(row.status_reason)) return row.status_reason;
   if (row.status_reason === "expired") return "expired";
   if (
-    ["idle_paused", "agent_finished"].includes(row.status_reason ?? "") &&
+    ["idle_paused", "agent_finished", "work_merged"].includes(row.status_reason ?? "") &&
     ["stopping", "stopped"].includes(row.status)
   )
     return row.status_reason;

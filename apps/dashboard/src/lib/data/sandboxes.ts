@@ -2,7 +2,6 @@ import {
   type CredentialKind,
   LAUNCH_STAGES,
   type LaunchTiming,
-  type Sandbox,
   type SandboxCost,
   type SandboxListMetadata,
   summarizeLaunch,
@@ -43,10 +42,7 @@ function logSkipped(skipped: readonly SkippedSandboxRow[]) {
 }
 
 /** The interior row. Row level security returns it only to its owner or a current organization admin. */
-export async function getSandbox(
-  supabase: Supabase,
-  id: string,
-): Promise<Omit<Sandbox, "docker_retention_deadline" | "external_ref"> | null> {
+export async function getSandbox(supabase: Supabase, id: string) {
   const selected = await selectedOrganization();
   if (!selected) return null;
   const { data, error } = await supabase

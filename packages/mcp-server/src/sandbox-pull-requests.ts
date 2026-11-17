@@ -9,7 +9,8 @@ import {
 import { z } from "zod";
 
 const repoName = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const repoUrl = /^(?:https:\/\/github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/i;
+const repoUrl =
+  /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/i;
 const prUrl = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/i;
 const repos = z
   .array(z.object({ url: z.string(), dir: z.string().min(1) }))
@@ -19,7 +20,11 @@ const githubPull = z.object({
   number: z.number().int().positive(),
   state: z.enum(["open", "closed"]),
   merged_at: z.string().nullable(),
-  head: z.object({ ref: z.string().min(1), repo: z.object({ full_name: z.string() }).nullable() }),
+  head: z.object({
+    ref: z.string().min(1),
+    sha: z.string().regex(/^[a-f0-9]{40}$/),
+    repo: z.object({ full_name: z.string() }).nullable(),
+  }),
   base: z.object({ repo: z.object({ full_name: z.string() }) }),
 });
 
@@ -48,10 +53,10 @@ const maxBranches = 16;
 // another sandbox. Only reflog records written by a push qualify for discovery.
 const readPushes = `remote=$(git remote get-url --push --all origin) || exit 1
 case "$remote" in
-  "https://github.com/$2"|"https://github.com/$2.git"|"git@github.com:$2"|"git@github.com:$2.git") ;;
+  "https://github.com/$2"|"https://github.com/$2.git"|"git@github.com:$2"|"git@github.com:$2.git"|"ssh://git@github.com/$2"|"ssh://git@github.com/$2.git") ;;
   *) exit 1 ;;
 esac
-logs=$(git reflog show --all --date=unix --format='%gD%x09%gs') || exit 1
+logs=$(git reflog show --all --date=unix --format='%gD%x09%gs%x09%H') || exit 1
 printf '%s\\n' "$logs" |
 awk -v since="$1" -F '\\t' '$1 ~ /^refs\\/remotes\\/origin\\// && $2 == "update by push" {
     timestamp=$1
@@ -59,7 +64,7 @@ awk -v since="$1" -F '\\t' '$1 ~ /^refs\\/remotes\\/origin\\// && $2 == "update 
     if (timestamp+0 < since) next
     sub(/@\\{[^@]*\\}$/, "", $1)
     sub(/^refs\\/remotes\\/origin\\//, "", $1)
-    if (!seen[$1]++) print $1
+    if (!seen[$1]++) print $1 "\\t" $3
 }'`;
 
 export function createSandboxPullRequests(
@@ -109,10 +114,11 @@ export function createSandboxPullRequests(
     if (!row) return;
     try {
       const configured = repos.parse(row.repositories);
-      const branches = new Map<string, Set<string>>();
+      const branches = new Map<string, Map<string, string>>();
       for (const repo of configured) {
         signal.throwIfAborted();
-        const repository = repoUrl.exec(repo.url)?.[1]?.toLowerCase();
+        const remote = repoUrl.exec(repo.url)?.[1];
+        const repository = remote?.toLowerCase();
         if (
           !repository ||
           !repoName.test(repository) ||
@@ -125,18 +131,20 @@ export function createSandboxPullRequests(
         if (!Number.isSafeInteger(since)) return;
         const result = await exec(row, {
           sandboxId: row.provider_sandbox_id,
-          command: `set -- '${since}' '${repoUrl.exec(repo.url)?.[1]}'; ${readPushes}`,
+          command: `set -- '${since}' '${remote}'; ${readPushes}`,
           cwd: `/home/user/${repo.dir}`,
           onlyIfRunning: true,
           timeoutSeconds: 5,
           signal,
         });
         if (result.detached || result.exitCode !== 0 || result.truncated || result.timedOut) return;
-        const refs = result.stdout.trimEnd() ? result.stdout.trimEnd().split("\n") : [];
-        const names = branches.get(repository) ?? new Set<string>();
-        for (const ref of refs) {
+        const lines = result.stdout.trimEnd() ? result.stdout.trimEnd().split("\n") : [];
+        const names = branches.get(repository) ?? new Map<string, string>();
+        for (const line of lines) {
+          const [ref, sha] = line.split("\t");
           if (!ref || ref.length > 255 || /\s/.test(ref) || [...ref].some((char) => char.charCodeAt(0) < 32)) return;
-          names.add(ref);
+          if (!sha || !/^[a-f0-9]{40}$/.test(sha)) return;
+          names.set(ref, sha);
         }
         branches.set(repository, names);
       }
@@ -160,6 +168,7 @@ export function createSandboxPullRequests(
       }
       if ([...branches.values()].reduce((sum, refs) => sum + refs.size, numbers.size) > maxBranches) return;
       const found = new Map<string, SandboxPullRequest>();
+      let complete = true;
       const checkedAt = new Date().toISOString();
       if (numbers.size || [...branches.values()].some((refs) => refs.size)) {
         const request = github.fetch ?? fetch;
@@ -167,11 +176,16 @@ export function createSandboxPullRequests(
           {
             ...github,
             caller: "managed_runtime",
-            fetch: (input, init) => request(input, { ...init, signal }),
+            fetch: Object.assign(
+              (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+                request(input, { ...init, signal }),
+              { preconnect: request.preconnect },
+            ),
           },
           row.owner_id,
         );
         if (access.status !== "connected" || String(access.identity.id) !== row.github_id) return;
+        const token = access.token;
         async function get(repository: string, path: string) {
           if (!repoName.test(repository) || !branches.has(repository))
             throw Error("Repository is outside the sandbox grant.");
@@ -179,7 +193,7 @@ export function createSandboxPullRequests(
             signal,
             redirect: "error",
             headers: {
-              authorization: `Bearer ${access.status === "connected" ? access.token : ""}`,
+              authorization: `Bearer ${token}`,
               accept: "application/vnd.github+json",
             },
           });
@@ -205,7 +219,7 @@ export function createSandboxPullRequests(
           record(repository, pull);
         }
         for (const [repository, refs] of branches) {
-          for (const ref of refs) {
+          for (const [ref, sha] of refs) {
             const params = new URLSearchParams({
               state: "all",
               head: `${repository.split("/")[0]}:${ref}`,
@@ -215,17 +229,21 @@ export function createSandboxPullRequests(
               .array(githubPull)
               .max(30)
               .parse(await get(repository, `?${params}`));
-            for (const pull of pulls) {
-              if (pull.head.repo?.full_name.toLowerCase() === repository && pull.head.ref === ref)
-                record(repository, pull);
-            }
+            const candidates = pulls.filter(
+              (pull) =>
+                pull.head.repo?.full_name.toLowerCase() === repository &&
+                pull.head.ref === ref &&
+                (pull.head.sha === sha || pull.state === "open"),
+            );
+            if (!candidates.some((pull) => pull.head.sha === sha)) complete = false;
+            for (const pull of candidates) record(repository, pull);
           }
         }
       }
       signal.throwIfAborted();
       const list = [...found.values()];
       const proof =
-        list.length > 0 && list.every((pr) => pr.state === "merged")
+        complete && list.length > 0 && list.every((pr) => pr.state === "merged")
           ? {
               checkedAt,
               connectionEpoch: row.connection_epoch,

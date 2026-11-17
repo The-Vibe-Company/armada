@@ -171,7 +171,7 @@ export async function launchRoute(
         harness,
         ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
         ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: requiredNumber(body, "ttlSeconds") }),
-        ...(body.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: body.stopWhenWorkMerged }),
+        ...(body.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
         ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef as string }),
       },
       {
