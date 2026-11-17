@@ -1,6 +1,7 @@
 import type { Harness } from "@armada/core";
 import {
   goldenCompatibilityIds,
+  isExternalRef,
   isHarness,
   launchGitHubResponse,
   MAX_MCP_CONNECTIONS,
@@ -49,6 +50,7 @@ type LaunchControlOptions = Pick<
   | "modelAuth"
   | "launch"
   | "dockerLaunch"
+  | "ordinaryLaunchReceipts"
 >;
 
 export async function launchRoute(
@@ -75,6 +77,16 @@ export async function launchRoute(
       body.connections.some((id) => typeof id !== "string" || !UUID.test(id)))
   )
     throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");
+  const idempotencyKey = body.idempotencyKey;
+  if (
+    idempotencyKey !== undefined &&
+    (typeof idempotencyKey !== "string" || idempotencyKey.length < 16 || idempotencyKey.length > 128)
+  )
+    throw new VaultError("invalid", "idempotencyKey must be 16 to 128 characters.");
+  if (body.externalRef !== undefined && !isExternalRef(body.externalRef))
+    throw new VaultError("invalid", "externalRef must be 1 to 200 characters without control characters.");
+  if (idempotencyKey !== undefined && !options.ordinaryLaunchReceipts)
+    throw new VaultError("unavailable", "Durable launch receipts are not configured; idempotencyKey is refused.");
   const armadaAccess = parseSandboxArmadaAccess(body.armadaAccess);
   if (armadaAccess && !options.sandboxArmadaAccess)
     throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
@@ -117,65 +129,94 @@ export async function launchRoute(
               : golden,
         );
   const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
-  const result = await launchSandbox(
-    provider,
-    {
-      ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
-      goldens: data.goldens,
-      sandboxes: data.sandboxes,
-      ...(connectionLifecycle ? { connections: connectionLifecycle } : {}),
-      credentials: launchCredentials(
-        options.store,
-        options.encryptionKey,
-        runtime || !options.github
-          ? undefined
-          : {
-              store: options.store,
-              app: options.github.app,
-              ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
-              ...(options.github?.now ? { now: options.github.now } : {}),
-            },
-        options.modelAuth,
-        runtime && options.github ? { ...options.github, store: options.store } : undefined,
-      ),
-    },
-    actor,
-    {
-      ...(body.credentialId !== undefined ? { credentialId: required(body, "credentialId") } : {}),
-      golden: name,
-      ...(body.size === undefined ? {} : { size: parseMachineSize(body.size) }),
-      provider: golden.provider,
-      ...(repo === undefined ? {} : { repo }),
-      ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
-      ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
-      ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
-      ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities as string[] }),
-      ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
-      ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
-      harness,
-      ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
-      ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: requiredNumber(body, "ttlSeconds") }),
-    },
-    {
-      ...options.launch,
-      ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
+  // The receipt id becomes the sandbox id, so a retried key answers with the same sandbox.
+  const dispatch = async (receiptId?: string) => {
+    const result = await launchSandbox(
+      provider,
+      {
+        ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
+        goldens: data.goldens,
+        sandboxes: data.sandboxes,
+        ...(connectionLifecycle ? { connections: connectionLifecycle } : {}),
+        credentials: launchCredentials(
+          options.store,
+          options.encryptionKey,
+          runtime || !options.github
+            ? undefined
+            : {
+                store: options.store,
+                app: options.github.app,
+                ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
+                ...(options.github?.now ? { now: options.github.now } : {}),
+              },
+          options.modelAuth,
+          runtime && options.github ? { ...options.github, store: options.store } : undefined,
+        ),
+      },
+      actor,
+      {
+        ...(body.credentialId !== undefined ? { credentialId: required(body, "credentialId") } : {}),
+        golden: name,
+        ...(body.size === undefined ? {} : { size: parseMachineSize(body.size) }),
+        provider: golden.provider,
+        ...(repo === undefined ? {} : { repo }),
+        ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
+        ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
+        ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
+        ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities as string[] }),
+        ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
+        ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
+        harness,
+        ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
+        ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: requiredNumber(body, "ttlSeconds") }),
+        ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef as string }),
+      },
+      {
+        ...options.launch,
+        ...(receiptId ? { newId: () => receiptId } : {}),
+        ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
+        ...(armadaAccess
+          ? {
+              privateVisibility: true as const,
+              beforeStart: async (provider: Provider, sandbox: import("@armada/core").SandboxRecord) => {
+                await options.launch?.beforeStart?.(provider, sandbox);
+                await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess);
+              },
+            }
+          : {}),
+      },
+    );
+    return {
+      ...launchJson(result),
       ...(armadaAccess
-        ? {
-            privateVisibility: true as const,
-            beforeStart: async (provider: Provider, sandbox: import("@armada/core").SandboxRecord) => {
-              await options.launch?.beforeStart?.(provider, sandbox);
-              await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess);
-            },
-          }
+        ? { armadaAccess: { enabled: true, maxActiveChildren: armadaAccess.maxActiveChildren ?? 3 } }
         : {}),
+    };
+  };
+  if (idempotencyKey === undefined) return dispatch();
+  const target = armadaAccess ? { ...golden, visibility: "private" as const } : golden;
+  const management = await provider.managementIdentity?.();
+  const backendId = (await provider.backendIdentity?.())?.id;
+  if (!management || !backendId)
+    throw new VaultError("unavailable", "This launch path cannot pin allocation authority; idempotencyKey is refused.");
+  const { idempotencyKey: _key, ...request } = body;
+  // Same key and same request replays the recorded answer; a different request under the key is refused.
+  return options.ordinaryLaunchReceipts!.run(
+    actor,
+    idempotencyKey as string,
+    {
+      surface: "control",
+      route: modalRuntime ? "modal-runtime" : runtime ? "boat-runtime" : "native",
+      request,
+      goldenId: golden.id,
+    },
+    dispatch,
+    {
+      target: { provider: target.provider, orgId: target.orgId, visibility: target.visibility, modal: target.modal },
+      management,
+      backendId,
     },
   );
-  return {
-    ...launchJson(result),
-    ...(armadaAccess
-      ? { armadaAccess: { enabled: true, maxActiveChildren: armadaAccess.maxActiveChildren ?? 3 } }
-      : {}),
-  };
 }
 
 export async function launchActor(

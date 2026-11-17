@@ -285,7 +285,9 @@ const externalRefOutput = z.string().optional().describe("Opaque reference given
 const externalRefInput = z
   .string()
   .refine(isExternalRef, "1 to 200 characters without control characters.")
-  .describe("Opaque caller reference, for example one business object id. Not unique; use idempotencyKey for exactly-once.");
+  .describe(
+    "Opaque caller reference, for example one business object id. Not unique; use idempotencyKey for exactly-once.",
+  );
 
 const sandboxListMetadata = z.object({
   ...expiryOutput,

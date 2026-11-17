@@ -274,10 +274,7 @@ export async function launchSandbox(
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
   if (request.externalRef !== undefined && !isExternalRef(request.externalRef))
-    throw new LaunchError(
-      "invalid_request",
-      "externalRef must be 1 to 200 characters without control characters.",
-    );
+    throw new LaunchError("invalid_request", "externalRef must be 1 to 200 characters without control characters.");
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId)
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
