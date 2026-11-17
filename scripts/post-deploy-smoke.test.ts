@@ -1462,6 +1462,12 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
   return { ...fake, run };
 }
 
+test("an ordinary lifecycle case never reads goldenId, which only scoped Codex cases validate", async () => {
+  const fake = lifecycleFixture();
+  expect(await fake.run([{ ...selected, goldenId: 42 }])).toBe(true);
+  expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+});
+
 test("lifecycle records readiness and confirms extend/list, closed idle steer refusal and send-after-stop on every selected pair", async () => {
   const fake = lifecycleFixture();
   const cases = ["modal"].flatMap((provider) =>
@@ -1563,8 +1569,15 @@ test("the launch tracker records every launch handle, awaits launches in flight 
     record({ id: "not-a-launch" });
     return new Promise(() => {});
   });
+  const never = () => false;
+  const idle = () => new Promise<void>(() => {});
+  // Rows already explained, or none at all, never wait on a launch in flight.
+  expect([...(await tracker.siblings(new Set(["parent"]), never, idle))].sort()).toEqual(["launched", "parent"]);
+  expect((await tracker.siblings(new Set(), never, idle)).size).toBe(2);
+  // A pending launch is unknown, not lost, until it settles.
+  expect(tracker.lostLaunch()).toBe(true);
   let observed: ReadonlySet<string> | undefined;
-  const siblings = tracker.siblings().then((ids) => {
+  const siblings = tracker.siblings(new Set(["template-sandbox"]), never, idle).then((ids) => {
     observed = ids;
   });
   await Bun.sleep(0);
@@ -1574,9 +1587,105 @@ test("the launch tracker records every launch handle, awaits launches in flight 
   await template;
   expect([...(observed ?? [])].sort()).toEqual(["launched", "parent", "template-sandbox"]);
   expect(tracker.lostLaunch()).toBe(false);
-  // A launch that fails before any handle may still have created a sandbox.
-  await tracker.track("templates/launch", () => Promise.reject(new Error("request_failed"))).catch(() => {});
+  // The wait is bounded: a launch that never answers cannot hold an unexplained row forever.
+  tracker.track("sandbox/launch", () => new Promise(() => {}));
+  let ticks = 0;
+  const bounded = await tracker.siblings(
+    new Set(["unknown"]),
+    () => ticks >= 3,
+    async () => {
+      ticks++;
+    },
+  );
+  expect(ticks).toBe(3);
+  expect(bounded.has("unknown")).toBe(false);
   expect(tracker.lostLaunch()).toBe(true);
+  // A launch that fails before any handle may still have created a sandbox.
+  const lostTracker = createLaunchTracker();
+  await lostTracker.track("templates/launch", () => Promise.reject(new Error("request_failed"))).catch(() => {});
+  expect(lostTracker.lostLaunch()).toBe(true);
+});
+test("an unrelated launch in flight never holds scoped child cleanup or the next preservation worker", async () => {
+  const org = "30000000-0000-4000-8000-000000000001";
+  const scopedGolden = "50000000-0000-4000-8000-000000000001";
+  const otherGolden = "50000000-0000-4000-8000-000000000002";
+  const children = new Map<string, string>();
+  const stopped: string[] = [];
+  const inventory: string[] = [];
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let releasedAt = -1;
+  const lines: string[] = [];
+  const fake = fixture(async (call) => {
+    if (call.path === "sandbox/list" && call.body.golden)
+      return json({ sandboxes: inventory.map((id) => ({ id })), page: 1, hasMore: false, nextPage: null });
+    if (call.path === "sandbox/launch" && call.body.harness === "claude") {
+      // The other golden's launch answers only once the scoped case has finished both windows.
+      await held;
+      return json({ sandbox: { id: crypto.randomUUID(), provider: "modal" } });
+    }
+    if (call.path === "sandbox/launch-access-v1" || call.path === "sandbox/launch") {
+      const id = crypto.randomUUID();
+      inventory.push(id);
+      if (call.path === "sandbox/launch-access-v1") {
+        children.set(id, crypto.randomUUID());
+        inventory.push(children.get(id)!);
+      }
+      return json({ sandbox: { id, provider: "modal" } });
+    }
+    if (call.path === "sandbox/stop") {
+      stopped.push(String(call.body.id));
+      return json({ status: "stopping" });
+    }
+    if (call.path === "sandbox/status") {
+      const id = String(call.body.id);
+      const done = stopped.includes(id);
+      return json({ id, status: done ? "stopped" : "ready", providerState: done ? "stopped" : "active" });
+    }
+    if (call.path === "logs/read") return json({ events: [], cursor: null, hasMore: false });
+    return undefined;
+  });
+  const cases = [
+    {
+      ...selected,
+      org,
+      golden: `smoke-${scopedGolden}`,
+      goldenId: scopedGolden,
+      modelAccountId: "40000000-0000-4000-8000-000000000000",
+    },
+    { ...selected, harness: "claude", org, golden: `smoke-${otherGolden}`, goldenId: otherGolden },
+  ];
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  await postDeploySmoke(
+    { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify(cases) },
+    ["--work-preservation", "--scoped-access"],
+    {
+      ...fake.io,
+      fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+      out: (line) => {
+        fake.io.out(line);
+        if (line === boatNotice) return;
+        lines.push(line);
+        const parsed = JSON.parse(line);
+        if (parsed.case === 0 && parsed.step === "scoped_cleanup_summary" && parsed.mode === "no_option") {
+          releasedAt = lines.length;
+          release();
+        }
+      },
+    },
+  );
+  // Both scoped windows of case 0 (clean, then preservation) closed while the other launch was pending.
+  expect(releasedAt).toBeGreaterThan(0);
+  const before = lines.slice(0, releasedAt).map((line) => JSON.parse(line));
+  const summaries = before.filter((line) => line.case === 0 && line.step === "scoped_cleanup_summary");
+  expect(summaries.map((line) => line.mode)).toEqual(["enabled", "no_option"]);
+  // The verified-parent child was stopped and the unclaimed child still fails the probe.
+  const enabled = summaries[0];
+  expect(enabled.unattributedSandboxIds).toEqual([children.get(enabled.parentId)]);
+  expect(enabled.pass).toBe(false);
+  expect(summaries[1].unattributedSandboxIds).toEqual([]);
+  expect(stopped).toContain(enabled.parentId);
+  expect(fake.lines.join("")).not.toContain("secret");
 });
 
 test("independent sandbox lanes run concurrently: the expiry wait overlaps every case's lifecycle, receipts stay attributable", async () => {

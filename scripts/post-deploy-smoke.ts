@@ -105,6 +105,8 @@ interface SmokeIo {
   recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
 }
 const POLLS = 120;
+/** Longest a scoped probe waits for in-flight sibling launches to explain its unattributed rows. */
+const SIBLING_ATTRIBUTION_WAIT_MS = 2 * 60_000;
 const LAUNCH_PATH = /^(?:sandbox\/launch(?:-access-v1)?|templates\/launch)$/;
 type Lane = "templates" | "expiry" | "lifecycle";
 
@@ -128,6 +130,12 @@ export function createLaunchTracker() {
   const ids = new Set<string>();
   const pending = new Set<Promise<unknown>>();
   let lost = false;
+  let wake = () => {};
+  let changed = new Promise<void>((resolve) => (wake = resolve));
+  const notify = () => {
+    wake();
+    changed = new Promise<void>((resolve) => (wake = resolve));
+  };
   return {
     /** `launch` calls `record` with the parsed response body before validating it. */
     track<T>(path: string, launch: (record: (receipt: unknown) => void) => Promise<T>): Promise<T> {
@@ -139,25 +147,39 @@ export function createLaunchTracker() {
         if (typeof id === "string" && id) {
           ids.add(id);
           handled = true;
+          notify();
         }
       });
       pending.add(promise);
       promise.then(
-        () => pending.delete(promise),
+        () => {
+          pending.delete(promise);
+          notify();
+        },
         () => {
           pending.delete(promise);
           if (!handled) lost = true;
+          notify();
         },
       );
       return promise;
     },
-    /** Call after a list read: any sandbox it returned came from a launch already in flight. */
-    async siblings(): Promise<ReadonlySet<string>> {
-      await Promise.allSettled([...pending]);
+    /**
+     * Call after a list read with the rows nothing else explains: any sibling among them came
+     * from a launch already in flight. Returns once every candidate has a handle, no launch is in
+     * flight, or `expired()` holds; `tick()` paces that check while launches stay pending.
+     */
+    async siblings(
+      candidates: ReadonlySet<string>,
+      expired: () => boolean,
+      tick: () => Promise<void>,
+    ): Promise<ReadonlySet<string>> {
+      while (pending.size && [...candidates].some((id) => !ids.has(id)) && !expired())
+        await Promise.race([changed, tick()]);
       return new Set(ids);
     },
-    /** Whether a settled launch failed without a handle; read after `siblings()`. */
-    lostLaunch: () => lost,
+    /** Whether a launch failed without a handle or is still in flight; read after `siblings()`. */
+    lostLaunch: () => lost || pending.size > 0,
   };
 }
 
@@ -612,11 +634,11 @@ async function runPostDeploySmoke(
   const lifecycleUnits = cases.map(async (item, index) => {
     const lane = unit(index, "lifecycle");
     const scopedPair = scopedAccess && item.harness === "codex";
-    const inventory = `${item.org.toLowerCase()}\n${item.goldenId?.toLowerCase()}`;
     let passed = true;
     for (const dirty of preservation ? [false, true] : [false]) {
       const run = () => lifecycleUnit(index, item, dirty, lane);
-      if (!(await (scopedPair ? scopedWindow(inventory, run) : run()))) passed = false;
+      // Scoped Codex cases are normalized to lowercase UUIDs at configuration; others never key.
+      if (!(await (scopedPair ? scopedWindow(`${item.org}\n${item.goldenId}`, run) : run()))) passed = false;
     }
     return passed;
   });
@@ -639,7 +661,14 @@ async function runPostDeploySmoke(
           poll: (read, done) => poll(read, done, 300),
           step,
           withCleanup,
-          siblingSandboxes: launches.siblings,
+          siblingSandboxes: (candidates) => {
+            const until = io.now() + SIBLING_ATTRIBUTION_WAIT_MS;
+            return launches.siblings(
+              candidates,
+              () => io.now() >= until,
+              () => io.sleep(1_000),
+            );
+          },
           siblingLaunchLost: launches.lostLaunch,
           isNotReady: (error) => error instanceof SmokeFailure && error.code === "sandbox_not_ready",
           out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
