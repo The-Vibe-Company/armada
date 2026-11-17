@@ -11,16 +11,14 @@ for (const width of [1280, 390])
       await page.setViewportSize({ width, height: 844 });
       await page.addInitScript((value) => localStorage.setItem("theme", value), theme);
       await signIn(page, "alice@example.com", "/environments");
-      for (const [route, label] of [
-        ["environments", "Snapshots"],
-        ["templates", "Templates"],
-        ["tools", "Tools"],
-        ["variables", "Variables and secrets"],
+      for (const [route, role, label] of [
+        ["environments", "list", "Snapshots"],
+        ["templates", "list", "Templates"],
+        ["tools", "list", "Tools"],
+        ["variables", "table", "Settings and secrets"],
       ] as const) {
         await page.goto(`/${route}`);
-        const list = page
-          .getByRole("list", { name: label, exact: true, includeHidden: true })
-          .filter({ visible: true });
+        const list = page.getByRole(role, { name: label, exact: true, includeHidden: true }).filter({ visible: true });
         await expect(list).toBeVisible();
         const before = await list.boundingBox();
         const select = list.locator("[data-select-item]").first();
@@ -66,7 +64,7 @@ test("shared scope radios support keyboard selection without granting organizati
   page,
 }) => {
   await signIn(page, "alice@example.com", "/skills");
-  await page.getByRole("button", { name: "Add key", exact: true }).click();
+  await page.getByRole("button", { name: "Add a key", exact: true }).click();
   const dialog = page.getByRole("dialog");
   const personal = dialog.getByRole("radio", { name: "Personal", exact: true });
   await personal.focus();
@@ -76,14 +74,14 @@ test("shared scope radios support keyboard selection without granting organizati
   await page.keyboard.press("Escape");
   await page.context().clearCookies();
   await signIn(page, "bob@example.com", "/skills");
-  await page.getByRole("button", { name: "Add key", exact: true }).click();
+  await page.getByRole("button", { name: "Add a key", exact: true }).click();
   await expect(dialog.getByRole("radio", { name: "Org (Acme)", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("radio", { name: "Personal", exact: true })).toBeChecked();
 });
 
 test("a refused org secret keeps kind/scope for retry but clears its one-time value", async ({ page }) => {
   await signIn(page, "alice@example.com", "/variables");
-  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByRole("button", { name: "Add a variable", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("radio", { name: "Secret", exact: true }).check();
   await dialog.getByRole("radio", { name: "Org (Acme)", exact: true }).check();
@@ -101,7 +99,8 @@ test("a refused org secret keeps kind/scope for retry but clears its one-time va
   await expect(dialog).toBeHidden();
   const row = page.locator('[data-vault-item="RETRY_SCOPE_SECRET"]');
   await expect(row).toHaveAttribute("data-vault-kind", "secret");
-  await expect(row.getByText("Org", { exact: true })).toBeVisible();
+  // The table states the org scope in words, not as a bare "Org" tag.
+  await expect(row).toContainText("Everyone in Acme");
 });
 
 test("list rows share their columns, whatever the width of each row's action", async ({ page }) => {

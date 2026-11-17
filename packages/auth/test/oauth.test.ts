@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { seal } from "../src/cookie.ts";
 import { createMemoryAuthStore } from "../src/memory.ts";
 import { handleOAuthRequest } from "../src/oauth.ts";
 import { createPkce, s256 } from "../src/pkce.ts";
@@ -168,5 +169,77 @@ describe("oauth", () => {
       expect(await response?.json()).toMatchObject({ error: "invalid_request" });
       expect(response?.headers.get("cache-control")).toBe("no-store");
     }
+  });
+
+  test("a refused provider code exchange returns the HTML error page and clears the pending cookie", async () => {
+    const store = createMemoryAuthStore();
+    const pkce = await createPkce();
+    const secret = "test-secret-at-least-16";
+    const pending = await seal(
+      {
+        clientId: "client-id",
+        redirectUri: "cursor://callback/complete",
+        codeChallenge: pkce.challenge,
+        resource: `${PUBLIC}/mcp`,
+        csrf: "csrf",
+        exp: Date.parse("2026-11-08T00:10:00.000Z"),
+        supabaseVerifier: pkce.verifier,
+      },
+      secret,
+    );
+    const server = {
+      store,
+      fetch: (async () => new Response("invalid_grant", { status: 400 })) satisfies AuthFetch,
+      supabaseUrl: "https://example.supabase.co",
+      anonKey: "anon-test",
+      authSecret: secret,
+      publicUrl: PUBLIC,
+      now: () => new Date("2026-11-08T00:00:00.000Z"),
+    };
+    const response = await handleOAuthRequest(
+      new Request(`${PUBLIC}/oauth/callback?code=used`, { headers: { cookie: `armada_oauth=${pending}` } }),
+      server,
+    );
+
+    expect(response?.status).toBe(400);
+    expect(response?.headers.get("content-type")).toContain("text/html");
+    expect(await response?.text()).toContain("Start sign-in again");
+    expect(response?.headers.getSetCookie().join(";")).toContain("Max-Age=0");
+  });
+
+  test("a callback with no provider verifier returns the HTML error page and clears the pending cookie", async () => {
+    const store = createMemoryAuthStore();
+    const secret = "test-secret-at-least-16";
+    const pending = await seal(
+      {
+        clientId: "client-id",
+        redirectUri: "cursor://callback/complete",
+        codeChallenge: "challenge",
+        resource: `${PUBLIC}/mcp`,
+        csrf: "csrf",
+        exp: Date.parse("2026-11-08T00:10:00.000Z"),
+      },
+      secret,
+    );
+    const server = {
+      store,
+      fetch: (async () => {
+        throw new Error("unexpected identity request");
+      }) satisfies AuthFetch,
+      supabaseUrl: "https://example.supabase.co",
+      anonKey: "anon-test",
+      authSecret: secret,
+      publicUrl: PUBLIC,
+      now: () => new Date("2026-11-08T00:00:00.000Z"),
+    };
+    const response = await handleOAuthRequest(
+      new Request(`${PUBLIC}/oauth/callback?code=unused`, { headers: { cookie: `armada_oauth=${pending}` } }),
+      server,
+    );
+
+    expect(response?.status).toBe(400);
+    expect(response?.headers.get("content-type")).toContain("text/html");
+    expect(await response?.text()).toContain("Start again from your client");
+    expect(response?.headers.getSetCookie().join(";")).toContain("Max-Age=0");
   });
 });

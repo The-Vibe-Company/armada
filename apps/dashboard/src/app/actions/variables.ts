@@ -43,7 +43,9 @@ async function guarded(
   if ("ok" in context) return context;
   try {
     const result = await run(context);
-    revalidatePath("/variables");
+    // Only a successful write changes the list. Revalidating a refusal would remount the page and discard the form
+    // the person still has to fix, closing its dialog before the error can be read.
+    if (result.ok) revalidatePath("/variables");
     return result;
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
