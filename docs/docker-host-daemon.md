@@ -70,6 +70,9 @@ The list returns `placement` and safe `hosts` metadata: id, name (currently null
 state, createdAt, lastSeenAt, revokedAt and retained non-deleted sandbox count.
 Pending means unregistered; online requires current registration/issuer membership
 and a heartbeat within 60 seconds; otherwise offline, with revoked taking priority.
+A host inside an active uninstall drain is `draining`, not online: it takes no new
+launch or snapshot build and the list, launch dialog and snapshots name the
+uninstall to finish or retry rather than reporting a permission failure.
 Online is not scheduling eligibility, capacity or runtime readiness. SQL current
 membership scopes every list; no credentials, token hashes or installation secrets
 are returned and no direct user-JWT host-table grant is added.
@@ -696,6 +699,10 @@ issuer must retain cleanup authority (current admin for other owners' sandboxes)
 Offline/uncertain cleanup, unknown labelled resources and changed managed files
 refuse removal, preserving state for reconciliation. Shared images, other workloads
 and account-wide linger are preserved. Drain is bounded; failure is not deletion.
+The drain window is one hour from its last start: retrying the uninstall starts a
+fresh window, and an interrupted drain that is left alone expires so the host can
+take new work again without a new command. Fencing never waits on the deadline
+for a drain that is actively finishing.
 
 Single coordinator check on the real machine previously registered as
 `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`: record container/volume baseline,

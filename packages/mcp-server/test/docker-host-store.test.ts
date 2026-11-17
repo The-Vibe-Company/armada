@@ -922,6 +922,18 @@ test("runtime self completion needs no child access and retries failed stop/dele
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
 });
 
+test("a draining host is listed as draining, not online, and an expired drain reads online again", async () => {
+  const db = database();
+  const a = await fixture();
+  await store.poll(a.hostToken, a.installationId, "2.48.0");
+  expect((await store.list(a.actor)).find((host) => host.id === a.hostId)?.state).toBe("online");
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [a.hostId]);
+  expect((await store.list(a.actor)).find((host) => host.id === a.hostId)?.state).toBe("draining");
+  // An interrupted uninstall's bounded window ends; the host is offered again without a new command.
+  await db.query(`update public.docker_hosts set draining_at=now()-interval '2 hours' where id=$1`, [a.hostId]);
+  expect((await store.list(a.actor)).find((host) => host.id === a.hostId)?.state).toBe("online");
+});
+
 test("retention belongs to the adding member and reports physical cleanup deadlines, not server estimates", async () => {
   const db = database();
   const a = await fixture();

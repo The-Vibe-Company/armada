@@ -110,6 +110,15 @@ test("host add pending waits respect token expiry and five-minute limit without 
   }
 });
 
+// A draining host is valid list metadata, not a malformed answer, so it is shown with its state.
+test("host list accepts and prints a draining host state", async () => {
+  const result = await capture(["host", "list"], async () =>
+    Response.json({ placement: true, hosts: [{ ...summary, state: "draining" }] }),
+  );
+  expect(result.code).toBe(0);
+  expect(result.out).toContain("draining");
+});
+
 test("host list exposes safe metadata as text or JSON and revoke uses host UUID", async () => {
   for (const json of [false, true]) {
     const result = await capture(["host", "list", ...(json ? ["--json"] : [])], async (request) => {

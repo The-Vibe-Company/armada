@@ -2836,6 +2836,25 @@ test("snapshot building respects the existing Docker placement switch", async ()
   );
 });
 
+test("a draining host refuses a snapshot build with the uninstall reason, not Host unavailable", async () => {
+  const db = database();
+  const f = await snapshotFixture();
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
+  await expect(
+    f.snapshots.command(f.caller, "create", {
+      org: f.actor.orgId,
+      hostId: f.hostId,
+      requestId: randomUUID(),
+      name: "draining",
+      visibility: "private",
+      config: f.config,
+    }),
+  ).rejects.toMatchObject({ code: "conflict", message: expect.stringContaining("draining for uninstall") });
+  expect((await db.query("select id from public.docker_snapshots where org_id=$1", [f.actor.orgId])).rows).toHaveLength(
+    0,
+  );
+});
+
 test("old or unreported Docker daemons get an actionable resume refusal before any job is queued", async () => {
   const db = database();
   const f = await fixture();

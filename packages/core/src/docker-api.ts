@@ -24,8 +24,8 @@ export interface DockerHostResourceSummary {
 export interface DockerHostSummary {
   id: string;
   name: string | null;
-  /** Online means a recent heartbeat, not a launch/readiness guarantee. */
-  state: "pending" | "online" | "offline" | "revoked";
+  /** Online means a recent heartbeat, not a launch/readiness guarantee. Draining takes no new work. */
+  state: "pending" | "online" | "offline" | "draining" | "revoked";
   createdAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;

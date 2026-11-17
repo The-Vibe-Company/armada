@@ -99,6 +99,8 @@ export function dockerLaunchBlocker(
   host: Pick<DockerHost, "state">,
 ): string | null {
   if (host.state === "revoked") return "This host is revoked.";
+  if (host.state === "draining")
+    return "This host is draining for uninstall. Finish or retry the uninstall on the machine; it can take new work again after the uninstall completes or an abandoned drain expires.";
   if (!option?.enabled) return "This Armada server does not launch on Docker hosts yet.";
   if (!option.capabilities.launch)
     return option.unsupportedReasons.launch ?? "This Armada server does not launch on Docker hosts yet.";

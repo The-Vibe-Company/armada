@@ -24,6 +24,11 @@ test("only published snapshots on an available installation offer launch; pendin
     bucket: "rest",
     label: "Host unavailable",
   });
+  // A draining host is named as draining, not as merely unavailable.
+  expect(snapshotState({ status: "ready", hostAvailable: false }, true, "draining")).toMatchObject({
+    bucket: "rest",
+    label: "Host draining",
+  });
   expect(snapshotState({ status: "ready", hostAvailable: true }, false)).toMatchObject({
     bucket: "rest",
     label: "Launch unavailable",

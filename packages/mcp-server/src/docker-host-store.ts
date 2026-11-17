@@ -24,6 +24,7 @@ import {
   hostResourcePolicy,
 } from "./docker-capacity.ts";
 
+import { hostDrainingSql } from "./docker-host-drain.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
@@ -393,6 +394,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           `select h.id,
             case when h.revoked_at is not null then 'revoked'
               when h.installation_id is null then 'pending'
+              when ${hostDrainingSql("h")} then 'draining'
               when h.hash is not null and h.registration_hash is null
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
@@ -710,7 +712,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const host =
           (
             await tx.query<Host & { installation_id: string }>(
-              "select id,org_id,owner_id,installation_id from public.docker_hosts where id=$1 and org_id=$2 and hash is not null and revoked_at is null and draining_at is null for update",
+              `select id,org_id,owner_id,installation_id from public.docker_hosts where id=$1 and org_id=$2 and hash is not null and revoked_at is null and not ${hostDrainingSql("docker_hosts")} for update`,
               [hostId, actor.orgId],
             )
           ).rows[0] ?? deny();
@@ -766,9 +768,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
             )
           ).rows[0] ?? deny();
         if (selection.operation === "bootstrap" || selection.operation === "resume") {
-          const draining = await tx.query(`select 1 from public.docker_hosts where id=$1 and draining_at is not null`, [
-            host.id,
-          ]);
+          const draining = await tx.query(
+            `select 1 from public.docker_hosts where id=$1 and ${hostDrainingSql("docker_hosts")}`,
+            [host.id],
+          );
           if (draining.rows.length) deny();
         }
         const row = await sandbox(tx, sandboxId, host, hint.docker_installation_id);
@@ -851,7 +854,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
           host.org_id,
           host.owner_id,
         ]);
-        await tx.query(`update public.docker_hosts set draining_at=coalesce(draining_at,now()) where id=$1`, [host.id]);
+        // A retried uninstall starts a fresh bounded window, so an abandoned drain cannot refuse
+        // new work forever; the flag itself still fences admission until it completes or expires.
+        await tx.query(`update public.docker_hosts set draining_at=now() where id=$1`, [host.id]);
         const retained = await tx.query<{ id: string; status: string }>(
           `select id,status from public.sandboxes where docker_host_id=$1 and status<>'deleted' order by id`,
           [host.id],

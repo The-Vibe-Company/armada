@@ -11,7 +11,14 @@ import {
   VaultError,
 } from "@armada/core";
 import { admitAccountCapacity } from "./account-capacity.ts";
-import { admitDockerCapacity, admitDockerDisk, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
+import {
+  admitDockerCapacity,
+  admitDockerDisk,
+  DockerHostDraining,
+  DockerHostFull,
+  DockerLimitsRefused,
+} from "./docker-capacity.ts";
+import { hostDrainingSql } from "./docker-host-drain.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
@@ -147,7 +154,12 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
       return await sql.transaction(work);
     } catch (error) {
       // Only trusted transaction-local placement policy raises public VaultError refusals.
-      if (error instanceof VaultError || error instanceof DockerHostFull || error instanceof DockerLimitsRefused)
+      if (
+        error instanceof VaultError ||
+        error instanceof DockerHostFull ||
+        error instanceof DockerHostDraining ||
+        error instanceof DockerLimitsRefused
+      )
         throw error;
       return deny();
     }
@@ -221,12 +233,15 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           deny();
         const host =
           (
-            await tx.query<{ installation_id: string }>(
-              `select installation_id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
-           and draining_at is null and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null for update`,
+            await tx.query<{ installation_id: string; draining: boolean }>(
+              `select installation_id,${hostDrainingSql("docker_hosts")} as draining from public.docker_hosts
+           where id=$1 and org_id=$2 and owner_id=$3 and installation_id=$4 and hash is not null
+             and registration_hash is null and revoked_at is null for update`,
               [request.hostId, actor.orgId, hint.owner_id, hint.installation_id],
             )
           ).rows[0] ?? deny();
+        // A drain is a state refusal with its own reason, never a permission failure.
+        if (host.draining) throw new DockerHostDraining();
         if (existing) {
           const row =
             (await tx.query<Row>(`select * from public.sandboxes where id=$1 for update`, [request.requestId]))

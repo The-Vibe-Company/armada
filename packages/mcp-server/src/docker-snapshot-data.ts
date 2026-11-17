@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { type DockerSnapshotRecord, parseGoldenConfig } from "@armada/core";
 import { type Sql, VaultError } from "@armada/core/server";
 import type { DockerHostJob } from "../../core/src/docker-host-job.ts";
-export const SNAPSHOT_COLUMNS = `s.*,h.name as host_name,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and h.draining_at is null and (h.last_seen_at>now()-interval '90 seconds') is true) as host_available`;
+import { hostDrainingSql } from "./docker-host-drain.ts";
+export const SNAPSHOT_COLUMNS = `s.*,h.name as host_name,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and not ${hostDrainingSql("h")} and (h.last_seen_at>now()-interval '90 seconds') is true) as host_available`;
 export type SnapshotRow = {
   id: string;
   org_id: string;
@@ -88,7 +89,7 @@ export async function authorizeSnapshotBuild(
     join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
     join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=s.actor_epoch
     join public.mcp_actor_epochs i on i.org_id=s.org_id and i.user_id=h.owner_id and i.epoch=s.issuer_epoch
-    where s.id=$1 and s.host_id=$2 and s.installation_id=$3 and h.installation_id=$3 and h.revoked_at is null and h.draining_at is null
+    where s.id=$1 and s.host_id=$2 and s.installation_id=$3 and h.installation_id=$3 and h.revoked_at is null and not ${hostDrainingSql("h")}
     and s.status='building' and s.build_expires_at>now() and (s.visibility='private' or m.role='admin') for update of s`,
       [job.build.id, hostId, installationId],
     )

@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { normalizeGitHubGoldenConfig, officialSandboxImage, parseGoldenConfig, VERSION } from "@armada/core";
+import {
+  DOCKER_HOST_DRAINING_MESSAGE,
+  normalizeGitHubGoldenConfig,
+  officialSandboxImage,
+  parseGoldenConfig,
+  VERSION,
+} from "@armada/core";
 import {
   type GitHubInstallationApp,
   type GitHubResolveDeps,
@@ -9,6 +15,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
+import { hostDrainingSql } from "./docker-host-drain.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { SNAPSHOT_COLUMNS, type SnapshotRow, snapshotRecord } from "./docker-snapshot-data.ts";
 import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
@@ -117,12 +124,13 @@ export function createDockerSnapshots(
     }
     const baseImage = officialSandboxImage();
     const target = (
-      await sql.query(
-        "select h.id from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id where h.id=$1 and h.org_id=$2 and h.hash is not null and h.registration_hash is null and h.revoked_at is null and h.draining_at is null",
+      await sql.query<{ id: string; draining: boolean }>(
+        `select h.id,${hostDrainingSql("h")} as draining from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id where h.id=$1 and h.org_id=$2 and h.hash is not null and h.registration_hash is null and h.revoked_at is null`,
         [hostId, org],
       )
     ).rows[0];
     if (!target) throw new VaultError("not_found", "Host unavailable.");
+    if (target.draining) throw new VaultError("conflict", DOCKER_HOST_DRAINING_MESSAGE);
     const authorizer = goldenGitHubAdapter({
       app: options.installationApp,
       ...(options.github.fetch ? { fetch: options.github.fetch } : {}),
@@ -171,12 +179,13 @@ export function createDockerSnapshots(
       )
         throw new VaultError("forbidden", "Snapshot admission denied.");
       const host = (
-        await tx.query<{ installation_id: string }>(
-          "select installation_id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and hash is not null and revoked_at is null and draining_at is null for update",
+        await tx.query<{ installation_id: string; draining: boolean }>(
+          `select installation_id,${hostDrainingSql("docker_hosts")} as draining from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and hash is not null and revoked_at is null for update`,
           [hostId, org, hint.owner_id],
         )
       ).rows[0];
       if (!host) throw new VaultError("not_found", "Host unavailable.");
+      if (host.draining) throw new VaultError("conflict", DOCKER_HOST_DRAINING_MESSAGE);
       const previous = (await tx.query<SnapshotRow>("select * from public.docker_snapshots where id=$1", [id])).rows[0];
       if (previous) {
         if (previous.owner_id !== caller.userId || previous.org_id !== org || previous.request_hash !== digest)

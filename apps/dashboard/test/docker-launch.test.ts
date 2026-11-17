@@ -82,6 +82,8 @@ test("a host takes a launch only when the server launches an agent in the offici
   expect(dockerLaunchBlocker(ready, true, { state: "offline" })).toBe("The host must be online to launch on it.");
   expect(dockerLaunchBlocker(ready, true, { state: "revoked" })).toBe("This host is revoked.");
   expect(dockerLaunchBlocker(null, false, { state: "revoked" })).toBe("This host is revoked.");
+  // A draining host is a state refusal naming the uninstall, not an online host refused as unauthorized.
+  expect(dockerLaunchBlocker(ready, true, { state: "draining" })).toContain("draining for uninstall");
 });
 
 test("what Docker cannot do yet is listed with the server's reason, or a plain default", () => {

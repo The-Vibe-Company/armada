@@ -33,7 +33,7 @@ export async function listHosts(client: ArmadaApiClient, org: string): Promise<D
       !UUID.test(host.id) ||
       ids.has(host.id) ||
       !(host.name === null || (typeof host.name === "string" && host.name.trim().length > 0)) ||
-      !["pending", "online", "offline", "revoked"].includes(String(host.state)) ||
+      !["pending", "online", "offline", "draining", "revoked"].includes(String(host.state)) ||
       !(
         host.lastSeenAt === null ||
         (typeof host.lastSeenAt === "string" && Number.isFinite(Date.parse(host.lastSeenAt)))

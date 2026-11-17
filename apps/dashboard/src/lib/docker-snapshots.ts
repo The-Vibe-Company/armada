@@ -1,14 +1,19 @@
 import { type DockerSnapshotRecord, snapshotUpdateAvailable } from "@armada/core";
 import type { ResourceState } from "./resource-list";
 
-/** A saved artifact remains visible when its installation is offline, but cannot start new work. */
+/**
+ * A saved artifact remains visible when its installation is offline, but cannot start new work. A draining host
+ * is named as such, not as merely unavailable: the uninstall is the thing to finish or retry.
+ */
 export function snapshotState(
   row: Pick<DockerSnapshotRecord, "status" | "hostAvailable">,
   launchEnabled: boolean,
+  hostState?: "pending" | "online" | "offline" | "draining" | "revoked",
 ): ResourceState {
   if (row.status === "building") return { bucket: "rest", tone: "info", label: "Building" };
   if (row.status === "failed") return { bucket: "action", tone: "destructive", label: "Build failed" };
-  if (!row.hostAvailable) return { bucket: "rest", tone: "warning", label: "Host unavailable" };
+  if (!row.hostAvailable)
+    return { bucket: "rest", tone: "warning", label: hostState === "draining" ? "Host draining" : "Host unavailable" };
   if (!launchEnabled) return { bucket: "rest", tone: "neutral", label: "Launch unavailable" };
   return { bucket: "ready", tone: "success", label: "Ready" };
 }
