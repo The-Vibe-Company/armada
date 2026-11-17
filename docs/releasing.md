@@ -4,6 +4,9 @@ Armada v2 replaces v1 under the existing public package `@the-vibe-company/armad
 Keep that package name: existing users upgrade with `npm install -g @the-vibe-company/armada`.
 The v2 launcher selects one of four optional platform packages, `@the-vibe-company/armada-{linux,darwin}-{x64,arm64}`.
 The workspace packages stay private; the compiled binaries bundle their dependencies.
+The TypeScript SDK is published as `@the-vibe-company/armada-sdk`: `scripts/npm.ts` bundles
+`packages/sdk` with the browser-safe core code it uses and expands core types in its declarations,
+so the package has no dependencies.
 
 ## Normal releases
 
@@ -16,8 +19,9 @@ The workspace packages stay private; the compiled binaries bundle their dependen
    the GitHub release, then the **same workflow** validates, builds and publishes it. It does not
    rely on a tag-push event from the bot token.
 4. Four native runners compile and smoke-test the binaries. The publisher stages and packs the
-   five npm packages, saves their tarballs and SHA-256 checksums as an Actions artifact, runs the
-   installation smoke test, and publishes platform packages before the main package.
+   six npm packages, saves their tarballs and SHA-256 checksums as an Actions artifact, runs the
+   installation smoke test (including an isolated install, Node import and TypeScript check of the SDK),
+   and publishes platform packages before the main package, then the SDK.
    `scripts/publish-npm.sh` then retrieves each exact platform version from npm before publishing
    the launcher. Newly uploaded tarballs must match the staged bytes; existing immutable versions
    are checked for availability without requiring a rebuild to be byte-identical. Registry retries
@@ -37,7 +41,7 @@ for the normal flow. All root and workspace versions must match the CLI's versio
 ## npm authentication and the first v2 release
 
 Publishing uses npm Trusted Publishing (GitHub OIDC), not a persistent `NPM_TOKEN`.
-Configure each of the five packages to trust GitHub repository `The-Vibe-Company/armada`,
+Configure each of the six packages to trust GitHub repository `The-Vibe-Company/armada`,
 workflow **`release.yml`**, environment **`npm`**. The existing main package already trusts this
 workflow. Preserve its settings and its requirement for two-factor authentication.
 
@@ -55,6 +59,12 @@ npm trust github @the-vibe-company/armada-darwin-arm64 \
 Repeat for the other three platform packages. npm requests the maintainer's 2FA confirmation.
 Do not weaken publishing protections or commit credentials. After all platform packages exist,
 resume the release to publish the main package using OIDC. Subsequent releases need no npm login.
+
+The SDK package `@the-vibe-company/armada-sdk` is bootstrapped the same way before the first release
+that contains it: publish the exact `the-vibe-company-armada-sdk-<version>.tgz` from that release's
+`npm-tarballs-<version>` artifact with a maintainer session, then run `npm trust github` for it.
+Until then that release's npm job fails after the CLI packages are published; rerunning it after the
+bootstrap skips the already-published versions and publishes nothing twice.
 
 After v2 is published and installation succeeds, deprecate **only** the legacy versions:
 

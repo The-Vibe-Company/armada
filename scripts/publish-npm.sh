@@ -92,3 +92,10 @@ fi
 
 name=$(jq -r .name dist/npm/armada/package.json)
 publish_package "$name" "$(tarball_for "$name")"
+
+# The SDK has no binary dependency; it follows the CLI so a first-publication failure leaves the CLI
+# released. Recovery of a release staged before the SDK existed has no SDK directory to publish.
+if [ -f dist/npm/sdk/package.json ]; then
+  name=$(jq -r .name dist/npm/sdk/package.json)
+  publish_package "$name" "$(tarball_for "$name")"
+fi

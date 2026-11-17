@@ -8,14 +8,15 @@ const version = "2.0.1";
 const main = "@the-vibe-company/armada";
 const targets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
 const platforms = targets.map((target) => `${main}-${target}`);
+const sdkPackage = "@the-vibe-company/armada-sdk";
 
-function publish(mode: string, publishRelease = true) {
+function publish(mode: string, publishRelease = true, sdk = false) {
   const root = mkdtempSync(join(tmpdir(), "armada-publish-"));
   try {
     mkdirSync(join(root, "bin"));
     mkdirSync(join(root, "dist/tarballs"), { recursive: true });
-    for (const name of [...platforms, main]) {
-      const short = name.split("/")[1] as string;
+    for (const name of [...platforms, main, ...(sdk ? [sdkPackage] : [])]) {
+      const short = name === sdkPackage ? "sdk" : (name.split("/")[1] as string);
       mkdirSync(join(root, "dist/npm", short), { recursive: true });
       writeFileSync(join(root, "dist/npm", short, "package.json"), JSON.stringify({ name, version }));
       writeFileSync(join(root, "dist/tarballs", `${name.slice(1).replace("/", "-")}-${version}.tgz`), name);
@@ -134,4 +135,13 @@ test("dry runs publish every staged tarball without querying registry availabili
     expect(event).toStartWith("publish ");
     expect(event).toContain("--dry-run");
   }
+});
+
+test("a staged SDK is published after the launcher", () => {
+  const result = publish("delayed", true, true);
+  expect(result.exitCode).toBe(0);
+  expect(result.events.filter((event) => event.startsWith("publish ")).slice(-2)).toEqual([
+    `publish dist/tarballs/the-vibe-company-armada-${version}.tgz --access public --tag latest --provenance`,
+    `publish dist/tarballs/the-vibe-company-armada-sdk-${version}.tgz --access public --tag latest --provenance`,
+  ]);
 });
