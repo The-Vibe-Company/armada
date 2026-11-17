@@ -8,6 +8,7 @@ export async function prepareOpenCode(input: {
   candidate: string;
   serverUrl: string;
   cacheDir: string;
+  sharedDir?: string;
 }): Promise<string> {
   if (process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64"))
     throw Error("unsupported_opencode_artifact");
@@ -29,5 +30,10 @@ export async function prepareOpenCode(input: {
     for await (const chunk of Bun.file(input.candidate).stream()) hash.update(chunk);
     if (hash.digest("hex") === sha256) return input.candidate;
   }
-  return installRuntimeArtifact({ serverUrl: input.serverUrl, cacheDir: input.cacheDir, artifact: { sha256, bytes } });
+  return installRuntimeArtifact({
+    serverUrl: input.serverUrl,
+    cacheDir: input.cacheDir,
+    artifact: { sha256, bytes },
+    ...(input.sharedDir ? { sharedDir: input.sharedDir } : {}),
+  });
 }

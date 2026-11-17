@@ -64,6 +64,15 @@ materializes selected files in memory. A fully verified extracted cache needs
 neither HTTP nor a retained archive. Install/update only at start/resume while
 old native work is quiescent, never during a live turn.
 
+Before HTTP, enrolled harness and OpenCode preparation look for
+`/opt/armada/artifact-cache/<sha256>` (#2562). That path is only a content
+address: links and special files are ignored, and a copy is used only with the
+exact manifest size and SHA256, then extracted with the same file-inventory
+checks into the private per-sandbox cache. Anything else falls back to the
+normal download. Docker hosts mount their verified cache there read-only (see
+[Docker hosts](docker-host-daemon.md#shared-verified-artifact-cache-2562)).
+Modal and Boat have no such mount and download as before.
+
 The trusted launcher holds exclusive launch/lifecycle ownership and supplies
 only `{serverUrl,enrolmentToken}` to `armada-runtime dialout` on private stdin.
 No ticket file, argv/environment secret or public runtime port is needed.

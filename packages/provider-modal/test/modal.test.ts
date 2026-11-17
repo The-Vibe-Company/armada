@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { type AgentEvent, ProviderError, type Sql } from "@armada/core";
-import { createSqlVaultStore, encryptSecret, GoldenBuildJobs } from "@armada/core/server";
+import { createSqlVaultStore, encryptSecret, GoldenBuildJobs, isNonMutatingProviderRefusal } from "@armada/core/server";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
@@ -711,6 +711,30 @@ async function runningFork(f: ReturnType<typeof fixture>) {
   await f.provider.snapshot({ sandboxId: builder.id, name });
   return f.provider.fork({ from: name });
 }
+test("overlapping forks refuse source contention definitively before allocating", async () => {
+  const f = fixture();
+  const builder = await f.provider.createGolden({});
+  const name = crypto.randomUUID();
+  await f.provider.snapshot({ sandboxId: builder.id, name });
+  const entered = deferred();
+  const release = deferred();
+  f.distribution.start = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+  const first = f.provider.fork({ from: name });
+  await entered.promise;
+  const creates = f.creates;
+  try {
+    const error = await f.provider.fork({ from: name }).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: "conflict", providerCode: "fork_source_busy" });
+    expect(isNonMutatingProviderRefusal(error)).toBe(true);
+    expect(f.creates).toBe(creates);
+  } finally {
+    release.resolve();
+    await first;
+  }
+});
 test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
   const f = fixture(scope, db, undefined, undefined, true);
   const row = await runningFork(f);

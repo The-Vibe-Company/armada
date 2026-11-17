@@ -46,6 +46,7 @@ import { createSqlGoldenList } from "./golden-list.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { idlePauseDelayMs } from "./idle-pause-policy.ts";
 import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
+import { createLangfuse } from "./langfuse.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
@@ -61,7 +62,7 @@ import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
-import { createRuntimeArtifactRoute } from "./runtime-artifacts.ts";
+import { createRuntimeArtifactRoute, createRuntimeArtifactSetRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
@@ -336,6 +337,7 @@ export async function startServer(
   });
   const dockerEnabled = env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1";
   let dockerBootstrap: ReturnType<typeof createDockerBootstrapService> | undefined;
+  let dockerArtifactSet: ReturnType<typeof createRuntimeArtifactSetRoute> | undefined;
   if (dockerEnabled) {
     if (!env.ARMADA_DOCKER_RUNTIME_MANIFEST) throw Error("Docker runtime manifest required.");
     const dockerManifest = await Bun.file(env.ARMADA_DOCKER_RUNTIME_MANIFEST).json();
@@ -346,6 +348,7 @@ export async function startServer(
       !["x64", "arm64"].includes(dockerManifest.architecture)
     )
       throw Error("Invalid Docker runtime deployment manifest.");
+    dockerArtifactSet = createRuntimeArtifactSetRoute(dockerManifest);
     dockerBootstrap = createDockerBootstrapService(sql, config.encryptionKey, {
       enabled: true,
       serverUrl: config.publicUrl,
@@ -550,10 +553,12 @@ export async function startServer(
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
+  const langfuse = createLangfuse(sql, config.encryptionKey);
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
     config.encryptionKey,
     createRuntimeNativeAuth(sql, config.encryptionKey),
+    langfuse.enqueue,
   );
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const commitSha = sourceIdentity.commit ?? env.RAILWAY_GIT_COMMIT_SHA;
@@ -635,10 +640,18 @@ export async function startServer(
         : []),
       createDockerHostInstallRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, config.publicUrl),
       createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
+      ...(dockerArtifactSet ? [dockerArtifactSet] : []),
       runtimeEnrolments.route,
       createRuntimeProgress(runtimeEnrolments),
       createRuntimeModelAccess(sql, config.encryptionKey, modelAuth.broker),
       runtimeEvents.route,
+      langfuse.route((request) =>
+        authenticateCaller(request.headers.get("authorization"), {
+          store: authStore,
+          supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+          now: new Date(),
+        }),
+      ),
       runtimeCommands.route,
       ...(runtimeGitHub ? [runtimeGitHub.route] : []),
       delegatedAccess.scopedToolsRoute,

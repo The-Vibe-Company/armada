@@ -113,15 +113,23 @@ test("runtime starter delivers only enrolment on private stdin and detaches runt
           expect(result.stdout.toString().trim()).toBe(createHash("sha256").update(input.stdin).digest("hex") + "  -");
         },
       },
-      { serverUrl: "https://staging.example", cacheDir: join(directory, "cache") },
+      {
+        serverUrl: "https://staging.example",
+        cacheDir: join(directory, "cache"),
+        // The shared-cache warm-up follows a successful bootstrap and is never awaited.
+        warmSharedArtifacts: (runtime) => {
+          events.push(`warm:${runtime}`);
+          return new Promise(() => {});
+        },
+      },
       (async () => new Response(executable)) as unknown as typeof fetch,
     );
     await start(machine, { serverUrl: "https://staging.example", artifact, enrolmentToken: token });
-    expect(events).toEqual(["install", "start"]);
+    expect(events).toEqual(["install", "start", `warm:${artifact.sha256}`]);
     await expect(
       start(machine, { serverUrl: "https://other.example", artifact, enrolmentToken: token }),
     ).rejects.toThrow("Docker runtime bootstrap failed");
-    expect(events).toEqual(["install", "start"]);
+    expect(events).toEqual(["install", "start", `warm:${artifact.sha256}`]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
