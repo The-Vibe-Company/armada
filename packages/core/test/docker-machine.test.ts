@@ -19,7 +19,10 @@ const request: DockerMachineRequest = {
 
 // Minimal independent Docker state machine: inspect returns stored Docker-shaped records,
 // not receipts or ownership decisions supplied by the executor.
-function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: number }, sharedArtifactDir?: string) {
+function fixture(
+  limits?: () => { cpus: number; memoryBytes: number; pids: number },
+  sharedArtifacts?: { dir: string; ensure(): Promise<boolean> },
+) {
   const containers = new Map<string, any>();
   const volumes = new Map<string, any>();
   const calls: {
@@ -31,6 +34,7 @@ function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: numbe
   let time = 1000;
   let failCommand = "";
   let retainRemoved = false;
+  let refuseBinds = false;
   // Images present on the host (by reference, as `docker image inspect` reports them), and those its registry serves.
   const images = new Map<string, unknown>([[request.image, { Id: request.image }]]);
   const registry = new Set<string>();
@@ -74,6 +78,8 @@ function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: numbe
       } else if (action === "create") {
         const name = value("--name");
         if (store.has(name)) return { exitCode: 1, stdout: "name already exists" };
+        if (refuseBinds && argv.some((arg) => arg.startsWith("type=bind,")))
+          return { exitCode: 1, stdout: "bind source path does not exist" };
         const mounts = argv
           .flatMap((arg, i) => (arg === "--mount" ? [argv[i + 1]!] : []))
           .map((spec) => Object.fromEntries(spec.split(",").map((part) => part.split("="))))
@@ -105,7 +111,7 @@ function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: numbe
     cli,
     now: () => time,
     ...(limits ? { limits } : {}),
-    ...(sharedArtifactDir ? { sharedArtifactDir } : {}),
+    ...(sharedArtifacts ? { sharedArtifacts } : {}),
   });
   return {
     executor,
@@ -120,6 +126,9 @@ function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: numbe
     fail: (v: string) => {
       failCommand = v;
     },
+    refuseBinds: () => {
+      refuseBinds = true;
+    },
     retainRemoved: () => {
       retainRemoved = true;
     },
@@ -131,8 +140,18 @@ function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: numbe
 describe("Docker machine executor", () => {
   test("new containers mount the host's shared artifact cache read-only; retained ones without it stay owned", async () => {
     const shared = "/state/artifact-cache";
-    const f = fixture(undefined, shared);
+    let ensured = 0;
+    let prepared = true;
+    const f = fixture(undefined, {
+      dir: shared,
+      ensure: async () => {
+        ensured++;
+        return prepared;
+      },
+    });
     const created = await f.executor.create(request);
+    // Prepared before the create and again before the start.
+    expect(ensured).toBe(2);
     const container = f.containers.get(created.containerName);
     expect(container.Mounts).toEqual([
       { Type: "volume", Name: created.volumeName, Destination: "/home/user", RW: true },
@@ -162,13 +181,28 @@ describe("Docker machine executor", () => {
       now: () => 1000,
     });
     await expect(plain.isRunning(request)).rejects.toThrow("ownership_mismatch");
+    // A host whose preparation now fails still owns (stops, deletes) mounted containers,
+    // and creates new ones without the mount.
+    prepared = false;
+    expect(await f.executor.isRunning(request)).toBe(true);
+    const other = { ...request, generation: "55555555-5555-5555-5555-555555555555" };
+    const unmounted = await f.executor.create(other);
+    expect(f.containers.get(unmounted.containerName).Mounts).toHaveLength(1);
+    // An engine that refuses the bind (confinement, remote engine) launches without it.
+    prepared = true;
+    f.refuseBinds();
+    const third = { ...request, generation: "66666666-6666-6666-6666-666666666666" };
+    const fallback = await f.executor.create(third);
+    expect(f.containers.get(fallback.containerName).Mounts).toEqual([
+      { Type: "volume", Name: fallback.volumeName, Destination: "/home/user", RW: true },
+    ]);
     expect(() =>
       createDockerMachineExecutor({
         installationId: "11111111-1111-1111-1111-111111111111",
         hostId: "22222222-2222-2222-2222-222222222222",
         cli: f.cli,
         now: () => 1000,
-        sharedArtifactDir: "/state,dst=/home/user",
+        sharedArtifacts: { dir: "/state,dst=/home/user", ensure: async () => true },
       }),
     ).toThrow("invalid_request");
   });

@@ -1311,11 +1311,19 @@ so a sandbox keeps today's guarantees without trusting the host or image.
   no credentials or redirects, exact size and SHA256) into
   `<state>/artifact-cache-private`, then published atomically as a mode 0444
   file in `<state>/artifact-cache` (mode 0755; public bytes only). Runs are
-  serialized; each prunes entries the current set no longer names.
+  serialized. The small set is re-read on every bootstrap, so a redeploy that
+  changes only archives is picked up; a changed set prunes entries named by
+  neither it nor the previous set.
 - New containers bind-mount that directory read-only at
-  `/opt/armada/artifact-cache`. Ownership checks accept only that exact
-  read-only bind as an extra mount; containers created before the upgrade keep
-  their single home volume and download as before.
+  `/opt/armada/artifact-cache`. The daemon recreates the directory before
+  every create/start; an engine that refuses the bind (confinement, remote
+  engine) gets the container without it. Ownership always accepts that exact
+  read-only bind as the only extra mount, even when preparation fails;
+  containers created before the upgrade keep their single home volume and
+  download as before.
+- Do not roll a host back to a daemon older than this change while containers
+  with the bind exist: older daemons require exactly one mount and cannot stop
+  or delete them. Upgrade forward instead.
 - Inside the sandbox the runtime copies a matching archive into its private
   cache instead of downloading it, then extracts with the usual inventory checks.
   Extraction and verification remain per sandbox; only HTTP is removed. The

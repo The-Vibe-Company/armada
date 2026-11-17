@@ -9,7 +9,7 @@ import {
   dockerResourceLimits,
 } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
-import { prepareSharedArtifactDir, sharedArtifactWarmer } from "./artifact-cache.ts";
+import { sharedArtifactDirectory, sharedArtifactWarmer } from "./artifact-cache.ts";
 import { createAvailabilitySampler } from "./availability.ts";
 import { createPhysicalExpirySweep, register, serverOrigin, tick, validToken } from "./daemon.ts";
 import { dockerDiskFreeBytes, stoppedSandboxBytes, withDiskFloor } from "./disk.ts";
@@ -194,14 +194,14 @@ async function main(args: string[]) {
     }
     const state = await store.load();
     let limits = dockerResourceLimits(dockerHostResources());
-    const sharedArtifactDir = await prepareSharedArtifactDir(join(directory, "artifact-cache"));
+    const sharedArtifacts = await sharedArtifactDirectory(directory);
     const executor = createDockerMachineExecutor({
       installationId: state.installationId,
       hostId: state.hostId,
       cli: dockerCli,
       now: Date.now,
       limits: () => limits,
-      ...(sharedArtifactDir ? { sharedArtifactDir } : {}),
+      ...(sharedArtifacts ? { sharedArtifacts } : {}),
     });
     const runtime = withDiskFloor(
       {
@@ -215,12 +215,12 @@ async function main(args: string[]) {
         startRuntime: dockerRuntimeStarter(executor, {
           serverUrl: state.server,
           cacheDir: join(directory, "runtime-cache"),
-          ...(sharedArtifactDir
+          ...(sharedArtifacts
             ? {
                 warmSharedArtifacts: sharedArtifactWarmer({
                   serverUrl: state.server,
                   privateDir: join(directory, "artifact-cache-private"),
-                  sharedDir: sharedArtifactDir,
+                  sharedDir: sharedArtifacts.dir,
                 }),
               }
             : {}),

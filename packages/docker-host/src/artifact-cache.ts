@@ -23,22 +23,30 @@ function pin(value: unknown): RuntimeArtifact {
 }
 
 /**
- * Create the host's shared artifact directory (world-readable: it holds only public, digest-named
- * bytes) and return its canonical path for the read-only container bind mount. A host that cannot
- * prepare it keeps launching without a shared cache rather than failing every container create.
+ * The host's shared artifact directory, `<state>/artifact-cache` under the canonical state path
+ * (world-readable: it holds only public, digest-named bytes). `ensure` (re)creates it before each
+ * container create/start; it never throws. Undefined only when the path cannot be a Docker
+ * `--mount` value, in which case the host simply runs without a shared cache.
  */
-export async function prepareSharedArtifactDir(directory: string): Promise<string | undefined> {
-  try {
-    await mkdir(directory, { recursive: true, mode: 0o755 });
-    const info = await lstat(directory);
-    if (!info.isDirectory() || info.isSymbolicLink()) return undefined;
-    await chmod(directory, 0o755);
-    const canonical = await realpath(directory);
-    // The path is a Docker --mount field value: refuse separators rather than quote them.
-    return /[,"=\0\n\r]/.test(canonical) ? undefined : canonical;
-  } catch {
-    return undefined;
-  }
+export async function sharedArtifactDirectory(
+  stateDirectory: string,
+): Promise<{ dir: string; ensure(): Promise<boolean> } | undefined> {
+  const dir = join(await realpath(stateDirectory), "artifact-cache");
+  // A Docker --mount field value: refuse separators rather than quote them.
+  if (/[,"=\0\n\r]/.test(dir)) return undefined;
+  const ensure = async () => {
+    try {
+      await mkdir(dir, { recursive: true, mode: 0o755 });
+      const info = await lstat(dir);
+      if (!info.isDirectory() || info.isSymbolicLink()) return false;
+      await chmod(dir, 0o755);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  await ensure();
+  return { dir, ensure };
 }
 
 /**
@@ -46,8 +54,10 @@ export async function prepareSharedArtifactDir(directory: string): Promise<strin
  * with that runtime digest, verify every artifact through the shared installer (fixed HTTPS origin,
  * no credentials or redirects, exact size and SHA256) into a private cache, then publish read-only
  * digest-named copies for sandboxes. Sandboxes re-verify size and digest, so this is an optimization
- * only: every failure leaves them on today's HTTP path. Runs are serialized; each prunes entries the
- * current set no longer names, so the cache holds one deployment's artifacts.
+ * only: every failure leaves them on today's HTTP path. Runs are serialized. The small set is
+ * re-read on every bootstrap (a redeploy may change archives without changing the runtime), and
+ * each change prunes entries named by neither the current nor the previous set, so alternating
+ * deployments do not re-download each other's artifacts.
  */
 export function sharedArtifactWarmer(
   options: { serverUrl: string; privateDir: string; sharedDir: string },
@@ -55,10 +65,10 @@ export function sharedArtifactWarmer(
 ) {
   const origin = new URL(options.serverUrl).origin;
   let queue: Promise<void> = Promise.resolve();
-  let warmed: string | undefined;
+  let current: Set<string> = new Set();
+  let previous: Set<string> = new Set();
 
   async function warm(runtime: string) {
-    if (warmed === runtime) return;
     const response = await request(new URL(`/api/runtime/artifact-sets/${runtime}`, origin), {
       redirect: "error",
       credentials: "omit",
@@ -79,14 +89,18 @@ export function sharedArtifactWarmer(
     )
       throw Error("invalid_artifact_set");
     const artifacts = set.artifacts.map(pin);
-    const keep = new Set(artifacts.map((artifact) => artifact.sha256));
+    const named = new Set(artifacts.map((artifact) => artifact.sha256));
+    const changed = named.size !== current.size || [...named].some((sha) => !current.has(sha));
     for (const artifact of artifacts) {
+      const target = join(options.sharedDir, artifact.sha256);
+      const published = await lstat(target).catch(() => undefined);
+      if (!changed && published?.isFile() && published.size === artifact.bytes && (published.mode & 0o777) === 0o444)
+        continue;
       const verified = await installRuntimeArtifact(
         { serverUrl: origin, cacheDir: options.privateDir, artifact },
         request,
       );
-      const target = join(options.sharedDir, artifact.sha256);
-      // Republish from the verified private copy once per run (repairing a damaged shared file),
+      // Republish from the verified private copy when the set changes or the entry is missing,
       // atomically: a reader never sees a partial file and an already open copy stays readable.
       const temporary = join(options.sharedDir, `.${artifact.sha256}.${crypto.randomUUID()}`);
       try {
@@ -97,10 +111,13 @@ export function sharedArtifactWarmer(
         await rm(temporary, { force: true });
       }
     }
+    if (!changed) return;
+    if (current.size) previous = current;
+    current = named;
     for (const directory of [options.sharedDir, options.privateDir])
       for (const name of await readdir(directory).catch(() => [] as string[]))
-        if (!keep.has(name)) await rm(join(directory, name), { recursive: true, force: true });
-    warmed = runtime;
+        if (!current.has(name) && !previous.has(name))
+          await rm(join(directory, name), { recursive: true, force: true });
   }
 
   /** Never throws and never delays the caller; the returned promise settles when this run ends. */

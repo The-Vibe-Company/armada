@@ -82,14 +82,17 @@ export function createDockerMachineExecutor(options: {
   limits?: () => DockerSandboxLimits;
   /**
    * Host directory of verified digest-named public artifacts, bind-mounted read-only at
-   * SHARED_ARTIFACT_CACHE_PATH into new containers (#2562). Retained containers created
-   * without it stay valid and simply download as before.
+   * SHARED_ARTIFACT_CACHE_PATH into new containers (#2562). The mount is an optimization:
+   * `ensure` (re)creates the directory before each create/start and a create that cannot
+   * bind it retries without it. Ownership always accepts this exact read-only bind, so a
+   * failed preparation never strands stop/delete; containers without it stay owned too.
    */
-  sharedArtifactDir?: string;
+  sharedArtifacts?: { dir: string; ensure(): Promise<boolean> };
 }) {
   if (!uuid.test(options.installationId) || !uuid.test(options.hostId)) fail("invalid_request");
-  const shared = options.sharedArtifactDir;
-  if (shared !== undefined && (!shared.startsWith("/") || /[,"=\0\n\r]/.test(shared))) fail("invalid_request");
+  const shared = options.sharedArtifacts;
+  if (shared !== undefined && (!shared.dir.startsWith("/") || /[,"=\0\n\r]/.test(shared.dir))) fail("invalid_request");
+  const ensureShared = async () => (shared ? await shared.ensure().catch(() => false) : false);
 
   async function run(argv: readonly string[], stdin?: string | Uint8Array) {
     try {
@@ -228,7 +231,7 @@ export function createDockerMachineExecutor(options: {
       // The only accepted extra mount is this host's own read-only shared artifact cache.
       for (const entry of binds) {
         const bind = object(entry);
-        if (bind.Source !== shared || bind.Destination !== SHARED_ARTIFACT_CACHE_PATH || bind.RW !== false)
+        if (bind.Source !== shared?.dir || bind.Destination !== SHARED_ARTIFACT_CACHE_PATH || bind.RW !== false)
           fail("ownership_mismatch");
       }
       const mount = object(home[0]);
@@ -318,7 +321,7 @@ export function createDockerMachineExecutor(options: {
         }
         if (!pulled) fail("image_unavailable");
       }
-      const result = await run([
+      const createArgs = (mountShared: boolean) => [
         "container",
         "create",
         ...dockerResourceArgs(dockerHostResources(), options.limits?.()),
@@ -332,17 +335,24 @@ export function createDockerMachineExecutor(options: {
         "no-new-privileges",
         "--mount",
         `type=volume,src=${state.volumeName},dst=/home/user`,
-        ...(shared === undefined
-          ? []
-          : ["--mount", `type=bind,src=${shared},dst=${SHARED_ARTIFACT_CACHE_PATH},readonly`]),
+        ...(mountShared && shared
+          ? ["--mount", `type=bind,src=${shared.dir},dst=${SHARED_ARTIFACT_CACHE_PATH},readonly`]
+          : []),
         ...labelArgs(object(state.volume?.Labels)),
         "--entrypoint",
         "/bin/sh",
         request.image,
         "-c",
         "exec sleep infinity",
-      ]);
+      ];
+      const mountShared = await ensureShared();
+      let result = await run(createArgs(mountShared));
       state = await owned(request);
+      if (!state.container && mountShared && result.exitCode !== 0) {
+        // An engine that cannot bind the host cache (confinement, remote engine) launches without it.
+        result = await run(createArgs(false));
+        state = await owned(request);
+      }
       if (!state.container) fail(result.exitCode === 0 ? "ownership_mismatch" : "docker_failed");
     }
     if (state.expiresAt === undefined || state.expiresAt <= now()) fail("expired");
@@ -356,6 +366,7 @@ export function createDockerMachineExecutor(options: {
         ...dockerResourceArgs(dockerHostResources(), options.limits?.()),
         state.containerName,
       ]);
+      await ensureShared();
       await checked(["container", "start", state.containerName]);
     }
     return { containerName: state.containerName, volumeName: state.volumeName, expiresAt: state.expiresAt };
@@ -375,6 +386,8 @@ export function createDockerMachineExecutor(options: {
         ...dockerResourceArgs(dockerHostResources(), options.limits?.()),
         state.containerName,
       ]);
+      // A retained container with the cache bind cannot start if its source vanished.
+      await ensureShared();
       await checked(["container", "start", state.containerName]);
     }
   }
