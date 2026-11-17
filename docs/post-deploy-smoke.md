@@ -171,6 +171,22 @@ The normal path launches each case, sends one trivial prompt, waits for success,
 checks `git status -sb` and `git ls-remote origin HEAD` in the checkout, stops
 the sandbox and checks provider state.
 
+### Concurrent lanes
+
+Default-pin reads and the vault family (no compute) run first, in case order.
+After that every independent sandbox runs concurrently in its own lane, one per
+case and family: `templates`, `expiry` and `lifecycle` (the clean worker, then
+the dirty preservation worker of the same case, in that order). The expiry TTL
+wait therefore overlaps the lifecycle and template work instead of adding to it.
+Every step receipt from a lane carries its `case` index and `lane`, so
+interleaved output still gives one attributable failure report per case. Each
+lane keeps its own cleanup reserve: one lane entering cleanup never extends or
+shortens another lane's deadline. The run waits for every lane, including its
+cleanup, before the journal cleanup waves and passes only if every lane passes.
+The scoped-access snapshot diff ignores sandboxes this same run launched through
+the owner API in other lanes; any other new sandbox remains unattributed and
+fails the probe.
+
 ### Pair prerequisites
 
 All selected pairs share staging `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN` and
@@ -564,7 +580,7 @@ launches with org/golden/start time. Lost create responses are never retried.
 This is not a resource janitor: an interrupted runner or unknown create still
 requires operator reconciliation.
 
-Expected added duration: about 3–5 minutes per pair, sequentially; no model
+Expected added duration: about 3–5 minutes per pair, overlapping the other lanes; no model
 turns, one extra short-lived worker per pair plus normal retained-disk cost.
 Each request remains bounded by the existing shared 35-minute work deadline
 and five-minute cleanup reserve. Ready polling allows 120 observations,

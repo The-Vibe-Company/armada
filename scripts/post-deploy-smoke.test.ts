@@ -97,13 +97,14 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
     io,
     calls,
     lines,
-    // Protocol assertions below ignore additive per-step telemetry; timing has its own contract test.
+    // Protocol assertions below ignore additive per-step telemetry; timing and lanes have their own contract tests.
     receipts: () =>
       lines
         .filter((line) => line !== boatNotice)
         .map((line) => {
           const receipt = JSON.parse(line);
           if (!receipt.step.endsWith("_summary") && receipt.step !== "time_to_ready") delete receipt.elapsedMs;
+          delete receipt.lane;
           return receipt;
         }),
     advance: (ms: number) => {
@@ -135,27 +136,26 @@ test("requires explicit compute opt-in, HTTPS origin, token and bounded valid ca
 });
 
 test("smokes each configured provider/harness through the real API wire contract, including git and provider stop confirmation", async () => {
+  // Distinct orgs keep each concurrent case lane's fake state apart.
   const cases = ["modal"].flatMap((provider) =>
-    ["claude", "codex"].map((harness) => ({ ...selected, provider, harness })),
+    ["claude", "codex"].map((harness) => ({ ...selected, provider, harness, org: `org-${harness}` })),
   );
-  let waited = false;
+  const waited = new Set<unknown>();
   const fake = fixture((call) => {
-    if (call.path === "sandbox/launch") {
-      waited = false;
-    }
-    if (call.path === "sandbox/wait" && !waited) {
-      waited = true;
+    const org = call.body.org;
+    const mine = fake.calls.filter((entry) => entry.body.org === org);
+    if (call.path === "sandbox/launch") waited.delete(org);
+    if (call.path === "sandbox/wait" && !waited.has(org)) {
+      waited.add(org);
       return json({ prompt: { promptId: "prompt-id", state: "running" } });
     }
     if (
       call.path === "sandbox/status" &&
-      fake.calls.some(
-        (entry) =>
-          entry.path === "sandbox/stop" &&
-          fake.calls.lastIndexOf(entry) > fake.calls.findLastIndex((entry) => entry.path === "sandbox/launch"),
-      )
+      mine.findLastIndex((entry) => entry.path === "sandbox/stop") >
+        mine.findLastIndex((entry) => entry.path === "sandbox/launch")
     )
       return json({ status: "stopped", providerState: "stopped" });
+    if (call.path === "sandbox/status") return json({ status: "ready", providerState: "active" });
   });
   expect(await postDeploySmoke({ ...env, ARMADA_SMOKE_CASES: JSON.stringify(cases) }, [], fake.io)).toBe(true);
   const launches = fake.calls.filter((call) => call.path === "sandbox/launch");
@@ -171,16 +171,21 @@ test("smokes each configured provider/harness through the real API wire contract
       ttlSeconds: 1800,
     })),
   );
-  const waits = fake.calls.filter((call) => call.path === "sandbox/wait");
-  expect(waits[0]?.body).toEqual({ org: "org", id: "sandbox-id", prompt_id: "prompt-id", timeout_seconds: 0 });
-  expect(
-    fake.calls.filter((call) => call.path === "sandbox/exec").map((call) => [call.body.command, call.body.cwd]),
-  ).toEqual(
-    cases.flatMap(() => [
+  for (const item of cases) {
+    const mine = fake.calls.filter((call) => call.body.org === item.org);
+    expect(mine.find((call) => call.path === "sandbox/wait")?.body).toEqual({
+      org: item.org,
+      id: "sandbox-id",
+      prompt_id: "prompt-id",
+      timeout_seconds: 0,
+    });
+    expect(
+      mine.filter((call) => call.path === "sandbox/exec").map((call) => [call.body.command, call.body.cwd]),
+    ).toEqual([
       ["git status -sb", selected.repo],
       ["git ls-remote origin HEAD", selected.repo],
-    ]),
-  );
+    ]);
+  }
   expect(fake.receipts().filter((line) => line.step === "stop" && line.pass)).toHaveLength(2);
   expect(fake.lines.join("")).not.toContain("secret");
 });
@@ -466,62 +471,62 @@ test("GitHub runtime slice requires staging assertions and disposable repository
 
 test("GitHub slice validates native receipts twice and cleans scratch before sandbox even on failure", async () => {
   for (const failReceipt of [false, true]) {
-    let stopping = false;
-
+    // Distinct orgs keep each concurrent case lane's fake state apart.
+    const stopping = new Set<unknown>();
     const fake = fixture((call) => {
-      if (call.path === "sandbox/launch") {
-        stopping = false;
-      }
-      if (call.path === "sandbox/stop") stopping = true;
+      if (call.path === "sandbox/launch") stopping.delete(call.body.org);
+      if (call.path === "sandbox/stop") stopping.add(call.body.org);
       if (call.path === "sandbox/status")
         return json({
-          status: stopping ? "stopped" : "ready",
-          providerState: stopping ? "stopped" : "active",
+          status: stopping.has(call.body.org) ? "stopped" : "ready",
+          providerState: stopping.has(call.body.org) ? "stopped" : "active",
         });
       if (call.path === "sandbox/exec" && String(call.body.command).startsWith("head -c 64 --"))
         return json({ exitCode: 0, timedOut: false, stdout: failReceipt ? "0 128 0" : "0 0 0" });
       return undefined;
     });
+    const cases = ["modal"].flatMap((provider) =>
+      ["claude", "codex"].map((harness) => ({
+        ...selected,
+        provider,
+        harness,
+        org: `org-${harness}`,
+        repo: "/home/user/it's a repo",
+        disposableRepository: "https://github.com/smoke/disposable.git",
+      })),
+    );
     const staging = {
       ...env,
       ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
       ARMADA_SMOKE_GITHUB_GATE: "true",
       ARMADA_SMOKE_SERVER_REVISION: "a".repeat(40),
       ARMADA_SMOKE_RUNTIME_REVISION: "b".repeat(40),
-      ARMADA_SMOKE_CASES: JSON.stringify(
-        ["modal"].flatMap((provider) =>
-          ["claude", "codex"].map((harness) => ({
-            ...selected,
-            provider,
-            harness,
-            repo: "/home/user/it's a repo",
-            disposableRepository: "https://github.com/smoke/disposable.git",
-          })),
-        ),
-      ),
+      ARMADA_SMOKE_CASES: JSON.stringify(cases),
     };
     const io = {
       ...fake.io,
       fetch: (url: string, init: RequestInit) => fake.io.fetch(url.replace(staging.ARMADA_URL, env.ARMADA_URL), init),
     };
     expect(await postDeploySmoke(staging, ["--github-runtime"], io)).toBe(!failReceipt);
-    const sends = fake.calls.filter((call) => call.path === "sandbox/send");
-    expect(sends).toHaveLength(failReceipt ? 2 : 4);
-    expect(String(sends[0]?.body.prompt)).toContain("push origin HEAD:refs/heads/armada-runtime-smoke-");
-    expect(fake.calls.filter((call) => String(call.body.command).startsWith("head -c 64 --"))).toHaveLength(
-      failReceipt ? 2 : 4,
-    );
-    if (!failReceipt)
-      for (const turn of [1, 3]) {
-        expect(String(sends[turn]?.body.prompt)).not.toContain("push origin");
-        expect(String(sends[turn]?.body.prompt)).toContain("ls-remote origin HEAD");
-        expect(String(sends[turn]?.body.prompt)).toContain("git -C '/home/user/it'\\''s a repo'");
+    for (const item of cases) {
+      const mine = fake.calls.filter((call) => call.body.org === item.org);
+      const sends = mine.filter((call) => call.path === "sandbox/send");
+      expect(sends).toHaveLength(failReceipt ? 1 : 2);
+      expect(String(sends[0]?.body.prompt)).toContain("push origin HEAD:refs/heads/armada-runtime-smoke-");
+      expect(mine.filter((call) => String(call.body.command).startsWith("head -c 64 --"))).toHaveLength(
+        failReceipt ? 1 : 2,
+      );
+      if (!failReceipt) {
+        expect(String(sends[1]?.body.prompt)).not.toContain("push origin");
+        expect(String(sends[1]?.body.prompt)).toContain("ls-remote origin HEAD");
+        expect(String(sends[1]?.body.prompt)).toContain("git -C '/home/user/it'\\''s a repo'");
       }
-    const cleanup = fake.calls.findIndex((call) =>
-      String(call.body.command).includes("push origin --delete armada-runtime-smoke-"),
-    );
-    expect(cleanup).toBeGreaterThan(0);
-    expect(fake.calls.findIndex((call) => call.path === "sandbox/stop")).toBeGreaterThan(cleanup);
+      const cleanup = mine.findIndex((call) =>
+        String(call.body.command).includes("push origin --delete armada-runtime-smoke-"),
+      );
+      expect(cleanup).toBeGreaterThan(0);
+      expect(mine.findIndex((call) => call.path === "sandbox/stop")).toBeGreaterThan(cleanup);
+    }
     expect(fake.lines.join("")).not.toContain("secret");
     expect(fake.receipts()).toContainEqual(
       expect.objectContaining({ step: "native_git_exit_statuses", status: 0, remote: failReceipt ? 128 : 0, push: 0 }),
@@ -1345,47 +1350,59 @@ type LifecycleFault =
   | "stop_failed"
   | "lost_launch";
 function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call) => Response | undefined) {
-  let provider = "modal";
-  let harness = "codex";
-  let id = "";
+  // Per-sandbox state: concurrent case lanes interleave their calls.
+  interface Life {
+    id: string;
+    provider: string;
+    harness: string;
+    sends: number;
+    stops: number;
+    stopped: boolean;
+    readiness: number;
+    expiry: string;
+  }
+  const lives = new Map<string, Life>();
   let launches = 0;
-  let sends = 0;
-  let stops = 0;
-  let stopped = false;
-  let readiness = 0;
-  let expiry = "";
   const fake = fixture((call) => {
     const override = handler?.(call);
     if (override) return override;
     if (call.path === "sandbox/launch") {
       launches++;
-      provider = String(call.body.provider);
-      harness = String(call.body.harness);
-      id = `life-${launches}`;
-      sends = 0;
-      stops = 0;
-      stopped = false;
-      readiness = 0;
       fake.advance(500);
-      expiry = new Date(fake.io.now() + 1800_000).toISOString();
+      const life: Life = {
+        id: `life-${launches}`,
+        provider: String(call.body.provider),
+        harness: String(call.body.harness),
+        sends: 0,
+        stops: 0,
+        stopped: false,
+        readiness: 0,
+        expiry: new Date(fake.io.now() + 1800_000).toISOString(),
+      };
+      lives.set(life.id, life);
       if (fault === "lost_launch") throw new Error("secret launch outcome");
-      return json({ sandbox: { id, provider } });
+      return json({ sandbox: { id: life.id, provider: life.provider } });
     }
-    if (call.path.startsWith("sandbox/") && !["sandbox/list", "sandbox/launch"].includes(call.path))
-      expect(call.body.id).toBe(id);
+    const life =
+      call.path === "sandbox/list"
+        ? [...lives.values()].findLast((entry) => entry.harness === call.body.harness)
+        : lives.get(String(call.body.id));
+    if (call.path.startsWith("sandbox/")) expect(life).toBeDefined();
+    if (!life) return undefined;
+    const { id, provider, harness } = life;
     if (call.path === "sandbox/status")
       return json({
         id,
         harness,
-        status: stopped ? "stopped" : !sends && ++readiness === 1 ? "starting" : "ready",
-        providerState: stopped ? "stopped" : "active",
-        expiresAt: expiry,
+        status: life.stopped ? "stopped" : !life.sends && ++life.readiness === 1 ? "starting" : "ready",
+        providerState: life.stopped ? "stopped" : "active",
+        expiresAt: life.expiry,
       });
     if (call.path === "sandbox/send") {
-      sends++;
-      stopped = false;
-      if (sends === 2 && fault === "lost_resume") throw new Error("secret lost resume receipt");
-      return json({ promptId: `turn-${sends}` });
+      life.sends++;
+      life.stopped = false;
+      if (life.sends === 2 && fault === "lost_resume") throw new Error("secret lost resume receipt");
+      return json({ promptId: `turn-${life.sends}` });
     }
     if (call.path === "sandbox/wait") return json({ prompt: { promptId: call.body.prompt_id, state: "finished" } });
     if (call.path === "sandbox/steer")
@@ -1397,13 +1414,12 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
           );
     if (call.path === "sandbox/extend") {
       expect(call.body.ttl_seconds).toBe(1860);
-      const next = new Date(Date.parse(expiry) + 60_000).toISOString();
-      if (fault !== "bad_extension") expiry = next;
-      return json({ id, expiresAt: expiry, ttlSeconds: 1860 });
+      const next = new Date(Date.parse(life.expiry) + 60_000).toISOString();
+      if (fault !== "bad_extension") life.expiry = next;
+      return json({ id, expiresAt: life.expiry, ttlSeconds: 1860 });
     }
     if (call.path === "sandbox/list") {
       expect(call.body.owner).toBe("me");
-      expect(call.body.harness).toBe(harness);
       expect(call.body.limit).toBe(200);
       return call.body.page === 1
         ? json({ sandboxes: [], page: 1, hasMore: true, nextPage: 2 })
@@ -1413,8 +1429,8 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
                 id,
                 provider,
                 harness,
-                status: fault === "list_mismatch" ? "running" : stopped ? "stopped" : "ready",
-                expiresAt: expiry,
+                status: fault === "list_mismatch" ? "running" : life.stopped ? "stopped" : "ready",
+                expiresAt: life.expiry,
               },
             ],
             page: 2,
@@ -1423,9 +1439,9 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
           });
     }
     if (call.path === "sandbox/stop") {
-      stops++;
-      if (fault === "stop_failed" && stops > 1) throw new Error("secret stop failure");
-      stopped = true;
+      life.stops++;
+      if (fault === "stop_failed" && life.stops > 1) throw new Error("secret stop failure");
+      life.stopped = true;
       return json({ status: "stopping" });
     }
   });
@@ -1463,7 +1479,8 @@ test("lifecycle records readiness and confirms extend/list, closed idle steer re
       pass: true,
       provider: item.provider,
       harness: item.harness,
-      elapsedMs: 1500,
+      // Concurrent lanes share the fake clock; the lower bound is checked below.
+      elapsedMs: expect.any(Number),
     });
     for (const step of [
       "list_ready",
@@ -1478,6 +1495,12 @@ test("lifecycle records readiness and confirms extend/list, closed idle steer re
     ])
       expect(fake.receipts()).toContainEqual({ case: index, step, pass: true });
   }
+  expect(
+    fake
+      .receipts()
+      .filter((line) => line.step === "time_to_ready")
+      .map((line) => line.elapsedMs >= 1500),
+  ).toEqual([true, true]);
   expect(fake.receipts().filter((line) => line.step === "lifecycle_cleanup_summary")).toHaveLength(2);
   expect(
     fake
@@ -1521,6 +1544,81 @@ test("lifecycle failures reject false receipts and report unknown launches or le
 });
 
 // The merged staging command combines these independently runnable families.
+test("independent sandbox lanes run concurrently: the expiry wait overlaps every case's lifecycle, receipts stay attributable", async () => {
+  const expiries = new Map<string, number>();
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/launch" && call.body.ttlSeconds === 180) {
+      const id = `exp-${call.body.harness}`;
+      expiries.set(id, fake.io.now() + 180_000);
+      return json({ sandbox: { id, provider: call.body.provider } });
+    }
+    const id = String(call.body.id);
+    const expiresMs = expiries.get(id);
+    const listed = call.path === "sandbox/list" && call.body.status === undefined;
+    if (expiresMs === undefined && !listed) return undefined;
+    const target = listed ? `exp-${call.body.harness}` : id;
+    const deadline = expiries.get(target)!;
+    const expired = fake.io.now() >= deadline;
+    const expiresAt = new Date(deadline).toISOString();
+    if (call.path === "sandbox/status")
+      return json({
+        id,
+        status: expired ? "stopped" : "ready",
+        providerState: expired ? "stopped" : "active",
+        statusReason: expired ? "expired" : null,
+        expiresAt,
+      });
+    if (listed)
+      return json({
+        sandboxes: [
+          {
+            id: target,
+            provider: "modal",
+            harness: call.body.harness,
+            status: expired ? "stopped" : "ready",
+            effectiveTtlSeconds: 180,
+            expiresAt,
+            stoppedAt: expired ? expiresAt : null,
+          },
+        ],
+        page: call.body.page,
+        hasMore: false,
+        nextPage: null,
+      });
+    throw new Error("unexpected expiry call");
+  });
+  const cases = ["claude", "codex"].map((harness) => ({ ...selected, harness }));
+  expect(await fake.run(cases, ["--expiry"])).toBe(true);
+  const receipts = fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line));
+  const at = (lane: string, step: string, index: number) =>
+    receipts.findIndex((line) => line.lane === lane && line.step === step && line.case === index);
+  for (const index of [0, 1]) {
+    // A serial run would finish every 180 s expiry wait before the first lifecycle launch.
+    expect(at("lifecycle", "lifecycle_cleanup_summary", index)).toBeGreaterThan(-1);
+    expect(at("lifecycle", "lifecycle_cleanup_summary", index)).toBeLessThan(at("expiry", "expiry_as_stop", 0));
+    expect(at("expiry", "expiry_cleanup_summary", index)).toBeGreaterThan(-1);
+  }
+  // Both cases' lifecycle sandboxes are launched before either one stops.
+  const lifecycleCalls = fake.calls.filter(
+    (call) =>
+      String(call.body.id ?? "").startsWith("life-") ||
+      (call.path === "sandbox/launch" && call.body.ttlSeconds === 1800),
+  );
+  expect(lifecycleCalls.filter((call) => call.path === "sandbox/launch")).toHaveLength(2);
+  expect(lifecycleCalls.findLastIndex((call) => call.path === "sandbox/launch")).toBeLessThan(
+    lifecycleCalls.findIndex((call) => call.path === "sandbox/stop"),
+  );
+  // Interleaved output stays attributable: every unit receipt names its case and lane.
+  const unitReceipts = receipts.filter((line) => line.step !== "smoke_cleanup_summary");
+  expect(unitReceipts.length).toBeGreaterThan(0);
+  for (const line of unitReceipts) {
+    expect([0, 1]).toContain(line.case);
+    expect(["lifecycle", "expiry"]).toContain(line.lane);
+    expect(line.lane === "expiry").toBe(String(line.step).startsWith("expiry_"));
+  }
+  expect(fake.lines.join("")).not.toContain("secret");
+});
+
 test("vault/template failures remain failures without bypassing the combined lifecycle checks", async () => {
   const fake = lifecycleFixture();
   expect(

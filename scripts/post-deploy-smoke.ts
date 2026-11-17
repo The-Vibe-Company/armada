@@ -106,7 +106,7 @@ interface SmokeIo {
 }
 const POLLS = 120;
 const LAUNCH_PATH = /^(?:sandbox\/launch(?:-access-v1)?|templates\/launch)$/;
-type Lane = "templates" | "expiry" | "lifecycle" | "preservation";
+type Lane = "templates" | "expiry" | "lifecycle";
 
 /** Wait for every concurrent unit, so all cleanups finish before the journal sweep; a thrown unit still throws. */
 async function settled(units: Promise<boolean>[]): Promise<boolean> {
@@ -544,27 +544,25 @@ async function runPostDeploySmoke(
     const { request, withCleanup, out, step } = unit(index, "expiry");
     return runExpiryCase(item, { request, now: io.now, sleep: io.sleep, out, step, withCleanup });
   }
-  // Every probe owns its sandbox, so the units run concurrently: the expiry TTL wait and
-  // template launches overlap the lifecycle work instead of adding to it. Each unit keeps
-  // its own receipts, failure report and cleanup; the run passes only if every unit does.
-  const units: Promise<boolean>[] = [];
-  const families: Promise<boolean>[] = [];
-  if (templatesSkills) {
-    const family = Promise.all(cases.map((item, index) => templateUnit(index, item))).then((all) => all.every(Boolean));
-    // This mode is independently runnable; combined staging runs keep the existing
-    // preservation baseline as well, under the same shared deadline.
-    if (!preservation && !lifecycle) return (await settled([family])) && vaultPassed;
-    families.push(family);
-  }
-  if (expiry) {
-    const family = Promise.all(cases.map((item, index) => expiryUnit(index, item))).then((all) => all.every(Boolean));
-    if (args.length === 1) return settled([family]);
-    families.push(family);
-  }
-  for (const [index, item] of cases.entries())
+  // Every probe owns its sandbox, so the per-case lanes run concurrently: the expiry TTL
+  // wait and template launches overlap the lifecycle work instead of adding to it. Each
+  // lane keeps its own receipts, failure report and cleanup; the run passes only if all do.
+  const templateUnits = templatesSkills ? cases.map((item, index) => templateUnit(index, item)) : [];
+  // This mode is independently runnable; combined staging runs keep the existing
+  // preservation baseline as well, under the same shared deadline.
+  if (templatesSkills && !preservation && !lifecycle) return (await settled(templateUnits)) && vaultPassed;
+  const expiryUnits = expiry ? cases.map((item, index) => expiryUnit(index, item)) : [];
+  if (expiry && args.length === 1) return settled(expiryUnits);
+  // A case's clean lifecycle and its preservation (dirty) run stay ordered in one lane:
+  // they share the case's step names, and the expiry lane bounds the run anyway.
+  const lifecycleUnits = cases.map(async (item, index) => {
+    const lane = unit(index, "lifecycle");
+    let passed = true;
     for (const dirty of preservation ? [false, true] : [false])
-      units.push(lifecycleUnit(index, item, dirty, unit(index, dirty ? "preservation" : "lifecycle")));
-  return (await settled([...families, ...units])) && vaultPassed;
+      if (!(await lifecycleUnit(index, item, dirty, lane))) passed = false;
+    return passed;
+  });
+  return (await settled([...templateUnits, ...expiryUnits, ...lifecycleUnits])) && vaultPassed;
   async function lifecycleUnit(
     index: number,
     item: SmokeCase,

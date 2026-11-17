@@ -52,6 +52,7 @@ function fixture(enabled = true) {
     incomplete: false,
     stopFail: new Set<string>(),
     mutate: (_tools: WireTool[]) => {},
+    siblings: [] as string[],
   };
   const receipt = (sandboxId = child) => ({ id: operation, sandboxId, state: "succeeded" });
   const wire = (name: string, input: Obj, result: Obj, suffix = name): WireTool => ({
@@ -209,6 +210,7 @@ function fixture(enabled = true) {
     },
     isNotReady: (error) => error instanceof Error && error.message === "not_ready",
     out: (line) => output.push(JSON.parse(line)),
+    siblingSandboxes: async () => new Set(state.siblings),
   };
   const probe = createScopedProbe(item, enabled, io);
   return { probe, state, output, stopped, journaled, requests, wire, receipt };
@@ -503,6 +505,22 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.stopped).toEqual([]);
     expect(f.journaled).toEqual([child]);
   });
+
+  test.each([
+    ["sibling", [other], true, []],
+    ["unknown", [], false, [other]],
+  ])(
+    "a sandbox launched by a concurrent smoke lane is not an unattributed child: %s",
+    async (_mode, siblings, pass, unattributed) => {
+      const f = fixture();
+      f.state.after = [parent, child, other];
+      f.state.siblings = siblings;
+      await run(f);
+      expect(await f.probe.cleanup(parent, true)).toBe(pass);
+      expect(f.stopped).toEqual([child]);
+      expect(f.output.at(-1)).toMatchObject({ pass, unattributedSandboxIds: unattributed, claimedSandboxIds: [child] });
+    },
+  );
 
   test("cleanup attempts every corroborated claim despite a stop failure", async () => {
     const f = fixture();
