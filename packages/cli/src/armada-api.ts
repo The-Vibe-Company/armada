@@ -3,6 +3,7 @@ import {
   API_FAILURE_HELP,
   APPLICATION_VAULT_CONFLICT_MESSAGES,
   type ApiFailureCode,
+  GITHUB_REFRESH_MODAL_NATIVE,
   githubHydrationPhase,
   type InvitationApiError,
   type InvitationErrorReason,
@@ -309,6 +310,18 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
           undefined,
           sandboxError.legacyCode,
           sandboxError.exitCode,
+        );
+      // A provider without refresh is a closed answer, not an unknown failure. Compare fixed text only.
+      if (path === "/api/v1/github/refresh" && failureCode === "unsupported")
+        throw new ArmadaApiError(
+          "unsupported",
+          response.status,
+          apiMessage(payload, "") === GITHUB_REFRESH_MODAL_NATIVE
+            ? GITHUB_REFRESH_MODAL_NATIVE
+            : "GitHub refresh is not supported for this sandbox's provider or runtime. Its GitHub access was not changed.",
+          undefined,
+          undefined,
+          1,
         );
       // Interior responses may contain provider failures or guest secrets. Never relay raw text.
       if (isSandboxInteriorPath(path) && response.status !== 401) {
