@@ -94,7 +94,7 @@ export async function admitDockerCapacity(tx: Sql, hostId: string): Promise<void
 export const DOCKER_CAPACITY_USAGE_SQL = `select count(distinct start.bound_sandbox_id) as running from public.docker_host_jobs start
      join public.sandboxes s on s.id=start.bound_sandbox_id
      where s.stopped_at is null and s.deleted_at is null and start.host_id=h.id and start.bound_sandbox_id is not null
-       and start.bound_operation in ('create','resume')
+       and start.bound_operation in ('create','resume') and start.cancelled_at is null
        and not exists (select 1 from public.docker_host_jobs stop
          where stop.host_id=start.host_id and stop.bound_sandbox_id=start.bound_sandbox_id
            and stop.position>start.position and stop.bound_operation in ('stop','delete')

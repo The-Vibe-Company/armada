@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, type Sql } from "@armada/core";
-import { decryptSecret } from "@armada/core/server";
+import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, DOCKER_LAUNCH_FAILURE_MESSAGES, type Sql } from "@armada/core";
+import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { admitDockerDisk } from "../src/docker-capacity.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
@@ -982,6 +982,138 @@ test("retired registrants retain only bound reconciliation and admin cleanup", a
     expect((await lifecycle(a.sandboxId))?.status).toBe("deleted");
     expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
   }
+});
+
+test("revoking a host retires a queued create without claiming physical cleanup and releases its capacity slot", async () => {
+  const db = database();
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  expect((await store.list(a.actor))[0]?.running).toBe(1);
+  await store.revoke(a.actor, a.hostId);
+  const failed = await lifecycle(a.sandboxId);
+  expect(failed?.status).toBe("failed");
+  expect(failed?.status_reason).toBe(DOCKER_LAUNCH_FAILURE_MESSAGES.hostUnavailable);
+  // Revocation is server intent, never proof that the machine stopped.
+  expect(failed?.stopped_at).toBeNull();
+  expect(failed?.deleted_at).toBeNull();
+  expect(Number(failed?.lifecycle_generation)).toBeGreaterThan(1);
+  expect((await store.list(a.actor))[0]?.running).toBe(0);
+  expect(
+    (
+      await db.query<{ outcome: string; cancelled_at: unknown }>(
+        "select outcome,cancelled_at from docker_host_jobs where request_id=$1",
+        [a.create.requestId],
+      )
+    ).rows[0],
+  ).toMatchObject({ outcome: "failed" });
+  expect(
+    (
+      await db.query<{ cancelled_at: unknown }>("select cancelled_at from docker_host_jobs where request_id=$1", [
+        a.create.requestId,
+      ])
+    ).rows[0]?.cancelled_at,
+  ).not.toBeNull();
+  // The retired startup cannot be retried on the revoked host.
+  await denied(store.enqueueSandbox(a.owner, a.sandboxId, a.create));
+  await denied(store.poll(a.hostToken, a.installationId));
+});
+
+test("a late completed create ACK after cancellation restores the reservation instead of losing compute", async () => {
+  const db = database();
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.revoke(a.actor, a.hostId);
+  expect((await store.list(a.actor))[0]?.running).toBe(0);
+  // The host may have executed the job before the revoke fenced its next poll.
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  expect(
+    (
+      await db.query<{ outcome: string; cancelled_at: unknown }>(
+        "select outcome,cancelled_at from docker_host_jobs where request_id=$1",
+        [a.create.requestId],
+      )
+    ).rows[0],
+  ).toEqual({ outcome: "completed", cancelled_at: null });
+  expect((await store.list(a.actor))[0]?.running).toBe(1);
+  await store.expired(a.hostToken, a.installationId, { requestId: a.create.requestId });
+  expect((await store.list(a.actor))[0]?.running).toBe(0);
+});
+
+test("removing the host owner retires queued startup before the denied poll", async () => {
+  const db = database();
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await db.query("delete from members where org_id=$1 and user_id=$2", [a.actor.orgId, a.actor.userId]);
+  await denied(store.poll(a.hostToken, a.installationId));
+  const failed = await lifecycle(a.sandboxId);
+  expect(failed?.status).toBe("failed");
+  expect(failed?.status_reason).toBe(DOCKER_LAUNCH_FAILURE_MESSAGES.hostUnavailable);
+  expect(failed?.stopped_at).toBeNull();
+  expect((await store.list({ ...a.actor, userId: a.backupAdmin }))[0]?.running).toBe(0);
+});
+
+test("revoking a host terminalizes a queued snapshot build without a machine fact", async () => {
+  const db = database();
+  const a = await fixture();
+  const snapshotId = randomUUID(),
+    ownerId = a.memberId,
+    generation = randomUUID(),
+    requestId = randomUUID();
+  await db.query(
+    `insert into public.docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,
+      request_hash,actor_epoch,issuer_epoch,generation,base_image,build_expires_at,status)
+     values($1,$2,$3,$4,$5,'queued-build','private','{}'::jsonb,$6,1,1,$7,$8,now()+interval '1 hour','building')`,
+    [
+      snapshotId,
+      a.actor.orgId,
+      ownerId,
+      a.hostId,
+      a.installationId,
+      "a".repeat(64),
+      generation,
+      `example/worker@sha256:${"a".repeat(64)}`,
+    ],
+  );
+  const job = {
+    requestId,
+    operation: "buildSnapshot" as const,
+    request: {
+      sandboxId: snapshotId,
+      generation,
+      image: `example/worker@sha256:${"a".repeat(64)}`,
+      ttlSeconds: 3600,
+    },
+    build: {
+      id: snapshotId,
+      ownerId,
+      visibility: "private" as const,
+      config: {},
+      token: "fixture-token",
+      armadaVersion: "2.49.6",
+    },
+  };
+  await db.query(
+    `insert into public.docker_host_jobs(request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,
+      bound_actor_epoch,bound_operation,snapshot_id) values($1,$2,$3,null,$4,1,'buildSnapshot',$5)`,
+    [requestId, a.hostId, await encryptSecret(JSON.stringify({ bound: 1, job }), key), ownerId, snapshotId],
+  );
+  await store.revoke(a.actor, a.hostId);
+  expect(
+    (
+      await db.query<{ status: string; failure_reason: string | null }>(
+        "select status,failure_reason from docker_snapshots where id=$1",
+        [snapshotId],
+      )
+    ).rows[0],
+  ).toEqual({ status: "failed", failure_reason: "Host retired before snapshot publication." });
+  const saved = (
+    await db.query<{ outcome: string; cancelled_at: unknown }>(
+      "select outcome,cancelled_at from docker_host_jobs where request_id=$1",
+      [requestId],
+    )
+  ).rows[0];
+  expect(saved?.outcome).toBe("failed");
+  expect(saved?.cancelled_at).not.toBeNull();
 });
 
 test("retirement cancels undispatchable startup without claiming physical cleanup", async () => {

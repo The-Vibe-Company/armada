@@ -237,8 +237,8 @@ export function hostFact(host: Pick<DockerHost, "sandboxes" | "version" | "resou
 export function revokeWarning(sandboxes: number): string {
   const base =
     "Only admins can unlink a server. This cannot be undone. Nothing is removed from the machine; to add it again later, run the uninstall command there first.";
-  if (sandboxes === 0) return base;
-  return `${base} Stop its ${sandboxCount(sandboxes).toLowerCase()} first: after unlinking, Armada can no longer stop or delete them.`;
+  if (sandboxes === 0) return `${base} Queued launches fail at once and stop holding a capacity slot.`;
+  return `${base} Its ${sandboxCount(sandboxes).toLowerCase()} stay on the machine: launches and resumes that have not started fail at once, and an organization admin can still request stop or delete so the host cleans them up.`;
 }
 
 /** A Docker sandbox's host in its page's details: the host's name when the list has it, else its short id (#1526). */

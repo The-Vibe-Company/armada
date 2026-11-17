@@ -154,6 +154,8 @@ export const DOCKER_LAUNCH_FAILURE_MESSAGES = {
     "Repository checkout failed or timed out. Check the repository branch and GitHub access, then launch again.",
   preparation: "Sandbox skill or MCP preparation failed. Check the launch configuration, then launch again.",
   prompt: "Sandbox first prompt admission failed. Inspect the sandbox and launch again.",
+  hostUnavailable:
+    "The Docker host became unavailable before this sandbox could start. Launch again on another host or re-register it.",
 } as const;
 
 /** Legacy operator/compatibility fixture image. Normal launches use officialSandboxImage(). */
