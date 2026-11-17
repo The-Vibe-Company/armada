@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Provider, ProviderRegistry, Sql } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
 import { createMcpSandboxProviderResolver } from "../src/mcp-sandbox-provider.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -152,4 +153,63 @@ test("native receipt admission rejects removed membership and changed physical a
   await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
   expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
   expect(calls).toBe(1);
+});
+
+test("accepted native receipts survive cancelled task publication and alias only the exact queued request", async () => {
+  const { db, sql, id, people } = await fixture();
+  const accepted = crypto.randomUUID();
+  const neighbour = crypto.randomUUID();
+  for (const request of [accepted, neighbour]) {
+    await db.query(
+      `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+         actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,failure_reason,dispatch_generation)
+       select s.id,$2,c.id,s.owner_id,s.org_id,1,c.version,'input_hash',$3,'conversation','failed','cancelled',s.lifecycle_generation
+       from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai'
+       where s.id=$1 limit 1`,
+      [id, request, new Uint8Array([1])],
+    );
+  }
+  await db.query(
+    "update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=lifecycle_generation+1 where id=$1",
+    [id],
+  );
+  const sandboxes = createSqlData(sql)({
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  await sandboxes.recordNativePrompt!(id, "wrong_machine", "wrong_receipt", accepted);
+  expect((await db.query("select prompt_id from native_webhook_prompts")).rows).toEqual([]);
+  expect((await db.query("select native_prompt_id from account_turn_queue")).rows).toEqual([
+    { native_prompt_id: null },
+    { native_prompt_id: null },
+  ]);
+  await sandboxes.recordNativePrompt!(id, "native_fixture", "accepted_receipt", accepted);
+  expect(
+    (await db.query("select native_prompt_id from account_turn_queue where request_id=$1", [accepted])).rows,
+  ).toEqual([{ native_prompt_id: "accepted_receipt" }]);
+  expect(
+    (await db.query("select native_prompt_id from account_turn_queue where request_id=$1", [neighbour])).rows,
+  ).toEqual([{ native_prompt_id: null }]);
+  expect((await db.query("select task_prompt_id from sandboxes where id=$1", [id])).rows).toEqual([
+    { task_prompt_id: null },
+  ]);
+  const observed: string[] = [];
+  const worker = createNativeWebhookPrompts(sql, async () => ({
+    id: "boat",
+    async getPrompt(request) {
+      observed.push(request.promptId);
+      return { promptId: request.promptId, status: "finished", done: true };
+    },
+  }));
+  expect(await worker.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(observed).toEqual(["accepted_receipt"]);
+  expect(
+    (
+      await db.query<{ payload: { promptId: string; type: string } }>(
+        "select payload from outbound_webhook_deliveries where payload->>'type' like 'turn.%'",
+      )
+    ).rows.map(({ payload }) => [payload.promptId, payload.type]),
+  ).toEqual([["accepted_receipt", "turn.finished"]]);
+  expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
 });
