@@ -144,7 +144,7 @@ export async function stageSdk(options: { out: string; version?: string }): Prom
     types: "./index.d.ts",
     files: ["index.js", "index.d.ts"],
     sideEffects: false,
-    engines: { node: ">=20" },
+    engines: { node: ">=20.3" },
   });
   return { name: SDK_PACKAGE, dir };
 }
