@@ -288,14 +288,20 @@ async function callback(url: URL, request: Request, options: OAuthServerOptions)
   if (url.searchParams.get("error")) return finish(page("Login failed", "<p>Login was declined.</p>", 400), options);
   const code = url.searchParams.get("code");
   if (!code) return finish(page("Login failed", "<p>Login was declined.</p>", 400), options);
-  const session = await exchangeSupabaseCode({
-    fetch: options.fetch,
-    supabaseUrl: options.supabaseUrl,
-    anonKey: options.anonKey,
-    code,
-    verifier: pending.supabaseVerifier,
-    now: options.now(),
-  });
+  let session: Awaited<ReturnType<typeof exchangeSupabaseCode>>;
+  try {
+    session = await exchangeSupabaseCode({
+      fetch: options.fetch,
+      supabaseUrl: options.supabaseUrl,
+      anonKey: options.anonKey,
+      code,
+      verifier: pending.supabaseVerifier,
+      now: options.now(),
+    });
+  } catch (error) {
+    if (!(error instanceof AuthError)) throw error;
+    return finish(page("Login failed", `<p>${error.message}</p>`, 400), options);
+  }
   const memberships = await options.store.memberships(session.userId);
   const next: PendingLogin = { ...pending, userId: session.userId, exp: options.now().getTime() + LOGIN_TTL_MS };
   delete next.supabaseVerifier;
