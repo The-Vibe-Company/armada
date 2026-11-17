@@ -49,6 +49,7 @@ export type State = {
     request: DockerMachineRequest;
     requestId: string;
     deadline: number;
+    observedStoppedAt?: number;
     cleanupAuthorized?: true;
     deleted?: true;
     cleanupReason?: "retention_elapsed" | "disk_pressure";
@@ -219,6 +220,17 @@ export async function tick(
   state.retention ??= [];
   const retentionSeconds = state.retentionSeconds ?? 86400;
   if (!Number.isSafeInteger(retentionSeconds) || retentionSeconds < 0) throw Error("Invalid retention policy");
+  const deadline = (request: DockerMachineRequest, stoppedAt: number) => {
+    const retainedUntil = stoppedAt + (state.retentionSeconds ?? 86400) * 1000;
+    return state.retentionPolicyFromServer || request.expiresAt === undefined
+      ? retainedUntil
+      : Math.min(retainedUntil, request.expiresAt);
+  };
+  // Preserve stopped age before capping deadlines, including ledgers from older daemons.
+  for (const entry of state.retention) {
+    entry.observedStoppedAt ??= entry.deadline - retentionSeconds * 1000;
+    if (!entry.deleted) entry.deadline = deadline(entry.request, entry.observedStoppedAt);
+  }
   // Claims cannot outlive the allocation's immutable physical expiry. A
   // server cannot admit a resume beyond this same frozen expiry, so releasing
   // the hold here is safe even while offline. Retain its historical ACK.
@@ -267,7 +279,8 @@ export async function tick(
           state.retention.push({
             request: receipt.request,
             requestId: receipt.requestId,
-            deadline: now() + retentionSeconds * 1000,
+            deadline: deadline(receipt.request, now()),
+            observedStoppedAt: now(),
             ...(absent ? { deleted: true as const } : {}),
           });
           await store.save(state);
@@ -346,10 +359,10 @@ export async function tick(
     if (polled.retentionSeconds !== undefined) {
       const seconds = polled.retentionSeconds;
       if (!Number.isSafeInteger(seconds) || seconds < 0) throw Error("Invalid retention policy");
-      const previous = state.retentionSeconds ?? 86400;
-      for (const entry of state.retention ?? []) if (!entry.deleted) entry.deadline += (seconds - previous) * 1000;
       state.retentionSeconds = seconds;
       state.retentionPolicyFromServer = true;
+      for (const entry of state.retention)
+        if (!entry.deleted) entry.deadline = deadline(entry.request, entry.observedStoppedAt!);
       await store.save(state);
     }
     state.lastPollAt = new Date().toISOString();
@@ -380,7 +393,8 @@ export async function tick(
           state.retention.push({
             request: receipt.request,
             requestId: receipt.requestId,
-            deadline: now() + retentionSeconds * 1000,
+            deadline: deadline(receipt.request, now()),
+            observedStoppedAt: now(),
           });
         }
       } catch {
@@ -398,7 +412,7 @@ export async function tick(
       }
     }
     const age = (entry: NonNullable<State["retention"]>[number]) =>
-      stoppedTimes.get(entry.requestId) ?? entry.deadline - retentionSeconds * 1000;
+      stoppedTimes.get(entry.requestId) ?? entry.observedStoppedAt ?? entry.deadline - retentionSeconds * 1000;
     for (const entry of [...state.retention].sort((a, b) => age(a) - age(b))) {
       if (!(await pressure())) break;
       const key = generationKey(entry.request);

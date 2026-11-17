@@ -1212,6 +1212,7 @@ test("server retention override persists and shifts pending deadlines without re
   const f = fixture();
   await tick(f.store, f.api, f.executor);
   const state = await f.store.load();
+  f.job.request.expiresAt = 15000000;
   state.retentionSeconds = 86400;
   state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 100000000 }];
   await f.store.save(state);
@@ -1613,7 +1614,7 @@ test("a resume behind another mailbox job still cancels its generation's due ret
   expect((await f.store.load()).retention).toEqual([]);
 });
 
-test("an abandoned resume claim releases only at immutable expiry and keeps the normal offline retention delay", async () => {
+test("an abandoned resume claim releases at immutable expiry for default cleanup", async () => {
   const f = fixture();
   f.job.request.expiresAt = 1000;
   await tick(f.store, f.api, f.executor, false, () => 0);
@@ -1646,11 +1647,11 @@ test("an abandoned resume claim releases only at immutable expiry and keeps the 
   await expect(tick(f.store, f.api, f.executor, false, () => 999)).rejects.toThrow("offline");
   expect((await f.store.load()).retention).toEqual([]);
   // A fresh load on each tick represents restart; expiry retires the durable
-  // hold, then discovery grants the complete configured retention period.
+  // hold, then default discovery reclaims the expired workspace.
   await expect(tick(f.store, f.api, f.executor, false, () => 1000)).rejects.toThrow("offline");
   expect((await f.store.load()).resumeClaims?.[0]?.active).toBe(false);
-  expect((await f.store.load()).retention?.[0]?.deadline).toBe(2000);
-  expect(deleted).toBe(false);
+  expect((await f.store.load()).retention?.[0]?.deadline).toBe(1000);
+  expect(deleted).toBe(true);
   const compacted = await f.store.load();
   const original = compacted.receipts.find((receipt) => receipt.requestId === f.job.requestId)!;
   original.expired = true;
@@ -1670,7 +1671,7 @@ test("an abandoned resume claim releases only at immutable expiry and keeps the 
   offline = false;
   await tick(f.store, f.api, f.executor, false, () => 1999);
   expect(acknowledgements).toEqual([true]); // expired replays cannot renew the claim
-  expect(deleted).toBe(false);
+  expect(deleted).toBe(true);
   offline = true;
   await expect(tick(f.store, f.api, f.executor, false, () => 2000)).rejects.toThrow("offline");
   expect(deleted).toBe(true);

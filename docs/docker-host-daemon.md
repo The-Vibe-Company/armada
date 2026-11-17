@@ -1245,8 +1245,8 @@ Source audit of tag `v2.46.0` against the incident report:
   receipts, labels and ownership/cleanup errors. Do not infer deletion authority
   from server expiry or shorten retention to mask missing evidence.
 
-This change leaves all deletion policy unchanged, including the known queued
-resume race tracked in #2525 / PR #2534. Disk-pressure deletion is implemented by part 2 below.
+Part 1 left deletion policy unchanged. Part 2 below builds on the durable
+resume fencing merged in #2534 and bounds default retention by expiry.
 A host upgrade is explicit operator work; there is no automatic daemon update.
 
 Stopped workspace usage is an approximate, read-only observation of writable
@@ -1279,7 +1279,12 @@ outdated-version guidance from part 1. Upgrade daemons to enable pressure cleanu
 The cleanup-reason migration must deploy before the new server accepts reports;
 no migration was applied during development.
 
-Owner decisions remain open: keep or shorten the unchanged 24-hour retention,
+Default retention is the earlier of 24 hours after the first observed stop and
+the allocation’s immutable expiry. Explicit `armada host retention` overrides
+keep their configured duration, including beyond expiry. Policy updates preserve
+the observed stop age; default cleanup still respects durable resume fencing.
+
+Owner decisions remain open: keep or shorten the proposed 24-hour retention,
 and whether to warn users before reclamation. Measured on the affected 930 GB
 host: 136 exited containers and 217 volumes held 1.17 TB (520 GB reclaimable);
 after manual cleanup, free space fell from 411 GB to 242 GB in six hours with
