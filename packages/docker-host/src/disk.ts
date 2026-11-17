@@ -49,12 +49,23 @@ export function withDiskFloor(executor: Executor, sample: () => Promise<number |
 }
 
 const STOPPED_INSPECT_CHUNK = 50;
-const VOLUME_INSPECT_FORMAT = "{{.Name}}|{{.UsageData.Size}}";
+const VOLUME_USAGE_FORMAT = "{{range .Volumes}}{{.Name}}|{{.Size}}{{println}}{{end}}";
 const STOPPED_INSPECT_FORMAT =
   '{{json .Config.Labels}}\t{{json .State.Status}}\t{{.SizeRw}}\t{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}},{{end}}{{end}}';
 
-/** Read-only, approximate inventory. Only volumes attached to stopped containers
- * with both installation labels are counted; shared volumes are counted once.
+const DOCKER_SIZE_UNITS = ["B", "kB", "MB", "GB", "TB", "PB"] as const;
+
+/** Parse the SI, four-significant-digit sizes that `docker system df` renders. */
+export function dockerHumanSizeBytes(value: string): number | null {
+  const match = /^(\d+(?:\.\d+)?)(B|kB|MB|GB|TB|PB)$/.exec(value.trim());
+  if (!match) return null;
+  const exponent = DOCKER_SIZE_UNITS.indexOf(match[2] as (typeof DOCKER_SIZE_UNITS)[number]);
+  const bytes = Math.round(Number(match[1]) * 1000 ** exponent);
+  return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null;
+}
+
+/** Read-only, approximate inventory. Only volumes attached to non-running owned
+ * containers with both installation labels are counted; shared volumes are counted once.
  * Docker's human-readable volume sizes are rounded, so this is not reclaimable space.
  * Inspect only the fields needed, in bounded chunks: full inspect JSON for a large
  * stopped inventory can exceed the CLI's 1 MiB output bound and its 3-second timeout. */
@@ -72,6 +83,8 @@ export async function stoppedSandboxBytes(
         "status=exited",
         "--filter",
         "status=dead",
+        "--filter",
+        "status=created",
         "--filter",
         `label=dev.armada.machine.installation=${state.installationId}`,
         "--filter",
@@ -115,7 +128,7 @@ export async function stoppedSandboxBytes(
           Array.isArray(labels) ||
           (labels as Record<string, unknown>)["dev.armada.machine.installation"] !== state.installationId ||
           (labels as Record<string, unknown>)["dev.armada.machine.host"] !== state.hostId ||
-          !["exited", "dead"].includes(String(status)) ||
+          !["exited", "dead", "created"].includes(String(status)) ||
           !Number.isSafeInteger(size) ||
           size < 0
         )
@@ -125,21 +138,21 @@ export async function stoppedSandboxBytes(
       }
     }
     const names = [...volumes];
-    for (let offset = 0; offset < names.length; offset += STOPPED_INSPECT_CHUNK) {
-      const chunk = names.slice(offset, offset + STOPPED_INSPECT_CHUNK);
-      // `docker system df` ignores a custom format in verbose mode, so its per-volume
-      // rows cannot be parsed reliably. Volume inspect reports the exact byte count.
-      const usage = await cli.run(["volume", "inspect", "--format", VOLUME_INSPECT_FORMAT, ...chunk], undefined, {
-        timeoutMs: 3000,
+    if (names.length) {
+      // Volume inspect omits UsageData; only the Engine's /system/df response has
+      // per-volume sizes. Ask disk usage for its volumes only, so unrelated images,
+      // containers and build cache cannot inflate the bounded CLI output.
+      const usage = await cli.run(["system", "df", "--verbose", "--format", VOLUME_USAGE_FORMAT], undefined, {
+        timeoutMs: 5000,
       });
       if (usage.exitCode !== 0) return null;
-      const lines = usage.stdout.trim().split("\n").filter(Boolean);
-      if (lines.length !== chunk.length) return null;
-      for (const line of lines) {
+      for (const line of usage.stdout.split("\n").filter(Boolean)) {
         const separator = line.lastIndexOf("|");
+        if (separator < 0) return null;
         const name = line.slice(0, separator);
-        const size = Number(line.slice(separator + 1));
-        if (!volumes.delete(name) || !Number.isSafeInteger(size) || size < 0) return null;
+        if (!volumes.has(name)) continue;
+        const size = dockerHumanSizeBytes(line.slice(separator + 1));
+        if (size === null || !volumes.delete(name)) return null;
         total += size;
       }
     }

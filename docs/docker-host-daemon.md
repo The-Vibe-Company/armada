@@ -1212,9 +1212,11 @@ resume race tracked in #2525 / PR #2534. No disk-pressure deletion is enabled.
 A host upgrade is explicit operator work; there is no automatic daemon update.
 
 Stopped workspace usage is an approximate, read-only observation of writable
-container layers plus attached named volumes for this installation's exited/dead
-containers. Shared attached volumes are counted once. Docker rounds volume
-sizes; this is not a reclaimable-space guarantee and excludes detached volumes.
+container layers plus attached named volumes for this installation's
+exited/dead/created containers. Shared attached volumes are counted once. Volume
+sizes come from `docker system df` (the Engine `/system/df` data); volume inspect
+does not include usage. Docker rounds volume sizes; this is not a
+reclaimable-space guarantee and excludes detached volumes.
 The daemon caches the scan for one minute; unsupported or unreadable inventory
 is unknown. CLI and Machines display it alongside free disk and version guidance.
 Deploy migration `20261117080000_docker_host_stopped_disk_observation.sql` and
