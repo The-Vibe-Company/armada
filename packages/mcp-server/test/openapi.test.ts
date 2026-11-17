@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import published from "../../../docs/openapi.json";
+import releasePlease from "../../../release-please-config.json";
 import { generateOpenApi } from "../src/openapi.ts";
+
+test("release version bumps update the published OpenAPI version with core", () => {
+  const extraFiles = releasePlease.packages["."]["extra-files"];
+  expect(extraFiles).toContainEqual({ type: "json", path: "packages/core/package.json", jsonpath: "$.version" });
+  expect(extraFiles).toContainEqual({ type: "json", path: "docs/openapi.json", jsonpath: "$.info.version" });
+});
 
 test("published OpenAPI matches current server contracts and preserves REST field names", async () => {
   const document = await generateOpenApi();
