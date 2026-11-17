@@ -18,6 +18,11 @@ test("provider error codes map to the same messages, and unknown reasons have no
   expect(describeFailure("provider_unavailable")?.title).toBe("Provider unavailable");
   expect(describeFailure("dependency_unavailable")?.title).toBe("Server dependency unavailable");
   expect(describeFailure("outcome_unknown")?.hint).toContain("before retrying");
+  // A retention refusal is durable, not a provider outage that invites a retry.
+  expect(describeFailure("sandbox_retention_ended")).toMatchObject({
+    title: "Retention ended",
+    hint: expect.stringContaining("Launch a new sandbox"),
+  });
   expect(describeFailure("segfault")).toBeNull();
   expect(describeFailure(null)).toBeNull();
 });
