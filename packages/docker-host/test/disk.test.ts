@@ -52,14 +52,15 @@ test("stopped usage counts owned writable layers and each attached volume once, 
   const cli = {
     async run(args: readonly string[]) {
       if (args[1] === "ls") return { exitCode: 0, stdout: "abcdef123456\nabcdef123457" };
-      if (args[1] === "inspect") {
+      if (args[0] === "container" && args[1] === "inspect") {
         const labels = JSON.stringify({
           "dev.armada.machine.installation": wrongOwner ? "other" : state.installationId,
           "dev.armada.machine.host": state.hostId,
         });
         return { exitCode: 0, stdout: `${labels}\t"exited"\t100\thome,\n${labels}\t"exited"\t100\thome,\n` };
       }
-      return { exitCode: 0, stdout: "unrelated|9GB\nhome|1.2GB\n" };
+      if (args[0] === "volume" && args[1] === "inspect") return { exitCode: 0, stdout: "home|1200000000\n" };
+      throw new Error(`unexpected command: ${args.join(" ")}`);
     },
   };
   expect(await stoppedSandboxBytes(cli, state)).toBe(1_200_000_200);
@@ -75,24 +76,32 @@ test("stopped usage inspects a large inventory in bounded compact chunks", async
     "dev.armada.machine.host": state.hostId,
   });
   const chunks: number[] = [];
+  const volumeChunks: number[] = [];
   let inspectedBytes = 0;
   const cli = {
     async run(args: readonly string[]) {
       if (args[1] === "ls") return { exitCode: 0, stdout: ids.join("\n") };
-      if (args[1] === "inspect") {
+      if (args[0] === "container" && args[1] === "inspect") {
         const format = args[args.indexOf("--format") + 1];
         expect(format).toContain("{{json .Config.Labels}}");
         expect(format).not.toContain("{{json .}}");
         const chunk = args.slice(args.indexOf("--format") + 2);
         chunks.push(chunk.length);
-        const stdout = chunk.map(() => `${labels}\t"exited"\t100\thome,\n`).join("");
+        const stdout = chunk.map((id) => `${labels}\t"exited"\t100\tvolume-${id},\n`).join("");
         inspectedBytes += Buffer.byteLength(stdout);
         return { exitCode: 0, stdout };
       }
-      return { exitCode: 0, stdout: "home|1GB\n" };
+      if (args[0] === "volume" && args[1] === "inspect") {
+        expect(args[args.indexOf("--format") + 1]).toBe("{{.Name}}|{{.UsageData.Size}}");
+        const chunk = args.slice(args.indexOf("--format") + 2);
+        volumeChunks.push(chunk.length);
+        return { exitCode: 0, stdout: chunk.map((name) => `${name}|1000\n`).join("") };
+      }
+      throw new Error(`unexpected command: ${args.join(" ")}`);
     },
   };
-  expect(await stoppedSandboxBytes(cli, state)).toBe(1_000_100_000);
+  expect(await stoppedSandboxBytes(cli, state)).toBe(1_100_000);
   expect(chunks).toEqual(Array(20).fill(50));
+  expect(volumeChunks).toEqual(Array(20).fill(50));
   expect(inspectedBytes).toBeLessThan(1024 * 1024);
 });

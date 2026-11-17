@@ -49,6 +49,7 @@ export function withDiskFloor(executor: Executor, sample: () => Promise<number |
 }
 
 const STOPPED_INSPECT_CHUNK = 50;
+const VOLUME_INSPECT_FORMAT = "{{.Name}}|{{.UsageData.Size}}";
 const STOPPED_INSPECT_FORMAT =
   '{{json .Config.Labels}}\t{{json .State.Status}}\t{{.SizeRw}}\t{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}},{{end}}{{end}}';
 
@@ -123,22 +124,24 @@ export async function stoppedSandboxBytes(
         for (const name of rawVolumes.split(",").filter(Boolean)) volumes.add(name);
       }
     }
-    if (volumes.size) {
-      const usage = await cli.run(
-        ["system", "df", "--verbose", "--format", "{{range .Volumes}}{{.Name}}|{{.Size}}{{println}}{{end}}"],
-        undefined,
-        { timeoutMs: 3000 },
-      );
+    const names = [...volumes];
+    for (let offset = 0; offset < names.length; offset += STOPPED_INSPECT_CHUNK) {
+      const chunk = names.slice(offset, offset + STOPPED_INSPECT_CHUNK);
+      // `docker system df` ignores a custom format in verbose mode, so its per-volume
+      // rows cannot be parsed reliably. Volume inspect reports the exact byte count.
+      const usage = await cli.run(["volume", "inspect", "--format", VOLUME_INSPECT_FORMAT, ...chunk], undefined, {
+        timeoutMs: 3000,
+      });
       if (usage.exitCode !== 0) return null;
-      for (const line of usage.stdout.trim().split("\n")) {
-        const [name, size] = line.split("|");
-        if (!name || !volumes.has(name)) continue;
-        const match = /^(\d+(?:\.\d+)?)\s*(B|kB|MB|GB|TB|PB)$/.exec(size ?? "");
-        if (!match) return null;
-        total += Math.round(Number(match[1]) * 1000 ** ["B", "kB", "MB", "GB", "TB", "PB"].indexOf(match[2]!));
-        volumes.delete(name);
+      const lines = usage.stdout.trim().split("\n").filter(Boolean);
+      if (lines.length !== chunk.length) return null;
+      for (const line of lines) {
+        const separator = line.lastIndexOf("|");
+        const name = line.slice(0, separator);
+        const size = Number(line.slice(separator + 1));
+        if (!volumes.delete(name) || !Number.isSafeInteger(size) || size < 0) return null;
+        total += size;
       }
-      if (volumes.size) return null;
     }
     return Number.isSafeInteger(total) && total >= 0 ? total : null;
   } catch {
