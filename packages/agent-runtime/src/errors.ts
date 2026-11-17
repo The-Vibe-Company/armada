@@ -106,3 +106,14 @@ export function acpStopReasonCode(stopReason: unknown): "finished" | "interrupte
   if (stopReason === "max_tokens") return "output_limit_exceeded";
   return "harness_failed";
 }
+
+/**
+ * Claude Code's terminal result. A failed result can carry the output-limit cause only on
+ * its own closed fields (`stop_reason: "max_tokens"` or an exact `errors` entry of
+ * `max_output_tokens`) with no preceding assistant error frame. Unknown stays generic.
+ */
+export function claudeResultFailureCode(stopReason: unknown, errors: unknown): HarnessErrorCode {
+  if (stopReason === "max_tokens") return "output_limit_exceeded";
+  if (Array.isArray(errors) && errors.includes("max_output_tokens")) return "output_limit_exceeded";
+  return "harness_failed";
+}

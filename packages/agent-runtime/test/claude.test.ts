@@ -244,6 +244,25 @@ nativeTest("Claude names a turn cut by the model output limit instead of a confi
   }
 });
 
+nativeTest("Claude names a result-only output-limit terminal with no assistant error frame", async () => {
+  const driver = new ClaudeDriver({
+    executable: `${import.meta.dir}/fixtures/claude-process.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "claude", text: "output-limit-result-only" },
+      signal: AbortSignal.timeout(3000),
+      session: () => {},
+      emit: () => {},
+    });
+    await expect(turn.done).rejects.toMatchObject({ code: "output_limit_exceeded" });
+  } finally {
+    await driver.close();
+  }
+});
+
 nativeTest("Claude native /usage fallback does not become public assistant text or partials", async () => {
   const driver = new ClaudeDriver({
     executable: `${import.meta.dir}/fixtures/claude-process.ts`,

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { nativeHarnessError } from "../src/errors.ts";
+import { claudeResultFailureCode, nativeHarnessError } from "../src/errors.ts";
 
 test("native classification uses only allowlisted discriminants and RPC phase, never native text", () => {
   expect(nativeHarnessError({ code: -32000 }, "session/load", "acp").reason).toBe(
@@ -33,4 +33,13 @@ test("native classification uses only allowlisted discriminants and RPC phase, n
     if (method === "thread/resume" || method === "session/load") expect(result.reason).toBe(`${code}:session_restore`);
     expect(JSON.stringify(result)).not.toContain("private_value");
   }
+});
+
+test("a Claude result names the model output limit only from its closed fields", () => {
+  expect(claudeResultFailureCode("max_tokens", [])).toBe("output_limit_exceeded");
+  expect(claudeResultFailureCode(null, ["max_output_tokens"])).toBe("output_limit_exceeded");
+  // Unknown or malformed terminal fields stay generic and never echo native text.
+  expect(claudeResultFailureCode("refusal", ["private upstream details"])).toBe("harness_failed");
+  expect(claudeResultFailureCode(undefined, undefined)).toBe("harness_failed");
+  expect(claudeResultFailureCode("max_tokens_extra", { private: "value" })).toBe("harness_failed");
 });
