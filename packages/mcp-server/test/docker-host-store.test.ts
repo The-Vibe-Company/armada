@@ -1044,6 +1044,109 @@ test("a late completed create ACK after cancellation restores the reservation in
   expect((await lifecycle(a.sandboxId))?.stopped_at).not.toBeNull();
 });
 
+test("a cancelled job's first host receipt is terminal and a later conflicting receipt is denied", async () => {
+  const db = database();
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.revoke(a.actor, a.hostId);
+  // The host reports the machine fact it actually observed: the create failed.
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "failed" });
+  expect(
+    (
+      await db.query<{ outcome: string; cancelled_at: unknown }>(
+        "select outcome,cancelled_at from docker_host_jobs where request_id=$1",
+        [a.create.requestId],
+      )
+    ).rows[0],
+  ).toEqual({ outcome: "failed", cancelled_at: null });
+  // A duplicate or late completed receipt must not rewrite the first terminal fact.
+  await denied(store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" }));
+  expect(
+    (
+      await db.query<{ outcome: string; cancelled_at: unknown }>(
+        "select outcome,cancelled_at from docker_host_jobs where request_id=$1",
+        [a.create.requestId],
+      )
+    ).rows[0],
+  ).toEqual({ outcome: "failed", cancelled_at: null });
+  // A failed create is not physical proof the container stopped, so its slot
+  // stays reserved until a stop/delete/expiry fact releases it.
+  expect((await store.list(a.actor))[0]?.running).toBe(1);
+  await store.expired(a.hostToken, a.installationId, { requestId: a.create.requestId });
+  expect((await store.list(a.actor))[0]?.running).toBe(0);
+});
+
+test("a cancelled snapshot build rejects a late completed receipt instead of claiming an unpublished image", async () => {
+  const db = database();
+  const a = await fixture();
+  const snapshotId = randomUUID(),
+    ownerId = a.memberId,
+    generation = randomUUID(),
+    requestId = randomUUID();
+  await db.query(
+    `insert into public.docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,
+      request_hash,actor_epoch,issuer_epoch,generation,base_image,build_expires_at,status)
+     values($1,$2,$3,$4,$5,'queued-build','private','{}'::jsonb,$6,1,1,$7,$8,now()+interval '1 hour','building')`,
+    [
+      snapshotId,
+      a.actor.orgId,
+      ownerId,
+      a.hostId,
+      a.installationId,
+      "a".repeat(64),
+      generation,
+      `example/worker@sha256:${"a".repeat(64)}`,
+    ],
+  );
+  const job = {
+    requestId,
+    operation: "buildSnapshot" as const,
+    request: {
+      sandboxId: snapshotId,
+      generation,
+      image: `example/worker@sha256:${"a".repeat(64)}`,
+      ttlSeconds: 3600,
+    },
+    build: {
+      id: snapshotId,
+      ownerId,
+      visibility: "private" as const,
+      config: {},
+      token: "fixture-token",
+      armadaVersion: "2.49.6",
+    },
+  };
+  await db.query(
+    `insert into public.docker_host_jobs(request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,
+      bound_actor_epoch,bound_operation,snapshot_id) values($1,$2,$3,null,$4,1,'buildSnapshot',$5)`,
+    [requestId, a.hostId, await encryptSecret(JSON.stringify({ bound: 1, job }), key), ownerId, snapshotId],
+  );
+  await store.revoke(a.actor, a.hostId);
+  await denied(
+    store.complete(a.hostToken, a.installationId, {
+      requestId,
+      outcome: "completed",
+      imageId: `sha256:${"b".repeat(64)}`,
+    }),
+  );
+  expect(
+    (
+      await db.query<{ outcome: string; cancelled_at: unknown }>(
+        "select outcome,cancelled_at from docker_host_jobs where request_id=$1",
+        [requestId],
+      )
+    ).rows[0],
+  ).toEqual({ outcome: "failed", cancelled_at: expect.anything() });
+  expect(
+    (
+      await db.query<{ status: string; image_id: string | null }>(
+        "select status,image_id from docker_snapshots where id=$1",
+        [snapshotId],
+      )
+    ).rows[0],
+  ).toEqual({ status: "failed", image_id: null });
+});
+
 test("removing the host owner retires queued startup before the denied poll", async () => {
   const db = database();
   const a = await boundFixture();

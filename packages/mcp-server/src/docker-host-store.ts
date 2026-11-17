@@ -1195,12 +1195,21 @@ export function createDockerHostStore(sql: Sql, key: string) {
           [host.id, result.requestId],
         );
         const job = jobs.rows[0] ?? deny();
-        // A cancelled job's server outcome is not a machine fact. A late host
-        // receipt still wins, so physical cleanup and capacity accounting stay true.
+        // A cancelled job's server outcome is not a machine fact. The first host
+        // receipt replaces it; after that, terminal facts are immutable.
         if (
           job.outcome !== null &&
           job.cancelled_at === null &&
           (job.outcome !== result.outcome || (job.result_image_id ?? null) !== (result.imageId ?? null))
+        )
+          deny();
+        // A retired snapshot build is already failed and its build authorization is
+        // gone. A matching failure is a harmless no-op; a completed receipt would
+        // claim a publication that can never happen, so reject it.
+        if (
+          job.snapshot_id &&
+          job.cancelled_at !== null &&
+          (result.outcome !== "failed" || result.imageId !== undefined)
         )
           deny();
         if (result.reason === "snapshot_build_failed" && !job.snapshot_id) deny();
@@ -1295,22 +1304,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
               [job.bound_sandbox_id],
             );
         }
+        // The first host receipt is the terminal machine fact. Clearing
+        // cancelled_at in the same write makes later conflicting receipts fail
+        // the immutability check above, and lets capacity follow the normal rule:
+        // a completed create/resume reserves, a failed one stays reserved until a
+        // physical stop/delete/expiry proves the machine is gone.
         if (job.outcome === null || job.cancelled_at !== null) {
           await tx.query(
-            `update public.docker_host_jobs set outcome=$2,completed_at=now(),result_image_id=$3 where request_id=$1`,
+            `update public.docker_host_jobs set outcome=$2,completed_at=now(),result_image_id=$3,cancelled_at=null where request_id=$1`,
             [result.requestId, result.outcome, result.imageId ?? null],
           );
         }
-        // A cancelled startup that the host reports completed did reach the machine:
-        // restore its capacity reservation. Stop/delete ACKs (or expiry) release it again.
-        if (
-          job.cancelled_at !== null &&
-          result.outcome === "completed" &&
-          (job.bound_operation === "create" || job.bound_operation === "resume")
-        )
-          await tx.query(`update public.docker_host_jobs set cancelled_at=null where request_id=$1`, [
-            result.requestId,
-          ]);
       });
     },
   };
