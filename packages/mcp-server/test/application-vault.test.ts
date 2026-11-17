@@ -498,6 +498,8 @@ describe("application vault control API and MCP", () => {
         ["GITHUB_TOKEN", CANARY],
         ["MCP_TOKEN", CANARY],
         ["PATH", CANARY],
+        ["XDG_DATA_HOME", CANARY],
+        ["OPENCODE_FOO", CANARY],
         ["HOME", CANARY],
         ["SHELL", CANARY],
         ["ENV", CANARY],

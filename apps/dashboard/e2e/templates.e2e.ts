@@ -357,7 +357,9 @@ test("a refused launch says why and takes a fresh key; a successful one opens th
     message: "HTTP 503: model_account_id credential_version digest sha256:example",
   });
   await dialog.getByRole("button", { name: /Launch/ }).click();
-  await expect(dialog.getByRole("alert")).toContainText("Reconnect it in Account > Models");
+  await expect(dialog.getByRole("alert")).toContainText(
+    "The model credential is expired, revoked or incompatible. Reconnect the model account.",
+  );
   await expect(dialog.getByRole("alert")).not.toContainText("HTTP 503");
   for (const [name, width] of [
     ["desktop", 1280],

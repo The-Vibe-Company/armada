@@ -415,3 +415,17 @@ test("routine help does not swallow literal prompts or names after the terminato
     expect(result.out).not.toContain("Scheduled template launches");
   }
 });
+
+test("routine history renders only closed launch refusal help", async () => {
+  for (const [launchRefusal, expected] of [
+    ["variable_version_changed", "Readable variable version changed"],
+    ["environment_unavailable", "Check the snapshot or Docker host"],
+    ["skillpack_credential_missing", "Skillpack installation failed: skillpack_credential_missing"],
+    ["private_value", "Previous run is still alive."],
+  ] as const) {
+    const result = await invoke(["runs", id], { reply: { items: [{ ...history.items[0], launchRefusal }] } });
+    expect(result.code).toBe(0);
+    expect(result.out).toContain(expected);
+    expect(result.out).not.toContain("private_value");
+  }
+});
