@@ -41,7 +41,7 @@ import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { publishedResponse } from "./published-response.ts";
+import { publishedRequest, publishedResponse } from "./published-response.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
 
@@ -902,6 +902,7 @@ describe("control API", () => {
       const response = await call({ method: "POST", headers, body: "{}" });
       expect(response?.status).toBe(200);
       const body = (await response?.json()) as LaunchOptionsResponse;
+      publishedResponse("launch/options").parse(body);
       expect(body.providers.find((provider) => provider.id === "boat")).toMatchObject({
         enabled: true,
         launchSources: ["golden"],
@@ -1181,6 +1182,7 @@ describe("control API", () => {
         idempotencyKey: "tender-0001-launch",
         externalRef: "tender:1",
       };
+      publishedRequest("sandbox/launch").parse({ org, ...request });
       const first = await call("sandbox/launch", request);
       expect(first?.status).toBe(200);
       const receipt = await first!.json();
@@ -1389,9 +1391,12 @@ describe("control API", () => {
       const serviceResponse = await list(`Bearer ${service}`);
       if (!serviceResponse) throw new Error("missing response");
       expect(serviceResponse.status).toBe(200);
-      expect(
-        ((await serviceResponse.json()) as { goldens: { name: string }[] }).goldens.map((golden) => golden.name),
-      ).toEqual(["shared", "stan-private"]);
+      const listed = await serviceResponse.json();
+      publishedResponse("golden/list").parse(listed);
+      expect((listed as { goldens: { name: string }[] }).goldens.map((golden) => golden.name)).toEqual([
+        "shared",
+        "stan-private",
+      ]);
       expect((await list(""))?.status).toBe(401);
     });
   });

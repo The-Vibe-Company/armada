@@ -1,8 +1,18 @@
 import { API_FAILURE_STATUS, VERSION } from "@armada/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { z } from "zod";
 import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
-import { REST_LAUNCH_RESPONSE, responseJsonSchema, TEMPLATE_LAUNCH_RESPONSE } from "./launch-response-schemas.ts";
+import { DOCKER_LAUNCH_REQUEST } from "./docker-launch-request-schema.ts";
+import {
+  GOLDEN_LIST_RESPONSE,
+  LAUNCH_OPTIONS_RESPONSE,
+  REST_LAUNCH_RESPONSE,
+  requestJsonSchema,
+  responseJsonSchema,
+  TEMPLATE_LAUNCH_RESPONSE,
+} from "./launch-response-schemas.ts";
+import { PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
 import { DRAIN_REFUSAL } from "./server-request-drain.ts";
 import { createArmadaServer, type ToolContext } from "./tools.ts";
 
@@ -11,15 +21,33 @@ export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, s
   "sandbox/launch": { ttl_seconds: "ttlSeconds", reasoning_effort: "reasoningEffort" },
   "logs/read": { since_cursor: "cursor", conversation_id: "conversationId" },
 };
-/**
- * Dispatcher routes that the public dashboard endpoint (`/api/v1/*`) refuses: experimental
- * runtime operations are not part of the integration contract. The dashboard proxy test
- * asserts every published operation is forwarded, so a new unproxied route fails there.
- */
-export const UNPUBLISHED_ROUTES: ReadonlySet<string> = new Set([
-  "sandbox/checkpoint-runtime-v1",
-  "sandbox/resume-runtime-v1",
-]);
+/** REST routes whose contract is the named MCP tool, beyond the dispatcher's shared-tool table. */
+const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
+  ...CONTROL_TOOL_ROUTES,
+  "golden/list": "golden_list",
+  "sandbox/launch": "launch",
+  "templates/launch": "template_launch",
+  "logs/read": "logs",
+};
+/** HTTP 200 bodies that differ from the MCP tool output (or that have no tool). */
+const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
+  "launch/options": LAUNCH_OPTIONS_RESPONSE,
+  "golden/list": GOLDEN_LIST_RESPONSE,
+  "sandbox/launch": REST_LAUNCH_RESPONSE,
+  "templates/launch": TEMPLATE_LAUNCH_RESPONSE,
+};
+/** Handled directly by the REST dispatcher, not through an MCP tool. */
+const REST_ONLY: Readonly<
+  Record<string, { description: string; input: { type: "object"; properties: Record<string, object> } }>
+> = {
+  "launch/options": {
+    description:
+      "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. Read it before offering launch choices.",
+    input: { type: "object", properties: {} },
+  },
+};
+/** MCP tool names in shared prose, as the REST routes that serve them. */
+const REST_PROSE_NAMES: Readonly<Record<string, string>> = { golden_list: "golden/list" };
 /** Rewrites every string (prose and `required` entries); object keys are renamed by the caller. */
 function restNames<T>(value: T, rename: Readonly<Record<string, string>>): T {
   if (typeof value === "string")
@@ -47,21 +75,15 @@ export async function generateOpenApi() {
     await client.connect(b);
     const { tools } = await client.listTools();
     const paths: Record<string, unknown> = {};
-    const routes = {
-      ...CONTROL_TOOL_ROUTES,
-      "sandbox/launch": "launch",
-      "templates/launch": "template_launch",
-      "logs/read": "logs",
-    };
-    for (const [route, name] of Object.entries(routes)) {
-      if (UNPUBLISHED_ROUTES.has(route)) continue;
-      const tool = tools.find((tool) => tool.name === name);
-      if (!tool) throw new Error(`No registered contract for ${route}`);
-      const rename = REST_FIELD_NAMES[route] ?? {};
+    for (const route of PUBLISHED_REST_ROUTES) {
+      const restOnly = REST_ONLY[route];
+      const tool = tools.find((tool) => tool.name === REST_TOOL_ROUTES[route]);
+      if (!tool && !restOnly) throw new Error(`No registered contract for ${route}`);
+      const rename = { ...REST_PROSE_NAMES, ...REST_FIELD_NAMES[route] };
       // REST handlers read their own field names (an unknown name is ignored, not
       // refused), so schema keys, required lists and prose must all use them.
-      const input = restNames(structuredClone(tool.inputSchema), rename);
-      const description = restNames(tool.description ?? "", rename);
+      const input = restNames(structuredClone(tool?.inputSchema ?? restOnly!.input), rename);
+      let description = restNames(tool?.description ?? restOnly!.description, rename);
       for (const [from, to] of Object.entries(rename)) {
         if (input.properties?.[from]) {
           input.properties[to] = input.properties[from];
@@ -74,24 +96,30 @@ export async function generateOpenApi() {
           follow: { type: "boolean", description: "Follow events within the bounded HTTP request." },
         };
       // REST selects org scope before calling shared tools.
-      if (route !== "templates/launch") input.properties = { ...input.properties, org: { type: "string" } };
+      if (tool && route !== "templates/launch") input.properties = { ...input.properties, org: { type: "string" } };
+      let request: object = input;
+      if (route === "sandbox/launch") {
+        // One public path, two handlers: provider "docker" is dispatched to the normal Docker launch.
+        const { $schema: _golden, ...golden } = input as Record<string, unknown>;
+        const { $schema: _docker, ...docker } = requestJsonSchema(DOCKER_LAUNCH_REQUEST);
+        request = { oneOf: [golden, docker] };
+        description +=
+          ' Docker hosts use the second request variant: provider "docker" with no golden. launch/options reports each provider\'s launch sources.';
+      }
       paths[`/api/v1/${route}`] = {
         post: {
           operationId: route.replaceAll("/", "_").replaceAll("-", "_"),
           description,
           security: [{ serviceToken: [] }],
-          requestBody: { required: true, content: { "application/json": { schema: input } } },
+          requestBody: { required: true, content: { "application/json": { schema: request } } },
           responses: {
             "200": {
               description: "Success",
               content: {
                 "application/json": {
-                  schema:
-                    route === "sandbox/launch"
-                      ? responseJsonSchema(REST_LAUNCH_RESPONSE)
-                      : route === "templates/launch"
-                        ? responseJsonSchema(TEMPLATE_LAUNCH_RESPONSE)
-                        : (tool.outputSchema ?? {}),
+                  schema: REST_RESPONSES[route]
+                    ? responseJsonSchema(REST_RESPONSES[route])
+                    : (tool?.outputSchema ?? {}),
                 },
               },
             },
@@ -126,7 +154,7 @@ export async function generateOpenApi() {
         title: "Armada shared control API",
         version: VERSION,
         description:
-          "Generated integration REST contracts. Includes SDK operations and shared-tool routes. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec; this description does not assert provider availability.",
+          "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts a golden launch or a Docker launch. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec; this description does not assert provider availability.",
       },
       paths,
       components: {

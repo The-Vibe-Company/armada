@@ -3,9 +3,518 @@
   "info": {
     "title": "Armada shared control API",
     "version": "2.52.0",
-    "description": "Generated integration REST contracts. Includes SDK operations and shared-tool routes. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec; this description does not assert provider availability."
+    "description": "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts a golden launch or a Docker launch. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec; this description does not assert provider availability."
   },
   "paths": {
+    "/api/v1/launch/options": {
+      "post": {
+        "operationId": "launch_options",
+        "description": "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. Read it before offering launch choices.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "harnesses": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "credentialKinds": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "defaultModel": {
+                            "type": "string"
+                          },
+                          "defaultReasoningEffort": {
+                            "type": "string"
+                          },
+                          "reasoningEfforts": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "models": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "label": {
+                                  "type": "string"
+                                },
+                                "reasoningEfforts": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "label",
+                                "reasoningEfforts"
+                              ],
+                              "additionalProperties": {}
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "credentialKinds",
+                          "defaultModel",
+                          "defaultReasoningEffort",
+                          "reasoningEfforts",
+                          "models"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    },
+                    "machineSizes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "ttl": {
+                      "type": "object",
+                      "properties": {
+                        "defaultSeconds": {
+                          "type": "number"
+                        },
+                        "maxSeconds": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "number"
+                          }
+                        }
+                      },
+                      "required": [
+                        "defaultSeconds",
+                        "maxSeconds"
+                      ],
+                      "additionalProperties": {},
+                      "description": "Launch TTL default and per-provider maximums, in seconds."
+                    },
+                    "providers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "launchSources": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "\"golden\" launches by golden name; \"image\" launches on a Docker host."
+                          },
+                          "harnesses": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "capabilities": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "boolean"
+                            }
+                          },
+                          "unsupportedReasons": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "enabled",
+                          "launchSources",
+                          "harnesses",
+                          "capabilities",
+                          "unsupportedReasons"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    },
+                    "modalRuntime": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": [
+                          "number",
+                          "boolean",
+                          "string"
+                        ]
+                      },
+                      "description": "Server feature versions for this provider path. Clients must tolerate unknown keys."
+                    },
+                    "dockerRuntime": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": [
+                          "number",
+                          "boolean",
+                          "string"
+                        ]
+                      },
+                      "description": "Server feature versions for this provider path. Clients must tolerate unknown keys."
+                    },
+                    "boatRuntime": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": [
+                          "number",
+                          "boolean",
+                          "string"
+                        ]
+                      },
+                      "description": "Server feature versions for this provider path. Clients must tolerate unknown keys."
+                    }
+                  },
+                  "required": [
+                    "harnesses",
+                    "machineSizes",
+                    "ttl",
+                    "providers",
+                    "boatRuntime"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/golden/list": {
+      "post": {
+        "operationId": "golden_list",
+        "description": "The goldens you can launch from: your orgs', and your own private ones. A golden without a providerSnapshotId cannot be launched yet. The same name may exist on several providers.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "goldens": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "orgId": {
+                            "type": "string"
+                          },
+                          "visibility": {
+                            "type": "string",
+                            "enum": [
+                              "org",
+                              "private"
+                            ]
+                          },
+                          "ownerId": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "boat",
+                              "modal"
+                            ],
+                            "description": "The sandbox provider it runs on, fixed for its life."
+                          },
+                          "providerSnapshotId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "providerSandboxId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "modal": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "workspace": {
+                                    "type": "string"
+                                  },
+                                  "environment": {
+                                    "type": "string"
+                                  },
+                                  "appId": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "workspace",
+                                  "environment",
+                                  "appId"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The Modal workspace, environment and App id a Modal golden is pinned to."
+                          },
+                          "boatSnapshotId": {
+                            "description": "The same as providerSnapshotId on a Boat golden or sandbox; null on any other provider.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "boatSandboxId": {
+                            "description": "The same as providerSandboxId on a Boat golden or sandbox; null on any other provider.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "repos": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "config": {
+                            "type": "object",
+                            "properties": {
+                              "repos": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "url": {
+                                      "type": "string"
+                                    },
+                                    "branch": {
+                                      "type": "string"
+                                    },
+                                    "dir": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "url",
+                                    "branch",
+                                    "dir"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "init": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "required": [
+                              "repos",
+                              "init"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "buildWarnings": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Non-blocking findings from the golden's last build."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "orgId",
+                          "visibility",
+                          "ownerId",
+                          "provider",
+                          "providerSnapshotId",
+                          "providerSandboxId",
+                          "modal",
+                          "boatSnapshotId",
+                          "boatSandboxId",
+                          "repos",
+                          "config",
+                          "buildWarnings"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "goldens"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/golden/capabilities": {
       "post": {
         "operationId": "golden_capabilities",
@@ -5147,7 +5656,7 @@
     "/api/v1/sandbox/launch": {
       "post": {
         "operationId": "sandbox_launch",
-        "description": "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes.",
+        "description": "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. Docker hosts use the second request variant: provider \"docker\" with no golden. launch/options reports each provider's launch sources.",
         "security": [
           {
             "serviceToken": []
@@ -5158,122 +5667,303 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "idempotencyKey": {
-                    "description": "Reuse this key for retries; inspect launch_receipt after an unknown outcome.",
-                    "type": "string",
-                    "minLength": 16,
-                    "maxLength": 128
-                  },
-                  "externalRef": {
-                    "type": "string",
-                    "description": "Opaque caller reference, for example one business object id. Not unique; use idempotencyKey for exactly-once."
-                  },
-                  "visibility": {
-                    "type": "string",
-                    "enum": [
-                      "private",
-                      "org"
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "idempotencyKey": {
+                        "description": "Reuse this key for retries; inspect launch_receipt after an unknown outcome.",
+                        "type": "string",
+                        "minLength": 16,
+                        "maxLength": 128
+                      },
+                      "externalRef": {
+                        "type": "string",
+                        "description": "Opaque caller reference, for example one business object id. Not unique; use idempotencyKey for exactly-once."
+                      },
+                      "visibility": {
+                        "type": "string",
+                        "enum": [
+                          "private",
+                          "org"
+                        ]
+                      },
+                      "skills": {
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "skipSkillDefaults": {
+                        "type": "boolean"
+                      },
+                      "helperCapabilities": {
+                        "maxItems": 8,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 64
+                        }
+                      },
+                      "connections": {
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        }
+                      },
+                      "golden": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The golden's name, as in golden/list."
+                      },
+                      "org": {
+                        "type": "string"
+                      },
+                      "provider": {
+                        "description": "The golden's provider. Needed only when the name exists on several providers.",
+                        "type": "string",
+                        "enum": [
+                          "boat",
+                          "modal"
+                        ]
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ],
+                        "description": "claude (Claude Code) or codex."
+                      },
+                      "model": {
+                        "description": "The model, by id. claude: claude-opus-5-5 (low|medium|high|xhigh|max), claude-sonnet-5-5 (low|medium|high|xhigh|max); default claude-opus-5-5 medium. codex: gpt-6.2-sol (low|medium|high|xhigh|max|ultra), gpt-6.2-astra (low|medium|high|xhigh|max|ultra), gpt-6.1-sol (low|medium|high|xhigh|max|ultra), gpt-6.1-terra (low|medium|high|xhigh|max|ultra), gpt-6-astra (low|medium|high|xhigh|max|ultra), gpt-6-sol (low|medium|high|xhigh|max|ultra), gpt-6-luna (low|medium|high|xhigh|max); default gpt-6.2-sol medium. opencode: armada/deepseek-flash (default); default armada/deepseek-flash default.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "size": {
+                        "type": "string",
+                        "enum": [
+                          "small",
+                          "medium",
+                          "large",
+                          "xlarge"
+                        ]
+                      },
+                      "repo": {
+                        "description": "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
+                        "type": "string"
+                      },
+                      "credentialId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      "prompt": {
+                        "description": "The first instruction. Leave out for an idle sandbox.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "ttlSeconds": {
+                        "description": "Seconds before the machine stops by itself. Default 14400 (4 hours). At most 2592000 (30 days) on boat, 86400 (24 hours) on modal; a longer TTL is refused.",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2592000
+                      },
+                      "reasoningEffort": {
+                        "description": "The reasoning effort; one the model accepts (see model).",
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "golden",
+                      "harness"
                     ]
                   },
-                  "skills": {
-                    "maxItems": 20,
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  "skipSkillDefaults": {
-                    "type": "boolean"
-                  },
-                  "helperCapabilities": {
-                    "maxItems": 8,
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "maxLength": 64
-                    }
-                  },
-                  "connections": {
-                    "maxItems": 100,
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                    }
-                  },
-                  "golden": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "The golden's name, as in golden_list."
-                  },
-                  "org": {
-                    "type": "string"
-                  },
-                  "provider": {
-                    "description": "The golden's provider. Needed only when the name exists on several providers.",
-                    "type": "string",
-                    "enum": [
-                      "boat",
-                      "modal"
-                    ]
-                  },
-                  "harness": {
-                    "type": "string",
-                    "enum": [
-                      "claude",
-                      "codex",
-                      "opencode"
+                  {
+                    "type": "object",
+                    "properties": {
+                      "org": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "description": "Organization UUID."
+                      },
+                      "provider": {
+                        "type": "string",
+                        "const": "docker"
+                      },
+                      "hostId": {
+                        "description": "Docker host UUID. Required unless snapshotId selects the host.",
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                      },
+                      "snapshotId": {
+                        "description": "Docker snapshot UUID; cannot be combined with repos.",
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "credentialId": {
+                        "description": "Omit to use the caller's compatible personal default, frozen at admission.",
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                      },
+                      "credentialVersion": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "requestId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "description": "Caller-chosen UUID; replaying it returns the same launch."
+                      },
+                      "prompt": {
+                        "description": "First prompt, at most 256 KiB.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "reasoningEffort": {
+                        "type": "string"
+                      },
+                      "ttlSeconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 86400
+                      },
+                      "visibility": {
+                        "type": "string",
+                        "const": "private"
+                      },
+                      "skills": {
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                        }
+                      },
+                      "skipSkillDefaults": {
+                        "type": "boolean"
+                      },
+                      "connections": {
+                        "description": "MCP connection UUIDs.",
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                        }
+                      },
+                      "repos": {
+                        "description": "GitHub repositories to check out, as in a golden config.",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "url": {
+                              "type": "string"
+                            },
+                            "branch": {
+                              "type": "string"
+                            },
+                            "dir": {
+                              "type": "string"
+                            },
+                            "history": {
+                              "type": "string",
+                              "enum": [
+                                "full",
+                                "shallow"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "url"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "variables": {
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {
+                              "type": "string"
+                            },
+                            "variableId": {
+                              "type": "string",
+                              "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "key",
+                            "variableId",
+                            "version"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "secrets": {
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {
+                              "type": "string"
+                            },
+                            "secretId": {
+                              "type": "string",
+                              "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "key",
+                            "secretId",
+                            "version"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "org",
+                      "provider",
+                      "harness",
+                      "requestId"
                     ],
-                    "description": "claude (Claude Code) or codex."
-                  },
-                  "model": {
-                    "description": "The model, by id. claude: claude-opus-5-5 (low|medium|high|xhigh|max), claude-sonnet-5-5 (low|medium|high|xhigh|max); default claude-opus-5-5 medium. codex: gpt-6.2-sol (low|medium|high|xhigh|max|ultra), gpt-6.2-astra (low|medium|high|xhigh|max|ultra), gpt-6.1-sol (low|medium|high|xhigh|max|ultra), gpt-6.1-terra (low|medium|high|xhigh|max|ultra), gpt-6-astra (low|medium|high|xhigh|max|ultra), gpt-6-sol (low|medium|high|xhigh|max|ultra), gpt-6-luna (low|medium|high|xhigh|max); default gpt-6.2-sol medium. opencode: armada/deepseek-flash (default); default armada/deepseek-flash default.",
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "size": {
-                    "type": "string",
-                    "enum": [
-                      "small",
-                      "medium",
-                      "large",
-                      "xlarge"
-                    ]
-                  },
-                  "repo": {
-                    "description": "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
-                    "type": "string"
-                  },
-                  "credentialId": {
-                    "type": "string",
-                    "format": "uuid",
-                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                  },
-                  "prompt": {
-                    "description": "The first instruction. Leave out for an idle sandbox.",
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "ttlSeconds": {
-                    "description": "Seconds before the machine stops by itself. Default 14400 (4 hours). At most 2592000 (30 days) on boat, 86400 (24 hours) on modal; a longer TTL is refused.",
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 2592000
-                  },
-                  "reasoningEffort": {
-                    "description": "The reasoning effort; one the model accepts (see model).",
-                    "type": "string",
-                    "minLength": 1
+                    "additionalProperties": false,
+                    "description": "Launch on a registered Docker host from the official Armada environment. There is no golden."
                   }
-                },
-                "required": [
-                  "golden",
-                  "harness"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }

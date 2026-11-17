@@ -50,6 +50,7 @@ import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createArmadaServer } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
+import { publishedRequest, publishedResponse } from "./published-response.ts";
 
 let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
 function database() {
@@ -825,7 +826,10 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
   expect(await pending?.json()).toMatchObject({ error: { code: "outcome_unknown" } });
   f.setDrive(true);
   options.dockerLaunch = f.service();
+  // The published contract describes the dashboard's Docker request and its receipt.
+  publishedRequest("sandbox/launch").parse(body);
   const launched = (await post("sandbox/launch", body)) as DockerLaunchResult;
+  publishedResponse("sandbox/launch").parse(launched);
   expect(launchedDockerSandbox(launched)).toBe(f.body.requestId);
   expect(launched).toMatchObject({
     sandbox: {

@@ -14,20 +14,32 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
   expect(document).toEqual(published);
   const paths = document.paths as Record<
     string,
-    { post: { requestBody: { content: { "application/json": { schema: { properties: Record<string, unknown> } } } } } }
+    {
+      post: {
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: { properties?: Record<string, unknown>; oneOf?: { properties: Record<string, unknown> }[] };
+            };
+          };
+        };
+      };
+    }
   >;
   // REST ignores MCP names (logs `since_cursor` would silently reread page one), so
   // no key, required entry or prose of a renamed operation may name them.
   for (const [route, rename] of Object.entries(REST_FIELD_NAMES)) {
     const operation = paths[`/api/v1/${route}`]!.post;
-    const properties = operation.requestBody.content["application/json"].schema.properties;
+    // sandbox/launch publishes the golden variant first; the Docker variant has REST names only.
+    const schema = operation.requestBody.content["application/json"].schema;
+    const properties = schema.properties ?? schema.oneOf![0]!.properties;
     for (const [mcp, rest] of Object.entries(rename)) {
       expect(properties[rest]).toBeDefined();
       expect(JSON.stringify(operation)).not.toMatch(new RegExp(`\\b${mcp}\\b`));
     }
   }
   expect(JSON.stringify(paths["/api/v1/logs/read"]!.post)).toContain("Pass the returned cursor as cursor");
-  expect(paths["/api/v1/logs/read"]!.post.requestBody.content["application/json"].schema.properties.follow).toEqual({
+  expect(paths["/api/v1/logs/read"]!.post.requestBody.content["application/json"].schema.properties!.follow).toEqual({
     type: "boolean",
     description: "Follow events within the bounded HTTP request.",
   });
@@ -71,4 +83,17 @@ test("published 503 schema accepts the real drain refusal and a structured unava
   expect(structured.status).toBe(503);
   expect(refusal.safeParse(await structured.json()).success).toBe(true);
   expect(refusal.safeParse({ error: "something_else" }).success).toBe(false);
+});
+
+test("published launch request is either a golden launch or a Docker launch, never a mix", async () => {
+  const { publishedRequest } = await import("./published-response.ts");
+  const launch = publishedRequest("sandbox/launch");
+  const org = "11111111-1111-4111-8111-111111111111";
+  expect(launch.safeParse({ golden: "web", harness: "codex", org }).success).toBe(true);
+  const docker = { org, provider: "docker", hostId: org, harness: "codex", requestId: org };
+  expect(launch.safeParse(docker).success).toBe(true);
+  // The Docker handler refuses fields it does not know, including a golden or an image.
+  expect(launch.safeParse({ ...docker, golden: "web" }).success).toBe(false);
+  expect(launch.safeParse({ ...docker, image: "busybox" }).success).toBe(false);
+  expect(launch.safeParse({ golden: "web", harness: "codex", provider: "docker" }).success).toBe(false);
 });

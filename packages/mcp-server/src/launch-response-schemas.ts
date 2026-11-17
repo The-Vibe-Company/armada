@@ -1,5 +1,6 @@
 import type { GoldenErrorCode } from "@armada/core";
 import { z } from "zod";
+import { GOLDEN_OUTPUT } from "./tools.ts";
 
 /**
  * Public HTTP 200 bodies of the two REST launch routes. Their MCP tools have no typed
@@ -82,6 +83,68 @@ export const TEMPLATE_LAUNCH_RESPONSE = z
   .union([TEMPLATE_LAUNCH_RECEIPT, TEMPLATE_LAUNCH_REFUSAL])
   .describe("A receipt has requestId; a pre-admission refusal has none.");
 
+/** `golden/list`: the MCP golden record plus the build warnings the REST handler adds. */
+export const GOLDEN_LIST_RESPONSE = z.object({
+  goldens: z.array(
+    GOLDEN_OUTPUT.extend({
+      buildWarnings: z.array(z.string()).describe("Non-blocking findings from the golden's last build."),
+    }),
+  ),
+});
+
+const versions = z
+  .record(z.string(), z.union([z.number(), z.boolean(), z.string()]))
+  .describe("Server feature versions for this provider path. Clients must tolerate unknown keys.");
+
+/**
+ * `launch/options` (core `LaunchOptionsResponse`): what a launch can ask for on this server.
+ * Identifiers stay plain strings so clients tolerate providers, harnesses and sizes added later.
+ */
+export const LAUNCH_OPTIONS_RESPONSE = z
+  .object({
+    harnesses: z.array(
+      z
+        .object({
+          id: z.string(),
+          credentialKinds: z.array(z.string()),
+          defaultModel: z.string(),
+          defaultReasoningEffort: z.string(),
+          reasoningEfforts: z.array(z.string()),
+          models: z.array(
+            z.object({ id: z.string(), label: z.string(), reasoningEfforts: z.array(z.string()) }).passthrough(),
+          ),
+        })
+        .passthrough(),
+    ),
+    machineSizes: z.array(z.string()),
+    ttl: z
+      .object({ defaultSeconds: z.number(), maxSeconds: z.record(z.string(), z.number()) })
+      .passthrough()
+      .describe("Launch TTL default and per-provider maximums, in seconds."),
+    providers: z.array(
+      z
+        .object({
+          id: z.string(),
+          enabled: z.boolean(),
+          launchSources: z
+            .array(z.string())
+            .describe('"golden" launches by golden name; "image" launches on a Docker host.'),
+          harnesses: z.array(z.string()),
+          capabilities: z.record(z.string(), z.boolean()),
+          unsupportedReasons: z.record(z.string(), z.string()),
+        })
+        .passthrough(),
+    ),
+    modalRuntime: versions.optional(),
+    dockerRuntime: versions.optional(),
+    boatRuntime: versions,
+  })
+  .passthrough();
+
 export function responseJsonSchema(schema: z.ZodType): Record<string, unknown> {
   return z.toJSONSchema(schema, { target: "draft-7", io: "output" }) as Record<string, unknown>;
+}
+
+export function requestJsonSchema(schema: z.ZodType): Record<string, unknown> {
+  return z.toJSONSchema(schema, { target: "draft-7", io: "input" }) as Record<string, unknown>;
 }

@@ -199,6 +199,9 @@ const golden = z.object({
   }),
 });
 
+/** The golden record shared by the MCP tools and the REST golden list. */
+export { golden as GOLDEN_OUTPUT };
+
 const taskOutcome = z.discriminatedUnion("state", [
   z
     .object({

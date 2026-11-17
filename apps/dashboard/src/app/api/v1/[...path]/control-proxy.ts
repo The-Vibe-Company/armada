@@ -4,7 +4,8 @@ import { NextResponse } from "next/server";
 const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = 128 * 1024;
 
-const PRIVATE_POST_PATHS = new Set([
+/** POST routes the public endpoint forwards with a bearer. */
+export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "golden/adopt",
   "github/runtime-status",
   "sandbox/resume",

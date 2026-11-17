@@ -689,3 +689,25 @@ test("every operation in the published OpenAPI description crosses the public pr
     else process.env.ARMADA_MCP_URL = env;
   }
 });
+
+test("every route the public proxy forwards is published or has a recorded reason to stay outside the description", async () => {
+  const published = (await import("../../../docs/openapi.json")).default as { paths: Record<string, unknown> };
+  const { PRIVATE_POST_PATHS } = await import("../src/app/api/v1/[...path]/control-proxy.ts");
+  const { UNPUBLISHED_REST_ROUTES, unpublishedReason } = await import(
+    "../../../packages/mcp-server/src/public-rest-routes.ts"
+  );
+  const publishedRoutes = Object.keys(published.paths).map((path) => path.replace(/^\/api\/v1\//, ""));
+  const forwarded = [
+    ...PRIVATE_POST_PATHS,
+    ...Object.keys(PUBLIC_CONTROL_ROUTES),
+    "sandboxes/11111111-1111-4111-8111-111111111111",
+  ];
+  expect(forwarded.filter((route) => !publishedRoutes.includes(route) && !unpublishedReason(route))).toEqual([]);
+  expect(publishedRoutes.filter((route) => unpublishedReason(route) !== undefined)).toEqual([]);
+  // A reason for a route the proxy no longer forwards would hide nothing; drop it instead.
+  expect(
+    Object.keys(UNPUBLISHED_REST_ROUTES).filter((key) =>
+      key.endsWith("/") ? !forwarded.some((route) => route.startsWith(key)) : !forwarded.includes(key),
+    ),
+  ).toEqual([]);
+});

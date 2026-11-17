@@ -45,6 +45,7 @@ import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts
 import { resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
+import { DOCKER_LAUNCH_FIELDS } from "./docker-launch-request-schema.ts";
 import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
 import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservation-sql.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
@@ -181,30 +182,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
     !body ||
     typeof body !== "object" ||
     Array.isArray(body) ||
-    Object.keys(body).some(
-      (field) =>
-        ![
-          "repos",
-          "variables",
-          "secrets",
-          "snapshotId",
-          "org",
-          "provider",
-          "hostId",
-          "harness",
-          "credentialId",
-          "credentialVersion",
-          "requestId",
-          "model",
-          "reasoningEffort",
-          "prompt",
-          "ttlSeconds",
-          "visibility",
-          "skills",
-          "connections",
-          "skipSkillDefaults",
-        ].includes(field),
-    ) ||
+    Object.keys(body).some((field) => !DOCKER_LAUNCH_FIELDS.includes(field)) ||
     body.provider !== "docker" ||
     !HARNESSES.includes(body.harness as Harness) ||
     (body.visibility !== undefined && body.visibility !== "private") ||

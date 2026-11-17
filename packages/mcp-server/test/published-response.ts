@@ -16,3 +16,14 @@ export function publishedResponse(route: string): z.ZodType {
 export function publishedFailure(): z.ZodType {
   return z.fromJSONSchema(published.components.schemas.Failure as Parameters<typeof z.fromJSONSchema>[0]);
 }
+
+type RequestOperation = { post: { requestBody: { content: { "application/json": { schema: unknown } } } } };
+
+/** The checked-in OpenAPI request schema of a route, as a validator for the bodies real clients send. */
+export function publishedRequest(route: string): z.ZodType {
+  const operation = (published.paths as Record<string, RequestOperation>)[`/api/v1/${route}`];
+  if (!operation) throw new Error(`No published route ${route}`);
+  return z.fromJSONSchema(
+    operation.post.requestBody.content["application/json"].schema as Parameters<typeof z.fromJSONSchema>[0],
+  );
+}
