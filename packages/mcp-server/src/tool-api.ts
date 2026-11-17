@@ -67,6 +67,7 @@ export class ToolApiError extends Error {
         "conflict",
         "sandbox_not_ready",
         "sandbox_terminal",
+        "sandbox_retention_ended",
         "no_running_turn",
       ].includes(this.code)
     )

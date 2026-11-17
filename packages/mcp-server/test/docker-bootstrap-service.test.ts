@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { Harness, Sql } from "@armada/core";
+import { DockerRetentionEnded } from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -609,17 +610,15 @@ test("resume is refused once the host's local retention deadline has passed", as
   await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
   await db.query(`update public.sandboxes set status='stopped',stopped_at=now() where id=$1`, [f.sandbox.id]);
-  await db.query(
-    `update public.sandboxes set docker_retention_deadline=now()-interval '1 second' where id=$1`,
-    [f.sandbox.id],
-  );
+  await db.query(`update public.sandboxes set docker_retention_deadline=now()-interval '1 second' where id=$1`, [
+    f.sandbox.id,
+  ]);
   // The daemon is now authorized to delete this stopped workspace locally.
-  await denied(service.resume(f.actor, f.sandbox.id, randomUUID()));
+  await expect(service.resume(f.actor, f.sandbox.id, randomUUID())).rejects.toBeInstanceOf(DockerRetentionEnded);
   // Under a deadline in the future the same stopped sandbox still admits it.
-  await db.query(
-    `update public.sandboxes set docker_retention_deadline=now()+interval '1 hour' where id=$1`,
-    [f.sandbox.id],
-  );
+  await db.query(`update public.sandboxes set docker_retention_deadline=now()+interval '1 hour' where id=$1`, [
+    f.sandbox.id,
+  ]);
   expect((await service.resume(f.actor, f.sandbox.id, randomUUID())).operation).toBe("resume");
 });
 
@@ -631,16 +630,14 @@ test("resume is refused after the host-reported per-generation deadline even whe
   // The container exited at T0; the daemon holds the deadline T0+60s. The stop
   // ACK records stopped_at later, so a stop-age estimate would admit too late.
   await db.query(`update public.sandboxes set status='stopped',stopped_at=now() where id=$1`, [f.sandbox.id]);
-  await db.query(
-    `update public.sandboxes set docker_retention_deadline=now()-interval '1 second' where id=$1`,
-    [f.sandbox.id],
-  );
-  await denied(service.resume(f.actor, f.sandbox.id, randomUUID()));
+  await db.query(`update public.sandboxes set docker_retention_deadline=now()-interval '1 second' where id=$1`, [
+    f.sandbox.id,
+  ]);
+  await expect(service.resume(f.actor, f.sandbox.id, randomUUID())).rejects.toBeInstanceOf(DockerRetentionEnded);
   // Before the host's own deadline the resume is admitted.
-  await db.query(
-    `update public.sandboxes set docker_retention_deadline=now()+interval '1 hour' where id=$1`,
-    [f.sandbox.id],
-  );
+  await db.query(`update public.sandboxes set docker_retention_deadline=now()+interval '1 hour' where id=$1`, [
+    f.sandbox.id,
+  ]);
   expect((await service.resume(f.actor, f.sandbox.id, randomUUID())).operation).toBe("resume");
   // Admission cancels the local obligation; a retried/later admission is not fenced by it.
   const cleared = await db.query<{ docker_retention_deadline: Date | string | null }>(

@@ -488,6 +488,8 @@ export type ProviderErrorCode =
   | "host_full"
   /** Any other refusal because of the state of a resource. */
   | "conflict"
+  /** A Docker sandbox's host-local retention ended: its disk is gone, so retrying cannot help. */
+  | "sandbox_retention_ended"
   | "rate_limited"
   /** The provider failed or has no capacity. */
   | "unavailable"

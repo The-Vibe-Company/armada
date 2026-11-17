@@ -1042,13 +1042,14 @@ test("poll reports every generation with pending start intent, and per-generatio
   const stop = { requestId: randomUUID(), operation: "stop" as const };
   await store.enqueueSandbox(a.owner, second.sandboxId, stop);
   // Resume admission sets the sandbox starting, then issues a fresh ticket and enqueues.
-  await db.query(
-    "update public.sandboxes set status='starting',stopped_at=null,stop_requested_at=null where id=$1",
-    [second.sandboxId],
-  );
-  const ticket = await (await import("../src/runtime-enrolment.ts")).createRuntimeEnrolments(sql, key, {
-    allowDockerIssue: true,
-  }).issue({ sandboxId: second.sandboxId, ownerId: second.owner.userId, configuration: {} });
+  await db.query("update public.sandboxes set status='starting',stopped_at=null,stop_requested_at=null where id=$1", [
+    second.sandboxId,
+  ]);
+  const ticket = await (await import("../src/runtime-enrolment.ts"))
+    .createRuntimeEnrolments(sql, key, {
+      allowDockerIssue: true,
+    })
+    .issue({ sandboxId: second.sandboxId, ownerId: second.owner.userId, configuration: {} });
   await store.enqueueSandbox(a.owner, second.sandboxId, {
     requestId: randomUUID(),
     operation: "resume",

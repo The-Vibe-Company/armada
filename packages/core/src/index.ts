@@ -124,6 +124,7 @@ export {
 } from "./docker-image.ts";
 export type { DockerResourceOverrides, DockerSandboxLimits } from "./docker-resource-policy.ts";
 export { parseDockerMemory } from "./docker-resource-policy.ts";
+export { DOCKER_RETENTION_ENDED_MESSAGE, DockerRetentionEnded } from "./docker-retention.ts";
 export { parseDockerSnapshotRecord } from "./docker-snapshot.ts";
 export {
   boundEventEntries,

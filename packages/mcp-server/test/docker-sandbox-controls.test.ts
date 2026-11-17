@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
+  API_FAILURE_STATUS,
   type DockerSandboxStatus,
   isSandboxPlacementProvider,
   ProviderError,
@@ -18,6 +19,7 @@ import {
 import { parseSandboxListMetadata } from "../../../apps/dashboard/src/lib/sandbox-access.ts";
 import { sandboxListText } from "../../cli/src/sandbox-list.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
+import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -975,17 +977,22 @@ test("a resume past the host's retention deadline is a non-retryable conflict, n
   await reservations.stop(f.actor, f.sandbox.id, requestId);
   await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
   // The daemon's own deadline has passed: the workspace disk is gone.
-  await db.query(
-    "update public.sandboxes set docker_retention_deadline=now()-interval '1 second' where id=$1",
-    [f.sandbox.id],
-  );
-  const controller = createDockerSandboxControls(sql, key, { send: createDockerNormalSend(sql, key, { enabled: true }), resume: bootstrap });
+  await db.query("update public.sandboxes set docker_retention_deadline=now()-interval '1 second' where id=$1", [
+    f.sandbox.id,
+  ]);
+  const controller = createDockerSandboxControls(sql, key, {
+    send: createDockerNormalSend(sql, key, { enabled: true }),
+    resume: bootstrap,
+  });
   try {
     await invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller);
     throw Error("resume unexpectedly allowed");
   } catch (error) {
     expect(error).toBeInstanceOf(ProviderError);
-    expect(error).toMatchObject({ provider: "docker", code: "conflict", retryable: false });
+    expect(error).toMatchObject({ provider: "docker", code: "sandbox_retention_ended", retryable: false });
     expect((error as Error).message).toContain("retention period has ended");
+    // The closed HTTP/MCP category maps to a non-retryable 409, not a provider outage.
+    expect(apiFailureCode(error)).toBe("sandbox_retention_ended");
+    expect(API_FAILURE_STATUS.sandbox_retention_ended).toBe(409);
   }
 });

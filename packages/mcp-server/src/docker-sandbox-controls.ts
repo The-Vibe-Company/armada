@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type AgentEvent,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
+  DockerRetentionEnded,
   type DockerSandboxStatus,
   dockerSandboxFailureReason,
   GoldenError,
@@ -794,6 +795,13 @@ export function createDockerSandboxControls(
         return { handled: true, result };
       } catch (error) {
         if (error instanceof ProviderError) throw error;
+        if (error instanceof DockerRetentionEnded)
+          throw new ProviderError({
+            provider: "docker",
+            code: "sandbox_retention_ended",
+            message: error.message,
+            retryable: false,
+          });
         if (error instanceof DockerHostDenied) throw failure("conflict", "Docker sandbox cleanup is unavailable.");
         throw failure("unavailable", "Docker sandbox operation is unavailable.");
       }
