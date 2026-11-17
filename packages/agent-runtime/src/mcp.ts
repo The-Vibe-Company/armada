@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { MAX_MCP_CONNECTIONS } from "@armada/core";
 import type { McpConfiguration, McpConnection } from "./protocol.ts";
 
 const fail = (): never => {
@@ -58,7 +59,8 @@ export function validateMcpConfiguration(value: unknown): McpConfiguration {
   const revision = string(input.revision, 128);
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(revision)) fail();
   const source = record(input.servers);
-  if (Object.keys(source).length > 32) fail();
+  // The built-in self service is additional to the selected remote connections.
+  if (Object.keys(source).filter((name) => name !== "armada_self").length > MAX_MCP_CONNECTIONS) fail();
   const servers: Record<string, McpConnection> = {};
   for (const name of Object.keys(source).sort()) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name) || ["__proto__", "prototype", "constructor"].includes(name))

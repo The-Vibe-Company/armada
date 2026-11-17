@@ -55,9 +55,11 @@ test("pre-claim admission refusal is retained without arbitrary exception text",
     claim: null,
     refusal: "variable_version_changed",
   });
+  for (const code of ["missing_credential", "credential_refused", "credential_busy"] as const)
+    expect((await failure(new VaultError(code, "private_value"))).refusal).toBe(code);
   for (const error of [
     new Error("private_value"),
-    new VaultError("conflict", "Template launch refused: private_value."),
+    new VaultError("invalid", "Template launch refused: private_value."),
   ])
     expect((await failure(error)).refusal).toBeNull();
 });

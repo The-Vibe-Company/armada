@@ -99,7 +99,7 @@ test("a secret is stored once and never shown again: replace, revoke and delete 
   // Names are written the way an environment expects them; a reserved one is refused before sending.
   await dialog.getByLabel("Name").fill("github token");
   await expect(dialog.getByLabel("Name")).toHaveValue("GITHUB_TOKEN");
-  await expect(dialog.getByText("Names starting with GITHUB_ are reserved")).toBeVisible();
+  await expect(dialog.getByText("GITHUB_TOKEN is reserved for the sandbox and agents.")).toBeVisible();
   await dialog.getByLabel("Name").fill("SENTRY_DSN");
   await dialog.getByLabel("Secret value").fill(CANARY);
   await dialog.getByRole("button", { name: "Store secret" }).click();

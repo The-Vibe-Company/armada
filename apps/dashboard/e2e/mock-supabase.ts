@@ -317,6 +317,7 @@ function seed(): State {
         state: "skipped",
         reason: "previous_run_alive",
         reasonHelp: ROUTINE_REASON_HELP.previous_run_alive,
+        launchRefusal: null,
         taskState: null,
         taskHelp: null,
         sandboxId: null,

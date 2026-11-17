@@ -1,3 +1,14 @@
+/** Names reserved by the runtime cannot be application bindings. */
+export function isApplicationVariableName(key: string): boolean {
+  return (
+    /^[A-Z][A-Z0-9_]{0,127}$/.test(key) &&
+    !/^(ARMADA_|BOAT_|MODAL_|ANTHROPIC_|OPENAI_|OPENCODE_|CLAUDE_|CODEX_|GH_|GITHUB_|MCP_|LD_|DYLD_)/i.test(key) &&
+    !/^(PATH|HOME|XDG_DATA_HOME|XDG_CONFIG_HOME|XDG_CACHE_HOME|XDG_STATE_HOME|SHELL|ENV|BASH_ENV|NODE_OPTIONS|PYTHONPATH|SSL_CERT_FILE|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)$/.test(
+      key,
+    )
+  );
+}
+
 /** Intentionally readable configuration, never application/model credentials. */
 export function validateReadableVariables(input: unknown): Record<string, string> {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw Error("Invalid readable variables.");
@@ -6,11 +17,7 @@ export function validateReadableVariables(input: unknown): Record<string, string
   let bytes = 0;
   for (const [key, value] of entries) {
     if (
-      !/^[A-Z][A-Z0-9_]{0,127}$/.test(key) ||
-      /^(ARMADA_|BOAT_|MODAL_|ANTHROPIC_|OPENAI_|OPENCODE_|CLAUDE_|CODEX_|GH_|GITHUB_|MCP_|LD_|DYLD_)/i.test(key) ||
-      /^(PATH|HOME|XDG_DATA_HOME|XDG_CONFIG_HOME|XDG_CACHE_HOME|XDG_STATE_HOME|SHELL|ENV|BASH_ENV|NODE_OPTIONS|PYTHONPATH|SSL_CERT_FILE|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)$/.test(
-        key,
-      ) ||
+      !isApplicationVariableName(key) ||
       typeof value !== "string" ||
       value.includes("\0") ||
       /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value)

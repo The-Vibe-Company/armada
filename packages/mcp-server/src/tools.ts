@@ -6,6 +6,7 @@ import {
   launchFailureHelp,
   launchResponse,
   MACHINE_SIZES,
+  MAX_MCP_CONNECTIONS,
   parseMachineSizePolicy,
   providerRateLimitDetails,
   SANDBOX_PLACEMENT_PROVIDERS,
@@ -573,7 +574,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       model: z.string().optional(),
       reasoningEffort: z.string().optional(),
       modelAccount: z.object({ id: z.string().uuid(), version: z.number().int().positive() }).strict().optional(),
-      connections: z.array(z.string().uuid()).max(100).optional(),
+      connections: z.array(z.string().uuid()).max(MAX_MCP_CONNECTIONS).optional(),
       variables: z
         .array(
           z.object({ key: z.string(), variableId: z.string().uuid(), version: z.number().int().positive() }).strict(),
@@ -1217,7 +1218,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
           skills: z.array(z.string()).max(20).optional(),
           skipSkillDefaults: z.boolean().optional(),
           helperCapabilities: z.array(z.string().max(64)).max(8).optional(),
-          connections: z.array(z.string().uuid()).max(100).optional(),
+          connections: z.array(z.string().uuid()).max(MAX_MCP_CONNECTIONS).optional(),
           golden: z.string().min(1).describe("The golden's name, as in golden_list."),
           org: z
             .string()

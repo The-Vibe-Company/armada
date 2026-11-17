@@ -6,6 +6,7 @@ import {
   GoldenError,
   HARNESSES,
   type Harness,
+  MAX_MCP_CONNECTIONS,
   parseApplicationSecretBindings,
   parseReadableVariableBindings,
   resolveModelChoice,
@@ -114,8 +115,8 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   if (flag(args, "--no-connections") && connections !== undefined)
     throw new GoldenError("invalid_config", "Use --connections or --no-connections, not both.");
   const selected = connections?.split(",").map((id) => id.trim());
-  if (selected && (selected.length > 32 || selected.some((id) => !uuid.test(id))))
-    throw new GoldenError("invalid_config", "Connections require 1–32 comma-separated UUIDs.");
+  if (selected && (selected.length > MAX_MCP_CONNECTIONS || selected.some((id) => !uuid.test(id))))
+    throw new GoldenError("invalid_config", `Connections require 1–${MAX_MCP_CONNECTIONS} comma-separated UUIDs.`);
   const client = await createArmadaApiClient(auth, { preserveServerErrors: true });
   const hostId = selector ? await resolveHost(client, org, selector) : undefined;
   const body: DockerLaunchRequest = {
