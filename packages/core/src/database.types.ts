@@ -559,6 +559,7 @@ export type Database = {
           reported_retention_seconds: number | null;
           next_cleanup_at: string | null;
           disk_free_bytes: number | null;
+          stopped_sandbox_bytes: number | null;
         };
         Insert: {
           id: string;
@@ -586,6 +587,7 @@ export type Database = {
           reported_retention_seconds?: number | null;
           next_cleanup_at?: string | null;
           disk_free_bytes?: number | null;
+          stopped_sandbox_bytes?: number | null;
         };
         Update: {
           id?: string;
@@ -613,6 +615,7 @@ export type Database = {
           reported_retention_seconds?: number | null;
           next_cleanup_at?: string | null;
           disk_free_bytes?: number | null;
+          stopped_sandbox_bytes?: number | null;
         };
         Relationships: [
           {

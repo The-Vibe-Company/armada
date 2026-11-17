@@ -113,11 +113,17 @@ test("host add pending waits respect token expiry and five-minute limit without 
 // A draining host is valid list metadata, not a malformed answer, so it is shown with its state and the uninstall reason.
 test("host list accepts a draining host and prints the shared uninstall reason", async () => {
   const result = await capture(["host", "list"], async () =>
-    Response.json({ placement: true, hosts: [{ ...summary, state: "draining" }] }),
+    Response.json({
+      placement: true,
+      serverVersion: "2.49.6",
+      hosts: [{ ...summary, state: "draining", diskFreeBytes: 12_000_000_000, stoppedSandboxBytes: 4_000_000_000 }],
+    }),
   );
   expect(result.code).toBe(0);
   expect(result.out).toContain("draining");
   expect(result.out).toContain("draining for uninstall");
+  expect(result.out).toContain("stopped sandbox space: 4.00 GB");
+  expect(result.out).toContain("is outdated");
 });
 
 test("host list exposes safe metadata as text or JSON and revoke uses host UUID", async () => {
@@ -125,12 +131,22 @@ test("host list exposes safe metadata as text or JSON and revoke uses host UUID"
     const result = await capture(["host", "list", ...(json ? ["--json"] : [])], async (request) => {
       expect(new URL(request.url).pathname).toEndWith("/hosts/list");
       expect(await request.json()).toEqual({ org });
-      return Response.json({ placement: true, hosts: [summary] });
+      return Response.json({ placement: true, serverVersion: "2.49.6", hosts: [summary] });
     });
     expect(result.code).toBe(0);
     if (json) expect(JSON.parse(result.out).hosts[0]).toEqual(summary);
     else
-      for (const value of ["office", "online", "2.27.0", "3", summary.lastSeenAt]) expect(result.out).toContain(value);
+      for (const value of [
+        "office",
+        "online",
+        "2.27.0",
+        "3",
+        summary.lastSeenAt,
+        "is outdated",
+        "server 2.49.6",
+        "armada host add",
+      ])
+        expect(result.out).toContain(value);
   }
   const revoked = await capture(["host", "revoke", hostId], async (request) => {
     expect(new URL(request.url).pathname).toEndWith("/hosts/revoke");

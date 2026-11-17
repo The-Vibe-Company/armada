@@ -281,6 +281,13 @@ test("Docker disk observations preserve missing, unknown and zero without accept
   const parse = (fields: Record<string, unknown>) =>
     parseDockerHostList({ placement: true, hosts: [{ ...host(), ...fields }] });
   expect(parse({})?.hosts[0]?.diskFreeBytes).toBeUndefined();
+  expect(parseDockerHostList({ placement: true, serverVersion: "2.49.6", hosts: [host()] })?.serverVersion).toBe(
+    "2.49.6",
+  );
+  for (const value of [undefined, null, 0, 1e9])
+    expect(parse({ stoppedSandboxBytes: value })?.hosts[0]?.stoppedSandboxBytes).toBe(value);
+  for (const value of [-1, "100", 1.5])
+    expect(parse({ stoppedSandboxBytes: value })).toMatchObject({ hosts: [], skipped: 1 });
   for (const value of [null, 0, 10_000_000_000])
     expect(parse({ diskFreeBytes: value })?.hosts[0]?.diskFreeBytes).toBe(value);
   for (const value of [-1, 0.5, "free", Number.MAX_SAFE_INTEGER + 1])

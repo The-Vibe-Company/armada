@@ -427,6 +427,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           reported_retention_seconds: number | null;
           next_cleanup_at: Date | string | null;
           disk_free_bytes: number | string | null;
+          stopped_sandbox_bytes: number | string | null;
         }>(
           `select h.id,
             case when h.revoked_at is not null then 'revoked'
@@ -436,7 +437,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.disk_free_bytes,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
+            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.disk_free_bytes,h.stopped_sandbox_bytes,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -463,6 +464,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             }
           })(),
           diskFreeBytes: host.disk_free_bytes == null ? null : Number(host.disk_free_bytes),
+          stoppedSandboxBytes: host.stopped_sandbox_bytes == null ? null : Number(host.stopped_sandbox_bytes),
           retentionSeconds: host.reported_retention_seconds ?? null,
           retentionOverrideSeconds: host.retention_seconds ?? null,
           nextCleanupAt: host.next_cleanup_at == null ? null : new Date(host.next_cleanup_at).toISOString(),
@@ -955,6 +957,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       resources?: DockerHostResources,
       resourcePolicyVersion?: 1,
       diskFreeBytes?: number | null,
+      stoppedSandboxBytes?: number | null,
     ): Promise<Job | null> {
       // A revoked host or a removed owner can never authenticate again. Retire its
       // undispatchable work in its own committed transaction before the normal
@@ -999,8 +1002,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
             ? await reconcileHost(tx, hostToken, installationId, hint.bound_actor_id ?? undefined)
             : await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
         await tx.query(
-          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4 where id=$1`,
-          [host.id, version ?? null, resourcePolicyVersion ?? null, diskFreeBytes ?? null],
+          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4,stopped_sandbox_bytes=$5 where id=$1`,
+          [host.id, version ?? null, resourcePolicyVersion ?? null, diskFreeBytes ?? null, stoppedSandboxBytes ?? null],
         );
         if (resources) {
           await tx.query(
