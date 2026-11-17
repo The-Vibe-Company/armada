@@ -37,3 +37,22 @@ export function validateExecReadables(value: unknown, credentialFreeBuilder = fa
     throw Error("invalid_exec_readables");
   return variables;
 }
+
+/** Each harness runs under a private HOME (legacy ~/.claude.json, XDG caches, refreshed native auth).
+ * Git's global configuration must stay the exec one: launch writes the owner's identity and the GitHub
+ * credential helper there (core `gitSetupCommand` through exec, managed tools through the exec HOME).
+ * A private HOME alone would hide both, so `git push` prompts for a username (#2577). */
+export function privateHarnessHome(
+  root: string,
+  harness: "claude" | "codex" | "opencode",
+  env: Record<string, string>,
+  exec: ExecEnvironment,
+  fallbackHome = process.env.HOME ?? "/home/user",
+): string {
+  env.GIT_CONFIG_GLOBAL ??= exec.GIT_CONFIG_GLOBAL ?? `${exec.HOME ?? fallbackHome}/.gitconfig`;
+  env.HOME = `${root}/${harness}/home`;
+  env.XDG_CONFIG_HOME = `${env.HOME}/.config`;
+  env.XDG_CACHE_HOME = `${env.HOME}/.cache`;
+  env.XDG_DATA_HOME = `${env.HOME}/.local/share`;
+  return env.HOME;
+}

@@ -1,4 +1,5 @@
 import {
+  GITHUB_REFRESH_MODAL_NATIVE,
   GitHubHydrationError,
   goldenForSettings,
   goldenResponse,
@@ -930,6 +931,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       const { sandbox: found, provider } = await live(args.id, false, selected);
       if (found.ownerId !== caller.userId)
         throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
+      if (provider.id === "modal") throw new ToolError("unsupported", GITHUB_REFRESH_MODAL_NATIVE);
       if (provider.id !== "boat")
         throw new ToolError("unsupported", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
       const machine = await provider.get(found.providerSandboxId);

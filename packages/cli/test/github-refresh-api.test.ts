@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { GITHUB_REFRESH_MODAL_NATIVE } from "@armada/core";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -67,3 +68,31 @@ test.each([
     expect(JSON.parse(error).error).toEqual({ code: "conflict", message });
   },
 );
+
+test.each([
+  [GITHUB_REFRESH_MODAL_NATIVE, GITHUB_REFRESH_MODAL_NATIVE],
+  ["untrusted response", "GitHub refresh is not supported for this sandbox's provider or runtime."],
+])("GitHub refresh names an unsupported provider instead of a generic sandbox failure", async (message, expected) => {
+  let error = "";
+  const io = {
+    out: () => {},
+    err: (text: string) => {
+      error += text;
+    },
+  };
+  const code = await run(["github", "refresh", "sandbox-id", "--json"], io, {
+    auth: {
+      ...io,
+      env: { ARMADA_URL: "https://armada.test", ARMADA_TOKEN: "fixture-service-token" },
+      session: memorySessionStore(),
+      now: () => new Date(),
+      open: () => {},
+      fetch: async () => Response.json({ error: { code: "unsupported", message } }, { status: 400 }),
+    },
+  });
+  expect(code).toBe(1);
+  const failure = JSON.parse(error).error;
+  expect(failure.message).toStartWith(expected);
+  expect(failure.message).not.toContain("untrusted response");
+  expect(failure.message).not.toContain("Sandbox operation failed");
+});
