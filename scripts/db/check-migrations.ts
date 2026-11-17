@@ -40,16 +40,22 @@ function guardNow(): number {
   return time;
 }
 
-// A free version strictly between two neighbours, at or after now when the
-// interval allows it, never on a whole minute and never beyond the window.
-function freeVersion(after: number, before: number, now: number): string | undefined {
-  const lower = after + 1000;
-  const upper = Math.min(before - 1000, now + FUTURE_WINDOW_MS);
-  const start = Math.max(lower, Math.min(now, upper));
-  const next = new Date(start - (start % 1000));
-  if (next.getTime() < lower) next.setTime(next.getTime() + 1000);
-  if (next.getUTCSeconds() === 0) next.setTime(next.getTime() + (next.getTime() + 1000 <= upper ? 1000 : -1000));
-  if (next.getTime() >= lower && next.getTime() <= upper) return formatVersion(next);
+// `count` ascending free versions strictly between two neighbours, never on a
+// whole minute and never beyond the window. They start at now when the
+// interval leaves room for all of them after it; otherwise they pack against
+// the upper neighbour. Undefined when the interval cannot hold them all.
+function freeVersions(after: number, before: number, now: number, count: number): string[] | undefined {
+  const lower = Math.ceil((after + 1) / 1000) * 1000;
+  const upper = Math.floor(Math.min(before - 1, now + FUTURE_WINDOW_MS) / 1000) * 1000;
+  const valid = (time: number) => new Date(time).getUTCSeconds() !== 0;
+  const forward: number[] = [];
+  for (let time = Math.max(lower, Math.ceil(now / 1000) * 1000); time <= upper && forward.length < count; time += 1000)
+    if (valid(time)) forward.push(time);
+  if (forward.length === count) return forward.map((time) => formatVersion(new Date(time)));
+  const backward: number[] = [];
+  for (let time = upper; time >= lower && backward.length < count; time -= 1000)
+    if (valid(time)) backward.unshift(time);
+  if (backward.length === count) return backward.map((time) => formatVersion(new Date(time)));
 }
 
 try {
@@ -85,36 +91,45 @@ try {
     }
   }
   if (renames.size) {
-    // Each rename keeps its file's place among the unapplied migrations: it
-    // lands above the base and the preceding kept or renamed migration, and
-    // below the next kept one, so dependency order survives the rename.
+    // Renames keep their files' place among the unapplied migrations. Each run
+    // of consecutive rejected files is allocated as one group, above the base
+    // and the preceding kept migration and below the next kept one, so
+    // applying every suggestion preserves dependency order. A group that does
+    // not fit gets no partial assignment.
     const additions = [...head].filter(([path]) => !baseline.has(path)).sort(([, a], [, b]) => a.localeCompare(b));
     const floor = latest ? (parseVersion(latest) ?? -Infinity) : -Infinity;
     let previous = floor;
     let previousName = latest ? `${latest} on ${base}` : undefined;
-    for (const [index, [path, version]] of additions.entries()) {
-      if (!renames.has(path)) {
-        const time = parseVersion(version) as number;
-        if (time > previous) [previous, previousName] = [time, path];
-        continue;
-      }
-      const next = additions
-        .slice(index + 1)
-        .find(([other, v]) => !renames.has(other) && (parseVersion(v) as number) > floor);
-      const suggestion = freeVersion(previous, next ? (parseVersion(next[1]) as number) : Infinity, now);
-      if (suggestion) {
-        errors.push(
-          `Use migration version ${suggestion} for ${path}. Preserve unapplied migration dependency order and rerun the guard.`,
-        );
-        [previous, previousName] = [parseVersion(suggestion) as number, `${suggestion} (suggested for ${path})`];
+    let group: string[] = [];
+    const allocate = (next: [string, number] | undefined) => {
+      if (!group.length) return;
+      const suggestions = freeVersions(previous, next ? next[1] : Infinity, now, group.length);
+      if (suggestions) {
+        for (const [index, path] of group.entries())
+          errors.push(
+            `Use migration version ${suggestions[index]} for ${path}. Preserve unapplied migration dependency order and rerun the guard.`,
+          );
       } else {
         errors.push(
           next || previous > floor
-            ? `No free version for ${path} within 24 hours of the current UTC time between ${previousName ?? "the base"} and ${next?.[0] ?? "the window end"}. Resequence those unapplied migrations.`
+            ? `No free version for ${group.join(", ")} within 24 hours of the current UTC time between ${previousName ?? "the base"} and ${next?.[0] ?? "the window end"}. Resequence those unapplied migrations.`
             : `No version within 24 hours of the current UTC time is above ${latest ?? "the base"}; a base migration is too far ahead.`,
         );
       }
+      group = [];
+    };
+    for (const [path, version] of additions) {
+      if (renames.has(path)) {
+        group.push(path);
+        continue;
+      }
+      // A kept file at or below the base already fails; it bounds nothing.
+      const time = parseVersion(version) as number;
+      if (time <= floor) continue;
+      allocate([path, time]);
+      if (time > previous) [previous, previousName] = [time, path];
     }
+    allocate(undefined);
   }
   if (errors.length) throw new Error(errors.join("\n"));
   console.log(`Migration versions OK (${head.size} files; base ${base}, latest ${latest ?? "none"})`);
