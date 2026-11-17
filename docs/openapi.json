@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Armada shared control API",
-    "version": "2.51.0",
+    "version": "2.52.0",
     "description": "Generated integration REST contracts. Includes SDK operations and shared-tool routes. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec; this description does not assert provider availability."
   },
   "paths": {
@@ -904,6 +904,92 @@
                       "type": "boolean",
                       "description": "True when known logical time left is at most five minutes, including expired resources."
                     },
+                    "launch": {
+                      "description": "Launch time per stage for the latest launch or resume; null before any stage is recorded.",
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activation": {
+                              "type": "string",
+                              "description": "\"1\" is the launch; a higher activation is a resume."
+                            },
+                            "stages": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "stage": {
+                                    "type": "string",
+                                    "enum": [
+                                      "accepted",
+                                      "provider_claimed",
+                                      "machine_started",
+                                      "checkout_done",
+                                      "bootstrap_started",
+                                      "enrolled",
+                                      "harness_ready",
+                                      "first_token"
+                                    ]
+                                  },
+                                  "at": {
+                                    "type": "string"
+                                  },
+                                  "ms": {
+                                    "type": ["number", "null"]
+                                  }
+                                },
+                                "required": ["stage", "at", "ms"],
+                                "additionalProperties": false
+                              }
+                            },
+                            "ready": {
+                              "type": "boolean",
+                              "description": "Harness ready was recorded."
+                            },
+                            "totalMs": {
+                              "description": "First stage to harness ready (or the last stage so far); first_token waits for a prompt and is excluded.",
+                              "type": ["number", "null"]
+                            },
+                            "slowest": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "stage": {
+                                      "type": "string",
+                                      "enum": [
+                                        "accepted",
+                                        "provider_claimed",
+                                        "machine_started",
+                                        "checkout_done",
+                                        "bootstrap_started",
+                                        "enrolled",
+                                        "harness_ready",
+                                        "first_token"
+                                      ]
+                                    },
+                                    "ms": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": ["stage", "ms"],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": ["activation", "stages", "ready", "totalMs", "slowest"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "providerExpiresAt": {
                       "description": "Provider physical deadline, when observed; distinct from Armada logical expiry.",
                       "type": ["string", "null"]
@@ -1462,6 +1548,92 @@
                     "expiringSoon": {
                       "type": "boolean",
                       "description": "True when known logical time left is at most five minutes, including expired resources."
+                    },
+                    "launch": {
+                      "description": "Launch time per stage for the latest launch or resume; null before any stage is recorded.",
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activation": {
+                              "type": "string",
+                              "description": "\"1\" is the launch; a higher activation is a resume."
+                            },
+                            "stages": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "stage": {
+                                    "type": "string",
+                                    "enum": [
+                                      "accepted",
+                                      "provider_claimed",
+                                      "machine_started",
+                                      "checkout_done",
+                                      "bootstrap_started",
+                                      "enrolled",
+                                      "harness_ready",
+                                      "first_token"
+                                    ]
+                                  },
+                                  "at": {
+                                    "type": "string"
+                                  },
+                                  "ms": {
+                                    "type": ["number", "null"]
+                                  }
+                                },
+                                "required": ["stage", "at", "ms"],
+                                "additionalProperties": false
+                              }
+                            },
+                            "ready": {
+                              "type": "boolean",
+                              "description": "Harness ready was recorded."
+                            },
+                            "totalMs": {
+                              "description": "First stage to harness ready (or the last stage so far); first_token waits for a prompt and is excluded.",
+                              "type": ["number", "null"]
+                            },
+                            "slowest": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "stage": {
+                                      "type": "string",
+                                      "enum": [
+                                        "accepted",
+                                        "provider_claimed",
+                                        "machine_started",
+                                        "checkout_done",
+                                        "bootstrap_started",
+                                        "enrolled",
+                                        "harness_ready",
+                                        "first_token"
+                                      ]
+                                    },
+                                    "ms": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": ["stage", "ms"],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": ["activation", "stages", "ready", "totalMs", "slowest"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "providerExpiresAt": {
                       "description": "Provider physical deadline, when observed; distinct from Armada logical expiry.",
@@ -2965,6 +3137,92 @@
                     "expiringSoon": {
                       "type": "boolean",
                       "description": "True when known logical time left is at most five minutes, including expired resources."
+                    },
+                    "launch": {
+                      "description": "Launch time per stage for the latest launch or resume; null before any stage is recorded.",
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "activation": {
+                              "type": "string",
+                              "description": "\"1\" is the launch; a higher activation is a resume."
+                            },
+                            "stages": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "stage": {
+                                    "type": "string",
+                                    "enum": [
+                                      "accepted",
+                                      "provider_claimed",
+                                      "machine_started",
+                                      "checkout_done",
+                                      "bootstrap_started",
+                                      "enrolled",
+                                      "harness_ready",
+                                      "first_token"
+                                    ]
+                                  },
+                                  "at": {
+                                    "type": "string"
+                                  },
+                                  "ms": {
+                                    "type": ["number", "null"]
+                                  }
+                                },
+                                "required": ["stage", "at", "ms"],
+                                "additionalProperties": false
+                              }
+                            },
+                            "ready": {
+                              "type": "boolean",
+                              "description": "Harness ready was recorded."
+                            },
+                            "totalMs": {
+                              "description": "First stage to harness ready (or the last stage so far); first_token waits for a prompt and is excluded.",
+                              "type": ["number", "null"]
+                            },
+                            "slowest": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "stage": {
+                                      "type": "string",
+                                      "enum": [
+                                        "accepted",
+                                        "provider_claimed",
+                                        "machine_started",
+                                        "checkout_done",
+                                        "bootstrap_started",
+                                        "enrolled",
+                                        "harness_ready",
+                                        "first_token"
+                                      ]
+                                    },
+                                    "ms": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": ["stage", "ms"],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": ["activation", "stages", "ready", "totalMs", "slowest"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "providerExpiresAt": {
                       "description": "Provider physical deadline, when observed; distinct from Armada logical expiry.",
