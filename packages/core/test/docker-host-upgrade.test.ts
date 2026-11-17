@@ -11,5 +11,10 @@ test("host upgrade guidance compares daemon against server and keeps unknown ver
   for (const version of ["2.49.6", "2.50.0", "3.0.0"]) {
     expect(dockerHostUpgradeMessage(version, "2.49.6")).toBeNull();
   }
+  for (const server of ["2.50.0-next.1", "2.49.6+build.7"]) {
+    expect(dockerHostUpgradeMessage("2.46.0", server)).toContain(`server ${server}`);
+    expect(dockerHostUpgradeMessage("2.50.0", server)).toBeNull();
+  }
   expect(dockerHostUpgradeMessage("2.46.0", undefined)).toBeNull();
+  expect(dockerHostUpgradeMessage("2.46.0", "not-a-version")).toBeNull();
 });

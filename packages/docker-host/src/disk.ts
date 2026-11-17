@@ -48,9 +48,15 @@ export function withDiskFloor(executor: Executor, sample: () => Promise<number |
   };
 }
 
+const STOPPED_INSPECT_CHUNK = 50;
+const STOPPED_INSPECT_FORMAT =
+  '{{json .Config.Labels}}\t{{json .State.Status}}\t{{.SizeRw}}\t{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}},{{end}}{{end}}';
+
 /** Read-only, approximate inventory. Only volumes attached to stopped containers
  * with both installation labels are counted; shared volumes are counted once.
- * Docker's human-readable volume sizes are rounded, so this is not reclaimable space. */
+ * Docker's human-readable volume sizes are rounded, so this is not reclaimable space.
+ * Inspect only the fields needed, in bounded chunks: full inspect JSON for a large
+ * stopped inventory can exceed the CLI's 1 MiB output bound and its 3-second timeout. */
 export async function stoppedSandboxBytes(
   cli: DockerMachineCli,
   state: { installationId: string; hostId: string },
@@ -79,26 +85,43 @@ export async function stoppedSandboxBytes(
     const ids = listing.stdout.trim().split(/\s+/).filter(Boolean);
     if (!ids.length) return 0;
     if (ids.length > 1000 || ids.some((id) => !/^[a-f0-9]{12,64}$/.test(id))) return null;
-    const inspection = await cli.run(["container", "inspect", "--size", ...ids], undefined, { timeoutMs: 3000 });
-    if (inspection.exitCode !== 0) return null;
-    const containers = JSON.parse(inspection.stdout);
-    if (!Array.isArray(containers) || containers.length !== ids.length) return null;
     let total = 0;
     const volumes = new Set<string>();
-    for (const item of containers) {
-      const labels = item.Config?.Labels;
-      if (
-        labels?.["dev.armada.machine.installation"] !== state.installationId ||
-        labels?.["dev.armada.machine.host"] !== state.hostId ||
-        !["exited", "dead"].includes(item.State?.Status) ||
-        !Number.isSafeInteger(item.SizeRw) ||
-        item.SizeRw < 0 ||
-        !Array.isArray(item.Mounts)
-      )
-        return null;
-      total += item.SizeRw;
-      for (const mount of item.Mounts)
-        if (mount.Type === "volume" && typeof mount.Name === "string") volumes.add(mount.Name);
+    for (let offset = 0; offset < ids.length; offset += STOPPED_INSPECT_CHUNK) {
+      const chunk = ids.slice(offset, offset + STOPPED_INSPECT_CHUNK);
+      const inspection = await cli.run(
+        ["container", "inspect", "--size", "--format", STOPPED_INSPECT_FORMAT, ...chunk],
+        undefined,
+        { timeoutMs: 3000 },
+      );
+      if (inspection.exitCode !== 0) return null;
+      const lines = inspection.stdout.trim().split("\n").filter(Boolean);
+      if (lines.length !== chunk.length) return null;
+      for (const line of lines) {
+        const [rawLabels, rawStatus, rawSize, rawVolumes = ""] = line.split("\t");
+        let labels: unknown;
+        let status: unknown;
+        try {
+          labels = JSON.parse(rawLabels ?? "");
+          status = JSON.parse(rawStatus ?? "");
+        } catch {
+          return null;
+        }
+        const size = Number(rawSize);
+        if (
+          !labels ||
+          typeof labels !== "object" ||
+          Array.isArray(labels) ||
+          (labels as Record<string, unknown>)["dev.armada.machine.installation"] !== state.installationId ||
+          (labels as Record<string, unknown>)["dev.armada.machine.host"] !== state.hostId ||
+          !["exited", "dead"].includes(String(status)) ||
+          !Number.isSafeInteger(size) ||
+          size < 0
+        )
+          return null;
+        total += size;
+        for (const name of rawVolumes.split(",").filter(Boolean)) volumes.add(name);
+      }
     }
     if (volumes.size) {
       const usage = await cli.run(

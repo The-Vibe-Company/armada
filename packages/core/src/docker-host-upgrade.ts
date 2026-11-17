@@ -1,10 +1,13 @@
-/** Compare published numeric versions; a newer daemon is not an upgrade candidate. */
+/** Compare the numeric core of published versions; prerelease/build suffixes are metadata,
+ * not a reason to hide upgrade guidance on staging, canary or next deployments. */
 export function dockerHostUpgradeMessage(
   version: string | null | undefined,
   serverVersion: string | undefined,
 ): string | null {
-  const parse = (value: string | null | undefined) =>
-    value && /^\d+\.\d+\.\d+$/.test(value) ? value.split(".").map(Number) : null;
+  const parse = (value: string | null | undefined) => {
+    const match = value && /^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.+-]+)?$/.exec(value);
+    return match ? match.slice(1, 4).map(Number) : null;
+  };
   const host = parse(version);
   const server = parse(serverVersion);
   if (!server) return null;

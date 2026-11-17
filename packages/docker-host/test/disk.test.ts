@@ -52,27 +52,47 @@ test("stopped usage counts owned writable layers and each attached volume once, 
   const cli = {
     async run(args: readonly string[]) {
       if (args[1] === "ls") return { exitCode: 0, stdout: "abcdef123456\nabcdef123457" };
-      if (args[1] === "inspect")
-        return {
-          exitCode: 0,
-          stdout: JSON.stringify(
-            [1, 2].map(() => ({
-              Config: {
-                Labels: {
-                  "dev.armada.machine.installation": wrongOwner ? "other" : state.installationId,
-                  "dev.armada.machine.host": state.hostId,
-                },
-              },
-              State: { Status: "exited" },
-              SizeRw: 100,
-              Mounts: [{ Type: "volume", Name: "home" }],
-            })),
-          ),
-        };
+      if (args[1] === "inspect") {
+        const labels = JSON.stringify({
+          "dev.armada.machine.installation": wrongOwner ? "other" : state.installationId,
+          "dev.armada.machine.host": state.hostId,
+        });
+        return { exitCode: 0, stdout: `${labels}\t"exited"\t100\thome,\n${labels}\t"exited"\t100\thome,\n` };
+      }
       return { exitCode: 0, stdout: "unrelated|9GB\nhome|1.2GB\n" };
     },
   };
   expect(await stoppedSandboxBytes(cli, state)).toBe(1_200_000_200);
   wrongOwner = true;
   expect(await stoppedSandboxBytes(cli, state)).toBeNull();
+});
+
+test("stopped usage inspects a large inventory in bounded compact chunks", async () => {
+  const state = { installationId: "installation", hostId: "host" };
+  const ids = Array.from({ length: 1000 }, (_, index) => index.toString(16).padStart(12, "0"));
+  const labels = JSON.stringify({
+    "dev.armada.machine.installation": state.installationId,
+    "dev.armada.machine.host": state.hostId,
+  });
+  const chunks: number[] = [];
+  let inspectedBytes = 0;
+  const cli = {
+    async run(args: readonly string[]) {
+      if (args[1] === "ls") return { exitCode: 0, stdout: ids.join("\n") };
+      if (args[1] === "inspect") {
+        const format = args[args.indexOf("--format") + 1];
+        expect(format).toContain("{{json .Config.Labels}}");
+        expect(format).not.toContain("{{json .}}");
+        const chunk = args.slice(args.indexOf("--format") + 2);
+        chunks.push(chunk.length);
+        const stdout = chunk.map(() => `${labels}\t"exited"\t100\thome,\n`).join("");
+        inspectedBytes += Buffer.byteLength(stdout);
+        return { exitCode: 0, stdout };
+      }
+      return { exitCode: 0, stdout: "home|1GB\n" };
+    },
+  };
+  expect(await stoppedSandboxBytes(cli, state)).toBe(1_000_100_000);
+  expect(chunks).toEqual(Array(20).fill(50));
+  expect(inspectedBytes).toBeLessThan(1024 * 1024);
 });
