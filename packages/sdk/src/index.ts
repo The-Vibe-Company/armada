@@ -343,13 +343,14 @@ export class Armada {
         // No automatic transport replay: acceptance may already have happened.
         throw new ArmadaError("transport_error", 0, undefined, !readOnly);
       }
-      let text: string;
+      let text = "";
       try {
         text = await response.text();
       } catch {
-        // The body stream failed or hit the deadline after headers: a transport failure,
-        // not a malformed payload. A mutation may already have been accepted.
-        throw new ArmadaError("transport_error", 0, undefined, !readOnly);
+        // A success body that fails or hits the deadline after headers is a transport failure,
+        // not a malformed payload; a mutation may already have been accepted. A failure status
+        // keeps its HTTP status and Retry-After, classified below without the body.
+        if (response.ok) throw new ArmadaError("transport_error", 0, undefined, !readOnly);
       }
       let value: unknown = null;
       try {

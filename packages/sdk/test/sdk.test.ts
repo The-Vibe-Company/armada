@@ -323,3 +323,22 @@ test("a body that fails after the headers is a transport error, while a malforme
     outcomeUnknown: false,
   });
 });
+
+test("a failure status whose body breaks keeps its HTTP status and Retry-After", async () => {
+  const client = new Armada({
+    token: "service_placeholder",
+    fetch: (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("{"));
+            controller.error(new TypeError("connection reset"));
+          },
+        }),
+        { status: 503, headers: { "retry-after": "7" } },
+      )) as import("../src/index.ts").Fetch,
+  });
+  const error = await client.stop({ id: "sandbox_placeholder" }).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(ArmadaError);
+  expect(error).toMatchObject({ code: "unknown_response", status: 503, outcomeUnknown: true, retryAfterSeconds: 7 });
+});
