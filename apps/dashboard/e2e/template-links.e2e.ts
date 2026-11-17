@@ -12,7 +12,8 @@ for (const phone of [false, true]) {
     await page.setViewportSize({ width: phone ? 390 : 1280, height: phone ? 844 : 900 });
     await signIn(page, "alice@example.com", "/templates?item=00000000-0000-4000-8000-000000000090");
     const panel = page.locator('[data-template-panel="Backend with docs"]');
-    const environment = panel.getByRole("link", { name: "shared-golden on Boat", exact: true });
+    // The snapshot link names its provider placement; the URL below is what it must point at.
+    const environment = panel.getByRole("link", { name: "shared-golden on Boat cloud", exact: true });
     const tool = panel.getByRole("link", { name: "Acme Docs", exact: true });
     const variable = panel.getByRole("link", { name: "APP_REGION", exact: true });
     await expect(tool).toHaveAttribute("href", "/tools?item=00000000-0000-4000-8000-000000000060");

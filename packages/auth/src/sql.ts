@@ -82,6 +82,7 @@ export function createSqlAuthStore(db: SqlQuery): AuthStore {
         `select t.id, t.label, t.created_at, t.revoked_at, o.name as org_name
          from public.service_tokens t
          join public.orgs o on o.id = t.org_id
+         join public.members m on m.user_id = t.user_id and m.org_id = t.org_id
          where t.user_id = $1
          order by t.created_at desc, t.id`,
         [userId],

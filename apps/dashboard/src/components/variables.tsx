@@ -162,16 +162,23 @@ function AddVaultForm({
   isAdmin: boolean;
   onDone: (message: string) => void;
 }) {
-  const [state, formAction] = useMutationState(addVaultItem);
+  // Confirm from inside the action, not from an effect on its state: the refresh that follows a write remounts
+  // this page, so a post-render effect would be discarded before it could show the toast.
+  const run = useCallback(
+    async (previous: ActionResult | null, data: FormData) => {
+      const next = await addVaultItem(previous, data);
+      if (next.ok) onDone(next.message);
+      return next;
+    },
+    [onDone],
+  );
+  const [state, formAction] = useMutationState(run);
   const formRef = usePreservedActionForm();
   const [kind, setKind] = useState<VaultKind>("variable");
   const [scope, setScope] = useState<VaultScope>("personal");
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const id = useId();
-  useEffect(() => {
-    if (state?.ok) onDone(state.message);
-  }, [state, onDone]);
 
   return (
     <form ref={formRef} action={formAction} className="space-y-4" data-add-vault-form>
@@ -362,7 +369,15 @@ export function VaultPanel({
   const close = useCallback((next: boolean) => {
     if (!next) setDialog(null);
   }, []);
-  const onResult = useCallback((next: ActionResult) => setResult(next), []);
+  const onResult = useCallback(
+    (next: ActionResult) => {
+      setResult(next);
+      // The refresh that follows a write can remount this panel (in the table or the detail dialog), dropping its
+      // ResultLine; a toast keeps the confirmation visible either way.
+      if (next.ok) toast({ tone: "success", title: next.message });
+    },
+    [toast],
+  );
   // The panel goes away with the item, so a deletion is confirmed where it stays visible.
   const onDeleted = useCallback(
     (next: ActionResult) => {
@@ -396,7 +411,9 @@ export function VaultPanel({
             <dt className="text-muted-foreground">Who can change it</dt>
             <dd>{item.scope === "personal" ? "Only you" : `${orgName}'s admins`}</dd>
             <dt className="text-muted-foreground">Version</dt>
-            <dd className="tabular-nums">{item.version}</dd>
+            <dd className="tabular-nums" data-vault-version={item.version}>
+              {item.version}
+            </dd>
             <dt className="text-muted-foreground">Created</dt>
             <dd>
               <CreatedAt iso={item.createdAt} now={now} />
@@ -463,7 +480,7 @@ export function VaultPanel({
               <KeyRoundIcon /> Replace value
             </Button>
           )}
-          {active && !inline && (
+          {active && (
             <Button variant="destructive-outline" size="sm" onClick={open("revoke")}>
               Revoke
             </Button>

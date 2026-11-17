@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
 import { migratedDatabase } from "../../core/test/support/database.ts";
+import { createServiceToken } from "../src/service-tokens.ts";
 import { createSqlAuthStore, type SqlQuery } from "../src/sql.ts";
 import { ORG_ID, proveAuth, STRANGER_ID, USER_ID } from "./prove.ts";
 
@@ -44,6 +45,23 @@ describe("sql store", () => {
       name: "Cursor",
       redirectUris: ["cursor://anysphere.cursor-mcp/oauth/callback"],
     });
+  });
+
+  test("a removed member no longer sees their organization's service token", async () => {
+    const db = database();
+    await db.query("insert into auth.users (id) values ($1)", [USER_ID]);
+    await db.query("insert into orgs (id, name) values ($1, 'Example')", [ORG_ID]);
+    await db.query("insert into members (org_id, user_id, role) values ($1, $2, 'member')", [ORG_ID, USER_ID]);
+    const store = createSqlAuthStore(serviceQuery(db));
+    const created = await createServiceToken(store, {
+      userId: USER_ID,
+      orgName: "Example",
+      now: new Date("2026-11-08T00:00:00.000Z"),
+    });
+    expect(await store.listServiceTokens(USER_ID)).toMatchObject([{ id: created.id, orgName: "Example" }]);
+
+    await db.query("delete from members where org_id = $1 and user_id = $2", [ORG_ID, USER_ID]);
+    expect(await store.listServiceTokens(USER_ID)).toEqual([]);
   });
 });
 
