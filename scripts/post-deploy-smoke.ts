@@ -148,6 +148,26 @@ export function createLaunchTracker() {
   };
 }
 
+/**
+ * Runs actions that share a key one after another, in call order; different keys stay concurrent.
+ * A failed action releases the key like a successful one.
+ */
+export function createKeyedQueue() {
+  const tails = new Map<string, Promise<unknown>>();
+  return <T>(key: string, action: () => Promise<T>): Promise<T> => {
+    const result = (tails.get(key) ?? Promise.resolve()).then(action);
+    const tail = result.then(
+      () => {},
+      () => {},
+    );
+    tails.set(key, tail);
+    void tail.then(() => {
+      if (tails.get(key) === tail) tails.delete(key);
+    });
+    return result;
+  };
+}
+
 /** Parse the tar in memory; validate only its selected Git pack in an isolated disposable object store. */
 async function verifyRecovery(archive: string, repo: string, commit: string) {
   if (archive.length > 3 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(archive)) fail("preservation_failed");
@@ -570,11 +590,20 @@ async function runPostDeploySmoke(
   if (expiry && args.length === 1) return settled(expiryUnits);
   // A case's clean lifecycle and its preservation (dirty) run stay ordered in one lane:
   // they share the case's step names, and the expiry lane bounds the run anyway.
+  // A scoped probe diffs the owner's inventory for its golden from before launch to after
+  // cleanup. A scoped child is registered under its parent's owner and golden but is not an
+  // owner API launch, so the launch tracker cannot attribute another case's child: probe
+  // windows that share an org and golden run one after another. Other lanes stay concurrent.
+  const scopedWindow = createKeyedQueue();
   const lifecycleUnits = cases.map(async (item, index) => {
     const lane = unit(index, "lifecycle");
+    const scopedPair = scopedAccess && item.harness === "codex";
+    const inventory = `${item.org.toLowerCase()}\n${item.goldenId?.toLowerCase()}`;
     let passed = true;
-    for (const dirty of preservation ? [false, true] : [false])
-      if (!(await lifecycleUnit(index, item, dirty, lane))) passed = false;
+    for (const dirty of preservation ? [false, true] : [false]) {
+      const run = () => lifecycleUnit(index, item, dirty, lane);
+      if (!(await (scopedPair ? scopedWindow(inventory, run) : run()))) passed = false;
+    }
     return passed;
   });
   return (await settled([...templateUnits, ...expiryUnits, ...lifecycleUnits])) && vaultPassed;

@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLaunchTracker, postDeploySmoke } from "./post-deploy-smoke.ts";
+import { createKeyedQueue, createLaunchTracker, postDeploySmoke } from "./post-deploy-smoke.ts";
 
 const boatNotice = "boat: not part of the release gate";
 
@@ -1640,6 +1640,122 @@ test("independent sandbox lanes run concurrently: the expiry wait overlaps every
     expect(line.lane === "expiry").toBe(String(line.step).startsWith("expiry_"));
   }
   expect(fake.lines.join("")).not.toContain("secret");
+});
+
+test("the keyed queue runs same-key actions in order, keeps other keys concurrent and survives a failure", async () => {
+  const queue = createKeyedQueue();
+  const events: string[] = [];
+  let release: () => void = () => {};
+  const first = queue("a", async () => {
+    events.push("a1 start");
+    await new Promise<void>((resolve) => (release = resolve));
+    events.push("a1 end");
+    throw new Error("a1 failed");
+  });
+  const second = queue("a", async () => {
+    events.push("a2");
+    return 2;
+  });
+  const other = queue("b", async () => {
+    events.push("b");
+    return "b";
+  });
+  expect(await other).toBe("b");
+  expect(events).toEqual(["a1 start", "b"]);
+  release();
+  await expect(first).rejects.toThrow("a1 failed");
+  expect(await second).toBe(2);
+  expect(events).toEqual(["a1 start", "b", "a1 end", "a2"]);
+});
+
+test("scoped probes sharing an org and golden never see each other's child; distinct goldens stay concurrent", async () => {
+  const org = "30000000-0000-4000-8000-000000000001";
+  const run = async (goldens: string[]) => {
+    // One inventory per golden. A launch-access parent registers a scoped child the owner API never launched.
+    const inventories = new Map<string, string[]>();
+    const children = new Map<string, string>();
+    const stopped = new Set<string>();
+    const fake = fixture((call) => {
+      // Lists name the golden by id, launches by slug; the server matches ids case-insensitively.
+      const golden = String(call.body.golden ?? "")
+        .replace(/^smoke-/, "")
+        .toLowerCase();
+      if (call.path === "sandbox/list" && call.body.golden)
+        return json({
+          sandboxes: (inventories.get(golden) ?? []).map((id) => ({ id })),
+          page: 1,
+          hasMore: false,
+          nextPage: null,
+        });
+      if (call.path === "sandbox/launch-access-v1" || call.path === "sandbox/launch") {
+        const id = crypto.randomUUID();
+        const added: string[] = [id];
+        if (call.path === "sandbox/launch-access-v1") {
+          children.set(id, crypto.randomUUID());
+          added.push(children.get(id)!);
+        }
+        inventories.set(golden, [...(inventories.get(golden) ?? []), ...added]);
+        // No golden receipt: the launch fails validation and the case goes straight to cleanup.
+        return json({ sandbox: { id, provider: "modal" } });
+      }
+      if (call.path === "sandbox/stop") {
+        stopped.add(String(call.body.id));
+        return json({ status: "stopping" });
+      }
+      if (call.path === "sandbox/status") {
+        const id = String(call.body.id);
+        const state = stopped.has(id) ? "stopped" : "active";
+        return json({ id, status: stopped.has(id) ? "stopped" : "ready", providerState: state });
+      }
+      if (call.path === "logs/read") return json({ events: [], cursor: null, hasMore: false });
+      return undefined;
+    });
+    const cases = goldens.map((golden, index) => ({
+      ...selected,
+      org: index ? org.toUpperCase() : org,
+      golden: `smoke-${golden}`,
+      goldenId: golden,
+      modelAccountId: `40000000-0000-4000-8000-00000000000${index}`,
+    }));
+    const staging = "https://armada-mcp-staging.up.railway.app";
+    await postDeploySmoke(
+      { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify(cases) },
+      ["--work-preservation", "--scoped-access"],
+      { ...fake.io, fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init) },
+    );
+    return { fake, children, lines: fake.lines.filter((line) => line !== boatNotice).map((l) => JSON.parse(l)) };
+  };
+  const golden = "50000000-0000-4000-8000-000000000001";
+  const shared = await run([golden, golden.toUpperCase()]);
+  const summaries = shared.lines.filter((line) => line.step === "scoped_cleanup_summary");
+  expect(summaries).toHaveLength(4);
+  for (const index of [0, 1]) {
+    // Only the case's own unclaimed child is unattributed: a genuinely unknown ID still fails.
+    const enabled = summaries.find((line) => line.case === index && line.mode === "enabled");
+    expect(enabled).toMatchObject({ pass: false, unattributedSandboxIds: [shared.children.get(enabled.parentId)] });
+    expect(summaries.find((line) => line.case === index && line.mode === "no_option")).toMatchObject({
+      unattributedSandboxIds: [],
+    });
+  }
+  // Probe windows on the same inventory never overlap: each snapshot pair is contiguous.
+  const windows = shared.lines.filter(
+    (line) => line.step === "scoped_snapshot" || line.step === "scoped_cleanup_summary",
+  );
+  for (let at = 0; at < windows.length; at += 2) {
+    expect(windows[at].step).toBe("scoped_snapshot");
+    expect(windows[at + 1]).toMatchObject({ step: "scoped_cleanup_summary", case: windows[at].case });
+  }
+
+  // Distinct goldens are independent inventories: both probes open before either closes.
+  const independent = await run([golden, "50000000-0000-4000-8000-000000000002"]);
+  const order = independent.lines.filter(
+    (line) => line.step === "scoped_snapshot" || line.step === "scoped_cleanup_summary",
+  );
+  expect(order.slice(0, 2).map((line) => [line.step, line.case])).toEqual([
+    ["scoped_snapshot", 0],
+    ["scoped_snapshot", 1],
+  ]);
+  expect(independent.fake.lines.join("")).not.toContain("secret");
 });
 
 test("vault/template failures remain failures without bypassing the combined lifecycle checks", async () => {

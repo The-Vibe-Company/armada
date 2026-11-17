@@ -185,7 +185,11 @@ shortens another lane's deadline. The run waits for every lane, including its
 cleanup, before the journal cleanup waves and passes only if every lane passes.
 The scoped-access snapshot diff ignores sandboxes this same run launched through
 the owner API in other lanes; any other new sandbox remains unattributed and
-fails the probe.
+fails the probe. A scoped child is registered under its parent's owner and
+golden without an owner API launch, so the run cannot attribute another case's
+child: scoped Codex lifecycle runs that share an org and golden run one after
+another, from the baseline snapshot through scoped cleanup. Expiry, templates
+and scoped runs on other goldens stay concurrent.
 
 ### Pair prerequisites
 
