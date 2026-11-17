@@ -105,7 +105,114 @@ interface SmokeIo {
   recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
 }
 const POLLS = 120;
+/** A template launch answers only once the whole launch finished, but its sandbox is listed before. */
+const TEMPLATE_LAUNCH_TIMEOUT_MS = 600_000;
+/**
+ * Longest a scoped probe waits for in-flight sibling launches to explain an otherwise unattributed
+ * row: the longest launch request timeout, so a slow but valid sibling launch is never misreported.
+ */
+const SIBLING_ATTRIBUTION_WAIT_MS = TEMPLATE_LAUNCH_TIMEOUT_MS;
+const LAUNCH_PATH = /^(?:sandbox\/launch(?:-access-v1)?|templates\/launch)$/;
+type Lane = "templates" | "expiry" | "lifecycle";
+
+/** Wait for every concurrent unit, so all cleanups finish before the journal sweep; a thrown unit still throws. */
+async function settled(units: Promise<boolean>[]): Promise<boolean> {
+  const results = await Promise.allSettled(units);
+  const thrown = results.find((result) => result.status === "rejected");
+  if (thrown) throw thrown.reason;
+  return results.every((result) => result.status === "fulfilled" && result.value);
+}
 const PROMPT = "Reply with exactly SMOKE_OK and do not use tools.";
+
+/**
+ * Sandboxes one smoke run launched through the owner API. Concurrent lanes share a golden,
+ * so the scoped probe's snapshot diff must tell these siblings apart from unaccounted
+ * sandboxes. A handle is recorded before its receipt is validated, like the cleanup journal.
+ * A launch that fails without a handle may still have created a sandbox: it is counted as
+ * lost, so a probe can say its unattributed IDs may belong to another lane.
+ */
+export function createLaunchTracker() {
+  const ids = new Set<string>();
+  const pending = new Set<Promise<unknown>>();
+  let lost = false;
+  let wake = () => {};
+  let changed = new Promise<void>((resolve) => (wake = resolve));
+  const notify = () => {
+    wake();
+    changed = new Promise<void>((resolve) => (wake = resolve));
+  };
+  return {
+    /** `launch` calls `record` with the parsed response body before validating it. */
+    track<T>(path: string, launch: (record: (receipt: unknown) => void) => Promise<T>): Promise<T> {
+      if (!LAUNCH_PATH.test(path)) return launch(() => {});
+      let handled = false;
+      const promise = launch((receipt) => {
+        const value = receipt as { sandbox?: { id?: unknown }; id?: unknown } | null;
+        const id = value?.sandbox?.id ?? value?.id;
+        if (typeof id === "string" && id) {
+          ids.add(id);
+          handled = true;
+          notify();
+        }
+      });
+      pending.add(promise);
+      promise.then(
+        () => {
+          pending.delete(promise);
+          notify();
+        },
+        () => {
+          pending.delete(promise);
+          if (!handled) lost = true;
+          notify();
+        },
+      );
+      return promise;
+    },
+    /**
+     * Call after a list read with the rows nothing else explains: any sibling among them came
+     * from a launch already in flight. Returns once every candidate has a handle, no launch is in
+     * flight, or `expired()` holds; `tick()` paces that check while launches stay pending.
+     */
+    async siblings(
+      candidates: ReadonlySet<string>,
+      expired: () => boolean,
+      tick: () => Promise<void>,
+    ): Promise<ReadonlySet<string>> {
+      while (pending.size && [...candidates].some((id) => !ids.has(id)) && !expired())
+        await Promise.race([changed, tick()]);
+      return new Set(ids);
+    },
+    /** Whether a launch failed without a handle or is still in flight; read after `siblings()`. */
+    lostLaunch: () => lost || pending.size > 0,
+  };
+}
+
+/**
+ * Runs actions that share a key one after another, in call order; different keys stay concurrent.
+ * A failed action releases the key like a successful one. An action may call `release` to let
+ * the next action with its key start before it finishes.
+ */
+export function createKeyedQueue() {
+  const tails = new Map<string, Promise<unknown>>();
+  return <T>(key: string, action: (release: () => void) => Promise<T>): Promise<T> => {
+    let release = () => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const result = (tails.get(key) ?? Promise.resolve()).then(() => action(release));
+    const tail = Promise.race([
+      released,
+      result.then(
+        () => {},
+        () => {},
+      ),
+    ]);
+    tails.set(key, tail);
+    void tail.then(() => {
+      if (tails.get(key) === tail) tails.delete(key);
+    });
+    return result;
+  };
+}
 
 /** Parse the tar in memory; validate only its selected Git pack in an isolated disposable object store. */
 async function verifyRecovery(archive: string, repo: string, commit: string) {
@@ -178,10 +285,11 @@ async function runPostDeploySmoke(
   io: SmokeIo,
   cleanupEnd?: number,
 ): Promise<boolean> {
-  function report(index: number, step: string, error?: unknown, elapsedMs?: number) {
+  function report(index: number, step: string, error?: unknown, elapsedMs?: number, lane?: Lane) {
     io.out(
       JSON.stringify({
         case: index,
+        ...(lane ? { lane } : {}),
         step,
         ...(elapsedMs === undefined ? {} : { elapsedMs }),
         pass: error === undefined,
@@ -347,9 +455,35 @@ async function runPostDeploySmoke(
     (cleanupEnd ?? Number.POSITIVE_INFINITY) - SMOKE_CLEANUP_BUDGET_MS - 5 * 60_000,
   );
   const cleanupDeadline = deadline + 5 * 60_000;
-  let cleaning = false;
   const protectedCanaries = new Set<string>();
-  async function request<T>(path: string, body?: unknown, key?: string, timeoutMs = 120_000): Promise<T> {
+  const launches = createLaunchTracker();
+  function send<T>(cleaning: boolean, path: string, body?: unknown, key?: string, timeoutMs = 120_000): Promise<T> {
+    return launches.track(path, (record) => transport<T>(cleaning, path, body, key, timeoutMs, record));
+  }
+  /** Each concurrent unit owns its cleanup flag; one unit's cleanup never moves another unit's deadline. */
+  function createLane() {
+    let cleaning = false;
+    return {
+      request: <T>(path: string, body?: unknown, key?: string, timeoutMs?: number) =>
+        send<T>(cleaning, path, body, key, timeoutMs),
+      withCleanup: async <T>(action: () => Promise<T>): Promise<T> => {
+        cleaning = true;
+        try {
+          return await action();
+        } finally {
+          cleaning = false;
+        }
+      },
+    };
+  }
+  async function transport<T>(
+    cleaning: boolean,
+    path: string,
+    body: unknown,
+    key: string | undefined,
+    timeoutMs: number,
+    record: (receipt: unknown) => void,
+  ): Promise<T> {
     const remaining = (cleaning ? cleanupDeadline : deadline) - io.now();
     if (remaining <= 0) fail("poll_limit_exceeded");
     try {
@@ -382,6 +516,8 @@ async function runPostDeploySmoke(
           id?: unknown;
           provider?: unknown;
         } | null;
+        // Keep the handle before validating the receipt, as the cleanup journal does.
+        record(result);
         if (/^sandbox\/launch(?:-access-v1)?$/.test(path) && smokeReceiptProvider(result) !== "modal")
           fail("invalid_response");
         if (
@@ -409,6 +545,7 @@ async function runPostDeploySmoke(
   }
   const defaultPins = new Map<number, string[]>();
   if (defaultSkills) {
+    const { request } = createLane();
     for (const [index, item] of cases.entries()) {
       try {
         const pins = await readDefaultPins(item.org, item.goldenId!, {
@@ -425,8 +562,11 @@ async function runPostDeploySmoke(
       }
     }
   }
+  // Vault allocates no compute and registers the canaries every later response is checked
+  // against, so it completes before any sandbox unit starts.
   let vaultPassed = true;
   if (vault) {
+    const { request, withCleanup } = createLane();
     for (const [index, item] of cases.entries()) {
       const ok = await runVaultCase(item.org, {
         request,
@@ -437,93 +577,107 @@ async function runPostDeploySmoke(
           return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
         },
         out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
-        withCleanup: async (action) => {
-          cleaning = true;
-          try {
-            return await action();
-          } finally {
-            cleaning = false;
-          }
-        },
+        withCleanup,
       });
       if (!ok) vaultPassed = false;
     }
     if (args.every((arg) => arg === "--vault")) return vaultPassed;
   }
-  let templateSkillsPassed = true;
-  if (templatesSkills) {
-    for (const [index, item] of cases.entries()) {
-      const ok = await runTemplateSkillCase(
-        { ...item, goldenId: item.goldenId! },
-        {
-          request: (path, body) => request(path, body, undefined, path === "templates/launch" ? 600_000 : 120_000),
-          poll,
-          step: async (name, action) => {
-            return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
-          },
-          out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
-          withCleanup: async (action) => {
-            cleaning = true;
-            try {
-              return await action();
-            } finally {
-              cleaning = false;
-            }
-          },
-          stopSandbox: async (id) => {
-            try {
-              await request("sandbox/stop", { org: item.org, id });
-            } catch (error) {
-              if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
-            }
-            await poll(
-              () => request<{ status: string; providerState: string }>("sandbox/status", { org: item.org, id }),
-              (result) => {
-                if (result.status !== "stopped" && result.status !== "failed") return false;
-                if (result.providerState !== "stopped") fail("provider_not_stopped");
-                return true;
-              },
-            );
-          },
-        },
-      );
-      if (!ok) templateSkillsPassed = false;
-    }
-    // This mode is independently runnable; combined staging runs keep the existing
-    // preservation baseline as well, under the same shared deadline.
-    if (!preservation && !lifecycle) return templateSkillsPassed && vaultPassed;
+  /** One concurrent sandbox unit; every receipt carries its case and lane so interleaved output stays attributable. */
+  function unit(index: number, lane: Lane) {
+    const out = (line: string) => io.out(JSON.stringify({ ...JSON.parse(line), case: index, lane }));
+    return {
+      ...createLane(),
+      out,
+      step: <T>(name: string, action: () => Promise<T>): Promise<T> =>
+        timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs, lane)),
+      io: { ...io, out } satisfies SmokeIo,
+    };
   }
-  let expiryPassed = true;
-  if (expiry) {
-    for (const [index, item] of cases.entries()) {
-      const result = await runExpiryCase(item, {
-        request,
-        now: io.now,
-        sleep: io.sleep,
-        out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
-        step: async (name, action) => {
-          return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
-        },
-        withCleanup: async (action) => {
-          cleaning = true;
+  function templateUnit(index: number, item: SmokeCase): Promise<boolean> {
+    const { request, withCleanup, out, step } = unit(index, "templates");
+    return runTemplateSkillCase(
+      { ...item, goldenId: item.goldenId! },
+      {
+        request: (path, body) =>
+          request(path, body, undefined, path === "templates/launch" ? TEMPLATE_LAUNCH_TIMEOUT_MS : 120_000),
+        poll,
+        step,
+        out,
+        withCleanup,
+        stopSandbox: async (id) => {
           try {
-            return await action();
-          } finally {
-            cleaning = false;
+            await request("sandbox/stop", { org: item.org, id });
+          } catch (error) {
+            if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
           }
+          await poll(
+            () => request<{ status: string; providerState: string }>("sandbox/status", { org: item.org, id }),
+            (result) => {
+              if (result.status !== "stopped" && result.status !== "failed") return false;
+              if (result.providerState !== "stopped") fail("provider_not_stopped");
+              return true;
+            },
+          );
         },
-      });
-      expiryPassed &&= result;
-    }
-    if (args.length === 1) return expiryPassed;
+      },
+    );
   }
-  let passed = templateSkillsPassed && vaultPassed && expiryPassed;
-  for (const { index, item, dirty } of cases.flatMap((item, index) =>
-    (preservation ? [false, true] : [false]).map((dirty) => ({ index, item, dirty })),
-  )) {
-    async function step<T>(name: string, action: () => Promise<T>): Promise<T> {
-      return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
+  function expiryUnit(index: number, item: SmokeCase): Promise<boolean> {
+    const { request, withCleanup, out, step } = unit(index, "expiry");
+    // A ready sandbox with no task no longer counts against its model account, so the expiry
+    // lane gives the account back before its TTL wait, which then overlaps the other lanes.
+    return accountSlot(item.modelAccountId, (release) =>
+      runExpiryCase(item, { request, now: io.now, sleep: io.sleep, out, step, withCleanup, idle: release }),
+    );
+  }
+  // Every probe owns its sandbox, so the per-case lanes run concurrently: the expiry TTL
+  // wait overlaps the lifecycle work instead of adding to it, subject to the account turns
+  // below. Each
+  // lane keeps its own receipts, failure report and cleanup; the run passes only if all do.
+  // A model account admits a bounded number of working agents (possibly one), and every launch
+  // reserves a slot before its fork: units that occupy the same account take turns across
+  // lanes, in creation order, so no lane is refused with a conflict caused by its sibling.
+  // Distinct accounts stay concurrent. Per account the order is templates, then expiry, then
+  // lifecycle: expiry holds its account only until its sandbox is ready, so queueing it right
+  // before the lifecycle runs makes its TTL wait overlap them. Queued ahead of a template probe
+  // (up to a 10-minute launch), the sandbox could expire before any lifecycle work started.
+  const accountSlot = createKeyedQueue();
+  const templateUnits = templatesSkills
+    ? cases.map((item, index) => accountSlot(item.modelAccountId, () => templateUnit(index, item)))
+    : [];
+  const expiryUnits = expiry ? cases.map((item, index) => expiryUnit(index, item)) : [];
+  if (expiry && args.length === 1) return settled(expiryUnits);
+  // This mode is independently runnable; combined staging runs keep the existing
+  // preservation baseline as well, under the same shared deadline.
+  if (templatesSkills && !preservation && !lifecycle) return (await settled(templateUnits)) && vaultPassed;
+  // A case's clean lifecycle and its preservation (dirty) run stay ordered in one lane:
+  // they share the case's step names, and the expiry lane bounds the run anyway.
+  // A scoped probe diffs the owner's inventory for its golden from before launch to after
+  // cleanup. A scoped child is registered under its parent's owner and golden but is not an
+  // owner API launch, so the launch tracker cannot attribute another case's child: probe
+  // windows that share an org and golden run one after another. Other lanes stay concurrent.
+  const scopedWindow = createKeyedQueue();
+  const lifecycleUnits = cases.map(async (item, index) => {
+    const lane = unit(index, "lifecycle");
+    const scopedPair = scopedAccess && item.harness === "codex";
+    let passed = true;
+    for (const dirty of preservation ? [false, true] : [false]) {
+      // The account is taken inside the scoped window, never held while waiting for one.
+      const run = () => accountSlot(item.modelAccountId, () => lifecycleUnit(index, item, dirty, lane));
+      // Scoped Codex cases are normalized to lowercase UUIDs at configuration; others never key.
+      if (!(await (scopedPair ? scopedWindow(`${item.org}\n${item.goldenId}`, run) : run()))) passed = false;
     }
+    return passed;
+  });
+  return (await settled([...templateUnits, ...expiryUnits, ...lifecycleUnits])) && vaultPassed;
+  async function lifecycleUnit(
+    index: number,
+    item: SmokeCase,
+    dirty: boolean,
+    { request, withCleanup, step, io }: ReturnType<typeof unit>,
+  ): Promise<boolean> {
+    let passed = true;
     const sandbox = <T>(action: string, body: object, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);
     const scopedPair = scopedAccess && item.harness === "codex";
@@ -534,14 +688,16 @@ async function runPostDeploySmoke(
           recordSandbox: (id, key) => io.recordSandbox?.(item.org, id, key, item.provider) ?? Promise.resolve(),
           poll: (read, done) => poll(read, done, 300),
           step,
-          withCleanup: async (action) => {
-            cleaning = true;
-            try {
-              return await action();
-            } finally {
-              cleaning = false;
-            }
+          withCleanup,
+          siblingSandboxes: (candidates) => {
+            const until = io.now() + SIBLING_ATTRIBUTION_WAIT_MS;
+            return launches.siblings(
+              candidates,
+              () => io.now() >= until,
+              () => io.sleep(1_000),
+            );
           },
+          siblingLaunchLost: launches.lostLaunch,
           isNotReady: (error) => error instanceof SmokeFailure && error.code === "sandbox_not_ready",
           out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
           stopSandbox: async (id) => {
@@ -1059,41 +1215,38 @@ async function runPostDeploySmoke(
       passed = false;
     } finally {
       if (github && sandboxId && pushAttempted) {
-        cleaning = true;
         try {
-          await step("cleanup_scratch_branch", async () => {
-            await checkedExec(remoteGuard);
-            const presence = await sandbox<{ exitCode: number | null; timedOut: boolean }>("exec", {
-              id: sandboxId,
-              command: `${git} ls-remote --exit-code origin refs/heads/${scratch}`,
-              cwd: item.repo,
-              timeout_seconds: 60,
-            });
-            if (presence?.timedOut !== false || (presence.exitCode !== 0 && presence.exitCode !== 2))
-              fail("exec_failed");
-            if (presence.exitCode === 0) await checkedExec(`${remoteGuard} && ${git} push origin --delete ${scratch}`);
-            io.out(
-              JSON.stringify({
-                case: index,
-                step: "scratch_branch_cleanup",
-                outcome: presence.exitCode === 2 ? "absent" : "deleted",
-              }),
-            );
-          });
+          await withCleanup(() =>
+            step("cleanup_scratch_branch", async () => {
+              await checkedExec(remoteGuard);
+              const presence = await sandbox<{ exitCode: number | null; timedOut: boolean }>("exec", {
+                id: sandboxId,
+                command: `${git} ls-remote --exit-code origin refs/heads/${scratch}`,
+                cwd: item.repo,
+                timeout_seconds: 60,
+              });
+              if (presence?.timedOut !== false || (presence.exitCode !== 0 && presence.exitCode !== 2))
+                fail("exec_failed");
+              if (presence.exitCode === 0)
+                await checkedExec(`${remoteGuard} && ${git} push origin --delete ${scratch}`);
+              io.out(
+                JSON.stringify({
+                  case: index,
+                  step: "scratch_branch_cleanup",
+                  outcome: presence.exitCode === 2 ? "absent" : "deleted",
+                }),
+              );
+            }),
+          );
         } catch {
           passed = false;
-        } finally {
-          cleaning = false;
         }
       }
       if (sandboxId && !stopped) {
-        cleaning = true;
         try {
-          await step("cleanup_sandbox", stopSandbox);
+          await withCleanup(() => step("cleanup_sandbox", stopSandbox));
         } catch {
           passed = false;
-        } finally {
-          cleaning = false;
         }
       }
     }
@@ -1130,8 +1283,8 @@ async function runPostDeploySmoke(
           golden: item.golden,
         }),
       );
+    return passed;
   }
-  return passed;
 }
 
 async function runAllowedSmoke(
