@@ -41,7 +41,9 @@ export async function GET(request: Request, context: Context) {
 
   const params = new URL(request.url).searchParams;
   const cursor = params.get("cursor");
-  const backward = !cursor || params.get("direction") === "backward";
+  // Native Boat cursors track mutable provider rows only on forward reads.
+  const retained = sandbox.provider === "docker" || sandbox.runtime_transport === "dialout" || sandbox.boat_runtime;
+  const backward = retained && (!cursor || params.get("direction") === "backward");
   // A broken log lane must not prevent status from collecting delayed usage.
   let observedStatus: unknown;
   const statusRead = () => gateway.status(id).catch(() => ({}));

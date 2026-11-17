@@ -189,6 +189,7 @@ export function SandboxChat(props: Props) {
   const [hasMore, setHasMore] = useState(false);
   const [turnModel, setTurnModel] = useState<{
     rateLimit?: { waiting: boolean; message: string; retryCount: number; totalWaitMs: number } | null;
+    state?: string;
     promptId?: string;
     conversationId?: string | null;
     requestedModel?: string | null;
@@ -217,7 +218,7 @@ export function SandboxChat(props: Props) {
   const applyMetadata = useCallback(
     (session: PollSession, body: Record<string, unknown>) => {
       if (!isCurrent(session)) return null;
-      if (isRecord(body.prompt)) setTurnModel(body.prompt);
+      if (body.prompt !== undefined) setTurnModel(isRecord(body.prompt) ? body.prompt : null);
       setStatusMessage(typeof body.statusMessage === "string" ? body.statusMessage : null);
       setIdlePaused(body.statusMessage === "Paused — wakes on your next message");
       const next = isSandboxStatus(body.status) ? body.status : known.current;
@@ -451,7 +452,9 @@ export function SandboxChat(props: Props) {
   const shownConversation = conversations.length > 1 ? selected : null;
   const chat = useMemo(() => projectChat(eventsOf(events, shownConversation)), [events, shownConversation]);
   // A stopped or failed machine runs no turn, whatever its last prompt event said before it stopped.
-  const turnRunning = chat.running && LIVE.includes(status);
+  const observedTurn = turnModel && (!selected || turnModel.conversationId === selected) ? turnModel : null;
+  const turnRunning =
+    (observedTurn?.state ? ["queued", "running"].includes(observedTurn.state) : chat.running) && LIVE.includes(status);
   const pauseMessage = idlePauseMessage({ status, idlePaused, expiresAt: props.expiresAt ?? null }, new Date());
   const failure = [...chat.items].reverse().find((item) => item.kind === "outcome" && item.status === "failed");
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;

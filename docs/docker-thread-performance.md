@@ -108,7 +108,7 @@ Docker, Modal and runtime Boat. No decrypted global cache is introduced.
 
 Docker logs includes its status metadata, so the dashboard uses one logs call
 and falls back to status when metadata is absent or logs fails. First open reads
-the newest bounded page; the older cursor is followed only on user request.
+the newest bounded retained-runtime page; native Boat retains its forward mutable-row cursor. The older cursor is followed only on user request.
 Forward polling continues from the newest cursor independently of older history.
 
 Offline 50,000-event fixture, same ciphertext/work accounting as above:
