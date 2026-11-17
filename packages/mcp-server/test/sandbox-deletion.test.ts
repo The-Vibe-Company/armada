@@ -403,14 +403,17 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
     );
     const sdk: string[] = [];
     let imageTimeouts = 0,
-      missingApps = 0;
+      missingApps = 0,
+      appLookups = 0,
+      missingAppAt = 0;
     const cleanupDelays: number[] = [];
     const timeout = (message: string) => Object.assign(Error(message), { name: "TimeoutError" });
     const exited = new Set<string>();
     const client = {
       apps: {
         fromName: async () => {
-          if (missingApps-- > 0) throw Object.assign(Error("app missing"), { name: "NotFoundError" });
+          if (missingApps-- > 0 || ++appLookups === missingAppAt)
+            throw Object.assign(Error("app missing"), { name: "NotFoundError" });
           return { appId: binding.appId };
         },
       },
@@ -468,7 +471,7 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
       }),
       now: () => server.clock.now,
     };
-    const launch = async (name: string) => {
+    const launch = async (name: string, lostCreate = false) => {
       const machine: Machine = {
         info: { id: `modal-${name}`, name, state: "running", providerState: "active", labels: {} },
         generation: 1,
@@ -480,12 +483,19 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
         managementAuthority: { credentialScope: "user", credentialOwnerId: p.owner },
         recoveryImageId: `prior-${name}`,
       };
+      if (lostCreate) {
+        // The create response was lost: the outcome is unknown and no physical ID is recorded.
+        machine.phase = "creating";
+        machine.info.state = "starting";
+        delete machine.physicalId;
+        delete machine.recoveryImageId;
+      }
       await createSqlModalStore(db, scope).reserve(`request-${name}`, machine);
       const id = crypto.randomUUID();
       await db.query(
         `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
-        select $1,id,$2,$3,'modal',$4,'claude','running' from goldens where name='delete-modal'`,
-        [id, p.org, p.owner, machine.info.id],
+        select $1,id,$2,$3,'modal',$4,'claude',$5 from goldens where name='delete-modal'`,
+        [id, p.org, p.owner, machine.info.id, lostCreate ? "failed" : "running"],
       );
       return { id, machine: machine.info.id };
     };
@@ -559,6 +569,16 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
       "snapshot:physical-third",
       "terminate:physical-third",
     ]);
+
+    // Name reconciliation of a lost create looks the App up again. A missing App there says
+    // nothing about the machine: both records stay recoverable and nothing is published.
+    const lost = await launch("lost", true);
+    missingAppAt = appLookups + 2;
+    expect((await control(`sandboxes/${lost.id}`, "DELETE")).status).toBeGreaterThanOrEqual(500);
+    expect(appLookups).toBe(missingAppAt);
+    expect(await row(lost.id)).toEqual({ status: "failed", leased: false });
+    expect(await phase(lost.machine)).toBe("creating");
+    expect(sdk.filter((x) => x.endsWith("-lost"))).toEqual([]);
   } finally {
     await server.close();
   }

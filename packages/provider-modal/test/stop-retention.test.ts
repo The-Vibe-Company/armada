@@ -32,6 +32,7 @@ function fixture(stage: "scrub" | "snapshot") {
     terminated = 0,
     snapshots = 0;
   let rejectImageDelete = false;
+  const deniedImages = new Set<string>();
   const deletedImages: string[] = [];
   const cleanupDelays: number[] = [];
   let images: SavedImage[] = [];
@@ -83,6 +84,8 @@ function fixture(stage: "scrub" | "snapshot") {
           rejectImageDelete = false;
           throw Object.assign(new Error("image cleanup unavailable"), { name: "TimeoutError" });
         }
+        if (deniedImages.has(id))
+          throw Object.assign(new Error("permission denied"), { name: "PermissionDeniedError" });
         deletedImages.push(id);
       },
     },
@@ -118,6 +121,18 @@ function fixture(stage: "scrub" | "snapshot") {
     rejectNextImageDelete: () => {
       rejectImageDelete = true;
     },
+    retireImage: (imageId: string, { denied }: { denied: boolean }) => {
+      if (!images.some((x) => x.imageId === imageId))
+        images.push({
+          info: { name: `retired-${imageId}` } as SavedImage["info"],
+          imageId,
+          sourceId: stored.info.id,
+          managementAuthority: { credentialScope: "user", credentialOwnerId: "owner" },
+          deleted: true,
+        });
+      if (denied) deniedImages.add(imageId);
+      else deniedImages.delete(imageId);
+    },
     recover: () => {
       failing = false;
     },
@@ -148,6 +163,40 @@ test("a missing App during termination never publishes deletion of a live machin
   expect(f.deletedImages).toEqual([]);
   await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
   expect(f.terminated()).toBe(1);
+});
+
+test("a missing App during name reconciliation never publishes deletion of an unknown create", async () => {
+  const f = fixture("snapshot");
+  // The create response was lost: no physical ID, outcome unknown.
+  f.state().phase = "creating";
+  delete f.state().physicalId;
+  // The first lookup admits the delete; the one inside name reconciliation finds no App.
+  f.missAppOnLookup(2);
+  await expect(f.provider.delete({ sandboxId: "logical" })).rejects.toMatchObject({ code: "unavailable" });
+  expect(f.state().phase).toBe("creating");
+  expect(f.state().physicalId).toBeUndefined();
+  expect(f.terminated()).toBe(0);
+  expect(f.deletedImages).toEqual([]);
+});
+
+test("a failing retired image never withholds the receipt of a completed delete", async () => {
+  const f = fixture("snapshot");
+  f.recover();
+  await f.provider.stop({ sandboxId: "logical" });
+  f.retireImage("retired-elsewhere", { denied: true });
+  await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
+  expect(f.state().phase).toBe("deleted");
+  expect(f.deletedImages).toEqual(["prior-recovery", "fresh-recovery"]);
+  // The tombstone keeps its durable retry record for the next collection in scope.
+  expect(
+    f
+      .images()
+      .filter((x) => x.deleted)
+      .map((x) => x.imageId),
+  ).toEqual(["retired-elsewhere"]);
+  f.retireImage("retired-elsewhere", { denied: false });
+  await f.provider.collectGarbage();
+  expect(f.deletedImages).toContain("retired-elsewhere");
 });
 
 test.each(["scrub", "snapshot"] as const)(

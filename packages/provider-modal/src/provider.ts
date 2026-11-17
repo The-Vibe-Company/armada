@@ -233,7 +233,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   async function namedOwned(row: Machine): Promise<Sandbox> {
     assertMachineSource(row);
-    await bound();
+    // Name reconciliation exists because the create outcome is unknown: a missing App must
+    // preserve the reservation, never read as the machine's absence.
+    await boundNotAbsence();
     let sb: Sandbox;
     try {
       sb = await client.sandboxes.fromName(options.appName, row.physicalName, {
@@ -738,9 +740,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
     }
   }
-  /** Deletion's App lookup. A missing or mismatched App says nothing about this sandbox, so
-   * its not_found must never read as absence, which would publish a deletion that never ran. */
-  async function boundForDelete() {
+  /** App lookup for paths whose not_found would read as a machine's absence. A missing App says
+   * nothing about this sandbox, so it must never publish a deletion that never ran. */
+  async function boundNotAbsence() {
     await bound().catch((error) => {
       if (modalError(error).code !== "not_found") throw error;
       throw refusal("unavailable", "Modal App lookup failed; the sandbox was not deleted.");
@@ -1699,7 +1701,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return { status: "deleted" };
     },
     async delete({ sandboxId }) {
-      await boundForDelete();
+      await boundNotAbsence();
       await store.lease(sandboxId, async (row, save) => {
         if (row.phase === "deleted") return;
         assertMachineSource(row);
@@ -1722,7 +1724,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         await save(row);
         if (!exitConfirmed && row.physicalId) {
           // Only the machine's own not_found proves exit; look the App up outside that catch.
-          await boundForDelete();
+          await boundNotAbsence();
           try {
             const sb = await client.sandboxes.fromId(row.physicalId);
             await sb.terminate({ wait: true });
@@ -1749,8 +1751,20 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         row.phase = "deleted";
         await save(row);
       });
-      // A busy retired source must not fail a delete whose own resources are already gone.
-      await cleanupStep(sandboxId, () => collectImages(true));
+      // The target's compute and recovery images are gone and durably recorded. Retired images
+      // of other sources are collected on a best-effort basis: their tombstones stay durable
+      // for the next collection in scope, and their failure never withholds this receipt.
+      await cleanupStep(sandboxId, () => collectImages(true)).catch((error) => {
+        const safe = modalError(error);
+        console.warn(
+          JSON.stringify({
+            event: "modal_delete_retired_collection_deferred",
+            sandboxId,
+            code: safe.code,
+            ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
+          }),
+        );
+      });
       return { status: "deleted" };
     },
     async resourceReceipts() {
