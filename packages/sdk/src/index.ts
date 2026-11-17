@@ -107,7 +107,8 @@ export interface TemplateLaunchReceipt {
   requestId: string;
   state: string;
   id: string;
-  reason?: string;
+  /** Set on failed requests; `null` while a replayed request is still in progress. */
+  reason?: string | null;
   message?: string;
   status?: string;
   promptId?: string | null;
@@ -339,13 +340,22 @@ export class Armada {
         throw new ArmadaError("transport_error", 0, undefined, !readOnly);
       }
       const value: unknown = await response.json().catch(() => null);
+      const error = value && typeof value === "object" && "error" in value ? value.error : undefined;
+      const retryAfterSeconds = response.ok ? undefined : retryAfter(response.headers.get("retry-after"), error);
+      // A draining or auth-unavailable server refuses with this body before dispatching anything.
+      if (
+        response.status === 503 &&
+        value &&
+        typeof value === "object" &&
+        "error" in value &&
+        value.error === "temporarily_unavailable"
+      )
+        throw new ArmadaError("unavailable", 503, "temporarily_unavailable", false, retryAfterSeconds);
       if (response.ok) {
         if (!value || typeof value !== "object" || Array.isArray(value))
           throw new ArmadaError("unknown_response", response.status, undefined, !readOnly);
         return value as T;
       }
-      const error = value && typeof value === "object" && "error" in value ? value.error : undefined;
-      const retryAfterSeconds = retryAfter(response.headers.get("retry-after"), error);
       // A server-requested delay belongs to the caller's scheduler: never replay early.
       if (
         readOnly &&
