@@ -1,5 +1,5 @@
 import { createHmac, randomBytes } from "node:crypto";
-import { resolve4 } from "node:dns/promises";
+import { Resolver } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
 import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
@@ -17,10 +17,18 @@ export function publicWebhookAddress(address: string): boolean {
   const parts = address.split(".").map(Number);
   if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
   const [a, b, c] = parts as [number, number, number, number];
-  return !(a === 0 || a === 10 || a === 127 || a >= 224 ||
-    (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 168 || b === 0 || (b === 88 && c === 99) || (b === 2 && c === 0))) ||
-    (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) || (a === 203 && b === 0 && c === 113));
+  return !(
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && (b === 168 || b === 0 || (b === 88 && c === 99) || (b === 2 && c === 0))) ||
+    (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
+    (a === 203 && b === 0 && c === 113)
+  );
 }
 
 function endpointUrl(value: unknown): URL {
@@ -32,26 +40,43 @@ function endpointUrl(value: unknown): URL {
 }
 
 async function deliver(url: URL, body: string, headers: Record<string, string>, signal: AbortSignal): Promise<number> {
-  const addresses = await resolve4(url.hostname);
-  if (!addresses.length || addresses.some((address) => !publicWebhookAddress(address))) throw new Error("invalid_address");
+  signal.throwIfAborted();
+  const resolver = new Resolver();
+  const cancel = () => resolver.cancel();
+  signal.addEventListener("abort", cancel, { once: true });
+  let addresses: string[];
+  try {
+    addresses = await resolver.resolve4(url.hostname);
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+  signal.throwIfAborted();
+  if (!addresses.length || addresses.some((address) => !publicWebhookAddress(address)))
+    throw new Error("invalid_address");
   const address = addresses[0];
   if (!address) throw new Error("invalid_address");
   return new Promise((resolve, reject) => {
-    const req = httpsRequest(url, {
-      method: "POST", headers, signal,
-      lookup: (_host, _options, callback) => callback(null, address, 4),
-    }, (response) => {
-      // No receiver body is retained or logged. Redirects are never followed.
-      const status = response.statusCode ?? 0;
-      response.destroy();
-      resolve(status);
-    });
+    const req = httpsRequest(
+      url,
+      {
+        method: "POST",
+        headers,
+        signal,
+        lookup: (_host, _options, callback) => callback(null, address, 4),
+      },
+      (response) => {
+        // No receiver body is retained or logged. Redirects are never followed.
+        const status = response.statusCode ?? 0;
+        response.destroy();
+        resolve(status);
+      },
+    );
     req.on("error", reject);
     req.end(body);
   });
 }
 
-export function createOutboundWebhooks(sql: Sql, key: string | undefined, publicUrl: string) {
+export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashboardUrl: string) {
   return {
     route(authenticate: (request: Request) => Promise<CallerResult>): Route {
       return async (request) => {
@@ -67,31 +92,50 @@ export function createOutboundWebhooks(sql: Sql, key: string | undefined, public
             return Response.json({ error: "forbidden" }, { status: 403 });
           if (path === "/api/v1/webhooks/deliveries" && request.method === "GET") {
             const endpoint = url.searchParams.get("endpointId");
-            if (endpoint && !UUID.test(endpoint)) return Response.json({ error: "invalid endpointId" }, { status: 400 });
-            const rows = await sql.query(`select d.id,d.endpoint_id,d.payload,d.attempts,d.next_attempt_at,d.delivered_at,d.last_status,d.created_at
+            if (endpoint && !UUID.test(endpoint))
+              return Response.json({ error: "invalid endpointId" }, { status: 400 });
+            const rows = await sql.query(
+              `select d.id,d.endpoint_id,d.payload,d.attempts,d.next_attempt_at,d.delivered_at,d.last_status,d.created_at
               from public.outbound_webhook_deliveries d join public.outbound_webhook_endpoints e on e.id=d.endpoint_id
-              where e.org_id=$1 and ($2::uuid is null or e.id=$2::uuid) order by d.created_at desc,d.id desc limit 100`, [org, endpoint]);
-            return Response.json({ deliveries: rows });
+              where e.org_id=$1 and ($2::uuid is null or e.id=$2::uuid) order by d.created_at desc,d.id desc limit 100`,
+              [org, endpoint],
+            );
+            return Response.json({ deliveries: rows.rows });
           }
           if (path === "/api/v1/webhooks" && request.method === "GET") {
-            const rows = await sql.query(`select id,url,enabled,created_at from public.outbound_webhook_endpoints where org_id=$1 order by created_at desc limit 100`, [org]);
-            return Response.json({ endpoints: rows });
+            const rows = await sql.query(
+              `select id,url,enabled,created_at from public.outbound_webhook_endpoints where org_id=$1 order by created_at desc limit 100`,
+              [org],
+            );
+            return Response.json({ endpoints: rows.rows });
           }
           if (path === "/api/v1/webhooks" && request.method === "POST") {
             const raw = await request.text();
             if (raw.length > 4096) return Response.json({ error: "body too large" }, { status: 413 });
             let target: URL;
-            try { target = endpointUrl((JSON.parse(raw) as { url?: unknown }).url); }
-            catch { return Response.json({ error: "A public HTTPS URL on port 443 is required" }, { status: 400 }); }
+            try {
+              target = endpointUrl((JSON.parse(raw) as { url?: unknown }).url);
+            } catch {
+              return Response.json({ error: "A public HTTPS URL on port 443 is required" }, { status: 400 });
+            }
             const secret = randomBytes(32).toString("hex");
             const encrypted = await encryptSecret(secret, key);
-            const rows = await sql.query(`insert into public.outbound_webhook_endpoints(org_id,url,secret_enc) values($1,$2,$3) returning id,url,enabled,created_at`, [org, target.href, encrypted]);
-            return Response.json({ endpoint: rows[0], secret }, { status: 201, headers: { "Cache-Control": "no-store" } });
+            const rows = await sql.query(
+              `insert into public.outbound_webhook_endpoints(org_id,url,secret_enc) values($1,$2,$3) returning id,url,enabled,created_at`,
+              [org, target.href, encrypted],
+            );
+            return Response.json(
+              { endpoint: rows.rows[0], secret },
+              { status: 201, headers: { "Cache-Control": "no-store" } },
+            );
           }
           const id = path.slice("/api/v1/webhooks/".length);
           if (request.method === "DELETE" && UUID.test(id)) {
             // Keep delivery history while cancelling future sends.
-            await sql.query(`update public.outbound_webhook_endpoints set enabled=false where id=$1 and org_id=$2`, [id, org]);
+            await sql.query(`update public.outbound_webhook_endpoints set enabled=false where id=$1 and org_id=$2`, [
+              id,
+              org,
+            ]);
             return new Response(null, { status: 204 });
           }
           return Response.json({ error: "not_found" }, { status: 404 });
@@ -101,7 +145,13 @@ export function createOutboundWebhooks(sql: Sql, key: string | undefined, public
       };
     },
     async reconcileOne(signal: AbortSignal): Promise<boolean> {
-      const rows = await sql.query<{ id: string; url: string; secret_enc: Uint8Array<ArrayBuffer>; payload: Record<string, unknown>; attempts: number }>(`
+      const rows = await sql.query<{
+        id: string;
+        url: string;
+        secret_enc: Uint8Array<ArrayBuffer>;
+        payload: Record<string, unknown>;
+        attempts: number;
+      }>(`
         with candidate as (
           select d.id from public.outbound_webhook_deliveries d join public.outbound_webhook_endpoints e on e.id=d.endpoint_id
           where e.enabled and d.delivered_at is null and d.attempts<5 and d.next_attempt_at<=now()
@@ -111,23 +161,37 @@ export function createOutboundWebhooks(sql: Sql, key: string | undefined, public
           update public.outbound_webhook_deliveries d set attempts=attempts+1,lease_until=now()+interval '60 seconds'
           from candidate c where d.id=c.id returning d.*
         ) select c.id,c.payload,c.attempts,e.url,e.secret_enc from claimed c join public.outbound_webhook_endpoints e on e.id=c.endpoint_id`);
-      const row = rows[0];
+      const row = rows.rows[0];
       if (!row) return false;
       let status: number | null = null;
       try {
         const secret = await decryptSecret(row.secret_enc, key);
         const timestamp = String(Math.floor(Date.now() / 1000));
-        const body = JSON.stringify({ ...row.payload, links: { sandbox: `${publicUrl.replace(/\/$/, "")}/api/v1/sandbox/status?id=${row.payload.sandboxId}` } });
-        status = await deliver(endpointUrl(row.url), body, {
-          "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)),
-          "Armada-Webhook-Id": row.id, "Armada-Webhook-Timestamp": timestamp,
-          "Armada-Webhook-Signature": webhookSignature(secret, timestamp, row.id, body),
-        }, AbortSignal.any([signal, AbortSignal.timeout(10_000)]));
-      } catch { /* Store only status codes; exception text can contain endpoint credentials. */ }
+        const body = JSON.stringify({
+          ...row.payload,
+          links: { sandbox: `${dashboardUrl.replace(/\/$/, "")}/sandboxes/${row.payload.sandboxId}` },
+        });
+        status = await deliver(
+          endpointUrl(row.url),
+          body,
+          {
+            "Content-Type": "application/json",
+            "Content-Length": String(Buffer.byteLength(body)),
+            "Armada-Webhook-Id": row.id,
+            "Armada-Webhook-Timestamp": timestamp,
+            "Armada-Webhook-Signature": webhookSignature(secret, timestamp, row.id, body),
+          },
+          AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+        );
+      } catch {
+        /* Store only status codes; exception text can contain endpoint credentials. */
+      }
       const success = status !== null && status >= 200 && status < 300;
-      await sql.query(`update public.outbound_webhook_deliveries set last_status=$3,delivered_at=case when $4 then now() else null end,
+      await sql.query(
+        `update public.outbound_webhook_deliveries set last_status=$3,delivered_at=case when $4 then now() else null end,
         lease_until=null,next_attempt_at=now()+($5 * interval '1 second') where id=$1 and attempts=$2`,
-        [row.id, row.attempts, status, success, Math.min(3600, 30 * 2 ** (row.attempts - 1))]);
+        [row.id, row.attempts, status, success, Math.min(3600, 30 * 2 ** (row.attempts - 1))],
+      );
       return true;
     },
     async drain() {},

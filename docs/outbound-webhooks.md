@@ -22,7 +22,11 @@ Events are `turn.finished`, `turn.failed`, `sandbox.stopped`, `sandbox.expired`,
 contain delivery/event identity, organization/sandbox/prompt IDs, state, occurrence
 time, a public reason code, links, and **always** `externalRef` (null when absent).
 There is no message, prompt, agent report text, or provider diagnostic by default.
-Failure reasons use the public code `turn_failed`; a blocked report uses
+Repeated terminal observations of one prompt are deduplicated durably per endpoint
+and event type. Runtime archive ingestion enqueues terminal prompts atomically;
+native lifecycle reconciliation observes terminal prompt receipts and uses the same admission function. Startup failures
+without an admitted prompt do not manufacture turn events.
+Failure reasons use the public code `turn_failed` (or `interrupted` for an interrupted turn); a blocked report uses
 `agent_blocked`. Fetch authorized sandbox details for further diagnostics.
 The external reference follows the launch contract in
 [launch idempotency](launch-idempotency.md) and PR #2574; it is an opaque correlation

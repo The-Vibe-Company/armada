@@ -27,6 +27,42 @@ alter table public.outbound_webhook_deliveries enable row level security;
 revoke all on public.outbound_webhook_endpoints,public.outbound_webhook_deliveries from public,anon,authenticated;
 grant all on public.outbound_webhook_endpoints,public.outbound_webhook_deliveries to service_role;
 
+-- A repeated terminal prompt observation must not create a second delivery.
+create unique index outbound_webhook_turn_identity on public.outbound_webhook_deliveries
+  (endpoint_id,(payload->>'sandboxId'),(payload->>'promptId'),(payload->>'type'))
+  where payload->>'type' in ('turn.finished','turn.failed');
+
+-- Runtime ingestion calls this inside its archive transaction. Native state
+-- terminal observations use the same admission boundary.
+create function public.enqueue_webhook_turn(sandbox uuid,prompt text,status text) returns void
+language plpgsql security definer set search_path='' as $$
+declare
+  saved public.sandboxes%rowtype;
+  endpoint record;
+  delivery_id uuid;
+  event_type text;
+begin
+  if prompt is null or status not in ('finished','failed','interrupted') then return; end if;
+  select * into saved from public.sandboxes where id=sandbox;
+  if not found then return; end if;
+  event_type := case when status='finished' then 'turn.finished' else 'turn.failed' end;
+  for endpoint in select id from public.outbound_webhook_endpoints
+    where org_id=saved.org_id and enabled loop
+    delivery_id := gen_random_uuid();
+    insert into public.outbound_webhook_deliveries(id,endpoint_id,payload)
+    values(delivery_id,endpoint.id,jsonb_build_object(
+      'id',delivery_id,'type',event_type,'occurredAt',clock_timestamp(),
+      'orgId',saved.org_id,'sandboxId',saved.id,'promptId',prompt,
+      'state',status,'externalRef',to_jsonb(saved)->'external_ref',
+      'reason',case when status='interrupted' then 'interrupted'
+        when status='failed' then 'turn_failed' else null end))
+    on conflict do nothing;
+  end loop;
+end;
+$$;
+revoke all on function public.enqueue_webhook_turn(uuid,text,text) from public,anon,authenticated;
+grant execute on function public.enqueue_webhook_turn(uuid,text,text) to service_role;
+
 -- Capture public lifecycle facts atomically with the state change. Neither
 -- provider diagnostics nor task report text is suitable for default payloads.
 create function public.enqueue_sandbox_webhooks() returns trigger
@@ -39,15 +75,10 @@ declare
   public_reason text;
 begin
   if new.status is distinct from old.status then
-    if old.status='running' and new.status='ready' then
-      event_types := array_append(event_types,'turn.finished');
-    elsif new.status='failed' then
-      event_types := array_append(event_types,'turn.failed');
-    end if;
     if new.status='stopped' then
       event_types := array_append(event_types,case when new.status_reason='expired'
         then 'sandbox.expired' else 'sandbox.stopped' end);
-    elsif new.status='deleted' and new.status_reason in ('retention_elapsed','disk_pressure') then
+    elsif new.status='deleted' then
       event_types := array_append(event_types,'sandbox.reclaimed');
     end if;
   end if;
@@ -57,9 +88,9 @@ begin
   end if;
   foreach event_type in array event_types loop
     public_reason := case
-      when event_type='turn.failed' then 'turn_failed'
       when event_type='sandbox.expired' then 'expired'
-      when event_type='sandbox.reclaimed' then new.status_reason
+      when event_type='sandbox.reclaimed' then case when new.status_reason in ('retention_elapsed','disk_pressure')
+        then new.status_reason else 'reclaimed' end
       when event_type='agent.report.blocked' then 'agent_blocked'
       else null end;
     for endpoint in select id from public.outbound_webhook_endpoints
