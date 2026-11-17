@@ -81,20 +81,20 @@ if (!(await verifyWebhookSignature({ secret: "secret", body, headers: new Header
 EOF
 node smoke.mjs
 echo "SDK install: node import passed."
-if [ -x "$root/node_modules/.bin/tsc" ]; then
-  cat > smoke.ts <<'EOF'
+tsc="$root/node_modules/.bin/tsc"
+test -x "$tsc" || { echo "::error::missing $tsc: run bun install --frozen-lockfile first"; exit 1; }
+cat > smoke.ts <<'EOF'
 import { Armada, type FailureCode } from "@the-vibe-company/armada-sdk";
 const code: FailureCode = "outcome_unknown";
 export const launched = new Armada({ token: code }).launch({ golden: "worker", harness: "codex" });
 EOF
-  # No ambient types: the declarations must resolve on their own, with the standard DOM fetch types.
-  cat > tsconfig.json <<'EOF'
+# No ambient types: the declarations must resolve on their own, with the standard DOM fetch types.
+cat > tsconfig.json <<'EOF'
 { "compilerOptions": { "noEmit": true, "strict": true, "exactOptionalPropertyTypes": true, "target": "es2022",
   "module": "nodenext", "moduleResolution": "nodenext", "lib": ["es2023", "dom"], "types": [] },
   "files": ["smoke.ts"] }
 EOF
-  "$root/node_modules/.bin/tsc" -p tsconfig.json
-  echo "SDK install: TypeScript declarations passed."
-fi
+"$tsc" -p tsconfig.json
+echo "SDK install: TypeScript declarations passed."
 
 echo "npm package smoke test passed for $target."
