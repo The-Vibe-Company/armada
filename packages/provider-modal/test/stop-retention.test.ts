@@ -30,6 +30,7 @@ function fixture(stage: "scrub" | "snapshot") {
   let failing = true,
     terminated = 0,
     snapshots = 0;
+  let rejectImageDelete = false;
   const deletedImages: string[] = [];
   const store = {
     get: async () => structuredClone(stored),
@@ -59,7 +60,15 @@ function fixture(stage: "scrub" | "snapshot") {
   const client = {
     apps: { fromName: async () => ({ appId: "app" }) },
     sandboxes: { fromId: async () => sandbox },
-    images: { delete: async (id: string) => deletedImages.push(id) },
+    images: {
+      delete: async (id: string) => {
+        if (rejectImageDelete) {
+          rejectImageDelete = false;
+          throw Object.assign(new Error("image cleanup unavailable"), { name: "TimeoutError" });
+        }
+        deletedImages.push(id);
+      },
+    },
   } as unknown as ModalClient;
   const distribution = {
     capabilities: {},
@@ -81,6 +90,9 @@ function fixture(stage: "scrub" | "snapshot") {
     snapshots: () => snapshots,
     terminated: () => terminated,
     deletedImages,
+    rejectNextImageDelete: () => {
+      rejectImageDelete = true;
+    },
     recover: () => {
       failing = false;
     },
@@ -91,6 +103,8 @@ test("a confirmed Modal stop lets deletion remove recovery images without anothe
   const f = fixture("snapshot");
   f.recover();
   await f.provider.stop({ sandboxId: "logical" });
+  f.rejectNextImageDelete();
+  await expect(f.provider.delete({ sandboxId: "logical" })).rejects.toMatchObject({ code: "unavailable" });
   await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
   expect(f.deletedImages).toEqual(["prior-recovery", "fresh-recovery"]);
   expect(f.state().phase).toBe("deleted");
