@@ -1311,6 +1311,31 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
+  test("a retired image still referenced by a live fork never leases its source", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const first = await f.provider.fork({ from: name });
+    const second = await f.provider.fork({ from: name });
+    await f.provider.deleteSnapshot(name);
+    await f.provider.delete({ sandboxId: first.id });
+    const lease = f.store.lease.bind(f.store);
+    const leased: string[] = [];
+    f.store.lease = (id, work) => {
+      leased.push(id);
+      return lease(id, work);
+    };
+    // The second fork still uses the snapshot image: the source is not leased, so its own
+    // lifecycle requests are never refused by a collection that has nothing to remove.
+    await f.runDetached();
+    expect(leased).not.toContain(builder.id);
+    expect(f.log).not.toContain("delete-image");
+    await f.provider.delete({ sandboxId: second.id });
+    await f.runDetached();
+    expect(leased).toContain(builder.id);
+    expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
+  });
   test("a busy retired source neither fails nor delays a fork's deletion", async () => {
     const f = fixture();
     const builder = await f.provider.createGolden({});

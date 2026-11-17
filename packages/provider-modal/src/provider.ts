@@ -131,6 +131,16 @@ export function assertSourceTargetScopes(source: Scope, target: Scope): void {
   )
     throw refusal("forbidden", "Source golden and target machine authority do not match.");
 }
+const detachedCollections = new Set<Promise<void>>();
+function trackDetachedCollection(work: () => Promise<void>) {
+  const run = work().finally(() => detachedCollections.delete(run));
+  detachedCollections.add(run);
+}
+/** Settles every detached retired-image collection. The server awaits this before closing SQL,
+ * so shutdown never strands a source's store lease mid-collection. */
+export async function settleDetachedModalCollections(): Promise<void> {
+  while (detachedCollections.size) await Promise.allSettled([...detachedCollections]);
+}
 export function createModalProvider(options: ModalProviderOptions): ModalProvider {
   const { store, distribution } = options;
   const runner: RunnerTransport = {
@@ -140,11 +150,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return options.runner.call(row, op, input);
     },
   };
-  const detachCollection =
-    options.detachCollection ??
-    ((work: () => Promise<void>) => {
-      void work();
-    });
+  const detachCollection = options.detachCollection ?? trackDetachedCollection;
   const measure: NonNullable<ModalProviderOptions["measure"]> = options.measure ?? ((_phase, work) => work());
   const source = options.source ?? { scope: options.scope, store };
   assertSourceTargetScopes(source.scope, options.scope);
@@ -695,8 +701,21 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     for (const sourceId of await imagesStore.tombstoneSources()) {
       const source = await imagesStore.get(sourceId);
       if (!matchesManagementAuthority(source.managementAuthority, managementAuthority)) continue;
-      const pending = (await imagesStore.images(source.info.id)).filter((x) => x.deleted);
-      if (!pending.length) continue;
+      // Lease a source only when it has an image to remove now. A tombstone still referenced by
+      // a live machine stays put, and leasing its source for nothing would refuse that source's
+      // own lifecycle requests. The lease re-checks every condition before any removal.
+      let collectable = false;
+      for (const image of await imagesStore.images(source.info.id))
+        if (
+          image.deleted &&
+          image.imageId &&
+          matchesManagementAuthority(image.managementAuthority, managementAuthority) &&
+          !(await imagesStore.imageReferenced(image.imageId))
+        ) {
+          collectable = true;
+          break;
+        }
+      if (!collectable) continue;
       const collect = imagesStore.lease(source.info.id, async () => {
         for (const image of (await imagesStore.images(source.info.id)).filter(
           (x) => x.deleted && matchesManagementAuthority(x.managementAuthority, managementAuthority),

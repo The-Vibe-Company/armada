@@ -22,6 +22,7 @@ export {
   type ModalPromptPhase,
   type ModalProvider,
   type ModalProviderOptions,
+  settleDetachedModalCollections,
 } from "./provider.ts";
 export { mergeModalResourceReceipts } from "./receipts.ts";
 export { prepareFilesystemSnapshot, prepareFreshFilesystem } from "./snapshot.ts";

@@ -591,8 +591,8 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
     expect(sdk.filter((x) => x.endsWith("-lost"))).toEqual([]);
 
     // Another source's retired image is collected detached. While its image call is held open,
-    // the target's DELETE still answers 200, releases its activity lease, and a repeated DELETE
-    // is answered at once instead of 409 sandbox_not_ready.
+    // the target's DELETE still answers 200 and releases its activity lease (the proof that a
+    // repeated DELETE is never refused with 409 sandbox_not_ready).
     await Promise.all(detachedRuns.splice(0));
     const modalStore = createSqlModalStore(db, scope);
     const retired = await launch("retired-source");

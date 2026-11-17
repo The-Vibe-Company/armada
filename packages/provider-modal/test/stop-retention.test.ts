@@ -7,10 +7,11 @@ import {
   type RunnerDistribution,
   type SavedImage,
   type Scope,
+  settleDetachedModalCollections,
 } from "../src/index.ts";
 
 /** Stop-policy boundary: real adapter, injected persistence/SDK ports; no SQL startup. */
-function fixture(stage: "scrub" | "snapshot") {
+function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {}) {
   const scope: Scope = {
     orgId: "org",
     userId: "owner",
@@ -33,6 +34,7 @@ function fixture(stage: "scrub" | "snapshot") {
     snapshots = 0;
   let rejectImageDelete = false;
   const deniedImages = new Set<string>();
+  const heldImages = new Map<string, { entered: () => void; released: Promise<void> }>();
   const deletedImages: string[] = [];
   const cleanupDelays: number[] = [];
   let images: SavedImage[] = [];
@@ -80,6 +82,11 @@ function fixture(stage: "scrub" | "snapshot") {
     sandboxes: { fromId: async () => sandbox },
     images: {
       delete: async (id: string) => {
+        const held = heldImages.get(id);
+        if (held) {
+          held.entered();
+          await held.released;
+        }
         if (rejectImageDelete) {
           rejectImageDelete = false;
           throw Object.assign(new Error("image cleanup unavailable"), { name: "TimeoutError" });
@@ -107,9 +114,13 @@ function fixture(stage: "scrub" | "snapshot") {
     cleanupSleep: async (milliseconds) => {
       cleanupDelays.push(milliseconds);
     },
-    detachCollection: (work) => {
-      detached.push(work);
-    },
+    ...(productionDetach
+      ? {}
+      : {
+          detachCollection: (work: () => Promise<void>) => {
+            detached.push(work);
+          },
+        }),
   });
   return {
     provider,
@@ -127,6 +138,12 @@ function fixture(stage: "scrub" | "snapshot") {
     },
     rejectNextImageDelete: () => {
       rejectImageDelete = true;
+    },
+    holdImageDelete: (imageId: string) => {
+      const entered = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      heldImages.set(imageId, { entered: entered.resolve, released: released.promise });
+      return { entered: entered.promise, release: released.resolve };
     },
     retireImage: (imageId: string, { denied }: { denied: boolean }) => {
       if (!images.some((x) => x.imageId === imageId))
@@ -247,3 +264,23 @@ test.each(["common-runtime", "lost-workspace", "unretained-terminate"] as const)
     expect(f.snapshots()).toBe(0);
   },
 );
+
+test("server shutdown settles a detached retired-image collection before SQL closes", async () => {
+  const f = fixture("snapshot", { productionDetach: true });
+  f.recover();
+  await f.provider.stop({ sandboxId: "logical" });
+  f.retireImage("retired-elsewhere", { denied: false });
+  const held = f.holdImageDelete("retired-elsewhere");
+  await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
+  await held.entered;
+  let settled = false;
+  const settling = settleDetachedModalCollections().then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  held.release();
+  await settling;
+  expect(f.deletedImages).toContain("retired-elsewhere");
+  expect(f.images().filter((x) => x.deleted)).toEqual([]);
+});
