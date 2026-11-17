@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 const script = resolve(import.meta.dir, "deploy-production.sh");
 
 // Exercise the real shell entrypoint; fake only external provider executables.
-function deploy(failure = "", missing = "", pinVersion?: string, source = "") {
+function deploy(failure = "", missing = "", pinVersion?: string, source = "", production = false) {
   const dir = mkdtempSync(join(tmpdir(), "release-deploy-"));
   try {
     const bin = join(dir, "bin");
@@ -43,6 +43,7 @@ function deploy(failure = "", missing = "", pinVersion?: string, source = "") {
       "git",
       `if [[ "$1" == ls-remote ]]; then printf '%s\\trefs/heads/main\\n' "$REMOTE_HEAD"; else exec ${JSON.stringify(actualGit)} "$@"; fi`,
     );
+    if (production) run(["mkfifo", join(dir, "build-ready")]);
     executable("supabase", 'echo "supabase $*" >> "$CALLS"; [[ "$FAILURE" != migrations ]]');
     executable(
       "railway",
@@ -54,6 +55,9 @@ if [[ "$1" == up ]]; then
   fi
   echo '{"deploymentId":"selected"}'
 else
+  if [[ "$RELEASE_ENVIRONMENT" == production ]]; then
+    read -r -t 0.5 -u 3 || exit 1
+  fi
   # Another deployment being healthy must not let this release continue.
   if [[ "$FAILURE" == server ]]; then status=FAILED; else status=SUCCESS; fi
   printf '[{"id":"other","status":"SUCCESS"},{"id":"selected","status":"%s"}]' "$status"
@@ -64,7 +68,14 @@ fi`,
       `echo curl >> "$CALLS"
 if [[ "$FAILURE" == wrong-commit ]]; then printf '{"ok":true,"version":"1.2.3","commit":"%s"}' "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; elif [[ "$FAILURE" == health ]]; then echo '{"ok":true,"version":"0.0.0"}'; else printf '{"ok":true,"version":"1.2.3","commit":"%s"}' "$RELEASE_SHA"; fi`,
     );
-    executable("vercel", 'echo "vercel $*" >> "$CALLS"; [[ "$FAILURE" != "dashboard-$1" ]]');
+    executable(
+      "vercel",
+      `echo "vercel $*" >> "$CALLS"
+if [[ "$RELEASE_ENVIRONMENT" == production && "$1" == build ]]; then
+  echo ready >&3
+fi
+[[ "$FAILURE" != "dashboard-$1" ]]`,
+    );
     executable("sleep", ":");
     const env: Record<string, string> = {
       PATH: `${bin}:${process.env.PATH}`,
@@ -73,6 +84,7 @@ if [[ "$FAILURE" == wrong-commit ]]; then printf '{"ok":true,"version":"1.2.3","
       PIN_VERSION: pinVersion ?? "",
       // A legacy environment flag must not restore the retired missing-token path.
       DEPLOYMENT_ENVIRONMENT: "staging",
+      RELEASE_ENVIRONMENT: production ? "production" : "staging",
       HOME: dir,
       RELEASE_SHA: sha,
       REMOTE_HEAD: source === "current" ? sha : source === "unresolved" ? "invalid" : "b".repeat(40),
@@ -96,7 +108,10 @@ if [[ "$FAILURE" == wrong-commit ]]; then printf '{"ok":true,"version":"1.2.3","
     ])
       env[key] = "fixture";
     delete env[missing];
-    const result = Bun.spawnSync(["bash", script], { cwd: dir, env });
+    const args = production
+      ? ["bash", "-c", 'exec 3<> "$HOME/build-ready"; exec bash "$1"', "fixture", script]
+      : ["bash", script];
+    const result = Bun.spawnSync(args, { cwd: dir, env });
     let calls = "";
     try {
       calls = readFileSync(log, "utf8");
@@ -139,6 +154,16 @@ test("release uploads and gates providers in migration/server/health/dashboard o
   expect(result.calls).toContain("vercel build --prod");
   expect(result.calls).toContain("vercel deploy --prebuilt --prod --yes");
   expect(result.calls).not.toContain("--token");
+});
+
+test("production builds while Railway is pending and publishes only after exact health", () => {
+  const result = deploy("", "", undefined, "", true);
+  expect(result.code).toBe(0);
+  expect(result.calls).toMatch(/vercel build --prod\n(?:[^\n]*\n)*curl\nvercel deploy --prebuilt/);
+  const failed = deploy("wrong-commit", "", undefined, "", true);
+  expect(failed.code).not.toBe(0);
+  expect(failed.calls).toContain("vercel build --prod");
+  expect(failed.calls).not.toContain("vercel deploy");
 });
 
 test.each(["migrations", "server", "health", "wrong-commit", "dashboard-pull", "dashboard-build", "dashboard-deploy"])(

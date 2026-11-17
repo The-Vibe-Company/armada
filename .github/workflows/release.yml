@@ -475,6 +475,8 @@ jobs:
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
       - uses: ./.github/actions/setup-bun
       - name: Migrate, deploy server, wait healthy, then deploy prebuilt dashboard
+        env:
+          RELEASE_ENVIRONMENT: production
         run: bash .release-tools/scripts/release/deploy-production.sh
       - name: Report stopped release
         if: failure()
