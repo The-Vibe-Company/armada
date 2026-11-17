@@ -72,7 +72,7 @@ export function createRuntimeProvider(
           },
         }
       : {}),
-    // Declared outputs are a fixed host read (Boat command/snapshot API, Modal container),
+    // Declared outputs are a fixed host read (Boat command API, Modal container),
     // never a runner operation, so enrolled runtimes publish outputs like native sandboxes.
     ...(host.readOutputs
       ? {

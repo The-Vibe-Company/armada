@@ -1269,7 +1269,7 @@ test("declared outputs are read from live compute by the fixed collector and nev
   expect((live.requests.at(-1)?.body as { command?: string } | undefined)?.command).toBe(OUTPUT_COLLECTOR);
   // A stopped sandbox is refused, never resumed: its retained disk is outside this read.
   const stopped = fakeBoat({ body: { ok: true, sandbox: sandbox({ state: "archived" }) } });
-  await expect(stopped.provider.readOutputs?.({ sandboxId: ID })).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  expect(await stopped.provider.readOutputs?.({ sandboxId: ID })).toBeNull();
   expect(stopped.requests.map((r) => r.method)).toEqual(["GET"]);
   expect(stopped.remaining()).toBe(0);
 });

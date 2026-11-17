@@ -19,6 +19,8 @@ const ELIGIBLE = `provider in ('boat','modal') and not application_secret_tainte
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
  * their signal aborts; the outstanding read stays tracked, bounded and fenced from persisting. */
 const OUTSTANDING_MAX = 4;
+/** Deadline of one background periodic sample (the shared worker loop never waits for it). */
+const SAMPLE_DEADLINE_MS = 25_000;
 
 function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return work;
@@ -86,11 +88,12 @@ async function collect(
   });
 }
 
-const finalPending = new Set<Promise<void>>();
+/** Final captures that outlived their stop deadline and still hang in the provider SDK. */
+const finalLate = new Set<Promise<void>>();
 
 /** Settle final captures that outlived their stop deadline (tests); late ones never persist. */
 export async function drainFinalOutputs(): Promise<void> {
-  await Promise.allSettled(finalPending);
+  await Promise.allSettled(finalLate);
 }
 
 /** Final capture on Armada's stop path: after quiesce, before provider stop revokes compute.
@@ -105,8 +108,9 @@ export async function captureFinalOutputs(
 ): Promise<void> {
   const key = options.key ?? encryptionKey();
   if (!key) return;
-  // Earlier captures still hang in the provider SDK: skip rather than pile up; the snapshot stays.
-  if (finalPending.size >= OUTSTANDING_MAX) throw Error("output_collection_busy");
+  // Earlier captures outlived their deadline and still hang in the provider SDK: skip rather than
+  // pile up; the snapshot stays. Concurrent stops that are still within their deadline never count.
+  if (finalLate.size >= OUTSTANDING_MAX) throw Error("output_collection_busy");
   const row = (
     await sql.query<{ provider_sandbox_id: string; scan: string }>(
       `update public.sandboxes set outputs_checked_at=clock_timestamp()
@@ -117,13 +121,17 @@ export async function captureFinalOutputs(
   ).rows[0];
   if (!row) return;
   const work = collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, options.signal);
-  finalPending.add(work);
-  void work.then(
-    () => finalPending.delete(work),
-    () => finalPending.delete(work),
-  );
+  work.catch(() => {});
   // Stop dispatch waits at most until the caller's deadline, even if the provider SDK does not.
-  await untilAborted(work, options.signal);
+  try {
+    await untilAborted(work, options.signal);
+  } catch (error) {
+    if (options.signal?.aborted) {
+      finalLate.add(work);
+      void work.catch(() => {}).finally(() => finalLate.delete(work));
+    }
+    throw error;
+  }
 }
 
 export function createSandboxOutputs(
@@ -146,20 +154,21 @@ export function createSandboxOutputs(
         order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider_sandbox_id,outputs_checked_at::text as scan`)
       ).rows[0];
       if (!row) return false;
+      // The sample runs in the background under its own deadline (and the worker's shutdown), so
+      // stop reconciliation, webhooks and other lanes never wait for a provider read. At most
+      // OUTSTANDING_MAX samples are in flight; drain() settles them; a late one never persists.
       // A per-sandbox failure (no python3, provider refusal, compute stopping) is that sandbox's
-      // problem: keep the previous snapshot, retry after the 30 s fence, and never stall
-      // the shared worker loop.
+      // problem: keep the previous snapshot and retry after the 30 s fence.
+      const deadline = AbortSignal.any([signal, AbortSignal.timeout(SAMPLE_DEADLINE_MS)]);
       const work = providerFor(row.id)
-        .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, signal))
+        .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, deadline))
         .catch(() => {
           console.warn(JSON.stringify({ event: "sandbox_output_collection_failed", sandboxId: row.id }));
         })
         .then(() => true);
       pending.add(work);
       void work.then(() => pending.delete(work));
-      // The lane yields at the worker deadline so stop reconciliation and webhooks proceed;
-      // the read stays tracked (drain, OUTSTANDING_MAX) and cannot persist after the deadline.
-      return untilAborted(work, signal).catch(() => true);
+      return true;
     },
     async drain() {
       await Promise.allSettled(pending);

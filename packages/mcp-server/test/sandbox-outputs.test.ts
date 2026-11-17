@@ -60,6 +60,13 @@ function disks() {
   return { state, provider };
 }
 
+/** One worker-lane pass plus its background sample (the lane itself never waits for the read). */
+async function sample(service: ReturnType<typeof createSandboxOutputs>) {
+  const claimed = await service.reconcileOne(signal());
+  await service.drain();
+  return claimed;
+}
+
 const routeFor = (service: ReturnType<typeof createSandboxOutputs>, userId: string, orgId: string) =>
   service.route(async () => ({ ok: true, caller: { userId, via: "service", orgs: [{ orgId, role: "member" }] } }));
 
@@ -72,16 +79,16 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   const { state, provider } = disks();
   state.live = [file("memo.pdf", "document")];
   const service = createSandboxOutputs(sql, KEY, async () => provider);
-  expect(await service.reconcileOne(signal())).toBe(true);
+  expect(await sample(service)).toBe(true);
   await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(true);
+  expect(await sample(service)).toBe(true);
   expect(
     (await db.query(`select 1 from outbound_webhook_deliveries where payload->>'type'='sandbox.output.available'`))
       .rows,
   ).toHaveLength(1);
   await db.query(`update sandboxes set status='stopped',stopped_at=now(),outputs_checked_at=null where id=$1`, [id]);
   // A stopped workspace is never read: the last live snapshot is what stays downloadable.
-  expect(await service.reconcileOne(signal())).toBe(false);
+  expect(await sample(service)).toBe(false);
   expect(state.reads).toBe(2);
   const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
   const response = await routeFor(service, people.owner, people.org)(new Request(`${url}/memo.pdf`));
@@ -108,8 +115,8 @@ test("stop captures files written after the last sample, for native and enrolled
   process.env.ARMADA_ENCRYPTION_KEY = KEY;
   try {
     const service = createSandboxOutputs(sql, KEY, async () => provider);
-    expect(await service.reconcileOne(signal())).toBe(true);
-    expect(await service.reconcileOne(signal())).toBe(true);
+    expect(await sample(service)).toBe(true);
+    expect(await sample(service)).toBe(true);
     state.live = [file("final.pdf", "final")];
     await db.query(
       `update sandboxes set status='stopping',stop_requested_at=now(),stop_generation=stop_generation+1 where id = any($1)`,
@@ -135,15 +142,15 @@ test("application-secret taint forbids output sampling, final capture, late pers
   state.live = [file("memo.pdf", "secret")];
   const service = createSandboxOutputs(sql, KEY, async () => provider);
   // A snapshot captured before exposure is purged when taint commits.
-  expect(await service.reconcileOne(signal())).toBe(true);
+  expect(await sample(service)).toBe(true);
   expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(1);
   await db.query(`update sandboxes set application_secret_tainted=true,outputs_checked_at=null where id=$1`, [id]);
   expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
   // Neither periodic sampling nor the stop-path final capture reads tainted disks.
-  expect(await service.reconcileOne(signal())).toBe(false);
+  expect(await sample(service)).toBe(false);
   await captureFinalOutputs(sql, provider, id, { key: KEY });
   await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(false);
+  expect(await sample(service)).toBe(false);
   expect(state.reads).toBe(1);
   // A collector that started before taint cannot persist afterwards.
   await expect(
@@ -162,11 +169,11 @@ test("a failed or out-of-bounds read keeps the previous snapshot and never fails
   const { state, provider } = disks();
   state.live = [file("memo.txt", "draft")];
   const service = createSandboxOutputs(sql, KEY, async () => provider);
-  expect(await service.reconcileOne(signal())).toBe(true);
+  expect(await sample(service)).toBe(true);
   // A provider returning entries the collector cannot produce is refused at server admission.
   state.live = [file("../key", "x"), file("memo.txt", "replaced")];
   await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(true);
+  expect(await sample(service)).toBe(true);
   expect((await db.query(`select name,size from sandbox_outputs where sandbox_id=$1`, [id])).rows).toEqual([
     { name: "memo.txt", size: 5 },
   ]);
@@ -186,14 +193,13 @@ test("a hanging provider read yields at the caller deadline, stays tracked and n
     });
   const rows = async () => (await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows;
   const service = createSandboxOutputs(sql, KEY, async () => provider);
-  // Worker lane: it returns at its deadline while the SDK promise is still pending, so the next
-  // lane (stop reconciliation, webhooks) runs; the read stays tracked and cannot persist late.
+  // Worker lane: it returns while the SDK promise is still pending, so the next lane (stop
+  // reconciliation, webhooks) runs; the read stays tracked and cannot persist after its deadline.
   const deadline = new AbortController();
   let reading = entered();
-  const lane = service.reconcileOne(deadline.signal);
+  expect(await service.reconcileOne(deadline.signal)).toBe(true);
   await reading;
   deadline.abort();
-  expect(await lane).toBe(true);
   release();
   await service.drain();
   expect(await rows()).toHaveLength(0);
@@ -281,4 +287,34 @@ test("a collection whose deadline passes while it waits for the row lock never c
   // Without a deadline, the same path publishes.
   await captureFinalOutputs(sql, provider, id, { key: KEY });
   expect(await committed()).toEqual({ files: 1, events: 1 });
+});
+
+test("concurrent stops within their deadline all take their final capture", async () => {
+  const { id, sql } = await fixture({ boatId: "concurrent_fixture" });
+  const { state, provider } = disks();
+  state.live = [file("memo.txt", "final")];
+  let release = () => {};
+  state.hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const reading = (count: number) =>
+    new Promise<void>((resolve) => {
+      state.entered = () => {
+        if (state.reads === count) resolve();
+      };
+    });
+  const capture = () => captureFinalOutputs(sql, provider, id, { key: KEY, signal: new AbortController().signal });
+  // Four stops are reading (e.g. a parent stopping its children); none has passed its deadline.
+  let entered = reading(4);
+  const captures = Array.from({ length: 4 }, capture);
+  await entered;
+  // A fifth stop is not refused as busy while the others are still within their deadline.
+  entered = reading(5);
+  captures.push(capture());
+  await entered;
+  release();
+  await Promise.all(captures);
+  expect((await sql.query(`select name from sandbox_outputs where sandbox_id=$1`, [id])).rows).toEqual([
+    { name: "memo.txt" },
+  ]);
 });
