@@ -16,7 +16,8 @@
       "!**/playwright-report",
       "!.agents",
       "!.claude",
-      "!docs/design/refonte-2026-11-16"
+      "!docs/design/refonte-2026-11-16",
+      "!docs/openapi.json"
     ]
   },
   "formatter": {

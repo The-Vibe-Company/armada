@@ -27,7 +27,10 @@
                   },
                   "provider": {
                     "type": "string",
-                    "enum": ["boat", "modal"]
+                    "enum": [
+                      "boat",
+                      "modal"
+                    ]
                   }
                 },
                 "$schema": "http://json-schema.org/draft-07/schema#"
@@ -45,7 +48,10 @@
                   "properties": {
                     "provider": {
                       "type": "string",
-                      "enum": ["boat", "modal"]
+                      "enum": [
+                        "boat",
+                        "modal"
+                      ]
                     },
                     "maxGoldens": {
                       "anyOf": [
@@ -71,15 +77,25 @@
                           },
                           "relation": {
                             "type": "string",
-                            "enum": ["current_backend", "other_backend", "unbound"]
+                            "enum": [
+                              "current_backend",
+                              "other_backend",
+                              "unbound"
+                            ]
                           }
                         },
-                        "required": ["goldenId", "relation"],
+                        "required": [
+                          "goldenId",
+                          "relation"
+                        ],
                         "additionalProperties": false
                       }
                     }
                   },
-                  "required": ["provider", "maxGoldens"],
+                  "required": [
+                    "provider",
+                    "maxGoldens"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -129,7 +145,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -153,7 +171,11 @@
                       "type": "string"
                     }
                   },
-                  "required": ["goldenId", "dryRun", "confirmation"],
+                  "required": [
+                    "goldenId",
+                    "dryRun",
+                    "confirmation"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -197,7 +219,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -232,14 +256,21 @@
                           "type": "string"
                         }
                       },
-                      "required": ["kind", "epoch"],
+                      "required": [
+                        "kind",
+                        "epoch"
+                      ],
                       "additionalProperties": false
                     },
                     "revision": {
                       "type": "string"
                     }
                   },
-                  "required": ["id", "login", "status"],
+                  "required": [
+                    "id",
+                    "login",
+                    "status"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -283,7 +314,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -304,7 +337,10 @@
                       "type": "boolean"
                     },
                     "revision": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "credentialRequests": {
                       "type": "integer",
@@ -312,7 +348,10 @@
                       "maximum": 9007199254740991
                     },
                     "lastAccessedAt": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "runtime": {
                       "type": "object",
@@ -325,11 +364,20 @@
                           "type": "string"
                         }
                       },
-                      "required": ["kind", "epoch"],
+                      "required": [
+                        "kind",
+                        "epoch"
+                      ],
                       "additionalProperties": false
                     }
                   },
-                  "required": ["id", "configured", "revision", "credentialRequests", "lastAccessedAt"],
+                  "required": [
+                    "id",
+                    "configured",
+                    "revision",
+                    "credentialRequests",
+                    "lastAccessedAt"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -367,7 +415,11 @@
                 "properties": {
                   "harness": {
                     "type": "string",
-                    "enum": ["claude", "codex", "opencode"]
+                    "enum": [
+                      "claude",
+                      "codex",
+                      "opencode"
+                    ]
                   },
                   "golden": {
                     "description": "Golden UUID, not a name.",
@@ -400,7 +452,15 @@
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                      "enum": [
+                        "starting",
+                        "ready",
+                        "running",
+                        "stopping",
+                        "stopped",
+                        "failed",
+                        "deleted"
+                      ]
                     }
                   },
                   "limit": {
@@ -456,7 +516,10 @@
                             "type": "boolean"
                           },
                           "statusMessage": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "usage": {
                             "anyOf": [
@@ -464,30 +527,46 @@
                                 "type": "object",
                                 "properties": {
                                   "computeSeconds": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "turnCount": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "cost": {
                                     "type": "object",
                                     "properties": {
                                       "classification": {
                                         "type": "string",
-                                        "enum": ["priced", "included_in_subscription", "unknown"]
+                                        "enum": [
+                                          "priced",
+                                          "included_in_subscription",
+                                          "unknown"
+                                        ]
                                       },
                                       "currency": {
                                         "type": "string",
                                         "const": "USD"
                                       },
                                       "usd": {
-                                        "type": ["string", "null"]
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
                                       },
                                       "basis": {
                                         "anyOf": [
                                           {
                                             "type": "string",
-                                            "enum": ["estimated", "api_equivalent"]
+                                            "enum": [
+                                              "estimated",
+                                              "api_equivalent"
+                                            ]
                                           },
                                           {
                                             "type": "null"
@@ -498,7 +577,13 @@
                                         "anyOf": [
                                           {
                                             "type": "string",
-                                            "enum": ["admission", "coverage", "price", "tokens", "pricing_dimensions"]
+                                            "enum": [
+                                              "admission",
+                                              "coverage",
+                                              "price",
+                                              "tokens",
+                                              "pricing_dimensions"
+                                            ]
                                           },
                                           {
                                             "type": "null"
@@ -535,19 +620,34 @@
                                         "type": "boolean"
                                       },
                                       "inputTokens": {
-                                        "type": ["number", "null"]
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
                                       },
                                       "outputTokens": {
-                                        "type": ["number", "null"]
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
                                       },
                                       "cachedTokens": {
-                                        "type": ["number", "null"]
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
                                       },
                                       "cacheWriteTokens": {
-                                        "type": ["number", "null"]
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
                                       },
                                       "reasoningTokens": {
-                                        "type": ["number", "null"]
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
                                       }
                                     },
                                     "required": [
@@ -568,22 +668,40 @@
                                           "type": "string"
                                         },
                                         "model": {
-                                          "type": ["string", "null"]
+                                          "type": [
+                                            "string",
+                                            "null"
+                                          ]
                                         },
                                         "inputTokens": {
-                                          "type": ["number", "null"]
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ]
                                         },
                                         "outputTokens": {
-                                          "type": ["number", "null"]
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ]
                                         },
                                         "cachedTokens": {
-                                          "type": ["number", "null"]
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ]
                                         },
                                         "cacheWriteTokens": {
-                                          "type": ["number", "null"]
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ]
                                         },
                                         "reasoningTokens": {
-                                          "type": ["number", "null"]
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ]
                                         },
                                         "pricing": {
                                           "description": "Versioned server USD quote from a frozen snapshot; null means unpriced, never zero.",
@@ -621,16 +739,29 @@
                                               "maxLength": 600
                                             }
                                           },
-                                          "required": ["code", "message"],
+                                          "required": [
+                                            "code",
+                                            "message"
+                                          ],
                                           "additionalProperties": false
                                         }
                                       },
-                                      "required": ["promptId", "model", "inputTokens", "outputTokens", "cachedTokens"],
+                                      "required": [
+                                        "promptId",
+                                        "model",
+                                        "inputTokens",
+                                        "outputTokens",
+                                        "cachedTokens"
+                                      ],
                                       "additionalProperties": false
                                     }
                                   }
                                 },
-                                "required": ["computeSeconds", "turnCount", "turns"],
+                                "required": [
+                                  "computeSeconds",
+                                  "turnCount",
+                                  "turns"
+                                ],
                                 "additionalProperties": false
                               },
                               {
@@ -639,13 +770,22 @@
                             ]
                           },
                           "preservationNote": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "providerSandboxId": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "boatId": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "id": {
                             "type": "string"
@@ -658,40 +798,76 @@
                           },
                           "provider": {
                             "type": "string",
-                            "enum": ["boat", "modal", "docker"]
+                            "enum": [
+                              "boat",
+                              "modal",
+                              "docker"
+                            ]
                           },
                           "harness": {
                             "type": "string",
-                            "enum": ["claude", "codex", "opencode"]
+                            "enum": [
+                              "claude",
+                              "codex",
+                              "opencode"
+                            ]
                           },
                           "model": {
                             "description": "The requested next-send default, not proof of the observed model.",
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "reasoningEffort": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "status": {
                             "type": "string",
-                            "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                            "enum": [
+                              "starting",
+                              "ready",
+                              "running",
+                              "stopping",
+                              "stopped",
+                              "failed",
+                              "deleted"
+                            ]
                           },
                           "createdAt": {
                             "type": "string"
                           },
                           "stoppedAt": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "expiresAt": {
-                            "type": ["string", "null"]
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "effectiveTtlSeconds": {
-                            "type": ["number", "null"]
+                            "type": [
+                              "number",
+                              "null"
+                            ]
                           },
                           "machineSize": {
                             "anyOf": [
                               {
                                 "type": "string",
-                                "enum": ["small", "medium", "large", "xlarge"]
+                                "enum": [
+                                  "small",
+                                  "medium",
+                                  "large",
+                                  "xlarge"
+                                ]
                               },
                               {
                                 "type": "null"
@@ -727,7 +903,9 @@
                                         "pattern": "^[a-f0-9]{40}$"
                                       }
                                     },
-                                    "required": ["state"],
+                                    "required": [
+                                      "state"
+                                    ],
                                     "additionalProperties": false
                                   },
                                   {
@@ -743,7 +921,10 @@
                                         "maxLength": 1000
                                       }
                                     },
-                                    "required": ["state", "reason"],
+                                    "required": [
+                                      "state",
+                                      "reason"
+                                    ],
                                     "additionalProperties": false
                                   }
                                 ]
@@ -820,7 +1001,14 @@
                       ]
                     }
                   },
-                  "required": ["sandboxes", "total", "page", "limit", "hasMore", "nextPage"],
+                  "required": [
+                    "sandboxes",
+                    "total",
+                    "page",
+                    "limit",
+                    "hasMore",
+                    "nextPage"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -873,7 +1061,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -936,10 +1126,17 @@
                                     "type": "string"
                                   },
                                   "ms": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   }
                                 },
-                                "required": ["stage", "at", "ms"],
+                                "required": [
+                                  "stage",
+                                  "at",
+                                  "ms"
+                                ],
                                 "additionalProperties": false
                               }
                             },
@@ -949,7 +1146,10 @@
                             },
                             "totalMs": {
                               "description": "First stage to harness ready (or the last stage so far); first_token waits for a prompt and is excluded.",
-                              "type": ["number", "null"]
+                              "type": [
+                                "number",
+                                "null"
+                              ]
                             },
                             "slowest": {
                               "anyOf": [
@@ -973,7 +1173,10 @@
                                       "type": "number"
                                     }
                                   },
-                                  "required": ["stage", "ms"],
+                                  "required": [
+                                    "stage",
+                                    "ms"
+                                  ],
                                   "additionalProperties": false
                                 },
                                 {
@@ -982,7 +1185,13 @@
                               ]
                             }
                           },
-                          "required": ["activation", "stages", "ready", "totalMs", "slowest"],
+                          "required": [
+                            "activation",
+                            "stages",
+                            "ready",
+                            "totalMs",
+                            "slowest"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -992,7 +1201,10 @@
                     },
                     "providerExpiresAt": {
                       "description": "Provider physical deadline, when observed; distinct from Armada logical expiry.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "billingAccount": {
                       "anyOf": [
@@ -1010,7 +1222,10 @@
                             },
                             "billing": {
                               "type": "string",
-                              "enum": ["subscription", "api-key"]
+                              "enum": [
+                                "subscription",
+                                "api-key"
+                              ]
                             },
                             "version": {
                               "type": "integer",
@@ -1018,7 +1233,13 @@
                               "maximum": 9007199254740991
                             }
                           },
-                          "required": ["id", "name", "kind", "billing", "version"],
+                          "required": [
+                            "id",
+                            "name",
+                            "kind",
+                            "billing",
+                            "version"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -1047,7 +1268,13 @@
                             "type": "string"
                           }
                         },
-                        "required": ["reference", "version", "skillId", "checksum", "origin"],
+                        "required": [
+                          "reference",
+                          "version",
+                          "skillId",
+                          "checksum",
+                          "origin"
+                        ],
                         "additionalProperties": false
                       }
                     },
@@ -1057,30 +1284,46 @@
                           "type": "object",
                           "properties": {
                             "computeSeconds": {
-                              "type": ["number", "null"]
+                              "type": [
+                                "number",
+                                "null"
+                              ]
                             },
                             "turnCount": {
-                              "type": ["number", "null"]
+                              "type": [
+                                "number",
+                                "null"
+                              ]
                             },
                             "cost": {
                               "type": "object",
                               "properties": {
                                 "classification": {
                                   "type": "string",
-                                  "enum": ["priced", "included_in_subscription", "unknown"]
+                                  "enum": [
+                                    "priced",
+                                    "included_in_subscription",
+                                    "unknown"
+                                  ]
                                 },
                                 "currency": {
                                   "type": "string",
                                   "const": "USD"
                                 },
                                 "usd": {
-                                  "type": ["string", "null"]
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
                                 },
                                 "basis": {
                                   "anyOf": [
                                     {
                                       "type": "string",
-                                      "enum": ["estimated", "api_equivalent"]
+                                      "enum": [
+                                        "estimated",
+                                        "api_equivalent"
+                                      ]
                                     },
                                     {
                                       "type": "null"
@@ -1091,7 +1334,13 @@
                                   "anyOf": [
                                     {
                                       "type": "string",
-                                      "enum": ["admission", "coverage", "price", "tokens", "pricing_dimensions"]
+                                      "enum": [
+                                        "admission",
+                                        "coverage",
+                                        "price",
+                                        "tokens",
+                                        "pricing_dimensions"
+                                      ]
                                     },
                                     {
                                       "type": "null"
@@ -1111,7 +1360,14 @@
                                   ]
                                 }
                               },
-                              "required": ["classification", "currency", "usd", "basis", "unknown", "unpricedTurns"],
+                              "required": [
+                                "classification",
+                                "currency",
+                                "usd",
+                                "basis",
+                                "unknown",
+                                "unpricedTurns"
+                              ],
                               "additionalProperties": false
                             },
                             "tokenTotals": {
@@ -1121,19 +1377,34 @@
                                   "type": "boolean"
                                 },
                                 "inputTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "outputTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "cachedTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "cacheWriteTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "reasoningTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 }
                               },
                               "required": [
@@ -1154,22 +1425,40 @@
                                     "type": "string"
                                   },
                                   "model": {
-                                    "type": ["string", "null"]
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
                                   },
                                   "inputTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "outputTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "cachedTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "cacheWriteTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "reasoningTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "pricing": {
                                     "description": "Versioned server USD quote from a frozen snapshot; null means unpriced, never zero.",
@@ -1207,16 +1496,29 @@
                                         "maxLength": 600
                                       }
                                     },
-                                    "required": ["code", "message"],
+                                    "required": [
+                                      "code",
+                                      "message"
+                                    ],
                                     "additionalProperties": false
                                   }
                                 },
-                                "required": ["promptId", "model", "inputTokens", "outputTokens", "cachedTokens"],
+                                "required": [
+                                  "promptId",
+                                  "model",
+                                  "inputTokens",
+                                  "outputTokens",
+                                  "cachedTokens"
+                                ],
                                 "additionalProperties": false
                               }
                             }
                           },
-                          "required": ["computeSeconds", "turnCount", "turns"],
+                          "required": [
+                            "computeSeconds",
+                            "turnCount",
+                            "turns"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -1225,7 +1527,10 @@
                       ]
                     },
                     "preservationNote": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "externalRef": {
                       "description": "Opaque reference given at launch; absent when none.",
@@ -1235,11 +1540,18 @@
                       "type": "string"
                     },
                     "golden": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "provider": {
                       "type": "string",
-                      "enum": ["boat", "modal", "docker"]
+                      "enum": [
+                        "boat",
+                        "modal",
+                        "docker"
+                      ]
                     },
                     "hostId": {
                       "type": "string"
@@ -1249,18 +1561,31 @@
                     },
                     "visibility": {
                       "type": "string",
-                      "enum": ["org", "private"]
+                      "enum": [
+                        "org",
+                        "private"
+                      ]
                     },
                     "harness": {
                       "type": "string",
-                      "enum": ["claude", "codex", "opencode"]
+                      "enum": [
+                        "claude",
+                        "codex",
+                        "opencode"
+                      ]
                     },
                     "repositoryDir": {
                       "description": "Configured directory used to prepare native agent cwd; not confinement.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "credentialId": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "credentialVersion": {
                       "anyOf": [
@@ -1276,10 +1601,16 @@
                     },
                     "model": {
                       "description": "The requested next-send default, not proof of the observed model.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "reasoningEffort": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "machineSize": {
                       "anyOf": [
@@ -1291,13 +1622,27 @@
                     },
                     "status": {
                       "type": "string",
-                      "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                      "enum": [
+                        "starting",
+                        "ready",
+                        "running",
+                        "stopping",
+                        "stopped",
+                        "failed",
+                        "deleted"
+                      ]
                     },
                     "statusReason": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "statusMessage": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "taskOutcome": {
                       "anyOf": [
@@ -1325,7 +1670,9 @@
                                   "pattern": "^[a-f0-9]{40}$"
                                 }
                               },
-                              "required": ["state"],
+                              "required": [
+                                "state"
+                              ],
                               "additionalProperties": false
                             },
                             {
@@ -1341,7 +1688,10 @@
                                   "maxLength": 1000
                                 }
                               },
-                              "required": ["state", "reason"],
+                              "required": [
+                                "state",
+                                "reason"
+                              ],
                               "additionalProperties": false
                             }
                           ]
@@ -1352,7 +1702,10 @@
                       ]
                     },
                     "providerState": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "conversationIds": {
                       "type": "array",
@@ -1361,7 +1714,10 @@
                       }
                     },
                     "expiresAt": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "prompt": {
                       "anyOf": [
@@ -1392,7 +1748,14 @@
                                       "type": "string"
                                     }
                                   },
-                                  "required": ["retryCount", "delayMs", "totalWaitMs", "retryAt", "waiting", "message"],
+                                  "required": [
+                                    "retryCount",
+                                    "delayMs",
+                                    "totalWaitMs",
+                                    "retryAt",
+                                    "waiting",
+                                    "message"
+                                  ],
                                   "additionalProperties": false
                                 },
                                 {
@@ -1404,26 +1767,46 @@
                               "type": "string"
                             },
                             "conversationId": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "state": {
                               "type": "string",
-                              "enum": ["running", "finished", "interrupted", "failed"]
+                              "enum": [
+                                "running",
+                                "finished",
+                                "interrupted",
+                                "failed"
+                              ]
                             },
                             "reason": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "requestedModel": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "observedModel": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "modelSelectionReason": {
                               "anyOf": [
                                 {
                                   "type": "string",
-                                  "enum": ["model_selection_mismatch", "model_selection_unverified"]
+                                  "enum": [
+                                    "model_selection_mismatch",
+                                    "model_selection_unverified"
+                                  ]
                                 },
                                 {
                                   "type": "null"
@@ -1431,10 +1814,18 @@
                               ]
                             },
                             "modelSelectionMessage": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             }
                           },
-                          "required": ["promptId", "conversationId", "state", "reason"],
+                          "required": [
+                            "promptId",
+                            "conversationId",
+                            "state",
+                            "reason"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -1518,7 +1909,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -1581,10 +1974,17 @@
                                     "type": "string"
                                   },
                                   "ms": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   }
                                 },
-                                "required": ["stage", "at", "ms"],
+                                "required": [
+                                  "stage",
+                                  "at",
+                                  "ms"
+                                ],
                                 "additionalProperties": false
                               }
                             },
@@ -1594,7 +1994,10 @@
                             },
                             "totalMs": {
                               "description": "First stage to harness ready (or the last stage so far); first_token waits for a prompt and is excluded.",
-                              "type": ["number", "null"]
+                              "type": [
+                                "number",
+                                "null"
+                              ]
                             },
                             "slowest": {
                               "anyOf": [
@@ -1618,7 +2021,10 @@
                                       "type": "number"
                                     }
                                   },
-                                  "required": ["stage", "ms"],
+                                  "required": [
+                                    "stage",
+                                    "ms"
+                                  ],
                                   "additionalProperties": false
                                 },
                                 {
@@ -1627,7 +2033,13 @@
                               ]
                             }
                           },
-                          "required": ["activation", "stages", "ready", "totalMs", "slowest"],
+                          "required": [
+                            "activation",
+                            "stages",
+                            "ready",
+                            "totalMs",
+                            "slowest"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -1637,7 +2049,10 @@
                     },
                     "providerExpiresAt": {
                       "description": "Provider physical deadline, when observed; distinct from Armada logical expiry.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "billingAccount": {
                       "anyOf": [
@@ -1655,7 +2070,10 @@
                             },
                             "billing": {
                               "type": "string",
-                              "enum": ["subscription", "api-key"]
+                              "enum": [
+                                "subscription",
+                                "api-key"
+                              ]
                             },
                             "version": {
                               "type": "integer",
@@ -1663,7 +2081,13 @@
                               "maximum": 9007199254740991
                             }
                           },
-                          "required": ["id", "name", "kind", "billing", "version"],
+                          "required": [
+                            "id",
+                            "name",
+                            "kind",
+                            "billing",
+                            "version"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -1692,7 +2116,13 @@
                             "type": "string"
                           }
                         },
-                        "required": ["reference", "version", "skillId", "checksum", "origin"],
+                        "required": [
+                          "reference",
+                          "version",
+                          "skillId",
+                          "checksum",
+                          "origin"
+                        ],
                         "additionalProperties": false
                       }
                     },
@@ -1702,30 +2132,46 @@
                           "type": "object",
                           "properties": {
                             "computeSeconds": {
-                              "type": ["number", "null"]
+                              "type": [
+                                "number",
+                                "null"
+                              ]
                             },
                             "turnCount": {
-                              "type": ["number", "null"]
+                              "type": [
+                                "number",
+                                "null"
+                              ]
                             },
                             "cost": {
                               "type": "object",
                               "properties": {
                                 "classification": {
                                   "type": "string",
-                                  "enum": ["priced", "included_in_subscription", "unknown"]
+                                  "enum": [
+                                    "priced",
+                                    "included_in_subscription",
+                                    "unknown"
+                                  ]
                                 },
                                 "currency": {
                                   "type": "string",
                                   "const": "USD"
                                 },
                                 "usd": {
-                                  "type": ["string", "null"]
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
                                 },
                                 "basis": {
                                   "anyOf": [
                                     {
                                       "type": "string",
-                                      "enum": ["estimated", "api_equivalent"]
+                                      "enum": [
+                                        "estimated",
+                                        "api_equivalent"
+                                      ]
                                     },
                                     {
                                       "type": "null"
@@ -1736,7 +2182,13 @@
                                   "anyOf": [
                                     {
                                       "type": "string",
-                                      "enum": ["admission", "coverage", "price", "tokens", "pricing_dimensions"]
+                                      "enum": [
+                                        "admission",
+                                        "coverage",
+                                        "price",
+                                        "tokens",
+                                        "pricing_dimensions"
+                                      ]
                                     },
                                     {
                                       "type": "null"
@@ -1756,7 +2208,14 @@
                                   ]
                                 }
                               },
-                              "required": ["classification", "currency", "usd", "basis", "unknown", "unpricedTurns"],
+                              "required": [
+                                "classification",
+                                "currency",
+                                "usd",
+                                "basis",
+                                "unknown",
+                                "unpricedTurns"
+                              ],
                               "additionalProperties": false
                             },
                             "tokenTotals": {
@@ -1766,19 +2225,34 @@
                                   "type": "boolean"
                                 },
                                 "inputTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "outputTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "cachedTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "cacheWriteTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "reasoningTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 }
                               },
                               "required": [
@@ -1799,22 +2273,40 @@
                                     "type": "string"
                                   },
                                   "model": {
-                                    "type": ["string", "null"]
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
                                   },
                                   "inputTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "outputTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "cachedTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "cacheWriteTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "reasoningTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "pricing": {
                                     "description": "Versioned server USD quote from a frozen snapshot; null means unpriced, never zero.",
@@ -1852,16 +2344,29 @@
                                         "maxLength": 600
                                       }
                                     },
-                                    "required": ["code", "message"],
+                                    "required": [
+                                      "code",
+                                      "message"
+                                    ],
                                     "additionalProperties": false
                                   }
                                 },
-                                "required": ["promptId", "model", "inputTokens", "outputTokens", "cachedTokens"],
+                                "required": [
+                                  "promptId",
+                                  "model",
+                                  "inputTokens",
+                                  "outputTokens",
+                                  "cachedTokens"
+                                ],
                                 "additionalProperties": false
                               }
                             }
                           },
-                          "required": ["computeSeconds", "turnCount", "turns"],
+                          "required": [
+                            "computeSeconds",
+                            "turnCount",
+                            "turns"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -1870,7 +2375,10 @@
                       ]
                     },
                     "preservationNote": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "externalRef": {
                       "description": "Opaque reference given at launch; absent when none.",
@@ -1880,11 +2388,18 @@
                       "type": "string"
                     },
                     "golden": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "provider": {
                       "type": "string",
-                      "enum": ["boat", "modal", "docker"]
+                      "enum": [
+                        "boat",
+                        "modal",
+                        "docker"
+                      ]
                     },
                     "hostId": {
                       "type": "string"
@@ -1894,18 +2409,31 @@
                     },
                     "visibility": {
                       "type": "string",
-                      "enum": ["org", "private"]
+                      "enum": [
+                        "org",
+                        "private"
+                      ]
                     },
                     "harness": {
                       "type": "string",
-                      "enum": ["claude", "codex", "opencode"]
+                      "enum": [
+                        "claude",
+                        "codex",
+                        "opencode"
+                      ]
                     },
                     "repositoryDir": {
                       "description": "Configured directory used to prepare native agent cwd; not confinement.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "credentialId": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "credentialVersion": {
                       "anyOf": [
@@ -1921,10 +2449,16 @@
                     },
                     "model": {
                       "description": "The requested next-send default, not proof of the observed model.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "reasoningEffort": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "machineSize": {
                       "anyOf": [
@@ -1936,13 +2470,27 @@
                     },
                     "status": {
                       "type": "string",
-                      "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                      "enum": [
+                        "starting",
+                        "ready",
+                        "running",
+                        "stopping",
+                        "stopped",
+                        "failed",
+                        "deleted"
+                      ]
                     },
                     "statusReason": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "statusMessage": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "taskOutcome": {
                       "anyOf": [
@@ -1970,7 +2518,9 @@
                                   "pattern": "^[a-f0-9]{40}$"
                                 }
                               },
-                              "required": ["state"],
+                              "required": [
+                                "state"
+                              ],
                               "additionalProperties": false
                             },
                             {
@@ -1986,7 +2536,10 @@
                                   "maxLength": 1000
                                 }
                               },
-                              "required": ["state", "reason"],
+                              "required": [
+                                "state",
+                                "reason"
+                              ],
                               "additionalProperties": false
                             }
                           ]
@@ -1997,7 +2550,10 @@
                       ]
                     },
                     "providerState": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "conversationIds": {
                       "type": "array",
@@ -2006,7 +2562,10 @@
                       }
                     },
                     "expiresAt": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "prompt": {
                       "anyOf": [
@@ -2037,7 +2596,14 @@
                                       "type": "string"
                                     }
                                   },
-                                  "required": ["retryCount", "delayMs", "totalWaitMs", "retryAt", "waiting", "message"],
+                                  "required": [
+                                    "retryCount",
+                                    "delayMs",
+                                    "totalWaitMs",
+                                    "retryAt",
+                                    "waiting",
+                                    "message"
+                                  ],
                                   "additionalProperties": false
                                 },
                                 {
@@ -2049,26 +2615,46 @@
                               "type": "string"
                             },
                             "conversationId": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "state": {
                               "type": "string",
-                              "enum": ["running", "finished", "interrupted", "failed"]
+                              "enum": [
+                                "running",
+                                "finished",
+                                "interrupted",
+                                "failed"
+                              ]
                             },
                             "reason": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "requestedModel": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "observedModel": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "modelSelectionReason": {
                               "anyOf": [
                                 {
                                   "type": "string",
-                                  "enum": ["model_selection_mismatch", "model_selection_unverified"]
+                                  "enum": [
+                                    "model_selection_mismatch",
+                                    "model_selection_unverified"
+                                  ]
                                 },
                                 {
                                   "type": "null"
@@ -2076,10 +2662,18 @@
                               ]
                             },
                             "modelSelectionMessage": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             }
                           },
-                          "required": ["promptId", "conversationId", "state", "reason"],
+                          "required": [
+                            "promptId",
+                            "conversationId",
+                            "state",
+                            "reason"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -2159,7 +2753,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -2174,10 +2770,15 @@
                   "type": "object",
                   "properties": {
                     "archive": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
-                  "required": ["archive"],
+                  "required": [
+                    "archive"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -2221,7 +2822,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -2237,7 +2840,9 @@
                   "properties": {
                     "advice": {}
                   },
-                  "required": ["advice"],
+                  "required": [
+                    "advice"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -2307,7 +2912,10 @@
                     "type": "string"
                   }
                 },
-                "required": ["id", "prompt"],
+                "required": [
+                  "id",
+                  "prompt"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -2338,7 +2946,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["kind", "epoch"],
+                      "required": [
+                        "kind",
+                        "epoch"
+                      ],
                       "additionalProperties": false
                     },
                     "promptId": {
@@ -2349,13 +2960,24 @@
                     },
                     "status": {
                       "type": "string",
-                      "enum": ["queued", "running", "finished", "failed", "interrupted"]
+                      "enum": [
+                        "queued",
+                        "running",
+                        "finished",
+                        "failed",
+                        "interrupted"
+                      ]
                     },
                     "statusMessage": {
                       "type": "string"
                     }
                   },
-                  "required": ["id", "promptId", "conversationId", "status"],
+                  "required": [
+                    "id",
+                    "promptId",
+                    "conversationId",
+                    "status"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -2404,7 +3026,10 @@
                     "type": "string"
                   }
                 },
-                "required": ["id", "request_id"],
+                "required": [
+                  "id",
+                  "request_id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -2426,7 +3051,10 @@
                       "const": "ready"
                     }
                   },
-                  "required": ["id", "status"],
+                  "required": [
+                    "id",
+                    "status"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -2479,7 +3107,11 @@
                     "type": "string"
                   }
                 },
-                "required": ["id", "request_id", "runtimeVersion"],
+                "required": [
+                  "id",
+                  "request_id",
+                  "runtimeVersion"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -2510,7 +3142,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["kind", "epoch"],
+                      "required": [
+                        "kind",
+                        "epoch"
+                      ],
                       "additionalProperties": false
                     },
                     "checkpoint": {
@@ -2531,11 +3166,20 @@
                           "maximum": 9007199254740991
                         }
                       },
-                      "required": ["state", "watermark", "acknowledgedSequence"],
+                      "required": [
+                        "state",
+                        "watermark",
+                        "acknowledgedSequence"
+                      ],
                       "additionalProperties": false
                     }
                   },
-                  "required": ["id", "requestId", "runtime", "checkpoint"],
+                  "required": [
+                    "id",
+                    "requestId",
+                    "runtime",
+                    "checkpoint"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -2597,7 +3241,12 @@
                     "type": "string"
                   }
                 },
-                "required": ["id", "request_id", "runtimeVersion", "prompt"],
+                "required": [
+                  "id",
+                  "request_id",
+                  "runtimeVersion",
+                  "prompt"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -2625,7 +3274,13 @@
                     },
                     "status": {
                       "type": "string",
-                      "enum": ["queued", "running", "finished", "failed", "interrupted"]
+                      "enum": [
+                        "queued",
+                        "running",
+                        "finished",
+                        "failed",
+                        "interrupted"
+                      ]
                     },
                     "resumed": {
                       "type": "boolean",
@@ -2642,7 +3297,10 @@
                           "type": "string"
                         }
                       },
-                      "required": ["kind", "epoch"],
+                      "required": [
+                        "kind",
+                        "epoch"
+                      ],
                       "additionalProperties": false
                     },
                     "sourceCheckpoint": {
@@ -2661,7 +3319,10 @@
                           "const": true
                         }
                       },
-                      "required": ["epoch", "watermark"],
+                      "required": [
+                        "epoch",
+                        "watermark"
+                      ],
                       "additionalProperties": false
                     }
                   },
@@ -2742,7 +3403,9 @@
                             "pattern": "^[a-f0-9]{40}$"
                           }
                         },
-                        "required": ["state"],
+                        "required": [
+                          "state"
+                        ],
                         "additionalProperties": false
                       },
                       {
@@ -2758,7 +3421,10 @@
                             "maxLength": 1000
                           }
                         },
-                        "required": ["state", "reason"],
+                        "required": [
+                          "state",
+                          "reason"
+                        ],
                         "additionalProperties": false
                       }
                     ]
@@ -2767,7 +3433,11 @@
                     "type": "string"
                   }
                 },
-                "required": ["id", "prompt_id", "outcome"],
+                "required": [
+                  "id",
+                  "prompt_id",
+                  "outcome"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -2808,7 +3478,9 @@
                               "pattern": "^[a-f0-9]{40}$"
                             }
                           },
-                          "required": ["state"],
+                          "required": [
+                            "state"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -2824,13 +3496,19 @@
                               "maxLength": 1000
                             }
                           },
-                          "required": ["state", "reason"],
+                          "required": [
+                            "state",
+                            "reason"
+                          ],
                           "additionalProperties": false
                         }
                       ]
                     }
                   },
-                  "required": ["id", "taskOutcome"],
+                  "required": [
+                    "id",
+                    "taskOutcome"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -2882,7 +3560,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -2901,13 +3581,24 @@
                     },
                     "status": {
                       "type": "string",
-                      "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                      "enum": [
+                        "starting",
+                        "ready",
+                        "running",
+                        "stopping",
+                        "stopped",
+                        "failed",
+                        "deleted"
+                      ]
                     },
                     "preservationNote": {
                       "type": "string"
                     }
                   },
-                  "required": ["id", "status"],
+                  "required": [
+                    "id",
+                    "status"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -2956,7 +3647,10 @@
                     "type": "string"
                   }
                 },
-                "required": ["id", "ttl_seconds"],
+                "required": [
+                  "id",
+                  "ttl_seconds"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -2982,7 +3676,11 @@
                       "maximum": 9007199254740991
                     }
                   },
-                  "required": ["id", "expiresAt", "ttlSeconds"],
+                  "required": [
+                    "id",
+                    "expiresAt",
+                    "ttlSeconds"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -3031,7 +3729,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -3053,7 +3753,10 @@
                       "const": "deleted"
                     }
                   },
-                  "required": ["id", "status"],
+                  "required": [
+                    "id",
+                    "status"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -3107,7 +3810,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -3170,10 +3875,17 @@
                                     "type": "string"
                                   },
                                   "ms": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   }
                                 },
-                                "required": ["stage", "at", "ms"],
+                                "required": [
+                                  "stage",
+                                  "at",
+                                  "ms"
+                                ],
                                 "additionalProperties": false
                               }
                             },
@@ -3183,7 +3895,10 @@
                             },
                             "totalMs": {
                               "description": "First stage to harness ready (or the last stage so far); first_token waits for a prompt and is excluded.",
-                              "type": ["number", "null"]
+                              "type": [
+                                "number",
+                                "null"
+                              ]
                             },
                             "slowest": {
                               "anyOf": [
@@ -3207,7 +3922,10 @@
                                       "type": "number"
                                     }
                                   },
-                                  "required": ["stage", "ms"],
+                                  "required": [
+                                    "stage",
+                                    "ms"
+                                  ],
                                   "additionalProperties": false
                                 },
                                 {
@@ -3216,7 +3934,13 @@
                               ]
                             }
                           },
-                          "required": ["activation", "stages", "ready", "totalMs", "slowest"],
+                          "required": [
+                            "activation",
+                            "stages",
+                            "ready",
+                            "totalMs",
+                            "slowest"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -3226,7 +3950,10 @@
                     },
                     "providerExpiresAt": {
                       "description": "Provider physical deadline, when observed; distinct from Armada logical expiry.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "billingAccount": {
                       "anyOf": [
@@ -3244,7 +3971,10 @@
                             },
                             "billing": {
                               "type": "string",
-                              "enum": ["subscription", "api-key"]
+                              "enum": [
+                                "subscription",
+                                "api-key"
+                              ]
                             },
                             "version": {
                               "type": "integer",
@@ -3252,7 +3982,13 @@
                               "maximum": 9007199254740991
                             }
                           },
-                          "required": ["id", "name", "kind", "billing", "version"],
+                          "required": [
+                            "id",
+                            "name",
+                            "kind",
+                            "billing",
+                            "version"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -3281,7 +4017,13 @@
                             "type": "string"
                           }
                         },
-                        "required": ["reference", "version", "skillId", "checksum", "origin"],
+                        "required": [
+                          "reference",
+                          "version",
+                          "skillId",
+                          "checksum",
+                          "origin"
+                        ],
                         "additionalProperties": false
                       }
                     },
@@ -3291,30 +4033,46 @@
                           "type": "object",
                           "properties": {
                             "computeSeconds": {
-                              "type": ["number", "null"]
+                              "type": [
+                                "number",
+                                "null"
+                              ]
                             },
                             "turnCount": {
-                              "type": ["number", "null"]
+                              "type": [
+                                "number",
+                                "null"
+                              ]
                             },
                             "cost": {
                               "type": "object",
                               "properties": {
                                 "classification": {
                                   "type": "string",
-                                  "enum": ["priced", "included_in_subscription", "unknown"]
+                                  "enum": [
+                                    "priced",
+                                    "included_in_subscription",
+                                    "unknown"
+                                  ]
                                 },
                                 "currency": {
                                   "type": "string",
                                   "const": "USD"
                                 },
                                 "usd": {
-                                  "type": ["string", "null"]
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
                                 },
                                 "basis": {
                                   "anyOf": [
                                     {
                                       "type": "string",
-                                      "enum": ["estimated", "api_equivalent"]
+                                      "enum": [
+                                        "estimated",
+                                        "api_equivalent"
+                                      ]
                                     },
                                     {
                                       "type": "null"
@@ -3325,7 +4083,13 @@
                                   "anyOf": [
                                     {
                                       "type": "string",
-                                      "enum": ["admission", "coverage", "price", "tokens", "pricing_dimensions"]
+                                      "enum": [
+                                        "admission",
+                                        "coverage",
+                                        "price",
+                                        "tokens",
+                                        "pricing_dimensions"
+                                      ]
                                     },
                                     {
                                       "type": "null"
@@ -3345,7 +4109,14 @@
                                   ]
                                 }
                               },
-                              "required": ["classification", "currency", "usd", "basis", "unknown", "unpricedTurns"],
+                              "required": [
+                                "classification",
+                                "currency",
+                                "usd",
+                                "basis",
+                                "unknown",
+                                "unpricedTurns"
+                              ],
                               "additionalProperties": false
                             },
                             "tokenTotals": {
@@ -3355,19 +4126,34 @@
                                   "type": "boolean"
                                 },
                                 "inputTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "outputTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "cachedTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "cacheWriteTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 },
                                 "reasoningTokens": {
-                                  "type": ["number", "null"]
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
                                 }
                               },
                               "required": [
@@ -3388,22 +4174,40 @@
                                     "type": "string"
                                   },
                                   "model": {
-                                    "type": ["string", "null"]
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
                                   },
                                   "inputTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "outputTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "cachedTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "cacheWriteTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "reasoningTokens": {
-                                    "type": ["number", "null"]
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
                                   },
                                   "pricing": {
                                     "description": "Versioned server USD quote from a frozen snapshot; null means unpriced, never zero.",
@@ -3441,16 +4245,29 @@
                                         "maxLength": 600
                                       }
                                     },
-                                    "required": ["code", "message"],
+                                    "required": [
+                                      "code",
+                                      "message"
+                                    ],
                                     "additionalProperties": false
                                   }
                                 },
-                                "required": ["promptId", "model", "inputTokens", "outputTokens", "cachedTokens"],
+                                "required": [
+                                  "promptId",
+                                  "model",
+                                  "inputTokens",
+                                  "outputTokens",
+                                  "cachedTokens"
+                                ],
                                 "additionalProperties": false
                               }
                             }
                           },
-                          "required": ["computeSeconds", "turnCount", "turns"],
+                          "required": [
+                            "computeSeconds",
+                            "turnCount",
+                            "turns"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -3459,7 +4276,10 @@
                       ]
                     },
                     "preservationNote": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "externalRef": {
                       "description": "Opaque reference given at launch; absent when none.",
@@ -3469,11 +4289,18 @@
                       "type": "string"
                     },
                     "golden": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "provider": {
                       "type": "string",
-                      "enum": ["boat", "modal", "docker"]
+                      "enum": [
+                        "boat",
+                        "modal",
+                        "docker"
+                      ]
                     },
                     "hostId": {
                       "type": "string"
@@ -3483,18 +4310,31 @@
                     },
                     "visibility": {
                       "type": "string",
-                      "enum": ["org", "private"]
+                      "enum": [
+                        "org",
+                        "private"
+                      ]
                     },
                     "harness": {
                       "type": "string",
-                      "enum": ["claude", "codex", "opencode"]
+                      "enum": [
+                        "claude",
+                        "codex",
+                        "opencode"
+                      ]
                     },
                     "repositoryDir": {
                       "description": "Configured directory used to prepare native agent cwd; not confinement.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "credentialId": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "credentialVersion": {
                       "anyOf": [
@@ -3510,10 +4350,16 @@
                     },
                     "model": {
                       "description": "The requested next-send default, not proof of the observed model.",
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "reasoningEffort": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "machineSize": {
                       "anyOf": [
@@ -3525,13 +4371,27 @@
                     },
                     "status": {
                       "type": "string",
-                      "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                      "enum": [
+                        "starting",
+                        "ready",
+                        "running",
+                        "stopping",
+                        "stopped",
+                        "failed",
+                        "deleted"
+                      ]
                     },
                     "statusReason": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "statusMessage": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "taskOutcome": {
                       "anyOf": [
@@ -3559,7 +4419,9 @@
                                   "pattern": "^[a-f0-9]{40}$"
                                 }
                               },
-                              "required": ["state"],
+                              "required": [
+                                "state"
+                              ],
                               "additionalProperties": false
                             },
                             {
@@ -3575,7 +4437,10 @@
                                   "maxLength": 1000
                                 }
                               },
-                              "required": ["state", "reason"],
+                              "required": [
+                                "state",
+                                "reason"
+                              ],
                               "additionalProperties": false
                             }
                           ]
@@ -3586,7 +4451,10 @@
                       ]
                     },
                     "providerState": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "conversationIds": {
                       "type": "array",
@@ -3595,7 +4463,10 @@
                       }
                     },
                     "expiresAt": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "prompt": {
                       "anyOf": [
@@ -3626,7 +4497,14 @@
                                       "type": "string"
                                     }
                                   },
-                                  "required": ["retryCount", "delayMs", "totalWaitMs", "retryAt", "waiting", "message"],
+                                  "required": [
+                                    "retryCount",
+                                    "delayMs",
+                                    "totalWaitMs",
+                                    "retryAt",
+                                    "waiting",
+                                    "message"
+                                  ],
                                   "additionalProperties": false
                                 },
                                 {
@@ -3638,26 +4516,46 @@
                               "type": "string"
                             },
                             "conversationId": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "state": {
                               "type": "string",
-                              "enum": ["running", "finished", "interrupted", "failed"]
+                              "enum": [
+                                "running",
+                                "finished",
+                                "interrupted",
+                                "failed"
+                              ]
                             },
                             "reason": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "requestedModel": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "observedModel": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "modelSelectionReason": {
                               "anyOf": [
                                 {
                                   "type": "string",
-                                  "enum": ["model_selection_mismatch", "model_selection_unverified"]
+                                  "enum": [
+                                    "model_selection_mismatch",
+                                    "model_selection_unverified"
+                                  ]
                                 },
                                 {
                                   "type": "null"
@@ -3665,10 +4563,18 @@
                               ]
                             },
                             "modelSelectionMessage": {
-                              "type": ["string", "null"]
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             }
                           },
-                          "required": ["promptId", "conversationId", "state", "reason"],
+                          "required": [
+                            "promptId",
+                            "conversationId",
+                            "state",
+                            "reason"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -3767,7 +4673,10 @@
                     "type": "string"
                   }
                 },
-                "required": ["id", "command"],
+                "required": [
+                  "id",
+                  "command"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -3809,7 +4718,14 @@
                       "type": "boolean"
                     }
                   },
-                  "required": ["id", "exitCode", "stdout", "stderr", "timedOut", "truncated"],
+                  "required": [
+                    "id",
+                    "exitCode",
+                    "stdout",
+                    "stderr",
+                    "timedOut",
+                    "truncated"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -3868,7 +4784,10 @@
                     "type": "string"
                   }
                 },
-                "required": ["id", "text"],
+                "required": [
+                  "id",
+                  "text"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -3893,13 +4812,25 @@
                     },
                     "delivery": {
                       "type": "string",
-                      "enum": ["native", "restart"]
+                      "enum": [
+                        "native",
+                        "restart"
+                      ]
                     },
                     "mode": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
-                  "required": ["id", "promptId", "conversationId", "delivery", "mode"],
+                  "required": [
+                    "id",
+                    "promptId",
+                    "conversationId",
+                    "delivery",
+                    "mode"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -3954,7 +4885,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -3975,7 +4908,10 @@
                       "type": "boolean"
                     }
                   },
-                  "required": ["id", "interrupted"],
+                  "required": [
+                    "id",
+                    "interrupted"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -4023,7 +4959,10 @@
                   },
                   "visibility": {
                     "type": "string",
-                    "enum": ["private", "org"]
+                    "enum": [
+                      "private",
+                      "org"
+                    ]
                   },
                   "skills": {
                     "maxItems": 20,
@@ -4063,11 +5002,18 @@
                   "provider": {
                     "description": "The golden's provider. Needed only when the name exists on several providers.",
                     "type": "string",
-                    "enum": ["boat", "modal"]
+                    "enum": [
+                      "boat",
+                      "modal"
+                    ]
                   },
                   "harness": {
                     "type": "string",
-                    "enum": ["claude", "codex", "opencode"],
+                    "enum": [
+                      "claude",
+                      "codex",
+                      "opencode"
+                    ],
                     "description": "claude (Claude Code) or codex."
                   },
                   "model": {
@@ -4077,7 +5023,12 @@
                   },
                   "size": {
                     "type": "string",
-                    "enum": ["small", "medium", "large", "xlarge"]
+                    "enum": [
+                      "small",
+                      "medium",
+                      "large",
+                      "xlarge"
+                    ]
                   },
                   "repo": {
                     "description": "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
@@ -4105,7 +5056,10 @@
                     "minLength": 1
                   }
                 },
-                "required": ["golden", "harness"],
+                "required": [
+                  "golden",
+                  "harness"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -4180,7 +5134,12 @@
                   },
                   "size": {
                     "type": "string",
-                    "enum": ["small", "medium", "large", "xlarge"]
+                    "enum": [
+                      "small",
+                      "medium",
+                      "large",
+                      "xlarge"
+                    ]
                   },
                   "repo": {
                     "type": "string"
@@ -4196,7 +5155,11 @@
                     "type": "boolean"
                   }
                 },
-                "required": ["org", "id", "requestKey"],
+                "required": [
+                  "org",
+                  "id",
+                  "requestKey"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "additionalProperties": false
               }
@@ -4261,7 +5224,10 @@
                   },
                   "direction": {
                     "type": "string",
-                    "enum": ["forward", "backward"]
+                    "enum": [
+                      "forward",
+                      "backward"
+                    ]
                   },
                   "maxBytes": {
                     "type": "integer",
@@ -4289,7 +5255,9 @@
                     "type": "string"
                   }
                 },
-                "required": ["id"],
+                "required": [
+                  "id"
+                ],
                 "$schema": "http://json-schema.org/draft-07/schema#"
               }
             }
@@ -4316,7 +5284,12 @@
                           },
                           "kind": {
                             "type": "string",
-                            "enum": ["prompt", "message", "steer", "other"]
+                            "enum": [
+                              "prompt",
+                              "message",
+                              "steer",
+                              "other"
+                            ]
                           },
                           "conversationId": {
                             "type": "string"
@@ -4325,12 +5298,19 @@
                             "type": "string"
                           }
                         },
-                        "required": ["id", "at", "kind"],
+                        "required": [
+                          "id",
+                          "at",
+                          "kind"
+                        ],
                         "additionalProperties": {}
                       }
                     },
                     "cursor": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "olderCursor": {
                       "type": "string"
@@ -4352,12 +5332,20 @@
                           "type": "string"
                         },
                         "statusMessage": {
-                          "type": ["string", "null"]
+                          "type": [
+                            "string",
+                            "null"
+                          ]
                         },
                         "prompt": {},
                         "usage": {}
                       },
-                      "required": ["status", "statusMessage", "prompt", "usage"],
+                      "required": [
+                        "status",
+                        "statusMessage",
+                        "prompt",
+                        "usage"
+                      ],
                       "additionalProperties": false
                     },
                     "runtimeFailure": {
@@ -4371,11 +5359,18 @@
                           "type": "string"
                         }
                       },
-                      "required": ["status", "reason"],
+                      "required": [
+                        "status",
+                        "reason"
+                      ],
                       "additionalProperties": false
                     }
                   },
-                  "required": ["events", "cursor", "hasMore"],
+                  "required": [
+                    "events",
+                    "cursor",
+                    "hasMore"
+                  ],
                   "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
@@ -4406,11 +5401,16 @@
     "schemas": {
       "Failure": {
         "type": "object",
-        "required": ["error"],
+        "required": [
+          "error"
+        ],
         "properties": {
           "error": {
             "type": "object",
-            "required": ["code", "message"],
+            "required": [
+              "code",
+              "message"
+            ],
             "properties": {
               "code": {
                 "type": "string",
