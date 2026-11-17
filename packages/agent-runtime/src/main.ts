@@ -7,7 +7,12 @@ import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
 import { enrolRuntime, RuntimeDialout, runtimeSubscriptionAccess } from "./dialout.ts";
 import { prepareEnrolledHarness } from "./enrolled-harness.ts";
-import { execCredentialValues, validateExecEnvironment, validateExecReadables } from "./exec-env.ts";
+import {
+  execCredentialValues,
+  privateHarnessHome,
+  validateExecEnvironment,
+  validateExecReadables,
+} from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
 import { githubRuntimeEnvironment, installUserGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
 import { runHarnessInstallMode } from "./harness-cache.ts";
@@ -298,13 +303,8 @@ async function main(dialout = false) {
       ["opencode", opencodeEnv],
       ["claude", config.claudeEnv],
       ["codex", config.codexEnv],
-    ] as const) {
-      env.HOME = `${config.root}/${harness}/home`;
-      env.XDG_CONFIG_HOME = `${env.HOME}/.config`;
-      env.XDG_CACHE_HOME = `${env.HOME}/.cache`;
-      env.XDG_DATA_HOME = `${env.HOME}/.local/share`;
-      await mkdir(env.HOME, { recursive: true, mode: 0o700 });
-    }
+    ] as const)
+      await mkdir(privateHarnessHome(config.root, harness, env, execEnv), { recursive: true, mode: 0o700 });
     opencodeEnv.XDG_DATA_HOME = `${config.root}/opencode/data`;
     opencodeEnv.XDG_CONFIG_HOME = `${config.root}/opencode/config`;
     opencodeEnv.XDG_CACHE_HOME = `${config.root}/opencode/cache`;
