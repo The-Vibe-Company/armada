@@ -33,7 +33,7 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { useMutationState } from "@/components/use-mutation-state";
 import { isUuid } from "@/lib/action";
-import type { DockerHost } from "@/lib/docker-hosts";
+import { type DockerHost, hostBuildBlocker } from "@/lib/docker-hosts";
 import { goldenRequest, type RepoRow } from "@/lib/golden-form";
 
 type SnapshotPlacement = {
@@ -76,11 +76,14 @@ export function SnapshotCreateChoice({
   );
   const options = [
     ...Object.keys(cloudForms).map((value) => ({ value, label: `${value === "boat" ? "Boat" : "Modal"} cloud` })),
-    ...hosts.map((host) => ({
-      value: host.id,
-      label: `your server ${host.name ?? host.id}`,
-      ...(host.state === "online" ? {} : { reason: "Bring this server online to build." }),
-    })),
+    ...hosts.map((host) => {
+      const reason = hostBuildBlocker(host);
+      return {
+        value: host.id,
+        label: `your server ${host.name ?? host.id}`,
+        ...(reason === null ? {} : { reason }),
+      };
+    }),
   ];
   const docker = hosts.some((host) => host.id === provider);
   return (
@@ -228,11 +231,14 @@ function DockerSnapshotForm({
                 label="Where to build"
                 value={hostId}
                 onChange={setHostId}
-                options={hosts.map((host) => ({
-                  value: host.id,
-                  label: `your server ${host.name ?? host.id}`,
-                  ...(host.state === "online" ? {} : { reason: "Bring this server online to build." }),
-                }))}
+                options={hosts.map((host) => {
+                  const reason = hostBuildBlocker(host);
+                  return {
+                    value: host.id,
+                    label: `your server ${host.name ?? host.id}`,
+                    ...(reason === null ? {} : { reason }),
+                  };
+                })}
               />
             )}
             <input type="hidden" name="hostId" value={placement?.value ?? hostId} />

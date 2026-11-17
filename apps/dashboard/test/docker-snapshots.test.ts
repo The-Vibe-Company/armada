@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { dockerLaunchOption } from "../src/lib/docker-launch.ts";
 import {
   hasDockerHost,
+  snapshotBuildHostBlocker,
   snapshotCurrentVersion,
   snapshotLaunchEnabled,
   snapshotRebuildAvailable,
@@ -23,6 +24,11 @@ test("only published snapshots on an available installation offer launch; pendin
   expect(snapshotState({ status: "ready", hostAvailable: false }, true)).toMatchObject({
     bucket: "rest",
     label: "Host unavailable",
+  });
+  // A draining host is named as draining, not as merely unavailable.
+  expect(snapshotState({ status: "ready", hostAvailable: false }, true, "draining")).toMatchObject({
+    bucket: "rest",
+    label: "Host draining",
   });
   expect(snapshotState({ status: "ready", hostAvailable: true }, false)).toMatchObject({
     bucket: "rest",
@@ -88,6 +94,26 @@ test("rebuild offers require a newer stable server, a ready available host, buil
   expect(
     snapshotRebuildAvailable({ ...snapshot, visibility: "org" }, "1.3.0", { id: "admin", isAdmin: true }, true),
   ).toBe(true);
+});
+
+test("a stale build form naming a draining host shows the uninstall reason, not a generic online-host refusal", () => {
+  const host = (state: "online" | "offline" | "draining" | "revoked") => ({
+    id: "11111111-1111-4111-8111-111111111111",
+    name: "build-box",
+    state,
+    createdAt: "2026-11-13T09:00:00Z",
+    lastSeenAt: null,
+    revokedAt: state === "revoked" ? "2026-11-13T09:00:00Z" : null,
+    sandboxes: 0,
+    version: null,
+  });
+  expect(snapshotBuildHostBlocker([host("online")], host("online").id)).toBeNull();
+  expect(snapshotBuildHostBlocker([host("draining")], host("draining").id)).toContain("draining for uninstall");
+  expect(snapshotBuildHostBlocker([host("offline")], host("offline").id)).toBe("Bring this server online to build.");
+  expect(snapshotBuildHostBlocker([host("revoked")], host("revoked").id)).toBe(
+    "Choose an online host with snapshot support.",
+  );
+  expect(snapshotBuildHostBlocker([], host("online").id)).toBe("Choose an online host with snapshot support.");
 });
 
 test("snapshot list metadata tolerates older servers without offering malformed current versions", () => {

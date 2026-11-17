@@ -230,6 +230,25 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
     }
     notify("item/agentMessage/delta", { threadId: thread, turnId: `turn-${turn}`, itemId: "text", delta: "partial" });
+    if (params.input[0]?.type === "text" && params.input[0].text === "output-limit") {
+      // Pinned 0.167.0 reports a response cut by the model output limit as a generic `other`
+      // terminal whose only discriminant is this exact Display text.
+      notify("turn/completed", {
+        threadId: thread,
+        turn: {
+          id: `turn-${turn}`,
+          status: "failed",
+          items: [],
+          error: {
+            message: "Incomplete response returned, reason: max_output_tokens",
+            codexErrorInfo: "other",
+            additionalDetails: null,
+            misalignment: null,
+          },
+        },
+      });
+      return;
+    }
     if (
       params.input[0]?.type === "text" &&
       ["recorded-failure", "unauthorized", "usageLimitExceeded", "rateLimitExceeded"].includes(params.input[0].text)

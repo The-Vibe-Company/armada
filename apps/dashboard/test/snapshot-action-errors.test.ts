@@ -24,6 +24,15 @@ test("only definite missing routes imply unsupported snapshot features", () => {
   ).toContain("may still finish");
 });
 
+test("a draining host refusal keeps the uninstall reason instead of a generic conflict", () => {
+  const result = snapshotActionFailure(
+    new ControlError("This host is draining for uninstall.", 409, "host_draining"),
+    "build",
+  );
+  expect(result).toContain("draining for uninstall");
+  expect(result).not.toContain("This snapshot or build changed");
+});
+
 test("reported capacity is actionable without inventing a provider limit or echoing its payload", () => {
   const result = snapshotActionFailure(
     new ControlError(`${diagnostic} golden capacity`, 409, "conflict"),

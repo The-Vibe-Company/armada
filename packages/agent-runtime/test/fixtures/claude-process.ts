@@ -142,6 +142,69 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
       return;
     }
+    if (m.message.content === "output-limit") {
+      // The CLI reports a response cut by the model output limit as an assistant error frame,
+      // then a failed result for the same turn.
+      send({
+        type: "assistant",
+        session_id: "fixture-session",
+        uuid: crypto.randomUUID(),
+        parent_tool_use_id: null,
+        error: "max_output_tokens",
+        message: {
+          id: "output-limit",
+          type: "message",
+          role: "assistant",
+          model: "test-model",
+          content: [],
+          stop_reason: "max_tokens",
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      });
+      send({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        session_id: "fixture-session",
+        uuid: crypto.randomUUID(),
+        duration_ms: 1,
+        duration_api_ms: 1,
+        num_turns: 1,
+        stop_reason: "max_tokens",
+        total_cost_usd: 0,
+        usage: { input_tokens: 1, output_tokens: 1 },
+        modelUsage: {},
+        permission_denials: [],
+        user_message_uuid: m.uuid,
+        user_message_uuids: [m.uuid],
+        errors: ["max_output_tokens"],
+      });
+      return;
+    }
+    if (m.message.content === "output-limit-result-only") {
+      // The pinned SDK also declares a failed result that carries the output-limit cause
+      // only on its own closed fields, with no preceding assistant error frame.
+      send({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        session_id: "fixture-session",
+        uuid: crypto.randomUUID(),
+        duration_ms: 1,
+        duration_api_ms: 1,
+        num_turns: 1,
+        stop_reason: "max_tokens",
+        total_cost_usd: 0,
+        usage: { input_tokens: 1, output_tokens: 1 },
+        modelUsage: {},
+        permission_denials: [],
+        user_message_uuid: m.uuid,
+        user_message_uuids: [m.uuid],
+        errors: ["max_output_tokens"],
+      });
+      return;
+    }
     if (["usage-fresh", "usage-resumed", "usage-after-reset", "usage-recorded"].includes(m.message.content)) {
       const result = (sessionId: string, consumed: string[], model = "claude-native") =>
         send({

@@ -1,3 +1,4 @@
+import { DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
 import { providerRateLimitMessage } from "./provider-limit.ts";
 /** Closed failure categories shared by HTTP, MCP and API consumers. Legacy `unavailable` is not emitted. */
 export const API_FAILURE_STATUS = {
@@ -73,6 +74,7 @@ const LAUNCH_FAILURE_HELP: Record<string, string> = {
     "The sandbox started but its first prompt was refused. Check the sandbox and model account before sending the prompt again.",
   host_full:
     "The selected host has no free sandbox slots. Stop a sandbox or ask its administrator to raise the limit, then retry.",
+  host_draining: DOCKER_HOST_DRAINING_MESSAGE,
   payment_required:
     "The provider account cannot create machines. Check billing or credits on the selected provider account before retrying.",
 };

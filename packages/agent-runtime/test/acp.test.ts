@@ -74,6 +74,26 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
     }
   });
 }
+test("ACP names a turn cut by the model output limit instead of a configuration failure", async () => {
+  const driver = new AcpDriver({
+    executable: process.execPath,
+    args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
+    cwd: "/tmp",
+    env: {},
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "opencode", text: "output-limit" },
+      signal: new AbortController().signal,
+      emit: () => {},
+      session: () => {},
+    });
+    await expect(turn.done).rejects.toMatchObject({ code: "output_limit_exceeded" });
+  } finally {
+    await driver.close();
+  }
+});
+
 test("ACP refuses another protocol before dispatching a prompt", async () => {
   const driver = new AcpDriver({
     executable: process.execPath,
