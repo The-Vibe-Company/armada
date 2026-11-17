@@ -34,18 +34,13 @@ export interface Provider {
    * provider's own channel: never caller commands or the agent runtime, never starts compute.
    * Live disk while active; the retained disk once stopped, where the backend can read it without
    * compute. Null means unavailable now: callers keep their previous snapshot and retry.
-   * "retained_unreadable" means this stop's retained disk can never be read without compute
-   * (Modal recovery image): callers keep the pre-stop capture, no retry. `complete: false` means
-   * the read covers only the listed files (truncated Boat snapshot listing): callers publish them
-   * and never treat unseen previous files as deleted. */
+   * "retained_unreadable" is definitive for this stop: its retained disk can never be read
+   * (Modal recovery image needing compute, sandbox or snapshot gone at the provider, declared
+   * directory beyond the read bound). Callers keep the pre-stop capture and stop reading. */
   readOutputs?(request: {
     sandboxId: string;
     signal?: AbortSignal;
-  }): Promise<
-    | { files: import("./sandbox-outputs.ts").OutputFile[]; retained: boolean; complete?: boolean }
-    | "retained_unreadable"
-    | null
-  >;
+  }): Promise<{ files: import("./sandbox-outputs.ts").OutputFile[]; retained: boolean } | "retained_unreadable" | null>;
   /** Read-only fixed sampler. Null means isolation/runtime is unsupported or not attested. */
   observeResources?(sandboxId: string): Promise<import("./resource-observation.ts").ProviderResourceObservation | null>;
   readonly id: string;

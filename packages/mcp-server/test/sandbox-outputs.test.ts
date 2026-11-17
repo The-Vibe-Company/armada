@@ -42,8 +42,6 @@ function disks() {
     // null: unavailable now (retryable); "retained_unreadable": never readable for this stop.
     retained: null as OutputFile[] | "retained_unreadable" | null,
     stopped: false,
-    // false: a truncated retained listing that covers only these files.
-    complete: true,
     // Set: reads hang like an SDK call that ignores cancellation, until released.
     hold: null as Promise<void> | null,
     entered: () => {},
@@ -60,7 +58,7 @@ function disks() {
       if (state.hold) await state.hold;
       if (!state.stopped) return { files: state.live, retained: false };
       if (!state.retained || state.retained === "retained_unreadable") return state.retained;
-      return { files: state.retained, retained: true, complete: state.complete };
+      return { files: state.retained, retained: true };
     },
   } as unknown as Provider;
   return { state, provider };
@@ -241,29 +239,6 @@ test("a failed or out-of-bounds read keeps the previous snapshot and never fails
   ]);
 });
 
-test("a truncated retained listing publishes the outputs it lists without deleting unseen ones", async () => {
-  const { db, people, id, sql } = await fixture({ boatId: "partial_fixture" });
-  const { state, provider } = disks();
-  state.live = [file("annex.txt", "annex"), file("memo.txt", "draft")];
-  const service = createSandboxOutputs(sql, KEY, async () => provider);
-  expect(await service.reconcileOne(signal())).toBe(true);
-  // Provider-initiated stop after the last sample; the listing is truncated but includes final.pdf.
-  state.stopped = true;
-  state.complete = false;
-  state.retained = [file("final.pdf", "final"), file("memo.txt", "final tender")];
-  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(true);
-  const route = routeFor(service, people.owner, people.org);
-  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
-  const listed = (await (await route(new Request(url)))?.json()) as { files: { name: string }[] };
-  expect(listed.files.map((f) => f.name)).toEqual(["annex.txt", "final.pdf", "memo.txt"]);
-  expect(await (await route(new Request(`${url}/final.pdf`)))?.text()).toBe("final");
-  expect(await (await route(new Request(`${url}/memo.txt`)))?.text()).toBe("final tender");
-  // A completed snapshot never changes: the partial read completes collection for this stop.
-  await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(false);
-});
-
 test("a hanging provider read yields at the caller deadline, stays tracked and never persists late", async () => {
   const { db, id, sql } = await fixture({ boatId: "hanging_fixture" });
   const { state, provider } = disks();
@@ -305,21 +280,82 @@ test("a hanging provider read yields at the caller deadline, stays tracked and n
   expect(state.reads).toBe(2);
 });
 
-test("listed files of a truncated retained listing win over unseen files when bounds are reached", async () => {
-  const { db, people, id, sql } = await fixture({ boatId: "partial_bounds_fixture" });
+test("a stop is read until a definitive retained result however old it is, backing off unavailable reads", async () => {
+  const { db, people, id, sql } = await fixture({ boatId: "old_stop_fixture" });
   const { state, provider } = disks();
-  state.live = [file("annex.txt", "a".repeat(20000)), file("report.md", "r")];
   const service = createSandboxOutputs(sql, KEY, async () => provider);
-  expect(await service.reconcileOne(signal())).toBe(true);
+  // Stopped 25 hours ago (rollout or outage spanning a day): still read, since the disk is retained.
   state.stopped = true;
-  state.complete = false;
-  state.retained = [file("report.md", "R".repeat(14000))];
-  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
+  await db.query(`update sandboxes set status='stopped',stopped_at=now()-interval '25 hours' where id=$1`, [id]);
   expect(await service.reconcileOne(signal())).toBe(true);
-  // 20000 + 14000 bytes exceeds the bound: the unseen annex is evicted, never the verified report.
-  expect((await db.query(`select name,size from sandbox_outputs where sandbox_id=$1`, [id])).rows).toEqual([
-    { name: "report.md", size: 14000 },
+  // Unavailable now: the next attempt waits as long as the stop had lasted, capped at one hour.
+  expect(await service.reconcileOne(signal())).toBe(false);
+  await db.query(`update sandboxes set outputs_checked_at=now()-interval '59 minutes' where id=$1`, [id]);
+  expect(await service.reconcileOne(signal())).toBe(false);
+  state.retained = [file("final.pdf", "final")];
+  await db.query(`update sandboxes set outputs_checked_at=now()-interval '61 minutes' where id=$1`, [id]);
+  expect(await service.reconcileOne(signal())).toBe(true);
+  expect(state.reads).toBe(2);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/final.pdf`;
+  expect(await (await routeFor(service, people.owner, people.org)(new Request(url)))?.text()).toBe("final");
+  await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
+  expect(await service.reconcileOne(signal())).toBe(false);
+});
+
+test("a collection whose deadline passes while it waits for SQL never commits files, events or the stop mark", async () => {
+  const { db, people, id, sql } = await fixture({ boatId: "gated_fixture" });
+  await db.query(
+    `insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)`,
+    [people.org, new Uint8Array([1])],
+  );
+  const { state, provider } = disks();
+  state.stopped = true;
+  state.retained = [file("final.pdf", "final")];
+  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
+  // The provider has answered; the transaction is then held (a busy pool) past the worker deadline.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let waiting = () => {};
+  const blocked = new Promise<void>((resolve) => {
+    waiting = resolve;
+  });
+  const gated: Sql = {
+    query: sql.query,
+    transaction: async (work) => {
+      waiting();
+      await held;
+      return sql.transaction!(work);
+    },
+  };
+  const service = createSandboxOutputs(gated, KEY, async () => provider);
+  const deadline = new AbortController();
+  const lane = service.reconcileOne(deadline.signal);
+  await blocked;
+  deadline.abort();
+  expect(await lane).toBe(true);
+  release();
+  await service.drain();
+  expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
+  const events = `select 1 from outbound_webhook_deliveries where payload->>'type'='sandbox.output.available' and payload->>'sandboxId'=$1`;
+  expect((await db.query(events, [id])).rows).toHaveLength(0);
+  // Not marked read: the stop is collected on a later pass.
+  expect((await db.query(`select outputs_retained_at from sandboxes where id=$1`, [id])).rows).toEqual([
+    { outputs_retained_at: null },
   ]);
-  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/report.md`;
-  expect(await (await routeFor(service, people.owner, people.org)(new Request(url)))?.text()).toBe("R".repeat(14000));
+  // The same fence holds for a definitive "never readable" answer.
+  state.retained = "retained_unreadable";
+  await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
+  const second = new AbortController();
+  const again = service.reconcileOne(second.signal);
+  await new Promise<void>((resolve) => {
+    waiting = resolve;
+  });
+  second.abort();
+  expect(await again).toBe(true);
+  await service.drain();
+  expect((await db.query(`select outputs_retained_at from sandboxes where id=$1`, [id])).rows).toEqual([
+    { outputs_retained_at: null },
+  ]);
 });

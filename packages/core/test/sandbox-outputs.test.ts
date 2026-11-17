@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { admitOutputs, parseCollectorOutput, selectRetainedOutputs } from "../src/sandbox-outputs.ts";
+import {
+  admitOutputs,
+  parseCollectorOutput,
+  parseOutputArchive,
+  selectRetainedOutputs,
+} from "../src/sandbox-outputs.ts";
+import { tarArchive, tarEntry } from "./support/tar.ts";
 
 const bytes = (n: number) => new Uint8Array(n);
 
@@ -39,4 +45,54 @@ test("retained-disk selection keeps only bounded direct regular files of the dec
     { path: "home/user/workspace/outputs/z", kind: "file", size: 1 },
   ]);
   expect(selected.map((entry) => entry.name)).toEqual(["a.txt", "b.pdf"]);
+});
+
+test("a declared-directory archive yields its bounded direct regular files whatever the path root", () => {
+  const read = (archive: Uint8Array) =>
+    parseOutputArchive(archive).map((file) => [file.name, Buffer.from(file.bytes).toString()]);
+  // Paths relative to the directory, with the directory entry itself.
+  expect(
+    read(
+      tarArchive(
+        tarEntry("./", "", "5"),
+        tarEntry("./final.pdf", "final"),
+        tarEntry("./sub/", "", "5"),
+        tarEntry("./sub/x", "nested"),
+        tarEntry("./link", "", "2"),
+        tarEntry("./hard", "", "1"),
+        tarEntry("./big.bin", "b".repeat(40000)),
+        tarEntry("./a.txt", "a"),
+      ),
+    ),
+  ).toEqual([
+    ["a.txt", "a"],
+    ["final.pdf", "final"],
+  ]);
+  // Paths relative to the disk root, and a pax path longer than the ustar name field.
+  const long = `${"n".repeat(150)}.md`;
+  const pax = `path=workspace/outputs/${long}\n`;
+  const record = `${pax.length + 4} ${pax}`;
+  expect(
+    read(
+      tarArchive(
+        tarEntry("workspace/outputs/", "", "5"),
+        tarEntry("workspace/outputs/memo.txt", "memo"),
+        tarEntry("PaxHeader", record, "x"),
+        tarEntry("truncated-name", "long", "0"),
+      ),
+    ),
+  ).toEqual([
+    ["memo.txt", "memo"],
+    [long, "long"],
+  ]);
+  // Count and byte bounds apply in name order; an empty directory is an empty, complete read.
+  const many = Array.from({ length: 40 }, (_, i) => tarEntry(`f${String(i).padStart(2, "0")}`, "x"));
+  expect(read(tarArchive(...many))).toHaveLength(32);
+  expect(read(tarArchive(tarEntry("b", "b".repeat(20000)), tarEntry("a", "a".repeat(20000))))).toEqual([
+    ["a", "a".repeat(20000)],
+  ]);
+  expect(read(tarArchive())).toEqual([]);
+  // Truncated or malformed archives are refused, never read as a smaller directory.
+  expect(() => parseOutputArchive(tarEntry("memo.txt", "memo").subarray(0, 512))).toThrow();
+  expect(() => parseOutputArchive(new Uint8Array(100))).toThrow();
 });

@@ -1,6 +1,10 @@
 -- Bounded durable output snapshots, accessible only through authenticated server routes.
--- outputs_retained_at: last successful read of the retained disk after a stop (once per stop).
-alter table public.sandboxes add column outputs_checked_at timestamptz, add column outputs_retained_at timestamptz;
+-- outputs_retained_at: last definitive retained-disk result after a stop (once per stop).
+-- Rows that exist when this migration runs start as already read (a metadata-only default, no row
+-- rewrite or triggers): stops before outputs existed are never backfilled; later stops are read.
+alter table public.sandboxes add column outputs_checked_at timestamptz,
+ add column outputs_retained_at timestamptz default now();
+alter table public.sandboxes alter column outputs_retained_at drop default;
 create table public.sandbox_outputs (
  sandbox_id uuid not null references public.sandboxes(id) on delete cascade,
  name text not null check (length(name) between 1 and 255 and name !~ '[/\\]'),

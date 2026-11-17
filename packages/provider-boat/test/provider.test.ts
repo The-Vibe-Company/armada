@@ -2,6 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { ProviderError } from "@armada/core";
 import { GoldenCreateService, type GoldenRecord, preserveWork, scanGoldenSandbox } from "@armada/core/server";
+import { tarArchive, tarEntry } from "../../core/test/support/tar.ts";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
 import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
 
@@ -1286,12 +1287,12 @@ test("declared outputs of a stopped sandbox are read from its retained disk snap
   const read = await boat.provider.readOutputs?.({ sandboxId: ID });
   if (!read || read === "retained_unreadable") throw Error("expected a retained read");
   expect(read?.retained).toBe(true);
-  expect(read?.complete).toBe(true);
   expect(read?.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
   expect(boat.requests.every((request) => request.method === "GET")).toBe(true);
   expect(boat.requests.at(-1)?.query.get("path")).toBe("workspace/outputs/final.pdf");
   expect(boat.remaining()).toBe(0);
-  // A truncated listing still publishes the outputs it lists, as partial coverage (no deletions).
+  // Unrelated files truncate the whole-disk listing before the declared directory: the directory
+  // itself is read as one folder archive, so a file written after the last sample is not missed.
   const truncated = fakeBoat(
     { body: { ok: true, sandbox: sandbox({ state: "archived" }) } },
     { body: { ok: true, type: "snapshot.latest", snapshot } },
@@ -1304,23 +1305,46 @@ test("declared outputs of a stopped sandbox are read from its retained disk snap
         generation: 3,
         treeAvailable: true,
         truncated: true,
-        fileCount: 2,
-        totalSizeBytes: 9000005,
-        entries: [
-          { path: "workspace/node_modules/big.bin", kind: "file", size: 9000000 },
-          { path: "workspace/outputs/final.pdf", kind: "file", size: 5 },
-        ],
+        fileCount: 90000,
+        totalSizeBytes: 9000000,
+        entries: [{ path: "workspace/node_modules/big.bin", kind: "file", size: 9000000 }],
       },
     },
-    { raw: "final", headers: { "x-snapshot-entry-kind": "file" } },
+    {
+      raw: tarArchive(tarEntry("./", "", "5"), tarEntry("./final.pdf", "final"), tarEntry("./sub/x", "nested")),
+      headers: { "x-snapshot-entry-kind": "dir", "x-snapshot-total-size-bytes": "11", "x-snapshot-file-count": "2" },
+    },
   );
-  const partial = await truncated.provider.readOutputs?.({ sandboxId: ID });
-  if (!partial || partial === "retained_unreadable") throw Error("expected a partial retained read");
-  expect(partial.complete).toBe(false);
-  expect(partial.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([
-    ["final.pdf", "final"],
-  ]);
+  const scoped = await truncated.provider.readOutputs?.({ sandboxId: ID });
+  if (!scoped || scoped === "retained_unreadable") throw Error("expected a scoped retained read");
+  expect(scoped.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
+  expect(truncated.requests.at(-1)?.query.get("path")).toBe("workspace/outputs");
   expect(truncated.remaining()).toBe(0);
+  // Definitive answers end collection for the stop: a directory beyond the read bound, or a
+  // sandbox Boat no longer has.
+  const oversized = fakeBoat(
+    { body: { ok: true, sandbox: sandbox({ state: "archived" }) } },
+    { body: { ok: true, type: "snapshot.latest", snapshot } },
+    {
+      body: {
+        ok: true,
+        type: "snapshot.tree",
+        snapshotId: "snap_1",
+        sandboxId: ID,
+        generation: 3,
+        treeAvailable: false,
+        truncated: false,
+        fileCount: 0,
+        totalSizeBytes: 0,
+        entries: [],
+      },
+    },
+    { raw: "", headers: { "x-snapshot-entry-kind": "dir", "x-snapshot-total-size-bytes": String(64 * 1024 * 1024) } },
+  );
+  expect(await oversized.provider.readOutputs?.({ sandboxId: ID })).toBe("retained_unreadable");
+  const gone = fakeBoat({ status: 404, body: { ok: false, error: { code: "not_found", message: "gone" } } });
+  expect(await gone.provider.readOutputs?.({ sandboxId: ID })).toBe("retained_unreadable");
+  expect([oversized.remaining(), gone.remaining()]).toEqual([0, 0]);
   // The latest completed snapshot predates a stop whose own snapshot is pending or failed (Boat may
   // retry it): unavailable now, never read in place of the stopped disk.
   const pending = fakeBoat({

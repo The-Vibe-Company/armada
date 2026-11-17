@@ -5,8 +5,6 @@ import {
   encryptionKey,
   encryptSecret,
   OUTPUT_DIRECTORY,
-  OUTPUT_MAX_BYTES,
-  OUTPUT_MAX_FILES,
   type Provider,
   type Sql,
 } from "@armada/core/server";
@@ -45,22 +43,36 @@ async function collect(
   const read = provider.readOutputs
     ? await provider.readOutputs({ sandboxId: providerId, ...(signal ? { signal } : {}) })
     : "retained_unreadable";
-  if (read === "retained_unreadable") {
-    // The backend can never read this stop's retained disk without compute (Modal recovery image):
-    // keep the snapshot captured before it; no polling until the next stop.
-    if (stopped)
-      await sql.query(
-        `update public.sandboxes set outputs_retained_at=now() where id=$1 and outputs_checked_at::text=$2`,
+  if (!sql.transaction) throw Error("output_transaction_unavailable");
+  /** Writes under the row lock and the scan fence, and only while the caller's deadline holds:
+   * checked after the lock (time spent waiting for SQL counts) and again before every write. */
+  const fenced = (work: (tx: Sql) => Promise<void>) =>
+    sql.transaction?.(async (tx) => {
+      signal?.throwIfAborted();
+      const authority = await tx.query(
+        `select id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
+          and outputs_checked_at::text=$2 for update`,
         [id, scan],
       );
+      if (!authority.rows.length) return;
+      signal?.throwIfAborted();
+      await work(tx);
+      signal?.throwIfAborted();
+    });
+  if (read === "retained_unreadable") {
+    // This stop's retained disk can never be read (Modal recovery image, gone at the provider):
+    // keep the snapshot captured before it; no polling until the next stop.
+    if (stopped)
+      await fenced(async (tx) => {
+        await tx.query(`update public.sandboxes set outputs_retained_at=now() where id=$1`, [id]);
+      });
     throw Error("output_collection_unsupported");
   }
-  // Unavailable now (incomplete snapshot tree, transient failure): keep the previous snapshot and
-  // retry after the scan fence. Only a successful retained read completes collection for a stop.
+  // Unavailable now (pending snapshot, transient failure): keep the previous snapshot and retry
+  // with backoff. Only a definitive retained result completes collection for a stop.
   if (!read) throw Error("output_collection_unavailable");
   // The caller's deadline has passed: a late read must never replace what callers saw since.
   signal?.throwIfAborted();
-  const complete = read.complete !== false;
   const files = admitOutputs(read.files).map((file) => ({
     name: file.name,
     bytes: Buffer.from(file.bytes),
@@ -75,44 +87,21 @@ async function collect(
       content: Buffer.from(await encryptSecret(file.bytes.toString("base64"), key)).toString("hex"),
     })),
   );
-  if (!sql.transaction) throw Error("output_transaction_unavailable");
-  await sql.transaction(async (tx) => {
-    const authority = await tx.query(
-      `select id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
-        and outputs_checked_at::text=$2 for update`,
-      [id, scan],
-    );
-    if (!authority.rows.length) return;
-    // Previously captured files a partial read (truncated listing) does not list are kept: unseen is
-    // not deleted. Listed, verified files always win; unseen ones stay only while the merged
-    // snapshot fits the same count and byte bounds (in name order).
-    const kept: string[] = [];
-    if (!complete) {
-      let count = payload.length;
-      let total = payload.reduce((sum, file) => sum + file.size, 0);
-      const listed = new Set(payload.map((file) => file.name));
-      const previous = await tx.query<{ name: string; size: number }>(
-        `select name,size from public.sandbox_outputs where sandbox_id=$1 order by name`,
-        [id],
-      );
-      for (const row of previous.rows) {
-        if (listed.has(row.name) || count >= OUTPUT_MAX_FILES || total + row.size > OUTPUT_MAX_BYTES) continue;
-        count++;
-        total += row.size;
-        kept.push(row.name);
-      }
-    }
+  await fenced(async (tx) => {
     await tx.query(
       `with incoming as (select * from jsonb_to_recordset($2::jsonb) as f(name text,digest text,size integer,content text)),
-      removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming) and name<>all($3::text[]))
+      removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming))
       insert into public.sandbox_outputs(sandbox_id,name,digest,size,content_enc)
       select $1,name,digest,size,decode(content,'hex') from incoming
       on conflict(sandbox_id,name) do update set digest=excluded.digest,size=excluded.size,content_enc=excluded.content_enc,updated_at=now()
       where sandbox_outputs.digest<>excluded.digest`,
-      [id, JSON.stringify(payload), kept],
+      [id, JSON.stringify(payload)],
     );
     // A retained-disk read is final for this stop: the workspace cannot change until compute resumes.
-    if (read.retained) await tx.query(`update public.sandboxes set outputs_retained_at=now() where id=$1`, [id]);
+    if (read.retained) {
+      signal?.throwIfAborted();
+      await tx.query(`update public.sandboxes set outputs_retained_at=now() where id=$1`, [id]);
+    }
   });
 }
 
@@ -174,11 +163,14 @@ export function createSandboxOutputs(
         }>(`update public.sandboxes set outputs_checked_at=now()
         where id=(select id from public.sandboxes where ${ELIGIBLE} and provider_sandbox_id is not null
         and (status in ('running','ready')
-          -- Any stop (Armada, TTL, provider-initiated or reconciled later): read the retained disk once.
-          or (status='stopped' and stopped_at>now()-interval '1 day'
-            and (outputs_retained_at is null or outputs_retained_at<stopped_at)))
-        and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds'
-          or (status='stopped' and outputs_checked_at<stopped_at))
+          -- Any stop (Armada, TTL, provider-initiated or reconciled later) until a definitive
+          -- retained result: a successful read, or the provider saying it can never be read.
+          or (status='stopped' and (outputs_retained_at is null or outputs_retained_at<stopped_at)))
+        and (outputs_checked_at is null or (status<>'stopped' and outputs_checked_at<now()-interval '30 seconds')
+          or (status='stopped' and (outputs_checked_at<stopped_at
+            -- Unavailable retained reads back off: wait at least as long as the stop had lasted at
+            -- the previous attempt, between 30 seconds and one hour.
+            or outputs_checked_at<now()-least(interval '1 hour',greatest(interval '30 seconds',outputs_checked_at-stopped_at)))))
         order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider_sandbox_id,outputs_checked_at::text as scan,status='stopped' as stopped`)
       ).rows[0];
       if (!row) return false;

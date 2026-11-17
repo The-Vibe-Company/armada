@@ -10,7 +10,9 @@ export interface Recorded {
   body: unknown;
 }
 
-export type Reply = { status?: number; body?: unknown; raw?: string; headers?: Record<string, string> } | Error;
+export type Reply =
+  | { status?: number; body?: unknown; raw?: string | Uint8Array; headers?: Record<string, string> }
+  | Error;
 
 /** A boat.dev stand-in at the HTTP boundary: it answers in order and records what the SDK really sent. */
 export function fakeBoat(...replies: Reply[]) {

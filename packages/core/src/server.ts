@@ -78,12 +78,14 @@ export { runtimeBootstrapScript } from "./runtime-bootstrap.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
 export {
   admitOutputs,
+  OUTPUT_ARCHIVE_MAX_BYTES,
   OUTPUT_COLLECTOR,
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
   OUTPUT_MAX_FILES,
   type OutputFile,
   parseCollectorOutput,
+  parseOutputArchive,
   selectRetainedOutputs,
 } from "./sandbox-outputs.ts";
 export {

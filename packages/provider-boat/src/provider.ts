@@ -41,9 +41,12 @@ import {
 } from "@armada/core";
 import {
   isNonMutatingProviderRefusal,
+  OUTPUT_ARCHIVE_MAX_BYTES,
   OUTPUT_COLLECTOR,
+  OUTPUT_DIRECTORY,
   type OutputFile,
   parseCollectorOutput,
+  parseOutputArchive,
   selectRetainedOutputs,
   sshReadableVariables,
 } from "@armada/core/server";
@@ -218,6 +221,49 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     } catch (error) {
       throw await toProviderError(error);
     }
+  }
+
+  /** The declared directory of a completed snapshot as one folder archive (never the machine). */
+  async function readOutputArchive(snapshotId: string, signal: AbortSignal) {
+    const path = OUTPUT_DIRECTORY.slice(1);
+    const response = await call(() => api.getSnapshotFileRaw({ snapshotId, path }, { signal })).catch(
+      (error: unknown) => {
+        // Not found cannot tell a missing directory from a snapshot removed since: keep the
+        // pre-stop capture rather than deleting it, and stop reading this stop's disk.
+        if (error instanceof ProviderError && error.code === "not_found") return "retained_unreadable" as const;
+        throw error;
+      },
+    );
+    if (response === "retained_unreadable") return response;
+    const raw = response.raw;
+    // A regular file in place of the directory declares nothing.
+    if (raw.headers.get("x-snapshot-entry-kind") === "file") {
+      await raw.body?.cancel().catch(() => {});
+      return { files: [], retained: true };
+    }
+    if (raw.headers.get("x-snapshot-entry-kind") !== "dir") return null;
+    // A completed snapshot never changes: a directory beyond the bound is never readable for this
+    // stop (the pre-stop capture stays). Never buffer beyond the bound, whatever the headers say.
+    if (Number(raw.headers.get("x-snapshot-total-size-bytes")) > OUTPUT_ARCHIVE_MAX_BYTES) {
+      await raw.body?.cancel().catch(() => {});
+      return "retained_unreadable" as const;
+    }
+    if (!raw.body) return null;
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    const reader = raw.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      // Tar headers and padding come on top of the file bytes.
+      if (total > 2 * OUTPUT_ARCHIVE_MAX_BYTES) {
+        await reader.cancel().catch(() => {});
+        return "retained_unreadable" as const;
+      }
+      chunks.push(value);
+    }
+    return { files: parseOutputArchive(Buffer.concat(chunks)), retained: true };
   }
 
   async function start(body: CreateSandboxRequest, idempotencyKey: string | undefined): Promise<SandboxInfo> {
@@ -417,7 +463,13 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
 
     async readOutputs({ sandboxId, signal }) {
       const read = signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000);
-      const current = await call(() => api.get({ sandboxId }, { signal: read }));
+      // Boat no longer has this sandbox (deleted or expired): nothing is retained, a definitive answer.
+      const gone = (error: unknown) => {
+        if (error instanceof ProviderError && error.code === "not_found") return "retained_unreadable" as const;
+        throw error;
+      };
+      const current = await call(() => api.get({ sandboxId }, { signal: read })).catch(gone);
+      if (current === "retained_unreadable") return current;
       if (!current.sandbox || current.sandbox.id !== sandboxId) return null;
       const state = sandboxInfo(current.sandbox).state;
       if (state === "ready" || state === "running") {
@@ -448,15 +500,15 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       // A failed latest attempt may still be retried by Boat: unavailable now (one cheap read per scan),
       // the caller keeps its pre-stop capture meanwhile.
       if (attempt && attempt !== "completed") return null;
-      const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal: read }));
+      const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal: read })).catch(gone);
+      if (latest === "retained_unreadable") return latest;
       const snapshot = latest.snapshot;
       if (!snapshot || snapshot.sandboxId !== sandboxId || snapshot.status !== "completed") return null;
       const tree = await call(() => api.getSnapshotTree({ snapshotId: snapshot.id }, { signal: read }));
       if (tree.snapshotId !== snapshot.id) return null;
-      if (!tree.treeAvailable) return null;
-      // Boat lists the whole disk; a truncated listing may still include declared outputs. Publish
-      // those it lists (verified below) as partial coverage: unseen outputs are not deletions.
-      // A completed snapshot never changes, so re-reading it cannot cover more.
+      // Boat lists the whole disk, so unrelated files can truncate (or prevent) the listing. Then read
+      // the declared directory itself as one bounded folder archive: complete coverage of its entries.
+      if (!tree.treeAvailable || tree.truncated) return readOutputArchive(snapshot.id, read);
       const selected = selectRetainedOutputs(tree.entries ?? []);
       const files: OutputFile[] = [];
       for (const entry of selected) {
@@ -468,7 +520,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         if (bytes.length !== entry.size) return null;
         files.push({ name: entry.name, bytes });
       }
-      return { files, retained: true, complete: !tree.truncated };
+      return { files, retained: true };
     },
 
     async observeResources(sandboxId) {

@@ -101,14 +101,94 @@ export function selectRetainedOutputs(
     if (typeof size !== "number" || !Number.isInteger(size) || size < 0 || size > OUTPUT_MAX_BYTES) continue;
     selected.push({ name, path: entry.path, size });
   }
-  selected.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  const admitted: typeof selected = [];
+  return bounded(selected);
+}
+
+/** One entry per name (the last wins, as in an archive), in name order, within count and byte bounds. */
+function bounded<T extends { name: string; size: number }>(entries: readonly T[]): T[] {
+  const unique = [...new Map(entries.map((entry) => [entry.name, entry])).values()];
+  unique.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const admitted: T[] = [];
   let total = 0;
-  for (const entry of selected) {
+  for (const entry of unique) {
     if (admitted.length === OUTPUT_MAX_FILES) break;
     if (total + entry.size > OUTPUT_MAX_BYTES) continue;
     total += entry.size;
     admitted.push(entry);
   }
   return admitted;
+}
+
+/** Bound on a retained declared-directory archive (whole subtree, including skipped files). */
+export const OUTPUT_ARCHIVE_MAX_BYTES = 16 * 1024 * 1024;
+
+function tarText(block: Uint8Array, start: number, length: number): string {
+  const field = block.subarray(start, start + length);
+  const end = field.indexOf(0);
+  return new TextDecoder("utf-8", { fatal: true }).decode(end === -1 ? field : field.subarray(0, end));
+}
+
+function tarSize(block: Uint8Array): number {
+  // Base-256 sizes (> 8 GiB) cannot belong to a bounded archive.
+  if ((block[124] ?? 0) & 0x80) throw Error("invalid_archive");
+  const text = tarText(block, 124, 12).trim();
+  if (!/^[0-7]*$/.test(text)) throw Error("invalid_archive");
+  return text ? Number.parseInt(text, 8) : 0;
+}
+
+/** Declared outputs from a tar of the declared directory's subtree (a retained-disk folder read).
+ * Complete coverage of the directory: only direct regular-file children, in name order, within the
+ * same bounds as `selectRetainedOutputs`. Subdirectories, links and special entries are skipped.
+ * Entry paths may be relative to the directory or to the disk root; the deepest candidate root
+ * that contains every entry is used. Throws on a malformed archive. */
+export function parseOutputArchive(archive: Uint8Array): OutputFile[] {
+  const entries: { path: string; regular: boolean; bytes: Uint8Array }[] = [];
+  let offset = 0;
+  let longName: string | null = null;
+  let paxPath: string | null = null;
+  for (;;) {
+    if (offset + 512 > archive.length) throw Error("invalid_archive");
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const size = tarSize(header);
+    const dataStart = offset + 512;
+    if (dataStart + size > archive.length) throw Error("invalid_archive");
+    const data = archive.subarray(dataStart, dataStart + size);
+    offset = dataStart + Math.ceil(size / 512) * 512;
+    const type = String.fromCharCode(header[156] ?? 0);
+    if (type === "L") {
+      longName = new TextDecoder("utf-8", { fatal: true }).decode(data).replace(/\0+$/, "");
+      continue;
+    }
+    if (type === "x") {
+      for (const record of new TextDecoder("utf-8", { fatal: true }).decode(data).split("\n")) {
+        const match = /^\d+ path=(.*)$/s.exec(record);
+        if (match) paxPath = match[1] ?? null;
+      }
+      continue;
+    }
+    if (type === "g") continue;
+    const prefix = tarText(header, 257, 6).startsWith("ustar") ? tarText(header, 345, 155) : "";
+    const name = tarText(header, 0, 100);
+    const path = paxPath ?? longName ?? (prefix ? `${prefix}/${name}` : name);
+    longName = null;
+    paxPath = null;
+    entries.push({
+      path: path.replace(/^(?:\.?\/)+/, "").replace(/\/+$/, ""),
+      regular: type === "0" || type === "\0",
+      bytes: data,
+    });
+  }
+  const root =
+    [`${OUTPUT_DIRECTORY.slice(1)}/`, `${OUTPUT_DIRECTORY.slice(OUTPUT_DIRECTORY.lastIndexOf("/") + 1)}/`].find(
+      (candidate) => entries.every((entry) => `${entry.path}/`.startsWith(candidate)),
+    ) ?? "";
+  const selected: { name: string; path: string; size: number; bytes: Uint8Array }[] = [];
+  for (const entry of entries) {
+    if (!entry.regular || !entry.path.startsWith(root)) continue;
+    const name = entry.path.slice(root.length);
+    if (!validName(name) || entry.bytes.length > OUTPUT_MAX_BYTES) continue;
+    selected.push({ name, path: entry.path, size: entry.bytes.length, bytes: entry.bytes });
+  }
+  return bounded(selected).map((entry) => ({ name: entry.name, bytes: new Uint8Array(entry.bytes) }));
 }
