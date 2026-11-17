@@ -8,7 +8,7 @@ export function launchTimingFact(timing: LaunchTiming | null): [string, string] 
   const slowest = `slowest: ${LAUNCH_STAGE_LABELS[timing.slowest.stage]}, ${formatLaunchDuration(timing.slowest.ms)}`;
   if (timing.ready) return ["Launch time", `${total} (${slowest})`];
   // Still starting, or stopped before the harness was ready: say how far it got, never a finished time.
-  const reached = timing.stages.filter((stage) => stage.stage !== "first_event").at(-1);
+  const reached = timing.stages.filter((stage) => stage.stage !== "first_token").at(-1);
   const until = reached ? ` until ${LAUNCH_STAGE_LABELS[reached.stage].toLowerCase()}` : "";
   return ["Launch time", `Not ready: ${total}${until} (${slowest})`];
 }

@@ -1,50 +1,57 @@
 /**
- * #2560: launch time per stage. One runtime activation (launch or resume) is one enrolment epoch;
- * the server records each stage once, at the point where it already authenticates that stage.
+ * #2560: launch time per stage. One activation is one launch (activation 1) or one resume (each later
+ * activation) of a sandbox, on every provider and path. Each stage keeps its earliest recorded time.
  * Browser-safe: no I/O.
  */
 export const LAUNCH_STAGES = [
-  /** Sandbox row created (first activation only; resumes start at machine_started). */
-  "created",
-  /** Provider machine running and the runtime ticket issued (Boat, Modal and Docker, launch and resume). */
+  /** The launch or resume request was accepted. */
+  "accepted",
+  /** The provider allocated the machine (Boat/Modal fork returned; Docker host picked up the job). */
+  "provider_claimed",
+  /** The machine is running (provider readiness, Docker host completion, or the bootstrap's first report). */
   "machine_started",
-  /** Bootstrap script reported it started inside the machine. */
+  /** Armada prepared the repository checkout (Boat/Modal launches; Docker images and resumes carry it). */
+  "checkout_done",
+  /** The Armada runtime bootstrap reported it started inside the machine (runtime paths only). */
   "bootstrap_started",
-  /** Runtime exchanged its ticket for a session. */
+  /** The Armada runtime exchanged its ticket for a session (runtime paths only). */
   "enrolled",
-  /** Harness (Claude Code, Codex or OpenCode) process started. */
+  /** The sandbox can take a prompt: workspace, skills and connections are ready. */
   "harness_ready",
-  /** First agent event stored. */
-  "first_event",
+  /** First model output of the activation (runtime paths, where events reach the server). */
+  "first_token",
 ] as const;
 export type LaunchStage = (typeof LAUNCH_STAGES)[number];
 
 export const LAUNCH_STAGE_LABELS: Record<LaunchStage, string> = {
-  created: "Created",
+  accepted: "Accepted",
+  provider_claimed: "Provider claimed",
   machine_started: "Machine started",
+  checkout_done: "Checkout done",
   bootstrap_started: "Bootstrap started",
   enrolled: "Enrolled",
   harness_ready: "Harness ready",
-  first_event: "First event",
+  first_token: "First model token",
 };
 
 export const isLaunchStage = (value: unknown): value is LaunchStage =>
   typeof value === "string" && (LAUNCH_STAGES as readonly string[]).includes(value);
 
 export interface LaunchStageRow {
-  epoch: string | number;
+  activation: string | number;
   stage: string;
   at: string;
 }
 
 export interface LaunchTiming {
-  epoch: string;
-  /** Recorded stages in launch order; `ms` is the time since the previous recorded stage. */
+  /** "1" is the launch; a higher activation is a resume. */
+  activation: string;
+  /** Recorded stages in time order; `ms` is the time since the previous recorded stage. */
   stages: { stage: LaunchStage; at: string; ms: number | null }[];
   /** Harness ready was recorded: the launch finished. */
   ready: boolean;
   /**
-   * First recorded stage to harness ready (or to the last stage reached so far). first_event is excluded: it waits
+   * First recorded stage to harness ready (or to the last stage reached so far). first_token is excluded: it waits
    * for the first prompt, which an idle launch may receive hours later.
    */
   totalMs: number | null;
@@ -52,30 +59,34 @@ export interface LaunchTiming {
   slowest: { stage: LaunchStage; ms: number } | null;
 }
 
-/** Summarize the latest epoch in `rows`; unknown stages and unparsable timestamps are ignored. */
+const order = (stage: string) => LAUNCH_STAGES.indexOf(stage as LaunchStage);
+
+/** Summarize the latest activation in `rows`; unknown stages and unparsable timestamps are ignored. */
 export function summarizeLaunch(rows: readonly LaunchStageRow[]): LaunchTiming | null {
   const valid = rows.filter((row) => isLaunchStage(row.stage) && Number.isFinite(Date.parse(row.at)));
   if (!valid.length) return null;
-  const epoch = valid.map((row) => BigInt(row.epoch)).reduce((max, value) => (value > max ? value : max));
+  const activation = valid.map((row) => BigInt(row.activation)).reduce((max, value) => (value > max ? value : max));
+  // Time order, not catalog order: a runtime launch prepares its checkout after enrolment.
   const ordered = valid
-    .filter((row) => BigInt(row.epoch) === epoch)
-    .sort((a, b) => LAUNCH_STAGES.indexOf(a.stage as LaunchStage) - LAUNCH_STAGES.indexOf(b.stage as LaunchStage));
+    .filter((row) => BigInt(row.activation) === activation)
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || order(a.stage) - order(b.stage));
+  const launch = ordered.filter((row) => row.stage !== "first_token");
   let slowest: LaunchTiming["slowest"] = null;
   const stages = ordered.map((row, index) => {
     const previous = ordered[index - 1];
     const ms = previous ? Math.max(0, Date.parse(row.at) - Date.parse(previous.at)) : null;
-    if (ms !== null && row.stage !== "first_event" && (!slowest || ms > slowest.ms))
+    if (ms !== null && row.stage !== "first_token" && (!slowest || ms > slowest.ms))
       slowest = { stage: row.stage as LaunchStage, ms };
     return { stage: row.stage as LaunchStage, at: new Date(row.at).toISOString(), ms };
   });
-  const launch = ordered.filter((row) => row.stage !== "first_event");
   const first = launch[0];
-  const last = launch[launch.length - 1];
+  const ready = launch.find((row) => row.stage === "harness_ready");
+  const last = ready ?? launch[launch.length - 1];
   return {
-    epoch: epoch.toString(),
+    activation: activation.toString(),
     stages,
-    ready: ordered.some((row) => row.stage === "harness_ready"),
-    totalMs: first && last && launch.length > 1 ? Math.max(0, Date.parse(last.at) - Date.parse(first.at)) : null,
+    ready: Boolean(ready),
+    totalMs: first && last && last !== first ? Math.max(0, Date.parse(last.at) - Date.parse(first.at)) : null,
     slowest,
   };
 }
@@ -95,36 +106,71 @@ export function formatLaunchDuration(ms: number): string {
   return `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
 }
 
+export interface LaunchPercentiles {
+  provider: string;
+  kind: "launch" | "resume";
+  count: number;
+  p50Ms: number;
+  p90Ms: number;
+}
+
 /**
- * p50/p90 launch-to-ready time per provider: only first activations with both `created` and
- * `harness_ready`, so resumes and unfinished launches never skew the sample.
+ * p50/p90 accepted-to-harness-ready time per provider, launches and resumes apart: only activations with both
+ * stages, so unfinished activations never skew the sample.
  */
 export function launchReadyPercentiles(
   rows: readonly (LaunchStageRow & { sandbox_id: string; provider: string })[],
-): { provider: string; count: number; p50Ms: number; p90Ms: number }[] {
-  const launches = new Map<string, { provider: string; created?: number; ready?: number }>();
+): LaunchPercentiles[] {
+  const activations = new Map<
+    string,
+    { provider: string; kind: LaunchPercentiles["kind"]; accepted?: number; ready?: number }
+  >();
   for (const row of rows) {
     const at = Date.parse(row.at);
-    if (!Number.isFinite(at) || (row.stage !== "created" && row.stage !== "harness_ready")) continue;
-    const key = `${row.sandbox_id}:${row.epoch}`;
-    const launch = launches.get(key) ?? { provider: row.provider };
-    if (row.stage === "created") launch.created = at;
-    else launch.ready = at;
-    launches.set(key, launch);
+    if (!Number.isFinite(at) || (row.stage !== "accepted" && row.stage !== "harness_ready")) continue;
+    const key = `${row.sandbox_id}:${row.activation}`;
+    const activation = activations.get(key) ?? {
+      provider: row.provider,
+      kind: String(row.activation) === "1" ? "launch" : "resume",
+    };
+    if (row.stage === "accepted") activation.accepted = at;
+    else activation.ready = at;
+    activations.set(key, activation);
   }
-  const byProvider = new Map<string, number[]>();
-  for (const launch of launches.values())
-    if (launch.created !== undefined && launch.ready !== undefined)
-      byProvider.set(launch.provider, [
-        ...(byProvider.get(launch.provider) ?? []),
-        Math.max(0, launch.ready - launch.created),
-      ]);
-  return [...byProvider]
-    .map(([provider, values]) => ({
+  const samples = new Map<string, { provider: string; kind: LaunchPercentiles["kind"]; values: number[] }>();
+  for (const { provider, kind, accepted, ready } of activations.values()) {
+    if (accepted === undefined || ready === undefined) continue;
+    const key = `${provider}:${kind}`;
+    const sample = samples.get(key) ?? { provider, kind, values: [] };
+    sample.values.push(Math.max(0, ready - accepted));
+    samples.set(key, sample);
+  }
+  return [...samples.values()]
+    .map(({ provider, kind, values }) => ({
       provider,
+      kind,
       count: values.length,
       p50Ms: percentile(values, 50)!,
       p90Ms: percentile(values, 90)!,
     }))
-    .sort((a, b) => a.provider.localeCompare(b.provider));
+    .sort((a, b) => a.provider.localeCompare(b.provider) || a.kind.localeCompare(b.kind));
+}
+
+/**
+ * Server-only SQL: record `stage` for the sandbox's current activation, `elapsedMs` before the database clock.
+ * No activation yet (a sandbox started before #2560) records nothing. A repeated or late report keeps the earliest time.
+ */
+export async function recordLaunchStageSql(
+  sql: { query(text: string, values?: unknown[]): Promise<unknown> },
+  sandboxId: string,
+  stage: LaunchStage,
+  elapsedMs = 0,
+): Promise<void> {
+  await sql.query(
+    `insert into public.sandbox_launch_stages(sandbox_id,activation,stage,at)
+     select $1::uuid,max(l.activation),$2,clock_timestamp()-make_interval(secs=>$3::double precision/1000)
+       from public.sandbox_launch_stages l where l.sandbox_id=$1::uuid having max(l.activation) is not null
+     on conflict(sandbox_id,activation,stage) do update set at=least(sandbox_launch_stages.at,excluded.at)`,
+    [sandboxId, stage, Math.max(0, Math.round(elapsedMs))],
+  );
 }

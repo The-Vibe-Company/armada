@@ -1,3 +1,4 @@
+import type { LaunchStage } from "@armada/core";
 import { isRuntimeStartupFailure, RUNTIME_STARTUP_FAILURES } from "../../core/src/runtime-startup-failure.ts";
 import type { Route } from "./http.ts";
 import { recordLaunchStage } from "./launch-stage-record.ts";
@@ -6,13 +7,16 @@ import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
 const bootstrap = new Set(["bootstrap_started", "artifact_verified", "bootstrap_failed"]);
 const runtime = new Set(["enrolled", "harness_started", "runtime_failed"]);
-/** Reported progress persisted as a launch stage (#2560); failures stay in sandbox status. */
-const launchStage = {
-  bootstrap_started: "bootstrap_started",
-  enrolled: "enrolled",
-  harness_started: "harness_ready",
-} as const;
-const persisted = (stage: string): stage is keyof typeof launchStage => Object.hasOwn(launchStage, stage);
+/**
+ * Reported progress persisted as launch stages (#2560); failures stay in sandbox status. A bootstrap report runs
+ * inside the machine, so it is also the earliest machine-start evidence where the server observed none before (a
+ * Docker resume is restored by the host after its ticket is issued). harness_started is not readiness: only Codex
+ * reports it, when its first prompt starts the app-server; readiness is recorded where the launch publishes.
+ */
+const launchStages: Record<string, readonly LaunchStage[]> = {
+  bootstrap_started: ["machine_started", "bootstrap_started"],
+  enrolled: ["enrolled"],
+};
 /** Only fixed stage names and authenticated identities; never request/exception text. */
 export function logRuntimeStage(scope: RuntimeSessionScope, stage: string, reason?: string) {
   try {
@@ -62,7 +66,7 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
       const token = request.headers.get("authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? "";
       const scope = await (bootstrap.has(stage)
         ? authority.withBootstrap(token, async (tx, scope) => {
-            if (persisted(stage)) await recordLaunchStage(tx, scope, launchStage[stage]);
+            for (const launch of launchStages[stage] ?? []) await recordLaunchStage(tx, scope.sandboxId, launch);
             if (stage === "bootstrap_failed")
               await tx.query(
                 "update public.sandboxes set status='failed',status_reason='Armada runtime bootstrap failed.' where id=$1",
@@ -71,7 +75,7 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
             return scope;
           })
         : authority.withSession(token, request.headers.get("x-armada-runtime-epoch") ?? "", async (tx, scope) => {
-            if (persisted(stage)) await recordLaunchStage(tx, scope, launchStage[stage]);
+            for (const launch of launchStages[stage] ?? []) await recordLaunchStage(tx, scope.sandboxId, launch);
             if (stage === "runtime_failed")
               await tx.query("update public.sandboxes set status='failed',status_reason=$2 where id=$1", [
                 scope.sandboxId,

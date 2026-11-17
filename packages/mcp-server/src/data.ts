@@ -9,6 +9,7 @@ import {
   mapGoldenRow,
   mapSandboxRow,
   type OrgSummary,
+  recordLaunchStageSql,
   resolveOrg,
   type SandboxListMetadata,
   type SandboxRecord,
@@ -301,11 +302,11 @@ export function createSqlData(
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
       async launchTiming(id) {
-        const rows = await sql.query<{ epoch: string; stage: string; at: string }>(
-          `select st.epoch::text as epoch,st.stage,to_json(st.at)#>>'{}' as at from public.sandbox_launch_stages st
+        const rows = await sql.query<{ activation: string; stage: string; at: string }>(
+          `select st.activation::text as activation,st.stage,to_json(st.at)#>>'{}' as at from public.sandbox_launch_stages st
            join public.sandboxes s on s.id=st.sandbox_id
            where ${SANDBOX_VISIBLE} and s.id=$3::uuid
-           and st.epoch=(select max(l.epoch) from public.sandbox_launch_stages l where l.sandbox_id=s.id)`,
+           and st.activation=(select max(l.activation) from public.sandbox_launch_stages l where l.sandbox_id=s.id)`,
           [...scope, id],
         );
         return summarizeLaunch(rows.rows);
@@ -358,6 +359,14 @@ export function createSqlData(
       async recordTurnModelEvidence(id, promptId, evidence) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
         await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModelEvidence!(id, promptId, evidence);
+      },
+      async recordLaunchStage(id, stage, elapsedMs) {
+        // Server measurement of the caller's own launch: the same owner fence as its skill receipts.
+        const owned = await sql.query("select 1 from public.sandboxes where id=$1::uuid and owner_id=$2::uuid", [
+          id,
+          caller.userId,
+        ]);
+        if (owned.rows.length) await recordLaunchStageSql(sql, id, stage, elapsedMs);
       },
       async recordSkills(id, skills) {
         const result = await sql.query(

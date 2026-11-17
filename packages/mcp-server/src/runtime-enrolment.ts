@@ -2,7 +2,6 @@ import { randomBytes } from "node:crypto";
 import { sha256Hex } from "@armada/auth";
 import { createSqlSandboxStore, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import type { Route } from "./http.ts";
-import { recordLaunchStage } from "./launch-stage-record.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
 const ENROL_PATH = "/api/runtime/enrol";
@@ -144,17 +143,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
-      const epoch = String(BigInt(row.epoch) + 1n);
-      // #2560: every provider issues the ticket once its machine runs; a first activation also
-      // dates the launch from the sandbox row, a resume starts here.
-      if (epoch === "1")
-        await tx.query(
-          `insert into public.sandbox_launch_stages(sandbox_id,epoch,stage,at)
-           select id,1,'created',created_at from public.sandboxes where id=$1 on conflict do nothing`,
-          [sandbox.id],
-        );
-      await recordLaunchStage(tx, { sandboxId: sandbox.id, epoch }, "machine_started");
-      return { epoch, lifecycleGeneration: sandbox.lifecycle_generation };
+      return { epoch: String(BigInt(row.epoch) + 1n), lifecycleGeneration: sandbox.lifecycle_generation };
     });
     return { enrolmentToken, ...receipt };
   }

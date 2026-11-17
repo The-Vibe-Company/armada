@@ -1483,3 +1483,32 @@ test("a host that reports no obligation clears its stale per-generation deadline
     (await db.query("select docker_retention_deadline from public.sandboxes where id=$1", [a.sandboxId])).rows[0],
   ).toEqual({ docker_retention_deadline: null });
 });
+
+// #2560: the host's own facts date a Docker launch; a ticket issued before the host acts records no machine start.
+test("docker launch stages come from host pickup and create ACK, not from ticket issuance", async () => {
+  const a = await boundFixture();
+  const { createRuntimeEnrolments } = await import("../src/runtime-enrolment.ts");
+  const stages = async () =>
+    (
+      await database().query<{ activation: string; stage: string }>(
+        "select activation::text,stage from public.sandbox_launch_stages where sandbox_id=$1 order by at,stage",
+        [a.sandboxId],
+      )
+    ).rows.map((row) => `${row.activation}:${row.stage}`);
+  expect(await stages()).toEqual(["1:accepted"]);
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  expect(await stages()).toEqual(["1:accepted"]);
+  expect((await store.poll(a.hostToken, a.installationId))?.operation).toBe("create");
+  expect(await stages()).toEqual(["1:accepted", "1:provider_claimed"]);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  expect(await stages()).toEqual(["1:accepted", "1:provider_claimed", "1:machine_started"]);
+  // A later activation (resume) whose ticket is issued before the host restores the machine.
+  await database().query("update public.sandboxes set status='stopped',stopped_at=now() where id=$1", [a.sandboxId]);
+  await database().query("update public.sandboxes set status='starting',stopped_at=null where id=$1", [a.sandboxId]);
+  await createRuntimeEnrolments(sql, key, { allowDockerIssue: true }).issue({
+    sandboxId: a.sandboxId,
+    ownerId: a.owner.userId,
+    configuration: {},
+  });
+  expect((await stages()).filter((stage) => stage.startsWith("2:"))).toEqual(["2:accepted"]);
+});

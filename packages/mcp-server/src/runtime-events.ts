@@ -11,12 +11,17 @@ import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
 import { recordLaunchStage } from "./launch-stage-record.ts";
+
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, runtimeTransaction } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
 import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
 import { admittedTurnContexts } from "./turn-pricing.ts";
+
+/** Assistant output (text or tool calls) from the model, not a prompt echo, tool result or retracted response. */
+const isModelOutput = (event: AgentEvent) =>
+  event.kind === "message" && event.responseKind !== "tool_result" && event.retracted !== true;
 
 class InvalidEvents extends Error {}
 class ConflictingEvent extends Error {}
@@ -279,8 +284,8 @@ export function createRuntimeEvents(
             : {}),
         });
       }
-      // #2560: first stored event of this activation (launch or resume); later batches are no-ops.
-      if (fresh.length) await recordLaunchStage(tx, scope, "first_event");
+      // #2560: first model output of this activation (launch or resume); the earliest report wins.
+      if (fresh.some(isModelOutput)) await recordLaunchStage(tx, scope.sandboxId, "first_token");
       if (initialAck === 0 && fresh.length) first = scope;
       return { acknowledgedSequence: ack };
     });

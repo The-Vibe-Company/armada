@@ -101,7 +101,7 @@ describe("database", () => {
         "readable_variables SELECT",
         "routine_runs SELECT(configuration_version,created_at,id,launch_refusal,missed_count_capped,missed_intervals,org_id,owner_id,reason,request_key,routine_id,scheduled_due_at,state,task_checked_at,task_state,template_request_id,updated_at)",
         "routines SELECT",
-        "sandbox_launch_stages SELECT(at,epoch,sandbox_id,stage)",
+        "sandbox_launch_stages SELECT(activation,at,sandbox_id,stage)",
         "sandboxes SELECT",
         "sandboxes UPDATE(conversation_ids,deleted_at,status,status_reason,stopped_at)",
         "service_tokens DELETE",
@@ -409,7 +409,7 @@ describe("database", () => {
       const golden = await insertGolden(db, people, { name: "timed", visibility: "org", owner: people.admin });
       const sandbox = await insertSandbox(db, people, golden, people.owner);
       await db.query(
-        "insert into sandbox_launch_stages (sandbox_id, epoch, stage, at) values ($1, 1, 'created', now())",
+        "insert into sandbox_launch_stages (sandbox_id, activation, stage, at) values ($1, 9, 'accepted', now())",
         [sandbox],
       );
       const read = (user: string) =>
@@ -421,7 +421,7 @@ describe("database", () => {
       await expect(
         asUser(db, people.owner, () =>
           db.query(
-            "insert into sandbox_launch_stages (sandbox_id, epoch, stage, at) values ($1, 2, 'created', now())",
+            "insert into sandbox_launch_stages (sandbox_id, activation, stage, at) values ($1, 10, 'accepted', now())",
             [sandbox],
           ),
         ),

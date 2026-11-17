@@ -35,6 +35,7 @@ import {
 import { HARNESS_CAPABILITIES } from "./harnesses.ts";
 import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
+import type { LaunchStage } from "./launch-stages.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
@@ -261,6 +262,8 @@ export async function launchSandbox(
   request: LaunchRequest,
   options: LaunchOptions = {},
 ): Promise<LaunchResult> {
+  // #2560: the request is accepted here; the sandbox row (and so the stage table) exists only after the fork.
+  const acceptedAt = performance.now();
   try {
     validateSkillPins(request.skills ?? []);
   } catch {
@@ -512,6 +515,7 @@ export async function launchSandbox(
         throw error;
       });
 
+    const claimedAt = performance.now();
     const activityLeaseId = stores.sandboxes.activityOwnership ? crypto.randomUUID() : undefined;
     let record: SandboxRecord;
     try {
@@ -567,6 +571,20 @@ export async function launchSandbox(
       throw error;
     }
 
+    // Launch-time measurement (#2560) must never change the launch it measures.
+    const mark = async (stage: LaunchStage, since?: number) => {
+      try {
+        await stores.sandboxes.recordLaunchStage?.(
+          record.id,
+          stage,
+          since === undefined ? 0 : performance.now() - since,
+        );
+      } catch {
+        /* Best effort only. */
+      }
+    };
+    await mark("accepted", acceptedAt);
+    await mark("provider_claimed", claimedAt);
     const progress = (stage: LaunchInitializationStage) => {
       try {
         void Promise.resolve(options.onInitialization?.(stage)).catch(() => {});
@@ -592,6 +610,7 @@ export async function launchSandbox(
       await stores.connections?.bind(record.id, connectionIds);
       progress("initialization_ready");
       const ready = await waitReady(provider, forked.id, options);
+      await mark("machine_started");
       progress("initialization_hydrate");
       if (
         !runtime &&
@@ -622,6 +641,7 @@ export async function launchSandbox(
           options.sleep,
         );
         if (warnings.length) launchGithub.message = [launchGithub.message, ...warnings].filter(Boolean).join(" ");
+        await mark("checkout_done");
       }
       progress("initialization_cwd");
       if (!runtime && repositoryDir !== null && prepareNativeCwd)
@@ -682,6 +702,7 @@ export async function launchSandbox(
             "Runtime workspace setup requires updated runtime artifacts; no native fallback.",
           );
         launchGithub = await agent.prepareWorkspace(golden, progress, options.sleep);
+        await mark("checkout_done");
       }
       if (runtime && request.skills?.length) {
         if (!agent?.installSkills) throw new PrivateSkillError("skillpack_transport_failed", "transport");
@@ -745,6 +766,8 @@ export async function launchSandbox(
         }
       }
       progress("initialization_publish");
+      // Every harness and path is ready for a prompt here; a launch prompt's dispatch is not launch time.
+      await mark("harness_ready");
       if (prompt === undefined) {
         signal.throwIfAborted();
         return {

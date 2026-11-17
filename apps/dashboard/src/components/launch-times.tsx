@@ -4,7 +4,9 @@ import type { ProviderLaunchTimes } from "@/lib/data/launch-times";
 
 const PROVIDER_LABELS: Record<string, string> = { boat: "Boat", modal: "Modal", docker: "Your servers" };
 
-/** #2560: launch-to-ready p50/p90 per provider over the last 30 days; nothing before a launch is measured. */
+const KIND_LABELS = { launch: "Launch", resume: "Resume" } as const;
+
+/** #2560: accepted-to-ready p50/p90 per provider, launches and resumes apart, over the last 30 days. */
 export function LaunchTimes({ rows }: { rows: ProviderLaunchTimes | null }) {
   if (!rows?.length) return null;
   return (
@@ -13,22 +15,24 @@ export function LaunchTimes({ rows }: { rows: ProviderLaunchTimes | null }) {
         Launch time
       </h2>
       <p className="text-xs text-muted-foreground">
-        From sandbox creation to harness ready, for recent launches in the last 30 days of sandboxes you can open. Only
-        launches through the Armada runtime are measured.
+        From the accepted request to the sandbox being ready for a prompt, for recent launches and resumes in the last
+        30 days of sandboxes you can open.
       </p>
       <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Provider</TableHead>
-            <TableHead className="text-right">Launches</TableHead>
+            <TableHead>Kind</TableHead>
+            <TableHead className="text-right">Count</TableHead>
             <TableHead className="text-right">p50</TableHead>
             <TableHead className="text-right">p90</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {rows.map((row) => (
-            <TableRow key={row.provider}>
+            <TableRow key={`${row.provider}:${row.kind}`}>
               <TableCell>{PROVIDER_LABELS[row.provider] ?? row.provider}</TableCell>
+              <TableCell>{KIND_LABELS[row.kind]}</TableCell>
               <TableCell className="text-right tabular-nums">{row.count}</TableCell>
               <TableCell className="text-right tabular-nums">{formatLaunchDuration(row.p50Ms)}</TableCell>
               <TableCell className="text-right tabular-nums">{formatLaunchDuration(row.p90Ms)}</TableCell>

@@ -8,6 +8,7 @@ import {
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { launchCredentials } from "./launch-credentials.ts";
+import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import type { RuntimeResumePlacement, RuntimeResumePrepare } from "./runtime-resume.ts";
 
@@ -74,6 +75,8 @@ export function runtimeResumePlacement<H extends Provider>(
                 SANDBOX_STOP_MARGIN_SECONDS,
             );
             await placement.restore(host, sandbox, ttlSeconds, admission, restoreCheckpoint);
+            // #2560: the provider restored the machine; the runtime ticket is issued only after this.
+            await recordLaunchStageQuietly(options.sql, sandbox.id, "machine_started");
           },
         }),
       stop: () => placement.stop(host, sandbox),

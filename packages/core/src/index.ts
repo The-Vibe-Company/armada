@@ -248,11 +248,13 @@ export {
   isLaunchStage,
   LAUNCH_STAGE_LABELS,
   LAUNCH_STAGES,
+  type LaunchPercentiles,
   type LaunchStage,
   type LaunchStageRow,
   type LaunchTiming,
   launchReadyPercentiles,
   percentile,
+  recordLaunchStageSql,
   summarizeLaunch,
 } from "./launch-stages.ts";
 export { type LaunchWorkdir, resolveLaunchWorkdir, resolveLaunchWorkdirAt } from "./launch-workdir.ts";

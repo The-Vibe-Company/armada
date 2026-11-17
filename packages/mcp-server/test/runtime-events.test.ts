@@ -204,6 +204,43 @@ test("ACK follows contiguous encrypted persistence and shared usage projection; 
   }
 });
 
+// #2560: the first model output dates the activation's first token; other events and tool results do not.
+test("first model output of an activation is recorded once as its first token", async () => {
+  const f = await fixture();
+  try {
+    await f.db.query("update sandboxes set status='starting' where id=$1", [f.id]);
+    const active = await f.enrol();
+    const message = (id: string, extra = {}): AgentEvent => ({
+      id,
+      at: 4,
+      kind: "message",
+      text: "ok",
+      partial: true,
+      tools: [],
+      ...extra,
+    });
+    const stages = async () =>
+      (
+        await f.db.query<{ stage: string; at: string }>(
+          "select stage,at::text from sandbox_launch_stages where sandbox_id=$1 and stage='first_token'",
+          [f.id],
+        )
+      ).rows;
+    await f.publish(active, [
+      { sequence: 1, event: f.other("other") },
+      { sequence: 2, event: message("tool-result", { responseKind: "tool_result" }) },
+    ]);
+    expect(await stages()).toEqual([]);
+    await f.publish(active, [{ sequence: 3, event: message("first") }]);
+    const first = await stages();
+    expect(first).toHaveLength(1);
+    await f.publish(active, [{ sequence: 4, event: message("second") }]);
+    expect(await stages()).toEqual(first);
+  } finally {
+    await f.close();
+  }
+});
+
 test("a maximum event batch uses bounded SQL and detects duplicate conflicts before committing", async () => {
   const f = await fixture();
   const active = await f.enrol();
@@ -238,21 +275,6 @@ test("a resumed epoch continues the persistent producer sequence and rejects the
       acknowledgedSequence: 2,
     });
     expect((await f.rows()).map((r) => r.epoch)).toEqual([old.epoch, current.epoch]);
-    // #2560: each activation records its own first event; only the first launch dates from creation.
-    expect(
-      (
-        await f.db.query<{ epoch: string; stage: string }>(
-          "select epoch::text,stage from sandbox_launch_stages where sandbox_id=$1 order by epoch,stage",
-          [f.id],
-        )
-      ).rows,
-    ).toEqual([
-      { epoch: old.epoch, stage: "created" },
-      { epoch: old.epoch, stage: "first_event" },
-      { epoch: old.epoch, stage: "machine_started" },
-      { epoch: current.epoch, stage: "first_event" },
-      { epoch: current.epoch, stage: "machine_started" },
-    ]);
     expect((await f.publish(current, [item], { sandboxId: crypto.randomUUID() })).status).toBe(401);
     expect((await f.publish(current, [item], { generation: old.epoch })).status).toBe(401);
     await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);

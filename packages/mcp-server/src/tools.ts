@@ -342,17 +342,17 @@ const skillReceipts = z
   )
   .optional();
 
-/** #2560: latest activation (launch or resume), stages in order; ms is the time since the previous stage. */
+/** #2560: latest activation (launch or resume), stages in time order; ms is the time since the previous stage. */
 const launchTiming = z
   .object({
-    epoch: z.string(),
+    activation: z.string().describe('"1" is the launch; a higher activation is a resume.'),
     stages: z.array(z.object({ stage: z.enum(LAUNCH_STAGES), at: z.string(), ms: z.number().nullable() })),
     ready: z.boolean().describe("Harness ready was recorded."),
     totalMs: z
       .number()
       .nullable()
       .describe(
-        "First stage to harness ready (or the last stage so far); first_event waits for a prompt and is excluded.",
+        "First stage to harness ready (or the last stage so far); first_token waits for a prompt and is excluded.",
       ),
     slowest: z.object({ stage: z.enum(LAUNCH_STAGES), ms: z.number() }).nullable(),
   })

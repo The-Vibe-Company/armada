@@ -28,6 +28,7 @@ import {
 
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
+import { recordLaunchStage } from "./launch-stage-record.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -1208,6 +1209,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
             );
             await state(tx, logical, row.bound_operation ?? deny());
             await machine(tx, logical, row.bound_operation ?? deny());
+            // #2560: the authenticated host took this activation's machine work.
+            if (row.bound_operation === "create" || row.bound_operation === "resume")
+              await recordLaunchStage(tx, logical.id, "provider_claimed");
           } catch (error) {
             if (!(error instanceof DockerHostDenied)) throw error;
             if (verified) await startupFailed(tx, verified, row.bound_operation);
@@ -1397,6 +1401,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const staleCleanup =
           (job.bound_operation === "stop" || job.bound_operation === "delete") && (await supersededLifecycle(tx, job));
         if (result.outcome === "completed" && job.bound_sandbox_id && !staleCleanup) {
+          // #2560: the host created and started the container. A resume restores inside its bootstrap job, so its
+          // machine start is the bootstrap's first report instead (see runtime-progress).
+          if (job.bound_operation === "create") await recordLaunchStage(tx, job.bound_sandbox_id, "machine_started");
           if (job.bound_operation === "stop")
             await tx.query(
               `update public.sandboxes set status=case when status='failed' then status else 'stopped' end,

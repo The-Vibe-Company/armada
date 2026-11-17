@@ -4081,19 +4081,19 @@ export type Database = {
       sandbox_launch_stages: {
         Row: {
           sandbox_id: string;
-          epoch: number;
+          activation: number;
           stage: string;
           at: string;
         };
         Insert: {
           sandbox_id: string;
-          epoch: number;
+          activation: number;
           stage: string;
           at: string;
         };
         Update: {
           sandbox_id?: string;
-          epoch?: number;
+          activation?: number;
           stage?: string;
           at?: string;
         };

@@ -2,6 +2,7 @@ import { sha256Hex } from "@armada/auth";
 import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
+import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
@@ -271,6 +272,8 @@ export function createRuntimeResume(
             await prepareGitHub?.(caller, found.id);
             await prepareMcp?.(caller, found.id, signal);
           }
+          // #2560: restored, verified and reauthorized; the resume prompt's dispatch is not launch time.
+          await recordLaunchStageQuietly(sql, found.id, "harness_ready");
           const accepted = await agent.prompt(
             {
               sandboxId: found.providerSandboxId,
