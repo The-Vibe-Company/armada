@@ -52,10 +52,7 @@ begin
     insert into public.outbound_webhook_deliveries(id,endpoint_id,payload)
     values(delivery_id,endpoint.id,jsonb_build_object(
       'id',delivery_id,'type',event_type,'occurredAt',clock_timestamp(),
-      'orgId',saved.org_id,'sandboxId',saved.id,'promptId',coalesce((
-        select q.request_id::text from public.account_turn_queue q
-        where q.sandbox_id=saved.id and (q.native_prompt_id=prompt or q.request_id::text=prompt)
-        order by q.sequence desc limit 1),prompt),
+      'orgId',saved.org_id,'sandboxId',saved.id,'promptId',prompt,
       'state',status,'externalRef',to_jsonb(saved)->'external_ref',
       'reason',case when status='interrupted' then 'interrupted'
         when status='failed' then 'turn_failed' else null end))
@@ -102,10 +99,7 @@ begin
       insert into public.outbound_webhook_deliveries(id,endpoint_id,payload)
       values(delivery_id,endpoint.id,jsonb_build_object(
         'id',delivery_id,'type',event_type,'occurredAt',clock_timestamp(),
-        'orgId',new.org_id,'sandboxId',new.id,'promptId',coalesce((
-          select q.request_id::text from public.account_turn_queue q
-          where q.sandbox_id=new.id and (q.native_prompt_id=new.task_prompt_id or q.request_id::text=new.task_prompt_id)
-          order by q.sequence desc limit 1),new.task_prompt_id),
+        'orgId',new.org_id,'sandboxId',new.id,'promptId',new.task_prompt_id,
         'state',new.status,'externalRef',to_jsonb(new)->'external_ref','reason',public_reason));
     end loop;
   end loop;

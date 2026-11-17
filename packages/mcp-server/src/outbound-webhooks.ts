@@ -80,12 +80,19 @@ async function deliver(url: URL, body: string, headers: Record<string, string>, 
 export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashboardUrl: string) {
   async function publicPayload(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (typeof payload.promptId !== "string") return payload;
-    const receipts = await sql.query<{ request_id: string; result_enc: Uint8Array<ArrayBuffer> | null }>(
-      `select request_id,result_enc from public.account_turn_queue
-       where sandbox_id=$1 and result_enc is not null order by sequence`,
+    const receipts = await sql.query<{
+      request_id: string;
+      native_prompt_id: string | null;
+      result_enc: Uint8Array<ArrayBuffer> | null;
+    }>(
+      `select request_id,native_prompt_id,result_enc from public.account_turn_queue
+       where sandbox_id=$1 and (native_prompt_id is not null or result_enc is not null) order by sequence`,
       [payload.sandboxId],
     );
     const aliases = await queuedPromptAliases(receipts.rows, key);
+    for (const receipt of receipts.rows) {
+      if (receipt.native_prompt_id) aliases.set(receipt.native_prompt_id, receipt.request_id);
+    }
     return { ...payload, promptId: aliases.get(payload.promptId) ?? payload.promptId };
   }
   return {
@@ -170,7 +177,14 @@ export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashbo
         with candidate as (
           select d.id from public.outbound_webhook_deliveries d join public.outbound_webhook_endpoints e on e.id=d.endpoint_id
           where e.enabled and d.delivered_at is null and d.attempts<5 and d.next_attempt_at<=now()
-          and (d.lease_until is null or d.lease_until<now()) order by d.next_attempt_at,d.id
+          and (d.lease_until is null or d.lease_until<now())
+          and not exists(select 1 from public.account_turn_queue q
+            where q.sandbox_id::text=d.payload->>'sandboxId'
+              and q.native_prompt_id is null and q.result_enc is null
+              and (q.state='dispatching' or exists(select 1 from public.runtime_commands c
+                where c.sandbox_id=q.sandbox_id and c.result_enc is null
+                  and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))))
+          order by d.next_attempt_at,d.id
           for update of d skip locked limit 1
         ), claimed as (
           update public.outbound_webhook_deliveries d set attempts=attempts+1,lease_until=now()+interval '60 seconds'
@@ -182,8 +196,9 @@ export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashbo
       try {
         const secret = await decryptSecret(row.secret_enc, key);
         const timestamp = String(Math.floor(Date.now() / 1000));
+        const payload = await publicPayload(row.payload);
         const body = JSON.stringify({
-          ...(await publicPayload(row.payload)),
+          ...payload,
           links: { sandbox: `${dashboardUrl.replace(/\/$/, "")}/sandboxes/${row.payload.sandboxId}` },
         });
         status = await deliver(

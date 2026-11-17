@@ -99,11 +99,13 @@ test("running native turns retain receipt eligibility while provider failures st
   const { db, sql, id } = await fixture();
   await db.query("update sandboxes set task_prompt_id='long_prompt' where id=$1", [id]);
   let failures = false;
+  let cancelled: AbortController | undefined;
   let calls = 0;
   const worker = createNativeWebhookPrompts(sql, async () => ({
     id: "boat",
     async getPrompt() {
       calls++;
+      cancelled?.abort();
       if (failures) throw Error("private_provider_error");
       return { promptId: "long_prompt", status: "running", done: false };
     },
@@ -116,7 +118,13 @@ test("running native turns retain receipt eligibility while provider failures st
   failures = true;
   for (let i = 0; i < 5; i++) {
     await db.query("update native_webhook_prompts set next_attempt_at=now()");
-    expect(await worker.reconcileOne(new AbortController().signal)).toBe(true);
+    if (i < 3) expect(await worker.reconcileOne(new AbortController().signal)).toBe(true);
+    else {
+      cancelled = new AbortController();
+      await expect(worker.reconcileOne(cancelled.signal)).rejects.toThrow();
+      await worker.drain();
+      await db.query("update native_webhook_prompts set lease_until=null");
+    }
   }
   await db.query("update native_webhook_prompts set next_attempt_at=now()");
   expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);

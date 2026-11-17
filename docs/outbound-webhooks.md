@@ -30,8 +30,10 @@ and uses the same admission function. It retains the persisted owner and provide
 binding checks; it never resumes or mutates a stopped machine. Startup failures
 without an admitted prompt do not manufacture turn events.
 Queued sends use the same public prompt/request ID as the send/status API.
-The provider-to-public mapping is captured with prompt publication and frozen in
-the event payload, including when a fast terminal event precedes send-result storage.
+The provider-to-public mapping is captured with prompt publication or runtime
+command acknowledgment, even when a stop has cancelled the queue entry. Delivery
+waits for unresolved dispatch receipts and projects that immutable mapping; the
+outbox retains native identity for deduplication.
 Failure reasons use the public code `turn_failed` (or `interrupted` for an interrupted turn); a blocked report uses
 `agent_blocked`. Fetch authorized sandbox details for further diagnostics.
 The external reference follows the launch contract in

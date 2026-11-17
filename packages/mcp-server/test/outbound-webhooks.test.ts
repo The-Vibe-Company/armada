@@ -102,6 +102,6 @@ test("delivery logs translate queued native receipts to the public send identity
   const response = await route(new Request(`https://armada.example/api/v1/webhooks/deliveries?org=${org}`));
   expect(response?.status).toBe(200);
   const body = (await response?.json()) as { deliveries: { payload: { promptId: string } }[] };
-  expect(body.deliveries[0].payload.promptId).toBe("public_request");
+  expect(body.deliveries[0]?.payload.promptId).toBe("public_request");
   expect(JSON.stringify(body)).not.toContain("private_receipt");
 });

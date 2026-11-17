@@ -156,13 +156,27 @@ export function createRuntimeCommands(
     const sealed = await encryptSecret(serialized, key);
     return authority.withSession(token, epoch, async (tx, scope) => {
       const row = (
-        await tx.query(
+        await tx.query<{ request_id: string; result_enc: Uint8Array<ArrayBuffer> }>(
           `update public.runtime_commands set result_enc=coalesce(result_enc,$4)
-         where sandbox_id=$1 and request_id=$2 and epoch=$3 returning request_id`,
+         where sandbox_id=$1 and request_id=$2 and epoch=$3 returning request_id,result_enc`,
           [scope.sandboxId, value.requestId, scope.epoch, sealed],
         )
       ).rows[0];
       if (!row) throw new RuntimeCommandConflict();
+      // Use the first durable reply, including on replay. A stop may already
+      // have cancelled the queue entry; it cannot erase accepted turn identity.
+      const reply = JSON.parse(await decryptSecret(row.result_enc, key));
+      const result = reply.body?.result;
+      const queued = /^(?:follow_|docker_prompt_|resume_)([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/i.exec(
+        value.requestId,
+      );
+      if (queued && typeof result?.promptId === "string" && reply.status >= 200 && reply.status < 300) {
+        await tx.query(
+          `update public.account_turn_queue set native_prompt_id=coalesce(native_prompt_id,$3)
+           where sandbox_id=$1 and request_id=$2::uuid`,
+          [scope.sandboxId, queued[1], result.promptId],
+        );
+      }
       return { epoch: scope.epoch, requestId: value.requestId };
     });
   }

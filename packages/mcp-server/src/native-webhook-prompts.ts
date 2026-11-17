@@ -29,7 +29,7 @@ export function createNativeWebhookPrompts(
             and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
             and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
           order by p.next_attempt_at,p.sandbox_id,p.prompt_id for update of p skip locked limit 1
-        ) update public.native_webhook_prompts p set lease_id=$1::uuid,lease_until=now()+interval '60 seconds'
+        ) update public.native_webhook_prompts p set failures=p.failures+1,lease_id=$1::uuid,lease_until=now()+interval '60 seconds'
           from candidate c where p.sandbox_id=c.sandbox_id and p.prompt_id=c.prompt_id
           returning p.sandbox_id,p.prompt_id,p.provider,p.provider_sandbox_id`,
         [lease],
@@ -61,8 +61,10 @@ export function createNativeWebhookPrompts(
       `with settled as (
         update public.native_webhook_prompts p set
           completed_at=case when $4::text is not null then now() else null end,
-          failures=p.failures+case when $5 then 1 else 0 end,
-          next_attempt_at=now()+(case when $5 then least(3600,30*power(2,p.failures)) else 30 end * interval '1 second'),
+          -- Reserve on claim so shutdown/crash/timeouts also consume a retry.
+          -- A successful running observation refunds its reservation.
+          failures=p.failures-case when $5 then 0 else 1 end,
+          next_attempt_at=now()+(case when $5 then least(3600,30*power(2,p.failures-1)) else 30 end * interval '1 second'),
           lease_id=null,lease_until=null
         from public.sandboxes s where p.sandbox_id=$1::uuid and p.prompt_id=$2 and p.lease_id=$3::uuid
           and p.lease_until>clock_timestamp() and s.id=p.sandbox_id
