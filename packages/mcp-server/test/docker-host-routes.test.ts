@@ -472,3 +472,96 @@ test("a host reporting many retained deadlines still fits the poll body limit", 
   expect(JSON.stringify({ deadlines }).length).toBeGreaterThan(4096);
   expect(response.status).toBe(200);
 });
+
+test("a held host poll answers as soon as work appears and never beyond its hold", async () => {
+  let time = 0;
+  let polls = 0;
+  let jobAfter = Number.POSITIVE_INFINITY;
+  const running: (readonly string[])[] = [];
+  const job = { requestId: randomUUID(), operation: "stop" };
+  const store = {
+    retentionForHost: async () => undefined,
+    resumeClaimsForHost: async () => [],
+    pendingStartsForHost: async () => [],
+    async poll(...args: unknown[]) {
+      polls++;
+      running.push(args[8] as readonly string[]);
+      return polls > jobAfter ? job : null;
+    },
+  } as unknown as ReturnType<typeof createDockerHostStore>;
+  const route = createDockerHostRoutes(store, async () => ({ ok: false as const }), {
+    clock: {
+      now: () => time,
+      async wait(ms) {
+        time += ms;
+      },
+    },
+  });
+  const poll = async (extra: Record<string, unknown>) => {
+    const response = await route(
+      new Request("https://staging.example/api/docker-host/poll", {
+        method: "POST",
+        headers: { authorization: `Bearer ${"a".repeat(64)}`, "content-type": "application/json" },
+        body: JSON.stringify({ installationId: randomUUID(), version: "2.51.0", ...extra }),
+      }),
+    );
+    if (!response) throw new Error("Expected Docker host route");
+    return { status: response.status, body: response.status === 200 ? await response.json() : null };
+  };
+  const inFlight = randomUUID();
+  jobAfter = 2;
+  expect(await poll({ waitSeconds: 20, running: [inFlight] })).toMatchObject({
+    status: 200,
+    body: { held: true, job },
+  });
+  expect([polls, time]).toEqual([3, 2000]);
+  expect(running.at(-1)).toEqual([inFlight]);
+  // Nothing arrives: the hold is capped at 20 seconds, whatever was asked.
+  [polls, time, jobAfter] = [0, 0, Number.POSITIVE_INFINITY];
+  expect(await poll({ waitSeconds: 600 })).toMatchObject({ status: 200, body: { held: true, job: null } });
+  expect(time).toBe(20_000);
+  // Without the opt-in the poll answers at once, as for older daemons.
+  [polls, time] = [0, 0];
+  expect(await poll({})).toEqual({ status: 200, body: { job: null, pendingStarts: [], resumeClaims: [] } });
+  expect([polls, time]).toEqual([1, 0]);
+  for (const invalid of [{ waitSeconds: 0 }, { waitSeconds: 1.5 }, { running: ["not-a-uuid"] }, { running: "x" }])
+    expect((await poll(invalid)).status).toBe(400);
+});
+
+test("a host poll skips work the daemon reports running and hands out another sandbox's job", async () => {
+  const { db, userId, orgId, store, post } = await fixture();
+  const actor = { userId, orgId };
+  const ticket = await store.issueRegistration(actor);
+  const installationId = randomUUID();
+  const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  const poll = (running: string[]) =>
+    post("/api/docker-host/poll", host.hostToken, {
+      installationId,
+      version: "2.51.0",
+      resources: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
+      resourcePolicyVersion: 1,
+      running,
+    });
+  expect((await poll([])).status).toBe(200);
+  const sql: Sql = {
+    query: (q, p) => db.query(q, p),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, p) => tx.query(q, p) })),
+  };
+  const sandboxes = createDockerSandboxService(sql, Buffer.alloc(32, 8).toString("base64"), { enabled: true });
+  const credentialId = randomUUID();
+  await db.query("insert into credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)", [
+    credentialId,
+    userId,
+    new Uint8Array([1]),
+  ]);
+  const input = { hostId: host.hostId, image: `worker@sha256:${"a".repeat(64)}`, credentialId, credentialVersion: 1 };
+  const first = await sandboxes.reserve(actor, { ...input, requestId: randomUUID() });
+  const second = await sandboxes.reserve(actor, { ...input, requestId: randomUUID() });
+  const job = async (running: string[]) =>
+    ((await (await poll(running)).json()) as { job: { requestId: string } | null }).job;
+  const head = await job([]);
+  expect(head).toMatchObject({ operation: "create", request: { sandboxId: first.id } });
+  const next = await job([head!.requestId]);
+  expect(next).toMatchObject({ operation: "create", request: { sandboxId: second.id } });
+  expect(await job([head!.requestId, next!.requestId])).toBeNull();
+});
