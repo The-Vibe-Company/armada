@@ -24,6 +24,7 @@ Before opening a PR, and again against current main before merge:
   version on current `origin/main`, not just the branch's original base.
   Use a valid UTC timestamp with nonzero seconds. The migration guard rejects
   invalid timestamps and new minute-rounded versions and suggests a replacement.
+  When renaming multiple unapplied migrations, preserve their dependency order.
 - Fetch current main and compare its migration versions with your additions:
 
   ```sh

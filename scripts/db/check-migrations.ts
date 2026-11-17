@@ -62,7 +62,11 @@ try {
   }
   if (needsTimestamp) {
     const suggestion = suggestedVersion([...baseline.values(), ...head.values()]);
-    if (suggestion) errors.push(`Use migration version ${suggestion} for the first rename, then rerun the guard.`);
+    if (suggestion) {
+      errors.push(
+        `Use migration version ${suggestion} for the first rename. Preserve unapplied migration dependency order and rerun the guard.`,
+      );
+    }
   }
   if (errors.length) throw new Error(errors.join("\n"));
   console.log(`Migration versions OK (${head.size} files; base ${base}, latest ${latest ?? "none"})`);
