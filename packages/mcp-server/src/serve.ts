@@ -58,7 +58,9 @@ import { modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
+import { createNativeWebhookPrompts } from "./native-webhook-prompts.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
+import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneServerRetention } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
@@ -119,6 +121,7 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
+  const webhooks = createOutboundWebhooks(sql, config.encryptionKey, config.dashboardUrl);
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands, {
@@ -603,6 +606,13 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
+      webhooks.route((request) =>
+        authenticateCaller(request.headers.get("authorization"), {
+          store: authStore,
+          supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+          now: new Date(),
+        }),
+      ),
       ...(env.ARMADA_DOCKER_HOSTS === "1"
         ? [
             createDockerSandboxRoutes(
@@ -707,6 +717,8 @@ export async function startServer(
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
     [
+      webhooks,
+      createNativeWebhookPrompts(sql, createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true })),
       delegatedAccess.childWorker,
       createFinishedDockerCleanup(sql, config.encryptionKey),
       accountTurns,

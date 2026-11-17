@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import type { Sql } from "@armada/core/server";
+import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -892,4 +893,122 @@ test("bound model check uses enrolled health and exact epoch, never destinations
   }
   expect(failure).toMatchObject({ provider: "boat", code: "unavailable" });
   expect(String(failure)).not.toContain("private_key_echo");
+});
+
+test("cancelled queued runtime turns defer webhooks until the first durable command reply preserves their alias", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const sql: Sql = { query: (q, p) => f.db.query(q, p) };
+  // Invalid encryption prevents any network send after a claim, while the
+  // attempts counter proves whether admission happened before alias readiness.
+  const worker = createOutboundWebhooks(sql, "invalid_key", "https://armada.example");
+  await f.db.query(
+    "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
+    [f.people.org, new Uint8Array([1])],
+  );
+  for (const prefix of ["follow_", "docker_prompt_", "resume_"]) {
+    const publicId = crypto.randomUUID();
+    const nativeId = `native_${prefix}`;
+    const command = {
+      ...f.command(`${prefix}${publicId}`),
+      op: "prompt",
+      input: { sandboxId: f.id, harness: "codex", text: "queued_prompt" },
+    } as const;
+    await f.db.query(
+      `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+        actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation)
+       select s.id,$2,c.id,s.owner_id,s.org_id,1,c.version,'input_hash',$3,'conversation','dispatching',s.lifecycle_generation
+       from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai'
+       where s.id=$1 limit 1`,
+      [f.id, publicId, new Uint8Array([1])],
+    );
+    await f.bridge().enqueue(f.people.owner, command);
+    await f.db.query("select enqueue_webhook_turn($1,$2,'finished')", [f.id, nativeId]);
+    expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+    await f.db.query("update account_turn_queue set state='failed',failure_reason='cancelled' where request_id=$1", [
+      publicId,
+    ]);
+    expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+    expect(
+      (
+        await f.db.query<{ attempts: number }>(
+          "select attempts from outbound_webhook_deliveries where payload->>'promptId'=$1",
+          [nativeId],
+        )
+      ).rows,
+    ).toEqual([{ attempts: 0 }]);
+    const reply = {
+      epoch: active.epoch,
+      requestId: command.requestId,
+      status: 200,
+      body: { result: { promptId: nativeId } },
+    };
+    await f.bridge().complete(active.runtimeToken, active.epoch, reply);
+    await f.bridge().complete(active.runtimeToken, active.epoch, {
+      ...reply,
+      body: { result: { promptId: "changed_replay" } },
+    });
+    expect(
+      (await f.db.query("select state,native_prompt_id from account_turn_queue where request_id=$1", [publicId])).rows,
+    ).toEqual([{ state: "failed", native_prompt_id: nativeId }]);
+    expect(await worker.reconcileOne(new AbortController().signal)).toBe(true);
+    expect(
+      (
+        await f.db.query<{ attempts: number }>(
+          "select attempts from outbound_webhook_deliveries where payload->>'promptId'=$1",
+          [nativeId],
+        )
+      ).rows,
+    ).toEqual([{ attempts: 1 }]);
+    // Isolate each prefix from already-failed delivery retries.
+    await f.db.query("delete from outbound_webhook_deliveries");
+  }
+});
+
+test("a superseded unfinished queued command cannot hold stop or later turn webhooks", async () => {
+  const f = await fixture();
+  await f.enrol();
+  const sql: Sql = { query: (q, p) => f.db.query(q, p) };
+  // Invalid encryption prevents any network send; a claim (true) proves admission.
+  const worker = createOutboundWebhooks(sql, "invalid_key", "https://armada.example");
+  await f.db.query("delete from outbound_webhook_deliveries");
+  await f.db.query(
+    "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
+    [f.people.org, new Uint8Array([1])],
+  );
+  const publicId = crypto.randomUUID();
+  await f.db.query(
+    `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+      actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation)
+     select s.id,$2,c.id,s.owner_id,s.org_id,1,c.version,'input_hash',$3,'conversation','failed',s.lifecycle_generation
+     from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai'
+     where s.id=$1 limit 1`,
+    [f.id, publicId, new Uint8Array([1])],
+  );
+  await f.bridge().enqueue(f.people.owner, {
+    ...f.command(`follow_${publicId}`),
+    op: "prompt",
+    input: { sandboxId: f.id, harness: "codex", text: "queued_prompt" },
+  } as RunnerRequest);
+  const attempts = async () =>
+    (
+      await f.db.query<{ type: string; attempts: number }>(
+        "select payload->>'type' as type,attempts from outbound_webhook_deliveries where payload->>'sandboxId'=$1 order by type",
+        [f.id],
+      )
+    ).rows;
+  await f.db.query("select enqueue_webhook_turn($1,'native_uncertain','finished')", [f.id]);
+  // While the reply can still arrive, the alias may still be published.
+  expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+  await f.enrol();
+  expect(await f.bridge().result(f.people.owner, f.id, `follow_${publicId}`)).toEqual({ state: "superseded" });
+  await f.db.query("select enqueue_webhook_turn($1,'native_later','finished')", [f.id]);
+  await f.db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [f.id]);
+  while (await worker.reconcileOne(new AbortController().signal));
+  expect(await attempts()).toEqual([
+    { type: "sandbox.stopped", attempts: 1 },
+    { type: "turn.finished", attempts: 1 },
+    { type: "turn.finished", attempts: 1 },
+  ]);
+  await f.db.query("delete from outbound_webhook_deliveries");
 });

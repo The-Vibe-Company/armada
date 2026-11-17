@@ -55,6 +55,7 @@ export type Database = {
           failure_reason: string | null;
           queued_generation: number;
           model: string | null;
+          native_prompt_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -75,6 +76,7 @@ export type Database = {
           failure_reason?: string | null;
           queued_generation: number;
           model?: string | null;
+          native_prompt_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -95,6 +97,7 @@ export type Database = {
           failure_reason?: string | null;
           queued_generation?: number;
           model?: string | null;
+          native_prompt_id?: string | null;
         };
         Relationships: [
           {
@@ -2463,6 +2466,59 @@ export type Database = {
           },
         ];
       };
+      native_webhook_prompts: {
+        Row: {
+          sandbox_id: string;
+          prompt_id: string;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id: string;
+          owner_id: string;
+          org_id: string;
+          failures: number;
+          next_attempt_at: string;
+          lease_id: string | null;
+          lease_until: string | null;
+          completed_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          prompt_id: string;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id: string;
+          owner_id: string;
+          org_id: string;
+          failures?: number;
+          next_attempt_at?: string;
+          lease_id?: string | null;
+          lease_until?: string | null;
+          completed_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          prompt_id?: string;
+          provider?: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id?: string;
+          owner_id?: string;
+          org_id?: string;
+          failures?: number;
+          next_attempt_at?: string;
+          lease_id?: string | null;
+          lease_until?: string | null;
+          completed_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_webhook_prompts_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       notify_subscriptions: {
         Row: {
           sandbox_id: string;
@@ -3414,6 +3470,85 @@ export type Database = {
           created_at?: string;
         };
         Relationships: [];
+      };
+      outbound_webhook_deliveries: {
+        Row: {
+          id: string;
+          endpoint_id: string;
+          payload: Json;
+          attempts: number;
+          next_attempt_at: string;
+          lease_until: string | null;
+          delivered_at: string | null;
+          last_status: number | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          endpoint_id: string;
+          payload: Json;
+          attempts?: number;
+          next_attempt_at?: string;
+          lease_until?: string | null;
+          delivered_at?: string | null;
+          last_status?: number | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          endpoint_id?: string;
+          payload?: Json;
+          attempts?: number;
+          next_attempt_at?: string;
+          lease_until?: string | null;
+          delivered_at?: string | null;
+          last_status?: number | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "outbound_webhook_deliveries_endpoint_id_fkey";
+            columns: ["endpoint_id"];
+            isOneToOne: false;
+            referencedRelation: "outbound_webhook_endpoints";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      outbound_webhook_endpoints: {
+        Row: {
+          id: string;
+          org_id: string;
+          url: string;
+          secret_enc: string;
+          enabled: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          url: string;
+          secret_enc: string;
+          enabled?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          url?: string;
+          secret_enc?: string;
+          enabled?: boolean;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "outbound_webhook_endpoints_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       personal_skill_defaults: {
         Row: {
@@ -4638,6 +4773,7 @@ export type ModalServerHarnessRow = Database["public"]["Tables"]["modal_server_h
 export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_scopes"]["Row"];
 export type ModelAuthOwnershipRow = Database["public"]["Tables"]["model_auth_ownership"]["Row"];
 export type ModelAuthStateRow = Database["public"]["Tables"]["model_auth_state"]["Row"];
+export type NativeWebhookPromptRow = Database["public"]["Tables"]["native_webhook_prompts"]["Row"];
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
 export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];
@@ -4658,6 +4794,8 @@ export type OrgLangfuseRow = Database["public"]["Tables"]["org_langfuse"]["Row"]
 export type OrgSkillDefaultsRow = Database["public"]["Tables"]["org_skill_defaults"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
+export type OutboundWebhookDeliveryRow = Database["public"]["Tables"]["outbound_webhook_deliveries"]["Row"];
+export type OutboundWebhookEndpointRow = Database["public"]["Tables"]["outbound_webhook_endpoints"]["Row"];
 export type PersonalSkillDefaultsRow = Database["public"]["Tables"]["personal_skill_defaults"]["Row"];
 export type ReadableVariableRow = Database["public"]["Tables"]["readable_variables"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];

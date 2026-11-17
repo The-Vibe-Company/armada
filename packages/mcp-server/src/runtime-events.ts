@@ -238,6 +238,14 @@ export function createRuntimeEvents(
           [scope.sandboxId, promptId, retryAt === null ? null : new Date(retryAt).toISOString()],
         );
       }
+      for (const item of fresh) {
+        if (item.kind === "prompt" && item.promptId && ["finished", "failed", "interrupted"].includes(item.status))
+          await tx.query("select public.enqueue_webhook_turn($1::uuid,$2,$3)", [
+            scope.sandboxId,
+            item.promptId,
+            item.status,
+          ]);
+      }
       await projectRuntimeIdle(tx, scope.sandboxId, key, initialAck, fresh, ack);
       const usage = reportedTurnUsage(fresh);
       if (addedPrompt || usage.turns.length) {

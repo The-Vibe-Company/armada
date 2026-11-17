@@ -46,6 +46,8 @@ export interface SandboxView extends SandboxRecord {
 }
 
 export interface ServerSandboxStore extends SandboxStore {
+  /** Persist an accepted native receipt even if stop fences later task publication. */
+  recordNativePrompt?(id: string, providerSandboxId: string, promptId: string, requestId?: string): Promise<void>;
   controlState?(
     id: string,
   ): Promise<Pick<
@@ -614,6 +616,22 @@ export function createSqlData(
       async readWorkRecovery(id, recoveryId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
         return readWorkRecovery(sql, id, recoveryId);
+      },
+      async recordNativePrompt(id, providerSandboxId, promptId, requestId) {
+        await sql.query(
+          `with accepted as (
+            select s.* from public.sandboxes s join public.goldens g on g.id=s.golden_id
+            where s.id=$3 and ${SANDBOX_VISIBLE} and s.provider_sandbox_id=$4
+              and s.provider in ('boat','modal') and not s.boat_runtime
+              and s.runtime_transport is distinct from 'dialout'
+          ), aliased as (
+            update public.account_turn_queue q set native_prompt_id=coalesce(q.native_prompt_id,$5)
+            from accepted s where q.sandbox_id=s.id and q.request_id=$6::uuid
+              and q.owner_id=s.owner_id and q.org_id=s.org_id
+          ) insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id)
+            select id,$5,provider,provider_sandbox_id,owner_id,org_id from accepted on conflict do nothing`,
+          [...scope, id, providerSandboxId, promptId, requestId ?? null],
+        );
       },
       async update(id, patch) {
         const sets: string[] = [];
