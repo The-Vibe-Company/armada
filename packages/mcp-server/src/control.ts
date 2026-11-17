@@ -1,3 +1,4 @@
+import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import type { AuthStore } from "@armada/auth";
 import {
   goldenForSettings,
@@ -535,31 +536,7 @@ export async function dispatchControlCommand(
     );
     return { id: found.id, test };
   }
-  const toolName = (
-    {
-      "golden/capabilities": "golden_capabilities",
-      "golden/adopt": "golden_adopt",
-      "github/refresh": "github_refresh",
-      "github/runtime-status": "runtime_github_status",
-      "sandbox/list": "list",
-      "sandbox/detail": "status",
-      "sandbox/status": "status",
-      "sandbox/recovery": "work_recovery",
-      "sandbox/advice": "resource_advice",
-      "sandbox/send": "send",
-      "sandbox/resume": "resume",
-      "sandbox/checkpoint-runtime-v1": "runtime_checkpoint",
-      "sandbox/resume-runtime-v1": "runtime_resume",
-      "sandbox/report": "report",
-      "sandbox/stop": "stop",
-      "sandbox/extend": "extend",
-      "sandbox/delete": "delete",
-      "sandbox/wait": "wait",
-      "sandbox/exec": "exec",
-      "sandbox/steer": "steer",
-      "sandbox/interrupt": "interrupt",
-    } as Record<string, string>
-  )[route];
+  const toolName = CONTROL_TOOL_ROUTES[route];
   if (toolName) {
     if (
       route === "sandbox/extend" &&
