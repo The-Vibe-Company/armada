@@ -4,6 +4,7 @@ import { request as httpsRequest } from "node:https";
 import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import type { Route } from "./http.ts";
+import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -77,6 +78,16 @@ async function deliver(url: URL, body: string, headers: Record<string, string>, 
 }
 
 export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashboardUrl: string) {
+  async function publicPayload(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (typeof payload.promptId !== "string") return payload;
+    const receipts = await sql.query<{ request_id: string; result_enc: Uint8Array<ArrayBuffer> | null }>(
+      `select request_id,result_enc from public.account_turn_queue
+       where sandbox_id=$1 and result_enc is not null order by sequence`,
+      [payload.sandboxId],
+    );
+    const aliases = await queuedPromptAliases(receipts.rows, key);
+    return { ...payload, promptId: aliases.get(payload.promptId) ?? payload.promptId };
+  }
   return {
     route(authenticate: (request: Request) => Promise<CallerResult>): Route {
       return async (request) => {
@@ -94,13 +105,17 @@ export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashbo
             const endpoint = url.searchParams.get("endpointId");
             if (endpoint && !UUID.test(endpoint))
               return Response.json({ error: "invalid endpointId" }, { status: 400 });
-            const rows = await sql.query(
+            const rows = await sql.query<{ payload: Record<string, unknown> }>(
               `select d.id,d.endpoint_id,d.payload,d.attempts,d.next_attempt_at,d.delivered_at,d.last_status,d.created_at
               from public.outbound_webhook_deliveries d join public.outbound_webhook_endpoints e on e.id=d.endpoint_id
               where e.org_id=$1 and ($2::uuid is null or e.id=$2::uuid) order by d.created_at desc,d.id desc limit 100`,
               [org, endpoint],
             );
-            return Response.json({ deliveries: rows.rows });
+            return Response.json({
+              deliveries: await Promise.all(
+                rows.rows.map(async (row) => ({ ...row, payload: await publicPayload(row.payload) })),
+              ),
+            });
           }
           if (path === "/api/v1/webhooks" && request.method === "GET") {
             const rows = await sql.query(
@@ -168,7 +183,7 @@ export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashbo
         const secret = await decryptSecret(row.secret_enc, key);
         const timestamp = String(Math.floor(Date.now() / 1000));
         const body = JSON.stringify({
-          ...row.payload,
+          ...(await publicPayload(row.payload)),
           links: { sandbox: `${dashboardUrl.replace(/\/$/, "")}/sandboxes/${row.payload.sandboxId}` },
         });
         status = await deliver(

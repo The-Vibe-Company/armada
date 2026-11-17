@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { decryptSecret, type Sql } from "@armada/core/server";
+import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import { createOutboundWebhooks, publicWebhookAddress, webhookSignature } from "../src/outbound-webhooks.ts";
 
 const org = "00000000-0000-4000-8000-000000000001";
@@ -81,4 +81,27 @@ test("endpoint creation returns secret once while storing only ciphertext", asyn
   expect(await decryptSecret(stored[2] as Uint8Array<ArrayBuffer>, key)).toBe(result.secret);
   expect(result.endpoint.secret_enc).toBeUndefined();
   expect(response?.headers.get("cache-control")).toBe("no-store");
+});
+
+test("delivery logs translate queued native receipts to the public send identity without exposing receipt content", async () => {
+  const encrypted = await encryptSecret(
+    JSON.stringify({ promptId: "native_prompt", privateText: "private_receipt" }),
+    key,
+  );
+  const sql: Sql = {
+    query: async <T>(query: string) => ({
+      rows: (query.includes("account_turn_queue")
+        ? [{ request_id: "public_request", result_enc: encrypted }]
+        : [{ payload: { sandboxId: "sandbox_id", promptId: "native_prompt", type: "turn.finished" } }]) as T[],
+    }),
+  };
+  const route = createOutboundWebhooks(sql, key, "https://armada.example").route(async () => ({
+    ok: true,
+    caller: { userId: "user", via: "service", orgs: [{ orgId: org, role: "admin" }] },
+  }));
+  const response = await route(new Request(`https://armada.example/api/v1/webhooks/deliveries?org=${org}`));
+  expect(response?.status).toBe(200);
+  const body = await response?.json();
+  expect(body.deliveries[0].payload.promptId).toBe("public_request");
+  expect(JSON.stringify(body)).not.toContain("private_receipt");
 });
