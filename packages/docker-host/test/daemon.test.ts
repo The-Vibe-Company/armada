@@ -1511,3 +1511,57 @@ test("a resume does not drop an already deleted entry's pending cleaned report",
   expect(reports).toEqual([f.job.requestId]);
   expect((await f.store.load()).retention).toEqual([]);
 });
+
+test("a resume behind another mailbox job still cancels its generation's due retention deletion", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  const order: string[] = [];
+  const executor: Executor = {
+    ...f.executor,
+    async resume() {
+      order.push("resume");
+    },
+    async deleteStopped() {
+      order.push("delete");
+    },
+    async stop() {
+      order.push("stop");
+    },
+    startRuntime: async () => {
+      order.push("startRuntime");
+    },
+  };
+  const state = await f.store.load();
+  state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 0 }];
+  await f.store.save(state);
+  const resume: Job = {
+    requestId: crypto.randomUUID(),
+    operation: "resume",
+    request: f.job.request,
+    bootstrap: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
+    },
+  };
+  // The server serves one job per poll, ordered so every stop/delete precedes
+  // startup work. An unrelated stop is therefore handed out first, and the
+  // resume for this generation is only visible as pending intent.
+  const unrelated: Job = {
+    requestId: crypto.randomUUID(),
+    operation: "stop",
+    request: { ...f.job.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() },
+  };
+  let polls = 0;
+  f.api.poll = async () => {
+    order.push("poll");
+    polls++;
+    // The server reports every held generation with the poll, including a
+    // resume queued behind this stop, not only the single job it hands out.
+    return { job: polls === 1 ? unrelated : resume, pendingStarts: [resume.request] };
+  };
+  await tick(f.store, f.api, executor, false, () => 0);
+  // The due generation is not deleted while a resume for it is queued behind the stop.
+  expect(order).not.toContain("delete");
+  expect((await f.store.load()).retention).toEqual([]);
+});
