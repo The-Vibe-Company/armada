@@ -183,8 +183,8 @@ Add `<origin>/auth/callback` (production and previews) to the Supabase project's
 cp apps/dashboard/.env.example apps/dashboard/.env.local   # then fill it in
 bun run dashboard          # next dev
 bun run dashboard:build    # next build
-bunx playwright install chromium
-bun run e2e                # Playwright against a mock of Supabase and the Armada server
+(cd apps/dashboard && bunx --no-install playwright install chromium)
+bun run e2e                # tester-army journeys against the local Supabase and Armada mock
 ```
 
 ## CI and releases
