@@ -94,7 +94,7 @@ for (const selection of ["implicit", "native", "historical"] as const) {
       expect(result).toMatchObject({
         result: { statusMessage: "Stored prompt state is incomplete; live data may be stale." },
       });
-    expect(pages).toBe(selection === "historical" ? 2 : 1);
+    expect(pages).toBe(selection === "historical" ? 2 : 0);
     if (selection === "native")
       expect(result).toMatchObject({ result: { prompt: { promptId: publicId, state: "running" } } });
     if (selection !== "implicit") return;
@@ -104,6 +104,6 @@ for (const selection of ["implicit", "native", "historical"] as const) {
       handled: true,
       result: { status: "stopped", settled: true },
     });
-    expect(pages).toBe(1);
+    expect(pages).toBe(0);
   });
 }

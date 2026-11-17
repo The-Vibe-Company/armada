@@ -1551,6 +1551,9 @@ export function createArmadaServer(context: ToolContext, version: string, option
         hasMore: z.boolean(),
         settled: z.boolean().optional(),
         source: z.literal("armada-runtime").optional(),
+        threadStatus: z
+          .object({ status: z.string(), statusMessage: z.string().nullable(), prompt: z.unknown(), usage: z.unknown() })
+          .optional(),
         runtimeFailure: z.object({ status: z.literal("failed"), reason: z.string() }).optional(),
       },
       readOnly: true,

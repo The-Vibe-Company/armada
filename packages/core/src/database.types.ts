@@ -3877,18 +3877,24 @@ export type Database = {
           sequence: number;
           last_activity: number;
           unknown_turn: boolean;
+          prompt_projection_sequence: number;
+          latest_prompt_enc: string | null;
         };
         Insert: {
           sandbox_id: string;
           sequence?: number;
           last_activity?: number;
           unknown_turn?: boolean;
+          prompt_projection_sequence?: number;
+          latest_prompt_enc?: string | null;
         };
         Update: {
           sandbox_id?: string;
           sequence?: number;
           last_activity?: number;
           unknown_turn?: boolean;
+          prompt_projection_sequence?: number;
+          latest_prompt_enc?: string | null;
         };
         Relationships: [
           {

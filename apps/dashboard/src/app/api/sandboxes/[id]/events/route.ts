@@ -1,10 +1,10 @@
-import { idlePauseMessage } from "@armada/core";
+import { idlePauseMessage, isRecord } from "@armada/core";
 import { NextResponse } from "next/server";
 import { isUuid } from "@/lib/action";
 import { viewerGateway } from "@/lib/data/gateway";
 import { getSandbox } from "@/lib/data/sandboxes";
 import { requireViewer } from "@/lib/data/viewer";
-import { readLogPages } from "@/lib/events";
+import { parseEventPage, readLogPages } from "@/lib/events";
 import { GatewayError } from "@/lib/gateway";
 import { createClient } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";
@@ -39,11 +39,16 @@ export async function GET(request: Request, context: Context) {
     });
   }
 
-  const cursor = new URL(request.url).searchParams.get("cursor");
+  const params = new URL(request.url).searchParams;
+  const cursor = params.get("cursor");
+  // Native Boat cursors track mutable provider rows only on forward reads.
+  const retained = sandbox.provider === "docker" || sandbox.runtime_transport === "dialout" || sandbox.boat_runtime;
+  const backward = retained && (!cursor || params.get("direction") === "backward");
   // A broken log lane must not prevent status from collecting delayed usage.
-  const statusRead = gateway.status(id).catch(() => ({}));
+  let observedStatus: unknown;
+  const statusRead = () => gateway.status(id).catch(() => ({}));
   const metadata = async () => {
-    const detail = (await statusRead) as {
+    const detail = (observedStatus ?? (await statusRead())) as {
       status?: string;
       statusMessage?: string | null;
       prompt?: unknown;
@@ -62,7 +67,11 @@ export async function GET(request: Request, context: Context) {
     };
   };
   try {
-    const page = await readLogPages(gateway.logs, id, cursor);
+    const raw = await gateway.logs(id, cursor, backward ? { direction: "backward" } : {});
+    if (isRecord(raw) && isRecord(raw.threadStatus)) observedStatus = raw.threadStatus;
+    const page = backward
+      ? { ...parseEventPage(raw), backward: true }
+      : await readLogPages(async () => raw, id, cursor);
     return NextResponse.json({
       ...(await metadata()),
       configured: true,

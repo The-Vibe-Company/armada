@@ -48,6 +48,7 @@ describe("events", () => {
         { id: "4", at: 12, kind: "other", type: "usage", data: { n: 1 } },
       ],
       cursor: "4",
+      olderCursor: "1",
       hasMore: true,
     });
     expect(page.events.map((event) => event.id)).toEqual(["1", "5", "4"]);
@@ -59,7 +60,7 @@ describe("events", () => {
     });
     expect(page.events[1]).not.toHaveProperty("textMode");
     expect(page.events[1]).not.toHaveProperty("messageId");
-    expect(page).toMatchObject({ cursor: "4", hasMore: true });
+    expect(page).toMatchObject({ cursor: "4", olderCursor: "1", hasMore: true });
     expect(parseEventPage(null)).toEqual({ events: [], cursor: null, hasMore: false });
   });
 });
