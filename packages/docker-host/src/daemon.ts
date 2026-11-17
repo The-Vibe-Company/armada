@@ -278,7 +278,9 @@ export async function tick(
 ): Promise<TickOutcome> {
   const step = await admit(store, api, executor, skipSnapshots, now, options);
   if (typeof step === "string") return step;
-  if (options.dispatch) {
+  // Only a server that held the poll excludes `running` work; an older one gets
+  // the previous serial execution, so one sandbox's jobs never overlap.
+  if (options.dispatch && step.held) {
     options.dispatch(step.job, step.work());
     return "worked";
   }
@@ -355,7 +357,7 @@ export async function runJobs(
   }
 }
 
-type Admission = TickOutcome | { job: Job; work: () => Promise<void> };
+type Admission = TickOutcome | { job: Job; held: boolean; work: () => Promise<void> };
 async function admit(
   store: Store,
   api: Api,
@@ -856,8 +858,11 @@ async function admitLocked(
   if ((job.operation === "bootstrap" || job.operation === "resume") && job.bootstrap.serverUrl !== state.server)
     throw new Error("Wrong bootstrap origin");
   // A server that cannot exclude running work re-delivers it; never treat
-  // this process's own in-flight operation as an uncertain recovery.
-  if (options.running?.has(job.requestId)) {
+  // this process's own in-flight operation as an uncertain recovery. Such a
+  // server (no held poll) may also hand out a later job of a sandbox whose
+  // operation is still running, so nothing is admitted until local work drains;
+  // the unadmitted job is delivered again.
+  if (options.running?.has(job.requestId) || (options.running?.size && !polled.held)) {
     await store.save(state);
     return "busy";
   }
@@ -942,6 +947,7 @@ async function admitLocked(
   const refusal = accepted.outcome ? undefined : await prepare(accepted);
   return {
     job,
+    held: polled.held === true,
     async work() {
       if (!accepted.outcome) {
         await perform(accepted, job, admitted, refusal);

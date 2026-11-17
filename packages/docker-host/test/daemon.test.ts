@@ -1772,7 +1772,7 @@ test("the mailbox loop drains ready jobs without idling and runs another sandbox
       const job = queue.find(
         (item) => !acknowledged.includes(item.requestId) && !options?.running?.includes(item.requestId),
       );
-      if (job) return { job: structuredClone(job) };
+      if (job) return { job: structuredClone(job), held: true };
       // The server holds the poll until something changes.
       await changed.promise;
       return { job: null, held: true };
@@ -1815,16 +1815,38 @@ test("the mailbox loop drains ready jobs without idling and runs another sandbox
 
 test("a re-delivered job that is still executing here is neither run again nor recovered as uncertain", async () => {
   const f = fixture();
+  const api: Api = {
+    ...f.api,
+    poll: async (state, options) => ({ ...(await f.api.poll(state, options)), held: true }),
+  };
   let work: Promise<void> | undefined;
   expect(
-    await tick(f.store, f.api, f.executor, false, Date.now, {
+    await tick(f.store, api, f.executor, false, Date.now, {
       dispatch: (_job, running) => {
         work = running;
       },
     }),
   ).toBe("worked");
-  expect(await tick(f.store, f.api, f.executor, false, Date.now, { running: new Set([f.job.requestId]) })).toBe("busy");
+  expect(await tick(f.store, api, f.executor, false, Date.now, { running: new Set([f.job.requestId]) })).toBe("busy");
   await work;
+  expect(f.executed).toEqual(["create"]);
+  expect(f.acknowledgements).toEqual(["completed"]);
+});
+
+test("against a server that cannot hold a poll, jobs run serially and none is admitted beside running work", async () => {
+  const f = fixture();
+  const dispatched: string[] = [];
+  const dispatch = (job: Job) => {
+    dispatched.push(job.requestId);
+  };
+  // The older server answers without `held` and knows nothing of `running`.
+  expect(await tick(f.store, f.api, f.executor, false, Date.now, { dispatch })).toBe("worked");
+  expect(dispatched).toEqual([]);
+  expect(f.acknowledgements).toEqual(["completed"]);
+  const other = crypto.randomUUID();
+  const receipts = f.state().receipts.length;
+  expect(await tick(f.store, f.api, f.executor, false, Date.now, { dispatch, running: new Set([other]) })).toBe("busy");
+  expect(f.state().receipts).toHaveLength(receipts);
   expect(f.executed).toEqual(["create"]);
   expect(f.acknowledgements).toEqual(["completed"]);
 });

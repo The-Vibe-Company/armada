@@ -576,6 +576,36 @@ export function createDockerHostStore(sql: Sql, key: string) {
         );
       });
     },
+    /**
+     * Read-only recheck for a held poll (#2561): whether `poll` or
+     * `resumeClaimsForHost` could now return something. It takes no lock and
+     * writes nothing, so an idle held poll does not repeat their host
+     * reconciliation and heartbeat writes every second; the caller runs the
+     * full poll only when this is true. A false positive costs one full poll.
+     */
+    async mayHaveWork(
+      hostToken: string,
+      installationId: string,
+      skipSnapshots: boolean,
+      running: readonly string[],
+      resumeClaims: boolean,
+    ): Promise<boolean> {
+      return transaction(async (tx) => {
+        const result = await tx.query<{ found: boolean }>(
+          `select exists(select 1 from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
+             where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null
+               and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)})
+           or ($5::boolean and exists(select 1 from public.docker_resume_claims c
+             join public.docker_hosts h on h.id=c.host_id join public.sandboxes s on s.id=c.sandbox_id
+             where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null
+               and c.installation_id=$2 and c.accepted is null
+               and s.docker_generation=c.generation and s.lifecycle_generation=c.lifecycle_generation
+               and s.status='stopped' and s.deleted_at is null and s.expires_at>now())) as found`,
+          [hash(hostToken), installationId, skipSnapshots, running, resumeClaims],
+        );
+        return result.rows[0]?.found === true;
+      });
+    },
     resumeClaimsForHost(hostToken: string, installationId: string) {
       return transaction(async (tx) => {
         const host = await reconcileHost(tx, hostToken, installationId);

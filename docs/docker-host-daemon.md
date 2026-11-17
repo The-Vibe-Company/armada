@@ -1309,9 +1309,13 @@ started about a minute apart.
 
 - **Held poll.** The daemon sends `waitSeconds: 20`. The server rechecks the
   mailbox every second and answers as soon as a job or an unacknowledged resume
-  claim exists, or after 20 seconds with `job: null`. The response carries
-  `held: true`. Older servers refuse the field with a 400; the daemon then uses
-  the previous poll body and keeps its 20-second idle period.
+  claim exists, or after 20 seconds with `job: null`. The recheck is a single
+  read-only query; the full poll (host reconciliation and heartbeat writes)
+  runs at the start and again only when the recheck finds something, so an
+  idle host costs one write transaction per hold, as before. The response
+  carries `held: true`. Older servers refuse the field with a 400; the daemon
+  then uses the previous poll body, keeps its 20-second idle period and runs
+  jobs one at a time, because such a server cannot exclude running work.
 - **Drain.** After taking a job, or after a held poll ends, the daemon polls
   again at once. It pauses 20 seconds only after a failed iteration, against a
   server that cannot hold a poll, or when the server can only re-deliver work

@@ -281,22 +281,40 @@ export function createDockerHostRoutes(
           throw new InvalidInput();
         let resumeClaims: Awaited<ReturnType<typeof store.resumeClaimsForHost>>;
         let job: Awaited<ReturnType<typeof store.poll>>;
+        const skipSnapshots = body.skipSnapshots === true;
+        const runningIds = (running as string[] | undefined) ?? [];
         for (;;) {
           resumeClaims = body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
           job = await store.poll(
             token,
             installationId,
             version,
-            body.skipSnapshots === true,
+            skipSnapshots,
             body.resources as DockerHostResources | undefined,
             body.resourcePolicyVersion as 1 | undefined,
             body.diskFreeBytes as number | null | undefined,
             body.stoppedSandboxBytes as number | null | undefined,
-            (running as string[] | undefined) ?? [],
+            runningIds,
           );
-          const remaining = holdUntil - clock.now();
-          if (job || resumeClaims.length || remaining <= 0 || request.signal.aborted) break;
-          await clock.wait(Math.min(1000, remaining), request.signal);
+          if (job || resumeClaims.length) break;
+          // Recheck every second with a read-only probe; the full poll above
+          // (host reconciliation, heartbeat and claim writes) runs again only
+          // when something may be ready, not once a second per idle host.
+          let ready = false;
+          while (!ready) {
+            const remaining = holdUntil - clock.now();
+            if (remaining <= 0 || request.signal.aborted) break;
+            await clock.wait(Math.min(1000, remaining), request.signal);
+            if (request.signal.aborted) break;
+            ready = await store.mayHaveWork(
+              token,
+              installationId,
+              skipSnapshots,
+              runningIds,
+              body.resumeClaimProtocol === 1,
+            );
+          }
+          if (!ready) break;
         }
         return Response.json(
           {

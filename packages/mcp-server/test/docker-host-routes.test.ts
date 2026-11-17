@@ -476,7 +476,8 @@ test("a host reporting many retained deadlines still fits the poll body limit", 
 test("a held host poll answers as soon as work appears and never beyond its hold", async () => {
   let time = 0;
   let polls = 0;
-  let jobAfter = Number.POSITIVE_INFINITY;
+  let probes = 0;
+  let readyAt = Number.POSITIVE_INFINITY;
   const running: (readonly string[])[] = [];
   const job = { requestId: randomUUID(), operation: "stop" };
   const store = {
@@ -486,7 +487,12 @@ test("a held host poll answers as soon as work appears and never beyond its hold
     async poll(...args: unknown[]) {
       polls++;
       running.push(args[8] as readonly string[]);
-      return polls > jobAfter ? job : null;
+      return time >= readyAt ? job : null;
+    },
+    async mayHaveWork(...args: unknown[]) {
+      probes++;
+      running.push(args[3] as readonly string[]);
+      return time >= readyAt;
     },
   } as unknown as ReturnType<typeof createDockerHostStore>;
   const route = createDockerHostRoutes(store, async () => ({ ok: false as const }), {
@@ -509,19 +515,21 @@ test("a held host poll answers as soon as work appears and never beyond its hold
     return { status: response.status, body: response.status === 200 ? await response.json() : null };
   };
   const inFlight = randomUUID();
-  jobAfter = 2;
+  readyAt = 2000;
   expect(await poll({ waitSeconds: 20, running: [inFlight] })).toMatchObject({
     status: 200,
     body: { held: true, job },
   });
-  expect([polls, time]).toEqual([3, 2000]);
-  expect(running.at(-1)).toEqual([inFlight]);
-  // Nothing arrives: the hold is capped at 20 seconds, whatever was asked.
-  [polls, time, jobAfter] = [0, 0, Number.POSITIVE_INFINITY];
+  // Rechecks are read-only probes; the full poll repeats only once one hits.
+  expect([polls, probes, time]).toEqual([2, 2, 2000]);
+  expect(running).toEqual([[inFlight], [inFlight], [inFlight], [inFlight]]);
+  // Nothing arrives: the hold is capped at 20 seconds, whatever was asked,
+  // and an idle hold runs the full (writing) poll only once.
+  [polls, probes, time, readyAt] = [0, 0, 0, Number.POSITIVE_INFINITY];
   expect(await poll({ waitSeconds: 600 })).toMatchObject({ status: 200, body: { held: true, job: null } });
-  expect(time).toBe(20_000);
+  expect([polls, probes, time]).toEqual([1, 20, 20_000]);
   // Without the opt-in the poll answers at once, as for older daemons.
-  [polls, time] = [0, 0];
+  [polls, probes, time] = [0, 0, 0];
   expect(await poll({})).toEqual({ status: 200, body: { job: null, pendingStarts: [], resumeClaims: [] } });
   expect([polls, time]).toEqual([1, 0]);
   for (const invalid of [{ waitSeconds: 0 }, { waitSeconds: 1.5 }, { running: ["not-a-uuid"] }, { running: "x" }])
