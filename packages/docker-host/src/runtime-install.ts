@@ -76,7 +76,7 @@ export function dockerRuntimeStarter(
     } catch {
       throw new Error("Docker runtime bootstrap failed");
     }
-    // Not awaited: the serial mailbox never waits on the cache, and this bootstrap's runtime
+    // Not awaited: the mailbox never waits on the cache, and this bootstrap's runtime
     // downloads as before. Later launches of the same deployment find the archives locally.
     void options.warmSharedArtifacts?.(bootstrap.artifact.sha256);
   };
