@@ -20,6 +20,7 @@ test("native classification uses only allowlisted discriminants and RPC phase, n
     [{}, "initialize", "harness_initialization_failed"],
     [{ code: "cloud_credential_error" }, "assistant", "authentication_failed"],
     [{ code: "overloaded" }, "assistant", "rate_limited"],
+    [{ code: "max_output_tokens" }, "assistant", "output_limit_exceeded"],
     [
       { code: "unknown_private_value", message: "unauthorized private_value", data: { message: "private_value" } },
       "unknown",

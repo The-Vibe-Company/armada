@@ -9,6 +9,7 @@ export type HarnessErrorCode =
   | "usage_limit_exceeded"
   | "rate_limited"
   | "context_window_exceeded"
+  | "output_limit_exceeded"
   | "harness_failed"
   | "harness_process_lost"
   | "harness_timeout"
@@ -63,19 +64,21 @@ export function nativeHarnessError(error: unknown, method: string, protocol?: "a
             ? "usage_limit_exceeded"
             : has("contextWindowExceeded")
               ? "context_window_exceeded"
-              : method === "account/login/start" || method === "authenticate"
-                ? "authentication_failed"
-                : method === "thread/resume" || method === "session/load"
-                  ? "session_restore_failed"
-                  : method === "session/set_model"
-                    ? "model_selection_failed"
-                    : method === "thread/start" || method === "session/new"
-                      ? "session_start_failed"
-                      : method === "turn/start" || method === "session/prompt"
-                        ? "turn_start_failed"
-                        : method === "initialize"
-                          ? "harness_initialization_failed"
-                          : "harness_failed";
+              : has("max_output_tokens")
+                ? "output_limit_exceeded"
+                : method === "account/login/start" || method === "authenticate"
+                  ? "authentication_failed"
+                  : method === "thread/resume" || method === "session/load"
+                    ? "session_restore_failed"
+                    : method === "session/set_model"
+                      ? "model_selection_failed"
+                      : method === "thread/start" || method === "session/new"
+                        ? "session_start_failed"
+                        : method === "turn/start" || method === "session/prompt"
+                          ? "turn_start_failed"
+                          : method === "initialize"
+                            ? "harness_initialization_failed"
+                            : "harness_failed";
   const phase: NativePhase | undefined =
     method === "account/login/start" || method === "authenticate"
       ? "authentication"
@@ -91,4 +94,15 @@ export function nativeHarnessError(error: unknown, method: string, protocol?: "a
                 ? "initialization"
                 : undefined;
   return new HarnessError(code, phase);
+}
+
+/**
+ * ACP v1 stop reasons. Only `end_turn` is a completed turn; `max_tokens` is the model's
+ * output limit, not a configuration failure. Unknown reasons stay generic.
+ */
+export function acpStopReasonCode(stopReason: unknown): "finished" | "interrupted" | HarnessErrorCode {
+  if (stopReason === "end_turn") return "finished";
+  if (stopReason === "cancelled") return "interrupted";
+  if (stopReason === "max_tokens") return "output_limit_exceeded";
+  return "harness_failed";
 }

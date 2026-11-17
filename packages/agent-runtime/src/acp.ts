@@ -2,7 +2,7 @@ import { VERSION } from "@armada/core";
 import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
-import { HarnessError, nativeHarnessError } from "./errors.ts";
+import { acpStopReasonCode, HarnessError, nativeHarnessError } from "./errors.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 
 type ObjectValue = Record<string, unknown>;
@@ -291,8 +291,9 @@ export class AcpDriver implements Driver {
           // A restart replaces the running native turn but remains the same Armada prompt.
           if (current !== active) continue;
           usage(response);
-          if (response.stopReason === "cancelled") return "interrupted";
-          if (response.stopReason !== "end_turn") throw new HarnessError("harness_failed");
+          const stop = acpStopReasonCode(response.stopReason);
+          if (stop === "interrupted") return "interrupted";
+          if (stop !== "finished") throw new HarnessError(stop);
           // ACP only streams text chunks. Publish the terminal snapshot with the same identity so
           // journal consumers need not reconstruct a completed answer from partial deltas.
           if (!interrupted && assistantChunks.length)
