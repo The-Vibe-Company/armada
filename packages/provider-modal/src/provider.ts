@@ -39,7 +39,16 @@ import type {
 import { createSshPreparation, SSH_PORT } from "./ssh.ts";
 import { scopeKey } from "./store.ts";
 
-export type ModalPromptPhase = "modal_prepare" | "modal_before_prompt" | "modal_admit" | "modal_health" | "modal_rpc";
+export type ModalPromptPhase =
+  | "modal_prepare"
+  | "modal_before_prompt"
+  | "modal_admit"
+  | "modal_health"
+  | "modal_rpc"
+  | "modal_app_lookup"
+  | "modal_image"
+  | "modal_sandbox_create"
+  | `modal_boot_${"binding" | "runtime" | "baseline" | "fresh" | "start" | "health" | "active_publication"}`;
 export interface ModalProviderOptions extends ModalConnection {
   /** Trusted staging opt-in: allocate host only, never start the tunnel listener. */
   commonRuntime?: true;
@@ -134,10 +143,12 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   const ssh = options.ssh ?? createSshPreparation();
   const client = modalConnection(options);
   async function bound(): Promise<App> {
-    const app = await client.apps.fromName(options.appName, {
-      environment: options.scope.binding.environment,
-      createIfMissing: false,
-    });
+    const app = await measure("modal_app_lookup", () =>
+      client.apps.fromName(options.appName, {
+        environment: options.scope.binding.environment,
+        createIfMissing: false,
+      }),
+    );
     if (app.appId !== options.scope.binding.appId)
       throw refusal("forbidden", "Modal App does not match the immutable binding.");
     // Public SDK exposes App ID/environment, not authenticated workspace identity. Globally unique
@@ -253,7 +264,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     work: () => Promise<T>,
   ): Promise<T> {
     try {
-      return await work();
+      return await measure(`modal_boot_${stage}`, work);
     } catch (error) {
       const safe = modalError(error);
       throw new ProviderError({
@@ -302,30 +313,34 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       if ((await sb.poll()) !== null)
         throw refusal("conflict", "Reconciled creation already terminated; manual recovery required.");
     } else if (row.phase === "reserved") {
-      const image = row.imageId ? await client.images.fromId(row.imageId) : await distribution.image(client);
+      const image = await measure("modal_image", () =>
+        row.imageId ? client.images.fromId(row.imageId) : distribution.image(client),
+      );
       row.phase = "creating";
       row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
       await save(row);
       const capacity = row.size === undefined ? null : machineCapacity("modal", row.size);
-      sb = await client.sandboxes.create(app, image, {
-        ...(row.runtimePolicy === "explicit-vm-v1" ? { runtime: "vm" as const } : {}),
-        ...(capacity
-          ? {
-              cpu: capacity.vcpus / 2,
-              cpuLimit: capacity.vcpus / 2,
-              memoryMiB: capacity.memoryMiB,
-              memoryLimitMiB: capacity.memoryMiB,
-            }
-          : {}),
-        name: row.physicalName,
-        tags: ownershipTags(row),
-        timeoutMs: row.ttlSeconds * 1000,
-        workdir: "/home/user",
-        unencryptedPorts: [SSH_PORT],
-        secrets: [],
-        env: {},
-        includeOidcIdentityToken: false,
-      });
+      sb = await measure("modal_sandbox_create", () =>
+        client.sandboxes.create(app, image, {
+          ...(row.runtimePolicy === "explicit-vm-v1" ? { runtime: "vm" as const } : {}),
+          ...(capacity
+            ? {
+                cpu: capacity.vcpus / 2,
+                cpuLimit: capacity.vcpus / 2,
+                memoryMiB: capacity.memoryMiB,
+                memoryLimitMiB: capacity.memoryMiB,
+              }
+            : {}),
+          name: row.physicalName,
+          tags: ownershipTags(row),
+          timeoutMs: row.ttlSeconds * 1000,
+          workdir: "/home/user",
+          unencryptedPorts: [SSH_PORT],
+          secrets: [],
+          env: {},
+          includeOidcIdentityToken: false,
+        }),
+      );
     } else {
       sb = await physical(row);
     }
