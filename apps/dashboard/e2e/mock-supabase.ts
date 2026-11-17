@@ -2425,10 +2425,8 @@ function admitGoldenBuild(route: string, body: Row, userId: string): Response | 
     return json({ error: { code: "invalid", message: "Provider is boat or modal." } }, 400);
   const name = String(body.name);
   if (route === "golden/create") {
-    // Absent means Boat, as on the server. A provider not configured for the org is refused, never redirected.
+    // Absent means Boat, as on the server.
     const provider = (body.provider ?? "boat") as "boat" | "modal";
-    const unconfigured = state.capabilities[provider].fail;
-    if (unconfigured) return json({ error: { code: "provider_not_configured", message: unconfigured.message } }, 503);
     if (!body.private && !isAdmin(org, userId))
       return json({ error: { code: "forbidden", message: "Only an admin can create an org golden." } }, 403);
     if (state.goldens.some((row) => row.org_id === org && row.name === name && row.provider === provider))
