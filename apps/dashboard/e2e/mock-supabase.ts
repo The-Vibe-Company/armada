@@ -9,6 +9,7 @@ import {
   ROUTINE_REASON_HELP,
   resolveMachineSize,
 } from "@armada/core";
+import { largeSandboxExpiry } from "./fixture-expiry";
 
 /**
  * A stand-in for Supabase Auth, PostgREST and the Armada MCP server, for the browser tests.
@@ -540,7 +541,7 @@ function seedLarge(target: State): void {
       docker_host_id: provider === "docker" ? LARGE_HOST : null,
       status_reason: variant === 4 ? "idle_paused" : null,
       stopped_at: [4, 5, 6].includes(variant) ? now : null,
-      expires_at: variant === 8 ? "2026-11-15T10:00:00.000Z" : "2026-11-17T12:00:00.000Z",
+      expires_at: largeSandboxExpiry(variant, Date.now()),
       conversation_ids: [`large_conversation_${i}`],
       task_prompt_id: variant === 3 ? `large_prompt_${i}` : null,
       task_outcome:
