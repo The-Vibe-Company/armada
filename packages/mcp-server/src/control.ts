@@ -101,6 +101,8 @@ import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-cont
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 import { sandboxListInput } from "./tools.ts";
 
+import { viewerControl } from "./viewer-control.ts";
+
 export const CONTROL_PREFIX = "/api/v1/";
 
 export interface ControlOptions {
@@ -207,6 +209,8 @@ export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecov
 export async function handleControlRequest(request: Request, options: ControlOptions): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith(CONTROL_PREFIX)) return null;
+  const viewer = await viewerControl(request, options, (next) => handleControlRequest(next, options));
+  if (viewer) return viewer;
   const timing = new RequestTiming();
   const response = await withRequestTiming(timing, () =>
     timing.measure("total", () => timedControlRequest(request, { ...options, timing })),
