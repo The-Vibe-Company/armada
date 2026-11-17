@@ -114,7 +114,7 @@ function fixture(stage: "scrub" | "snapshot") {
   };
 }
 
-test("a confirmed Modal stop deletes at once and collects recovery images after a transient failure", async () => {
+test("a confirmed Modal stop deletes at once and collects recovery images through a transient failure", async () => {
   const f = fixture("snapshot");
   f.recover();
   await f.provider.stop({ sandboxId: "logical" });
@@ -122,8 +122,7 @@ test("a confirmed Modal stop deletes at once and collects recovery images after 
   await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
   expect(f.state().phase).toBe("deleted");
   expect(f.terminated()).toBe(1);
-  await f.provider.deferredCollection();
-  expect(f.retries).toEqual([5_000]);
+  expect(f.retries).toEqual([1_000]);
   expect(f.deletedImages).toEqual(["prior-recovery", "fresh-recovery"]);
   expect(f.images()).toEqual([]);
 });

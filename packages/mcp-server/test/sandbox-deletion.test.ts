@@ -5,7 +5,6 @@ import {
   createModalProvider,
   createSqlModalStore,
   type Machine,
-  type ModalProvider,
   type RunnerDistribution,
   type Scope,
 } from "@armada/provider-modal";
@@ -381,9 +380,9 @@ test("admin extension and deletion resolve private-source resources through thei
   }
 });
 
-// #2594: a confirmed Modal stop is deletable at once. An image-service timeout no longer
-// fails the delete and retains the activity lease; the server collects images afterwards.
-test("a stopped Modal sandbox is deleted on the first request and its images are collected after a timeout", async () => {
+// #2594: a confirmed Modal stop is deletable at once. Image cleanup retries transient
+// failures in the request; a failure after proven exit releases the activity fence.
+test("a stopped Modal sandbox deletes in one request, collects images before success and releases known-outcome fences", async () => {
   const server = await harness({}, await sharedDatabase());
   try {
     const { people: p, db } = server;
@@ -414,13 +413,13 @@ test("a stopped Modal sandbox is deleted on the first request and its images are
       [id, p.org, p.owner, machine.info.id],
     );
     const sdk: string[] = [];
-    let timeouts = 1,
-      lookupTimeouts = 1;
+    let timeouts = 0,
+      missingApps = 1;
     const timeout = (message: string) => Object.assign(Error(message), { name: "TimeoutError" });
     const client = {
       apps: {
         fromName: async () => {
-          if (lookupTimeouts-- > 0) throw timeout("app lookup timed out");
+          if (missingApps-- > 0) throw Object.assign(Error("app missing"), { name: "NotFoundError" });
           return { appId: binding.appId };
         },
       },
@@ -438,7 +437,6 @@ test("a stopped Modal sandbox is deleted on the first request and its images are
       },
     } as unknown as ModalClient;
     const retries: number[] = [];
-    let adapter: ModalProvider | undefined;
     const vault = createSqlVaultStore(db);
     const options: ControlOptions = {
       authStore: server.auth,
@@ -454,7 +452,7 @@ test("a stopped Modal sandbox is deleted on the first request and its images are
         },
         modalTokensFor: async () => ({ tokenId: "modal_id", tokenSecret: "modal_secret", scope: "user" }),
         modalProviderFor: async () => {
-          adapter = createModalProvider({
+          return createModalProvider({
             scope,
             appName: "bound",
             client,
@@ -465,7 +463,6 @@ test("a stopped Modal sandbox is deleted on the first request and its images are
               retries.push(milliseconds);
             },
           });
-          return adapter;
         },
       }),
       now: () => server.clock.now,
@@ -485,18 +482,48 @@ test("a stopped Modal sandbox is deleted on the first request and its images are
           [id],
         )
       ).rows[0];
-    // An App lookup failure precedes any write, so the fence is released for an immediate retry.
+    const phase = async () => (await createSqlModalStore(db, scope).get(machine.info.id)).phase;
+    const images = async () =>
+      (await db.query("select name from modal_images where source_id=$1", [machine.info.id])).rows;
+    // A refused admission logs its predicates from the refusing statement itself.
+    await db.query("update sandboxes set activity_until=now()+interval '1 minute' where id=$1", [id]);
+    const logged: string[] = [];
+    const info = console.info;
+    console.info = (line: string) => logged.push(line);
+    try {
+      expect((await remove())?.status).toBe(409);
+    } finally {
+      console.info = info;
+    }
+    expect(logged.map((line) => JSON.parse(line))).toEqual([
+      {
+        event: "sandbox_delete_admission_refused",
+        sandboxId: id,
+        observed: expect.objectContaining({ status: "stopped", activityLeaseHeld: true, reconcileLeaseHeld: false }),
+      },
+    ]);
+    await db.query("update sandboxes set activity_until=null where id=$1", [id]);
+    // A missing App is not proof the sandbox is gone: the row survives, the fence is released.
     expect((await remove())?.status).toBe(502);
     expect(await row()).toEqual({ status: "stopped", leased: false });
+    expect(await phase()).toBe("stopped");
+    // Collection that keeps failing fails the delete visibly, with physical exit proven,
+    // so the fence is released and nothing reports success while images remain.
+    timeouts = 3;
+    expect((await remove())?.status).toBe(502);
+    expect(await row()).toEqual({ status: "stopped", leased: false });
+    expect(await phase()).toBe("deleted");
+    expect(await images()).toHaveLength(1);
+    expect(retries).toEqual([1_000, 5_000]);
+    // A transient image timeout is retried inside the request: one DELETE completes.
+    timeouts = 1;
     const response = await remove();
     expect(response?.status).toBe(200);
     expect(await response?.json()).toEqual({ id, status: "deleted" });
     expect(await row()).toEqual({ status: "deleted", leased: false });
-    expect((await createSqlModalStore(db, scope).get(machine.info.id)).phase).toBe("deleted");
-    await adapter?.deferredCollection();
-    expect(retries).toEqual([5_000]);
+    expect(retries).toEqual([1_000, 5_000, 1_000]);
     expect(sdk).toEqual(["delete:recovery-image"]);
-    expect((await db.query("select name from modal_images where source_id=$1", [machine.info.id])).rows).toEqual([]);
+    expect(await images()).toEqual([]);
   } finally {
     await server.close();
   }

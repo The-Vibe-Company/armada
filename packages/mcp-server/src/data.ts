@@ -729,8 +729,10 @@ export function createSqlData(
           params.push(patch.queueRequestId);
           fence += ` and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=s.id and q.request_id=$${params.length}::uuid and q.state<>'dispatching')`;
         }
+        let generationParam: number | undefined;
         if (patch.expectedGeneration !== undefined) {
           params.push(patch.expectedGeneration);
+          generationParam = params.length;
           fence += ` and s.lifecycle_generation = $${params.length}`;
         }
         if (patch.deleteRequested)
@@ -759,30 +761,44 @@ export function createSqlData(
           patch.status === "deleted";
         const cancelTurns = patch.stopRequested === true;
         const wrapped = releaseReservation || cancelTurns;
-        const result = await sql.query<{ id: string }>(
-          `${wrapped ? "with updated as (" : ""}update public.sandboxes s set ${sets.join(", ")} from public.goldens g
+        const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
-             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
+             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id`;
+        // A refused delete records its admission predicates from the same statement and
+        // snapshot as the refusal, so a concurrent lease release cannot erase the evidence.
+        // Lifecycle columns only, never provider or credential text.
+        const diagnose = patch.deleteRequested && !wrapped;
+        const generation = generationParam === undefined ? "null" : `$${generationParam}`;
+        const result = await sql.query<{ id: string | null; observed?: Record<string, unknown> | null }>(
+          wrapped
+            ? `with updated as (${update})${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated`
+            : diagnose
+              ? `with updated as (${update})
+                select u.id, d.observed from (select 1) one left join updated u on true
+                left join lateral (select json_build_object(
+                  'status', s.status::text,
+                  'stopRequested', s.stop_requested_at is not null,
+                  'activityLeaseHeld', coalesce(s.activity_until>=now(),false),
+                  'activityLeaseSeconds', ceil(extract(epoch from greatest(s.activity_until-now(),interval '0')))::int,
+                  'reconcileLeaseHeld', coalesce(s.reconcile_lease_until>=now(),false),
+                  'reconcileLeaseSeconds', ceil(extract(epoch from greatest(s.reconcile_lease_until-now(),interval '0')))::int,
+                  'reconcileDueSeconds', ceil(extract(epoch from greatest(s.reconcile_after-now(),interval '0')))::int,
+                  'lifecycleErrorRecorded', s.lifecycle_error is not null,
+                  'generationChanged', coalesce(s.lifecycle_generation<>${generation},false),
+                  'managed', ${SANDBOX_DELETION_MANAGED}) as observed
+                  from public.sandboxes s where s.id=$3 and ${SANDBOX_VISIBLE}) d on true`
+              : update,
           params,
         );
-        if (!result.rows[0]) {
-          if (patch.deleteRequested) {
-            // Record only admission predicates. The provider has not received this delete.
-            const observed = await sql
-              .query(
-                `select s.status::text as status,
-                  coalesce(s.activity_until>=now(),false) as "activityLeaseHeld",
-                  coalesce(s.reconcile_lease_until>=now(),false) as "reconcileLeaseHeld",
-                  s.lifecycle_generation<>$4::bigint as "generationChanged",
-                  ${SANDBOX_DELETION_MANAGED} as managed
-                 from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}`,
-                [...scope, id, patch.expectedGeneration ?? null],
-              )
-              .catch(() => null);
+        if (!result.rows[0]?.id) {
+          if (diagnose)
             console.info(
-              JSON.stringify({ event: "sandbox_delete_admission_refused", sandboxId: id, observed: observed?.rows[0] }),
+              JSON.stringify({
+                event: "sandbox_delete_admission_refused",
+                sandboxId: id,
+                observed: result.rows[0]?.observed ?? null,
+              }),
             );
-          }
           throw new DataError(
             "The sandbox is busy or its lifecycle changed; retry after refreshing status.",
             "sandbox_not_ready",

@@ -141,20 +141,23 @@ export async function lifecycleStep<T>(
     });
   }
 }
-/** Marks a delete that failed before its first durable write: nothing changed, so the
- * server may release its activity fence and admit an immediate retry. */
-export function deleteNotDispatched(error: unknown): ProviderError {
+/** Marks a delete failure whose physical outcome is known: nothing was written yet, or the
+ * machine's exit is durably proven and only idempotent image cleanup remains (the
+ * `deleting`/`deleted` phase already refuses resume). The server may then release its
+ * activity fence and admit an immediate retry. `code` overrides a provider code that would
+ * otherwise read as sandbox absence. */
+export function deleteRetrySafe(error: unknown, code?: ProviderError["code"]): ProviderError {
   const safe = modalError(error);
   return new ProviderError({
     provider: safe.provider,
-    code: safe.code,
+    code: code ?? safe.code,
     message: safe.message,
     ...(safe.status !== undefined ? { status: safe.status } : {}),
     ...(safe.providerCode !== undefined ? { providerCode: safe.providerCode } : {}),
-    retryable: safe.retryable,
+    retryable: code === undefined ? safe.retryable : true,
     ...(safe.retryAfterSeconds !== undefined ? { retryAfterSeconds: safe.retryAfterSeconds } : {}),
     ...(safe.requestId !== undefined ? { requestId: safe.requestId } : {}),
-    details: { ...safe.details, deleteNotDispatched: true },
+    details: { ...safe.details, deleteRetrySafe: true },
     cause: error,
   });
 }
