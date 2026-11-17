@@ -69,6 +69,9 @@ function parseHost(value: unknown): DockerHost | null {
       (!Number.isInteger(value.retentionOverrideSeconds) ||
         Number(value.retentionOverrideSeconds) < 0 ||
         Number(value.retentionOverrideSeconds) > 31536000)) ||
+    (value.stoppedSandboxBytes !== undefined &&
+      value.stoppedSandboxBytes !== null &&
+      (!Number.isSafeInteger(value.stoppedSandboxBytes) || Number(value.stoppedSandboxBytes) < 0)) ||
     (value.diskFreeBytes !== undefined &&
       value.diskFreeBytes !== null &&
       (!Number.isSafeInteger(value.diskFreeBytes) || Number(value.diskFreeBytes) < 0)) ||
@@ -91,6 +94,9 @@ function parseHost(value: unknown): DockerHost | null {
       ? {}
       : { retentionOverrideSeconds: value.retentionOverrideSeconds as number | null }),
     ...(value.nextCleanupAt === undefined ? {} : { nextCleanupAt: value.nextCleanupAt as string | null }),
+    ...(value.stoppedSandboxBytes === undefined
+      ? {}
+      : { stoppedSandboxBytes: value.stoppedSandboxBytes as number | null }),
     ...(value.diskFreeBytes === undefined ? {} : { diskFreeBytes: value.diskFreeBytes as number | null }),
     ...(value.canManageLimits === undefined ? {} : { canManageLimits: value.canManageLimits as boolean }),
     ...(value.limitsSupported === undefined ? {} : { limitsSupported: value.limitsSupported as boolean }),
@@ -110,7 +116,12 @@ export function parseDockerHostList(value: unknown): DockerHostList | null {
   if (!isRecord(value) || typeof value.placement !== "boolean" || !Array.isArray(value.hosts)) return null;
   const list = value.hosts.map(parseHost).filter((host): host is DockerHost => host !== null);
   if (new Set(list.map((host) => host.id)).size !== list.length) return null;
-  return { placement: value.placement, hosts: list, skipped: value.hosts.length - list.length };
+  return {
+    placement: value.placement,
+    ...(typeof value.serverVersion === "string" ? { serverVersion: value.serverVersion } : {}),
+    hosts: list,
+    skipped: value.hosts.length - list.length,
+  };
 }
 
 /**

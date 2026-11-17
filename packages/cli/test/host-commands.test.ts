@@ -115,12 +115,22 @@ test("host list exposes safe metadata as text or JSON and revoke uses host UUID"
     const result = await capture(["host", "list", ...(json ? ["--json"] : [])], async (request) => {
       expect(new URL(request.url).pathname).toEndWith("/hosts/list");
       expect(await request.json()).toEqual({ org });
-      return Response.json({ placement: true, hosts: [summary] });
+      return Response.json({ placement: true, serverVersion: "2.49.6", hosts: [summary] });
     });
     expect(result.code).toBe(0);
     if (json) expect(JSON.parse(result.out).hosts[0]).toEqual(summary);
     else
-      for (const value of ["office", "online", "2.27.0", "3", summary.lastSeenAt]) expect(result.out).toContain(value);
+      for (const value of [
+        "office",
+        "online",
+        "2.27.0",
+        "3",
+        summary.lastSeenAt,
+        "is outdated",
+        "server 2.49.6",
+        "armada host add",
+      ])
+        expect(result.out).toContain(value);
   }
   const revoked = await capture(["host", "revoke", hostId], async (request) => {
     expect(new URL(request.url).pathname).toEndWith("/hosts/revoke");

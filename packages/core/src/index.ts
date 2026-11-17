@@ -116,6 +116,7 @@ export {
   type DockerSnapshotRecord,
 } from "./docker-api.ts";
 export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
+export { dockerHostUpgradeMessage } from "./docker-host-upgrade.ts";
 export {
   DOCKER_LOCAL_IMAGE_LABELS,
   type DockerSnapshotBinding,

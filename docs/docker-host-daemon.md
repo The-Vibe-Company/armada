@@ -1181,8 +1181,9 @@ server acknowledgement can therefore lag physical enforcement during slow work.
 ### Diagnosing older daemons (#2540)
 
 A server deployment does not upgrade installed host executables. Upgrade on the
-Docker machine with `armada host install --server HTTPS_ORIGIN` using the current
-CLI. The installer verifies the published binary, preserves the registration and
+Docker machine using the current CLI: run `armada host add` from a signed-in
+client for the same server, then run its generated installer command on that
+same Docker machine. The installer verifies the published binary, preserves the registration and
 private state, and restarts the existing user service. A service restart alone
 runs the same installed binary. Until upgraded, a host continues its old policy.
 
