@@ -297,7 +297,7 @@ export function createDockerSandboxControls(
     let complete = false;
     // Explicit historical lookups retain archive search semantics. Latest-turn
     // reads already have an admission receipt and need only the newest page.
-    const pageBudget = promptId && promptId !== admitted.receipt?.promptId && !queueOnly ? 100 : 1;
+    const pageBudget = promptId && selectedPrompt !== admitted.receipt?.promptId && !queueOnly ? 100 : 1;
     for (let count = 0; count < pageBudget; count++) {
       const page = await readHistory(caller, initial.id, {
         direction: "backward",
@@ -340,7 +340,7 @@ export function createDockerSandboxControls(
         reason: state === "failed" ? (limit ? planLimitMessage(limit) : promptFailureReason(event.reason)) : null,
       };
     }
-    if (!prompt && admitted.receipt && (!promptId || promptId === admitted.receipt.promptId)) {
+    if (!prompt && admitted.receipt && (!promptId || selectedPrompt === admitted.receipt.promptId)) {
       const state = terminal(row) ? (row.status === "failed" ? "failed" : "interrupted") : "running";
       prompt = {
         promptId: admitted.receipt.promptId,
