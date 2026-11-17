@@ -3,6 +3,7 @@ import {
   goldenForSettings,
   goldenResponse,
   idlePauseMessage,
+  isExternalRef,
   launchFailureHelp,
   launchResponse,
   MACHINE_SIZES,
@@ -280,6 +281,12 @@ const expiryOutput = {
     .describe("True when known logical time left is at most five minutes, including expired resources."),
 };
 
+const externalRefOutput = z.string().optional().describe("Opaque reference given at launch; absent when none.");
+const externalRefInput = z
+  .string()
+  .refine(isExternalRef, "1 to 200 characters without control characters.")
+  .describe("Opaque caller reference, for example one business object id. Not unique; use idempotencyKey for exactly-once.");
+
 const sandboxListMetadata = z.object({
   ...expiryOutput,
   idlePaused: z.boolean().optional(),
@@ -303,6 +310,7 @@ const sandboxListMetadata = z.object({
   machineSize: z.enum(["small", "medium", "large", "xlarge"]).nullable(),
   displayLabel: z.string(),
   taskOutcome: taskOutcome.nullable().optional(),
+  externalRef: externalRefOutput,
   canOpen: z.boolean(),
   canManage: z.boolean(),
 });
@@ -360,6 +368,7 @@ const status = {
   skills: skillReceipts,
   usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
+  externalRef: externalRefOutput,
   id: z.string(),
   golden: z.string().nullable(),
   provider: z.enum(SANDBOX_PLACEMENT_PROVIDERS).optional(),
@@ -399,6 +408,9 @@ export const sandboxListInput = z.object({
   page: z.number().int().min(1).max(1_000_000).optional().describe("1-based page, default 1."),
   status: z.array(z.enum(SANDBOX_STATUSES)).min(1).optional().describe("Only these statuses."),
   limit: z.number().int().min(1).max(200).optional().describe("At most this many. Default 25."),
+  externalRef: externalRefInput
+    .optional()
+    .describe("Only sandboxes launched with this reference that you own or administer."),
 });
 
 /** One MCP server per request: the principal is fixed for its whole life, and nothing outlives the request. */
@@ -1214,6 +1226,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
             .max(128)
             .optional()
             .describe("Reuse this key for retries; inspect launch_receipt after an unknown outcome."),
+          externalRef: externalRefInput.optional(),
           visibility: z.enum(["private", "org"]).optional(),
           skills: z.array(z.string()).max(20).optional(),
           skipSkillDefaults: z.boolean().optional(),
@@ -1259,6 +1272,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
           providerSandboxId: z.string(),
           boatId: compat("providerSandboxId"),
           golden: z.string(),
+          externalRef: externalRefOutput,
           visibility: z.enum(["org", "private"]),
           harness: z.enum(HARNESSES),
           helper: z.unknown(),
@@ -1320,6 +1334,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
               ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
               ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
               ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
+              ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
             },
             { ...context.launch, ...(receiptId ? { newId: () => receiptId } : {}) },
           );
@@ -1419,6 +1434,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
           ...(args.harness === undefined ? {} : { harness: args.harness }),
           ...(args.golden === undefined ? {} : { goldenId: args.golden }),
           ...(args.owner === undefined ? {} : { ownerId: args.owner === "me" ? caller.userId : args.owner }),
+          ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
         });
         const hasMore = page * limit < total;
         return {
