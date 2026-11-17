@@ -37,6 +37,12 @@ export interface LaunchTemplate {
 
 /** Closed, value-free launch refusal diagnostics shared by API clients and receipts. */
 export const TEMPLATE_REFUSAL_HELP = {
+  missing_credential: "No usable model credential is available. Add a model account before retrying.",
+  credential_refused: "The model credential is expired, revoked or incompatible. Reconnect the model account.",
+  credential_busy: "The model account is busy. Wait before retrying or choose another account.",
+  unauthorized: "Your authorization is no longer valid. Sign in again before retrying.",
+  launch_unavailable: "The environment or a launch dependency is unavailable. Check the golden or Docker host before retrying.",
+  allocation_or_start_unknown: "The launch outcome is uncertain. Check the existing request before retrying; a sandbox may have started.",
   reference_unavailable: "A template reference is missing or inaccessible. Check the template definition.",
   environment_unavailable:
     "Template environment is removed, unavailable or inaccessible. Check the golden or Docker host.",

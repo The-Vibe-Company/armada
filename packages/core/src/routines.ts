@@ -1,3 +1,4 @@
+import { TEMPLATE_REFUSAL_HELP } from "./templates.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 
 /** A scheduled owner-scoped template launch definition. */
@@ -58,26 +59,7 @@ const LAUNCH_REFUSALS: readonly string[] = [
   "setup_failed",
   "snapshot_failed",
   "build_failed",
-  "reference_unavailable",
-  "variable_unavailable",
-  "variable_version_changed",
-  "secret_unavailable",
-  "secret_version_changed",
-  "environment_unavailable",
-  "environment_snapshot_unavailable",
-  "environment_binding_changed",
-  "connection_unavailable",
-  "connection_version_changed",
-  "model_account_unavailable",
-  "model_account_version_changed",
-  "model_account_incompatible",
-  "environment_limits_exceeded",
-  "model_account_ambiguous",
-  "template_revision_changed",
-  "environment_admission_unavailable",
-  "secret_delivery_unavailable",
-  "variable_delivery_unavailable",
-  "authorization_changed",
+  ...Object.keys(TEMPLATE_REFUSAL_HELP),
   "no_credentials",
   "credential_refused",
   "unsupported",

@@ -303,7 +303,7 @@ describe("template launch", () => {
     );
     for (const [reason, action] of [
       ["model_account_ambiguous", "Set a default in Account > Models"],
-      ["model_account_refused", "Reconnect it in Account > Models"],
+      ["model_account_refused", "Reconnect the model account"],
     ]) {
       const message = templateFailure(409, `Template launch refused: ${reason}.`);
       expect(message).toContain(action);
@@ -465,8 +465,8 @@ test("template control failures suppress arbitrary diagnostics and retain accoun
   const diagnostic = "HTTP 502: model_account_id digest sha256:example";
   for (const status of [undefined, 401, 502]) expect(templateFailure(status, diagnostic)).not.toContain(diagnostic);
   expect(templateFailure(401, diagnostic)).toContain("Sign in again");
-  expect(templateFailure(404, diagnostic, "missing_credential")).toContain("Add one in Account > Models");
-  expect(templateFailure(404, diagnostic, "credential_refused")).toContain("Reconnect it in Account > Models");
+  expect(templateFailure(404, diagnostic, "missing_credential")).toContain("Add a model account");
+  expect(templateFailure(404, diagnostic, "credential_refused")).toContain("Reconnect the model account");
   expect(templateFailure(409, diagnostic, "credential_busy")).toContain("account is busy");
 });
 
@@ -496,4 +496,10 @@ test("host template pins the exact selected snapshot and rejects private organiz
   });
   expect(templateRequest(form({ ...selection, scope: "org" }), sources).ok).toBe(false);
   expect(templateRequest(form({ placement: `${SHARED}:`, goldenId: "" }), sources).ok).toBe(true);
+});
+
+test("template launch reasons distinguish unavailable and uncertain outcomes without raw diagnostics", () => {
+  expect(launchReason("launch_unavailable")).toContain("Docker host");
+  expect(launchReason("allocation_or_start_unknown")).toContain("uncertain");
+  expect(launchReason("private_value")).not.toContain("private_value");
 });

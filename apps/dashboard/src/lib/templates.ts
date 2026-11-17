@@ -4,6 +4,7 @@ import {
   isHarness,
   isSandboxProvider,
   MODEL_CATALOG,
+  templateRefusalHelp,
   PROVIDER_LIMITS,
   type SandboxPlacementProviderId,
   type SandboxProviderId,
@@ -430,43 +431,9 @@ export function unreadableSelections(
 }
 
 /** Why a launch was refused, in words, from the server's value-free reason code. */
-const LAUNCH_REASONS: Record<string, string> = {
-  environment_unavailable: "Its snapshot is no longer available or has not been built.",
-  environment_binding_changed: "Its snapshot moved to another Modal workspace. Publish a new version.",
-  environment_snapshot_unavailable: "Its saved snapshot was retired. Rebuild the snapshot and try again.",
-  environment_admission_unavailable: "Its snapshot changed while launching. Try again.",
-  secret_unavailable: "A secret is expired, revoked or inaccessible. Publish a version with an available secret.",
-  secret_version_changed: "A secret changed. Publish a new version to use its current version.",
-  secret_delivery_unavailable: "This provider cannot deliver secret environment values.",
-  variable_unavailable: "A variable it uses was revoked or deleted. Publish a new version without it.",
-  variable_version_changed: "A variable it uses changed. Publish a new version to use the new value.",
-  environment_limits_exceeded:
-    "Template variables and secrets exceed the snapshot limits (64 entries, 8 KiB per value, 64 KiB total). Reduce the bindings.",
-  variable_delivery_unavailable: "This provider cannot deliver variables yet.",
-  connection_unavailable: "A tool it uses is not connected. Reconnect it in Tools, or publish a version without it.",
-  connection_version_changed: "A tool it uses was reconnected while launching. Try again.",
-  credential_busy: "The model account is busy. Wait before trying again, or choose another account.",
-  model_account_unavailable:
-    "No usable model account is available for this agent in this organization. Add one in Account > Models or choose another agent.",
-  model_account_ambiguous:
-    "Several model accounts can run this agent. Set a default in Account > Models or publish a version with an explicit pinned account.",
-  model_account_refused:
-    "The selected model account is expired, revoked, changed or incompatible. Reconnect it in Account > Models or publish a version with a usable pinned account.",
-  model_account_version_changed: "Its model account changed. Try again.",
-  model_account_incompatible: "Its model account cannot run this agent.",
-  template_revision_changed: "A new version was published while launching. Try again.",
-  launch_unavailable: "The sandbox could not be started.",
-};
-
 export function launchReason(reason: string | null | undefined): string {
   if (reason?.startsWith("skillpack_")) return skillLaunchFailure(reason);
-  const canonical =
-    reason === "credential_refused"
-      ? "model_account_refused"
-      : reason === "missing_credential"
-        ? "model_account_unavailable"
-        : reason;
-  return (canonical && LAUNCH_REASONS[canonical]) ?? "The sandbox could not be started.";
+  return templateRefusalHelp(reason);
 }
 
 /**

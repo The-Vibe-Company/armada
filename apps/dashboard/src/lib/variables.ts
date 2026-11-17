@@ -1,3 +1,4 @@
+import { isApplicationVariableName } from "@armada/core";
 import { isRecord } from "@armada/core";
 import type { Bucket, ResourceState } from "./resource-list.ts";
 
@@ -82,22 +83,6 @@ export function parseVaultItem(
   };
 }
 
-/** Prefixes the server keeps for Armada, the providers and the harnesses (`application-vault.ts`). */
-const RESERVED_PREFIXES = /^(ARMADA_|BOAT_|MODAL_|ANTHROPIC_|OPENAI_|CLAUDE_|CODEX_|GH_|GITHUB_|MCP_|LD_|DYLD_)/;
-const RESERVED_NAMES = new Set([
-  "PATH",
-  "HOME",
-  "SHELL",
-  "ENV",
-  "BASH_ENV",
-  "NODE_OPTIONS",
-  "PYTHONPATH",
-  "SSL_CERT_FILE",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "ALL_PROXY",
-  "NO_PROXY",
-]);
 /** Prefixes a frontend build publishes into its bundle: a secret there would ship to every browser. */
 const PUBLIC_PREFIXES = /^(NEXT_PUBLIC_|VITE_|PUBLIC_)/;
 
@@ -112,9 +97,7 @@ export function nameProblem(name: string, kind: VaultKind): string | null {
   if (!/^[A-Z][A-Z0-9_]*$/.test(name))
     return "Use capital letters, digits and underscores, starting with a letter (like APP_REGION).";
   if (name.length > 128) return "Use at most 128 characters.";
-  const prefix = RESERVED_PREFIXES.exec(name)?.[1];
-  if (prefix) return `Names starting with ${prefix} are reserved for Armada and the agents.`;
-  if (RESERVED_NAMES.has(name)) return `${name} is reserved: the sandbox sets it.`;
+  if (!isApplicationVariableName(name)) return `${name} is reserved for the sandbox and agents.`;
   const exposed = kind === "secret" ? PUBLIC_PREFIXES.exec(name)?.[1] : undefined;
   if (exposed) return `A secret cannot start with ${exposed}: frontend builds publish those names.`;
   return null;

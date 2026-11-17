@@ -463,3 +463,5 @@ export {
   type VaultErrorCode,
 } from "./vault-error.ts";
 export { VERSION } from "./version.ts";
+
+export { isApplicationVariableName } from "./readable-variables.ts";

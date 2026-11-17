@@ -80,8 +80,10 @@ describe("the server's rules, said before sending", () => {
     ["app_region", "variable", /capital letters/],
     ["1ST", "variable", /starting with a letter/],
     ["A".repeat(129), "variable", /128/],
-    ["GITHUB_TOKEN", "secret", /GITHUB_ are reserved/],
+    ["GITHUB_TOKEN", "secret", /reserved/],
     ["PATH", "variable", /PATH is reserved/],
+    ["XDG_DATA_HOME", "variable", /reserved/],
+    ["OPENCODE_FOO", "variable", /reserved/],
     ["NEXT_PUBLIC_KEY", "secret", /frontend builds/],
     ["NEXT_PUBLIC_URL", "variable", null],
   ] as const)("%s as a %s", (name, kind, expected) => {

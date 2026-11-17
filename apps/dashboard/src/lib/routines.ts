@@ -1,4 +1,4 @@
-import { ROUTINE_REASON_HELP, type Routine, isRecord as record, routineReasonHelp } from "@armada/core";
+import { ROUTINE_REASON_HELP, type Routine, isRecord as record, routineReasonHelp, routineLaunchRefusal, templateRefusalHelp } from "@armada/core";
 import type { TemplateHeader } from "./templates.ts";
 
 export type RoutineItem = Omit<Routine, "createdAt" | "updatedAt" | "nextDueAt"> & {
@@ -12,6 +12,7 @@ export type RoutineRun = {
   configurationVersion: number;
   state: "admitted" | "succeeded" | "failed" | "reconciling" | "skipped";
   reason: string | null;
+  launchRefusal: string | null;
   taskState: "running" | "finished" | "failed" | "interrupted" | "unknown" | null;
   sandboxId: string | null;
   templateRequestId: string | null;
@@ -99,6 +100,7 @@ export function parseRoutineRun(x: unknown): RoutineRun | null {
     missedIntervals: x.missedIntervals,
     state: x.state as RoutineRun["state"],
     reason: reason(x.reason),
+    launchRefusal: routineLaunchRefusal(x.launchRefusal),
     taskState: x.taskState as RoutineRun["taskState"],
     sandboxId: x.sandboxId,
     templateRequestId: x.templateRequestId,
@@ -125,6 +127,7 @@ export function routineFailure(status?: number): string {
 }
 export function runDescription(run: RoutineRun): string {
   return (
+    (run.launchRefusal ? templateRefusalHelp(run.launchRefusal) : null) ??
     routineReasonHelp(run.reason) ??
     (run.state === "succeeded"
       ? "Sandbox launched. Agent outcome is shown separately."
