@@ -414,9 +414,16 @@ test("a stopped Modal sandbox is deleted on the first request and its images are
       [id, p.org, p.owner, machine.info.id],
     );
     const sdk: string[] = [];
-    let timeouts = 1;
+    let timeouts = 1,
+      lookupTimeouts = 1;
+    const timeout = (message: string) => Object.assign(Error(message), { name: "TimeoutError" });
     const client = {
-      apps: { fromName: async () => ({ appId: binding.appId }) },
+      apps: {
+        fromName: async () => {
+          if (lookupTimeouts-- > 0) throw timeout("app lookup timed out");
+          return { appId: binding.appId };
+        },
+      },
       sandboxes: {
         fromId: async () => {
           sdk.push("sandbox-lookup");
@@ -425,7 +432,7 @@ test("a stopped Modal sandbox is deleted on the first request and its images are
       },
       images: {
         delete: async (imageId: string) => {
-          if (timeouts-- > 0) throw Object.assign(Error("image service timed out"), { name: "TimeoutError" });
+          if (timeouts-- > 0) throw timeout("image service timed out");
           sdk.push(`delete:${imageId}`);
         },
       },
@@ -463,22 +470,28 @@ test("a stopped Modal sandbox is deleted on the first request and its images are
       }),
       now: () => server.clock.now,
     };
-    const response = await handleControlRequest(
-      new Request(`${PUBLIC_URL}/api/v1/sandboxes/${id}`, {
-        method: "DELETE",
-        headers: { authorization: `Bearer ${ownerToken}` },
-      }),
-      options,
-    );
+    const remove = () =>
+      handleControlRequest(
+        new Request(`${PUBLIC_URL}/api/v1/sandboxes/${id}`, {
+          method: "DELETE",
+          headers: { authorization: `Bearer ${ownerToken}` },
+        }),
+        options,
+      );
+    const row = async () =>
+      (
+        await db.query<{ status: string; leased: boolean }>(
+          "select status::text,coalesce(activity_until>=now(),false) as leased from sandboxes where id=$1",
+          [id],
+        )
+      ).rows[0];
+    // An App lookup failure precedes any write, so the fence is released for an immediate retry.
+    expect((await remove())?.status).toBe(502);
+    expect(await row()).toEqual({ status: "stopped", leased: false });
+    const response = await remove();
     expect(response?.status).toBe(200);
     expect(await response?.json()).toEqual({ id, status: "deleted" });
-    const row = (
-      await db.query<{ status: string; leased: boolean }>(
-        "select status::text,coalesce(activity_until>=now(),false) as leased from sandboxes where id=$1",
-        [id],
-      )
-    ).rows[0];
-    expect(row).toEqual({ status: "deleted", leased: false });
+    expect(await row()).toEqual({ status: "deleted", leased: false });
     expect((await createSqlModalStore(db, scope).get(machine.info.id)).phase).toBe("deleted");
     await adapter?.deferredCollection();
     expect(retries).toEqual([5_000]);

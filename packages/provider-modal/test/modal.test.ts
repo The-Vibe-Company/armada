@@ -1313,9 +1313,18 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const released = new Promise<void>((resolve) => {
       release = resolve;
     });
-    f.onCollectionSleep(() => released);
+    let refused!: () => void;
+    const retrying = new Promise<void>((resolve) => {
+      refused = resolve;
+    });
+    f.onCollectionSleep(() => {
+      refused();
+      return released;
+    });
     await f.store.lease(builder.id, async () => {
       expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
+      // Hold the source until the deferred collector has been refused and scheduled a retry.
+      await retrying;
     });
     expect(f.log.filter((x) => x === "terminate")).toHaveLength(terminations);
     expect((await f.store.get(fork.id)).phase).toBe("deleted");

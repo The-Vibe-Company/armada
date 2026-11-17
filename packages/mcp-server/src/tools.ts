@@ -2191,14 +2191,14 @@ export function createArmadaServer(context: ToolContext, version: string, option
         throw new ToolError("unavailable", "Sandbox deletion provider is not configured.");
       const provider = found.providerSandboxId && deletionProvider ? await deletionProvider(found) : null;
       // A definite refusal deleted nothing, so the retry need not wait for lease expiry.
-      // Unknown outcomes and pending receipts retain the bounded activity lease. Modal
-      // raises its other refusals after recording deleting or terminating, so only its
-      // lifecycle-lease claim proves that nothing changed.
+      // Unknown outcomes and pending receipts retain the bounded activity lease. Modal can
+      // fail with any code after recording deleting, so only its explicit pre-write marker
+      // (which covers App lookup and lifecycle-lease refusals) proves that nothing changed.
       const failurePatch = (error: unknown) => {
         if (
           error instanceof ProviderError &&
           (error.provider === "modal"
-            ? error.providerCode === "lifecycle_lease_busy"
+            ? error.details?.deleteNotDispatched === true || error.providerCode === "lifecycle_lease_busy"
             : isNonMutatingProviderRefusal(error))
         )
           return {};

@@ -22,7 +22,7 @@ import { runtimeBootstrapScript } from "@armada/core/server";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
-import { lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
+import { deleteNotDispatched, lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
 import type {
   Machine,
@@ -1693,54 +1693,65 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return { status: "deleted" };
     },
     async delete({ sandboxId }) {
-      await bound();
-      await store.lease(sandboxId, async (row, save) => {
-        if (row.phase === "deleted") return;
-        assertMachineSource(row);
-        // Stop confirms exit. A reservation without an ID is pre-create because
-        // SQL commits creating before issuing the remote request. Carry either
-        // proof through an interrupted image deletion.
-        if (row.phase === "stopped" || (row.phase === "reserved" && !row.physicalId))
-          row.deletePhysicalExitGeneration = row.generation;
-        const exitConfirmed = row.deletePhysicalExitGeneration === row.generation;
-        // Creating/booting/deleting without ID is NOT proof of absence, even if name lookup says 404.
-        if (!exitConfirmed && !row.physicalId) {
-          const reconciled = await namedOwned(row);
-          row.physicalId = reconciled.sandboxId;
-          await save(row);
-        }
-        row.phase = "deleting";
-        await save(row);
-        if (!exitConfirmed && row.physicalId) {
-          try {
-            const sb = await physical(row);
-            await sb.terminate({ wait: true });
-            if ((await sb.poll()) === null)
-              throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
-          } catch (error) {
-            if (modalError(error).code !== "not_found") throw error;
+      // Until the first durable write, a failure (App lookup, lease claim, authority or
+      // name lookup) changed nothing; say so, or the server keeps its activity fence.
+      let dispatched = false;
+      await (async () => {
+        await bound();
+        await store.lease(sandboxId, async (row, persist) => {
+          const save = async (value: Machine) => {
+            dispatched = true;
+            await persist(value);
+          };
+          if (row.phase === "deleted") return;
+          assertMachineSource(row);
+          // Stop confirms exit. A reservation without an ID is pre-create because
+          // SQL commits creating before issuing the remote request. Carry either
+          // proof through an interrupted image deletion.
+          if (row.phase === "stopped" || (row.phase === "reserved" && !row.physicalId))
+            row.deletePhysicalExitGeneration = row.generation;
+          const exitConfirmed = row.deletePhysicalExitGeneration === row.generation;
+          // Creating/booting/deleting without ID is NOT proof of absence, even if name lookup says 404.
+          if (!exitConfirmed && !row.physicalId) {
+            const reconciled = await namedOwned(row);
+            row.physicalId = reconciled.sandboxId;
+            await save(row);
           }
-          row.deletePhysicalExitGeneration = row.generation;
+          row.phase = "deleting";
           await save(row);
-        }
-        // Physical exit is durable. Hand recovery images to the tombstone collector instead
-        // of deleting them inline. An inline image-service timeout failed the delete after
-        // it had mutated, so the server kept its activity lease and refused the caller's
-        // retry with sandbox_not_ready for two minutes. "saving" keeps the upsert idempotent
-        // when an interrupted delete is retried; deleted records are never served.
-        for (const imageId of new Set([
-          ...(row.retainedRecoveryIds ?? []),
-          ...(row.recoveryImageId ? [row.recoveryImageId] : []),
-        ]))
-          await store.saveImage({
-            info: { name: `recovery:${row.info.id}:${imageId}`, status: "saving" },
-            imageId,
-            sourceId: row.info.id,
-            managementAuthority: { ...managementAuthority },
-            deleted: true,
-          });
-        row.phase = "deleted";
-        await save(row);
+          if (!exitConfirmed && row.physicalId) {
+            try {
+              const sb = await physical(row);
+              await sb.terminate({ wait: true });
+              if ((await sb.poll()) === null)
+                throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
+            } catch (error) {
+              if (modalError(error).code !== "not_found") throw error;
+            }
+            row.deletePhysicalExitGeneration = row.generation;
+            await save(row);
+          }
+          // Physical exit is durable. Hand recovery images to the tombstone collector instead
+          // of deleting them inline. An inline image-service timeout failed the delete after
+          // it had mutated, so the server kept its activity lease and refused the caller's
+          // retry with sandbox_not_ready for two minutes. "saving" keeps the upsert idempotent
+          // when an interrupted delete is retried; deleted records are never served.
+          for (const imageId of new Set([
+            ...(row.retainedRecoveryIds ?? []),
+            ...(row.recoveryImageId ? [row.recoveryImageId] : []),
+          ]))
+            await store.saveImage({
+              info: { name: `recovery:${row.info.id}:${imageId}`, status: "saving" },
+              imageId,
+              sourceId: row.info.id,
+              managementAuthority: { ...managementAuthority },
+              deleted: true,
+            });
+          row.phase = "deleted";
+          await save(row);
+        });
+      })().catch((error) => {
+        throw dispatched ? error : deleteNotDispatched(error);
       });
       // The sandbox's own deletion is complete. Collection is shared scope work with
       // durable tombstones; it must not hold the caller's request or activity lease.
