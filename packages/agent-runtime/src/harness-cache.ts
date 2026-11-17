@@ -124,7 +124,7 @@ async function verified(root: string, expected: readonly HarnessFile[]): Promise
 }
 /** Start/resume only. Returns paths; never executes, hot-swaps, or fetches unselected harnesses. */
 export async function installSelectedHarness(
-  input: { serverUrl: string; cacheDir: string; harness: string; manifest: unknown },
+  input: { serverUrl: string; cacheDir: string; harness: string; manifest: unknown; sharedDir?: string },
   fetcher: (url: URL, options: RequestInit) => Promise<Response> = fetch,
 ) {
   const harness = selected(input.manifest, input.harness);
@@ -172,7 +172,12 @@ export async function installSelectedHarness(
     root = join(input.cacheDir, `${prefix}${crypto.randomUUID()}`);
   }
   const archive = await installRuntimeArtifact(
-    { serverUrl: input.serverUrl, cacheDir: join(input.cacheDir, "archives"), artifact: harness.archive },
+    {
+      serverUrl: input.serverUrl,
+      cacheDir: join(input.cacheDir, "archives"),
+      artifact: harness.archive,
+      ...(input.sharedDir ? { sharedDir: input.sharedDir } : {}),
+    },
     fetcher,
   );
   const temporary = await mkdtemp(join(input.cacheDir, `.${input.harness}-install-`));

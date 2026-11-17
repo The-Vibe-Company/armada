@@ -1,5 +1,6 @@
 import { lstat, mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { SHARED_ARTIFACT_CACHE_PATH } from "../../core/src/shared-artifact-cache.ts";
 import { installSelectedHarness } from "./harness-cache.ts";
 import { prepareOpenCode } from "./opencode-install.ts";
 
@@ -15,6 +16,8 @@ export async function prepareEnrolledHarness(
     opencodeEnv?: Record<string, string>;
   },
   fetcher: (url: URL, options: RequestInit) => Promise<Response> = fetch,
+  /** Docker hosts mount their verified digest-named cache here; elsewhere it is simply absent. */
+  sharedDir: string = SHARED_ARTIFACT_CACHE_PATH,
 ) {
   const env =
     configuration.selectedHarness === "claude"
@@ -41,6 +44,7 @@ export async function prepareEnrolledHarness(
       candidate: join(configuration.root, "artifacts", "opencode"),
       serverUrl,
       cacheDir: join(configuration.root, "artifacts", "opencode-cache"),
+      sharedDir,
     });
     return {
       opencodeExecutable: executable,
@@ -55,6 +59,7 @@ export async function prepareEnrolledHarness(
     {
       serverUrl,
       cacheDir: join(configuration.root, "artifacts", "harnesses"),
+      sharedDir,
       harness: configuration.selectedHarness as string,
       manifest: configuration.artifactManifest,
     },
