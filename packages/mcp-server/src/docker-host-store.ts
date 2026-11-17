@@ -514,6 +514,35 @@ export function createDockerHostStore(sql: Sql, key: string) {
         );
       });
     },
+    resumeClaimsForHost(hostToken: string, installationId: string) {
+      return transaction(async (tx) => {
+        const host = await reconcileHost(tx, hostToken, installationId);
+        const result = await tx.query<{ request_id: string; sandbox_id: string; generation: string }>(
+          `select c.request_id,c.sandbox_id,c.generation from public.docker_resume_claims c
+           join public.sandboxes s on s.id=c.sandbox_id
+           where c.host_id=$1 and c.installation_id=$2 and c.accepted is null
+             and s.docker_generation=c.generation`,
+          [host.id, installationId],
+        );
+        return result.rows.map((row) => ({
+          requestId: row.request_id,
+          sandboxId: row.sandbox_id,
+          generation: row.generation,
+        }));
+      });
+    },
+    claimResume(hostToken: string, installationId: string, requestId: string, accepted: boolean) {
+      return transaction(async (tx) => {
+        id(requestId);
+        const host = await reconcileHost(tx, hostToken, installationId);
+        const result = await tx.query(
+          `update public.docker_resume_claims set accepted=$4 where request_id=$3 and host_id=$1 and installation_id=$2
+           and (accepted is null or accepted=$4) returning request_id`,
+          [host.id, installationId, requestId, accepted],
+        );
+        if (!result.rows.length) deny();
+      });
+    },
     /** Every generation with a queued resume/bootstrap, so the daemon fences all of them, not only the head job. */
     pendingStartsForHost(hostToken: string, installationId: string) {
       return transaction(async (tx) => {

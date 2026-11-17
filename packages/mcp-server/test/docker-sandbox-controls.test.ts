@@ -768,6 +768,8 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
     now: () => now,
     async wait(ms: number) {
       now += ms;
+      for (const claim of await hosts.resumeClaimsForHost(f.hostToken, f.installationId))
+        await hosts.claimResume(f.hostToken, f.installationId, claim.requestId, true);
       const job = await hosts.poll(f.hostToken, f.installationId, "2.28.0");
       if (job) {
         if (job.operation !== "resume") throw Error("expected resume");
@@ -775,6 +777,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
         await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
         session = await authority.enrol(job.bootstrap.enrolmentToken);
       }
+      if (!job && resumes === 0) return;
       const next = await commands.next(session.runtimeToken, session.epoch);
       if (!next.command) return;
       const command = next.command;
@@ -968,7 +971,7 @@ test("Docker status preserves safe native prompt diagnoses instead of replacing 
   });
 });
 
-test("a resume past the host's retention deadline is a non-retryable conflict, not a provider outage", async () => {
+test("a resume refused by host cleanup is a non-retryable conflict, not a provider outage", async () => {
   const db = database();
   const f = await fixture();
   await ready(f);
@@ -976,7 +979,10 @@ test("a resume past the host's retention deadline is a non-retryable conflict, n
   const requestId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, requestId);
   await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
-  // The daemon's own deadline has passed: the workspace disk is gone.
+  const resumeId = randomUUID();
+  await bootstrap.resume(f.actor, f.sandbox.id, resumeId);
+  await hosts.claimResume(f.hostToken, f.installationId, resumeId, false);
+  // Cleanup won the durable host exclusion.
   await db.query("update public.sandboxes set docker_retention_deadline=now()-interval '1 second' where id=$1", [
     f.sandbox.id,
   ]);
@@ -985,12 +991,12 @@ test("a resume past the host's retention deadline is a non-retryable conflict, n
     resume: bootstrap,
   });
   try {
-    await invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller);
+    await invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: resumeId }, controller);
     throw Error("resume unexpectedly allowed");
   } catch (error) {
     expect(error).toBeInstanceOf(ProviderError);
     expect(error).toMatchObject({ provider: "docker", code: "sandbox_retention_ended", retryable: false });
-    expect((error as Error).message).toContain("retention period has ended");
+    expect((error as Error).message).toContain("cleanup has begun");
     // The closed HTTP/MCP category maps to a non-retryable 409, not a provider outage.
     expect(apiFailureCode(error)).toBe("sandbox_retention_ended");
     expect(API_FAILURE_STATUS.sandbox_retention_ended).toBe(409);

@@ -433,19 +433,22 @@ the deadline, even when the server is unreachable. Shared runtime artifact cache
 and user snapshot images are not sandbox files and remain untouched. Set
 `ARMADA_DOCKER_RETENTION_SECONDS` in this host daemon's environment before starting
 it to configure the period (`0` means the next local sweep); this setting persists
-in its private state. Policy changes shift existing deadlines, preserving stopped age. Each tick polls the
-mailbox before the local deletion pass, so a resume already admitted by the server
-cancels that generation's deadline before its stopped container and home volume can
-be removed; cleanup still runs while the server is unreachable. The server serves one
-job per poll, ordered so every stop/delete precedes startup work, so a resume queued
-behind another job is invisible in the single delivered job. The poll therefore also
-reports every generation with a queued resume/bootstrap, and the daemon fences all of
-them, not only the head. The daemon reports each retained generation's own local
-deadline on poll; the server persists it and refuses a fresh resume once that exact
-deadline has passed, because the daemon is then authorized to delete the workspace.
-Admission clears the stored deadline, so a later resume is not fenced by a stale one.
-A refusal after the deadline is a non-retryable `sandbox_retention_ended` (HTTP 409),
-not a provider outage: the disk is gone, so the person launches a new sandbox.
+in its private state. Policy changes shift existing deadlines, preserving stopped age.
+Resume admission uses a durable host claim, rather than server intent or a
+successful mailbox poll alone. A resume request first waits for its generation's
+claim; it does not start the sandbox until the host acknowledges that claim.
+The host serializes claim acceptance with local cleanup authorization and saves
+the winner before acknowledging a claim or physically deleting the workspace.
+An accepted claim survives daemon restarts and protects the generation while its
+resume waits behind other mailbox work. If cleanup won, the host refuses the claim
+and the caller receives non-retryable `sandbox_retention_ended` (HTTP 409), with
+instructions to launch a new sandbox. A request sent before the deadline remains
+pending if its poll fails; it cannot promise preservation until the host accepts.
+Offline retention continues for generations without an accepted claim.
+The daemon reports each retained generation's local deadline for inspection;
+that deadline alone is not proof that a workspace was removed.
+Deploy the claim schema and server before upgrading hosts. Older daemons cannot
+acknowledge claims, so resume requests remain pending until the host is upgraded.
 Cleanup refuses a running allocation. Missing resources are safe to retry. Authenticated physical-cleanup reports reconcile the
 server to `deleted` after reconnection. Deploy the server support before upgrading
 hosts; old servers reject the additive report and the daemon retries it safely.

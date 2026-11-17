@@ -750,6 +750,61 @@ export type Database = {
           },
         ];
       };
+      docker_resume_claims: {
+        Row: {
+          request_id: string;
+          sandbox_id: string;
+          host_id: string;
+          installation_id: string;
+          generation: string;
+          actor_id: string;
+          lifecycle_generation: number;
+          accepted: boolean | null;
+        };
+        Insert: {
+          request_id: string;
+          sandbox_id: string;
+          host_id: string;
+          installation_id: string;
+          generation: string;
+          actor_id: string;
+          lifecycle_generation: number;
+          accepted?: boolean | null;
+        };
+        Update: {
+          request_id?: string;
+          sandbox_id?: string;
+          host_id?: string;
+          installation_id?: string;
+          generation?: string;
+          actor_id?: string;
+          lifecycle_generation?: number;
+          accepted?: boolean | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "docker_resume_claims_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "docker_resume_claims_host_id_fkey";
+            columns: ["host_id"];
+            isOneToOne: false;
+            referencedRelation: "docker_hosts";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "docker_resume_claims_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       docker_snapshots: {
         Row: {
           id: string;
@@ -4503,6 +4558,7 @@ export type DockerHostJobRow = Database["public"]["Tables"]["docker_host_jobs"][
 export type DockerHostRow = Database["public"]["Tables"]["docker_hosts"]["Row"];
 export type DockerLaunchRequestRow = Database["public"]["Tables"]["docker_launch_requests"]["Row"];
 export type DockerQueuedPromptRow = Database["public"]["Tables"]["docker_queued_prompts"]["Row"];
+export type DockerResumeClaimRow = Database["public"]["Tables"]["docker_resume_claims"]["Row"];
 export type DockerSnapshotRow = Database["public"]["Tables"]["docker_snapshots"]["Row"];
 export type GitHubAuthorization = Database["public"]["Tables"]["github_authorizations"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];

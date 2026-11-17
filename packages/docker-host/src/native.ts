@@ -236,6 +236,7 @@ export function httpApi(
       const body = {
         installationId: state.installationId,
         version: VERSION,
+
         ...(options?.skipSnapshots ? { skipSnapshots: true } : {}),
       };
       const retention = {
@@ -260,6 +261,7 @@ export function httpApi(
       try {
         return (await post(state.server, "poll", state.hostToken, {
           ...body,
+          resumeClaimProtocol: 1,
           ...retention,
           ...disk,
           resources: sampledResources,
@@ -268,6 +270,18 @@ export function httpApi(
       } catch (error) {
         // Older servers reject the additive resource field before claiming a job.
         if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
+        try {
+          return (await post(state.server, "poll", state.hostToken, {
+            ...body,
+            ...retention,
+            ...disk,
+            resources: sampledResources,
+            resourcePolicyVersion: 1,
+          })) as Awaited<ReturnType<Api["poll"]>>;
+        } catch (claimCompatibilityError) {
+          if (!(claimCompatibilityError instanceof HostRequestDenied) || claimCompatibilityError.status !== 400)
+            throw claimCompatibilityError;
+        }
         if (diskFreeBytes) {
           try {
             return (await post(state.server, "poll", state.hostToken, {
@@ -304,6 +318,13 @@ export function httpApi(
           return (await post(state.server, "poll", state.hostToken, body)) as Awaited<ReturnType<Api["poll"]>>;
         }
       }
+    },
+    async claim(state, requestId, accepted) {
+      await post(state.server, "results", state.hostToken, {
+        installationId: state.installationId,
+        requestId,
+        claimed: accepted,
+      });
     },
     async cleaned(state, requestId) {
       await post(state.server, "results", state.hostToken, {

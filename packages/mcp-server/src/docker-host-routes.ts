@@ -143,19 +143,22 @@ export function createDockerHostRoutes(
           ? [
               "installationId",
               "requestId",
-              ...("cleaned" in body
-                ? ["cleaned"]
-                : "expired" in body
-                  ? ["expired"]
-                  : "reason" in body
-                    ? ["outcome", "reason"]
-                    : ["outcome"]),
+              ...("claimed" in body
+                ? ["claimed"]
+                : "cleaned" in body
+                  ? ["cleaned"]
+                  : "expired" in body
+                    ? ["expired"]
+                    : "reason" in body
+                      ? ["outcome", "reason"]
+                      : ["outcome"]),
               ...("imageId" in body ? ["imageId"] : []),
             ]
           : path.endsWith("/poll") && "version" in body
             ? [
                 "installationId",
                 "version",
+                ...("resumeClaimProtocol" in body ? ["resumeClaimProtocol"] : []),
                 ...("resources" in body ? ["resources"] : []),
                 ...("resourcePolicyVersion" in body ? ["resourcePolicyVersion"] : []),
                 ...("skipSnapshots" in body ? ["skipSnapshots"] : []),
@@ -225,6 +228,7 @@ export function createDockerHostRoutes(
         return Response.json(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
+            resumeClaims: body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [],
             job: await store.poll(
               token,
               installationId,
@@ -241,6 +245,12 @@ export function createDockerHostRoutes(
           },
           { headers },
         );
+      }
+      if ("claimed" in body) {
+        if (typeof body.claimed !== "boolean") throw new InvalidInput();
+        const requestId = string(body.requestId);
+        await store.claimResume(token, installationId, requestId, body.claimed);
+        return Response.json({ requestId }, { headers });
       }
       if ("cleaned" in body) {
         if (body.cleaned !== true) throw new InvalidInput();

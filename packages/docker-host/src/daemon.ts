@@ -45,7 +45,15 @@ export type State = {
   ][];
   cleanupLimit?: number;
   /** Local durable retention obligations survive receipt compaction and offline polls. */
-  retention?: { request: DockerMachineRequest; requestId: string; deadline: number; deleted?: true }[];
+  retention?: {
+    request: DockerMachineRequest;
+    requestId: string;
+    deadline: number;
+    cleanupAuthorized?: true;
+    deleted?: true;
+  }[];
+  cleanupGenerations?: string[];
+  resumeClaims?: { requestId: string; sandboxId: string; generation: string; accepted: boolean; active: boolean }[];
   retentionSeconds?: number;
   retentionPolicyFromServer?: true;
   retentionScanAfter?: string;
@@ -72,8 +80,10 @@ export interface Api {
     retentionSeconds?: number;
     /** Every generation with a queued resume/bootstrap, not only the job handed out. */
     pendingStarts?: { sandboxId: string; generation: string }[];
+    resumeClaims?: { requestId: string; sandboxId: string; generation: string }[];
   }>;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
+  claim?(state: State, requestId: string, accepted: boolean): Promise<void>;
   cleaned?(state: State, requestId: string): Promise<void>;
 }
 export interface Executor {
@@ -229,7 +239,11 @@ export async function tick(
           state.retention = state.retention.filter((entry) => entry !== scheduled);
           await store.save(state);
         }
-        if (stopped && !scheduled) {
+        if (
+          stopped &&
+          !scheduled &&
+          !state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key)
+        ) {
           state.retention.push({
             request: receipt.request,
             requestId: receipt.requestId,
@@ -253,6 +267,33 @@ export async function tick(
     polled = await api.poll(state, { skipSnapshots });
   } catch (error) {
     pollError = error;
+  }
+  // A claim and cleanup authorization are serialized by this single durable
+  // host ledger. Merely requesting a resume on the server never admits it.
+  for (const intent of polled?.resumeClaims ?? []) {
+    state.resumeClaims ??= [];
+    let claim = state.resumeClaims.find((item) => item.requestId === intent.requestId);
+    if (!claim) {
+      const key = generationKey(intent);
+      const lost =
+        state.cleanupGenerations?.includes(key) ||
+        state.retention.some(
+          (entry) => generationKey(entry.request) === key && (entry.cleanupAuthorized || entry.deleted),
+        ) ||
+        state.receipts.some(
+          (receipt) => generationKey(receipt.request) === key && (receipt.cleaned || receipt.operation === "delete"),
+        ) ||
+        state.retired?.some((receipt) => receipt[2] === key && receipt[4] === "delete");
+      claim = { ...intent, accepted: !lost, active: !lost };
+      state.resumeClaims.push(claim);
+      if (claim.accepted) state.retention = state.retention.filter((entry) => generationKey(entry.request) !== key);
+      await store.save(state); // fsync before acknowledging; crashes cannot resurrect cleanup.
+    }
+    try {
+      await api.claim?.(state, claim.requestId, claim.accepted);
+    } catch (error) {
+      pollError = error;
+    }
   }
   // Resume intent cancels this generation's local cleanup deadline before the
   // deletion pass; a later failed resume is rediscovered as a stopped receipt.
@@ -297,6 +338,11 @@ export async function tick(
   if (due && executor.deleteStopped) {
     try {
       state.retentionDeleteAfter = due.requestId;
+      await store.save(state);
+      due.cleanupAuthorized = true;
+      state.cleanupGenerations ??= [];
+      if (!state.cleanupGenerations.includes(generationKey(due.request)))
+        state.cleanupGenerations.push(generationKey(due.request));
       await store.save(state);
       await executor.deleteStopped(due.request);
       due.deleted = true;
@@ -423,7 +469,21 @@ export async function tick(
           await executor.resume(receipt.request);
         }
         await executor.startRuntime(receipt.request, job.bootstrap);
-      } else await executor[receipt.operation](receipt.request);
+      } else {
+        if (
+          (receipt.operation === "stop" || receipt.operation === "delete") &&
+          state.resumeClaims?.some(
+            (claim) => claim.active && claim.accepted && generationKey(claim) === generationKey(receipt.request),
+          )
+        )
+          throw new Error("Generation claimed for resume");
+        if (receipt.operation === "delete") {
+          state.cleanupGenerations ??= [];
+          state.cleanupGenerations.push(generationKey(receipt.request));
+          await store.save(state);
+        }
+        await executor[receipt.operation](receipt.request);
+      }
       receipt.outcome = "completed";
     } catch (error) {
       receipt.outcome = "failed";
@@ -441,6 +501,7 @@ export async function tick(
     const saved = latest.receipts.find((item) => item.requestId === receipt.requestId);
     if (!saved) throw Error("Missing durable receipt");
     Object.assign(saved, receipt);
+    for (const claim of latest.resumeClaims ?? []) if (claim.requestId === receipt.requestId) claim.active = false;
     if (receipt.operation === "resume" && receipt.outcome === "completed")
       latest.retention = (latest.retention ?? []).filter(
         (entry) => generationKey(entry.request) !== generationKey(receipt.request),
@@ -449,6 +510,7 @@ export async function tick(
     Object.assign(state, latest);
     await store.save(state);
   }
+  if (pollError) throw pollError;
   if (!polled) throw pollError ?? new Error("Host poll unavailable");
   if (!polled.job) {
     await store.save(state);

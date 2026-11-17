@@ -584,10 +584,11 @@ export function createDockerSandboxControls(
         "Update this Docker host daemon to Armada 2.28.0 or later before resuming. Keep its existing registration, then retry. No resume job was sent.",
       );
     const actor = { userId: caller.userId, orgId: row.org_id };
-    await options.resume.resume(actor, row.id, requestId);
+    let requested = await options.resume.resume(actor, row.id, requestId);
     const deadline = clock.now() + (options.timeoutMs ?? 45_000);
     const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
     for (;;) {
+      if (requested.state === "claiming") requested = await options.resume.resume(actor, row.id, requestId);
       // Host ACK is not runtime readiness.
       const state = (
         await sql.query<{ outcome: string | null }>(
