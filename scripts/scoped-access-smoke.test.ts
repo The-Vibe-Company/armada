@@ -53,6 +53,7 @@ function fixture(enabled = true) {
     stopFail: new Set<string>(),
     mutate: (_tools: WireTool[]) => {},
     siblings: [] as string[],
+    siblingLaunchLost: false,
   };
   const receipt = (sandboxId = child) => ({ id: operation, sandboxId, state: "succeeded" });
   const wire = (name: string, input: Obj, result: Obj, suffix = name): WireTool => ({
@@ -211,6 +212,7 @@ function fixture(enabled = true) {
     isNotReady: (error) => error instanceof Error && error.message === "not_ready",
     out: (line) => output.push(JSON.parse(line)),
     siblingSandboxes: async () => new Set(state.siblings),
+    siblingLaunchLost: () => state.siblingLaunchLost,
   };
   const probe = createScopedProbe(item, enabled, io);
   return { probe, state, output, stopped, journaled, requests, wire, receipt };
@@ -507,18 +509,26 @@ describe("ordinary scoped Armada smoke", () => {
   });
 
   test.each([
-    ["sibling", [other], true, []],
-    ["unknown", [], false, [other]],
+    ["sibling", [other], false, true, [], false],
+    ["unknown", [], false, false, [other], false],
+    ["unknown after a lost sibling launch", [], true, false, [other], true],
+    ["lost sibling launch, nothing unattributed", [other], true, true, [], false],
   ])(
     "a sandbox launched by a concurrent smoke lane is not an unattributed child: %s",
-    async (_mode, siblings, pass, unattributed) => {
+    async (_mode, siblings, lost, pass, unattributed, unknownSiblingLaunch) => {
       const f = fixture();
       f.state.after = [parent, child, other];
       f.state.siblings = siblings;
+      f.state.siblingLaunchLost = lost;
       await run(f);
       expect(await f.probe.cleanup(parent, true)).toBe(pass);
       expect(f.stopped).toEqual([child]);
-      expect(f.output.at(-1)).toMatchObject({ pass, unattributedSandboxIds: unattributed, claimedSandboxIds: [child] });
+      expect(f.output.at(-1)).toMatchObject({
+        pass,
+        unattributedSandboxIds: unattributed,
+        unknownSiblingLaunch,
+        claimedSandboxIds: [child],
+      });
     },
   );
 

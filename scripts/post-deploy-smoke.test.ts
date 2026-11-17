@@ -1544,27 +1544,39 @@ test("lifecycle failures reject false receipts and report unknown launches or le
 });
 
 // The merged staging command combines these independently runnable families.
-test("the launch tracker records every launch handle before receipt validation and awaits launches in flight", async () => {
+test("the launch tracker records every launch handle, awaits launches in flight and flags a lost launch", async () => {
   const tracker = createLaunchTracker();
   let finish: (value: unknown) => void = () => {};
-  tracker.track("templates/launch", new Promise((resolve) => (finish = resolve)));
-  tracker.track("sandbox/launch", Promise.reject(new Error("lost"))).catch(() => {});
+  const template = tracker.track("templates/launch", (record) =>
+    new Promise((resolve) => (finish = resolve)).then(() => record({ id: "template-sandbox" })),
+  );
+  // A receipt that fails validation (wrong provider) is still a sibling handle, and not a lost launch.
+  await tracker
+    .track("sandbox/launch", async (record) => {
+      record({ sandbox: { id: "launched", provider: "boat" } });
+      throw new Error("invalid_response");
+    })
+    .catch(() => {});
+  await tracker.track("sandbox/launch-access-v1", async (record) => record({ sandbox: { id: "parent" } }));
   // Only launches gate the snapshot diff; a pending read never does.
-  tracker.track("sandbox/status", new Promise(() => {}));
+  tracker.track("sandbox/status", (record) => {
+    record({ id: "not-a-launch" });
+    return new Promise(() => {});
+  });
   let observed: ReadonlySet<string> | undefined;
   const siblings = tracker.siblings().then((ids) => {
     observed = ids;
   });
   await Bun.sleep(0);
   expect(observed).toBeUndefined();
-  // A receipt that later fails validation (wrong provider) is still a sibling handle.
-  tracker.record("sandbox/launch", { sandbox: { id: "launched", provider: "boat" } });
-  tracker.record("sandbox/launch-access-v1", { sandbox: { id: "parent" } });
-  tracker.record("templates/launch", { id: "template-sandbox" });
-  tracker.record("sandbox/status", { id: "not-a-launch" });
   finish(null);
   await siblings;
+  await template;
   expect([...(observed ?? [])].sort()).toEqual(["launched", "parent", "template-sandbox"]);
+  expect(tracker.lostLaunch()).toBe(false);
+  // A launch that fails before any handle may still have created a sandbox.
+  await tracker.track("templates/launch", () => Promise.reject(new Error("request_failed"))).catch(() => {});
+  expect(tracker.lostLaunch()).toBe(true);
 });
 
 test("independent sandbox lanes run concurrently: the expiry wait overlaps every case's lifecycle, receipts stay attributable", async () => {
@@ -1690,13 +1702,15 @@ test("scoped probes sharing an org and golden never see each other's child; dist
       if (call.path === "sandbox/launch-access-v1" || call.path === "sandbox/launch") {
         const id = crypto.randomUUID();
         const added: string[] = [id];
+        // The concurrent Claude lane's receipt fails validation after its handle arrived.
+        const provider = call.body.harness === "claude" ? "boat" : "modal";
         if (call.path === "sandbox/launch-access-v1") {
           children.set(id, crypto.randomUUID());
           added.push(children.get(id)!);
         }
         inventories.set(golden, [...(inventories.get(golden) ?? []), ...added]);
         // No golden receipt: the launch fails validation and the case goes straight to cleanup.
-        return json({ sandbox: { id, provider: "modal" } });
+        return json({ sandbox: { id, provider } });
       }
       if (call.path === "sandbox/stop") {
         stopped.add(String(call.body.id));
@@ -1710,13 +1724,18 @@ test("scoped probes sharing an org and golden never see each other's child; dist
       if (call.path === "logs/read") return json({ events: [], cursor: null, hasMore: false });
       return undefined;
     });
-    const cases = goldens.map((golden, index) => ({
-      ...selected,
-      org: index ? org.toUpperCase() : org,
-      golden: `smoke-${golden}`,
-      goldenId: golden,
-      modelAccountId: `40000000-0000-4000-8000-00000000000${index}`,
-    }));
+    const cases = [
+      ...goldens.map((golden, index) => ({
+        ...selected,
+        org: index ? org.toUpperCase() : org,
+        golden: `smoke-${golden}`,
+        goldenId: golden,
+        modelAccountId: `40000000-0000-4000-8000-00000000000${index}`,
+      })),
+      // Not a scoped pair, so never queued: its owner launches land in the first inventory
+      // while the scoped windows are open and must be recognised as siblings.
+      { ...selected, harness: "claude", org, golden: `smoke-${goldens[0]}`, goldenId: goldens[0] },
+    ];
     const staging = "https://armada-mcp-staging.up.railway.app";
     await postDeploySmoke(
       { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: JSON.stringify(cases) },

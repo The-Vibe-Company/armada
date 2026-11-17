@@ -517,6 +517,9 @@ Only receipt-claimed IDs corroborated as new owned rows can be stopped with the
 owner API. Preexisting, parent, unverified and unclaimed IDs are never blindly
 stopped. `scoped_cleanup_summary` retains parent/local request key, operation
 UUIDs and leftover/unverified/unattributed IDs/uncertainty without raw tool text.
+When another lane of the same run lost an owner launch outcome (no handle), the
+summary also sets `unknownSiblingLaunch` beside any unattributed ID: the probe
+still fails, but that ID may be the other lane's sandbox rather than a child.
 Unknown mutations are never replayed; reconcile reported handles before rerun.
 If the parent's stop cannot be confirmed, cleanup still attempts safe known
 children but must report an unquiesced producer/future-child uncertainty. A

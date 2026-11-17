@@ -121,30 +121,43 @@ const PROMPT = "Reply with exactly SMOKE_OK and do not use tools.";
  * Sandboxes one smoke run launched through the owner API. Concurrent lanes share a golden,
  * so the scoped probe's snapshot diff must tell these siblings apart from unaccounted
  * sandboxes. A handle is recorded before its receipt is validated, like the cleanup journal.
+ * A launch that fails without a handle may still have created a sandbox: it is counted as
+ * lost, so a probe can say its unattributed IDs may belong to another lane.
  */
 export function createLaunchTracker() {
   const ids = new Set<string>();
   const pending = new Set<Promise<unknown>>();
+  let lost = false;
   return {
-    track<T>(path: string, launch: Promise<T>): Promise<T> {
-      if (!LAUNCH_PATH.test(path)) return launch;
-      pending.add(launch);
-      const settle = () => {
-        pending.delete(launch);
-      };
-      launch.then(settle, settle);
-      return launch;
-    },
-    record(path: string, receipt: unknown) {
-      const value = receipt as { sandbox?: { id?: unknown }; id?: unknown } | null;
-      const id = value?.sandbox?.id ?? value?.id;
-      if (LAUNCH_PATH.test(path) && typeof id === "string" && id) ids.add(id);
+    /** `launch` calls `record` with the parsed response body before validating it. */
+    track<T>(path: string, launch: (record: (receipt: unknown) => void) => Promise<T>): Promise<T> {
+      if (!LAUNCH_PATH.test(path)) return launch(() => {});
+      let handled = false;
+      const promise = launch((receipt) => {
+        const value = receipt as { sandbox?: { id?: unknown }; id?: unknown } | null;
+        const id = value?.sandbox?.id ?? value?.id;
+        if (typeof id === "string" && id) {
+          ids.add(id);
+          handled = true;
+        }
+      });
+      pending.add(promise);
+      promise.then(
+        () => pending.delete(promise),
+        () => {
+          pending.delete(promise);
+          if (!handled) lost = true;
+        },
+      );
+      return promise;
     },
     /** Call after a list read: any sandbox it returned came from a launch already in flight. */
     async siblings(): Promise<ReadonlySet<string>> {
       await Promise.allSettled([...pending]);
       return new Set(ids);
     },
+    /** Whether a settled launch failed without a handle; read after `siblings()`. */
+    lostLaunch: () => lost,
   };
 }
 
@@ -412,7 +425,7 @@ async function runPostDeploySmoke(
   const protectedCanaries = new Set<string>();
   const launches = createLaunchTracker();
   function send<T>(cleaning: boolean, path: string, body?: unknown, key?: string, timeoutMs = 120_000): Promise<T> {
-    return launches.track(path, transport<T>(cleaning, path, body, key, timeoutMs));
+    return launches.track(path, (record) => transport<T>(cleaning, path, body, key, timeoutMs, record));
   }
   /** Each concurrent unit owns its cleanup flag; one unit's cleanup never moves another unit's deadline. */
   function createLane() {
@@ -436,6 +449,7 @@ async function runPostDeploySmoke(
     body: unknown,
     key: string | undefined,
     timeoutMs: number,
+    record: (receipt: unknown) => void,
   ): Promise<T> {
     const remaining = (cleaning ? cleanupDeadline : deadline) - io.now();
     if (remaining <= 0) fail("poll_limit_exceeded");
@@ -470,7 +484,7 @@ async function runPostDeploySmoke(
           provider?: unknown;
         } | null;
         // Keep the handle before validating the receipt, as the cleanup journal does.
-        launches.record(path, result);
+        record(result);
         if (/^sandbox\/launch(?:-access-v1)?$/.test(path) && smokeReceiptProvider(result) !== "modal")
           fail("invalid_response");
         if (
@@ -626,6 +640,7 @@ async function runPostDeploySmoke(
           step,
           withCleanup,
           siblingSandboxes: launches.siblings,
+          siblingLaunchLost: launches.lostLaunch,
           isNotReady: (error) => error instanceof SmokeFailure && error.code === "sandbox_not_ready",
           out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
           stopSandbox: async (id) => {

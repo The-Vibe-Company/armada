@@ -19,6 +19,8 @@ export interface ScopedProbeIo {
   recordSandbox?(id: string, requestKey: string): Promise<void>;
   /** Sandboxes the same smoke run launched itself through the owner API (concurrent units), never children. */
   siblingSandboxes?(): Promise<ReadonlySet<string>>;
+  /** Whether a concurrent unit's owner launch failed without a handle; read after `siblingSandboxes`. */
+  siblingLaunchLost?(): boolean;
   isNotReady(error: unknown): boolean;
   out(line: string): void;
 }
@@ -532,10 +534,12 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         }
         let after: Set<string> | undefined;
         let siblings: ReadonlySet<string> = new Set();
+        let siblingLaunchLost = false;
         try {
           after = await snapshot();
           // Read after the snapshot: every sibling it can contain was launched before it returned.
           siblings = (await io.siblingSandboxes?.()) ?? siblings;
+          siblingLaunchLost = io.siblingLaunchLost?.() ?? false;
         } catch {
           ok = false;
         }
@@ -573,6 +577,8 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             leftoverSandboxIds: leftover,
             unverifiedSandboxIds: unverified,
             unattributedSandboxIds: unattributed,
+            // Still a failure: an unattributed ID may then be another lane's lost launch, not a child.
+            unknownSiblingLaunch: unattributed.length > 0 && siblingLaunchLost,
             parentQuiesced: parent ? parentQuiesced : null,
             unknownParent,
             unknownFutureChildren: unknownParent,
