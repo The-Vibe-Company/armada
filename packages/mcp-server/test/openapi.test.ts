@@ -12,4 +12,8 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
   const launch = paths["/api/v1/sandbox/launch"]!.post.requestBody.content["application/json"].schema.properties;
   expect(launch.ttlSeconds).toBeDefined();
   expect(launch.ttl_seconds).toBeUndefined();
+  expect(paths["/api/v1/logs/read"]!.post.requestBody.content["application/json"].schema.properties.follow).toEqual({
+    type: "boolean",
+    description: "Follow events within the bounded HTTP request.",
+  });
 });

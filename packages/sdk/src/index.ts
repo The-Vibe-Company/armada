@@ -1,7 +1,18 @@
-import { API_FAILURE_HELP, type ApiFailureCode } from "@armada/core";
+import {
+  API_FAILURE_HELP,
+  type ApiFailureCode,
+  type GoldenErrorCode,
+  type LaunchErrorCode,
+  type ProviderErrorCode,
+  type VaultErrorCode,
+} from "@armada/core";
 
 export type FailureCode =
   | ApiFailureCode
+  | LaunchErrorCode
+  | ProviderErrorCode
+  | VaultErrorCode
+  | GoldenErrorCode
   | "invalid"
   | "unauthorized"
   | "forbidden"
@@ -10,7 +21,13 @@ export type FailureCode =
   | "unsupported"
   | "unavailable"
   | "unknown_response"
-  | "transport_error";
+  | "transport_error"
+  | "internal"
+  | "unknown_route"
+  | "sandbox_terminal"
+  | "busy"
+  | "denied"
+  | "upstream";
 export class ArmadaError extends Error {
   override readonly name = "ArmadaError";
   constructor(
@@ -149,15 +166,56 @@ interface ExecResult {
   timedOut: boolean;
   truncated: boolean;
 }
-const commonCodes = new Set([
-  "invalid",
-  "unauthorized",
-  "forbidden",
-  "not_found",
-  "conflict",
-  "unsupported",
-  "unavailable",
-]);
+const commonCodes = {
+  build_failed: true,
+  busy: true,
+  conflict: true,
+  credential_binding_required: true,
+  credential_binding_unsafe: true,
+  credential_binding_unsupported: true,
+  credential_busy: true,
+  credential_refused: true,
+  denied: true,
+  forbidden: true,
+  host_draining: true,
+  host_full: true,
+  init_failed: true,
+  internal: true,
+  invalid: true,
+  invalid_config: true,
+  invalid_request: true,
+  missing_credential: true,
+  no_credentials: true,
+  no_running_turn: true,
+  not_found: true,
+  payment_required: true,
+  prompt_failed: true,
+  provider_not_configured: true,
+  provider_routing_unavailable: true,
+  rate_limited: true,
+  sandbox_not_ready: true,
+  sandbox_retention_ended: true,
+  sandbox_terminal: true,
+  setup_failed: true,
+  snapshot_failed: true,
+  start_failed: true,
+  unauthorized: true,
+  unavailable: true,
+  unknown: true,
+  unknown_route: true,
+  unsupported: true,
+  upstream: true,
+} satisfies Record<
+  | Exclude<LaunchErrorCode | ProviderErrorCode | VaultErrorCode | GoldenErrorCode, ApiFailureCode>
+  | "internal"
+  | "unknown_route"
+  | "sandbox_terminal"
+  | "busy"
+  | "denied"
+  | "upstream",
+  boolean
+> &
+  Partial<Record<ApiFailureCode, boolean>>;
 const retryStatuses = new Set([429, 502, 503, 504]);
 
 /** Service-token client. No provider credentials, filesystem access, or server imports. */
@@ -216,13 +274,12 @@ export class Armada {
     read: async (input: SandboxRef & { path: string }, options?: RequestOptions): Promise<string> => {
       const result = await this.request<ExecResult>(
         "sandbox/exec",
-        { id: input.id, ...(input.org ? { org: input.org } : {}), command: `base64 < ${shellPath(input.path)}` },
+        { id: input.id, ...(input.org ? { org: input.org } : {}), command: `cat < ${shellPath(input.path)}` },
         false,
         options,
       );
       checkExec(result);
-      const bytes = Uint8Array.from(atob(result.stdout.replace(/\s/g, "")), (c) => c.charCodeAt(0));
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      return result.stdout;
     },
     write: async (input: SandboxRef & { path: string; content: string }, options?: RequestOptions): Promise<void> => {
       const bytes = new TextEncoder().encode(input.content);
@@ -286,7 +343,7 @@ export class Armada {
           ? error.code
           : undefined;
       const code: FailureCode =
-        rawCode && (Object.hasOwn(API_FAILURE_HELP, rawCode) || commonCodes.has(rawCode))
+        rawCode && (Object.hasOwn(API_FAILURE_HELP, rawCode) || Object.hasOwn(commonCodes, rawCode))
           ? (rawCode as FailureCode)
           : "unknown_response";
       // Untrusted messages/details may echo secrets; errors retain only the code and status.

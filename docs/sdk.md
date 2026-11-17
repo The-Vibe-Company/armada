@@ -24,7 +24,7 @@ All methods accept a final `{ signal, timeoutMs }` request option. `wait` perfor
 
 Automatic retries default to zero. Set `readRetries` (maximum 3) to replay only read-only status, wait and logs after HTTP 429/502/503/504. The client performs no retries when `Retry-After` is present; the caller owns delayed scheduling and should respect it. Transport failures and mutations are never automatically retried. A request's timeout and abort signal cover all attempts.
 
-`files.read({ id, path })` and `files.write({ id, path, content })` are UTF-8 helpers over the existing authorized `sandbox/exec` API. They require the guest's `base64` command, have the same filesystem authority and credential redaction as exec, and reject failed, timed-out or truncated results. They are intended for small application text files; writes are limited to 32 KiB and overwrite the target directly. A failed write can leave partial content. They are not an archive or binary transfer API, do not create parent directories and never retry.
+`files.read({ id, path })` and `files.write({ id, path, content })` are UTF-8 helpers over the existing authorized `sandbox/exec` API. Writes require the guest's `base64` command; reads use plaintext `cat` so the server can redact known credentials, have the same filesystem authority and credential redaction as exec, and reject failed, timed-out or truncated results. They are intended for small application text files; writes are limited to 32 KiB and overwrite the target directly. A failed write can leave partial content. They are not an archive or binary transfer API, do not create parent directories and never retry.
 
 Verify outbound webhook signatures against the exact raw request body before parsing JSON:
 

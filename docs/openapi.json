@@ -4023,6 +4023,10 @@
                     "type": "string",
                     "minLength": 1
                   },
+                  "follow": {
+                    "type": "boolean",
+                    "description": "Follow events within the bounded HTTP request."
+                  },
                   "org": {
                     "type": "string"
                   }

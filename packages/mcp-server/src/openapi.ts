@@ -40,6 +40,11 @@ export async function generateOpenApi() {
           delete input.properties[from];
         }
       }
+      if (route === "logs/read")
+        input.properties = {
+          ...input.properties,
+          follow: { type: "boolean", description: "Follow events within the bounded HTTP request." },
+        };
       // REST selects org scope before calling shared tools.
       if (route !== "templates/launch") input.properties = { ...input.properties, org: { type: "string" } };
       paths[`/api/v1/${route}`] = {

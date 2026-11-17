@@ -62,6 +62,22 @@ test("retry policy replays only eligible reads and retains typed safe failures",
     }
     expect(count).toBe(operation === "status" ? 3 : 1);
   }
+  for (const code of [
+    "rate_limited",
+    "payment_required",
+    "no_credentials",
+    "credential_binding_required",
+    "init_failed",
+  ]) {
+    const typed = new Armada({
+      token: "service_placeholder",
+      fetch: async () => Response.json({ error: { code } }, { status: 400 }),
+    });
+    await expect(typed.launch({ golden: "worker", harness: "codex" })).rejects.toMatchObject({
+      code,
+      serverCode: code,
+    });
+  }
   let count = 0;
   const client = new Armada({
     token: "service_placeholder",
@@ -84,7 +100,7 @@ test("file helpers quote paths and reject truncated exec receipts", async () => 
       commands.push(JSON.parse(String(init?.body)).command);
       return Response.json({
         id: "sandbox_placeholder",
-        stdout: btoa("hello"),
+        stdout: "hello",
         stderr: "",
         exitCode: 0,
         timedOut: false,
@@ -93,7 +109,7 @@ test("file helpers quote paths and reject truncated exec receipts", async () => 
     }) as import("../src/index.ts").Fetch,
   });
   expect(await client.files.read({ id: "sandbox_placeholder", path: "a'$(touch nope)" })).toBe("hello");
-  expect(commands[0]).toBe(`base64 < 'a'"'"'$(touch nope)'`);
+  expect(commands[0]).toBe(`cat < 'a'"'"'$(touch nope)'`);
   await client.files.write({ id: "sandbox_placeholder", path: "file", content: "hello" });
   expect(commands[1]).toBe("printf '%s' 'aGVsbG8=' | base64 -d > 'file'");
   truncated = true;
