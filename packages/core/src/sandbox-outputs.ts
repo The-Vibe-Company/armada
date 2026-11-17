@@ -86,7 +86,7 @@ export function admitOutputs(files: readonly OutputFile[]): OutputFile[] {
 
 /** Select declared outputs from a retained-disk listing (paths relative to the disk root).
  * Only direct regular-file children of the declared directory, in name order, within bounds.
- * Returns the snapshot paths to fetch. A truncated listing still yields the outputs it lists. */
+ * Returns the snapshot paths to fetch. Only for a complete listing: a truncated one may omit outputs. */
 export function selectRetainedOutputs(
   entries: readonly { path: string; kind: string; size?: number | null }[],
 ): { name: string; path: string; size: number }[] {
@@ -122,30 +122,39 @@ function bounded<T extends { name: string; size: number }>(entries: readonly T[]
 /** Bound on a retained declared-directory archive (whole subtree, including skipped files). */
 export const OUTPUT_ARCHIVE_MAX_BYTES = 16 * 1024 * 1024;
 
-function tarText(block: Uint8Array, start: number, length: number): string {
-  const field = block.subarray(start, start + length);
-  const end = field.indexOf(0);
-  return new TextDecoder("utf-8", { fatal: true }).decode(end === -1 ? field : field.subarray(0, end));
+/** A tar text field; null when not valid UTF-8 (the live collector skips such names too). */
+function tarText(bytes: Uint8Array): string | null {
+  const end = bytes.indexOf(0);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(end === -1 ? bytes : bytes.subarray(0, end));
+  } catch {
+    return null;
+  }
 }
 
 function tarSize(block: Uint8Array): number {
   // Base-256 sizes (> 8 GiB) cannot belong to a bounded archive.
   if ((block[124] ?? 0) & 0x80) throw Error("invalid_archive");
-  const text = tarText(block, 124, 12).trim();
-  if (!/^[0-7]*$/.test(text)) throw Error("invalid_archive");
+  const text = tarText(block.subarray(124, 136))?.trim();
+  if (text === undefined || !/^[0-7]*$/.test(text)) throw Error("invalid_archive");
   return text ? Number.parseInt(text, 8) : 0;
 }
 
+// Header-only entries that describe the next entry or the archive, never a file.
+const TAR_METADATA = new Set(["K", "g", "V"]);
+
 /** Declared outputs from a tar of the declared directory's subtree (a retained-disk folder read).
  * Complete coverage of the directory: only direct regular-file children, in name order, within the
- * same bounds as `selectRetainedOutputs`. Subdirectories, links and special entries are skipped.
- * Entry paths may be relative to the directory or to the disk root; the deepest candidate root
- * that contains every entry is used. Throws on a malformed archive. */
+ * same bounds as `selectRetainedOutputs`. Subdirectories, links, special entries and names that are
+ * not UTF-8 are skipped. The archive must identify its root by the directory's own entry, either
+ * relative to the directory (`./`) or to the disk root (`workspace/outputs/`). Any other layout,
+ * or an entry outside that root, throws: a guessed root could publish a subdirectory's files or
+ * read as an empty directory and delete the previous snapshot. */
 export function parseOutputArchive(archive: Uint8Array): OutputFile[] {
-  const entries: { path: string; regular: boolean; bytes: Uint8Array }[] = [];
+  const entries: { path: string | null; regular: boolean; bytes: Uint8Array }[] = [];
   let offset = 0;
-  let longName: string | null = null;
-  let paxPath: string | null = null;
+  let longName: string | null | undefined;
+  let paxPath: string | null | undefined;
   for (;;) {
     if (offset + 512 > archive.length) throw Error("invalid_archive");
     const header = archive.subarray(offset, offset + 512);
@@ -157,35 +166,57 @@ export function parseOutputArchive(archive: Uint8Array): OutputFile[] {
     offset = dataStart + Math.ceil(size / 512) * 512;
     const type = String.fromCharCode(header[156] ?? 0);
     if (type === "L") {
-      longName = new TextDecoder("utf-8", { fatal: true }).decode(data).replace(/\0+$/, "");
+      longName = tarText(data);
       continue;
     }
     if (type === "x") {
-      for (const record of new TextDecoder("utf-8", { fatal: true }).decode(data).split("\n")) {
-        const match = /^\d+ path=(.*)$/s.exec(record);
-        if (match) paxPath = match[1] ?? null;
-      }
+      // Only the path record matters; other records (xattrs) may be binary.
+      const text = Buffer.from(data).toString("latin1");
+      for (const match of text.matchAll(/(?:^|\n)\d+ path=([^\n]*)/g))
+        paxPath = tarText(new Uint8Array(Buffer.from(match[1] ?? "", "latin1")));
       continue;
     }
-    if (type === "g") continue;
-    const prefix = tarText(header, 257, 6).startsWith("ustar") ? tarText(header, 345, 155) : "";
-    const name = tarText(header, 0, 100);
-    const path = paxPath ?? longName ?? (prefix ? `${prefix}/${name}` : name);
-    longName = null;
-    paxPath = null;
+    if (TAR_METADATA.has(type)) continue;
+    const magic = tarText(header.subarray(257, 263));
+    const prefix = magic?.startsWith("ustar") ? tarText(header.subarray(345, 500)) : "";
+    const name = tarText(header.subarray(0, 100));
+    const path =
+      paxPath !== undefined
+        ? paxPath
+        : longName !== undefined
+          ? longName
+          : prefix === null || name === null
+            ? null
+            : prefix
+              ? `${prefix}/${name}`
+              : name;
+    longName = undefined;
+    paxPath = undefined;
+    const normalized = path === null ? null : path.replace(/^(?:\.\/|\/)+/, "").replace(/\/+$/, "");
     entries.push({
-      path: path.replace(/^(?:\.?\/)+/, "").replace(/\/+$/, ""),
+      path: normalized === "." ? "" : normalized,
       regular: type === "0" || type === "\0",
       bytes: data,
     });
   }
-  const root =
-    [`${OUTPUT_DIRECTORY.slice(1)}/`, `${OUTPUT_DIRECTORY.slice(OUTPUT_DIRECTORY.lastIndexOf("/") + 1)}/`].find(
-      (candidate) => entries.every((entry) => `${entry.path}/`.startsWith(candidate)),
-    ) ?? "";
+  const declared = OUTPUT_DIRECTORY.slice(1);
+  let root: string;
+  if (entries.length === 0 || entries.some((entry) => entry.path === "")) root = "";
+  else if (
+    entries.some((entry) => entry.path === declared && !entry.regular) &&
+    entries.every(
+      (entry) =>
+        entry.path === null ||
+        entry.path === declared ||
+        entry.path.startsWith(`${declared}/`) ||
+        declared.startsWith(`${entry.path}/`),
+    )
+  )
+    root = `${declared}/`;
+  else throw Error("invalid_archive");
   const selected: { name: string; path: string; size: number; bytes: Uint8Array }[] = [];
   for (const entry of entries) {
-    if (!entry.regular || !entry.path.startsWith(root)) continue;
+    if (!entry.regular || entry.path === null || !entry.path.startsWith(root)) continue;
     const name = entry.path.slice(root.length);
     if (!validName(name) || entry.bytes.length > OUTPUT_MAX_BYTES) continue;
     selected.push({ name, path: entry.path, size: entry.bytes.length, bytes: entry.bytes });

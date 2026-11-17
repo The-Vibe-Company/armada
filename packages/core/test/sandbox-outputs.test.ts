@@ -87,11 +87,33 @@ test("a declared-directory archive yields its bounded direct regular files whate
   ]);
   // Count and byte bounds apply in name order; an empty directory is an empty, complete read.
   const many = Array.from({ length: 40 }, (_, i) => tarEntry(`f${String(i).padStart(2, "0")}`, "x"));
-  expect(read(tarArchive(...many))).toHaveLength(32);
-  expect(read(tarArchive(tarEntry("b", "b".repeat(20000)), tarEntry("a", "a".repeat(20000))))).toEqual([
-    ["a", "a".repeat(20000)],
-  ]);
+  expect(read(tarArchive(tarEntry("./", "", "5"), ...many))).toHaveLength(32);
+  expect(
+    read(tarArchive(tarEntry(".", "", "5"), tarEntry("b", "b".repeat(20000)), tarEntry("a", "a".repeat(20000)))),
+  ).toEqual([["a", "a".repeat(20000)]]);
   expect(read(tarArchive())).toEqual([]);
+  // Metadata entries are skipped; a name that is not UTF-8 skips that entry only.
+  const latin = tarEntry("./", "", "5");
+  const bad = tarEntry("./x", "bad");
+  bad.set([0xff, 0xfe], 2);
+  expect(read(tarArchive(latin, tarEntry("././@LongLink", "target", "K"), bad, tarEntry("./ok.txt", "ok")))).toEqual([
+    ["ok.txt", "ok"],
+  ]);
+  // A layout without the directory's own root entry is ambiguous: refused, never guessed (it could
+  // publish a subdirectory's files, or read as empty and delete the previous snapshot).
+  expect(() =>
+    parseOutputArchive(tarArchive(tarEntry("outputs/", "", "5"), tarEntry("outputs/nested.txt", "n"))),
+  ).toThrow();
+  expect(() => parseOutputArchive(tarArchive(tarEntry("workspace/outputs/deep.txt", "d")))).toThrow();
+  expect(() =>
+    parseOutputArchive(
+      tarArchive(
+        tarEntry("workspace/outputs/", "", "5"),
+        tarEntry("workspace/outputs/a", "a"),
+        tarEntry("etc/passwd", "x"),
+      ),
+    ),
+  ).toThrow();
   // Truncated or malformed archives are refused, never read as a smaller directory.
   expect(() => parseOutputArchive(tarEntry("memo.txt", "memo").subarray(0, 512))).toThrow();
   expect(() => parseOutputArchive(new Uint8Array(100))).toThrow();
