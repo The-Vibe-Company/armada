@@ -119,7 +119,9 @@ The encrypted durable mailbox redelivers original request IDs; it does not
 promise exactly-once execution. IDs are unique per logical sandbox across epochs.
 Retry only identical serialized input in the same epoch. Changed input or
 cross-epoch reuse conflicts. Runner's local receipt/fence protects native side
-effects, but a crash can still yield `request_outcome_unknown`.
+effects, but a crash can still yield `request_outcome_unknown`. A request refused
+before any side effect (validation, admission, a closed turn) is stored as a
+definite `409` and replays that same refusal for the identical ID.
 
 Trusted `call` waits at most 120 seconds for command admission/result, **not**
 turn completion. Abort/deadline ends the wait, not durable work;
