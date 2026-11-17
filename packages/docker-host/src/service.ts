@@ -103,6 +103,8 @@ type ManagedInstallation = {
 };
 const digestPattern = /^[a-f0-9]{64}$/;
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+/** Daemon-owned, re-creatable public artifact caches (runtime binary; #2562 shared and private archives). */
+const CACHE_DIRECTORIES = ["runtime-cache", "artifact-cache", "artifact-cache-private"];
 
 async function safeAncestors(path: string, home: string) {
   for (let directory = dirname(path); ; directory = dirname(directory)) {
@@ -164,7 +166,7 @@ export async function validateInstallation(
     throw new Error("Installation files changed; inspect them before uninstalling or upgrading.");
   for (const entry of await readdir(directory)) {
     if (
-      !["state.json", "daemon.lock", "managed.json", "runtime-cache"].includes(entry) &&
+      !["state.json", "daemon.lock", "managed.json", ...CACHE_DIRECTORIES].includes(entry) &&
       !/^daemon-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.lock$/.test(entry)
     )
       throw new Error("Unknown files in installation directory; preserve and inspect before uninstalling.");
@@ -172,7 +174,7 @@ export async function validateInstallation(
     if (
       entryStat.isSymbolicLink() ||
       entryStat.uid !== process.getuid?.() ||
-      (entry !== "runtime-cache" &&
+      (!CACHE_DIRECTORIES.includes(entry) &&
         (!entryStat.isFile() || entryStat.nlink !== 1 || (entryStat.mode & 0o777) !== 0o600))
     )
       throw new Error("Unsafe installation file.");
@@ -284,7 +286,7 @@ export async function removeInstallation(instance?: string) {
   try {
     await unlink(p.unit);
     await command(["systemctl", "--user", "daemon-reload"]);
-    await rm(join(directory, "runtime-cache"), { recursive: true, force: true });
+    for (const cache of CACHE_DIRECTORIES) await rm(join(directory, cache), { recursive: true, force: true });
     for (const entry of await readdir(directory)) {
       if (/^daemon-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.lock$/.test(entry)) {
         const file = join(directory, entry);

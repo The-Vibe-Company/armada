@@ -57,6 +57,12 @@ test("managed service persists registration and refuses cleanup of unknown files
     expect(refused.stderr.toString()).toContain("Unknown files");
     expect(await readFile(join(directory, "unrelated.txt"), "utf8")).toBe("keep");
     await rm(join(directory, "unrelated.txt"));
+    // Daemon-owned artifact caches (#2562) are neither unknown files nor left behind.
+    for (const cache of ["runtime-cache", "artifact-cache", "artifact-cache-private"]) {
+      await mkdir(join(directory, cache), { mode: cache === "artifact-cache" ? 0o755 : 0o700 });
+      await writeFile(join(directory, cache, "a".repeat(64)), "public bytes", { mode: 0o444 });
+    }
+    expect(run("await uninstallPreflight(state)").stderr.toString()).not.toContain("Unknown files");
     await writeFile(join(directory, "state.json"), JSON.stringify(state), { mode: 0o600 });
     await writeFile(join(bin, "systemctl"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
     const failedRemoval = run("await removeInstallation()");
