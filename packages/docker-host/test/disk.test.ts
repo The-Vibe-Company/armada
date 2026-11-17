@@ -34,16 +34,16 @@ test("fresh disk proof gates allocating work at the floor but never gates cleanu
   for (const unavailable of [free, null, -1, NaN]) {
     free = unavailable;
     await expect(executor.create(request)).rejects.toBeInstanceOf(DockerDiskFloorError);
-    await executor.resume!(request);
+    await expect(executor.resume!(request)).rejects.toBeInstanceOf(DockerDiskFloorError);
   }
-  expect(effects).toEqual(["resume", "resume", "resume", "resume"]);
-  expect(samples).toBe(4);
+  expect(effects).toEqual([]);
+  expect(samples).toBe(8);
   await executor.stop(request);
   await executor.delete(request);
   await executor.stopIfExpired(request);
   free = DOCKER_DISK_FLOOR_BYTES;
   await executor.create(request);
-  expect(effects).toEqual(["resume", "resume", "resume", "resume", "stop", "delete", "expire", "create"]);
+  expect(effects).toEqual(["stop", "delete", "expire", "create"]);
 });
 
 test("stopped usage counts owned writable layers and each attached volume once, including pre-start containers", async () => {

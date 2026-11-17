@@ -1,4 +1,4 @@
-import type { Sandbox } from "@armada/core";
+import { dockerWorkspaceReclaimedMessage, type Sandbox } from "@armada/core";
 import Link from "next/link";
 import {
   AddSandboxTime,
@@ -40,7 +40,11 @@ export async function SandboxAttention({
   let title: string | null = null;
   let detail: string | null = null;
   let action: React.ReactNode = null;
-  if (sandbox.status === "failed") {
+  const reclaimed = sandbox.status === "deleted" ? dockerWorkspaceReclaimedMessage(sandbox.status_reason) : null;
+  if (reclaimed) {
+    title = "Workspace reclaimed";
+    detail = reclaimed;
+  } else if (sandbox.status === "failed") {
     title = view.state.failure?.title ?? "This sandbox failed.";
     detail =
       sandbox.status_reason?.includes("before launching again") ||

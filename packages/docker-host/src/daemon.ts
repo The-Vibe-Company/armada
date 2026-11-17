@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DockerJobFailureReason } from "../../core/src/docker-api.ts";
-import { DockerDiskFloorError } from "../../core/src/docker-disk-policy.ts";
+import { DOCKER_DISK_FLOOR_BYTES, DockerDiskFloorError } from "../../core/src/docker-disk-policy.ts";
 import {
   type BootstrapDescriptor,
   canonicalDockerHostJob,
@@ -49,8 +49,10 @@ export type State = {
     request: DockerMachineRequest;
     requestId: string;
     deadline: number;
+    observedStoppedAt?: number;
     cleanupAuthorized?: true;
     deleted?: true;
+    cleanupReason?: "retention_elapsed" | "disk_pressure";
   }[];
   cleanupGenerations?: string[];
   resumeClaims?: { requestId: string; sandboxId: string; generation: string; accepted: boolean; active: boolean }[];
@@ -84,9 +86,11 @@ export interface Api {
   }>;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
   claim?(state: State, requestId: string, accepted: boolean): Promise<void>;
-  cleaned?(state: State, requestId: string): Promise<void>;
+  cleaned?(state: State, requestId: string, reason?: "retention_elapsed" | "disk_pressure"): Promise<void>;
 }
 export interface Executor {
+  diskFreeBytes?(): Promise<number | null>;
+  cleanupImages?(): Promise<void>;
   configureLimits?(limits: DockerSandboxLimits | undefined): void;
   buildSnapshot?(job: Extract<Job, { operation: "buildSnapshot" }>, recoverOnly?: boolean): Promise<string>;
   startRuntime?(request: DockerMachineRequest, bootstrap: BootstrapDescriptor): Promise<unknown>;
@@ -98,6 +102,7 @@ export interface Executor {
   deleteStopped?(request: DockerMachineRequest): Promise<void>;
   isRunning?(request: DockerMachineRequest): Promise<boolean>;
   isAbsent?(request: DockerMachineRequest): Promise<boolean>;
+  stoppedAt?(request: DockerMachineRequest): Promise<number | null>;
   isStopped?(request: DockerMachineRequest): Promise<boolean>;
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -215,6 +220,17 @@ export async function tick(
   state.retention ??= [];
   const retentionSeconds = state.retentionSeconds ?? 86400;
   if (!Number.isSafeInteger(retentionSeconds) || retentionSeconds < 0) throw Error("Invalid retention policy");
+  const deadline = (request: DockerMachineRequest, stoppedAt: number) => {
+    const retainedUntil = stoppedAt + (state.retentionSeconds ?? 86400) * 1000;
+    return state.retentionPolicyFromServer || request.expiresAt === undefined
+      ? retainedUntil
+      : Math.min(retainedUntil, request.expiresAt);
+  };
+  // Preserve stopped age before capping deadlines, including ledgers from older daemons.
+  for (const entry of state.retention) {
+    entry.observedStoppedAt ??= entry.deadline - retentionSeconds * 1000;
+    if (!entry.deleted) entry.deadline = deadline(entry.request, entry.observedStoppedAt);
+  }
   // Claims cannot outlive the allocation's immutable physical expiry. A
   // server cannot admit a resume beyond this same frozen expiry, so releasing
   // the hold here is safe even while offline. Retain its historical ACK.
@@ -263,7 +279,8 @@ export async function tick(
           state.retention.push({
             request: receipt.request,
             requestId: receipt.requestId,
-            deadline: now() + retentionSeconds * 1000,
+            deadline: deadline(receipt.request, now()),
+            observedStoppedAt: now(),
             ...(absent ? { deleted: true as const } : {}),
           });
           await store.save(state);
@@ -342,13 +359,91 @@ export async function tick(
     if (polled.retentionSeconds !== undefined) {
       const seconds = polled.retentionSeconds;
       if (!Number.isSafeInteger(seconds) || seconds < 0) throw Error("Invalid retention policy");
-      const previous = state.retentionSeconds ?? 86400;
-      for (const entry of state.retention ?? []) if (!entry.deleted) entry.deadline += (seconds - previous) * 1000;
       state.retentionSeconds = seconds;
       state.retentionPolicyFromServer = true;
+      for (const entry of state.retention)
+        if (!entry.deleted) entry.deadline = deadline(entry.request, entry.observedStoppedAt!);
       await store.save(state);
     }
     state.lastPollAt = new Date().toISOString();
+  }
+  // Pressure cleanup shares the same durable authorization as retention. Discovery
+  // stays restricted to known completed operations; physical ownership is checked
+  // by isStopped and again by deleteStopped. Claims survive disconnected polls.
+  const pressure = async () => {
+    const bytes = await executor.diskFreeBytes?.();
+    return typeof bytes === "number" && Number.isSafeInteger(bytes) && bytes >= 0 && bytes < DOCKER_DISK_FLOOR_BYTES;
+  };
+  if (await pressure()) {
+    const latest = new Map<string, Receipt>();
+    for (const receipt of state.receipts) latest.set(generationKey(receipt.request), receipt);
+    for (const [key, receipt] of latest) {
+      if (
+        !receipt.outcome ||
+        receipt.cleaned ||
+        receipt.operation === "delete" ||
+        receipt.operation === "buildSnapshot" ||
+        claimed.has(key) ||
+        state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key) ||
+        state.retention.some((entry) => generationKey(entry.request) === key)
+      )
+        continue;
+      try {
+        if (await executor.isStopped?.(receipt.request)) {
+          state.retention.push({
+            request: receipt.request,
+            requestId: receipt.requestId,
+            deadline: deadline(receipt.request, now()),
+            observedStoppedAt: now(),
+          });
+        }
+      } catch {
+        /* An uncertain inspection never authorizes deletion. */
+      }
+    }
+    await store.save(state);
+    const stoppedTimes = new Map<string, number>();
+    for (const entry of state.retention) {
+      try {
+        const stoppedAt = await executor.stoppedAt?.(entry.request);
+        if (stoppedAt !== null && stoppedAt !== undefined) stoppedTimes.set(entry.requestId, stoppedAt);
+      } catch {
+        /* Ownership is checked again before deletion. */
+      }
+    }
+    const age = (entry: NonNullable<State["retention"]>[number]) =>
+      stoppedTimes.get(entry.requestId) ?? entry.observedStoppedAt ?? entry.deadline - retentionSeconds * 1000;
+    for (const entry of [...state.retention].sort((a, b) => age(a) - age(b))) {
+      if (!(await pressure())) break;
+      const key = generationKey(entry.request);
+      if (
+        entry.deleted ||
+        claimed.has(key) ||
+        state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key)
+      )
+        continue;
+      if (!executor.deleteStopped) break;
+      try {
+        if (!(await executor.isStopped?.(entry.request))) continue;
+        entry.cleanupReason ??= "disk_pressure";
+        entry.cleanupAuthorized = true;
+        state.cleanupGenerations ??= [];
+        if (!state.cleanupGenerations.includes(key)) state.cleanupGenerations.push(key);
+        await store.save(state); // Fence resume durably before physical deletion.
+        await executor.deleteStopped(entry.request);
+        entry.deleted = true;
+        await store.save(state);
+      } catch {
+        /* Preserve the authorization and reason for safe retry. */
+      }
+    }
+    if (await pressure()) {
+      try {
+        await executor.cleanupImages?.();
+      } catch {
+        /* Best-effort image cleanup must not block TTL or deletion reports. */
+      }
+    }
   }
   // One physical cleanup per tick, rotated durably even when Docker refuses it.
   // Reporting is deliberately deferred until after all local physical TTL work.
@@ -360,6 +455,7 @@ export async function tick(
     try {
       state.retentionDeleteAfter = due.requestId;
       await store.save(state);
+      due.cleanupReason ??= "retention_elapsed";
       due.cleanupAuthorized = true;
       state.cleanupGenerations ??= [];
       if (!state.cleanupGenerations.includes(generationKey(due.request)))
@@ -433,7 +529,7 @@ export async function tick(
     try {
       state.retentionReportAfter = cleaned.requestId;
       await store.save(state);
-      await api.cleaned(state, cleaned.requestId);
+      await api.cleaned(state, cleaned.requestId, cleaned.cleanupReason);
       for (const receipt of state.receipts) {
         if (generationKey(receipt.request) === generationKey(cleaned.request)) receipt.cleaned = true;
       }
