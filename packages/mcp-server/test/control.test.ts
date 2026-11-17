@@ -1175,29 +1175,30 @@ describe("control API", () => {
       };
       const first = await call("sandbox/launch", request);
       expect(first?.status).toBe(200);
-      const launched = (await first!.json()).sandbox;
+      const launched = ((await first!.json()) as { sandbox: { id: string; externalRef?: string } }).sandbox;
       expect(launched.externalRef).toBe("tender:1");
       const replay = await call("sandbox/launch", request);
       expect(replay?.status).toBe(200);
-      expect((await replay!.json()).sandbox.id).toBe(launched.id);
+      expect(((await replay!.json()) as { sandbox: { id: string } }).sandbox.id).toBe(launched.id);
       expect(boat.forks).toHaveLength(1);
       const changed = await call("sandbox/launch", { ...request, externalRef: "tender:2" });
       expect(changed?.status).toBe(409);
       expect(boat.forks).toHaveLength(1);
       const status = await call("sandbox/status", { id: launched.id, recorded: true });
       expect(await status!.json()).toMatchObject({ id: launched.id, externalRef: "tender:1" });
-      const listed = await (await call("sandbox/list", { externalRef: "tender:1" }))!.json();
-      expect(listed.sandboxes.map((row: { id: string; externalRef?: string }) => [row.id, row.externalRef])).toEqual([
-        [launched.id, "tender:1"],
-      ]);
-      expect((await (await call("sandbox/list", { externalRef: "tender:2" }))!.json()).total).toBe(0);
+      type Page = { total: number; sandboxes: { id: string; externalRef?: string }[] };
+      const list = async (body: Record<string, unknown>, user = STAN) =>
+        (await (await call("sandbox/list", body, user))!.json()) as Page;
+      const listed = await list({ externalRef: "tender:1" });
+      expect(listed.sandboxes.map((row) => [row.id, row.externalRef])).toEqual([[launched.id, "tender:1"]]);
+      expect((await list({ externalRef: "tender:2" })).total).toBe(0);
       // A metadata-only member sees the row in an unfiltered list but cannot read or probe its reference.
       await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [org, ADA]);
       options.authStore.addMembership(ADA, { orgId: org, name: "Keyed", role: "member" });
-      const member = await (await call("sandbox/list", {}, ADA))!.json();
-      expect(member.sandboxes).toHaveLength(1);
-      expect(member.sandboxes[0].externalRef).toBeUndefined();
-      expect((await (await call("sandbox/list", { externalRef: "tender:1" }, ADA))!.json()).total).toBe(0);
+      expect((await list({}, ADA)).sandboxes.map((row) => [row.id, row.externalRef])).toEqual([
+        [launched.id, undefined],
+      ]);
+      expect((await list({ externalRef: "tender:1" }, ADA)).total).toBe(0);
     });
   });
 

@@ -932,6 +932,7 @@ export async function dispatchControlCommand(
           "repo",
           "skills",
           "skipSkillDefaults",
+          "externalRef",
         ];
         if (
           Object.keys(body).some(
