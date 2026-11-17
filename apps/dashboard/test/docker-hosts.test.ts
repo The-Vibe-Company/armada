@@ -151,10 +151,13 @@ test("the dialog's host is connected, with its name, once listed online or offli
   expect(connectedHostName(list("online"), OTHER)).toBeNull();
 });
 
-test("revoking warns that a revoked host can no longer clean up its sandboxes", () => {
+test("revoking says queued launches stop holding capacity and admins can still request cleanup", () => {
   expect(revokeWarning(0)).toContain("run the uninstall command there first");
-  expect(revokeWarning(1)).toContain("Stop its 1 sandbox first");
-  expect(revokeWarning(3)).toContain("Stop its 3 sandboxes first");
+  expect(revokeWarning(0)).toContain("stop holding a capacity slot");
+  expect(revokeWarning(1)).toContain("Its 1 sandbox stays on the machine");
+  expect(revokeWarning(3)).toContain("Its 3 sandboxes stay on the machine");
+  expect(revokeWarning(3)).toContain("request stop or delete");
+  expect(revokeWarning(3)).not.toContain("can no longer stop or delete");
 });
 
 test("only an unmounted host route (404 or 405 without a code) reads as Docker not enabled", () => {

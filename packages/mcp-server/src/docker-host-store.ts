@@ -46,6 +46,7 @@ type StoredJob = Bound & {
   input_enc: Uint8Array<ArrayBuffer>;
   outcome: string | null;
   result_image_id?: string | null;
+  cancelled_at?: string | null;
 };
 type Sandbox = {
   id: string;
@@ -360,6 +361,36 @@ export function createDockerHostStore(sql: Sql, key: string) {
             ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
             : DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
       ],
+    );
+  }
+  /** Retire queued work the server can no longer dispatch. This is cancellation,
+   * never physical evidence: a bound startup becomes failed without stopped_at,
+   * and stop/delete jobs stay dispatchable through reconcileHost. The caller
+   * holds the host lock, so no concurrent enqueue or ACK can interleave. */
+  async function retireUndispatchable(tx: Sql, hostId: string, reason: { sandbox: string; snapshot: string }) {
+    await tx.query(
+      `update public.docker_snapshots set status='failed',image_id=null,failure_reason=$2
+       where host_id=$1 and status='building'`,
+      [hostId, reason.snapshot],
+    );
+    const startups = await tx.query<{ bound_sandbox_id: string }>(
+      `select bound_sandbox_id from public.docker_host_jobs
+       where host_id=$1 and outcome is null and bound_sandbox_id is not null
+         and bound_operation in ('create','bootstrap','resume') for update`,
+      [hostId],
+    );
+    for (const job of startups.rows)
+      await tx.query(
+        `update public.sandboxes set status='failed',status_reason=$2,
+         lifecycle_generation=lifecycle_generation+1
+         where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
+        [job.bound_sandbox_id, reason.sandbox],
+      );
+    await tx.query(
+      `update public.docker_host_jobs set outcome='failed',completed_at=now(),cancelled_at=now()
+       where host_id=$1 and outcome is null
+         and (bound_operation is null or bound_operation not in ('stop','delete'))`,
+      [hostId],
     );
   }
   return {
@@ -689,6 +720,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
     revoke(actor: Actor, hostId: string) {
       return transaction(async (tx) => {
         await owned(tx, actor, hostId);
+        // Revocation fences authentication, so queued startup and snapshot work can
+        // never be dispatched. Retire it now instead of leaving sandboxes starting
+        // and capacity reserved forever; physical cleanup remains an admin action.
+        await retireUndispatchable(tx, hostId, {
+          sandbox: DOCKER_LAUNCH_FAILURE_MESSAGES.hostUnavailable,
+          snapshot: DOCKER_SNAPSHOT_FAILURE_MESSAGES.retired,
+        });
         await tx.query(`update public.docker_hosts set revoked_at=now(),registration_hash=null where id=$1`, [hostId]);
       });
     },
@@ -877,14 +915,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
           host.id,
         ]);
         if (!members.rows.length || !active.rows.length) {
-          await tx.query(
-            "update public.docker_snapshots set status='failed',image_id=null,failure_reason=$2 where host_id=$1 and status='building'",
-            [host.id, DOCKER_SNAPSHOT_FAILURE_MESSAGES.retired],
-          );
-          await tx.query(
-            "update public.docker_host_jobs set outcome='failed',completed_at=now() where host_id=$1 and outcome is null and (bound_operation is null or bound_operation not in ('stop','delete'))",
-            [host.id],
-          );
+          await retireUndispatchable(tx, host.id, {
+            sandbox: DOCKER_LAUNCH_FAILURE_MESSAGES.hostUnavailable,
+            snapshot: DOCKER_SNAPSHOT_FAILURE_MESSAGES.retired,
+          });
         }
         const pending = await tx.query(
           `select 1 from public.docker_host_jobs where host_id=$1 and outcome is null limit 1`,
@@ -915,7 +949,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       }
       return false;
     },
-    poll(
+    async poll(
       hostToken: string,
       installationId: string,
       version?: string,
@@ -925,6 +959,33 @@ export function createDockerHostStore(sql: Sql, key: string) {
       diskFreeBytes?: number | null,
       stoppedSandboxBytes?: number | null,
     ): Promise<Job | null> {
+      // A revoked host or a removed owner can never authenticate again. Retire its
+      // undispatchable work in its own committed transaction before the normal
+      // admission path denies, so a queued startup cannot stay starting forever.
+      await transaction(async (tx) => {
+        const hint = (
+          await tx.query<{ id: string; org_id: string; owner_id: string; revoked_at: unknown; member: boolean }>(
+            `select h.id,h.org_id,h.owner_id,h.revoked_at,
+               exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id) as member
+             from public.docker_hosts h where h.hash=$1 and h.installation_id=$2`,
+            [hash(hostToken), installationId],
+          )
+        ).rows[0];
+        if (!hint || (hint.revoked_at === null && hint.member)) return;
+        // Membership -> host is the shared lock order; the host lock fences enqueue/ACK.
+        await tx.query(`select user_id from public.members where org_id=$1 and user_id=$2 for update`, [
+          hint.org_id,
+          hint.owner_id,
+        ]);
+        const host = (
+          await tx.query<Host>(`select id,org_id,owner_id from public.docker_hosts where id=$1 for update`, [hint.id])
+        ).rows[0];
+        if (host)
+          await retireUndispatchable(tx, host.id, {
+            sandbox: DOCKER_LAUNCH_FAILURE_MESSAGES.hostUnavailable,
+            snapshot: DOCKER_SNAPSHOT_FAILURE_MESSAGES.retired,
+          });
+      });
       return transaction(async (tx) => {
         // Cleanup bypasses queued startup/snapshot work; already executing native work remains serial.
         // Stop intent fences every later startup, so an absent-resource ACK cannot admit a queued create.
@@ -1162,9 +1223,21 @@ export function createDockerHostStore(sql: Sql, key: string) {
           [host.id, result.requestId],
         );
         const job = jobs.rows[0] ?? deny();
+        // A cancelled job's server outcome is not a machine fact. The first host
+        // receipt replaces it; after that, terminal facts are immutable.
         if (
           job.outcome !== null &&
+          job.cancelled_at === null &&
           (job.outcome !== result.outcome || (job.result_image_id ?? null) !== (result.imageId ?? null))
+        )
+          deny();
+        // A retired snapshot build is already failed and its build authorization is
+        // gone. A matching failure is a harmless no-op; a completed receipt would
+        // claim a publication that can never happen, so reject it.
+        if (
+          job.snapshot_id &&
+          job.cancelled_at !== null &&
+          (result.outcome !== "failed" || result.imageId !== undefined)
         )
           deny();
         if (result.reason === "snapshot_build_failed" && !job.snapshot_id) deny();
@@ -1263,9 +1336,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
               [job.bound_sandbox_id],
             );
         }
-        if (job.outcome === null) {
+        // The first host receipt is the terminal machine fact. Clearing
+        // cancelled_at in the same write makes later conflicting receipts fail
+        // the immutability check above, and lets capacity follow the normal rule:
+        // a completed create/resume reserves, a failed one stays reserved until a
+        // physical stop/delete/expiry proves the machine is gone.
+        if (job.outcome === null || job.cancelled_at !== null) {
           await tx.query(
-            `update public.docker_host_jobs set outcome=$2,completed_at=now(),result_image_id=$3 where request_id=$1`,
+            `update public.docker_host_jobs set outcome=$2,completed_at=now(),result_image_id=$3,cancelled_at=null where request_id=$1`,
             [result.requestId, result.outcome, result.imageId ?? null],
           );
         }
