@@ -1954,3 +1954,49 @@ test("a job of a sandbox whose operation still runs here waits, even if the serv
   expect(f.state().receipts).toEqual([]);
   expect(f.executed).toEqual([]);
 });
+
+test("a job that completes during a held poll frees its sandbox's next job at once", async () => {
+  const f = fixture();
+  const stop: Job = { ...structuredClone(f.job), requestId: crypto.randomUUID(), operation: "stop" };
+  const acknowledged: string[] = [];
+  const executed: string[] = [];
+  const created = Promise.withResolvers<void>();
+  const createAcknowledged = Promise.withResolvers<void>();
+  const api: Api = {
+    ...f.api,
+    async poll(_state, options) {
+      if (!acknowledged.includes(f.job.requestId) && !options?.running?.includes(f.job.requestId))
+        return { job: structuredClone(f.job), held: true };
+      // The server holds the poll while create runs, and hands out the stop once create's outcome is recorded.
+      created.resolve();
+      await createAcknowledged.promise;
+      return acknowledged.includes(stop.requestId)
+        ? { job: null, held: true }
+        : { job: structuredClone(stop), held: true };
+    },
+    async result(state, receipt, ...rest) {
+      await f.api.result(state, receipt, ...rest);
+      acknowledged.push(receipt.requestId);
+      if (receipt.requestId === f.job.requestId) createAcknowledged.resolve();
+    },
+  };
+  const executor: Executor = {
+    ...f.executor,
+    async create() {
+      await created.promise;
+      executed.push("create");
+    },
+    async stop() {
+      executed.push("stop");
+    },
+  };
+  const sleeps: number[] = [];
+  await runJobs(f.store, api, executor, {
+    stopping: () => acknowledged.includes(stop.requestId),
+    async sleep(ms) {
+      sleeps.push(ms);
+    },
+  });
+  expect(executed).toEqual(["create", "stop"]);
+  expect(sleeps).toEqual([]);
+});

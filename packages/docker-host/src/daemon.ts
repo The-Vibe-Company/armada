@@ -225,10 +225,16 @@ export type TickOutcome = "worked" | "held" | "busy" | "idle";
 export type TickOptions = {
   /** Ask the server to hold the poll open until work exists, at most this long. */
   waitSeconds?: number;
-  /** Request IDs whose machine operation is still executing in this process. */
+  /**
+   * Request IDs whose machine operation is still executing in this process. This
+   * and the two sets below may be live: admission after a held poll reads them
+   * again, so work that completed during the hold no longer blocks anything.
+   */
   running?: ReadonlySet<string>;
   /** Sandboxes whose machine operation is still executing in this process. */
   sandboxes?: ReadonlySet<string>;
+  /** Snapshot builds still executing in this process; when given, it replaces `skipSnapshots` after the poll. */
+  snapshots?: ReadonlySet<string>;
   /**
    * Receives an admitted machine operation instead of awaiting it, so the next
    * tick can take another sandbox's job. The durable receipt is already saved;
@@ -316,8 +322,11 @@ export async function runJobs(
     now?: () => number;
   },
 ): Promise<void> {
-  const running = new Map<string, { sandboxId: string; snapshot: boolean; done: Promise<void> }>();
-  const settled = () => Promise.race([...running.values()].map((job) => job.done));
+  const running = new Map<string, Promise<void>>();
+  // Live views of `running`, read again when a held poll returns: a job that
+  // completed during the hold must not block its sandbox's next job (#2561).
+  const live = { running: new Set<string>(), sandboxes: new Set<string>(), snapshots: new Set<string>() };
+  const settled = () => Promise.race(running.values());
   try {
     while (!loop.stopping()) {
       await loop.beforeTick?.();
@@ -327,30 +336,24 @@ export async function runJobs(
       }
       let outcome: TickOutcome;
       try {
-        outcome = await tick(
-          store,
-          api,
-          executor,
-          [...running.values()].some((job) => job.snapshot),
-          loop.now ?? Date.now,
-          {
-            waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
-            running: new Set(running.keys()),
-            sandboxes: new Set([...running.values()].map((job) => job.sandboxId)),
-            dispatch(job, work) {
-              const done = work
-                .catch(() => loop.failed?.("job"))
-                .finally(() => {
-                  running.delete(job.requestId);
-                });
-              running.set(job.requestId, {
-                sandboxId: job.request.sandboxId,
-                snapshot: job.operation === "buildSnapshot",
-                done,
+        outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
+          waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
+          ...live,
+          dispatch(job, work) {
+            const done = work
+              .catch(() => loop.failed?.("job"))
+              .finally(() => {
+                running.delete(job.requestId);
+                live.running.delete(job.requestId);
+                live.sandboxes.delete(job.request.sandboxId);
+                live.snapshots.delete(job.requestId);
               });
-            },
+            running.set(job.requestId, done);
+            live.running.add(job.requestId);
+            live.sandboxes.add(job.request.sandboxId);
+            if (job.operation === "buildSnapshot") live.snapshots.add(job.requestId);
           },
-        );
+        });
       } catch {
         loop.failed?.("tick");
         outcome = "idle";
@@ -360,7 +363,7 @@ export async function runJobs(
       else if (outcome === "busy" || outcome === "idle") await loop.sleep(DOCKER_HOST_IDLE_MS);
     }
   } finally {
-    await Promise.all([...running.values()].map((job) => job.done));
+    await Promise.all(running.values());
   }
 }
 
@@ -872,7 +875,7 @@ async function admitLocked(
     options.running?.has(job.requestId) ||
     (options.running?.size && !polled.held) ||
     options.sandboxes?.has(job.request.sandboxId) ||
-    (skipSnapshots && job.operation === "buildSnapshot")
+    ((options.snapshots ? options.snapshots.size > 0 : skipSnapshots) && job.operation === "buildSnapshot")
   ) {
     await store.save(state);
     return "busy";
