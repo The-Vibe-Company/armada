@@ -10,9 +10,7 @@ export interface Recorded {
   body: unknown;
 }
 
-export type Reply =
-  | { status?: number; body?: unknown; raw?: string | Uint8Array; headers?: Record<string, string> }
-  | Error;
+export type Reply = { status?: number; body?: unknown; headers?: Record<string, string> } | Error;
 
 /** A boat.dev stand-in at the HTTP boundary: it answers in order and records what the SDK really sent. */
 export function fakeBoat(...replies: Reply[]) {
@@ -31,12 +29,9 @@ export function fakeBoat(...replies: Reply[]) {
     const reply = queue.shift();
     if (!reply) throw new Error(`Unexpected request ${init?.method} ${url.pathname}`);
     if (reply instanceof Error) throw reply;
-    return new Response(reply.raw ?? JSON.stringify(reply.body ?? { ok: true }), {
+    return new Response(JSON.stringify(reply.body ?? { ok: true }), {
       status: reply.status ?? 200,
-      headers: {
-        "content-type": reply.raw === undefined ? "application/json" : "application/octet-stream",
-        ...reply.headers,
-      },
+      headers: { "content-type": "application/json", ...reply.headers },
     });
   }) as typeof fetch;
   const sleeps: number[] = [];

@@ -1,11 +1,8 @@
 import { expect, test } from "bun:test";
-import {
-  admitOutputs,
-  parseCollectorOutput,
-  parseOutputArchive,
-  selectRetainedOutputs,
-} from "../src/sandbox-outputs.ts";
-import { tarArchive, tarEntry } from "./support/tar.ts";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { admitOutputs, OUTPUT_COLLECTOR, OUTPUT_MAX_ENTRIES, parseCollectorOutput } from "../src/sandbox-outputs.ts";
 
 const bytes = (n: number) => new Uint8Array(n);
 
@@ -32,89 +29,39 @@ test("server admission bounds any provider's read by count, size and unique name
     expect(() => admitOutputs(files)).toThrow();
 });
 
-test("retained-disk selection keeps only bounded direct regular files of the declared directory", () => {
-  const selected = selectRetainedOutputs([
-    { path: "workspace/outputs/b.pdf", kind: "file", size: 20000 },
-    { path: "/workspace/outputs/a.txt", kind: "file", size: 10 },
-    { path: "workspace/outputs/c.bin", kind: "file", size: 20000 },
-    { path: "workspace/outputs/link", kind: "symlink", size: 4 },
-    { path: "workspace/outputs/sub", kind: "dir" },
-    { path: "workspace/outputs/sub/x", kind: "file", size: 1 },
-    { path: "workspace/outputs/huge", kind: "file", size: 40000 },
-    { path: "workspace/secret", kind: "file", size: 1 },
-    { path: "home/user/workspace/outputs/z", kind: "file", size: 1 },
-  ]);
-  expect(selected.map((entry) => entry.name)).toEqual(["a.txt", "b.pdf"]);
-});
+/** Runs the real collector against a fixture root standing in for `/workspace`. */
+function runCollector(root: string) {
+  const script = OUTPUT_COLLECTOR.replace("'/workspace'", `'${root}'`);
+  return Bun.spawnSync(["bash", "-c", script], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } });
+}
 
-test("a declared-directory archive yields its bounded direct regular files whatever the path root", () => {
-  const read = (archive: Uint8Array) =>
-    parseOutputArchive(archive).map((file) => [file.name, Buffer.from(file.bytes).toString()]);
-  // Paths relative to the directory, with the directory entry itself.
-  expect(
-    read(
-      tarArchive(
-        tarEntry("./", "", "5"),
-        tarEntry("./final.pdf", "final"),
-        tarEntry("./sub/", "", "5"),
-        tarEntry("./sub/x", "nested"),
-        tarEntry("./link", "", "2"),
-        tarEntry("./hard", "", "1"),
-        tarEntry("./big.bin", "b".repeat(40000)),
-        tarEntry("./a.txt", "a"),
-      ),
-    ),
-  ).toEqual([
-    ["a.txt", "a"],
-    ["final.pdf", "final"],
-  ]);
-  // Paths relative to the disk root, and a pax path longer than the ustar name field.
-  const long = `${"n".repeat(150)}.md`;
-  const pax = `path=workspace/outputs/${long}\n`;
-  const record = `${pax.length + 4} ${pax}`;
-  expect(
-    read(
-      tarArchive(
-        tarEntry("workspace/outputs/", "", "5"),
-        tarEntry("workspace/outputs/memo.txt", "memo"),
-        tarEntry("PaxHeader", record, "x"),
-        tarEntry("truncated-name", "long", "0"),
-      ),
-    ),
-  ).toEqual([
-    ["memo.txt", "memo"],
-    [long, "long"],
-  ]);
-  // Count and byte bounds apply in name order; an empty directory is an empty, complete read.
-  const many = Array.from({ length: 40 }, (_, i) => tarEntry(`f${String(i).padStart(2, "0")}`, "x"));
-  expect(read(tarArchive(tarEntry("./", "", "5"), ...many))).toHaveLength(32);
-  expect(
-    read(tarArchive(tarEntry(".", "", "5"), tarEntry("b", "b".repeat(20000)), tarEntry("a", "a".repeat(20000)))),
-  ).toEqual([["a", "a".repeat(20000)]]);
-  expect(read(tarArchive())).toEqual([]);
-  // Metadata entries are skipped; a name that is not UTF-8 skips that entry only.
-  const latin = tarEntry("./", "", "5");
-  const bad = tarEntry("./x", "bad");
-  bad.set([0xff, 0xfe], 2);
-  expect(read(tarArchive(latin, tarEntry("././@LongLink", "target", "K"), bad, tarEntry("./ok.txt", "ok")))).toEqual([
-    ["ok.txt", "ok"],
-  ]);
-  // A layout without the directory's own root entry is ambiguous: refused, never guessed (it could
-  // publish a subdirectory's files, or read as empty and delete the previous snapshot).
-  expect(() =>
-    parseOutputArchive(tarArchive(tarEntry("outputs/", "", "5"), tarEntry("outputs/nested.txt", "n"))),
-  ).toThrow();
-  expect(() => parseOutputArchive(tarArchive(tarEntry("workspace/outputs/deep.txt", "d")))).toThrow();
-  expect(() =>
-    parseOutputArchive(
-      tarArchive(
-        tarEntry("workspace/outputs/", "", "5"),
-        tarEntry("workspace/outputs/a", "a"),
-        tarEntry("etc/passwd", "x"),
-      ),
-    ),
-  ).toThrow();
-  // Truncated or malformed archives are refused, never read as a smaller directory.
-  expect(() => parseOutputArchive(tarEntry("memo.txt", "memo").subarray(0, 512))).toThrow();
-  expect(() => parseOutputArchive(new Uint8Array(100))).toThrow();
+test("the real collector bounds admitted files in name order, so excluded entries never hide a deliverable", () => {
+  const root = mkdtempSync(join(tmpdir(), "outputs-"));
+  try {
+    expect(parseCollectorOutput(runCollector(root).stdout.toString())).toEqual([]);
+    const outputs = join(root, "outputs");
+    mkdirSync(outputs);
+    // Excluded entries enumerated around the deliverables: subdirectories, a link, an oversized file.
+    for (let i = 0; i < 128; i++) mkdirSync(join(outputs, `dir${String(i).padStart(3, "0")}`));
+    symlinkSync("/etc/hostname", join(outputs, "a-link"));
+    writeFileSync(join(outputs, "b-huge.bin"), "x".repeat(40000));
+    for (let i = 0; i < 40; i++) writeFileSync(join(outputs, `f${String(i).padStart(2, "0")}.txt`), String(i));
+    writeFileSync(join(outputs, "memo.pdf"), "document");
+    const run = runCollector(root);
+    expect(run.exitCode).toBe(0);
+    const files = parseCollectorOutput(run.stdout.toString());
+    expect(files.map((file) => file.name)).toEqual(
+      Array.from({ length: 32 }, (_, i) => `f${String(i).padStart(2, "0")}.txt`),
+    );
+    expect(admitOutputs(files)).toHaveLength(32);
+    // Fewer files: the deliverable after every excluded entry is published.
+    for (let i = 0; i < 40; i++) rmSync(join(outputs, `f${String(i).padStart(2, "0")}.txt`));
+    const read = parseCollectorOutput(runCollector(root).stdout.toString());
+    expect(read.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["memo.pdf", "document"]]);
+    // Beyond the entry bound the read fails (the previous snapshot stays), never a partial snapshot.
+    for (let i = 0; i < OUTPUT_MAX_ENTRIES; i++) writeFileSync(join(outputs, `z${i}`), "");
+    expect(runCollector(root).exitCode).not.toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

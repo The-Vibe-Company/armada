@@ -393,7 +393,7 @@ function DockerSandbox({
   host,
   launchFact,
 }: {
-  sandbox: Omit<Sandbox, "docker_retention_deadline" | "external_ref" | "outputs_checked_at" | "outputs_retained_at">;
+  sandbox: Omit<Sandbox, "docker_retention_deadline" | "external_ref" | "outputs_checked_at">;
   viewer: Viewer;
   controls: DockerSandboxControls;
   org: string;

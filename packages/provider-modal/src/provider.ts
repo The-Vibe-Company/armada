@@ -986,7 +986,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       assertMachineSource(row);
       // Live compute only: a stopped Modal workspace is a recovery image, readable only by
       // starting compute, which this read never does. Armada stops capture first instead.
-      if (!row.golden && row.phase === "stopped") return "retained_unreadable";
       if (row.golden || row.phase !== "active" || !row.physicalId) return null;
       const sb = await physical(row);
       signal?.throwIfAborted();
@@ -1003,7 +1002,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       // The caller's budget (the shared pre-stop deadline) bounds the wait, not only the exec timeout.
       const [status, stdout] = await abortable(Promise.all([child.wait(), output]), signal);
       if (status !== 0) return null;
-      return { files: parseCollectorOutput(stdout), retained: false };
+      return parseCollectorOutput(stdout);
     },
     async observeResources(id) {
       await bound();

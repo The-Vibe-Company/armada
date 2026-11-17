@@ -35,12 +35,10 @@ async function fixture(options: { boatId: string; boatRuntime?: boolean } = { bo
   return { db, people, id, sql };
 }
 
-/** A provider stand-in: a live disk while running, the retained disk once stopped. */
+/** A provider stand-in: live compute until stopped; a stopped workspace is never read. */
 function disks() {
   const state = {
     live: [] as OutputFile[],
-    // null: unavailable now (retryable); "retained_unreadable": never readable for this stop.
-    retained: null as OutputFile[] | "retained_unreadable" | null,
     stopped: false,
     // Set: reads hang like an SDK call that ignores cancellation, until released.
     hold: null as Promise<void> | null,
@@ -56,9 +54,7 @@ function disks() {
       state.reads++;
       state.entered();
       if (state.hold) await state.hold;
-      if (!state.stopped) return { files: state.live, retained: false };
-      if (!state.retained || state.retained === "retained_unreadable") return state.retained;
-      return { files: state.retained, retained: true };
+      return state.stopped ? null : state.live;
     },
   } as unknown as Provider;
   return { state, provider };
@@ -83,7 +79,10 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
     (await db.query(`select 1 from outbound_webhook_deliveries where payload->>'type'='sandbox.output.available'`))
       .rows,
   ).toHaveLength(1);
-  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
+  await db.query(`update sandboxes set status='stopped',stopped_at=now(),outputs_checked_at=null where id=$1`, [id]);
+  // A stopped workspace is never read: the last live snapshot is what stays downloadable.
+  expect(await service.reconcileOne(signal())).toBe(false);
+  expect(state.reads).toBe(2);
   const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
   const response = await routeFor(service, people.owner, people.org)(new Request(`${url}/memo.pdf`));
   expect(response?.status).toBe(200);
@@ -94,72 +93,6 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   // Only a well-formed UUID reaches the uuid-typed query; anything else is not this route.
   const malformed = `https://armada.example/api/v1/sandboxes/${"-".repeat(36)}/outputs`;
   expect(await routeFor(service, people.owner, people.org)(new Request(malformed))).toBeNull();
-});
-
-test("a stop without the pre-stop hook publishes the retained disk's files written or changed after the last sample", async () => {
-  const { db, people, id, sql } = await fixture();
-  const { state, provider } = disks();
-  state.live = [file("memo.txt", "draft")];
-  const service = createSandboxOutputs(sql, KEY, async () => provider);
-  // The last periodic sample sees the draft only.
-  expect(await service.reconcileOne(signal())).toBe(true);
-  // The agent finishes the memo and writes final.pdf; the provider then stops on its own (TTL),
-  // retaining the disk. No Armada pre-stop hook runs.
-  state.retained = [file("final.pdf", "final"), file("memo.txt", "final tender")];
-  state.stopped = true;
-  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(true);
-  const route = routeFor(service, people.owner, people.org);
-  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
-  const listed = (await (await route(new Request(url)))?.json()) as { files: { name: string }[] };
-  expect(listed.files.map((f) => f.name)).toEqual(["final.pdf", "memo.txt"]);
-  expect(await (await route(new Request(`${url}/final.pdf`)))?.text()).toBe("final");
-  expect(await (await route(new Request(`${url}/memo.txt`)))?.text()).toBe("final tender");
-  // The retained disk is read once per stop, not polled.
-  await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(false);
-  expect(state.reads).toBe(2);
-});
-
-test("a retained disk that is unavailable at first is read again and publishes its final files once readable", async () => {
-  const { db, people, id, sql } = await fixture();
-  const { state, provider } = disks();
-  state.live = [file("memo.txt", "draft")];
-  const service = createSandboxOutputs(sql, KEY, async () => provider);
-  expect(await service.reconcileOne(signal())).toBe(true);
-  // Provider-initiated stop after the last sample; its snapshot tree is not readable yet (null).
-  state.stopped = true;
-  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(true);
-  // The retained disk becomes readable; the next scan after the 30 s fence publishes it.
-  state.retained = [file("final.pdf", "final"), file("memo.txt", "final tender")];
-  await db.query(`update sandboxes set outputs_checked_at=now()-interval '31 seconds' where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(true);
-  expect(state.reads).toBe(3);
-  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
-  const route = routeFor(service, people.owner, people.org);
-  expect(await (await route(new Request(`${url}/final.pdf`)))?.text()).toBe("final");
-  expect(await (await route(new Request(`${url}/memo.txt`)))?.text()).toBe("final tender");
-  // Successful retained read completes collection for this stop.
-  await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(false);
-});
-
-test("a retained disk the provider can never read keeps the pre-stop snapshot and is not polled again for that stop", async () => {
-  const { db, people, id, sql } = await fixture();
-  const { state, provider } = disks();
-  state.live = [file("memo.txt", "captured")];
-  const service = createSandboxOutputs(sql, KEY, async () => provider);
-  expect(await service.reconcileOne(signal())).toBe(true);
-  state.stopped = true;
-  state.retained = "retained_unreadable"; // e.g. a Modal recovery image needs compute to read
-  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(true);
-  await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(false);
-  expect(state.reads).toBe(2);
-  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/memo.txt`;
-  expect(await (await routeFor(service, people.owner, people.org)(new Request(url)))?.text()).toBe("captured");
 });
 
 test("stop captures files written after the last sample, for native and enrolled-runtime sandboxes", async () => {
@@ -206,7 +139,7 @@ test("application-secret taint forbids output sampling, final capture, late pers
   expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(1);
   await db.query(`update sandboxes set application_secret_tainted=true,outputs_checked_at=null where id=$1`, [id]);
   expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
-  // Neither periodic sampling, the retained read nor the stop-path final capture reads tainted disks.
+  // Neither periodic sampling nor the stop-path final capture reads tainted disks.
   expect(await service.reconcileOne(signal())).toBe(false);
   await captureFinalOutputs(sql, provider, id, { key: KEY });
   await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
@@ -280,82 +213,72 @@ test("a hanging provider read yields at the caller deadline, stays tracked and n
   expect(state.reads).toBe(2);
 });
 
-test("a stop is read until a definitive retained result however old it is, backing off unavailable reads", async () => {
-  const { db, people, id, sql } = await fixture({ boatId: "old_stop_fixture" });
-  const { state, provider } = disks();
-  const service = createSandboxOutputs(sql, KEY, async () => provider);
-  // Stopped 25 hours ago (rollout or outage spanning a day): still read, since the disk is retained.
-  state.stopped = true;
-  await db.query(`update sandboxes set status='stopped',stopped_at=now()-interval '25 hours' where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(true);
-  // Unavailable now: the next attempt waits as long as the stop had lasted, capped at one hour.
-  expect(await service.reconcileOne(signal())).toBe(false);
-  await db.query(`update sandboxes set outputs_checked_at=now()-interval '59 minutes' where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(false);
-  state.retained = [file("final.pdf", "final")];
-  await db.query(`update sandboxes set outputs_checked_at=now()-interval '61 minutes' where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(true);
-  expect(state.reads).toBe(2);
-  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/final.pdf`;
-  expect(await (await routeFor(service, people.owner, people.org)(new Request(url)))?.text()).toBe("final");
-  await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
-  expect(await service.reconcileOne(signal())).toBe(false);
-});
-
-test("a collection whose deadline passes while it waits for SQL never commits files, events or the stop mark", async () => {
+test("a collection whose deadline passes while it waits for the row lock never commits files or events", async () => {
   const { db, people, id, sql } = await fixture({ boatId: "gated_fixture" });
   await db.query(
     `insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)`,
     [people.org, new Uint8Array([1])],
   );
   const { state, provider } = disks();
-  state.stopped = true;
-  state.retained = [file("final.pdf", "final")];
-  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
-  // The provider has answered; the transaction is then held (a busy pool) past the worker deadline.
+  state.live = [file("final.pdf", "final")];
+  // The provider has answered; the row-lock query is then held (a concurrent stop) past the deadline.
   let release = () => {};
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let waiting = () => {};
-  const blocked = new Promise<void>((resolve) => {
-    waiting = resolve;
-  });
-  const gated: Sql = {
-    query: sql.query,
-    transaction: async (work) => {
-      waiting();
-      await held;
-      return sql.transaction!(work);
-    },
+  let locking = () => {};
+  const gated = (): Sql => {
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return {
+      query: sql.query,
+      transaction: (work) =>
+        sql.transaction!((tx) =>
+          work({
+            query: async (q, p) => {
+              if (q.includes("for update")) {
+                locking();
+                await held;
+              }
+              return tx.query(q, p);
+            },
+          }),
+        ),
+    };
   };
-  const service = createSandboxOutputs(gated, KEY, async () => provider);
+  const waitForLock = () =>
+    new Promise<void>((resolve) => {
+      locking = resolve;
+    });
+  const committed = async () => ({
+    files: (await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows.length,
+    events: (
+      await db.query(
+        `select 1 from outbound_webhook_deliveries where payload->>'type'='sandbox.output.available' and payload->>'sandboxId'=$1`,
+        [id],
+      )
+    ).rows.length,
+  });
+  // Periodic sample: the lane yields at its deadline; the late transaction rolls back.
+  const service = createSandboxOutputs(gated(), KEY, async () => provider);
   const deadline = new AbortController();
+  let waiting = waitForLock();
   const lane = service.reconcileOne(deadline.signal);
-  await blocked;
+  await waiting;
   deadline.abort();
   expect(await lane).toBe(true);
   release();
   await service.drain();
-  expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
-  const events = `select 1 from outbound_webhook_deliveries where payload->>'type'='sandbox.output.available' and payload->>'sandboxId'=$1`;
-  expect((await db.query(events, [id])).rows).toHaveLength(0);
-  // Not marked read: the stop is collected on a later pass.
-  expect((await db.query(`select outputs_retained_at from sandboxes where id=$1`, [id])).rows).toEqual([
-    { outputs_retained_at: null },
-  ]);
-  // The same fence holds for a definitive "never readable" answer.
-  state.retained = "retained_unreadable";
-  await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
-  const second = new AbortController();
-  const again = service.reconcileOne(second.signal);
-  await new Promise<void>((resolve) => {
-    waiting = resolve;
-  });
-  second.abort();
-  expect(await again).toBe(true);
-  await service.drain();
-  expect((await db.query(`select outputs_retained_at from sandboxes where id=$1`, [id])).rows).toEqual([
-    { outputs_retained_at: null },
-  ]);
+  expect(await committed()).toEqual({ files: 0, events: 0 });
+  // Final pre-stop capture: the same fence holds at its write boundary.
+  const stop = new AbortController();
+  waiting = waitForLock();
+  const capture = captureFinalOutputs(gated(), provider, id, { key: KEY, signal: stop.signal });
+  await waiting;
+  stop.abort();
+  await expect(capture).rejects.toBeDefined();
+  release();
+  await drainFinalOutputs();
+  expect(await committed()).toEqual({ files: 0, events: 0 });
+  // Without a deadline, the same path publishes.
+  await captureFinalOutputs(sql, provider, id, { key: KEY });
+  expect(await committed()).toEqual({ files: 1, events: 1 });
 });

@@ -2952,13 +2952,11 @@ test("declared outputs are read on live compute only, never by resuming a stoppe
   const fork = await f.provider.fork({ from: name });
   // Observation never takes the lifecycle lease: a sample overlapping a stop or prompt does not refuse it.
   const read = await f.store.lease(fork.id, async () => f.provider.readOutputs?.({ sandboxId: fork.id }));
-  if (!read || read === "retained_unreadable") throw Error("expected a live read");
-  expect(read?.retained).toBe(false);
-  expect(read?.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
+  expect(read?.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
   expect(f.sdkCommands.at(-1)?.argv.at(-1)).toBe(OUTPUT_COLLECTOR);
   await f.provider.stop({ sandboxId: fork.id });
   const creates = f.creates;
-  expect(await f.provider.readOutputs?.({ sandboxId: fork.id })).toBe("retained_unreadable");
+  expect(await f.provider.readOutputs?.({ sandboxId: fork.id })).toBeNull();
   expect(f.creates).toBe(creates);
   expect(f.log.filter((x) => x === "outputs")).toHaveLength(1);
 });

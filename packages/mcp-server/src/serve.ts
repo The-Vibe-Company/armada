@@ -570,8 +570,8 @@ export async function startServer(
   const outputs = createSandboxOutputs(
     sql,
     config.encryptionKey,
-    // Stopped rows are read from their retained disk; the resolver must admit terminal rows.
-    createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true }),
+    // Only live rows are sampled; stopped workspaces are never read.
+    createMcpSandboxProviderResolver(sql, providers),
   );
   const handler = createHandler({
     ...(dockerControls ? { dockerControls } : {}),

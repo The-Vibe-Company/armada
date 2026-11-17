@@ -150,7 +150,7 @@ export function createSubscriptionMigration(
       // Older/unknown pins are not repointed. Stopping prevents future native
       // rotations when possible; Modal stop publishes its private checkpoint.
       await recheck(source);
-      // This stop bypasses preserveBeforeStop; a stopped Modal workspace cannot be read without compute.
+      // This stop bypasses preserveBeforeStop; stopped workspaces are never read for outputs.
       await captureFinalOutputs(sql, target.provider, source.id, { signal: AbortSignal.timeout(10_000) }).catch(() => {
         console.warn(JSON.stringify({ event: "sandbox_output_final_capture_failed", sandboxId: source.id }));
       });

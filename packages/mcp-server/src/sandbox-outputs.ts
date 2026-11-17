@@ -38,42 +38,15 @@ async function collect(
   scan: string,
   key: string,
   signal?: AbortSignal,
-  stopped = false,
 ) {
   const read = provider.readOutputs
     ? await provider.readOutputs({ sandboxId: providerId, ...(signal ? { signal } : {}) })
-    : "retained_unreadable";
-  if (!sql.transaction) throw Error("output_transaction_unavailable");
-  /** Writes under the row lock and the scan fence, and only while the caller's deadline holds:
-   * checked after the lock (time spent waiting for SQL counts) and again before every write. */
-  const fenced = (work: (tx: Sql) => Promise<void>) =>
-    sql.transaction?.(async (tx) => {
-      signal?.throwIfAborted();
-      const authority = await tx.query(
-        `select id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
-          and outputs_checked_at::text=$2 for update`,
-        [id, scan],
-      );
-      if (!authority.rows.length) return;
-      signal?.throwIfAborted();
-      await work(tx);
-      signal?.throwIfAborted();
-    });
-  if (read === "retained_unreadable") {
-    // This stop's retained disk can never be read (Modal recovery image, gone at the provider):
-    // keep the snapshot captured before it; no polling until the next stop.
-    if (stopped)
-      await fenced(async (tx) => {
-        await tx.query(`update public.sandboxes set outputs_retained_at=now() where id=$1`, [id]);
-      });
-    throw Error("output_collection_unsupported");
-  }
-  // Unavailable now (pending snapshot, transient failure): keep the previous snapshot and retry
-  // with backoff. Only a definitive retained result completes collection for a stop.
+    : null;
+  // Not live or a failed read: keep the previous snapshot; running sandboxes retry after the fence.
   if (!read) throw Error("output_collection_unavailable");
   // The caller's deadline has passed: a late read must never replace what callers saw since.
   signal?.throwIfAborted();
-  const files = admitOutputs(read.files).map((file) => ({
+  const files = admitOutputs(read).map((file) => ({
     name: file.name,
     bytes: Buffer.from(file.bytes),
     digest: createHash("sha256").update(file.bytes).digest("hex"),
@@ -87,7 +60,19 @@ async function collect(
       content: Buffer.from(await encryptSecret(file.bytes.toString("base64"), key)).toString("hex"),
     })),
   );
-  await fenced(async (tx) => {
+  if (!sql.transaction) throw Error("output_transaction_unavailable");
+  // Writes under the row lock and the scan fence, and only while the caller's deadline holds: checked
+  // after the lock (time spent waiting for SQL counts) and again after the write, before commit, so an
+  // expired collection rolls back its files and webhook events.
+  await sql.transaction(async (tx) => {
+    signal?.throwIfAborted();
+    const authority = await tx.query(
+      `select id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
+        and outputs_checked_at::text=$2 for update`,
+      [id, scan],
+    );
+    if (!authority.rows.length) return;
+    signal?.throwIfAborted();
     await tx.query(
       `with incoming as (select * from jsonb_to_recordset($2::jsonb) as f(name text,digest text,size integer,content text)),
       removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming))
@@ -97,11 +82,7 @@ async function collect(
       where sandbox_outputs.digest<>excluded.digest`,
       [id, JSON.stringify(payload)],
     );
-    // A retained-disk read is final for this stop: the workspace cannot change until compute resumes.
-    if (read.retained) {
-      signal?.throwIfAborted();
-      await tx.query(`update public.sandboxes set outputs_retained_at=now() where id=$1`, [id]);
-    }
+    signal?.throwIfAborted();
   });
 }
 
@@ -113,9 +94,9 @@ export async function drainFinalOutputs(): Promise<void> {
 }
 
 /** Final capture on Armada's stop path: after quiesce, before provider stop revokes compute.
- * Needed where the stopped workspace cannot be read without compute (Modal recovery images);
- * Boat retained disks are also re-read after stop by the worker. Taking a new scan fence
- * prevents an older in-flight sample from replacing this snapshot. Never resumes compute. */
+ * Stopped workspaces are never read, so this is the last snapshot a stopped sandbox exposes.
+ * Taking a new scan fence prevents an older in-flight sample from replacing this snapshot.
+ * Never resumes compute. */
 export async function captureFinalOutputs(
   sql: Sql,
   provider: Provider,
@@ -159,26 +140,17 @@ export function createSandboxOutputs(
           id: string;
           provider_sandbox_id: string;
           scan: string;
-          stopped: boolean;
         }>(`update public.sandboxes set outputs_checked_at=now()
         where id=(select id from public.sandboxes where ${ELIGIBLE} and provider_sandbox_id is not null
-        and (status in ('running','ready')
-          -- Any stop (Armada, TTL, provider-initiated or reconciled later) until a definitive
-          -- retained result: a successful read, or the provider saying it can never be read.
-          or (status='stopped' and (outputs_retained_at is null or outputs_retained_at<stopped_at)))
-        and (outputs_checked_at is null or (status<>'stopped' and outputs_checked_at<now()-interval '30 seconds')
-          or (status='stopped' and (outputs_checked_at<stopped_at
-            -- Unavailable retained reads back off: wait at least as long as the stop had lasted at
-            -- the previous attempt, between 30 seconds and one hour.
-            or outputs_checked_at<now()-least(interval '1 hour',greatest(interval '30 seconds',outputs_checked_at-stopped_at)))))
-        order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider_sandbox_id,outputs_checked_at::text as scan,status='stopped' as stopped`)
+        and status in ('running','ready') and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds')
+        order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider_sandbox_id,outputs_checked_at::text as scan`)
       ).rows[0];
       if (!row) return false;
-      // A per-sandbox failure (no python3, provider refusal, unreadable retained disk) is that sandbox's
+      // A per-sandbox failure (no python3, provider refusal, compute stopping) is that sandbox's
       // problem: keep the previous snapshot, retry after the 30 s fence, and never stall
       // the shared worker loop.
       const work = providerFor(row.id)
-        .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, signal, row.stopped))
+        .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, signal))
         .catch(() => {
           console.warn(JSON.stringify({ event: "sandbox_output_collection_failed", sandboxId: row.id }));
         })

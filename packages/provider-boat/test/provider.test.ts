@@ -1,8 +1,13 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { ProviderError } from "@armada/core";
-import { GoldenCreateService, type GoldenRecord, preserveWork, scanGoldenSandbox } from "@armada/core/server";
-import { tarArchive, tarEntry } from "../../core/test/support/tar.ts";
+import {
+  GoldenCreateService,
+  type GoldenRecord,
+  OUTPUT_COLLECTOR,
+  preserveWork,
+  scanGoldenSandbox,
+} from "@armada/core/server";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
 import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
 
@@ -1253,107 +1258,18 @@ test("terminal capture refusal identifies its stop caller without forwarding con
   }
 });
 
-test("declared outputs of a stopped sandbox are read from its retained disk snapshot without contacting the machine", async () => {
-  const snapshot = {
-    id: "snap_1",
-    sandboxId: ID,
-    status: "completed",
-    generation: 3,
-    createdAt: "2026-11-09T09:00:00Z",
-  };
-  const boat = fakeBoat(
-    { body: { ok: true, sandbox: sandbox({ state: "archived" }) } },
-    { body: { ok: true, type: "snapshot.latest", snapshot } },
-    {
-      body: {
-        ok: true,
-        type: "snapshot.tree",
-        snapshotId: "snap_1",
-        sandboxId: ID,
-        generation: 3,
-        treeAvailable: true,
-        truncated: false,
-        fileCount: 4,
-        totalSizeBytes: 15,
-        entries: [
-          { path: "workspace/outputs/final.pdf", kind: "file", size: 5 },
-          { path: "workspace/outputs/link", kind: "symlink", size: 10 },
-          { path: "workspace/notes.txt", kind: "file", size: 5 },
-        ],
-      },
-    },
-    { raw: "final", headers: { "x-snapshot-entry-kind": "file" } },
+test("declared outputs are read from live compute by the fixed collector and never resume a stopped sandbox", async () => {
+  const stdout = JSON.stringify([{ name: "final.pdf", base64: Buffer.from("final").toString("base64") }]);
+  const live = fakeBoat(
+    { body: { ok: true, sandbox: sandbox({ state: "ready" }) } },
+    { body: { ok: true, type: "command.finished", success: true, exitCode: 0, stdout, stderr: "", timedOut: false } },
   );
-  const read = await boat.provider.readOutputs?.({ sandboxId: ID });
-  if (!read || read === "retained_unreadable") throw Error("expected a retained read");
-  expect(read?.retained).toBe(true);
-  expect(read?.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
-  expect(boat.requests.every((request) => request.method === "GET")).toBe(true);
-  expect(boat.requests.at(-1)?.query.get("path")).toBe("workspace/outputs/final.pdf");
-  expect(boat.remaining()).toBe(0);
-  // Unrelated files truncate the whole-disk listing before the declared directory: the directory
-  // itself is read as one folder archive, so a file written after the last sample is not missed.
-  const truncated = fakeBoat(
-    { body: { ok: true, sandbox: sandbox({ state: "archived" }) } },
-    { body: { ok: true, type: "snapshot.latest", snapshot } },
-    {
-      body: {
-        ok: true,
-        type: "snapshot.tree",
-        snapshotId: "snap_1",
-        sandboxId: ID,
-        generation: 3,
-        treeAvailable: true,
-        truncated: true,
-        fileCount: 90000,
-        totalSizeBytes: 9000000,
-        entries: [{ path: "workspace/node_modules/big.bin", kind: "file", size: 9000000 }],
-      },
-    },
-    {
-      raw: tarArchive(tarEntry("./", "", "5"), tarEntry("./final.pdf", "final"), tarEntry("./sub/x", "nested")),
-      headers: { "x-snapshot-entry-kind": "dir", "x-snapshot-total-size-bytes": "11", "x-snapshot-file-count": "2" },
-    },
-  );
-  const scoped = await truncated.provider.readOutputs?.({ sandboxId: ID });
-  if (!scoped || scoped === "retained_unreadable") throw Error("expected a scoped retained read");
-  expect(scoped.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
-  expect(truncated.requests.at(-1)?.query.get("path")).toBe("workspace/outputs");
-  expect(truncated.remaining()).toBe(0);
-  // Definitive answers end collection for the stop: a directory beyond the read bound, or a
-  // sandbox Boat no longer has.
-  const oversized = fakeBoat(
-    { body: { ok: true, sandbox: sandbox({ state: "archived" }) } },
-    { body: { ok: true, type: "snapshot.latest", snapshot } },
-    {
-      body: {
-        ok: true,
-        type: "snapshot.tree",
-        snapshotId: "snap_1",
-        sandboxId: ID,
-        generation: 3,
-        treeAvailable: false,
-        truncated: false,
-        fileCount: 0,
-        totalSizeBytes: 0,
-        entries: [],
-      },
-    },
-    { raw: "", headers: { "x-snapshot-entry-kind": "dir", "x-snapshot-total-size-bytes": String(64 * 1024 * 1024) } },
-  );
-  expect(await oversized.provider.readOutputs?.({ sandboxId: ID })).toBe("retained_unreadable");
-  const gone = fakeBoat({ status: 404, body: { ok: false, error: { code: "not_found", message: "gone" } } });
-  expect(await gone.provider.readOutputs?.({ sandboxId: ID })).toBe("retained_unreadable");
-  expect([oversized.remaining(), gone.remaining()]).toEqual([0, 0]);
-  // The latest completed snapshot predates a stop whose own snapshot is pending or failed (Boat may
-  // retry it): unavailable now, never read in place of the stopped disk.
-  const pending = fakeBoat({
-    body: { ok: true, sandbox: sandbox({ state: "archived", lastSnapshotStatus: "in_progress" }) },
-  });
-  await expect(pending.provider.readOutputs?.({ sandboxId: ID })).rejects.toMatchObject({ retryable: true });
-  const failed = fakeBoat({
-    body: { ok: true, sandbox: sandbox({ state: "archived", lastSnapshotStatus: "failed" }) },
-  });
-  expect(await failed.provider.readOutputs?.({ sandboxId: ID })).toBeNull();
-  expect([pending.remaining(), failed.remaining()]).toEqual([0, 0]);
+  const read = await live.provider.readOutputs?.({ sandboxId: ID });
+  expect(read?.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
+  expect((live.requests.at(-1)?.body as { command?: string } | undefined)?.command).toBe(OUTPUT_COLLECTOR);
+  // A stopped sandbox is refused, never resumed: its retained disk is outside this read.
+  const stopped = fakeBoat({ body: { ok: true, sandbox: sandbox({ state: "archived" }) } });
+  await expect(stopped.provider.readOutputs?.({ sandboxId: ID })).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  expect(stopped.requests.map((r) => r.method)).toEqual(["GET"]);
+  expect(stopped.remaining()).toBe(0);
 });
