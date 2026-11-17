@@ -1773,41 +1773,65 @@ test("independent sandbox lanes run concurrently: the expiry wait overlaps every
 });
 
 test("lanes sharing a one-slot model account take turns, and the expiry wait still overlaps the lifecycle", async () => {
-  // The server's admission rule: a launch reserves the account's only slot, a starting sandbox
-  // keeps it, an idle ready one frees it, and a concurrent launch is refused with a conflict.
-  const working = new Set<string>();
-  const polls = new Map<string, number>();
-  let conflicts = 0;
-  const expiry = expiryApi(
-    () => fake.io.now(),
-    (id) => {
-      const count = (polls.get(id) ?? 0) + 1;
-      polls.set(id, count);
-      if (count > 1) working.delete(id);
-      return count === 1;
-    },
-  );
-  const fake = lifecycleFixture("none", (call) => {
-    if (call.path === "sandbox/launch") {
-      expect(call.body.credentialId).toBe("account");
-      if (working.size) {
-        conflicts++;
-        return json({ error: { code: "conflict", message: "secret account at its limit" } }, 409);
+  for (const harnesses of [["claude"], ["claude", "codex"]]) {
+    // The server's admission rule: a launch reserves the account's only slot, a starting sandbox
+    // keeps it, an idle ready one frees it, and a concurrent launch is refused with a conflict.
+    const working = new Set<string>();
+    const polls = new Map<string, number>();
+    let conflicts = 0;
+    let lifecycleLaunches = 0;
+    const expiry = expiryApi(
+      () => fake.io.now(),
+      (id) => {
+        const count = (polls.get(id) ?? 0) + 1;
+        polls.set(id, count);
+        if (count > 1) working.delete(id);
+        return count === 1;
+      },
+    );
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path === "sandbox/launch") {
+        expect(call.body.credentialId).toBe("account");
+        if (working.size) {
+          conflicts++;
+          return json({ error: { code: "conflict", message: "secret account at its limit" } }, 409);
+        }
+        working.add(call.body.ttlSeconds === 180 ? `exp-${call.body.harness}` : `life-${++lifecycleLaunches}`);
       }
-      working.add(call.body.ttlSeconds === 180 ? `exp-${call.body.harness}` : "lifecycle");
+      if (call.path === "sandbox/stop") working.delete(String(call.body.id));
+      return expiry(call);
+    });
+    const cases = harnesses.map((harness) => ({ ...selected, harness }));
+    expect(await fake.run(cases, ["--expiry"])).toBe(true);
+    expect(conflicts).toBe(0);
+    expect(lifecycleLaunches).toBe(harnesses.length);
+    const receipts = fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line));
+    const at = (lane: string, step: string, index: number) =>
+      receipts.findIndex((line) => line.lane === lane && line.step === step && line.case === index);
+    for (const index of harnesses.keys()) {
+      // Each expiry lane gives the account back once ready, so every lifecycle runs inside the TTL waits.
+      expect(at("expiry", "expiry_ready", index)).toBeGreaterThan(-1);
+      expect(at("lifecycle", "lifecycle_cleanup_summary", index)).toBeGreaterThan(
+        at("expiry", "expiry_ready", harnesses.length - 1),
+      );
+      expect(at("lifecycle", "lifecycle_cleanup_summary", index)).toBeLessThan(at("expiry", "expiry_as_stop", 0));
     }
-    if (call.path === "sandbox/stop" && String(call.body.id).startsWith("life-")) working.delete("lifecycle");
-    return expiry(call);
-  });
-  expect(await fake.run([selected], ["--expiry"])).toBe(true);
-  expect(conflicts).toBe(0);
-  const receipts = fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line));
-  const at = (lane: string, step: string) => receipts.findIndex((line) => line.lane === lane && line.step === step);
-  // The expiry lane gives the account back once ready, so the lifecycle runs inside its TTL wait.
-  expect(at("expiry", "expiry_ready")).toBeGreaterThan(-1);
-  expect(at("lifecycle", "lifecycle_cleanup_summary")).toBeGreaterThan(at("expiry", "expiry_ready"));
-  expect(at("lifecycle", "lifecycle_cleanup_summary")).toBeLessThan(at("expiry", "expiry_as_stop"));
-  expect(fake.lines.join("")).not.toContain("secret");
+    expect(fake.lines.join("")).not.toContain("secret");
+  }
+});
+
+test("a template case takes its model account between the expiry launch and the lifecycle", async () => {
+  const expiry = expiryApi(() => fake.io.now());
+  const fake = lifecycleFixture("none", (call) => expiry(call));
+  // The fake answers no template route, so the template lane fails; only its turn on the account is checked.
+  expect(await fake.run([selected], ["--expiry", "--templates-skills"])).toBe(false);
+  const first = (match: (call: Call) => boolean) => fake.calls.findIndex(match);
+  const expiryReady = first((call) => call.path === "sandbox/status" && call.body.id === "exp-codex");
+  const template = first((call) => !call.path.startsWith("sandbox/"));
+  const lifecycleLaunch = first((call) => call.path === "sandbox/launch" && call.body.ttlSeconds !== 180);
+  expect(expiryReady).toBeGreaterThan(-1);
+  expect(template).toBeGreaterThan(expiryReady);
+  expect(lifecycleLaunch).toBeGreaterThan(template);
 });
 
 test("a keyed action that releases its key early lets the next one start before it finishes", async () => {

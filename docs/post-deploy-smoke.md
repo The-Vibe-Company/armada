@@ -197,10 +197,11 @@ and scoped runs on other goldens stay concurrent.
 
 A model account admits a bounded number of working agents, possibly one, and
 every launch reserves a slot before its fork. Work that occupies the same
-`modelAccountId` therefore takes turns across lanes, in this order: the expiry
-lane (it holds the account only until its sandbox is ready and idle, so its TTL
-wait still overlaps everything else), then the template case, then the clean
-and dirty lifecycle runs. A lane is never refused with a conflict caused by its
+`modelAccountId` therefore takes turns across lanes, first come first served:
+every expiry lane first (it holds the account only until its sandbox is ready
+and idle, so its TTL wait still overlaps everything else), then the template
+cases, then the clean lifecycle runs. A case's dirty preservation run queues
+when its clean run ends. A lane is never refused with a conflict caused by its
 sibling. Cases on distinct model accounts stay concurrent.
 
 ### Pair prerequisites
