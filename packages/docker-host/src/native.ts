@@ -160,11 +160,17 @@ export function httpApi(
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
 } {
-  async function post(server: string, endpoint: string, token: string, body: unknown): Promise<unknown> {
+  async function post(
+    server: string,
+    endpoint: string,
+    token: string,
+    body: unknown,
+    timeoutMs = 8_000,
+  ): Promise<unknown> {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(8_000),
+      signal: AbortSignal.timeout(timeoutMs),
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
@@ -264,6 +270,32 @@ export function httpApi(
       const disk = diskFreeBytes ? { diskFreeBytes: await diskFreeBytes() } : {};
       const stopped = stoppedBytes ? { stoppedSandboxBytes: await stoppedBytes(state) } : {};
       const sampledResources = resources ? await resources(state) : dockerHostResources();
+      if (options?.waitSeconds !== undefined) {
+        // Held poll (#2561): the server answers as soon as work exists. Servers
+        // without it refuse the additive fields before claiming, and the
+        // daemon then keeps its own idle period.
+        try {
+          return (await post(
+            state.server,
+            "poll",
+            state.hostToken,
+            {
+              ...body,
+              resumeClaimProtocol: 1,
+              ...retention,
+              ...disk,
+              ...stopped,
+              resources: sampledResources,
+              resourcePolicyVersion: 1,
+              waitSeconds: options.waitSeconds,
+              running: [...(options.running ?? [])],
+            },
+            options.waitSeconds * 1000 + 8_000,
+          )) as Awaited<ReturnType<Api["poll"]>>;
+        } catch (error) {
+          if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
+        }
+      }
       try {
         return (await post(state.server, "poll", state.hostToken, {
           ...body,

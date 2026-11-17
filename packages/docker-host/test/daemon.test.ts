@@ -691,7 +691,7 @@ test("snapshot builds keep ordinary stop/TTL work responsive and merge durable r
   };
   const interval = globalThis.setInterval,
     clear = globalThis.clearInterval;
-  let pump: (() => void | Promise<void>) | undefined, running: Promise<void> | undefined;
+  let pump: (() => void | Promise<void>) | undefined, running: Promise<unknown> | undefined;
   globalThis.setInterval = ((callback: () => void | Promise<void>) => {
     pump = callback;
     return 1;

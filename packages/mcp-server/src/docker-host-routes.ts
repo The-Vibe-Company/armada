@@ -282,8 +282,7 @@ export function createDockerHostRoutes(
         let resumeClaims: Awaited<ReturnType<typeof store.resumeClaimsForHost>>;
         let job: Awaited<ReturnType<typeof store.poll>>;
         for (;;) {
-          resumeClaims =
-            body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
+          resumeClaims = body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
           job = await store.poll(
             token,
             installationId,
