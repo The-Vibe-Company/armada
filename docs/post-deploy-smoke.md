@@ -171,6 +171,42 @@ The normal path launches each case, sends one trivial prompt, waits for success,
 checks `git status -sb` and `git ls-remote origin HEAD` in the checkout, stops
 the sandbox and checks provider state.
 
+### Concurrent lanes
+
+Default-pin reads and the vault family (no compute) run first, in case order.
+After that every independent sandbox runs concurrently in its own lane, one per
+case and family: `templates`, `expiry` and `lifecycle` (the clean worker, then
+the dirty preservation worker of the same case, in that order). The expiry TTL
+wait therefore overlaps the lifecycle work instead of adding to it (work on one
+model account takes turns, see below).
+Every step receipt from a lane carries its `case` index and `lane`, so
+interleaved output still gives one attributable failure report per case. Each
+lane keeps its own cleanup reserve: one lane entering cleanup never extends or
+shortens another lane's deadline. The run waits for every lane, including its
+cleanup, before the journal cleanup waves and passes only if every lane passes.
+The scoped-access snapshot diff ignores sandboxes this same run launched through
+the owner API in other lanes; any other new sandbox remains unattributed and
+fails the probe. Verified children are stopped first. Only a row nothing else
+explains waits for launches still in flight to return its handle, until none
+is in flight or for at most the longest launch request timeout (10 minutes).
+When nothing is unexplained there is no wait, so an unrelated launch does not
+delay scoped cleanup or the next preservation worker. A scoped child is registered under its parent's owner and
+golden without an owner API launch, so the run cannot attribute another case's
+child: scoped Codex lifecycle runs that share an org and golden run one after
+another, from the baseline snapshot through scoped cleanup. Expiry, templates
+and scoped runs on other goldens are not held by that queue.
+
+A model account admits a bounded number of working agents, possibly one, and
+every launch reserves a slot before its fork. Work that occupies the same
+`modelAccountId` therefore takes turns across lanes, first come first served:
+the template cases first, then every expiry lane, then the clean lifecycle
+runs. The expiry lane holds the account only until its sandbox is ready and
+idle, so queued right before the lifecycle runs its TTL wait overlaps them; a
+template probe (up to a 10-minute launch) queued after it could outlast the
+TTL before any lifecycle work started. A case's dirty preservation run queues
+when its clean run ends. A lane is never refused with a conflict caused by its
+sibling. Cases on distinct model accounts stay concurrent.
+
 ### Pair prerequisites
 
 All selected pairs share staging `ARMADA_ORIGIN`, `ARMADA_SMOKE_TOKEN` and
@@ -497,6 +533,9 @@ Only receipt-claimed IDs corroborated as new owned rows can be stopped with the
 owner API. Preexisting, parent, unverified and unclaimed IDs are never blindly
 stopped. `scoped_cleanup_summary` retains parent/local request key, operation
 UUIDs and leftover/unverified/unattributed IDs/uncertainty without raw tool text.
+When another lane of the same run lost an owner launch outcome (no handle), or
+a launch was still in flight when the bounded wait ended, the summary also sets `unknownSiblingLaunch` beside any unattributed ID: the probe
+still fails, but that ID may be the other lane's sandbox rather than a child.
 Unknown mutations are never replayed; reconcile reported handles before rerun.
 If the parent's stop cannot be confirmed, cleanup still attempts safe known
 children but must report an unquiesced producer/future-child uncertainty. A
@@ -564,7 +603,7 @@ launches with org/golden/start time. Lost create responses are never retried.
 This is not a resource janitor: an interrupted runner or unknown create still
 requires operator reconciliation.
 
-Expected added duration: about 3–5 minutes per pair, sequentially; no model
+Expected added duration: about 3–5 minutes per pair, overlapping the other lanes; no model
 turns, one extra short-lived worker per pair plus normal retained-disk cost.
 Each request remains bounded by the existing shared 35-minute work deadline
 and five-minute cleanup reserve. Ready polling allows 120 observations,

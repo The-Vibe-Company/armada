@@ -17,6 +17,14 @@ export interface ScopedProbeIo {
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
   stopSandbox(id: string): Promise<void>;
   recordSandbox?(id: string, requestKey: string): Promise<void>;
+  /**
+   * Sandboxes the same smoke run launched itself through the owner API (concurrent units), never
+   * children. Called only with snapshot rows nothing else explains; it may wait, bounded, for
+   * launches still in flight to report a handle for one of those `candidates`.
+   */
+  siblingSandboxes?(candidates: ReadonlySet<string>): Promise<ReadonlySet<string>>;
+  /** Whether a concurrent unit's owner launch failed without a handle or is still in flight; read after `siblingSandboxes`. */
+  siblingLaunchLost?(): boolean;
   isNotReady(error: unknown): boolean;
   out(line: string): void;
 }
@@ -547,11 +555,26 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             ok = false;
           }
         }
+        // Verified children are stopped first; only rows nothing else explains wait on sibling
+        // attribution, so an unrelated launch in flight never delays cleanup or the next worker.
         const baseline = before;
-        if (baseline && after)
-          unattributed = [...after].filter(
-            (childId) => childId !== parent && !baseline.has(childId) && !claims.has(childId),
+        let siblingLaunchLost = false;
+        if (baseline && after) {
+          const candidates = new Set(
+            [...after].filter((childId) => childId !== parent && !baseline.has(childId) && !claims.has(childId)),
           );
+          if (candidates.size && io.siblingSandboxes) {
+            try {
+              // Read after the snapshot: every sibling it can contain was launched before it returned.
+              const siblings = await io.siblingSandboxes(candidates);
+              for (const childId of siblings) candidates.delete(childId);
+              siblingLaunchLost = io.siblingLaunchLost?.() ?? false;
+            } catch {
+              ok = false;
+            }
+          }
+          unattributed = [...candidates];
+        }
         if (unattributed.length || sendUnknown || launchUnknown || evidenceUnknown) ok = false;
         io.out(
           JSON.stringify({
@@ -568,6 +591,8 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             leftoverSandboxIds: leftover,
             unverifiedSandboxIds: unverified,
             unattributedSandboxIds: unattributed,
+            // Still a failure: an unattributed ID may then be another lane's lost launch, not a child.
+            unknownSiblingLaunch: unattributed.length > 0 && siblingLaunchLost,
             parentQuiesced: parent ? parentQuiesced : null,
             unknownParent,
             unknownFutureChildren: unknownParent,
