@@ -2,7 +2,7 @@
 
 Write deliverables as regular files directly inside `/workspace/outputs` (create it if absent). This fixed directory is the declaration; no API accepts arbitrary filesystem paths. Subdirectories, symlinks, hard links and special files are excluded. Python 3 is required in the sandbox. The collector opens the directory and files without following symlinks.
 
-The server samples running Boat/Modal workspaces approximately every 30 seconds. Each snapshot has at most 32 files, 64 KiB per file and 256 KiB total. Use short filenames without control characters. Oversized files are skipped; provider truncation or collector failure retains the previous snapshot. Docker collection is not supported. Files must remain present until a successful sample; collection does not resume stopped compute.
+The server samples running Boat/Modal workspaces approximately every 30 seconds. Each snapshot has at most 32 files, 32 KiB per file and 32 KiB total (below the runtime exec transport budget, including base64 and metadata). Use short filenames without control characters. Oversized files are skipped; provider truncation or collector failure retains the previous snapshot. Docker collection is not supported. Stopped workspaces expose only the last successful sample. Files must remain present until a successful sample; collection does not resume stopped compute.
 
 Authenticated owner/admin callers can use:
 

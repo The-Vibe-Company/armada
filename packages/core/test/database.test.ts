@@ -202,12 +202,12 @@ describe("database", () => {
         "organization_invitations.token_enc",
         "orgs.boat_api_key_enc",
         "outbound_webhook_endpoints.secret_enc",
-        "sandbox_outputs.content_enc",
         "runtime_commands.request_enc",
         "runtime_commands.result_enc",
         "runtime_enrolments.configuration_enc",
         "runtime_events.event_enc",
         "runtime_idle_evidence.latest_prompt_enc",
+        "sandbox_outputs.content_enc",
         "sandbox_work_recovery.archive_enc",
       ]);
 

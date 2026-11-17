@@ -4,7 +4,7 @@ create table public.sandbox_outputs (
  sandbox_id uuid not null references public.sandboxes(id) on delete cascade,
  name text not null check (length(name) between 1 and 255 and name !~ '[/\\]'),
  digest text not null,
- size integer not null check (size between 0 and 65536),
+ size integer not null check (size between 0 and 32768),
  content_enc bytea not null,
  updated_at timestamptz not null default now(),
  primary key(sandbox_id,name)

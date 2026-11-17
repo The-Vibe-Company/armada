@@ -386,7 +386,7 @@ function DockerSandbox({
   choices,
   host,
 }: {
-  sandbox: Omit<Sandbox, "docker_retention_deadline" | "external_ref">;
+  sandbox: Omit<Sandbox, "docker_retention_deadline" | "external_ref" | "outputs_checked_at">;
   viewer: Viewer;
   controls: DockerSandboxControls;
   org: string;

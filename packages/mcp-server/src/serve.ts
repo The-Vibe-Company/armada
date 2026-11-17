@@ -1,4 +1,3 @@
-import { createSandboxOutputs } from "./sandbox-outputs.ts";
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
 import {
   createApplicationVault,
@@ -87,6 +86,7 @@ import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createFinishedDockerCleanup } from "./sandbox-finish.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
+import { createSandboxOutputs } from "./sandbox-outputs.ts";
 import { createServerRequestDrain } from "./server-request-drain.ts";
 import { createServerRoutineScheduler } from "./server-routines.ts";
 import { installServerShutdown } from "./server-shutdown.ts";
@@ -608,7 +608,13 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
-      outputs.route((request) => authenticateCaller(request.headers.get("authorization"), { store: authStore, supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey }, now: new Date() })),
+      outputs.route((request) =>
+        authenticateCaller(request.headers.get("authorization"), {
+          store: authStore,
+          supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+          now: new Date(),
+        }),
+      ),
       webhooks.route((request) =>
         authenticateCaller(request.headers.get("authorization"), {
           store: authStore,
