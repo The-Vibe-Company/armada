@@ -56,7 +56,7 @@ if [[ "$1" == up ]]; then
   echo '{"deploymentId":"selected"}'
 else
   if [[ "$RELEASE_ENVIRONMENT" == production ]]; then
-    read -r -t 0.5 -u 3 || exit 1
+    read -r -u 3
   fi
   # Another deployment being healthy must not let this release continue.
   if [[ "$FAILURE" == server ]]; then status=FAILED; else status=SUCCESS; fi
@@ -111,7 +111,7 @@ fi
     const args = production
       ? ["bash", "-c", 'exec 3<> "$HOME/build-ready"; exec bash "$1"', "fixture", script]
       : ["bash", script];
-    const result = Bun.spawnSync(args, { cwd: dir, env });
+    const result = Bun.spawnSync(args, { cwd: dir, env, timeout: 2_000 });
     let calls = "";
     try {
       calls = readFileSync(log, "utf8");
