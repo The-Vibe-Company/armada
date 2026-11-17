@@ -577,19 +577,18 @@ export async function launchSandbox(
     }
 
     // Launch-time measurement (#2560) must never change the launch it measures.
-    const mark = async (stage: LaunchStage, since?: number) => {
+    const mark = async (stage: LaunchStage, elapsedMs = 0) => {
       try {
-        await stores.sandboxes.recordLaunchStage?.(
-          record.id,
-          stage,
-          since === undefined ? 0 : performance.now() - since,
-        );
+        await stores.sandboxes.recordLaunchStage?.(record.id, stage, elapsedMs);
       } catch {
         /* Best effort only. */
       }
     };
-    await mark("accepted", acceptedAt);
-    await mark("provider_claimed", claimedAt);
+    // Both past stages are aged from one instant: reading the clock again after the first await would let a slow
+    // store call make `accepted` look younger than `provider_claimed` when the fork returns at once.
+    const recordedAt = performance.now();
+    await mark("accepted", recordedAt - acceptedAt);
+    await mark("provider_claimed", recordedAt - claimedAt);
     const progress = (stage: LaunchInitializationStage) => {
       try {
         void Promise.resolve(options.onInitialization?.(stage)).catch(() => {});

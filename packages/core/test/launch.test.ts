@@ -2036,38 +2036,47 @@ test.each([
 ] as const)("%s %s launch records each stage once, harness ready before its prompt", async (path, harness) => {
   const world = setup({ golden: golden("org") });
   const elapsed: Record<string, number> = {};
+  // A deterministic monotonic clock: the fork returns at once and storing `accepted` is slow, the case where reading
+  // the clock again per stage dated acceptance after the provider claim.
+  let clock = 0;
+  const now = spyOn(performance, "now").mockImplementation(() => ++clock);
   world.stores.sandboxes.recordLaunchStage = async (_id, stage, ms) => {
     world.order.push(`stage:${stage}`);
     elapsed[stage] = ms ?? 0;
+    if (stage === "accepted") clock += 1_000;
   };
   const prompt = async () => {
     world.order.push("prompt");
     return { promptId: "p", conversationId: "c", status: "queued" as PromptStatus };
   };
   if (path === "runtime") world.provider.prompt = prompt;
-  await launchSandbox(
-    world.provider,
-    world.stores,
-    owner,
-    { golden: "web", harness, prompt: "go" },
-    path === "runtime"
-      ? {
-          boatRuntime: {
-            async start() {
-              world.order.push("start");
-              return {
-                epoch: "1",
-                async prepareWorkspace() {
-                  world.order.push("workspace");
-                  return { status: "not_connected" as const };
-                },
-                prompt,
-              };
+  try {
+    await launchSandbox(
+      world.provider,
+      world.stores,
+      owner,
+      { golden: "web", harness, prompt: "go" },
+      path === "runtime"
+        ? {
+            boatRuntime: {
+              async start() {
+                world.order.push("start");
+                return {
+                  epoch: "1",
+                  async prepareWorkspace() {
+                    world.order.push("workspace");
+                    return { status: "not_connected" as const };
+                  },
+                  prompt,
+                };
+              },
             },
-          },
-        }
-      : {},
-  );
+          }
+        : {},
+    );
+  } finally {
+    now.mockRestore();
+  }
   const stages = world.order.filter((step) => step.startsWith("stage:") || ["fork", "start", "prompt"].includes(step));
   expect(stages).toEqual([
     "fork",
