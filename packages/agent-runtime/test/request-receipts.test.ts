@@ -25,12 +25,20 @@ test("checkpoint retries dispatch afresh instead of replaying an old request rec
 
 test("definite refusals replay their status while ambiguous failures retain the crash fence", async () => {
   const { RequestRefused } = await import("../src/errors.ts");
-  const journal = new Journal(":memory:", value => value);
+  const journal = new Journal(":memory:", (value) => value);
   try {
     for (const definite of [true, false]) {
-      const request = { version: 1 as const, sandboxId: "logical", requestId: String(definite), op: "interrupt" as const };
+      const request = {
+        version: 1 as const,
+        sandboxId: "logical",
+        requestId: String(definite),
+        op: "interrupt" as const,
+      };
       let calls = 0;
-      const dispatch = async () => { calls++; throw definite ? new RequestRefused("no_running_turn") : Error("transport_lost"); };
+      const dispatch = async () => {
+        calls++;
+        throw definite ? new RequestRefused("no_running_turn") : Error("transport_lost");
+      };
       if (definite) expect((await executeWithReceipt(journal, request, dispatch)).status).toBe(409);
       else await expect(executeWithReceipt(journal, request, dispatch)).rejects.toThrow("transport_lost");
       const replay = await executeWithReceipt(journal, request, dispatch);
@@ -38,5 +46,7 @@ test("definite refusals replay their status while ambiguous failures retain the 
       expect(await replay.json()).toMatchObject({ error: definite ? "no_running_turn" : "request_outcome_unknown" });
       expect(calls).toBe(1);
     }
-  } finally { journal.close(); }
+  } finally {
+    journal.close();
+  }
 });

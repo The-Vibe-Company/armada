@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { RequestRefused } from "./errors.ts";
 /** Native working-directory selection, not an access-confinement boundary. Never echo refused input. */
 export function validateHarnessCwd(value: unknown): string {
   if (
@@ -10,11 +11,11 @@ export function validateHarnessCwd(value: unknown): string {
     !isAbsolute(value) ||
     resolve(value) !== value
   )
-    throw Error("invalid_cwd");
+    throw new RequestRefused("invalid_cwd");
   try {
-    if (!statSync(value).isDirectory()) throw Error("invalid_cwd");
+    if (!statSync(value).isDirectory()) throw new RequestRefused("invalid_cwd");
   } catch {
-    throw Error("invalid_cwd");
+    throw new RequestRefused("invalid_cwd");
   }
   return value;
 }

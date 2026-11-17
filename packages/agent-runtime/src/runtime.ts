@@ -1,11 +1,10 @@
-import { RequestRefused } from "./errors.ts";
 import { timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES } from "@armada/core";
 import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
-import { HarnessError } from "./errors.ts";
+import { HarnessError, RequestRefused } from "./errors.ts";
 import { execCredentialValues, validateExecEnvironment, validateExecReadables } from "./exec-env.ts";
 import { githubRuntimeEnvironment } from "./github-tools.ts";
 import { checkpointIdentityKey } from "./identity.ts";
@@ -386,7 +385,7 @@ export class Runner {
         .query("SELECT harness,session FROM sessions WHERE conversation=?")
         .get(r.conversationId) as { harness: string; session: string } | null;
       if (!saved || saved.harness !== r.input.harness || saved.session !== r.expectedSessionId)
-        throw Error("native_session_identity_changed");
+        throw new RequestRefused("native_session_identity_changed");
       const resume = this.drivers[r.input.harness]?.resumeSession?.bind(this.drivers[r.input.harness]);
       if (!resume) throw new RequestRefused("native_resume_unsupported");
       this.resumingNative = true;
@@ -601,7 +600,8 @@ export class Runner {
         throw new RequestRefused("native_auth_writer_busy");
       if (r.input.conversationId) {
         const existing = this.journal.prompts().find((p) => p.conversationId === r.input.conversationId);
-        if (existing && existing.request.harness !== r.input.harness) throw new RequestRefused("conversation_harness_mismatch");
+        if (existing && existing.request.harness !== r.input.harness)
+          throw new RequestRefused("conversation_harness_mismatch");
       }
       if (
         r.input.sandboxId !== this.grant.sandboxId ||
@@ -677,12 +677,16 @@ export class Runner {
             this.journal.transition(p, status);
           },
           async (error: unknown) => {
+            const stopped = this.closing;
             active.terminal = true;
             await this.publishNativeAuth?.();
             // A deliberate shutdown may make any native driver reject its pending RPC.
             // Preserve spontaneous child failures when the runner is still serving.
-            this.journal.transition(p, this.closing ? "interrupted" : "failed",
-              this.closing ? undefined : error instanceof HarnessError ? error.reason : "harness_failed");
+            this.journal.transition(
+              p,
+              stopped ? "interrupted" : "failed",
+              stopped ? undefined : error instanceof HarnessError ? error.reason : "harness_failed",
+            );
           },
         )
         .catch(() => this.journal.transition(p, "failed", "native_auth_state_unacknowledged"))
@@ -748,7 +752,8 @@ export class Runner {
   }
   private async exec(r: ExecRequest, signal?: AbortSignal): Promise<ExecResult> {
     signal?.throwIfAborted();
-    if (r.sandboxId !== this.grant.sandboxId || typeof r.command !== "string") throw Error("invalid_request");
+    if (r.sandboxId !== this.grant.sandboxId || typeof r.command !== "string")
+      throw new RequestRefused("invalid_request");
     const child = this.execChildren.spawn("/bin/bash", ["-s"], {
       cwd: r.cwd ?? process.cwd(),
       env: this.execEnvironment,

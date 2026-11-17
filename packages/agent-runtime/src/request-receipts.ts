@@ -14,7 +14,10 @@ export async function executeWithReceipt(
     body: string;
   } | null;
   if (old && request.op !== "checkpoint")
-    return new Response(old.body, { status: "error" in JSON.parse(old.body) && JSON.parse(old.body).error !== "request_outcome_unknown" ? 409 : 200, headers: { "content-type": "application/json" } });
+    return new Response(old.body, {
+      status: "error" in JSON.parse(old.body) && JSON.parse(old.body).error !== "request_outcome_unknown" ? 409 : 200,
+      headers: { "content-type": "application/json" },
+    });
   const mutating = !READ_ONLY_OPERATIONS.has(request.op);
   // Fence before side effects. A crash leaves an explicit unknown outcome, never a duplicate turn.
   if (mutating)

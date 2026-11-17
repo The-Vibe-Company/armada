@@ -38,13 +38,15 @@ test("large prompt and steer previews preserve control metadata after escaping a
   try {
     for (const text of ["a".repeat(262144), '"'.repeat(140000), "😀".repeat(65536)]) {
       const prompt = {
-        promptId: "p", conversationId: "c", status: "queued" as const,
+        promptId: "p",
+        conversationId: "c",
+        status: "queued" as const,
         request: { sandboxId: "logical", harness: "claude" as const, text: `private_value ${text}` },
       };
       journal.transition(prompt, "failed", "authentication_failed");
       journal.append({ id: "s", at: 1, kind: "steer", promptId: "p", conversationId: "c", text: prompt.request.text });
     }
-    const events = journal.events().map(row => row.event);
+    const events = journal.events().map((row) => row.event);
     expect(events).toHaveLength(6);
     for (const event of events) {
       expect(["prompt", "steer"]).toContain(event.kind);
@@ -54,5 +56,7 @@ test("large prompt and steer previews preserve control metadata after escaping a
       if (event.kind === "prompt") expect(event).toMatchObject({ status: "failed", reason: "authentication_failed" });
       if (event.kind === "prompt" || event.kind === "steer") expect(event.text).toContain("[truncated]");
     }
-  } finally { journal.close(); }
+  } finally {
+    journal.close();
+  }
 });
