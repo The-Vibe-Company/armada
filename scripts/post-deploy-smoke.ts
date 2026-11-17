@@ -105,8 +105,13 @@ interface SmokeIo {
   recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
 }
 const POLLS = 120;
-/** Longest a scoped probe waits for in-flight sibling launches to explain its unattributed rows. */
-const SIBLING_ATTRIBUTION_WAIT_MS = 2 * 60_000;
+/** A template launch answers only once the whole launch finished, but its sandbox is listed before. */
+const TEMPLATE_LAUNCH_TIMEOUT_MS = 600_000;
+/**
+ * Longest a scoped probe waits for in-flight sibling launches to explain an otherwise unattributed
+ * row: the longest launch request timeout, so a slow but valid sibling launch is never misreported.
+ */
+const SIBLING_ATTRIBUTION_WAIT_MS = TEMPLATE_LAUNCH_TIMEOUT_MS;
 const LAUNCH_PATH = /^(?:sandbox\/launch(?:-access-v1)?|templates\/launch)$/;
 type Lane = "templates" | "expiry" | "lifecycle";
 
@@ -588,7 +593,8 @@ async function runPostDeploySmoke(
     return runTemplateSkillCase(
       { ...item, goldenId: item.goldenId! },
       {
-        request: (path, body) => request(path, body, undefined, path === "templates/launch" ? 600_000 : 120_000),
+        request: (path, body) =>
+          request(path, body, undefined, path === "templates/launch" ? TEMPLATE_LAUNCH_TIMEOUT_MS : 120_000),
         poll,
         step,
         out,

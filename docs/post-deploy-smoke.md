@@ -185,7 +185,10 @@ shortens another lane's deadline. The run waits for every lane, including its
 cleanup, before the journal cleanup waves and passes only if every lane passes.
 The scoped-access snapshot diff ignores sandboxes this same run launched through
 the owner API in other lanes; any other new sandbox remains unattributed and
-fails the probe. A scoped child is registered under its parent's owner and
+fails the probe. Verified children are stopped first. Only a row nothing else
+explains waits for launches still in flight to return its handle, for at most
+the longest launch request timeout (10 minutes), so an unrelated launch never
+delays scoped cleanup or the next preservation worker. A scoped child is registered under its parent's owner and
 golden without an owner API launch, so the run cannot attribute another case's
 child: scoped Codex lifecycle runs that share an org and golden run one after
 another, from the baseline snapshot through scoped cleanup. Expiry, templates
@@ -517,8 +520,8 @@ Only receipt-claimed IDs corroborated as new owned rows can be stopped with the
 owner API. Preexisting, parent, unverified and unclaimed IDs are never blindly
 stopped. `scoped_cleanup_summary` retains parent/local request key, operation
 UUIDs and leftover/unverified/unattributed IDs/uncertainty without raw tool text.
-When another lane of the same run lost an owner launch outcome (no handle), the
-summary also sets `unknownSiblingLaunch` beside any unattributed ID: the probe
+When another lane of the same run lost an owner launch outcome (no handle), or a
+launch was still in flight when the bounded wait ended, the summary also sets `unknownSiblingLaunch` beside any unattributed ID: the probe
 still fails, but that ID may be the other lane's sandbox rather than a child.
 Unknown mutations are never replayed; reconcile reported handles before rerun.
 If the parent's stop cannot be confirmed, cleanup still attempts safe known

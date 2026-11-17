@@ -54,6 +54,7 @@ function fixture(enabled = true) {
     mutate: (_tools: WireTool[]) => {},
     siblings: [] as string[],
     siblingLaunchLost: false,
+    siblingCalls: [] as { candidates: string[]; stoppedBefore: string[] }[],
   };
   const receipt = (sandboxId = child) => ({ id: operation, sandboxId, state: "succeeded" });
   const wire = (name: string, input: Obj, result: Obj, suffix = name): WireTool => ({
@@ -211,7 +212,10 @@ function fixture(enabled = true) {
     },
     isNotReady: (error) => error instanceof Error && error.message === "not_ready",
     out: (line) => output.push(JSON.parse(line)),
-    siblingSandboxes: async () => new Set(state.siblings),
+    siblingSandboxes: async (candidates) => {
+      state.siblingCalls.push({ candidates: [...candidates], stoppedBefore: [...stopped] });
+      return new Set(state.siblings);
+    },
     siblingLaunchLost: () => state.siblingLaunchLost,
   };
   const probe = createScopedProbe(item, enabled, io);
@@ -531,6 +535,22 @@ describe("ordinary scoped Armada smoke", () => {
       });
     },
   );
+
+  test("verified children stop before sibling attribution, which only ever sees unexplained rows", async () => {
+    // Nothing unexplained: attribution never runs, so no launch in flight can hold cleanup.
+    const clean = fixture();
+    await run(clean);
+    expect(await clean.probe.cleanup(parent, true)).toBe(true);
+    expect(clean.stopped).toEqual([child]);
+    expect(clean.state.siblingCalls).toEqual([]);
+    // One unexplained row: attribution is asked about that row only, after the claimed child stopped.
+    const mixed = fixture();
+    mixed.state.after = [parent, child, other];
+    mixed.state.siblings = [other];
+    await run(mixed);
+    expect(await mixed.probe.cleanup(parent, true)).toBe(true);
+    expect(mixed.state.siblingCalls).toEqual([{ candidates: [other], stoppedBefore: [child] }]);
+  });
 
   test("cleanup attempts every corroborated claim despite a stop failure", async () => {
     const f = fixture();

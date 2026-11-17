@@ -1679,7 +1679,9 @@ test("an unrelated launch in flight never holds scoped child cleanup or the next
   const before = lines.slice(0, releasedAt).map((line) => JSON.parse(line));
   const summaries = before.filter((line) => line.case === 0 && line.step === "scoped_cleanup_summary");
   expect(summaries.map((line) => line.mode)).toEqual(["enabled", "no_option"]);
-  // The verified-parent child was stopped and the unclaimed child still fails the probe.
+  // The unclaimed child still fails the probe; the parent was stopped. The bounded wait for the
+  // still-pending launch applies only to that unexplained row (child-first order and the no-wait
+  // path are proven at the probe boundary in scoped-access-smoke.test.ts).
   const enabled = summaries[0];
   expect(enabled.unattributedSandboxIds).toEqual([children.get(enabled.parentId)]);
   expect(enabled.pass).toBe(false);
