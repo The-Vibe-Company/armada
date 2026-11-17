@@ -61,6 +61,24 @@ export interface SandboxRecord {
   model: string | null;
   /** The reasoning effort its turns run with. Null exactly when `model` is. */
   reasoningEffort: string | null;
+  /** Opaque caller reference recorded at launch (#2568). Absent when none was given. */
+  externalRef?: string;
+}
+
+/** The longest accepted external reference. The database enforces the same bound. */
+export const MAX_EXTERNAL_REF_LENGTH = 200;
+
+/** True for an opaque external reference: 1-200 characters, no control characters. */
+export function isExternalRef(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= MAX_EXTERNAL_REF_LENGTH &&
+    ![...value].some((char) => {
+      const code = char.charCodeAt(0);
+      return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+    })
+  );
 }
 
 export interface SandboxPatch {
@@ -136,6 +154,8 @@ export interface SandboxStore {
     model: string;
     reasoningEffort: string;
     visibility?: "private" | "org";
+    /** Validated with `isExternalRef` before any provider allocation. */
+    externalRef?: string;
   }): Promise<SandboxRecord>;
   update(id: string, patch: SandboxPatch): Promise<void>;
 }
@@ -176,13 +196,14 @@ export interface SandboxRow {
   lifecycle_error?: string | null;
   stop_requested_at?: Date | string | null;
   lifecycle_generation?: number | string | bigint;
+  external_ref?: string | null;
 }
 
 /** The longest failure reason kept; a longer one is cut. */
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
 const COLUMNS = `runtime_transport,boat_runtime,skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation, stop_requested_at`;
+  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation, stop_requested_at, external_ref`;
 
 /** Turn and pricing evidence is service-role-only; caller-role stores must not gain these ports. */
 export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } = {}): SandboxStore {
@@ -198,8 +219,8 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
         `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport)
-         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, coalesce($20::timestamptz, now() + $14::integer * interval '1 second'), $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb, $21::boolean,$22::text)
+           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport, external_ref)
+         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, coalesce($20::timestamptz, now() + $14::integer * interval '1 second'), $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb, $21::boolean,$22::text,$23::text)
          returning ${COLUMNS}`,
         [
           input.id,
@@ -224,6 +245,7 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
           input.expiresAt ?? null,
           input.boatRuntime === true,
           input.runtimeTransport ?? null,
+          input.externalRef ?? null,
         ],
       );
       const row = result.rows[0];
@@ -304,6 +326,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
     model: row.model ?? null,
     reasoningEffort: row.reasoning_effort ?? null,
     skills: row.skills ?? [],
+    ...(row.external_ref ? { externalRef: row.external_ref } : {}),
   };
 }
 

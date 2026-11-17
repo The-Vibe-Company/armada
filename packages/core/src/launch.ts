@@ -41,7 +41,7 @@ import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpo
 import { PrivateSkillError } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
-import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
+import { isExternalRef, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import * as placement from "./sandbox-provider.ts";
@@ -82,6 +82,8 @@ export interface LaunchRequest {
   model?: string;
   /** An effort the model accepts. Default: the harness's default effort. */
   reasoningEffort?: string;
+  /** Opaque caller reference stored on the sandbox (#2568). Refused before any allocation when malformed. */
+  externalRef?: string;
 }
 
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
@@ -271,6 +273,8 @@ export async function launchSandbox(
   }
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
+  if (request.externalRef !== undefined && !isExternalRef(request.externalRef))
+    throw new LaunchError("invalid_request", "externalRef must be 1 to 200 characters without control characters.");
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId)
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
@@ -558,6 +562,7 @@ export async function launchSandbox(
         model: choice.model,
         reasoningEffort: choice.reasoningEffort,
         visibility,
+        ...(request.externalRef === undefined ? {} : { externalRef: request.externalRef }),
       });
       childRecorded = true;
     } catch (error) {

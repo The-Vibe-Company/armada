@@ -449,7 +449,9 @@ export async function startServer(
         })
       : undefined;
   const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
+  const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
   const control: ConfiguredControlOptions = {
+    ordinaryLaunchReceipts,
     ...(dockerControls ? { dockerControls } : {}),
     ...(dockerLaunch ? { dockerLaunch } : {}),
     docker: {
@@ -567,7 +569,7 @@ export async function startServer(
     idlePauseDelayMs: idleDelayMs,
     ...(commitSha ? { commitSha } : {}),
     runtimeProviderFor,
-    ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(sql),
+    ordinaryLaunchReceipts,
     launch,
     modelAuth,
     publicUrl: config.publicUrl,

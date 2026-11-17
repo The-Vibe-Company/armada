@@ -369,6 +369,8 @@ export type {
 export { ROUTINE_REASON_HELP, type Routine, routineLaunchRefusal, routineReasonHelp } from "./routines.ts";
 export {
   createSqlSandboxStore,
+  isExternalRef,
+  MAX_EXTERNAL_REF_LENGTH,
   MAX_STATUS_REASON_LENGTH,
   mapSandboxRow,
   type ResourceProject,

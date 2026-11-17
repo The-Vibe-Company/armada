@@ -32,6 +32,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModalIntegration } from "../src/modal-integration.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
+import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -1125,6 +1126,101 @@ describe("control API", () => {
       }
     });
   }
+
+  test("sandbox/launch replays one sandbox per idempotencyKey and refuses a changed request", async () => {
+    await withServer(async ({ db, options }) => {
+      const org = (await options.store.createOrg("Keyed", STAN)).id;
+      options.authStore.addMembership(STAN, { orgId: org, name: "Keyed", role: "admin" });
+      await db.query("update orgs set boat_api_key_enc = $1 where id = $2", [
+        await encryptSecret("server-only-boat-key", KEY),
+        org,
+      ]);
+      await db.query(
+        "insert into credentials (scope, owner_id, kind, value_enc) values ('user', $1, 'claude_oauth', $2)",
+        [STAN, await encryptSecret("server-only-model-token", KEY)],
+      );
+      await db.query(
+        "insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values ($1, 'web', 'org', $2, $3, $4::jsonb)",
+        [
+          org,
+          STAN,
+          `a${"b".repeat(62)}`,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const boat = fakeBoat();
+      const provider = { ...boat.provider, managementIdentity: async () => ({ scope: "org" as const, ownerId: org }) };
+      const keyed = {
+        ...options,
+        providerFor: () => provider,
+        providers: { resolve: async () => provider },
+        ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(db as unknown as Sql),
+      };
+      const call = (route: string, body: Record<string, unknown>, user = STAN) =>
+        handleControlRequest(
+          new Request(`https://armada.test/api/v1/${route}`, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: user })).replace(/=+$/, "")}.sig`,
+            },
+            body: JSON.stringify({ org, ...body }),
+          }),
+          keyed,
+        );
+      const request = {
+        golden: "web",
+        harness: "claude",
+        idempotencyKey: "tender-0001-launch",
+        externalRef: "tender:1",
+      };
+      const first = await call("sandbox/launch", request);
+      expect(first?.status).toBe(200);
+      const launched = ((await first!.json()) as { sandbox: { id: string; externalRef?: string } }).sandbox;
+      expect(launched.externalRef).toBe("tender:1");
+      const replay = await call("sandbox/launch", request);
+      expect(replay?.status).toBe(200);
+      expect(((await replay!.json()) as { sandbox: { id: string } }).sandbox.id).toBe(launched.id);
+      expect(boat.forks).toHaveLength(1);
+      const changed = await call("sandbox/launch", { ...request, externalRef: "tender:2" });
+      expect(changed?.status).toBe(409);
+      expect(boat.forks).toHaveLength(1);
+      const status = await call("sandbox/status", { id: launched.id, recorded: true });
+      expect(await status!.json()).toMatchObject({ id: launched.id, externalRef: "tender:1" });
+      type Page = { total: number; sandboxes: { id: string; externalRef?: string }[] };
+      const list = async (body: Record<string, unknown>, user = STAN) =>
+        (await (await call("sandbox/list", body, user))!.json()) as Page;
+      const listed = await list({ externalRef: "tender:1" });
+      expect(listed.sandboxes.map((row) => [row.id, row.externalRef])).toEqual([[launched.id, "tender:1"]]);
+      expect((await list({ externalRef: "tender:2" })).total).toBe(0);
+      // A metadata-only member sees the row in an unfiltered list but cannot read or probe its reference.
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [org, ADA]);
+      options.authStore.addMembership(ADA, { orgId: org, name: "Keyed", role: "member" });
+      expect((await list({}, ADA)).sandboxes.map((row) => [row.id, row.externalRef])).toEqual([
+        [launched.id, undefined],
+      ]);
+      expect((await list({ externalRef: "tender:1" }, ADA)).total).toBe(0);
+    });
+  });
+
+  test("sandbox/launch refuses a malformed externalRef before any allocation", async () => {
+    await withServer(async ({ options }) => {
+      const org = (await options.store.createOrg("Ref", STAN)).id;
+      options.authStore.addMembership(STAN, { orgId: org, name: "Ref", role: "admin" });
+      const boat = fakeBoat();
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
+          body: JSON.stringify({ org, golden: "web", harness: "claude", externalRef: "bad\nref" }),
+        }),
+        { ...options, providerFor: () => boat.provider },
+      );
+      expect(response?.status).toBe(400);
+      expect(boat.forks).toHaveLength(0);
+    });
+  });
 
   test("sandbox/launch refuses a service token scoped to another org", async () => {
     await withServer(async ({ db, options }) => {
