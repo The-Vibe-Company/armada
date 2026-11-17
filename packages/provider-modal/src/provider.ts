@@ -978,24 +978,29 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     async readOutputs({ sandboxId, signal }) {
       await bound();
       signal?.throwIfAborted();
-      return store.lease(sandboxId, async (row) => {
-        assertMachineSource(row);
-        // Live compute only: a stopped Modal workspace is a recovery image, readable only by
-        // starting compute, which this read never does. Armada stops capture first instead.
-        if (row.golden || row.phase !== "active" || !row.physicalId) return null;
-        const sb = await physical(row);
-        // Fixed collector on the physical container, not the runner: it works for native and
-        // enrolled (dial-out) runtimes alike and never carries caller input.
-        const child = await sb.exec(
-          ["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sh", "-c", OUTPUT_COLLECTOR],
-          { mode: "text", env: {}, secrets: [], timeoutMs: 10_000, workdir: "/", stderr: "ignore" },
-        );
-        const output = child.stdout.readText();
-        await child.stdin.close();
-        const [status, stdout] = await Promise.all([child.wait(), output]);
-        if (status !== 0) return null;
-        return { files: parseCollectorOutput(stdout), retained: false };
-      });
+      // Observation, not lifecycle: like exec and getPrompt it reads the row without the
+      // exclusive lifecycle lease, so a periodic sample never makes a concurrent stop, prompt or
+      // the pre-stop final capture fail with lifecycle_lease_busy. A stop racing this read only
+      // makes the exec fail; the caller keeps its previous snapshot.
+      const row = await store.get(sandboxId);
+      assertMachineSource(row);
+      // Live compute only: a stopped Modal workspace is a recovery image, readable only by
+      // starting compute, which this read never does. Armada stops capture first instead.
+      if (row.golden || row.phase !== "active" || !row.physicalId) return null;
+      const sb = await physical(row);
+      signal?.throwIfAborted();
+      // Fixed collector on the physical container, not the runner: it works for native and
+      // enrolled (dial-out) runtimes alike and never carries caller input.
+      const child = await sb.exec(
+        ["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sh", "-c", OUTPUT_COLLECTOR],
+        { mode: "text", env: {}, secrets: [], timeoutMs: 10_000, workdir: "/", stderr: "ignore" },
+      );
+      const output = child.stdout.readText();
+      await child.stdin.close();
+      // The caller's budget (the shared pre-stop deadline) bounds the wait, not only the exec timeout.
+      const [status, stdout] = await abortable(Promise.all([child.wait(), output]), signal);
+      if (status !== 0) return null;
+      return { files: parseCollectorOutput(stdout), retained: false };
     },
     async observeResources(id) {
       await bound();
@@ -1764,4 +1769,15 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         : value,
     ]),
   ) as unknown as ModalProvider;
+}
+
+/** Settles with `work`, or rejects with the signal's reason as soon as the caller aborts. */
+function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }

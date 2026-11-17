@@ -147,7 +147,10 @@ export function createSandboxOutputs(
     route(authenticate: (request: Request) => Promise<CallerResult>): Route {
       return async (request) => {
         const url = new URL(request.url);
-        const match = /^\/api\/v1\/sandboxes\/([0-9a-f-]{36})\/outputs(?:\/([^/]+))?$/.exec(url.pathname);
+        const match =
+          /^\/api\/v1\/sandboxes\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/outputs(?:\/([^/]+))?$/.exec(
+            url.pathname,
+          );
         if (!match) return null;
         if (request.method !== "GET") return Response.json({ error: "Use GET" }, { status: 405 });
         const auth = await authenticate(request);

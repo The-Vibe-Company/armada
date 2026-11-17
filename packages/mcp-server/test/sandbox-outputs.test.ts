@@ -79,6 +79,9 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   expect(await response?.text()).toBe("document");
   expect((await routeFor(service, people.member, people.org)(new Request(url)))?.status).toBe(404);
   expect((await routeFor(service, people.owner, crypto.randomUUID())(new Request(url)))?.status).toBe(404);
+  // Only a well-formed UUID reaches the uuid-typed query; anything else is not this route.
+  const malformed = `https://armada.example/api/v1/sandboxes/${"-".repeat(36)}/outputs`;
+  expect(await routeFor(service, people.owner, people.org)(new Request(malformed))).toBeNull();
 });
 
 test("a stop without the pre-stop hook publishes the retained disk's files written or changed after the last sample", async () => {

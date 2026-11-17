@@ -2950,7 +2950,8 @@ test("declared outputs are read on live compute only, never by resuming a stoppe
   const name = crypto.randomUUID();
   await f.provider.snapshot({ sandboxId: builder.id, name });
   const fork = await f.provider.fork({ from: name });
-  const read = await f.provider.readOutputs?.({ sandboxId: fork.id });
+  // Observation never takes the lifecycle lease: a sample overlapping a stop or prompt does not refuse it.
+  const read = await f.store.lease(fork.id, async () => f.provider.readOutputs?.({ sandboxId: fork.id }));
   expect(read?.retained).toBe(false);
   expect(read?.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
   expect(f.sdkCommands.at(-1)?.argv.at(-1)).toBe(OUTPUT_COLLECTOR);

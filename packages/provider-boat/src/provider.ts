@@ -435,6 +435,17 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (state !== "stopped") return null;
       // Retained disk: every Boat stop (ours, TTL or provider-initiated) saves the disk first.
       // Read the latest completed snapshot directly; the machine is never contacted or resumed.
+      // The latest *completed* snapshot predates the stop while the stop's own snapshot is still
+      // pending or has failed: reading it would replace a fresher pre-stop capture with stale bytes.
+      const attempt = current.sandbox.lastSnapshotStatus;
+      if (attempt === "queued" || attempt === "in_progress")
+        throw new ProviderError({
+          provider: PROVIDER_ID,
+          code: "sandbox_not_ready",
+          message: "The stop snapshot is not complete yet.",
+          retryable: true,
+        });
+      if (attempt && attempt !== "completed") return null;
       const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal: read }));
       const snapshot = latest.snapshot;
       if (!snapshot || snapshot.sandboxId !== sandboxId || snapshot.status !== "completed") return null;
