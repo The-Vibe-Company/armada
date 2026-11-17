@@ -3,6 +3,8 @@ import Testing
 @testable import ArmadaKit
 
 // Only this reserved host is intercepted. No sockets or production session inspection.
+// URLSession ignores URLProtocol.registerClass (that API only reaches NSURLConnection),
+// so the protocol is installed on the session configuration instead.
 private final class TransportProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var handler: (@Sendable (TransportProtocol) -> Void)?
@@ -32,22 +34,66 @@ private final class TransportProtocol: URLProtocol, @unchecked Sendable {
     }
 }
 
+/// Resumes exactly once, whichever of the signal and the timeout arrives first.
+private final class FirstSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var settled = false
+
+    func arm(_ continuation: CheckedContinuation<Bool, Never>) {
+        lock.withLock { self.continuation = continuation }
+    }
+
+    func settle(_ value: Bool) {
+        let pending = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
+            guard !settled, let continuation else { return nil }
+            settled = true
+            self.continuation = nil
+            return continuation
+        }
+        pending?.resume(returning: value)
+    }
+}
+
 @Suite(.serialized)
 struct URLSessionTransportTests {
+    private func transport() -> URLSessionTransport {
+        let configuration = URLSessionTransport.ephemeralConfiguration()
+        configuration.protocolClasses = [TransportProtocol.self]
+        return URLSessionTransport(configuration: configuration)
+    }
+
     private func request(_ path: String, bearer: String? = nil) -> URLRequest {
         var request = URLRequest(url: URL(string: "https://transport.invalid/\(path)")!)
+        request.timeoutInterval = 5
         if let bearer { request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization") }
         return request
     }
 
-    @Test func concurrentAndSubsequentRequestsDoNotShareAuthentication() async throws {
-        #expect(URLProtocol.registerClass(TransportProtocol.self))
-        defer {
-            URLProtocol.unregisterClass(TransportProtocol.self)
-            TransportProtocol.handle(nil)
+    /// Fails the test instead of hanging the job if the expected signal never arrives.
+    private func awaitFirst(_ stream: AsyncStream<Void>) async {
+        let gate = FirstSignal()
+        let arrived = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            gate.arm(continuation)
+            Task {
+                for await _ in stream {
+                    gate.settle(true)
+                    return
+                }
+                gate.settle(false)
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(5))
+                gate.settle(false)
+            }
         }
+        #expect(arrived, "Timed out waiting for the transport to start the request")
+    }
+
+    @Test func concurrentAndSubsequentRequestsDoNotShareAuthentication() async throws {
+        defer { TransportProtocol.handle(nil) }
         TransportProtocol.handle { $0.reply() }
-        let transport = URLSessionTransport()
+        let transport = transport()
         async let first = transport.send(request("first", bearer: "fixture_first"))
         async let second = transport.send(request("second", bearer: "fixture_second"))
         let (a, b) = try await (first, second)
@@ -58,20 +104,16 @@ struct URLSessionTransportTests {
     }
 
     @Test func cancellingOneRequestLeavesOtherRequestsUsable() async throws {
-        #expect(URLProtocol.registerClass(TransportProtocol.self))
-        defer {
-            URLProtocol.unregisterClass(TransportProtocol.self)
-            TransportProtocol.handle(nil)
-        }
+        defer { TransportProtocol.handle(nil) }
         let (started, signal) = AsyncStream<Void>.makeStream()
         TransportProtocol.handle { fixture in
             if fixture.request.url?.path == "/held" { signal.yield(()) }
             else { fixture.reply() }
         }
-        let transport = URLSessionTransport()
-        let heldRequest = request("held")
-        let held = Task { try await transport.send(heldRequest) }
-        for await _ in started { break }
+        defer { signal.finish() }
+        let transport = transport()
+        let held = Task { try await transport.send(request("held")) }
+        await awaitFirst(started)
         let other = try await transport.send(request("other"))
         #expect(other.1.statusCode == 200)
         held.cancel()
@@ -83,6 +125,5 @@ struct URLSessionTransportTests {
         }
         let later = try await transport.send(request("later"))
         #expect(later.1.statusCode == 200)
-        signal.finish()
     }
 }
