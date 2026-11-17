@@ -7,6 +7,7 @@ import {
 } from "./docker-image.ts";
 import { type DockerSandboxLimits, dockerHostResources, dockerResourceArgs } from "./docker-resources.ts";
 import { buildDockerSnapshot } from "./docker-snapshot-build.ts";
+import { SHARED_ARTIFACT_CACHE_PATH } from "./shared-artifact-cache.ts";
 
 /** Direct argv execution only; adapters must never invoke a shell or log stdin/output. */
 export interface DockerMachineCli {
@@ -79,8 +80,16 @@ export function createDockerMachineExecutor(options: {
   cli: DockerMachineCli;
   now: () => number;
   limits?: () => DockerSandboxLimits;
+  /**
+   * Host directory of verified digest-named public artifacts, bind-mounted read-only at
+   * SHARED_ARTIFACT_CACHE_PATH into new containers (#2562). Retained containers created
+   * without it stay valid and simply download as before.
+   */
+  sharedArtifactDir?: string;
 }) {
   if (!uuid.test(options.installationId) || !uuid.test(options.hostId)) fail("invalid_request");
+  const shared = options.sharedArtifactDir;
+  if (shared !== undefined && (!shared.startsWith("/") || /[,"=\0\n\r]/.test(shared))) fail("invalid_request");
 
   async function run(argv: readonly string[], stdin?: string | Uint8Array) {
     try {
@@ -209,10 +218,20 @@ export function createDockerMachineExecutor(options: {
         config.User !== "1000:1000" ||
         host.Privileged !== false ||
         !Array.isArray(mounts) ||
-        mounts.length !== 1
+        mounts.length < 1 ||
+        mounts.length > (shared === undefined ? 1 : 2)
       )
         fail("ownership_mismatch");
-      const mount = object(mounts[0]);
+      const home = mounts.filter((entry) => object(entry).Type !== "bind");
+      const binds = mounts.filter((entry) => object(entry).Type === "bind");
+      if (home.length !== 1) fail("ownership_mismatch");
+      // The only accepted extra mount is this host's own read-only shared artifact cache.
+      for (const entry of binds) {
+        const bind = object(entry);
+        if (bind.Source !== shared || bind.Destination !== SHARED_ARTIFACT_CACHE_PATH || bind.RW !== false)
+          fail("ownership_mismatch");
+      }
+      const mount = object(home[0]);
       if (
         mount.Type !== "volume" ||
         mount.Name !== ctx.volumeName ||
@@ -313,6 +332,9 @@ export function createDockerMachineExecutor(options: {
         "no-new-privileges",
         "--mount",
         `type=volume,src=${state.volumeName},dst=/home/user`,
+        ...(shared === undefined
+          ? []
+          : ["--mount", `type=bind,src=${shared},dst=${SHARED_ARTIFACT_CACHE_PATH},readonly`]),
         ...labelArgs(object(state.volume?.Labels)),
         "--entrypoint",
         "/bin/sh",

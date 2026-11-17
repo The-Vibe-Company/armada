@@ -19,7 +19,7 @@ const request: DockerMachineRequest = {
 
 // Minimal independent Docker state machine: inspect returns stored Docker-shaped records,
 // not receipts or ownership decisions supplied by the executor.
-function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: number }) {
+function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: number }, sharedArtifactDir?: string) {
   const containers = new Map<string, any>();
   const volumes = new Map<string, any>();
   const calls: {
@@ -74,16 +74,19 @@ function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: numbe
       } else if (action === "create") {
         const name = value("--name");
         if (store.has(name)) return { exitCode: 1, stdout: "name already exists" };
-        const mount = Object.fromEntries(
-          value("--mount")
-            .split(",")
-            .map((part) => part.split("=")),
-        );
+        const mounts = argv
+          .flatMap((arg, i) => (arg === "--mount" ? [argv[i + 1]!] : []))
+          .map((spec) => Object.fromEntries(spec.split(",").map((part) => part.split("="))))
+          .map((mount) =>
+            mount.type === "bind"
+              ? { Type: "bind", Source: mount.src, Destination: mount.dst, RW: !("readonly" in mount) }
+              : { Type: mount.type, Name: mount.src, Destination: mount.dst, RW: true },
+          );
         store.set(name, {
           Name: `/${name}`,
           Config: { Image: argv[argv.indexOf("--entrypoint") + 2], User: value("--user"), Labels: labels },
           HostConfig: { Privileged: false },
-          Mounts: [{ Type: mount.type, Name: mount.src, Destination: mount.dst, RW: true }],
+          Mounts: mounts,
           State: { Status: "created", Running: false },
         });
       } else if (action === "start" || action === "stop") {
@@ -102,6 +105,7 @@ function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: numbe
     cli,
     now: () => time,
     ...(limits ? { limits } : {}),
+    ...(sharedArtifactDir ? { sharedArtifactDir } : {}),
   });
   return {
     executor,
@@ -125,6 +129,50 @@ function fixture(limits?: () => { cpus: number; memoryBytes: number; pids: numbe
 }
 
 describe("Docker machine executor", () => {
+  test("new containers mount the host's shared artifact cache read-only; retained ones without it stay owned", async () => {
+    const shared = "/state/artifact-cache";
+    const f = fixture(undefined, shared);
+    const created = await f.executor.create(request);
+    const container = f.containers.get(created.containerName);
+    expect(container.Mounts).toEqual([
+      { Type: "volume", Name: created.volumeName, Destination: "/home/user", RW: true },
+      { Type: "bind", Source: shared, Destination: "/opt/armada/artifact-cache", RW: false },
+    ]);
+    // A container created before the host had a shared cache resumes unchanged.
+    container.Mounts = [container.Mounts[0]];
+    expect(await f.executor.isRunning(request)).toBe(true);
+    // Any other bind, a writable cache or a foreign source is not ours.
+    for (const bind of [
+      { Type: "bind", Source: shared, Destination: "/opt/armada/artifact-cache", RW: true },
+      { Type: "bind", Source: "/var/run/docker.sock", Destination: "/opt/armada/artifact-cache", RW: false },
+      { Type: "bind", Source: shared, Destination: "/home/user/cache", RW: false },
+    ]) {
+      container.Mounts = [container.Mounts[0], bind];
+      await expect(f.executor.isRunning(request)).rejects.toThrow("ownership_mismatch");
+    }
+    // Without a configured cache, the shared bind is refused too.
+    container.Mounts = [
+      container.Mounts[0],
+      { Type: "bind", Source: shared, Destination: "/opt/armada/artifact-cache", RW: false },
+    ];
+    const plain = createDockerMachineExecutor({
+      installationId: "11111111-1111-1111-1111-111111111111",
+      hostId: "22222222-2222-2222-2222-222222222222",
+      cli: f.cli,
+      now: () => 1000,
+    });
+    await expect(plain.isRunning(request)).rejects.toThrow("ownership_mismatch");
+    expect(() =>
+      createDockerMachineExecutor({
+        installationId: "11111111-1111-1111-1111-111111111111",
+        hostId: "22222222-2222-2222-2222-222222222222",
+        cli: f.cli,
+        now: () => 1000,
+        sharedArtifactDir: "/state,dst=/home/user",
+      }),
+    ).toThrow("invalid_request");
+  });
+
   test("fetches an image the host does not have with a pull's own bound, and names a failed fetch", async () => {
     const fresh = { ...request, image: `buildpack-deps@sha256:${"b".repeat(64)}` };
     const pulled = fixture();
