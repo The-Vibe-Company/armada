@@ -149,7 +149,6 @@ function dto(h: Header): LaunchTemplate {
   };
 }
 
-/** Service-role owner: both transports share validation, reference authorization and admission. */
 /** Every field the REST `templates/launch` route accepts; the published OpenAPI request lists exactly these. */
 export const TEMPLATE_LAUNCH_FIELDS = [
   "org",
@@ -166,6 +165,7 @@ export const TEMPLATE_LAUNCH_FIELDS = [
   "externalRef",
 ] as const;
 
+/** Service-role owner: both transports share validation, reference authorization and admission. */
 export function createTemplateService(sql: Sql, encryptionKey?: string) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
     if (!sql.transaction) throw new VaultError("unavailable", "Template transactions unavailable.");
