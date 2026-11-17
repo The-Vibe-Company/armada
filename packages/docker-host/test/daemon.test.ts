@@ -1939,3 +1939,18 @@ test("a ledger that cannot be saved before a held poll never overwrites a comple
   expect(f.executed).toEqual(["create"]);
   expect(f.acknowledgements).toEqual(["completed"]);
 });
+
+test("a job of a sandbox whose operation still runs here waits, even if the server already freed the sandbox", async () => {
+  // The server records an outcome without the host when it cancels queued work,
+  // and then hands out the sandbox's next job while its create still executes.
+  const f = fixture("stop");
+  const api: Api = {
+    ...f.api,
+    poll: async (state, options) => ({ ...(await f.api.poll(state, options)), held: true }),
+  };
+  const running = new Set([crypto.randomUUID()]);
+  const options = { running, sandboxes: new Set([f.job.request.sandboxId]), dispatch: () => {} };
+  expect(await tick(f.store, api, f.executor, false, Date.now, options)).toBe("busy");
+  expect(f.state().receipts).toEqual([]);
+  expect(f.executed).toEqual([]);
+});

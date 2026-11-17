@@ -1312,7 +1312,11 @@ started about a minute apart.
   claim exists, or after 20 seconds with `job: null`. The recheck is a single
   read-only query; the full poll (host reconciliation and heartbeat writes)
   runs at the start and again only when the recheck finds something, so an
-  idle host costs one write transaction per hold, as before. The response
+  idle host costs one write transaction per hold, as before. The recheck is
+  broader than the poll, which also applies admission refusals and job order. If
+  the full poll it triggered finds nothing to hand out, the server does not
+  recheck again in that hold, so such a job costs at most one more full poll per
+  hold. The response
   carries `held: true`. Older servers refuse the field with a 400; the daemon
   then uses the previous poll body, keeps its 20-second idle period and runs
   jobs one at a time, because such a server cannot exclude running work.
@@ -1328,14 +1332,21 @@ started about a minute apart.
   daemon completes jobs while a poll is held, so a bootstrap or stop queued
   behind a create that just finished is handed out on the next recheck, not
   after the hold. A held poll therefore omits `skipSnapshots`, which could not
-  change during the hold; the server serializes builds from `running`. Docker's
+  change during the hold; the server serializes builds from `running`. The
+  server also records an outcome without the host when it cancels queued work
+  (revocation, owner removal, snapshot build expiry), so the daemon does not
+  rely on the server alone. It does not admit a job of a sandbox, or a snapshot
+  build, while one of its own operations for that sandbox, or a build, is still
+  executing, and the server delivers that job again later. Docker's
   per-container limits and the server's capacity admission still bound what
   runs.
 - **Durable protocol unchanged.** Every ledger read-modify-write (admission
   receipt, resume-claim acknowledgement, retention, TTL, completion) is
   serialized per state file. Only the machine operation and the held poll run
-  outside that section, and the ledger is reloaded after a poll while jobs are
-  running. A receipt is still saved before its operation starts, replay fences
+  outside that section. While jobs are running, the ledger is saved before the
+  poll and reloaded after it. If that save fails, the iteration ends before
+  polling, because a later write of the unsaved copy would erase a completion
+  saved during the poll. A receipt is still saved before its operation starts, replay fences
   and the resume-claim protocol (#2534) are untouched, and a job re-delivered
   while it is still running here is skipped, never recovered as uncertain.
 

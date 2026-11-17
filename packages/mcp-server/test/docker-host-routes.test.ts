@@ -478,16 +478,21 @@ test("a held host poll answers as soon as work appears and never beyond its hold
   let polls = 0;
   let probes = 0;
   let readyAt = Number.POSITIVE_INFINITY;
+  let refused = false;
+  let retentionWrites = 0;
   const running: (readonly string[])[] = [];
   const job = { requestId: randomUUID(), operation: "stop" };
   const store = {
-    retentionForHost: async () => undefined,
+    async retentionForHost() {
+      retentionWrites++;
+      return undefined;
+    },
     resumeClaimsForHost: async () => [],
     pendingStartsForHost: async () => [],
     async poll(...args: unknown[]) {
       polls++;
       running.push(args[8] as readonly string[]);
-      return time >= readyAt ? job : null;
+      return time >= readyAt && !refused ? job : null;
     },
     async mayHaveWork(...args: unknown[]) {
       probes++;
@@ -528,12 +533,20 @@ test("a held host poll answers as soon as work appears and never beyond its hold
   [polls, probes, time, readyAt] = [0, 0, 0, Number.POSITIVE_INFINITY];
   expect(await poll({ waitSeconds: 600 })).toMatchObject({ status: 200, body: { held: true, job: null } });
   expect([polls, probes, time]).toEqual([1, 20, 20_000]);
+  // A probe the full poll cannot serve (a refused admission) is not retried
+  // within the hold: one more full poll, not one per second.
+  [polls, probes, time, readyAt, refused] = [0, 0, 0, 0, true];
+  expect(await poll({ waitSeconds: 20 })).toMatchObject({ status: 200, body: { held: true, job: null } });
+  expect([polls, probes, time]).toEqual([2, 1, 20_000]);
   // Without the opt-in the poll answers at once, as for older daemons.
   [polls, probes, time] = [0, 0, 0];
   expect(await poll({})).toEqual({ status: 200, body: { job: null, pendingStarts: [], resumeClaims: [] } });
   expect([polls, time]).toEqual([1, 0]);
+  retentionWrites = 0;
   for (const invalid of [{ waitSeconds: 0 }, { waitSeconds: 1.5 }, { running: ["not-a-uuid"] }, { running: "x" }])
     expect((await poll(invalid)).status).toBe(400);
+  // Refused before any write: an older daemon's fallback poll is the only one that writes.
+  expect(retentionWrites).toBe(0);
 });
 
 test("a host poll skips work the daemon reports running and hands out another sandbox's job", async () => {

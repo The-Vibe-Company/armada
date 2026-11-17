@@ -252,20 +252,10 @@ export function createDockerHostRoutes(
         // are meaningless without the policy they belong to.
         if ("deadlines" in body && !("retentionSeconds" in body)) throw new InvalidInput();
         const deadlines = "deadlines" in body ? deadlinesOf(body.deadlines) : undefined;
-        const retentionSeconds = await store.retentionForHost(
-          token,
-          installationId,
-          "retentionSeconds" in body
-            ? {
-                retentionSeconds: body.retentionSeconds as number,
-                nextCleanupAt: body.nextCleanupAt as string | null,
-                ...(deadlines === undefined ? {} : { deadlines }),
-              }
-            : undefined,
-        );
         // A daemon may opt into a held poll: the response waits until a job or an
         // unacknowledged resume claim exists, so a launch never waits out the
         // daemon's idle period, and the host still needs no inbound port (#2561).
+        // Validated before any write, as a daemon retries a refused poll without them.
         const wait = body.waitSeconds;
         if (wait !== undefined && (!Number.isSafeInteger(wait) || Number(wait) < 1)) throw new InvalidInput();
         const holdUntil = clock.now() + Math.min(Number(wait ?? 0), DOCKER_HOST_POLL_HOLD_SECONDS) * 1000;
@@ -279,10 +269,22 @@ export function createDockerHostRoutes(
             running.some((item) => typeof item !== "string" || !uuid.test(item)))
         )
           throw new InvalidInput();
+        const retentionSeconds = await store.retentionForHost(
+          token,
+          installationId,
+          "retentionSeconds" in body
+            ? {
+                retentionSeconds: body.retentionSeconds as number,
+                nextCleanupAt: body.nextCleanupAt as string | null,
+                ...(deadlines === undefined ? {} : { deadlines }),
+              }
+            : undefined,
+        );
         let resumeClaims: Awaited<ReturnType<typeof store.resumeClaimsForHost>>;
         let job: Awaited<ReturnType<typeof store.poll>>;
         const skipSnapshots = body.skipSnapshots === true;
         const runningIds = (running as string[] | undefined) ?? [];
+        let probed = false;
         for (;;) {
           resumeClaims = body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
           job = await store.poll(
@@ -297,6 +299,14 @@ export function createDockerHostRoutes(
             runningIds,
           );
           if (job || resumeClaims.length) break;
+          // The probe is broader than the poll (admission refusals, job order). A
+          // probe the full poll could not serve is not retried within this hold,
+          // so such a job costs one more full poll per hold, not one per second.
+          if (probed) {
+            const remaining = holdUntil - clock.now();
+            if (remaining > 0) await clock.wait(remaining, request.signal);
+            break;
+          }
           // Recheck every second with a read-only probe; the full poll above
           // (host reconciliation, heartbeat and claim writes) runs again only
           // when something may be ready, not once a second per idle host.
@@ -315,6 +325,7 @@ export function createDockerHostRoutes(
             );
           }
           if (!ready) break;
+          probed = true;
         }
         return Response.json(
           {

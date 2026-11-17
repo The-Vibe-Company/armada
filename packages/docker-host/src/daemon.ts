@@ -227,6 +227,8 @@ export type TickOptions = {
   waitSeconds?: number;
   /** Request IDs whose machine operation is still executing in this process. */
   running?: ReadonlySet<string>;
+  /** Sandboxes whose machine operation is still executing in this process. */
+  sandboxes?: ReadonlySet<string>;
   /**
    * Receives an admitted machine operation instead of awaiting it, so the next
    * tick can take another sandbox's job. The durable receipt is already saved;
@@ -314,7 +316,7 @@ export async function runJobs(
     now?: () => number;
   },
 ): Promise<void> {
-  const running = new Map<string, { snapshot: boolean; done: Promise<void> }>();
+  const running = new Map<string, { sandboxId: string; snapshot: boolean; done: Promise<void> }>();
   const settled = () => Promise.race([...running.values()].map((job) => job.done));
   try {
     while (!loop.stopping()) {
@@ -334,13 +336,18 @@ export async function runJobs(
           {
             waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
             running: new Set(running.keys()),
+            sandboxes: new Set([...running.values()].map((job) => job.sandboxId)),
             dispatch(job, work) {
               const done = work
                 .catch(() => loop.failed?.("job"))
                 .finally(() => {
                   running.delete(job.requestId);
                 });
-              running.set(job.requestId, { snapshot: job.operation === "buildSnapshot", done });
+              running.set(job.requestId, {
+                sandboxId: job.request.sandboxId,
+                snapshot: job.operation === "buildSnapshot",
+                done,
+              });
             },
           },
         );
@@ -857,8 +864,16 @@ async function admitLocked(
   // this process's own in-flight operation as an uncertain recovery. Such a
   // server (no held poll) may also hand out a later job of a sandbox whose
   // operation is still running, so nothing is admitted until local work drains;
-  // the unadmitted job is delivered again.
-  if (options.running?.has(job.requestId) || (options.running?.size && !polled.held)) {
+  // the unadmitted job is delivered again. The server frees a sandbox once a
+  // job's outcome is recorded, and it records one without the host when it
+  // cancels queued work (revocation, owner removal, snapshot build expiry). So
+  // this host keeps each sandbox, and snapshot builds, serial itself.
+  if (
+    options.running?.has(job.requestId) ||
+    (options.running?.size && !polled.held) ||
+    options.sandboxes?.has(job.request.sandboxId) ||
+    (skipSnapshots && job.operation === "buildSnapshot")
+  ) {
     await store.save(state);
     return "busy";
   }
