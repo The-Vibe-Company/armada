@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
+import { createServer } from "node:net";
 import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
-import { createOutboundWebhooks, publicWebhookAddress, webhookSignature } from "../src/outbound-webhooks.ts";
+import {
+  createOutboundWebhooks,
+  pinnedLookup,
+  postPinned,
+  publicWebhookAddress,
+  webhookSignature,
+} from "../src/outbound-webhooks.ts";
 
 const org = "00000000-0000-4000-8000-000000000001";
 const key = Buffer.alloc(32, 7).toString("base64");
@@ -104,4 +111,37 @@ test("delivery logs translate queued native receipts to the public send identity
   const body = (await response?.json()) as { deliveries: { payload: { promptId: string } }[] };
   expect(body.deliveries[0]?.payload.promptId).toBe("public_request");
   expect(JSON.stringify(body)).not.toContain("private_receipt");
+});
+
+test("pinned lookup answers both the single-address and all-records callback contracts", () => {
+  const single: unknown[] = [];
+  pinnedLookup("203.0.114.7")("receiver.example", { all: false }, (...args) => single.push(...args));
+  expect(single).toEqual([null, "203.0.114.7", 4]);
+  const all: unknown[] = [];
+  pinnedLookup("203.0.114.7")("receiver.example", { all: true }, (...args) => all.push(...args));
+  expect(all).toEqual([null, [{ address: "203.0.114.7", family: 4 }]]);
+});
+
+test("HTTPS delivery to a hostname connects to the pinned address through the real request lookup", async () => {
+  const connections: string[] = [];
+  const server = createServer((socket) => {
+    connections.push(socket.remoteAddress ?? "");
+    socket.destroy();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    const error = await postPinned(
+      new URL(`https://receiver.example:${port}/hook`),
+      "127.0.0.1",
+      "{}",
+      { "Content-Type": "application/json" },
+      new AbortController().signal,
+    ).catch((caught: unknown) => caught as NodeJS.ErrnoException);
+    // The plain TCP fixture closes before TLS completes; reaching it proves lookup succeeded.
+    expect(connections).toEqual(["127.0.0.1"]);
+    expect((error as NodeJS.ErrnoException).code).not.toBe("ERR_INVALID_IP_ADDRESS");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

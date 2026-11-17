@@ -40,6 +40,43 @@ function endpointUrl(value: unknown): URL {
   return url;
 }
 
+type LookupCallback = (
+  error: NodeJS.ErrnoException | null,
+  address: string | { address: string; family: number }[],
+  family?: number,
+) => void;
+
+/**
+ * Pin a validated address while honouring both Node lookup contracts: `net` asks for
+ * `all: true` (address records) when it may race families, and a single address otherwise.
+ */
+export function pinnedLookup(address: string) {
+  return (_host: string, options: { all?: boolean | undefined } | number | undefined, callback: LookupCallback) => {
+    if (typeof options === "object" && options?.all) callback(null, [{ address, family: 4 }]);
+    else callback(null, address, 4);
+  };
+}
+
+/** Sends to one already-validated address; the URL host stays the TLS server name and Host header. */
+export function postPinned(
+  url: URL,
+  address: string,
+  body: string,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = httpsRequest(url, { method: "POST", headers, signal, lookup: pinnedLookup(address) }, (response) => {
+      // No receiver body is retained or logged. Redirects are never followed.
+      const status = response.statusCode ?? 0;
+      response.destroy();
+      resolve(status);
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
 async function deliver(url: URL, body: string, headers: Record<string, string>, signal: AbortSignal): Promise<number> {
   signal.throwIfAborted();
   const resolver = new Resolver();
@@ -56,25 +93,7 @@ async function deliver(url: URL, body: string, headers: Record<string, string>, 
     throw new Error("invalid_address");
   const address = addresses[0];
   if (!address) throw new Error("invalid_address");
-  return new Promise((resolve, reject) => {
-    const req = httpsRequest(
-      url,
-      {
-        method: "POST",
-        headers,
-        signal,
-        lookup: (_host, _options, callback) => callback(null, address, 4),
-      },
-      (response) => {
-        // No receiver body is retained or logged. Redirects are never followed.
-        const status = response.statusCode ?? 0;
-        response.destroy();
-        resolve(status);
-      },
-    );
-    req.on("error", reject);
-    req.end(body);
-  });
+  return postPinned(url, address, body, headers, signal);
 }
 
 export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashboardUrl: string) {
