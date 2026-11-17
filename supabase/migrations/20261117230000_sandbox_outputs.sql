@@ -31,3 +31,28 @@ $$;
 revoke all on function public.enqueue_output_webhook() from public,anon,authenticated;
 create trigger output_webhook after insert or update on public.sandbox_outputs
  for each row execute function public.enqueue_output_webhook();
+
+-- Application-secret taint forbids file egress: purge snapshots once tainted and
+-- reject late writes from a collector that started before the taint committed.
+create function public.purge_tainted_sandbox_outputs() returns trigger
+language plpgsql set search_path='' as $$
+begin
+ delete from public.sandbox_outputs where sandbox_id=new.id;
+ return new;
+end;
+$$;
+revoke all on function public.purge_tainted_sandbox_outputs() from public,anon,authenticated;
+create trigger purge_tainted_sandbox_outputs after update of application_secret_tainted on public.sandboxes
+ for each row when (new.application_secret_tainted) execute function public.purge_tainted_sandbox_outputs();
+create function public.reject_tainted_sandbox_outputs() returns trigger
+language plpgsql set search_path='' as $$
+begin
+ perform 1 from public.sandboxes where id=new.sandbox_id and not application_secret_tainted for share;
+ if not found then raise exception 'Sandbox outputs unavailable'; end if;
+ return new;
+end;
+$$;
+revoke all on function public.reject_tainted_sandbox_outputs() from public,anon,authenticated;
+create trigger reject_tainted_sandbox_outputs before insert or update on public.sandbox_outputs
+ for each row execute function public.reject_tainted_sandbox_outputs();
+

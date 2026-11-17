@@ -60,7 +60,9 @@ export function parseOutputs(stdout: string): { name: string; bytes: Buffer; dig
 }
 
 // Native Boat/Modal only: enrolled runtimes refuse server exec, so neither sampling nor final capture applies.
-const ELIGIBLE = `provider in ('boat','modal') and not boat_runtime and runtime_transport is distinct from 'dialout'`;
+// Application-secret taint is irreversible and forbids every file egress (same policy as exec and work recovery).
+const ELIGIBLE = `provider in ('boat','modal') and not boat_runtime and runtime_transport is distinct from 'dialout'
+  and not application_secret_tainted`;
 
 async function collect(
   sql: Sql,
@@ -93,7 +95,7 @@ async function collect(
   if (!sql.transaction) throw Error("output_transaction_unavailable");
   await sql.transaction(async (tx) => {
     const authority = await tx.query(
-      `select id from public.sandboxes where id=$1 and status<>'deleted'
+      `select id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
         and outputs_checked_at::text=$2 for update`,
       [id, scan],
     );
@@ -179,7 +181,7 @@ export function createSandboxOutputs(
         const row = (
           await sql.query<{ id: string }>(
             `select s.id from public.sandboxes s join public.members m on m.org_id=s.org_id
-          where s.id=$1 and s.status<>'deleted' and m.user_id=$2 and s.org_id=any($3::uuid[])
+          where s.id=$1 and s.status<>'deleted' and not s.application_secret_tainted and m.user_id=$2 and s.org_id=any($3::uuid[])
           and (s.owner_id=$2 or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
             [match[1], caller.userId, caller.orgs.map((o) => o.orgId)],
           )

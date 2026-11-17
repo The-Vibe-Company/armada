@@ -177,3 +177,68 @@ test("stop captures files written after the last sample; enrolled runtimes are n
     else process.env.ARMADA_ENCRYPTION_KEY = previous;
   }
 });
+
+import { captureFinalOutputs } from "../src/sandbox-outputs.ts";
+
+test("application-secret taint forbids output sampling, final capture, late persistence and download", async () => {
+  const { db, people } = await database();
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
+    select $1,id,org_id,owner_id,'tainted_fixture','codex','ready' from goldens
+    where owner_id=$2 and visibility='private' limit 1`,
+    [id, people.owner],
+  );
+  const sql: Sql = {
+    query: (q, p) => db.query(q, p),
+    transaction: async (work) => {
+      await db.exec("begin");
+      try {
+        const result = await work(sql);
+        await db.exec("commit");
+        return result;
+      } catch (e) {
+        await db.exec("rollback");
+        throw e;
+      }
+    },
+  };
+  let calls = 0;
+  const provider = {
+    exec: async () => {
+      calls++;
+      return {
+        detached: false,
+        exitCode: 0,
+        timedOut: false,
+        truncated: false,
+        stderr: "",
+        stdout: JSON.stringify([{ name: "memo.pdf", base64: Buffer.from("secret").toString("base64") }]),
+      };
+    },
+  } as unknown as Provider;
+  const key = Buffer.alloc(32, 7).toString("base64");
+  const service = createSandboxOutputs(sql, key, async () => provider);
+  // A snapshot captured before exposure is purged when taint commits.
+  expect(await service.reconcileOne(new AbortController().signal)).toBe(true);
+  expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(1);
+  await db.query(`update sandboxes set application_secret_tainted=true,outputs_checked_at=null where id=$1`, [id]);
+  expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
+  // Neither periodic sampling nor the stop-path final capture executes against tainted compute.
+  expect(await service.reconcileOne(new AbortController().signal)).toBe(false);
+  await captureFinalOutputs(sql, provider, id, { key });
+  expect(calls).toBe(1);
+  // A collector that started before taint cannot persist afterwards.
+  await expect(
+    db.query(`insert into sandbox_outputs(sandbox_id,name,digest,size,content_enc) values($1,'late','d',0,'\\x00')`, [
+      id,
+    ]),
+  ).rejects.toThrow("Sandbox outputs unavailable");
+  const route = service.route(async () => ({
+    ok: true,
+    caller: { userId: people.owner, via: "service", orgs: [{ orgId: people.org, role: "member" }] },
+  }));
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+  expect((await route(new Request(url)))?.status).toBe(404);
+  expect((await route(new Request(`${url}/memo.pdf`)))?.status).toBe(404);
+});
