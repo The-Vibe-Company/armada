@@ -472,6 +472,24 @@ export function createDockerHostStore(sql: Sql, key: string) {
             "update public.docker_hosts set reported_retention_seconds=$2,next_cleanup_at=case when retention_seconds is null or retention_seconds=$2 then $3::timestamptz else null end where id=$1",
             [host.id, report.retentionSeconds, report.nextCleanupAt],
           );
+          // A host that speaks this protocol reports every obligation it holds.
+          // Clear deadlines it no longer holds (resumed, deleted, lost state) so a
+          // stale one cannot fence a resume the daemon would never delete.
+          if (report.deadlines) {
+            await tx.query(
+              `update public.sandboxes set docker_retention_deadline=null
+               where docker_host_id=$1 and docker_retention_deadline is not null
+                 and not exists (
+                   select 1 from unnest($2::uuid[],$3::uuid[]) as held(sandbox_id,generation)
+                   where held.sandbox_id=sandboxes.id and held.generation=sandboxes.docker_generation
+                 )`,
+              [
+                host.id,
+                report.deadlines.map((entry) => entry.sandboxId),
+                report.deadlines.map((entry) => entry.generation),
+              ],
+            );
+          }
           // Persist the exact deadline the daemon will delete at, keyed to the
           // generation it belongs to. A stale report for a superseded generation
           // must not fence a newer one, so match on the current generation.

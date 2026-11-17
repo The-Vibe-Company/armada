@@ -1082,3 +1082,26 @@ test("poll reports every generation with pending start intent, and per-generatio
   );
   expect(other.rows[0]!.docker_retention_deadline).toBeNull();
 });
+
+test("a host that reports no obligation clears its stale per-generation deadline", async () => {
+  const db = database();
+  const a = await boundFixture();
+  const deadline = "2026-11-20T12:00:00.000Z";
+  await store.retentionForHost(a.hostToken, a.installationId, {
+    retentionSeconds: 3600,
+    nextCleanupAt: deadline,
+    deadlines: [{ sandboxId: a.sandboxId, generation: a.generation, deadline }],
+  });
+  expect(
+    (await db.query("select docker_retention_deadline from public.sandboxes where id=$1", [a.sandboxId])).rows[0],
+  ).toMatchObject({ docker_retention_deadline: expect.anything() });
+  // The host resumed or lost the obligation; it reports an empty set (not undefined).
+  await store.retentionForHost(a.hostToken, a.installationId, {
+    retentionSeconds: 3600,
+    nextCleanupAt: null,
+    deadlines: [],
+  });
+  expect(
+    (await db.query("select docker_retention_deadline from public.sandboxes where id=$1", [a.sandboxId])).rows[0],
+  ).toEqual({ docker_retention_deadline: null });
+});
