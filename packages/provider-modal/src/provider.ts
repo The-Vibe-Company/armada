@@ -1660,16 +1660,17 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         // SQL commits creating before issuing the remote request. Carry either
         // proof through an interrupted image deletion.
         if (row.phase === "stopped" || (row.phase === "reserved" && !row.physicalId))
-          row.deletePhysicalExitConfirmed = true;
+          row.deletePhysicalExitGeneration = row.generation;
+        const exitConfirmed = row.deletePhysicalExitGeneration === row.generation;
         // Creating/booting/deleting without ID is NOT proof of absence, even if name lookup says 404.
-        if (!row.deletePhysicalExitConfirmed && !row.physicalId) {
+        if (!exitConfirmed && !row.physicalId) {
           const reconciled = await namedOwned(row);
           row.physicalId = reconciled.sandboxId;
           await save(row);
         }
         row.phase = "deleting";
         await save(row);
-        if (!row.deletePhysicalExitConfirmed && row.physicalId) {
+        if (!exitConfirmed && row.physicalId) {
           try {
             const sb = await physical(row);
             await sb.terminate({ wait: true });
@@ -1678,7 +1679,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           } catch (error) {
             if (modalError(error).code !== "not_found") throw error;
           }
-          row.deletePhysicalExitConfirmed = true;
+          row.deletePhysicalExitGeneration = row.generation;
           await save(row);
         }
         for (const imageId of new Set([

@@ -53,8 +53,8 @@ export interface ProcessBaseline {
 }
 
 export interface Machine {
-  /** Physical exit confirmed before recovery-image deletion began. */
-  deletePhysicalExitConfirmed?: true;
+  /** Incarnation confirmed absent before recovery-image deletion began. */
+  deletePhysicalExitGeneration?: number;
   /** Frozen host-only launch routing; enrolled runtime health belongs to the server. */
   commonRuntime?: true;
   /** One detached bootstrap attempt per physical incarnation; uncertainty cannot spawn twice. */

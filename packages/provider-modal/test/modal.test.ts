@@ -1979,7 +1979,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.creates).toBe(before);
     const second = crypto.randomUUID();
     await f.provider.snapshot({ sandboxId: builder.id, name: second });
+    const beforeDelete = f.log.length;
     await f.provider.delete({ sandboxId: builder.id });
+    expect(f.log.slice(beforeDelete)).toContain("terminate");
     const next = await f.provider.restoreGoldenMaster({ snapshotId: second });
     expect(next.id).toBe(builder.id);
     expect(next.physicalGeneration).toBe("3");
