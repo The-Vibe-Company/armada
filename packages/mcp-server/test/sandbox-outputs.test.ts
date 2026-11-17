@@ -377,3 +377,33 @@ test("a user stop of a failed sandbox whose compute still runs captures its fina
     else process.env.ARMADA_ENCRYPTION_KEY = previous;
   }
 });
+
+test("an in-flight sample publishes unless a newer final capture commits first", async () => {
+  const { people, id, sql } = await fixture({ boatId: "sample_vs_final" });
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/memo.txt`;
+  const read = async (service: ReturnType<typeof createSandboxOutputs>) =>
+    (await routeFor(service, people.owner, people.org)(new Request(url)))?.text();
+  // The periodic sample is claimed and its provider read hangs.
+  const periodic = disks();
+  let release = () => {};
+  periodic.state.hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    periodic.state.entered = resolve;
+  });
+  const service = createSandboxOutputs(sql, KEY, async () => periodic.provider);
+  expect(await service.reconcileOne(signal())).toBe(true);
+  await entered;
+  // The newer pre-stop capture reads the final bytes and commits first.
+  const final = disks();
+  final.state.live = [file("memo.txt", "final")];
+  await captureFinalOutputs(sql, final.provider, id, { key: KEY, signal: signal() });
+  expect(await read(service)).toBe("final");
+  // The older sample answers late with what it saw: it never goes back over the newer snapshot.
+  periodic.state.live = [file("memo.txt", "draft")];
+  release();
+  await service.drain();
+  expect(periodic.state.reads).toBe(1);
+  expect(await read(service)).toBe("final");
+});

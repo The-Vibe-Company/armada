@@ -28,7 +28,7 @@ Authenticated owner/admin callers can use:
 - `GET /api/v1/sandboxes/{id}/outputs`: the sandbox's declared directory and file metadata (`name`, `size`, `sha256`, `updatedAt`).
 - `GET /api/v1/sandboxes/{id}/outputs/{encodedName}`: attachment bytes, content type, length, nosniff and private/no-store headers.
 
-Collected snapshots are encrypted using `ARMADA_ENCRYPTION_KEY` and stay readable after stop without contacting the provider. Deleted sandboxes are inaccessible. A new snapshot replaces the previous file set; files removed from the directory disappear on the next successful read. The bounded last snapshot is kept until the sandbox row is purged.
+Collected snapshots are encrypted using `ARMADA_ENCRYPTION_KEY` and stay readable after stop without contacting the provider. Deleted sandboxes are inaccessible. A new snapshot replaces the previous file set; files removed from the directory disappear on the next successful read. Reads are ordered by when they were started: a read never replaces a snapshot from a read started after it, but a sample still in flight when a final capture fails or is skipped (for example behind its own busy Docker runtime queue) still publishes. The bounded last snapshot is kept until the sandbox row is purged.
 
 Each new or changed file emits `sandbox.output.available` through the existing signed webhook outbox, in the same transaction as persistence. Payloads include the sandbox/org IDs, external reference and output name, size and SHA-256; no document bytes. Unchanged files do not emit duplicate events. Webhook receivers should fetch using their existing Armada token and handle ordinary at-least-once delivery.
 

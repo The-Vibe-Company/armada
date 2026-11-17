@@ -46,7 +46,10 @@ function logSkipped(skipped: readonly SkippedSandboxRow[]) {
 export async function getSandbox(
   supabase: Supabase,
   id: string,
-): Promise<Omit<Sandbox, "docker_retention_deadline" | "external_ref" | "outputs_checked_at"> | null> {
+): Promise<Omit<
+  Sandbox,
+  "docker_retention_deadline" | "external_ref" | "outputs_checked_at" | "outputs_published_scan"
+> | null> {
   const selected = await selectedOrganization();
   if (!selected) return null;
   const { data, error } = await supabase

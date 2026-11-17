@@ -4459,6 +4459,7 @@ export type Database = {
           docker_retention_deadline: string | null;
           external_ref: string | null;
           outputs_checked_at: string | null;
+          outputs_published_scan: string | null;
         };
         Insert: {
           id?: string;
@@ -4522,6 +4523,7 @@ export type Database = {
           docker_retention_deadline?: string | null;
           external_ref?: string | null;
           outputs_checked_at?: string | null;
+          outputs_published_scan?: string | null;
         };
         Update: {
           id?: string;
@@ -4585,6 +4587,7 @@ export type Database = {
           docker_retention_deadline?: string | null;
           external_ref?: string | null;
           outputs_checked_at?: string | null;
+          outputs_published_scan?: string | null;
         };
         Relationships: [
           {

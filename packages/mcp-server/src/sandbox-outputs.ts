@@ -67,16 +67,18 @@ async function collect(
     })),
   );
   if (!sql.transaction) throw Error("output_transaction_unavailable");
-  // Writes under the row lock and the scan fence, and only while the caller's deadline holds: checked
+  // Writes under the row lock and the publication fence (only a newer scan supersedes), and only while the caller's deadline holds: checked
   // after the lock (time spent waiting for SQL counts) and again after the write, before commit, so an
   // expired collection rolls back its files and webhook events.
   await sql.transaction(async (tx) => {
     signal?.throwIfAborted();
     const authority = await tx.query(
       `select id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
-        and outputs_checked_at::text=$2 for update`,
+        and (outputs_published_scan is null or outputs_published_scan<$2::timestamptz) for update`,
       [id, scan],
     );
+    // A newer read (e.g. a pre-stop capture claimed after this sample) already committed: never go
+    // back. An older read whose newer rival failed or was skipped still publishes what live compute held.
     if (!authority.rows.length) return;
     signal?.throwIfAborted();
     await tx.query(
@@ -88,6 +90,7 @@ async function collect(
       where sandbox_outputs.digest<>excluded.digest`,
       [id, JSON.stringify(payload)],
     );
+    await tx.query(`update public.sandboxes set outputs_published_scan=$2::timestamptz where id=$1`, [id, scan]);
     signal?.throwIfAborted();
   });
 }
@@ -102,8 +105,8 @@ export async function drainFinalOutputs(): Promise<void> {
 
 /** Final capture on Armada's stop path: after quiesce, before provider stop revokes compute.
  * Stopped workspaces are never read, so this is the last snapshot a stopped sandbox exposes.
- * Taking a new scan fence prevents an older in-flight sample from replacing this snapshot.
- * Never resumes compute. */
+ * Once it commits, its newer scan prevents an older in-flight sample from replacing it; if it
+ * fails or is skipped (a busy Docker runtime queue), that older sample still publishes. Never resumes compute. */
 export async function captureFinalOutputs(
   sql: Sql,
   provider: OutputReader,
@@ -120,7 +123,7 @@ export async function captureFinalOutputs(
   // pool connection must not hold stop dispatch either, and a claim that returns after the
   // deadline never reaches the provider.
   const work = (async () => {
-    // An expired capture must not even move the scan fence of an in-flight sample.
+    // An expired capture must not even claim a scan.
     signal?.throwIfAborted();
     // Live compute only: an admitted stop keeps 'failed' rows failed while compute may still run.
     const row = (
@@ -165,7 +168,7 @@ export function createSandboxOutputs(
           provider: string;
           provider_sandbox_id: string;
           scan: string;
-        }>(`update public.sandboxes set outputs_checked_at=now()
+        }>(`update public.sandboxes set outputs_checked_at=clock_timestamp()
         where id=(select id from public.sandboxes where ${ELIGIBLE} and provider_sandbox_id is not null
         and status in ('running','ready') and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds')
         order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider::text,provider_sandbox_id,outputs_checked_at::text as scan`)

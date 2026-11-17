@@ -51,11 +51,17 @@ async function fixture() {
   const outputs = join(home, "outputs");
   const runtime = createRuntimeCommands(createRuntimeEnrolments(sql, ENCRYPTION_KEY), ENCRYPTION_KEY);
   const ops: string[] = [];
+  // When set, the runtime holds its replies until the gate opens (a slow in-flight read).
+  const hold: { gate: Promise<void> | null } = { gate: null };
   // The reader's poll wait stands in for the runtime's command loop: it takes the head command
   // over the real session fence and answers it with the runtime's own directory read.
   const clock = {
     now: () => Date.now(),
     async wait() {
+      if (hold.gate) {
+        await hold.gate;
+        return;
+      }
       const { command } = await runtime.next(session.runtimeToken, session.epoch);
       if (!command) return;
       ops.push(command.op);
@@ -85,7 +91,7 @@ async function fixture() {
     return route(new Request(`https://armada.example/api/v1/sandboxes/${id}/outputs/${name}`));
   };
   const cleanup = () => rmSync(home, { recursive: true, force: true });
-  return { db, people, id, sql, outputs, ops, runtime, reader, service, download, cleanup };
+  return { db, people, id, sql, outputs, ops, runtime, reader, service, download, cleanup, hold };
 }
 
 test("a Docker file produced while live is sampled through the runtime and stays downloadable after stop", async () => {
@@ -140,6 +146,41 @@ test("a Docker read never queues behind an unanswered runtime command; the previ
         .rows,
     ).toHaveLength(0);
     expect(f.ops).toEqual([]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a Docker stop whose final read is skipped behind an in-flight sample keeps that sample's snapshot", async () => {
+  const f = await fixture();
+  try {
+    mkdirSync(f.outputs);
+    writeFileSync(join(f.outputs, "memo.pdf"), "document");
+    let release = () => {};
+    f.hold.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // The periodic sample is queued and awaits its reply.
+    expect(await f.service.reconcileOne(new AbortController().signal)).toBe(true);
+    for (let i = 0; i < 50; i++) {
+      const queued = await f.db.query(
+        `select 1 from runtime_commands where sandbox_id=$1 and request_id like 'outputs_%'`,
+        [f.id],
+      );
+      if (queued.rows.length) break;
+      await Bun.sleep(10);
+    }
+    // The pre-stop capture claims a newer scan but is skipped: the runtime queue is busy.
+    await captureDockerStopOutputs(f.sql, ENCRYPTION_KEY, f.id, { reader: f.reader });
+    // The held reply arrives while compute is still live, then the sandbox stops.
+    f.hold.gate = null;
+    release();
+    await f.service.drain();
+    expect(f.ops).toEqual(["readOutputs"]);
+    await f.db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [f.id]);
+    const response = await f.download("memo.pdf");
+    expect(response?.status).toBe(200);
+    expect(await response?.text()).toBe("document");
   } finally {
     f.cleanup();
   }

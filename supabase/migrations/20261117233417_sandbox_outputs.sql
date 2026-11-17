@@ -1,6 +1,8 @@
 -- Bounded durable output snapshots, accessible only through authenticated server routes.
--- outputs_checked_at: scan fence of the latest live sample or pre-stop capture.
-alter table public.sandboxes add column outputs_checked_at timestamptz;
+-- outputs_checked_at: claim time of the latest live sample or pre-stop capture (sampling throttle).
+-- outputs_published_scan: claim time of the snapshot last committed; only a newer scan replaces it.
+alter table public.sandboxes add column outputs_checked_at timestamptz,
+ add column outputs_published_scan timestamptz;
 create table public.sandbox_outputs (
  sandbox_id uuid not null references public.sandboxes(id) on delete cascade,
  name text not null check (length(name) between 1 and 255 and name !~ '[/\\]'),
