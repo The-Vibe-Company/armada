@@ -337,6 +337,14 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         await sql.query(`update public.account_turn_queue q set state='failed',failure_reason='Dispatch cancelled by confirmed stop.'
           from public.sandboxes s where q.sandbox_id=s.id and q.state='dispatching'
           and (s.stop_requested_at is not null or s.deleted_at is not null or s.status in ('deleted','stopping','failed') or (s.status='stopped' and s.lifecycle_generation<>q.queued_generation) or s.expires_at<=now())`);
+        // Native admission advances the generation before calling the provider. An expired
+        // changed-generation claim is uncertain, never safe to replay or leave dispatching.
+        await sql.query(`update public.account_turn_queue q set state='failed',dispatch_until=null,
+          failure_reason='Dispatch outcome uncertain; inspect sandbox history before resending.'
+          from public.sandboxes s where s.id=q.sandbox_id and q.state='dispatching'
+          and q.dispatch_until<=now() and not coalesce(${RUNTIME_LANE},false)
+          and (s.lifecycle_generation is distinct from q.dispatch_generation
+            or s.activity_lease_id is not null or coalesce(${RUNTIME_REQUEST_EVIDENCE},false))`);
         const candidates = (
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
@@ -504,8 +512,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             } else {
               // No raw exception text: provider diagnostics may contain credentials.
               await tx.query(
-                `update public.account_turn_queue q set failure_reason='Dispatch outcome uncertain; inspect status.',
-                 dispatch_until=case when ${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE} then now() else q.dispatch_until end
+                `update public.account_turn_queue q set failure_reason='Dispatch outcome uncertain; inspect sandbox history before resending.',
+                 state=case when coalesce(${RUNTIME_LANE},false) then q.state else 'failed' end,
+                 dispatch_until=case when not coalesce(${RUNTIME_LANE},false) then null when ${RUNTIME_REQUEST_EVIDENCE} then now() else q.dispatch_until end
                  from public.sandboxes s where s.id=q.sandbox_id and q.sandbox_id=$1 and q.request_id=$2 and q.state='dispatching'`,
                 [picked.entry.sandbox_id, picked.entry.request_id],
               );

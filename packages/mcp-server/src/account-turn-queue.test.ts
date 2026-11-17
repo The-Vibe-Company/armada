@@ -122,6 +122,8 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
   await queue.drain();
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
   expect(calls).toBe(1);
+  expect((await queue.status(caller, first.id, first.request_id))?.failed).toBe(true);
+  expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [first.id])).rows).toEqual([{state: "failed"}]);
   await db.query(
     "update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=lifecycle_generation+1 where id=$1",
     [ids[1]],
@@ -797,3 +799,15 @@ test.each(["boat", "modal"] as const)("stopped %s native send reaches account ad
   ).toMatchObject({ status: "queued" });
   expect((await db.query("select * from account_turn_queue")).rows).toHaveLength(1);
 });
+
+ test("expired native post-admission claims fail visibly without replay after restart", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain after restart" };
+  await queue.accept(caller, input);
+  await db.query("update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()-interval '1 second' where sandbox_id=$1", [input.id]);
+  await db.query("update sandboxes set lifecycle_generation=1 where id=$1", [input.id]);
+  let calls=0;
+  queue.setDispatch(async () => { calls++; });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(calls).toBe(0);
+  expect((await queue.status(caller,input.id,input.request_id))?.failed).toBe(true);
+ });
