@@ -117,6 +117,37 @@ async function settled(units: Promise<boolean>[]): Promise<boolean> {
 }
 const PROMPT = "Reply with exactly SMOKE_OK and do not use tools.";
 
+/**
+ * Sandboxes one smoke run launched through the owner API. Concurrent lanes share a golden,
+ * so the scoped probe's snapshot diff must tell these siblings apart from unaccounted
+ * sandboxes. A handle is recorded before its receipt is validated, like the cleanup journal.
+ */
+export function createLaunchTracker() {
+  const ids = new Set<string>();
+  const pending = new Set<Promise<unknown>>();
+  return {
+    track<T>(path: string, launch: Promise<T>): Promise<T> {
+      if (!LAUNCH_PATH.test(path)) return launch;
+      pending.add(launch);
+      const settle = () => {
+        pending.delete(launch);
+      };
+      launch.then(settle, settle);
+      return launch;
+    },
+    record(path: string, receipt: unknown) {
+      const value = receipt as { sandbox?: { id?: unknown }; id?: unknown } | null;
+      const id = value?.sandbox?.id ?? value?.id;
+      if (LAUNCH_PATH.test(path) && typeof id === "string" && id) ids.add(id);
+    },
+    /** Call after a list read: any sandbox it returned came from a launch already in flight. */
+    async siblings(): Promise<ReadonlySet<string>> {
+      await Promise.allSettled([...pending]);
+      return new Set(ids);
+    },
+  };
+}
+
 /** Parse the tar in memory; validate only its selected Git pack in an isolated disposable object store. */
 async function verifyRecovery(archive: string, repo: string, commit: string) {
   if (archive.length > 3 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(archive)) fail("preservation_failed");
@@ -359,24 +390,9 @@ async function runPostDeploySmoke(
   );
   const cleanupDeadline = deadline + 5 * 60_000;
   const protectedCanaries = new Set<string>();
-  // Every sandbox this run launched through the owner API, so concurrent units
-  // can tell their siblings apart from sandboxes nobody accounts for.
-  const smokeLaunches = new Set<string>();
-  const pendingLaunches = new Set<Promise<unknown>>();
-  async function siblingLaunches(): Promise<ReadonlySet<string>> {
-    // Any sandbox a list read returned was created by a launch already in flight.
-    await Promise.allSettled([...pendingLaunches]);
-    return new Set(smokeLaunches);
-  }
+  const launches = createLaunchTracker();
   function send<T>(cleaning: boolean, path: string, body?: unknown, key?: string, timeoutMs = 120_000): Promise<T> {
-    const result = transport<T>(cleaning, path, body, key, timeoutMs);
-    if (!LAUNCH_PATH.test(path)) return result;
-    pendingLaunches.add(result);
-    const settle = () => {
-      pendingLaunches.delete(result);
-    };
-    result.then(settle, settle);
-    return result;
+    return launches.track(path, transport<T>(cleaning, path, body, key, timeoutMs));
   }
   /** Each concurrent unit owns its cleanup flag; one unit's cleanup never moves another unit's deadline. */
   function createLane() {
@@ -434,8 +450,7 @@ async function runPostDeploySmoke(
           provider?: unknown;
         } | null;
         // Keep the handle before validating the receipt, as the cleanup journal does.
-        const launched = (result?.sandbox as { id?: unknown } | undefined)?.id ?? result?.id;
-        if (LAUNCH_PATH.test(path) && typeof launched === "string") smokeLaunches.add(launched);
+        launches.record(path, result);
         if (/^sandbox\/launch(?:-access-v1)?$/.test(path) && smokeReceiptProvider(result) !== "modal")
           fail("invalid_response");
         if (
@@ -581,7 +596,7 @@ async function runPostDeploySmoke(
           poll: (read, done) => poll(read, done, 300),
           step,
           withCleanup,
-          siblingSandboxes: siblingLaunches,
+          siblingSandboxes: launches.siblings,
           isNotReady: (error) => error instanceof SmokeFailure && error.code === "sandbox_not_ready",
           out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
           stopSandbox: async (id) => {

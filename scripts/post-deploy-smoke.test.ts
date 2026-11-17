@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { postDeploySmoke } from "./post-deploy-smoke.ts";
+import { createLaunchTracker, postDeploySmoke } from "./post-deploy-smoke.ts";
 
 const boatNotice = "boat: not part of the release gate";
 
@@ -1544,6 +1544,29 @@ test("lifecycle failures reject false receipts and report unknown launches or le
 });
 
 // The merged staging command combines these independently runnable families.
+test("the launch tracker records every launch handle before receipt validation and awaits launches in flight", async () => {
+  const tracker = createLaunchTracker();
+  let finish: (value: unknown) => void = () => {};
+  tracker.track("templates/launch", new Promise((resolve) => (finish = resolve)));
+  tracker.track("sandbox/launch", Promise.reject(new Error("lost"))).catch(() => {});
+  // Only launches gate the snapshot diff; a pending read never does.
+  tracker.track("sandbox/status", new Promise(() => {}));
+  let observed: ReadonlySet<string> | undefined;
+  const siblings = tracker.siblings().then((ids) => {
+    observed = ids;
+  });
+  await Bun.sleep(0);
+  expect(observed).toBeUndefined();
+  // A receipt that later fails validation (wrong provider) is still a sibling handle.
+  tracker.record("sandbox/launch", { sandbox: { id: "launched", provider: "boat" } });
+  tracker.record("sandbox/launch-access-v1", { sandbox: { id: "parent" } });
+  tracker.record("templates/launch", { id: "template-sandbox" });
+  tracker.record("sandbox/status", { id: "not-a-launch" });
+  finish(null);
+  await siblings;
+  expect([...(observed ?? [])].sort()).toEqual(["launched", "parent", "template-sandbox"]);
+});
+
 test("independent sandbox lanes run concurrently: the expiry wait overlaps every case's lifecycle, receipts stay attributable", async () => {
   const expiries = new Map<string, number>();
   const fake = lifecycleFixture("none", (call) => {
