@@ -102,6 +102,13 @@ function hash(token: unknown): string {
   if (typeof token !== "string" || !tokenPattern.test(token)) deny();
   return createHash("sha256").update(token).digest("hex");
 }
+/** SQL predicate over job alias `j`: not reported running, not behind a running job of
+ * its sandbox, and no second snapshot build while one runs. `$n` is the running uuid[]. */
+function notRunning(n: number): string {
+  return `not (j.request_id=any($${n}::uuid[])) and not exists(select 1 from public.docker_host_jobs r
+    where r.host_id=j.host_id and r.request_id=any($${n}::uuid[])
+    and (r.bound_sandbox_id=j.bound_sandbox_id or (r.snapshot_id is not null and j.snapshot_id is not null)))`;
+}
 function input(job: Job): string {
   try {
     return canonicalDockerHostJob(job);
@@ -111,7 +118,8 @@ function input(job: Job): string {
 }
 
 /** Internal service-role store, deliberately not mounted as a route or wired into placement.
- * Poll is at-least-once; a host must serialize execution and deduplicate request IDs durably.
+ * Poll is at-least-once; a host must serialize execution per sandbox, report what it is
+ * still executing, and deduplicate request IDs durably.
  * Only trusted bootstrap tickets and authorized snapshot definitions enter this mailbox; Docker argv is generated on the host, and model credentials never enter build jobs.
  */
 export function createDockerHostStore(sql: Sql, key: string) {
@@ -1053,6 +1061,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
       resourcePolicyVersion?: 1,
       diskFreeBytes?: number | null,
       stoppedSandboxBytes?: number | null,
+      /** Request IDs the daemon reports as still executing (#2561). */
+      running: readonly string[] = [],
     ): Promise<Job | null> {
       // A revoked host or a removed owner can never authenticate again. Retire its
       // undispatchable work in its own committed transaction before the normal
@@ -1082,14 +1092,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
           });
       });
       return transaction(async (tx) => {
-        // Cleanup bypasses queued startup/snapshot work; already executing native work remains serial.
+        // Cleanup bypasses queued startup/snapshot work. Work the daemon reports as
+        // still executing stays serial per sandbox (and snapshot builds stay serial):
+        // neither it nor any later job of its sandbox is handed out, while other
+        // sandboxes' jobs are, so one slow launch does not delay the next (#2561).
         // Stop intent fences every later startup, so an absent-resource ACK cannot admit a queued create.
         // Peek before member/host locks: never acquire a late actor lock behind the host.
         const hint = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
-            [hash(hostToken), installationId, skipSnapshots],
+           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
+            [hash(hostToken), installationId, skipSnapshots, running],
           )
         ).rows[0];
         const host =
@@ -1146,8 +1159,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         const row = (
           await tx.query<StoredJob>(
-            `select * from public.docker_host_jobs where host_id=$1 and outcome is null and (not $2::boolean or snapshot_id is null) order by case when bound_operation in ('stop','delete') then 0 else 1 end,(snapshot_id is not null),position limit 1`,
-            [host.id, skipSnapshots],
+            `select j.* from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
+            [host.id, skipSnapshots, running],
           )
         ).rows[0];
         if (!row || row.request_id !== hint?.request_id) return null;
