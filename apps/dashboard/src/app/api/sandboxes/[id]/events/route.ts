@@ -1,4 +1,4 @@
-import { idlePauseMessage } from "@armada/core";
+import { idlePauseMessage, isRecord } from "@armada/core";
 import { NextResponse } from "next/server";
 import { isUuid } from "@/lib/action";
 import { viewerGateway } from "@/lib/data/gateway";
@@ -43,9 +43,10 @@ export async function GET(request: Request, context: Context) {
   const cursor = params.get("cursor");
   const backward = !cursor || params.get("direction") === "backward";
   // A broken log lane must not prevent status from collecting delayed usage.
-  const statusRead = gateway.status(id).catch(() => ({}));
+  let observedStatus: unknown;
+  const statusRead = () => gateway.status(id).catch(() => ({}));
   const metadata = async () => {
-    const detail = (await statusRead) as {
+    const detail = (observedStatus ?? (await statusRead())) as {
       status?: string;
       statusMessage?: string | null;
       prompt?: unknown;
@@ -64,9 +65,11 @@ export async function GET(request: Request, context: Context) {
     };
   };
   try {
+    const raw = await gateway.logs(id, cursor, backward ? { direction: "backward" } : {});
+    if (isRecord(raw) && isRecord(raw.threadStatus)) observedStatus = raw.threadStatus;
     const page = backward
-      ? { ...parseEventPage(await gateway.logs(id, cursor, { direction: "backward" })), backward: true }
-      : await readLogPages(gateway.logs, id, cursor);
+      ? { ...parseEventPage(raw), backward: true }
+      : await readLogPages(async () => raw, id, cursor);
     return NextResponse.json({
       ...(await metadata()),
       configured: true,

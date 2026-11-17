@@ -311,6 +311,50 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
   await rejected(invoke(who, "status", { id: f.sandbox.id }), "not_found");
 });
 
+test("latest status uses ingest projection without reading history and exposes a stale watermark", async () => {
+  const f = await fixture(),
+    session = await ready(f),
+    who = caller(f.actor);
+  const promptId = randomUUID(),
+    conversationId = randomUUID();
+  await service.prompt(f.actor, f.sandbox.id, { requestId: randomUUID(), text: "begin" });
+  await complete(session, { promptId, conversationId, status: "queued" });
+  await publish(f, session, [
+    { id: "projection_done", at: 1, kind: "prompt", promptId, conversationId, text: "begin", status: "finished" },
+    {
+      id: "projection_output",
+      at: 2,
+      kind: "message",
+      promptId,
+      conversationId,
+      text: "output",
+      tools: [],
+      partial: false,
+    },
+  ]);
+  const withoutArchive = createDockerSandboxControls(
+    {
+      async query(query, values) {
+        if (query.includes("select sequence::text,event_enc")) throw Error("Journal unavailable");
+        return sql.query(query, values);
+      },
+    },
+    key,
+  );
+  expect(await invoke(who, "status", { id: f.sandbox.id }, withoutArchive)).toMatchObject({
+    settled: true,
+    prompt: { promptId, state: "finished" },
+    statusMessage: null,
+  });
+  await database().query("update public.runtime_idle_evidence set prompt_projection_sequence=1 where sandbox_id=$1", [
+    f.sandbox.id,
+  ]);
+  expect(await invoke(who, "status", { id: f.sandbox.id }, withoutArchive)).toMatchObject({
+    settled: false,
+    statusMessage: "Stored prompt state is incomplete; live data may be stale.",
+  });
+});
+
 test("logs remain available without reading the launch manifest", async () => {
   const f = await fixture();
   const controller = createDockerSandboxControls(

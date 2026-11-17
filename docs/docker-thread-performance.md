@@ -95,3 +95,43 @@ poll (500 decryptions each), plus the forward page. Browser observation also
 adds 0–2 seconds plus response time. Ask the coordinator to time page metadata,
 MCP negotiation, SQL and ingest-to-browser delay after release before changing
 transport. The benchmark intentionally does not extrapolate network latency.
+
+## Incremental thread reads (#2545)
+
+Root cause: status derived prompt state from output history, and one chat fetch
+requested status both directly and inside logs. Ingest now maintains an encrypted
+latest-prompt projection and journal watermark in the same epoch transaction as
+the retained journal. Latest Docker status reads that projection; missing or
+behind evidence reports stale rather than rebuilding history. Explicit historical
+prompt queries retain archive semantics. Projection ingestion is shared by
+Docker, Modal and runtime Boat. No decrypted global cache is introduced.
+
+Docker logs includes its status metadata, so the dashboard uses one logs call
+and falls back to status when metadata is absent or logs fails. First open reads
+the newest bounded page; the older cursor is followed only on user request.
+Forward polling continues from the newest cursor independently of older history.
+
+Offline 50,000-event fixture, same ciphertext/work accounting as above:
+
+| Operation | Before SQL / decryptions | After SQL / decryptions |
+| --- | ---: | ---: |
+| First chat fetch | 25 / 1101 | 7 / 100 |
+| Status | 11 / 501 | 6 / 1 |
+| Logs page | 14 / 600 | 7 / 100 |
+| Unchanged live tail | 25 / 1001 | 7 / 0 |
+
+Run `bun packages/mcp-server/benchmarks/docker-thread.ts --assert-targets`.
+The unchanged-tail assertion failed before implementation (25/1001), and requires
+at most seven SQL statements and one decryption. Empty queue and no prompt events
+are fixture limitations; promptful sessions decrypt a single encrypted projection,
+and queued admissions/receipts add their own work. These are work counts, not
+production timing. The coordinator must measure deployed latency separately.
+Existing archives receive their one-time projection backfill at next ingest;
+quiet archives report stale until then. Deploy the additive migration before
+server code. No migration was applied to staging or production for this change.
+
+Future browser push design (not implemented): viewer-scoped subscriptions must
+recheck membership/revocation, reconnect from an opaque journal cursor and bound
+buffer/backpressure with polling fallback. This could remove unchanged polls and
+the browser's up-to-two-second observation delay; it would not remove ingest or
+network latency. Never expose the machine runtime channel to browser viewers.
