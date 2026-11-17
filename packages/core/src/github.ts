@@ -591,7 +591,7 @@ export function gitSetupCommand(identity: GitIdentity): string {
 /** Fixed public refusal: native Modal harnesses receive the owner's GitHub token in their environment
  * when the runtime starts, and a running process environment cannot be replaced (#2577). */
 export const GITHUB_REFRESH_MODAL_NATIVE =
-  "GitHub refresh does not apply to native Modal sandboxes: the owner's GitHub token is issued when the sandbox runtime starts. Stop and resume the sandbox to renew it, or launch a new sandbox.";
+  "GitHub refresh does not apply to native Modal sandboxes: the owner's GitHub token is issued when the sandbox runtime starts. Stop and resume a sandbox launched with GitHub to renew it; otherwise launch a new sandbox with GitHub connected.";
 
 export const GH_MISSING_NOTE =
   "gh is not installed in this golden: git push works as you, but the gh command does not. Add an init command that installs the GitHub CLI.";

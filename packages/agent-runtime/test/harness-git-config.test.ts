@@ -21,14 +21,21 @@ test.each(harnesses)("%s keeps the exec Git global config and GitHub env under i
   });
 });
 
-test("without an explicit exec Git config, harnesses share the exec HOME config the managed tools write", () => {
-  const managed: Record<string, string> = {};
-  privateHarnessHome("/runtime", "codex", managed, { HOME: "/workspace/home" });
-  expect(managed.GIT_CONFIG_GLOBAL).toBe("/workspace/home/.gitconfig");
-  const fallback: Record<string, string> = {};
-  privateHarnessHome("/runtime", "claude", fallback, {}, "/home/user");
-  expect(fallback.GIT_CONFIG_GLOBAL).toBe("/home/user/.gitconfig");
-  const explicit: Record<string, string> = { GIT_CONFIG_GLOBAL: "/srv/harness.gitconfig" };
-  privateHarnessHome("/runtime", "opencode", explicit, { GIT_CONFIG_GLOBAL: "/home/user/.gitconfig" });
-  expect(explicit.GIT_CONFIG_GLOBAL).toBe("/srv/harness.gitconfig");
+// Managed tools write the helper to the exec HOME first (main.ts `homes[0]`).
+test("without an explicit exec Git config, a harness reads the exec HOME config", () => {
+  const env: Record<string, string> = {};
+  privateHarnessHome("/runtime", "codex", env, { HOME: "/workspace/home" });
+  expect(env.GIT_CONFIG_GLOBAL).toBe("/workspace/home/.gitconfig");
+});
+
+test("without an exec HOME, a harness reads the runtime process HOME config", () => {
+  const env: Record<string, string> = {};
+  privateHarnessHome("/runtime", "claude", env, {}, "/home/user");
+  expect(env.GIT_CONFIG_GLOBAL).toBe("/home/user/.gitconfig");
+});
+
+test("an explicit harness Git config is kept", () => {
+  const env: Record<string, string> = { GIT_CONFIG_GLOBAL: "/srv/harness.gitconfig" };
+  privateHarnessHome("/runtime", "opencode", env, { GIT_CONFIG_GLOBAL: "/home/user/.gitconfig" });
+  expect(env.GIT_CONFIG_GLOBAL).toBe("/srv/harness.gitconfig");
 });

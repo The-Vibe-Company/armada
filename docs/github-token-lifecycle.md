@@ -65,7 +65,8 @@ Native Modal sandboxes refuse this repair with `unsupported` and a fixed reason:
 their harness receives the owner's token in `GH_TOKEN`/`GITHUB_TOKEN` when the
 runtime starts, and Git reads the launch helper from the exec global config
 (`/home/user/.gitconfig`, shared with every harness through `GIT_CONFIG_GLOBAL`).
-Stop and resume the sandbox to renew the token, or launch a new one.
+Stop and resume a sandbox launched with GitHub to renew the token; otherwise
+launch a new sandbox with GitHub connected.
 
 Private pinned SSH/stdin carries the token; never paste one into `exec`, prompts,
 argv, logs or repository files. The repair installs token-aware `gh` and `git`
