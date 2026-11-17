@@ -33,6 +33,7 @@ function fixture(stage: "scrub" | "snapshot") {
     snapshots = 0;
   let rejectImageDelete = false;
   const deletedImages: string[] = [];
+  const cleanupDelays: number[] = [];
   let images: SavedImage[] = [];
   const store = {
     get: async () => structuredClone(stored),
@@ -92,6 +93,9 @@ function fixture(stage: "scrub" | "snapshot") {
     store,
     distribution,
     runner: { call: async <T>() => ({ generation: "1", watermark: 1, acknowledgedSequence: 1 }) as T },
+    cleanupSleep: async (milliseconds) => {
+      cleanupDelays.push(milliseconds);
+    },
   });
   return {
     provider,
@@ -99,6 +103,7 @@ function fixture(stage: "scrub" | "snapshot") {
     snapshots: () => snapshots,
     terminated: () => terminated,
     deletedImages,
+    cleanupDelays,
     images: () => images,
     rejectNextImageDelete: () => {
       rejectImageDelete = true;
@@ -114,10 +119,9 @@ test("a confirmed Modal stop is deleted without another termination, even across
   f.recover();
   await f.provider.stop({ sandboxId: "logical" });
   f.rejectNextImageDelete();
-  await expect(f.provider.delete({ sandboxId: "logical" })).rejects.toThrow();
-  // The durable deleting phase refuses resume and carries the stop's exit proof to the retry.
-  expect(f.state()).toMatchObject({ phase: "deleting", deletePhysicalExitGeneration: 1 });
+  // The transient timeout is retried inside the same delete.
   await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
+  expect(f.cleanupDelays).toEqual([1_000]);
   expect(f.state().phase).toBe("deleted");
   expect(f.terminated()).toBe(1);
   expect(f.deletedImages).toEqual(["prior-recovery", "fresh-recovery"]);

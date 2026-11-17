@@ -361,9 +361,10 @@ test("admin extension and deletion resolve private-source resources through thei
 });
 
 // #2594: the HTTP stop writer leaves a Modal sandbox deletable by the very next request.
-// Delete reuses the stop's exit proof instead of terminating again, and an image-service
-// timeout releases the server fence so the caller's immediate retry completes deletion.
-test("a Modal sandbox stopped over HTTP is deleted by the next request, and a failed delete retries at once", async () => {
+// Delete reuses the stop's exit proof instead of terminating again. A transient image
+// timeout is retried inside the request; a persistent one, or a missing App, fails without
+// publishing deletion and releases the server fence so the caller's retry is admitted at once.
+test("a Modal sandbox stopped over HTTP is deleted by the next request, and failed deletes retry at once", async () => {
   const server = await harness({}, await sharedDatabase());
   try {
     const { people: p, db } = server;
@@ -376,11 +377,18 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and a fa
       [p.org, p.owner, binding.workspace, binding.environment, binding.appId],
     );
     const sdk: string[] = [];
-    let imageTimeouts = 0;
+    let imageTimeouts = 0,
+      missingApps = 0;
+    const cleanupDelays: number[] = [];
     const timeout = (message: string) => Object.assign(Error(message), { name: "TimeoutError" });
     const exited = new Set<string>();
     const client = {
-      apps: { fromName: async () => ({ appId: binding.appId }) },
+      apps: {
+        fromName: async () => {
+          if (missingApps-- > 0) throw Object.assign(Error("app missing"), { name: "NotFoundError" });
+          return { appId: binding.appId };
+        },
+      },
       sandboxes: {
         fromId: async (physicalId: string) => ({
           snapshotFilesystem: async () => {
@@ -413,6 +421,9 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and a fa
         runner: {
           call: async <T>(_row: Machine, op: string) =>
             (op === "checkpoint" ? { generation: "1", watermark: 0, acknowledgedSequence: 0 } : {}) as T,
+        },
+        cleanupSleep: async (milliseconds) => {
+          cleanupDelays.push(milliseconds);
         },
       });
     const options: ControlOptions = {
@@ -492,9 +503,15 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and a fa
 
     const second = await launch("second");
     expect((await control("sandbox/stop", "POST", { id: second.id })).status).toBe(200);
-    imageTimeouts = 1;
+    // A missing App is not proof the sandbox is gone: nothing is published or written.
+    missingApps = 1;
+    expect((await control(`sandboxes/${second.id}`, "DELETE")).status).toBeGreaterThanOrEqual(500);
+    expect(await row(second.id)).toEqual({ status: "stopped", leased: false });
+    expect(await phase(second.machine)).toBe("stopped");
+    imageTimeouts = 3;
     const failed = await control(`sandboxes/${second.id}`, "DELETE");
     expect(failed.status).toBeGreaterThanOrEqual(500);
+    expect(cleanupDelays).toEqual([1_000, 5_000]);
     // The adapter's deleting phase fences resume; the server lease no longer refuses the retry.
     expect(await row(second.id)).toEqual({ status: "stopped", leased: false });
     expect(await phase(second.machine)).toBe("deleting");
@@ -503,6 +520,20 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and a fa
     expect(await row(second.id)).toEqual({ status: "deleted", leased: false });
     expect(await phase(second.machine)).toBe("deleted");
     expect(sdk.filter((x) => x === "terminate:physical-second")).toHaveLength(1);
+
+    // One transient image timeout no longer costs the caller a second DELETE.
+    const third = await launch("third");
+    expect((await control("sandbox/stop", "POST", { id: third.id })).status).toBe(200);
+    imageTimeouts = 1;
+    expect((await control(`sandboxes/${third.id}`, "DELETE")).status).toBe(200);
+    expect(await row(third.id)).toEqual({ status: "deleted", leased: false });
+    expect(cleanupDelays).toEqual([1_000, 5_000, 1_000]);
+    expect(sdk.filter((x) => x.endsWith("-third")).toSorted()).toEqual([
+      "delete:prior-third",
+      "delete:recovery-physical-third",
+      "snapshot:physical-third",
+      "terminate:physical-third",
+    ]);
   } finally {
     await server.close();
   }

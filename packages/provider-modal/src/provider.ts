@@ -39,6 +39,9 @@ import type {
 import { createSshPreparation, SSH_PORT } from "./ssh.ts";
 import { scopeKey } from "./store.ts";
 
+/** In-request retry delays after the first attempt for deletion's image cleanup. */
+const CLEANUP_RETRY_MS = [1_000, 5_000];
+
 export type ModalPromptPhase =
   | "modal_prepare"
   | "modal_before_prompt"
@@ -58,6 +61,8 @@ export interface ModalProviderOptions extends ModalConnection {
   storedReads?: boolean;
   /** Scheduler for lifecycle admission backoff; defaults to the Bun timer. */
   admissionSleep?(milliseconds: number): Promise<void>;
+  /** Scheduler for deletion image-cleanup retries; defaults to the Bun timer. */
+  cleanupSleep?(milliseconds: number): Promise<void>;
   scope: Scope;
   /** Trusted immutable source credential selection; never a requested access visibility. */
   managementAuthority?: ModalManagementProvenance;
@@ -701,6 +706,30 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   async function collectImages() {
     await collectFrom(source.store);
+  }
+  /** Retries a transient image-service failure inside the delete request, so one DELETE
+   * completes. A persistent failure still fails the delete; the durable phase resumes it. */
+  async function cleanupStep(sandboxId: string, step: () => Promise<void>) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await step();
+      } catch (error) {
+        const safe = modalError(error);
+        const delay = CLEANUP_RETRY_MS[attempt - 1];
+        console.warn(
+          JSON.stringify({
+            event: "modal_delete_image_cleanup_failed",
+            sandboxId,
+            attempt,
+            code: safe.code,
+            ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
+            retrying: delay !== undefined,
+          }),
+        );
+        if (delay === undefined) throw error;
+        await (options.cleanupSleep ?? Bun.sleep)(delay);
+      }
+    }
   }
   function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
     if (
@@ -1655,7 +1684,12 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return { status: "deleted" };
     },
     async delete({ sandboxId }) {
-      await bound();
+      // A missing or mismatched App says nothing about this sandbox: its not_found must
+      // never read as sandbox absence, which would publish deletion with nothing removed.
+      await bound().catch((error) => {
+        if (modalError(error).code !== "not_found") throw error;
+        throw refusal("unavailable", "Modal App lookup failed; the sandbox was not deleted.");
+      });
       await store.lease(sandboxId, async (row, save) => {
         if (row.phase === "deleted") return;
         assertMachineSource(row);
@@ -1692,16 +1726,18 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           ...(row.retainedRecoveryIds ?? []),
           ...(row.recoveryImageId ? [row.recoveryImageId] : []),
         ])) {
-          try {
-            await client.images.delete(imageId);
-          } catch (error) {
-            if (modalError(error).code !== "not_found") throw error;
-          }
+          await cleanupStep(sandboxId, async () => {
+            try {
+              await client.images.delete(imageId);
+            } catch (error) {
+              if (modalError(error).code !== "not_found") throw error;
+            }
+          });
         }
         row.phase = "deleted";
         await save(row);
       });
-      await collectImages();
+      await cleanupStep(sandboxId, collectImages);
       return { status: "deleted" };
     },
     async resourceReceipts() {

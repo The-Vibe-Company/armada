@@ -214,8 +214,12 @@ function fixture(
       await onScrub?.();
     },
   };
+  const cleanupDelays: number[] = [];
   const provider = createModalProvider({
     admissionSleep,
+    cleanupSleep: async (milliseconds) => {
+      cleanupDelays.push(milliseconds);
+    },
     scope: accessScope,
     ...(commonRuntime ? { commonRuntime } : {}),
     ...(beforePrompt ? { beforePrompt } : {}),
@@ -250,6 +254,7 @@ function fixture(
     },
   });
   return {
+    cleanupDelays,
     provider,
     store,
     client,
@@ -1308,6 +1313,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         providerCode: "lifecycle_lease_busy",
       });
     });
+    // Collection retried inside the request before failing it.
+    expect(f.cleanupDelays).toEqual([1_000, 5_000]);
     // The fork is gone and the source tombstone stays durable for the caller's retry.
     expect((await f.store.get(fork.id)).phase).toBe("deleted");
     expect(await f.store.tombstoneSources()).toContain(builder.id);
