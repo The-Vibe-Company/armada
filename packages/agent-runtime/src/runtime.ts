@@ -699,7 +699,16 @@ export class Runner {
       active.done = done;
       this.active.set(p.conversationId, active);
     } catch (error) {
-      this.journal.transition(p, "failed", error instanceof HarnessError ? error.reason : "harness_start_failed");
+      // Keep a definite start refusal's own code instead of flattening it into a generic failure.
+      this.journal.transition(
+        p,
+        "failed",
+        error instanceof HarnessError
+          ? error.reason
+          : error instanceof RequestRefused
+            ? error.message
+            : "harness_start_failed",
+      );
     }
   }
   private flushing: Promise<void> | undefined;

@@ -31,15 +31,16 @@ export class Journal {
  CREATE TABLE IF NOT EXISTS processes(pid INTEGER PRIMARY KEY,body TEXT NOT NULL);`);
   }
   append(event: AgentEvent): number {
-    let body = this.redact(JSON.stringify(event));
     const terminalSnapshot = event.kind === "message" && !event.partial && event.textMode === "snapshot";
     // Control events must retain their identity, status and failure reason. Bound only
     // the display preview, after redaction, so JSON escaping cannot erase the event.
-    if ((event.kind === "prompt" || event.kind === "steer") && Buffer.byteLength(body) > 262144) {
-      const safe = JSON.parse(body);
-      safe.text = `${boundedPreview(safe.text, 16000)}… [truncated]`;
-      body = JSON.stringify(safe);
-    }
+    let control = event;
+    if (
+      (event.kind === "prompt" || event.kind === "steer") &&
+      Buffer.byteLength(this.redact(JSON.stringify(event))) > 262144
+    )
+      control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
+    let body = this.redact(JSON.stringify(control));
     const oversized = Buffer.byteLength(body) > 262144;
     if (oversized)
       body = JSON.stringify({
