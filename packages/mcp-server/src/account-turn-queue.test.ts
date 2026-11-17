@@ -130,12 +130,18 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
     { state: "failed" },
   ]);
   await db.query(
+    "update sandboxes set status='stopping',stop_requested_at=now(),lifecycle_generation=lifecycle_generation+2 where id=$1",
+    [ids[1]],
+  );
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(calls).toBe(1);
+  await db.query(
     "update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=lifecycle_generation+1 where id=$1",
     [ids[1]],
   );
   // A later resume must not resurrect the old uncertain model charge.
   await db.query(
-    "update sandboxes set status='ready',stopped_at=null,lifecycle_generation=lifecycle_generation+1 where id=$1",
+    "update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,lifecycle_generation=lifecycle_generation+1 where id=$1",
     [ids[1]],
   );
   queue.setDispatch(async (_caller, input) => ({

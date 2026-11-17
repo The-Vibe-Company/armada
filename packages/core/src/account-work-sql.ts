@@ -23,7 +23,8 @@ export function accountWorkingCountSql(account: string, exclude = "null::uuid", 
         and q.state='failed' and q.dispatch_generation is not null and q.dispatch_until is null
         and uncertain.stopped_at is null and uncertain.deleted_at is null
         and uncertain.status in ('starting','ready','running','stopping')
-        and (uncertain.lifecycle_generation=q.dispatch_generation+1
+        and ((uncertain.status='stopping' and uncertain.stop_requested_at is not null)
+          or uncertain.lifecycle_generation=q.dispatch_generation+1
           or (uncertain.lifecycle_generation=q.dispatch_generation+2
             and uncertain.task_prompt_id is not null and not exists(
               select 1 from public.runtime_idle_turns settled where settled.sandbox_id=uncertain.id
