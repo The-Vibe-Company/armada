@@ -141,20 +141,3 @@ export async function lifecycleStep<T>(
     });
   }
 }
-/** Marks a delete that failed before its first durable write: nothing changed, so the
- * server may release its activity fence and admit an immediate retry. */
-export function deleteNotDispatched(error: unknown): ProviderError {
-  const safe = modalError(error);
-  return new ProviderError({
-    provider: safe.provider,
-    code: safe.code,
-    message: safe.message,
-    ...(safe.status !== undefined ? { status: safe.status } : {}),
-    ...(safe.providerCode !== undefined ? { providerCode: safe.providerCode } : {}),
-    retryable: safe.retryable,
-    ...(safe.retryAfterSeconds !== undefined ? { retryAfterSeconds: safe.retryAfterSeconds } : {}),
-    ...(safe.requestId !== undefined ? { requestId: safe.requestId } : {}),
-    details: { ...safe.details, deleteNotDispatched: true },
-    cause: error,
-  });
-}

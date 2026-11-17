@@ -69,7 +69,6 @@ function fixture(
   let lookupError: Error | undefined;
   let onLookup: (() => Promise<void>) | undefined;
   let onScrub: (() => Promise<void>) | undefined;
-  let collectionSleep: (milliseconds: number) => Promise<void> = async () => {};
   let onTerminate: (() => Promise<void>) | undefined;
   let onRpc: ((row: Machine, op: string, input: object) => Promise<unknown>) | undefined;
   let provisioned = false;
@@ -217,7 +216,6 @@ function fixture(
   };
   const provider = createModalProvider({
     admissionSleep,
-    collectionSleep: (milliseconds) => collectionSleep(milliseconds),
     scope: accessScope,
     ...(commonRuntime ? { commonRuntime } : {}),
     ...(beforePrompt ? { beforePrompt } : {}),
@@ -269,9 +267,6 @@ function fixture(
     },
     onTerminate(work: () => Promise<void>) {
       onTerminate = work;
-    },
-    onCollectionSleep(work: (milliseconds: number) => Promise<void>) {
-      collectionSleep = work;
     },
     onScrub(work: () => Promise<void>) {
       onScrub = work;
@@ -1296,10 +1291,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
     expect((await f.provider.get(fork.id)).state).toBe("ready");
     await f.provider.delete({ sandboxId: fork.id });
-    await f.provider.deferredCollection();
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
   });
-  test("stopped fork deletion completes while another controller holds its retired source", async () => {
+  test("a busy retired source fails deletion only after the fork is durably gone", async () => {
     const f = fixture();
     const builder = await f.provider.createGolden({});
     const name = crypto.randomUUID();
@@ -1309,30 +1303,17 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.stop({ sandboxId: fork.id });
     expect(await f.store.tombstoneSources()).toContain(builder.id);
     const terminations = f.log.filter((x) => x === "terminate").length;
-    let release!: () => void;
-    const released = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let refused!: () => void;
-    const retrying = new Promise<void>((resolve) => {
-      refused = resolve;
-    });
-    f.onCollectionSleep(() => {
-      refused();
-      return released;
-    });
     await f.store.lease(builder.id, async () => {
-      expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
-      // Hold the source until the deferred collector has been refused and scheduled a retry.
-      await retrying;
+      await expect(f.provider.delete({ sandboxId: fork.id })).rejects.toMatchObject({
+        providerCode: "lifecycle_lease_busy",
+      });
     });
-    expect(f.log.filter((x) => x === "terminate")).toHaveLength(terminations);
+    // The fork is gone and the source tombstone stays durable for the caller's retry.
     expect((await f.store.get(fork.id)).phase).toBe("deleted");
-    // Deferred collection retries the source lease without another client delete.
-    release();
-    await f.provider.deferredCollection();
+    expect(await f.store.tombstoneSources()).toContain(builder.id);
+    expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
+    expect(f.log.filter((x) => x === "terminate")).toHaveLength(terminations);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
-    expect(await f.store.tombstoneSources()).not.toContain(fork.id);
   });
   test("recovery references do not depend on a saved label surviving retirement", async () => {
     const f = fixture();
@@ -1813,7 +1794,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.deleteSnapshot(snapshot);
     expect(f.log).not.toContain("delete-image");
     await provider.delete({ sandboxId: launched.id });
-    await provider.deferredCollection();
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
     close();
     const { resolveManagementCredentials: _resolver, ...operatorConfiguration } = configuration;
@@ -1933,7 +1913,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await userKey.provider.collectGarbage();
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls); // Cannot collect another authority's tombstone.
     await restoredConnection.delete({ sandboxId: fork.id });
-    await restoredConnection.deferredCollection();
     expect(f.log.filter((x) => x === "delete-image").length).toBeGreaterThan(calls);
     close();
   });
