@@ -1,4 +1,3 @@
-import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import type { AuthStore } from "@armada/auth";
 import {
   goldenForSettings,
@@ -54,6 +53,7 @@ import { controlFailureResponse } from "./control-errors.ts";
 import { optional, required, requiredNumber, UUID } from "./control-input.ts";
 import { readLogs } from "./control-logs.ts";
 import { fail } from "./control-response.ts";
+import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { listControlCredentials } from "./credential-list.ts";
 import type { createSqlCredentialList } from "./credential-list-sql.ts";

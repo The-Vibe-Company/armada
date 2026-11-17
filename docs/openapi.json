@@ -1,0 +1,4180 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Armada shared control API",
+    "version": "2.51.0",
+    "description": "Generated integration REST contracts. Includes SDK operations and shared-tool routes. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec; this description does not assert provider availability."
+  },
+  "paths": {
+    "/api/v1/golden/capabilities": {
+      "post": {
+        "operationId": "golden_capabilities",
+        "description": "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown/unbounded, not a workspace quota.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "org": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string",
+                    "enum": ["boat", "modal"]
+                  }
+                },
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "enum": ["boat", "modal"]
+                    },
+                    "maxGoldens": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "bindings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "goldenId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "relation": {
+                            "type": "string",
+                            "enum": ["current_backend", "other_backend", "unbound"]
+                          }
+                        },
+                        "required": ["goldenId", "relation"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["provider", "maxGoldens"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/golden/adopt": {
+      "post": {
+        "operationId": "golden_adopt",
+        "description": "Dry-run first: select an existing visible golden by id. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "confirmation": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "goldenId": {
+                      "type": "string"
+                    },
+                    "dryRun": {
+                      "type": "boolean"
+                    },
+                    "confirmation": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["goldenId", "dryRun", "confirmation"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/github/refresh": {
+      "post": {
+        "operationId": "github_refresh",
+        "description": "Configure or refresh the owner's GitHub access in a running sandbox without relaunching. Enrolled Armada runtimes use current-epoch private RPC; native Boat keeps its existing setup. Reuses a validated unexpired token; rejection/expiry can require renewal. Only the sandbox owner may request this.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "login": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "connected"
+                    },
+                    "runtime": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "armada"
+                        },
+                        "epoch": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["kind", "epoch"],
+                      "additionalProperties": false
+                    },
+                    "revision": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["id", "login", "status"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/github/runtime-status": {
+      "post": {
+        "operationId": "github_runtime_status",
+        "description": "Owner-only non-secret current-epoch configuration and credential-request count. Does not return credentials or probe GitHub.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "configured": {
+                      "type": "boolean"
+                    },
+                    "revision": {
+                      "type": ["string", "null"]
+                    },
+                    "credentialRequests": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "lastAccessedAt": {
+                      "type": ["string", "null"]
+                    },
+                    "runtime": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "armada"
+                        },
+                        "epoch": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["kind", "epoch"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["id", "configured", "revision", "credentialRequests", "lastAccessedAt"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/list": {
+      "post": {
+        "operationId": "sandbox_list",
+        "description": "Allowlisted metadata of sandboxes in your current organizations, newest first. Interior is owner/admin only. Deleted ones are left out unless asked for. Statuses are as recorded; call status for a fresh read.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "harness": {
+                    "type": "string",
+                    "enum": ["claude", "codex", "opencode"]
+                  },
+                  "golden": {
+                    "description": "Golden UUID, not a name.",
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "owner": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      {
+                        "type": "string",
+                        "const": "me"
+                      }
+                    ]
+                  },
+                  "page": {
+                    "description": "1-based page, default 1.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000
+                  },
+                  "status": {
+                    "description": "Only these statuses.",
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                    }
+                  },
+                  "limit": {
+                    "description": "At most this many. Default 25.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200
+                  },
+                  "externalRef": {
+                    "description": "Only sandboxes launched with this reference that you own or administer.",
+                    "type": "string"
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sandboxes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "timeLeftSeconds": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Seconds until persisted Armada logical expiry, rounded up and clamped to zero; null if unknown."
+                          },
+                          "expiringSoon": {
+                            "type": "boolean",
+                            "description": "True when known logical time left is at most five minutes, including expired resources."
+                          },
+                          "idlePaused": {
+                            "type": "boolean"
+                          },
+                          "statusMessage": {
+                            "type": ["string", "null"]
+                          },
+                          "usage": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "computeSeconds": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "turnCount": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "cost": {
+                                    "type": "object",
+                                    "properties": {
+                                      "classification": {
+                                        "type": "string",
+                                        "enum": ["priced", "included_in_subscription", "unknown"]
+                                      },
+                                      "currency": {
+                                        "type": "string",
+                                        "const": "USD"
+                                      },
+                                      "usd": {
+                                        "type": ["string", "null"]
+                                      },
+                                      "basis": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "enum": ["estimated", "api_equivalent"]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "unknown": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "enum": ["admission", "coverage", "price", "tokens", "pricing_dimensions"]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "unpricedTurns": {
+                                        "anyOf": [
+                                          {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "classification",
+                                      "currency",
+                                      "usd",
+                                      "basis",
+                                      "unknown",
+                                      "unpricedTurns"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "tokenTotals": {
+                                    "type": "object",
+                                    "properties": {
+                                      "incomplete": {
+                                        "type": "boolean"
+                                      },
+                                      "inputTokens": {
+                                        "type": ["number", "null"]
+                                      },
+                                      "outputTokens": {
+                                        "type": ["number", "null"]
+                                      },
+                                      "cachedTokens": {
+                                        "type": ["number", "null"]
+                                      },
+                                      "cacheWriteTokens": {
+                                        "type": ["number", "null"]
+                                      },
+                                      "reasoningTokens": {
+                                        "type": ["number", "null"]
+                                      }
+                                    },
+                                    "required": [
+                                      "inputTokens",
+                                      "outputTokens",
+                                      "cachedTokens",
+                                      "cacheWriteTokens",
+                                      "reasoningTokens"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "turns": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "promptId": {
+                                          "type": "string"
+                                        },
+                                        "model": {
+                                          "type": ["string", "null"]
+                                        },
+                                        "inputTokens": {
+                                          "type": ["number", "null"]
+                                        },
+                                        "outputTokens": {
+                                          "type": ["number", "null"]
+                                        },
+                                        "cachedTokens": {
+                                          "type": ["number", "null"]
+                                        },
+                                        "cacheWriteTokens": {
+                                          "type": ["number", "null"]
+                                        },
+                                        "reasoningTokens": {
+                                          "type": ["number", "null"]
+                                        },
+                                        "pricing": {
+                                          "description": "Versioned server USD quote from a frozen snapshot; null means unpriced, never zero.",
+                                          "anyOf": [
+                                            {},
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "unavailableReason": {
+                                          "type": "object",
+                                          "properties": {
+                                            "code": {
+                                              "type": "string",
+                                              "enum": [
+                                                "admission_missing",
+                                                "admission_expired",
+                                                "admission_superseded",
+                                                "legacy_disabled",
+                                                "native_start_unobserved",
+                                                "native_input_unmatched",
+                                                "native_turn_unobserved",
+                                                "native_terminal_unobserved",
+                                                "native_history_unavailable",
+                                                "native_boundary_unverified",
+                                                "unsafe_reader_state",
+                                                "reader_unavailable",
+                                                "compute_inactive",
+                                                "unsupported_harness"
+                                              ]
+                                            },
+                                            "message": {
+                                              "type": "string",
+                                              "maxLength": 600
+                                            }
+                                          },
+                                          "required": ["code", "message"],
+                                          "additionalProperties": false
+                                        }
+                                      },
+                                      "required": ["promptId", "model", "inputTokens", "outputTokens", "cachedTokens"],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": ["computeSeconds", "turnCount", "turns"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "preservationNote": {
+                            "type": ["string", "null"]
+                          },
+                          "providerSandboxId": {
+                            "type": ["string", "null"]
+                          },
+                          "boatId": {
+                            "type": ["string", "null"]
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "orgId": {
+                            "type": "string"
+                          },
+                          "ownerId": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "type": "string",
+                            "enum": ["boat", "modal", "docker"]
+                          },
+                          "harness": {
+                            "type": "string",
+                            "enum": ["claude", "codex", "opencode"]
+                          },
+                          "model": {
+                            "description": "The requested next-send default, not proof of the observed model.",
+                            "type": ["string", "null"]
+                          },
+                          "reasoningEffort": {
+                            "type": ["string", "null"]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "stoppedAt": {
+                            "type": ["string", "null"]
+                          },
+                          "expiresAt": {
+                            "type": ["string", "null"]
+                          },
+                          "effectiveTtlSeconds": {
+                            "type": ["number", "null"]
+                          },
+                          "machineSize": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": ["small", "medium", "large", "xlarge"]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "displayLabel": {
+                            "type": "string"
+                          },
+                          "taskOutcome": {
+                            "anyOf": [
+                              {
+                                "oneOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "state": {
+                                        "type": "string",
+                                        "const": "ready"
+                                      },
+                                      "prNumber": {
+                                        "type": "integer",
+                                        "exclusiveMinimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "prUrl": {
+                                        "type": "string",
+                                        "maxLength": 2048,
+                                        "format": "uri"
+                                      },
+                                      "headSha": {
+                                        "type": "string",
+                                        "pattern": "^[a-f0-9]{40}$"
+                                      }
+                                    },
+                                    "required": ["state"],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "state": {
+                                        "type": "string",
+                                        "const": "blocked"
+                                      },
+                                      "reason": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 1000
+                                      }
+                                    },
+                                    "required": ["state", "reason"],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "externalRef": {
+                            "description": "Opaque reference given at launch; absent when none.",
+                            "type": "string"
+                          },
+                          "canOpen": {
+                            "type": "boolean"
+                          },
+                          "canManage": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "timeLeftSeconds",
+                          "expiringSoon",
+                          "providerSandboxId",
+                          "boatId",
+                          "id",
+                          "orgId",
+                          "ownerId",
+                          "provider",
+                          "harness",
+                          "model",
+                          "reasoningEffort",
+                          "status",
+                          "createdAt",
+                          "stoppedAt",
+                          "expiresAt",
+                          "effectiveTtlSeconds",
+                          "machineSize",
+                          "displayLabel",
+                          "canOpen",
+                          "canManage"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "page": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "hasMore": {
+                      "type": "boolean"
+                    },
+                    "nextPage": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": ["sandboxes", "total", "page", "limit", "hasMore", "nextPage"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/detail": {
+      "post": {
+        "operationId": "sandbox_detail",
+        "description": "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is running, finished, interrupted or failed; failed includes a usage limit or an expired login, with the reason. settled is true when the agent is not working.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "prompt_id": {
+                    "description": "A specific turn. Default: the latest.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "recorded": {
+                    "description": "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
+                    "type": "boolean"
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "timeLeftSeconds": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Seconds until persisted Armada logical expiry, rounded up and clamped to zero; null if unknown."
+                    },
+                    "expiringSoon": {
+                      "type": "boolean",
+                      "description": "True when known logical time left is at most five minutes, including expired resources."
+                    },
+                    "providerExpiresAt": {
+                      "description": "Provider physical deadline, when observed; distinct from Armada logical expiry.",
+                      "type": ["string", "null"]
+                    },
+                    "billingAccount": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "type": "string"
+                            },
+                            "billing": {
+                              "type": "string",
+                              "enum": ["subscription", "api-key"]
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": ["id", "name", "kind", "billing", "version"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "skills": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "reference": {
+                            "type": "string"
+                          },
+                          "version": {
+                            "type": "string"
+                          },
+                          "skillId": {
+                            "type": "string"
+                          },
+                          "checksum": {
+                            "type": "string"
+                          },
+                          "origin": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["reference", "version", "skillId", "checksum", "origin"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "usage": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "computeSeconds": {
+                              "type": ["number", "null"]
+                            },
+                            "turnCount": {
+                              "type": ["number", "null"]
+                            },
+                            "cost": {
+                              "type": "object",
+                              "properties": {
+                                "classification": {
+                                  "type": "string",
+                                  "enum": ["priced", "included_in_subscription", "unknown"]
+                                },
+                                "currency": {
+                                  "type": "string",
+                                  "const": "USD"
+                                },
+                                "usd": {
+                                  "type": ["string", "null"]
+                                },
+                                "basis": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": ["estimated", "api_equivalent"]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "unknown": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": ["admission", "coverage", "price", "tokens", "pricing_dimensions"]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "unpricedTurns": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": ["classification", "currency", "usd", "basis", "unknown", "unpricedTurns"],
+                              "additionalProperties": false
+                            },
+                            "tokenTotals": {
+                              "type": "object",
+                              "properties": {
+                                "incomplete": {
+                                  "type": "boolean"
+                                },
+                                "inputTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "outputTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "cachedTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "cacheWriteTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "reasoningTokens": {
+                                  "type": ["number", "null"]
+                                }
+                              },
+                              "required": [
+                                "inputTokens",
+                                "outputTokens",
+                                "cachedTokens",
+                                "cacheWriteTokens",
+                                "reasoningTokens"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "turns": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "promptId": {
+                                    "type": "string"
+                                  },
+                                  "model": {
+                                    "type": ["string", "null"]
+                                  },
+                                  "inputTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "outputTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "cachedTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "cacheWriteTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "reasoningTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "pricing": {
+                                    "description": "Versioned server USD quote from a frozen snapshot; null means unpriced, never zero.",
+                                    "anyOf": [
+                                      {},
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "unavailableReason": {
+                                    "type": "object",
+                                    "properties": {
+                                      "code": {
+                                        "type": "string",
+                                        "enum": [
+                                          "admission_missing",
+                                          "admission_expired",
+                                          "admission_superseded",
+                                          "legacy_disabled",
+                                          "native_start_unobserved",
+                                          "native_input_unmatched",
+                                          "native_turn_unobserved",
+                                          "native_terminal_unobserved",
+                                          "native_history_unavailable",
+                                          "native_boundary_unverified",
+                                          "unsafe_reader_state",
+                                          "reader_unavailable",
+                                          "compute_inactive",
+                                          "unsupported_harness"
+                                        ]
+                                      },
+                                      "message": {
+                                        "type": "string",
+                                        "maxLength": 600
+                                      }
+                                    },
+                                    "required": ["code", "message"],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": ["promptId", "model", "inputTokens", "outputTokens", "cachedTokens"],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": ["computeSeconds", "turnCount", "turns"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "preservationNote": {
+                      "type": ["string", "null"]
+                    },
+                    "externalRef": {
+                      "description": "Opaque reference given at launch; absent when none.",
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "golden": {
+                      "type": ["string", "null"]
+                    },
+                    "provider": {
+                      "type": "string",
+                      "enum": ["boat", "modal", "docker"]
+                    },
+                    "hostId": {
+                      "type": "string"
+                    },
+                    "image": {
+                      "type": "string"
+                    },
+                    "visibility": {
+                      "type": "string",
+                      "enum": ["org", "private"]
+                    },
+                    "harness": {
+                      "type": "string",
+                      "enum": ["claude", "codex", "opencode"]
+                    },
+                    "repositoryDir": {
+                      "description": "Configured directory used to prepare native agent cwd; not confinement.",
+                      "type": ["string", "null"]
+                    },
+                    "credentialId": {
+                      "type": ["string", "null"]
+                    },
+                    "credentialVersion": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "model": {
+                      "description": "The requested next-send default, not proof of the observed model.",
+                      "type": ["string", "null"]
+                    },
+                    "reasoningEffort": {
+                      "type": ["string", "null"]
+                    },
+                    "machineSize": {
+                      "anyOf": [
+                        {},
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                    },
+                    "statusReason": {
+                      "type": ["string", "null"]
+                    },
+                    "statusMessage": {
+                      "type": ["string", "null"]
+                    },
+                    "taskOutcome": {
+                      "anyOf": [
+                        {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "state": {
+                                  "type": "string",
+                                  "const": "ready"
+                                },
+                                "prNumber": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "prUrl": {
+                                  "type": "string",
+                                  "maxLength": 2048,
+                                  "format": "uri"
+                                },
+                                "headSha": {
+                                  "type": "string",
+                                  "pattern": "^[a-f0-9]{40}$"
+                                }
+                              },
+                              "required": ["state"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "state": {
+                                  "type": "string",
+                                  "const": "blocked"
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 1000
+                                }
+                              },
+                              "required": ["state", "reason"],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "providerState": {
+                      "type": ["string", "null"]
+                    },
+                    "conversationIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "expiresAt": {
+                      "type": ["string", "null"]
+                    },
+                    "prompt": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "rateLimit": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "retryCount": {
+                                      "type": "number"
+                                    },
+                                    "delayMs": {
+                                      "type": "number"
+                                    },
+                                    "totalWaitMs": {
+                                      "type": "number"
+                                    },
+                                    "retryAt": {
+                                      "type": "number"
+                                    },
+                                    "waiting": {
+                                      "type": "boolean"
+                                    },
+                                    "message": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["retryCount", "delayMs", "totalWaitMs", "retryAt", "waiting", "message"],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "promptId": {
+                              "type": "string"
+                            },
+                            "conversationId": {
+                              "type": ["string", "null"]
+                            },
+                            "state": {
+                              "type": "string",
+                              "enum": ["running", "finished", "interrupted", "failed"]
+                            },
+                            "reason": {
+                              "type": ["string", "null"]
+                            },
+                            "requestedModel": {
+                              "type": ["string", "null"]
+                            },
+                            "observedModel": {
+                              "type": ["string", "null"]
+                            },
+                            "modelSelectionReason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": ["model_selection_mismatch", "model_selection_unverified"]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "modelSelectionMessage": {
+                              "type": ["string", "null"]
+                            }
+                          },
+                          "required": ["promptId", "conversationId", "state", "reason"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "settled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "timeLeftSeconds",
+                    "expiringSoon",
+                    "providerExpiresAt",
+                    "id",
+                    "golden",
+                    "visibility",
+                    "harness",
+                    "repositoryDir",
+                    "model",
+                    "reasoningEffort",
+                    "machineSize",
+                    "status",
+                    "statusReason",
+                    "providerState",
+                    "conversationIds",
+                    "expiresAt",
+                    "prompt",
+                    "settled"
+                  ],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/status": {
+      "post": {
+        "operationId": "sandbox_status",
+        "description": "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is running, finished, interrupted or failed; failed includes a usage limit or an expired login, with the reason. settled is true when the agent is not working.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "prompt_id": {
+                    "description": "A specific turn. Default: the latest.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "recorded": {
+                    "description": "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
+                    "type": "boolean"
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "timeLeftSeconds": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Seconds until persisted Armada logical expiry, rounded up and clamped to zero; null if unknown."
+                    },
+                    "expiringSoon": {
+                      "type": "boolean",
+                      "description": "True when known logical time left is at most five minutes, including expired resources."
+                    },
+                    "providerExpiresAt": {
+                      "description": "Provider physical deadline, when observed; distinct from Armada logical expiry.",
+                      "type": ["string", "null"]
+                    },
+                    "billingAccount": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "type": "string"
+                            },
+                            "billing": {
+                              "type": "string",
+                              "enum": ["subscription", "api-key"]
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": ["id", "name", "kind", "billing", "version"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "skills": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "reference": {
+                            "type": "string"
+                          },
+                          "version": {
+                            "type": "string"
+                          },
+                          "skillId": {
+                            "type": "string"
+                          },
+                          "checksum": {
+                            "type": "string"
+                          },
+                          "origin": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["reference", "version", "skillId", "checksum", "origin"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "usage": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "computeSeconds": {
+                              "type": ["number", "null"]
+                            },
+                            "turnCount": {
+                              "type": ["number", "null"]
+                            },
+                            "cost": {
+                              "type": "object",
+                              "properties": {
+                                "classification": {
+                                  "type": "string",
+                                  "enum": ["priced", "included_in_subscription", "unknown"]
+                                },
+                                "currency": {
+                                  "type": "string",
+                                  "const": "USD"
+                                },
+                                "usd": {
+                                  "type": ["string", "null"]
+                                },
+                                "basis": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": ["estimated", "api_equivalent"]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "unknown": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": ["admission", "coverage", "price", "tokens", "pricing_dimensions"]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "unpricedTurns": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": ["classification", "currency", "usd", "basis", "unknown", "unpricedTurns"],
+                              "additionalProperties": false
+                            },
+                            "tokenTotals": {
+                              "type": "object",
+                              "properties": {
+                                "incomplete": {
+                                  "type": "boolean"
+                                },
+                                "inputTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "outputTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "cachedTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "cacheWriteTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "reasoningTokens": {
+                                  "type": ["number", "null"]
+                                }
+                              },
+                              "required": [
+                                "inputTokens",
+                                "outputTokens",
+                                "cachedTokens",
+                                "cacheWriteTokens",
+                                "reasoningTokens"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "turns": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "promptId": {
+                                    "type": "string"
+                                  },
+                                  "model": {
+                                    "type": ["string", "null"]
+                                  },
+                                  "inputTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "outputTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "cachedTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "cacheWriteTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "reasoningTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "pricing": {
+                                    "description": "Versioned server USD quote from a frozen snapshot; null means unpriced, never zero.",
+                                    "anyOf": [
+                                      {},
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "unavailableReason": {
+                                    "type": "object",
+                                    "properties": {
+                                      "code": {
+                                        "type": "string",
+                                        "enum": [
+                                          "admission_missing",
+                                          "admission_expired",
+                                          "admission_superseded",
+                                          "legacy_disabled",
+                                          "native_start_unobserved",
+                                          "native_input_unmatched",
+                                          "native_turn_unobserved",
+                                          "native_terminal_unobserved",
+                                          "native_history_unavailable",
+                                          "native_boundary_unverified",
+                                          "unsafe_reader_state",
+                                          "reader_unavailable",
+                                          "compute_inactive",
+                                          "unsupported_harness"
+                                        ]
+                                      },
+                                      "message": {
+                                        "type": "string",
+                                        "maxLength": 600
+                                      }
+                                    },
+                                    "required": ["code", "message"],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": ["promptId", "model", "inputTokens", "outputTokens", "cachedTokens"],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": ["computeSeconds", "turnCount", "turns"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "preservationNote": {
+                      "type": ["string", "null"]
+                    },
+                    "externalRef": {
+                      "description": "Opaque reference given at launch; absent when none.",
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "golden": {
+                      "type": ["string", "null"]
+                    },
+                    "provider": {
+                      "type": "string",
+                      "enum": ["boat", "modal", "docker"]
+                    },
+                    "hostId": {
+                      "type": "string"
+                    },
+                    "image": {
+                      "type": "string"
+                    },
+                    "visibility": {
+                      "type": "string",
+                      "enum": ["org", "private"]
+                    },
+                    "harness": {
+                      "type": "string",
+                      "enum": ["claude", "codex", "opencode"]
+                    },
+                    "repositoryDir": {
+                      "description": "Configured directory used to prepare native agent cwd; not confinement.",
+                      "type": ["string", "null"]
+                    },
+                    "credentialId": {
+                      "type": ["string", "null"]
+                    },
+                    "credentialVersion": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "model": {
+                      "description": "The requested next-send default, not proof of the observed model.",
+                      "type": ["string", "null"]
+                    },
+                    "reasoningEffort": {
+                      "type": ["string", "null"]
+                    },
+                    "machineSize": {
+                      "anyOf": [
+                        {},
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                    },
+                    "statusReason": {
+                      "type": ["string", "null"]
+                    },
+                    "statusMessage": {
+                      "type": ["string", "null"]
+                    },
+                    "taskOutcome": {
+                      "anyOf": [
+                        {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "state": {
+                                  "type": "string",
+                                  "const": "ready"
+                                },
+                                "prNumber": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "prUrl": {
+                                  "type": "string",
+                                  "maxLength": 2048,
+                                  "format": "uri"
+                                },
+                                "headSha": {
+                                  "type": "string",
+                                  "pattern": "^[a-f0-9]{40}$"
+                                }
+                              },
+                              "required": ["state"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "state": {
+                                  "type": "string",
+                                  "const": "blocked"
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 1000
+                                }
+                              },
+                              "required": ["state", "reason"],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "providerState": {
+                      "type": ["string", "null"]
+                    },
+                    "conversationIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "expiresAt": {
+                      "type": ["string", "null"]
+                    },
+                    "prompt": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "rateLimit": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "retryCount": {
+                                      "type": "number"
+                                    },
+                                    "delayMs": {
+                                      "type": "number"
+                                    },
+                                    "totalWaitMs": {
+                                      "type": "number"
+                                    },
+                                    "retryAt": {
+                                      "type": "number"
+                                    },
+                                    "waiting": {
+                                      "type": "boolean"
+                                    },
+                                    "message": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["retryCount", "delayMs", "totalWaitMs", "retryAt", "waiting", "message"],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "promptId": {
+                              "type": "string"
+                            },
+                            "conversationId": {
+                              "type": ["string", "null"]
+                            },
+                            "state": {
+                              "type": "string",
+                              "enum": ["running", "finished", "interrupted", "failed"]
+                            },
+                            "reason": {
+                              "type": ["string", "null"]
+                            },
+                            "requestedModel": {
+                              "type": ["string", "null"]
+                            },
+                            "observedModel": {
+                              "type": ["string", "null"]
+                            },
+                            "modelSelectionReason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": ["model_selection_mismatch", "model_selection_unverified"]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "modelSelectionMessage": {
+                              "type": ["string", "null"]
+                            }
+                          },
+                          "required": ["promptId", "conversationId", "state", "reason"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "settled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "timeLeftSeconds",
+                    "expiringSoon",
+                    "providerExpiresAt",
+                    "id",
+                    "golden",
+                    "visibility",
+                    "harness",
+                    "repositoryDir",
+                    "model",
+                    "reasoningEffort",
+                    "machineSize",
+                    "status",
+                    "statusReason",
+                    "providerState",
+                    "conversationIds",
+                    "expiresAt",
+                    "prompt",
+                    "settled"
+                  ],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/recovery": {
+      "post": {
+        "operationId": "sandbox_recovery",
+        "description": "Owner/admin only. Returns sensitive base64 recovery archive; never log it.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "recovery_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "archive": {
+                      "type": ["string", "null"]
+                    }
+                  },
+                  "required": ["archive"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/advice": {
+      "post": {
+        "operationId": "sandbox_advice",
+        "description": "Collects one bounded read-only VM observation and reports the last ten comparable repository sessions. Missing evidence causes abstention; never resizes or changes defaults.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "advice": {}
+                  },
+                  "required": ["advice"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/send": {
+      "post": {
+        "operationId": "sandbox_send",
+        "description": "Gives the agent its next instruction as a new turn. Without conversation_id the first send of an idle sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is still running, use steer. The turn runs with the model and effort chosen at launch; model and reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "request_id": {
+                    "description": "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The instruction."
+                  },
+                  "conversation_id": {
+                    "description": "A conversation of the sandbox. Default: the latest.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "model": {
+                    "description": "The model, by id. claude: claude-opus-5-5 (low|medium|high|xhigh|max), claude-sonnet-5-5 (low|medium|high|xhigh|max); default claude-opus-5-5 medium. codex: gpt-6.2-sol (low|medium|high|xhigh|max|ultra), gpt-6.2-astra (low|medium|high|xhigh|max|ultra), gpt-6.1-sol (low|medium|high|xhigh|max|ultra), gpt-6.1-terra (low|medium|high|xhigh|max|ultra), gpt-6-astra (low|medium|high|xhigh|max|ultra), gpt-6-sol (low|medium|high|xhigh|max|ultra), gpt-6-luna (low|medium|high|xhigh|max); default gpt-6.2-sol medium. opencode: armada/deepseek-flash (default); default armada/deepseek-flash default.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "reasoning_effort": {
+                    "description": "The reasoning effort; one the model accepts (see model).",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "prompt"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "runtime": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "armada"
+                        },
+                        "epoch": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["kind", "epoch"],
+                      "additionalProperties": false
+                    },
+                    "promptId": {
+                      "type": "string"
+                    },
+                    "conversationId": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": ["queued", "running", "finished", "failed", "interrupted"]
+                    },
+                    "statusMessage": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["id", "promptId", "conversationId", "status"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/resume": {
+      "post": {
+        "operationId": "sandbox_resume",
+        "description": "Owner-only. Restarts the same Docker allocation with fresh runtime enrolment, keeping history and the original TTL. Reuse request_id after uncertainty.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "request_id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "ready"
+                    }
+                  },
+                  "required": ["id", "status"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/checkpoint-runtime-v1": {
+      "post": {
+        "operationId": "sandbox_checkpoint_runtime_v1",
+        "description": "Quiesce and seal the current Boat runtime journal/harness state before compute stop. Does not stop the VM or promise disk retention/resume. Owner-only; reuse request_id on uncertainty. New sends remain fenced until fresh enrolment.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "runtimeVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "request_id", "runtimeVersion"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "runtime": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "armada"
+                        },
+                        "epoch": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["kind", "epoch"],
+                      "additionalProperties": false
+                    },
+                    "checkpoint": {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "const": "complete"
+                        },
+                        "watermark": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "acknowledgedSequence": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": ["state", "watermark", "acknowledgedSequence"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["id", "requestId", "runtime", "checkpoint"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/resume-runtime-v1": {
+      "post": {
+        "operationId": "sandbox_resume_runtime_v1",
+        "description": "Activates the retained sandbox under a fresh epoch and verifies its sealed checkpoint. Continues the saved native conversation, or starts the first only from a verified empty journal. Owner-only; stable request_id, no implicit retry of uncertain activation. Cached outcome is historical, not current machine state.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "runtimeVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "conversation_id": {
+                    "description": "A conversation of the sandbox. Default: the latest.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "request_id", "runtimeVersion", "prompt"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "promptId": {
+                      "type": "string"
+                    },
+                    "conversationId": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": ["queued", "running", "finished", "failed", "interrupted"]
+                    },
+                    "resumed": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "runtime": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "armada"
+                        },
+                        "epoch": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["kind", "epoch"],
+                      "additionalProperties": false
+                    },
+                    "sourceCheckpoint": {
+                      "type": "object",
+                      "properties": {
+                        "epoch": {
+                          "type": "string"
+                        },
+                        "watermark": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "empty": {
+                          "type": "boolean",
+                          "const": true
+                        }
+                      },
+                      "required": ["epoch", "watermark"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "requestId",
+                    "promptId",
+                    "conversationId",
+                    "status",
+                    "resumed",
+                    "runtime",
+                    "sourceCheckpoint"
+                  ],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/report": {
+      "post": {
+        "operationId": "sandbox_report",
+        "description": "Explicit result for the latest finished turn. Call after wait; never inferred from message text. A new send clears it. Only the sandbox owner or current org admin may report or read it.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "prompt_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "outcome": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "state": {
+                            "type": "string",
+                            "const": "ready"
+                          },
+                          "prNumber": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "prUrl": {
+                            "type": "string",
+                            "maxLength": 2048,
+                            "format": "uri"
+                          },
+                          "headSha": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{40}$"
+                          }
+                        },
+                        "required": ["state"],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "state": {
+                            "type": "string",
+                            "const": "blocked"
+                          },
+                          "reason": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1000
+                          }
+                        },
+                        "required": ["state", "reason"],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "prompt_id", "outcome"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "taskOutcome": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "const": "ready"
+                            },
+                            "prNumber": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "prUrl": {
+                              "type": "string",
+                              "maxLength": 2048,
+                              "format": "uri"
+                            },
+                            "headSha": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{40}$"
+                            }
+                          },
+                          "required": ["state"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "const": "blocked"
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1000
+                            }
+                          },
+                          "required": ["state", "reason"],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": ["id", "taskOutcome"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/stop": {
+      "post": {
+        "operationId": "sandbox_stop",
+        "description": "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the agent is done, so the sandbox stops costing.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "only_if_idle": {
+                    "type": "boolean"
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                    },
+                    "preservationNote": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["id", "status"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/extend": {
+      "post": {
+        "operationId": "sandbox_extend",
+        "description": "Set a later expiry, measured from now. Owner/admin only. Modal extensions must fit inside the current physical machine lifetime; stop and resume for a new physical lifetime.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "ttl_seconds": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 2591700
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "ttl_seconds"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "type": "string"
+                    },
+                    "ttlSeconds": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["id", "expiresAt", "ttlSeconds"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/delete": {
+      "post": {
+        "operationId": "sandbox_delete",
+        "description": "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Legacy orchestrator parents and children are refused; ordinary delegated children require a deleted parent.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "deleted"
+                    }
+                  },
+                  "required": ["id", "status"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/wait": {
+      "post": {
+        "operationId": "sandbox_wait",
+        "description": "Blocks until the agent settles (its turn finished, failed or was interrupted, or the machine stopped) or the timeout passes, then answers like status with timedOut. Default 60s, at most 600s: call again to keep waiting.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 600
+                  },
+                  "prompt_id": {
+                    "description": "A specific turn. Default: the latest.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "timeLeftSeconds": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Seconds until persisted Armada logical expiry, rounded up and clamped to zero; null if unknown."
+                    },
+                    "expiringSoon": {
+                      "type": "boolean",
+                      "description": "True when known logical time left is at most five minutes, including expired resources."
+                    },
+                    "providerExpiresAt": {
+                      "description": "Provider physical deadline, when observed; distinct from Armada logical expiry.",
+                      "type": ["string", "null"]
+                    },
+                    "billingAccount": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "type": "string"
+                            },
+                            "billing": {
+                              "type": "string",
+                              "enum": ["subscription", "api-key"]
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": ["id", "name", "kind", "billing", "version"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "skills": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "reference": {
+                            "type": "string"
+                          },
+                          "version": {
+                            "type": "string"
+                          },
+                          "skillId": {
+                            "type": "string"
+                          },
+                          "checksum": {
+                            "type": "string"
+                          },
+                          "origin": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["reference", "version", "skillId", "checksum", "origin"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "usage": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "computeSeconds": {
+                              "type": ["number", "null"]
+                            },
+                            "turnCount": {
+                              "type": ["number", "null"]
+                            },
+                            "cost": {
+                              "type": "object",
+                              "properties": {
+                                "classification": {
+                                  "type": "string",
+                                  "enum": ["priced", "included_in_subscription", "unknown"]
+                                },
+                                "currency": {
+                                  "type": "string",
+                                  "const": "USD"
+                                },
+                                "usd": {
+                                  "type": ["string", "null"]
+                                },
+                                "basis": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": ["estimated", "api_equivalent"]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "unknown": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": ["admission", "coverage", "price", "tokens", "pricing_dimensions"]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "unpricedTurns": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": ["classification", "currency", "usd", "basis", "unknown", "unpricedTurns"],
+                              "additionalProperties": false
+                            },
+                            "tokenTotals": {
+                              "type": "object",
+                              "properties": {
+                                "incomplete": {
+                                  "type": "boolean"
+                                },
+                                "inputTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "outputTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "cachedTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "cacheWriteTokens": {
+                                  "type": ["number", "null"]
+                                },
+                                "reasoningTokens": {
+                                  "type": ["number", "null"]
+                                }
+                              },
+                              "required": [
+                                "inputTokens",
+                                "outputTokens",
+                                "cachedTokens",
+                                "cacheWriteTokens",
+                                "reasoningTokens"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "turns": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "promptId": {
+                                    "type": "string"
+                                  },
+                                  "model": {
+                                    "type": ["string", "null"]
+                                  },
+                                  "inputTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "outputTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "cachedTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "cacheWriteTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "reasoningTokens": {
+                                    "type": ["number", "null"]
+                                  },
+                                  "pricing": {
+                                    "description": "Versioned server USD quote from a frozen snapshot; null means unpriced, never zero.",
+                                    "anyOf": [
+                                      {},
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "unavailableReason": {
+                                    "type": "object",
+                                    "properties": {
+                                      "code": {
+                                        "type": "string",
+                                        "enum": [
+                                          "admission_missing",
+                                          "admission_expired",
+                                          "admission_superseded",
+                                          "legacy_disabled",
+                                          "native_start_unobserved",
+                                          "native_input_unmatched",
+                                          "native_turn_unobserved",
+                                          "native_terminal_unobserved",
+                                          "native_history_unavailable",
+                                          "native_boundary_unverified",
+                                          "unsafe_reader_state",
+                                          "reader_unavailable",
+                                          "compute_inactive",
+                                          "unsupported_harness"
+                                        ]
+                                      },
+                                      "message": {
+                                        "type": "string",
+                                        "maxLength": 600
+                                      }
+                                    },
+                                    "required": ["code", "message"],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": ["promptId", "model", "inputTokens", "outputTokens", "cachedTokens"],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": ["computeSeconds", "turnCount", "turns"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "preservationNote": {
+                      "type": ["string", "null"]
+                    },
+                    "externalRef": {
+                      "description": "Opaque reference given at launch; absent when none.",
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "golden": {
+                      "type": ["string", "null"]
+                    },
+                    "provider": {
+                      "type": "string",
+                      "enum": ["boat", "modal", "docker"]
+                    },
+                    "hostId": {
+                      "type": "string"
+                    },
+                    "image": {
+                      "type": "string"
+                    },
+                    "visibility": {
+                      "type": "string",
+                      "enum": ["org", "private"]
+                    },
+                    "harness": {
+                      "type": "string",
+                      "enum": ["claude", "codex", "opencode"]
+                    },
+                    "repositoryDir": {
+                      "description": "Configured directory used to prepare native agent cwd; not confinement.",
+                      "type": ["string", "null"]
+                    },
+                    "credentialId": {
+                      "type": ["string", "null"]
+                    },
+                    "credentialVersion": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "model": {
+                      "description": "The requested next-send default, not proof of the observed model.",
+                      "type": ["string", "null"]
+                    },
+                    "reasoningEffort": {
+                      "type": ["string", "null"]
+                    },
+                    "machineSize": {
+                      "anyOf": [
+                        {},
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]
+                    },
+                    "statusReason": {
+                      "type": ["string", "null"]
+                    },
+                    "statusMessage": {
+                      "type": ["string", "null"]
+                    },
+                    "taskOutcome": {
+                      "anyOf": [
+                        {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "state": {
+                                  "type": "string",
+                                  "const": "ready"
+                                },
+                                "prNumber": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "prUrl": {
+                                  "type": "string",
+                                  "maxLength": 2048,
+                                  "format": "uri"
+                                },
+                                "headSha": {
+                                  "type": "string",
+                                  "pattern": "^[a-f0-9]{40}$"
+                                }
+                              },
+                              "required": ["state"],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "state": {
+                                  "type": "string",
+                                  "const": "blocked"
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 1000
+                                }
+                              },
+                              "required": ["state", "reason"],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "providerState": {
+                      "type": ["string", "null"]
+                    },
+                    "conversationIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "expiresAt": {
+                      "type": ["string", "null"]
+                    },
+                    "prompt": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "rateLimit": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "retryCount": {
+                                      "type": "number"
+                                    },
+                                    "delayMs": {
+                                      "type": "number"
+                                    },
+                                    "totalWaitMs": {
+                                      "type": "number"
+                                    },
+                                    "retryAt": {
+                                      "type": "number"
+                                    },
+                                    "waiting": {
+                                      "type": "boolean"
+                                    },
+                                    "message": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["retryCount", "delayMs", "totalWaitMs", "retryAt", "waiting", "message"],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "promptId": {
+                              "type": "string"
+                            },
+                            "conversationId": {
+                              "type": ["string", "null"]
+                            },
+                            "state": {
+                              "type": "string",
+                              "enum": ["running", "finished", "interrupted", "failed"]
+                            },
+                            "reason": {
+                              "type": ["string", "null"]
+                            },
+                            "requestedModel": {
+                              "type": ["string", "null"]
+                            },
+                            "observedModel": {
+                              "type": ["string", "null"]
+                            },
+                            "modelSelectionReason": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": ["model_selection_mismatch", "model_selection_unverified"]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "modelSelectionMessage": {
+                              "type": ["string", "null"]
+                            }
+                          },
+                          "required": ["promptId", "conversationId", "state", "reason"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "settled": {
+                      "type": "boolean"
+                    },
+                    "timedOut": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "timeLeftSeconds",
+                    "expiringSoon",
+                    "providerExpiresAt",
+                    "id",
+                    "golden",
+                    "visibility",
+                    "harness",
+                    "repositoryDir",
+                    "model",
+                    "reasoningEffort",
+                    "machineSize",
+                    "status",
+                    "statusReason",
+                    "providerState",
+                    "conversationIds",
+                    "expiresAt",
+                    "prompt",
+                    "settled",
+                    "timedOut"
+                  ],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/exec": {
+      "post": {
+        "operationId": "sandbox_exec",
+        "description": "Runs a shell command in the sandbox (cwd /home/user by default) and returns its output. Output that contains the agent's credentials is redacted. Use it to inspect the repos, not to drive the agent.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "request_id": {
+                    "description": "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "command": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "cwd": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "timeout_seconds": {
+                    "description": "Default 120.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "command"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "exitCode": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "stdout": {
+                      "type": "string"
+                    },
+                    "stderr": {
+                      "type": "string"
+                    },
+                    "timedOut": {
+                      "type": "boolean"
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["id", "exitCode", "stdout", "stderr", "timedOut", "truncated"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/steer": {
+      "post": {
+        "operationId": "sandbox_steer",
+        "description": "Redirects the turn that is running now. delivery says how: native joins the turn (Claude Code); restart interrupts it and continues the same conversation with this text (Codex). Refused when no turn runs: use send then.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "conversation_id": {
+                    "description": "A conversation of the sandbox. Default: the latest.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "request_id": {
+                    "description": "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id", "text"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "promptId": {
+                      "type": "string"
+                    },
+                    "conversationId": {
+                      "type": "string"
+                    },
+                    "delivery": {
+                      "type": "string",
+                      "enum": ["native", "restart"]
+                    },
+                    "mode": {
+                      "type": ["string", "null"]
+                    }
+                  },
+                  "required": ["id", "promptId", "conversationId", "delivery", "mode"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/interrupt": {
+      "post": {
+        "operationId": "sandbox_interrupt",
+        "description": "Stops the running turn of one conversation, or of all. The sandbox stays up for the next send.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "conversation_id": {
+                    "description": "A conversation of the sandbox. Default: the latest.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "request_id": {
+                    "description": "Optional durable runtime request ID (runtime sandboxes only); reuse identical input after uncertain delivery.",
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "interrupted": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["id", "interrupted"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/launch": {
+      "post": {
+        "operationId": "sandbox_launch",
+        "description": "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "description": "Reuse this key for retries; inspect launch_receipt after an unknown outcome.",
+                    "type": "string",
+                    "minLength": 16,
+                    "maxLength": 128
+                  },
+                  "externalRef": {
+                    "type": "string",
+                    "description": "Opaque caller reference, for example one business object id. Not unique; use idempotencyKey for exactly-once."
+                  },
+                  "visibility": {
+                    "type": "string",
+                    "enum": ["private", "org"]
+                  },
+                  "skills": {
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "skipSkillDefaults": {
+                    "type": "boolean"
+                  },
+                  "helperCapabilities": {
+                    "maxItems": 8,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 64
+                    }
+                  },
+                  "connections": {
+                    "maxItems": 100,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "golden": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The golden's name, as in golden_list."
+                  },
+                  "org": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "description": "The golden's provider. Needed only when the name exists on several providers.",
+                    "type": "string",
+                    "enum": ["boat", "modal"]
+                  },
+                  "harness": {
+                    "type": "string",
+                    "enum": ["claude", "codex", "opencode"],
+                    "description": "claude (Claude Code) or codex."
+                  },
+                  "model": {
+                    "description": "The model, by id. claude: claude-opus-5-5 (low|medium|high|xhigh|max), claude-sonnet-5-5 (low|medium|high|xhigh|max); default claude-opus-5-5 medium. codex: gpt-6.2-sol (low|medium|high|xhigh|max|ultra), gpt-6.2-astra (low|medium|high|xhigh|max|ultra), gpt-6.1-sol (low|medium|high|xhigh|max|ultra), gpt-6.1-terra (low|medium|high|xhigh|max|ultra), gpt-6-astra (low|medium|high|xhigh|max|ultra), gpt-6-sol (low|medium|high|xhigh|max|ultra), gpt-6-luna (low|medium|high|xhigh|max); default gpt-6.2-sol medium. opencode: armada/deepseek-flash (default); default armada/deepseek-flash default.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "size": {
+                    "type": "string",
+                    "enum": ["small", "medium", "large", "xlarge"]
+                  },
+                  "repo": {
+                    "description": "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
+                    "type": "string"
+                  },
+                  "credentialId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "prompt": {
+                    "description": "The first instruction. Leave out for an idle sandbox.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "ttlSeconds": {
+                    "description": "Seconds before the machine stops by itself. Default 14400 (4 hours). At most 2592000 (30 days) on boat, 86400 (24 hours) on modal; a longer TTL is refused.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2592000
+                  },
+                  "reasoningEffort": {
+                    "description": "The reasoning effort; one the model accepts (see model).",
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": ["golden", "harness"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "REST launch receipt: sandbox, golden, promptId, conversationId, ttlSeconds, expiresAt, github and helper. Provider records may carry additional fields."
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/templates/launch": {
+      "post": {
+        "operationId": "templates_launch",
+        "description": "Launch an immutable template revision. requestKey is required: same key/body returns the recorded request and never allocates twice. Readable variables are NOT secrets; no secret bindings or authority-enlarging overrides.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "org": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "requestKey": {
+                    "type": "string"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "ttlSeconds": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "size": {
+                    "type": "string",
+                    "enum": ["small", "medium", "large", "xlarge"]
+                  },
+                  "repo": {
+                    "type": "string"
+                  },
+                  "skills": {
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "skipSkillDefaults": {
+                    "type": "boolean"
+                  }
+                },
+                "required": ["org", "id", "requestKey"],
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/logs/read": {
+      "post": {
+        "operationId": "logs_read",
+        "description": "The agent's events oldest first: prompts (with status and failure reason), messages and tool calls, steers. The default is one bounded page (100 events). Set all to read every available page (up to 100 pages) in one response. Pass the returned cursor as since_cursor to read only what is new. An event read twice has the same id and the newer body; each id appears once per response.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500
+                  },
+                  "all": {
+                    "description": "Read all available pages, bounded at 100 pages.",
+                    "type": "boolean"
+                  },
+                  "direction": {
+                    "type": "string",
+                    "enum": ["forward", "backward"]
+                  },
+                  "maxBytes": {
+                    "type": "integer",
+                    "minimum": 256,
+                    "maximum": 1048576
+                  },
+                  "coalesce": {
+                    "type": "boolean"
+                  },
+                  "cursor": {
+                    "description": "The cursor of the previous page.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "conversationId": {
+                    "description": "A conversation of the sandbox. Default: the latest.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "org": {
+                    "type": "string"
+                  }
+                },
+                "required": ["id"],
+                "$schema": "http://json-schema.org/draft-07/schema#"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "at": {
+                            "type": "number"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": ["prompt", "message", "steer", "other"]
+                          },
+                          "conversationId": {
+                            "type": "string"
+                          },
+                          "promptId": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["id", "at", "kind"],
+                        "additionalProperties": {}
+                      }
+                    },
+                    "cursor": {
+                      "type": ["string", "null"]
+                    },
+                    "olderCursor": {
+                      "type": "string"
+                    },
+                    "hasMore": {
+                      "type": "boolean"
+                    },
+                    "settled": {
+                      "type": "boolean"
+                    },
+                    "source": {
+                      "type": "string",
+                      "const": "armada-runtime"
+                    },
+                    "threadStatus": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string"
+                        },
+                        "statusMessage": {
+                          "type": ["string", "null"]
+                        },
+                        "prompt": {},
+                        "usage": {}
+                      },
+                      "required": ["status", "statusMessage", "prompt", "usage"],
+                      "additionalProperties": false
+                    },
+                    "runtimeFailure": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "const": "failed"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["status", "reason"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["events", "cursor", "hasMore"],
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "serviceToken": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "Failure": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "Public failure code; clients must tolerate future codes.",
+                "examples": [
+                  "provider_routing_unavailable",
+                  "github_hydration_failed",
+                  "extension_not_found",
+                  "extension_not_allowed",
+                  "extension_state",
+                  "sandbox_retention_ended",
+                  "extension_maximum",
+                  "credential_refused",
+                  "provider_unavailable",
+                  "dependency_unavailable",
+                  "outcome_unknown"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {}
+            }
+          }
+        }
+      }
+    }
+  }
+}
