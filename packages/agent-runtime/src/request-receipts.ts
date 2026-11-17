@@ -1,3 +1,4 @@
+import { RequestRefused } from "./errors.ts";
 import type { Journal } from "./journal.ts";
 import type { RunnerRequest } from "./protocol.ts";
 
@@ -13,7 +14,7 @@ export async function executeWithReceipt(
     body: string;
   } | null;
   if (old && request.op !== "checkpoint")
-    return new Response(old.body, { headers: { "content-type": "application/json" } });
+    return new Response(old.body, { status: "error" in JSON.parse(old.body) && JSON.parse(old.body).error !== "request_outcome_unknown" ? 409 : 200, headers: { "content-type": "application/json" } });
   const mutating = !READ_ONLY_OPERATIONS.has(request.op);
   // Fence before side effects. A crash leaves an explicit unknown outcome, never a duplicate turn.
   if (mutating)
@@ -23,7 +24,15 @@ export async function executeWithReceipt(
         request.requestId,
         JSON.stringify({ version: 1, requestId: request.requestId, error: "request_outcome_unknown" }),
       );
-  const result = await dispatch();
+  let result: unknown;
+  try {
+    result = await dispatch();
+  } catch (error) {
+    if (!(error instanceof RequestRefused)) throw error;
+    const body = journal.redact(JSON.stringify({ error: error.message }));
+    if (mutating) journal.db.query("INSERT OR REPLACE INTO requests VALUES(?,?)").run(request.requestId, body);
+    return new Response(body, { status: 409, headers: { "content-type": "application/json" } });
+  }
   const body = journal.redact(JSON.stringify({ version: 1, requestId: request.requestId, result }));
   if (mutating) journal.db.query("INSERT OR REPLACE INTO requests VALUES(?,?)").run(request.requestId, body);
   return new Response(body, { headers: { "content-type": "application/json" } });

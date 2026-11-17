@@ -26,7 +26,14 @@ export class Journal {
   append(event: AgentEvent): number {
     let body = this.redact(JSON.stringify(event));
     const terminalSnapshot = event.kind === "message" && !event.partial && event.textMode === "snapshot";
-    const oversized = body.length > 262144;
+    // Control events must retain their identity, status and failure reason. Bound only
+    // the display preview, after redaction, so JSON escaping cannot erase the event.
+    if ((event.kind === "prompt" || event.kind === "steer") && Buffer.byteLength(body) > 262144) {
+      const safe = JSON.parse(body);
+      safe.text = `${safe.text.slice(0, 16000)}… [truncated]`;
+      body = JSON.stringify(safe);
+    }
+    const oversized = Buffer.byteLength(body) > 262144;
     if (oversized)
       body = JSON.stringify({
         id: event.id,

@@ -1,3 +1,4 @@
+import { RequestRefused } from "./errors.ts";
 import { timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES } from "@armada/core";
@@ -343,7 +344,7 @@ export class Runner {
         r.conversationId !== undefined &&
         (typeof r.conversationId !== "string" || !r.conversationId || r.conversationId.length > 256)
       )
-        throw Error("invalid_request");
+        throw new RequestRefused("invalid_request");
       return observeRuntime({
         journal: this.journal,
         grant: this.grant,
@@ -355,7 +356,7 @@ export class Runner {
     }
     if (r.op === "resumeNativeSession") {
       if (this.credentialFreeBuilder || this.barrier || this.active.size || this.commands.size || this.resumingNative)
-        throw Error("native_resume_unavailable");
+        throw new RequestRefused("native_resume_unavailable");
       if (
         Object.keys(r).some(
           (key) =>
@@ -380,14 +381,14 @@ export class Runner {
         !r.expectedSessionId ||
         r.expectedSessionId.length > 256
       )
-        throw Error("invalid_native_resume");
+        throw new RequestRefused("invalid_native_resume");
       const saved = this.journal.db
         .query("SELECT harness,session FROM sessions WHERE conversation=?")
         .get(r.conversationId) as { harness: string; session: string } | null;
       if (!saved || saved.harness !== r.input.harness || saved.session !== r.expectedSessionId)
         throw Error("native_session_identity_changed");
       const resume = this.drivers[r.input.harness]?.resumeSession?.bind(this.drivers[r.input.harness]);
-      if (!resume) throw Error("native_resume_unsupported");
+      if (!resume) throw new RequestRefused("native_resume_unsupported");
       this.resumingNative = true;
       const work = withNativeAuthPublication(this.execution, () =>
         resume({
@@ -495,11 +496,11 @@ export class Runner {
       this.journal.flush();
       return { watermark, acknowledgedSequence: this.journal.ack, generation: this.grant.generation };
     }
-    if (this.barrier) throw Error("checkpoint_in_progress");
+    if (this.barrier) throw new RequestRefused("checkpoint_in_progress");
     if (this.preparingWorkspace && !["getPrompt", "events", "getExec"].includes(r.op))
-      throw Error("workspace_setup_in_progress");
+      throw new RequestRefused("workspace_setup_in_progress");
     if (this.installingSkills && !["getPrompt", "events", "getExec"].includes(r.op))
-      throw Error("skills_install_in_progress");
+      throw new RequestRefused("skills_install_in_progress");
     if (r.op === "workspaceExec") {
       if (
         this.credentialFreeBuilder ||
@@ -508,7 +509,7 @@ export class Runner {
         this.resumingNative ||
         this.journal.db.query("SELECT 1 FROM prompts LIMIT 1").get()
       )
-        throw Error("workspace_launch_only");
+        throw new RequestRefused("workspace_launch_only");
       const input = validateWorkspaceExec(r.input);
       this.preparingWorkspace = true;
       const workspaceEvent = (status: "running" | "finished" | "failed", exitCode?: number | null) =>
@@ -553,9 +554,9 @@ export class Runner {
         !(HARNESSES as readonly string[]).includes(r.input.harness) ||
         !this.drivers[r.input.harness]
       )
-        throw Error("skills_install_denied");
+        throw new RequestRefused("skills_install_denied");
       if (Object.keys(r.input).some((k) => !["harness", "references", "cwd", "key"].includes(k)))
-        throw Error("skills_install_denied");
+        throw new RequestRefused("skills_install_denied");
       const cwd = validateHarnessCwd(r.input.cwd);
       this.installingSkills = true;
       const work = installRuntimeSkills({ ...r.input, cwd }, this.journal, this.execEnvironment, signal);
@@ -590,17 +591,17 @@ export class Runner {
       }
     }
     if (r.op === "prompt") {
-      if (this.resumingNative) throw Error("native_resume_in_progress");
-      if (this.credentialFreeBuilder) throw Error("builder_model_prompts_forbidden");
+      if (this.resumingNative) throw new RequestRefused("native_resume_in_progress");
+      if (this.credentialFreeBuilder) throw new RequestRefused("builder_model_prompts_forbidden");
       if (
         this.exclusiveNativeAuth &&
         r.input.harness === "codex" &&
         [...this.active.values()].some((value) => value.prompt.request.harness === "codex")
       )
-        throw Error("native_auth_writer_busy");
+        throw new RequestRefused("native_auth_writer_busy");
       if (r.input.conversationId) {
         const existing = this.journal.prompts().find((p) => p.conversationId === r.input.conversationId);
-        if (existing && existing.request.harness !== r.input.harness) throw Error("conversation_harness_mismatch");
+        if (existing && existing.request.harness !== r.input.harness) throw new RequestRefused("conversation_harness_mismatch");
       }
       if (
         r.input.sandboxId !== this.grant.sandboxId ||
@@ -608,10 +609,10 @@ export class Runner {
         typeof r.input.text !== "string" ||
         !r.input.text.trim()
       )
-        throw Error("invalid_request");
+        throw new RequestRefused("invalid_request");
       if (r.input.cwd !== undefined) validateHarnessCwd(r.input.cwd);
       const conversationId = r.input.conversationId ?? crypto.randomUUID();
-      if (this.active.has(conversationId)) throw Error("conversation_busy");
+      if (this.active.has(conversationId)) throw new RequestRefused("conversation_busy");
       const p: StoredPrompt = { promptId: crypto.randomUUID(), conversationId, status: "queued", request: r.input };
       this.journal.transition(p, "queued");
       this.start(p);
@@ -631,7 +632,7 @@ export class Runner {
     }
     if (r.op === "steer") {
       const a = targets[0];
-      if (!a || targets.length !== 1) throw Error("no_running_turn");
+      if (!a || targets.length !== 1) throw new RequestRefused("no_running_turn");
       await a.turn.steer(r.text);
       this.journal.append({
         id: crypto.randomUUID(),
@@ -643,7 +644,7 @@ export class Runner {
       });
       return { conversationId: a.prompt.conversationId, promptId: a.prompt.promptId };
     }
-    throw Error("invalid_operation");
+    throw new RequestRefused("invalid_operation");
   }
   private start(p: StoredPrompt) {
     const controller = new AbortController();
@@ -678,7 +679,10 @@ export class Runner {
           async (error: unknown) => {
             active.terminal = true;
             await this.publishNativeAuth?.();
-            this.journal.transition(p, "failed", error instanceof HarnessError ? error.reason : "harness_failed");
+            // A deliberate shutdown may make any native driver reject its pending RPC.
+            // Preserve spontaneous child failures when the runner is still serving.
+            this.journal.transition(p, this.closing ? "interrupted" : "failed",
+              this.closing ? undefined : error instanceof HarnessError ? error.reason : "harness_failed");
           },
         )
         .catch(() => this.journal.transition(p, "failed", "native_auth_state_unacknowledged"))
