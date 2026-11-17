@@ -46,6 +46,27 @@ const REST_ONLY: Readonly<
     input: { type: "object", properties: {} },
   },
 };
+/** Fields a REST handler accepts beyond its MCP tool's input. */
+const REST_EXTRA_FIELDS: Readonly<Record<string, Readonly<Record<string, object>>>> = {
+  "logs/read": { follow: { type: "boolean", description: "Follow events within the bounded HTTP request." } },
+  "templates/launch": {
+    modelAccount: {
+      type: "object",
+      required: ["id", "version"],
+      additionalProperties: false,
+      properties: { id: { type: "string", format: "uuid" }, version: { type: "integer", minimum: 1 } },
+      description:
+        "Model credential account to run with, by id and version, when the revision pins none. Refused when the revision pins one.",
+    },
+    externalRef: {
+      type: "string",
+      minLength: 1,
+      maxLength: 200,
+      description:
+        "Opaque caller reference recorded on the sandbox, 1 to 200 characters without control characters. Refused for Docker templates.",
+    },
+  },
+};
 /** MCP tool names in shared prose, as the REST routes that serve them. */
 const REST_PROSE_NAMES: Readonly<Record<string, string>> = { golden_list: "golden/list" };
 /** Rewrites every string (prose and `required` entries); object keys are renamed by the caller. */
@@ -90,11 +111,7 @@ export async function generateOpenApi() {
           delete input.properties[from];
         }
       }
-      if (route === "logs/read")
-        input.properties = {
-          ...input.properties,
-          follow: { type: "boolean", description: "Follow events within the bounded HTTP request." },
-        };
+      if (REST_EXTRA_FIELDS[route]) input.properties = { ...input.properties, ...REST_EXTRA_FIELDS[route] };
       // REST selects org scope before calling shared tools.
       if (tool && route !== "templates/launch") input.properties = { ...input.properties, org: { type: "string" } };
       let request: object = input;

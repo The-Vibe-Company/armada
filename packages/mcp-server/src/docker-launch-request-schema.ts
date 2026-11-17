@@ -24,7 +24,7 @@ export const DOCKER_LAUNCH_REQUEST = z
       .describe("Omit to use the caller's compatible personal default, frozen at admission."),
     credentialVersion: z.number().int().min(1).optional(),
     requestId: uuid.describe("Caller-chosen UUID; replaying it returns the same launch."),
-    prompt: z.string().min(1).optional().describe("First prompt, at most 256 KiB."),
+    prompt: z.string().min(1).optional().describe("First prompt. The whole request body is limited to 128 KiB."),
     model: z.string().optional(),
     reasoningEffort: z.string().optional(),
     ttlSeconds: z.number().int().min(1).max(86400).optional(),

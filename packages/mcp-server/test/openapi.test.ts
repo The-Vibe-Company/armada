@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { TEMPLATE_LAUNCH_FIELDS } from "@armada/core/server";
 import published from "../../../docs/openapi.json";
 import releasePlease from "../../../release-please-config.json";
 import { generateOpenApi, REST_FIELD_NAMES } from "../src/openapi.ts";
@@ -96,4 +97,17 @@ test("published launch request is either a golden launch or a Docker launch, nev
   expect(launch.safeParse({ ...docker, golden: "web" }).success).toBe(false);
   expect(launch.safeParse({ ...docker, image: "busybox" }).success).toBe(false);
   expect(launch.safeParse({ golden: "web", harness: "codex", provider: "docker" }).success).toBe(false);
+});
+
+test("published template launch request lists exactly the fields the template service accepts", async () => {
+  const { publishedRequest } = await import("./published-response.ts");
+  type Operation = { post: { requestBody: { content: { "application/json": { schema: { properties: object } } } } } };
+  const operation = (published.paths as unknown as Record<string, Operation>)["/api/v1/templates/launch"]!.post;
+  expect(Object.keys(operation.requestBody.content["application/json"].schema.properties).sort()).toEqual(
+    [...TEMPLATE_LAUNCH_FIELDS].sort(),
+  );
+  const id = "11111111-1111-4111-8111-111111111111";
+  // The CLI's `templates launch --model-account` body.
+  const cli = { org: id, id, requestKey: "k", modelAccount: { id, version: 1 }, externalRef: "tender:1" };
+  expect(publishedRequest("templates/launch").safeParse(cli).success).toBe(true);
 });

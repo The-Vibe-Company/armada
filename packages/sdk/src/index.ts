@@ -101,6 +101,10 @@ export interface TemplateLaunchInput {
   repo?: string;
   skills?: string[];
   skipSkillDefaults?: boolean;
+  /** Model credential account, when the template revision pins none. */
+  modelAccount?: { id: string; version: number };
+  /** Opaque caller reference recorded on the sandbox; refused for Docker templates. */
+  externalRef?: string;
 }
 /** A durable launch request: `state` is "succeeded", "failed" or still "reconciling"/"allocating". Replay `requestKey` to read it again. */
 export interface TemplateLaunchReceipt {

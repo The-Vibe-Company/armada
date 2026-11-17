@@ -5831,7 +5831,7 @@
                         "description": "Caller-chosen UUID; replaying it returns the same launch."
                       },
                       "prompt": {
-                        "description": "First prompt, at most 256 KiB.",
+                        "description": "First prompt. The whole request body is limited to 128 KiB.",
                         "type": "string",
                         "minLength": 1
                       },
@@ -6199,6 +6199,31 @@
                   },
                   "skipSkillDefaults": {
                     "type": "boolean"
+                  },
+                  "modelAccount": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "version"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "version": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "description": "Model credential account to run with, by id and version, when the revision pins none. Refused when the revision pins one."
+                  },
+                  "externalRef": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Opaque caller reference recorded on the sandbox, 1 to 200 characters without control characters. Refused for Docker templates."
                   }
                 },
                 "required": [

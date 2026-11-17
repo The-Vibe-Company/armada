@@ -100,6 +100,11 @@ export {
 } from "./ssh-executor.ts";
 export { sshHydrateGitHubToken } from "./ssh-github-token.ts";
 export { sshReadableVariables } from "./ssh-readable-variables.ts";
-export { createTemplateService, type TemplateRuntime, type TemplateService } from "./template-service.ts";
+export {
+  createTemplateService,
+  TEMPLATE_LAUNCH_FIELDS,
+  type TemplateRuntime,
+  type TemplateService,
+} from "./template-service.ts";
 export { createSqlVaultStore } from "./vault-store.ts";
 export { preserveWork, type WorkPreservation, workPreservationError } from "./work-preservation.ts";
