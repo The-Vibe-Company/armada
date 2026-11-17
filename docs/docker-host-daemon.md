@@ -1294,3 +1294,38 @@ Modal stops retain workspace storage for resume under its existing lifecycle;
 Boat stop retains disk/conversations as described in the provider contract.
 Neither provider shares this host's local disk admission boundary; no provider
 lifecycle changes are included here.
+
+## Shared verified artifact cache (#2562)
+
+Without a shared cache every sandbox downloaded, verified and extracted its
+harness archive into its own fresh volume (about 20 s between `enrolled` and
+`harness_started` on one measured production launch). Design: share the
+public, self-verifying unit, the digest-named archive, not extracted trees,
+so a sandbox keeps today's guarantees without trusting the host or image.
+
+- After each successful bootstrap the daemon, in the background, fetches
+  `GET /api/runtime/artifact-sets/<runtime sha256>`: the public digests and
+  sizes of the harness archives and OpenCode binary deployed with that runtime.
+  Unknown digests and older servers return 404 and nothing happens.
+- Each artifact is verified through the shared installer (fixed HTTPS origin,
+  no credentials or redirects, exact size and SHA256) into
+  `<state>/artifact-cache-private`, then published atomically as a mode 0444
+  file in `<state>/artifact-cache` (mode 0755; public bytes only). Runs are
+  serialized; each prunes entries the current set no longer names.
+- New containers bind-mount that directory read-only at
+  `/opt/armada/artifact-cache`. Ownership checks accept only that exact
+  read-only bind as an extra mount; containers created before the upgrade keep
+  their single home volume and download as before.
+- Inside the sandbox the runtime copies a matching archive into its private
+  cache instead of downloading it, then extracts with the usual inventory checks.
+  Extraction and verification remain per sandbox; only HTTP is removed. The
+  first launch of a new deployment on a host still downloads.
+
+Uninstall removes both cache directories with `runtime-cache`. Upgrade the
+daemon to enable the cache; the server route needs no migration.
+
+Modal and Boat: neither image carries a warm cache a new sandbox can use. The
+enrolled root is `/home/user/.armada-runtime/<sandbox id>`, so any cache in a
+snapshot belongs to another sandbox ID, and Modal snapshot finalization removes
+`/home/user/.armada-runtime` before capture. Both download per launch; this
+change does not alter their images or lifecycle.
