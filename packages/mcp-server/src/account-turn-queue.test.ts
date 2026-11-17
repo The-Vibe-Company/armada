@@ -69,7 +69,7 @@ beforeAll(async () => {
 afterAll(() => db.close());
 beforeEach(async () => {
   await db.exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -191,6 +191,58 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
     await queue.drain();
     expect(await queue.status(caller, ids[2]!, requests[1])).toEqual({ nativePromptId: "actual_next" });
   }
+});
+
+// Cancellation can win the race against the dispatch error handler. The receipt is
+// terminalized by the sweep while the handler still owns the claim, so the handler's
+// update matches zero rows. Uncertainty must not depend on which path wrote last.
+test("cancellation during dispatch keeps the uncertain model charge until physical stop", async () => {
+  const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction", model: "gpt-5.4" };
+  const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction", model: "gpt-5.4" };
+  await db.exec("update credentials set max_agents=null,model_limits='{\"gpt-5.4\":1}'::jsonb");
+  await queue.accept(caller, first);
+  await queue.accept(caller, second);
+  queue.setDispatch(async () => {
+    // Admission advances the generation, then ordinary cleanup releases the reservation.
+    await db.query(
+      "update sandboxes set lifecycle_generation=lifecycle_generation+1,model='default_model',activity_lease_id=id where id=$1",
+      [ids[1]],
+    );
+    await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
+    // A stop becomes pending while the dispatch handler is still running.
+    await db.query(
+      "update sandboxes set status='stopping',stop_requested_at=now(),activity_lease_id=null where id=$1",
+      [ids[1]],
+    );
+    // A concurrent reconciliation terminalizes the receipt before the handler completes.
+    await queue.reconcileOne(new AbortController().signal);
+    throw Error("uncertain");
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  const usage = await db.query<{ total: number; default_model: number; override_model: number }>(
+    `select ${accountWorkingCountSql("$1")} as total,
+      ${accountWorkingCountSql("$1", "null::uuid", "'default_model'")} as default_model,
+      ${accountWorkingCountSql("$1", "null::uuid", "'gpt-5.4'")} as override_model`,
+    [account],
+  );
+  expect(usage.rows.map((row) => [Number(row.total), Number(row.default_model), Number(row.override_model)])).toEqual([
+    [1, 0, 1],
+  ]);
+  // The second request must stay blocked while physical stop is unconfirmed.
+  let calls = 0;
+  queue.setDispatch(async () => {
+    calls++;
+    throw Error("must not dispatch");
+  });
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  await queue.drain();
+  expect(calls).toBe(0);
+  // Confirmed physical stop releases the charge.
+  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  expect(calls).toBe(1);
 });
 
 test("queued public receipts remain usable across server reads, evidence, outcome and conversation controls", async () => {
