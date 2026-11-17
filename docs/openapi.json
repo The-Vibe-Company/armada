@@ -6457,6 +6457,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "events": {
@@ -6552,6 +6553,37 @@
                         "reason"
                       ],
                       "additionalProperties": false
+                    },
+                    "queuedPrompt": {
+                      "description": "Docker only: the latest prompt while the runtime has not admitted it. Absent once the agent has it.",
+                      "type": "object",
+                      "properties": {
+                        "promptId": {
+                          "type": "string"
+                        },
+                        "conversationId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "promptId",
+                        "conversationId",
+                        "state",
+                        "reason"
+                      ],
+                      "additionalProperties": {}
                     }
                   },
                   "required": [
@@ -6559,8 +6591,7 @@
                     "cursor",
                     "hasMore"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
-                  "additionalProperties": false
+                  "additionalProperties": {}
                 }
               }
             }

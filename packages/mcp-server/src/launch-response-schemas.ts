@@ -1,6 +1,6 @@
 import type { GoldenErrorCode } from "@armada/core";
 import { z } from "zod";
-import { GOLDEN_OUTPUT } from "./tools.ts";
+import { GOLDEN_OUTPUT, LOGS_OUTPUT } from "./tools.ts";
 
 /**
  * Public HTTP 200 bodies of the two REST launch routes. Their MCP tools have no typed
@@ -138,6 +138,27 @@ export const LAUNCH_OPTIONS_RESPONSE = z
     modalRuntime: versions.optional(),
     dockerRuntime: versions.optional(),
     boatRuntime: versions,
+  })
+  .passthrough();
+
+/**
+ * `logs/read`: the MCP `logs` output plus what the REST handler adds. A Docker sandbox reports
+ * a prompt the runtime has not admitted yet (queued behind startup, or failed before admission)
+ * as `queuedPrompt`. The record stays open: providers and later releases add fields.
+ */
+export const REST_LOGS_RESPONSE = z
+  .object({
+    ...LOGS_OUTPUT,
+    queuedPrompt: z
+      .object({
+        promptId: z.string(),
+        conversationId: z.string().nullable(),
+        state: z.string(),
+        reason: z.string().nullable(),
+      })
+      .passthrough()
+      .optional()
+      .describe("Docker only: the latest prompt while the runtime has not admitted it. Absent once the agent has it."),
   })
   .passthrough();
 

@@ -8,6 +8,7 @@ import {
   GOLDEN_LIST_RESPONSE,
   LAUNCH_OPTIONS_RESPONSE,
   REST_LAUNCH_RESPONSE,
+  REST_LOGS_RESPONSE,
   requestJsonSchema,
   responseJsonSchema,
   TEMPLATE_LAUNCH_RESPONSE,
@@ -35,6 +36,7 @@ const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
   "golden/list": GOLDEN_LIST_RESPONSE,
   "sandbox/launch": REST_LAUNCH_RESPONSE,
   "templates/launch": TEMPLATE_LAUNCH_RESPONSE,
+  "logs/read": REST_LOGS_RESPONSE,
 };
 /** Handled directly by the REST dispatcher, not through an MCP tool. */
 const REST_ONLY: Readonly<

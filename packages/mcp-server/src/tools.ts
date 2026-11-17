@@ -427,6 +427,20 @@ const event = z.looseObject({
   promptId: z.string().optional(),
 });
 
+/** Output of the `logs` tool. The REST `logs/read` response extends it (`REST_LOGS_RESPONSE`). */
+export const LOGS_OUTPUT = {
+  events: z.array(event),
+  cursor: z.string().nullable(),
+  olderCursor: z.string().optional(),
+  hasMore: z.boolean(),
+  settled: z.boolean().optional(),
+  source: z.literal("armada-runtime").optional(),
+  threadStatus: z
+    .object({ status: z.string(), statusMessage: z.string().nullable(), prompt: z.unknown(), usage: z.unknown() })
+    .optional(),
+  runtimeFailure: z.object({ status: z.literal("failed"), reason: z.string() }).optional(),
+};
+
 export const sandboxListInput = z.object({
   harness: z.enum(HARNESSES).optional(),
   golden: z.string().uuid().optional().describe("Golden UUID, not a name."),
@@ -1593,18 +1607,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         maxBytes: z.number().int().min(256).max(1048576).optional(),
         coalesce: z.boolean().optional(),
       },
-      output: {
-        events: z.array(event),
-        cursor: z.string().nullable(),
-        olderCursor: z.string().optional(),
-        hasMore: z.boolean(),
-        settled: z.boolean().optional(),
-        source: z.literal("armada-runtime").optional(),
-        threadStatus: z
-          .object({ status: z.string(), statusMessage: z.string().nullable(), prompt: z.unknown(), usage: z.unknown() })
-          .optional(),
-        runtimeFailure: z.object({ status: z.literal("failed"), reason: z.string() }).optional(),
-      },
+      output: LOGS_OUTPUT,
       readOnly: true,
     },
     async (args) => {

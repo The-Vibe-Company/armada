@@ -33,6 +33,7 @@ import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard
 import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
+import { readLogs } from "../src/control-logs.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -1180,6 +1181,10 @@ test.each([false, true])(
       handled: true,
       result: { prompt: { promptId: queued.promptId, state: "queued" }, settled: false },
     });
+    // The REST logs read reports the queued turn, and the published response accepts it.
+    const queuedLogs = await readLogs({ dockerControls: controls }, f.caller, f.body.requestId, {});
+    expect(queuedLogs).toMatchObject({ queuedPrompt: { promptId: queued.promptId, state: "queued" } });
+    publishedResponse("logs/read").parse(queuedLogs);
     await server.drain();
     if (initial) {
       await server.drainQueued();
