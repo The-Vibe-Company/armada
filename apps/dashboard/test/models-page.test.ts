@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { HARNESS_CATALOG } from "@armada/core";
-import { initialLaunchSelection } from "../src/lib/launch-picker";
+import { initialLaunchSelection, launchPickerGroups } from "../src/lib/launch-picker";
 import { launchAccounts, type ModelAccount } from "../src/lib/model-accounts";
 import { modelsPageDefault, modelsPageModel, modelsPageStatus } from "../src/lib/models-page";
 
@@ -65,4 +65,17 @@ test("launch initialization carries personal agent choices through the account p
   });
   const missing = launchAccounts({ state: "ready", accounts: [account], orgId: "org", orgName: "Work", defaults }, 1);
   expect(initialLaunchSelection(missing, HARNESS_CATALOG, "codex").credentialId).toBe("");
+});
+
+test("OpenAI key and subscription accounts offer GPT-6.2 without changing the saved default", () => {
+  for (const kind of ["openai", "codex_auth"] as const) {
+    const list = launchAccounts(
+      { state: "ready", accounts: [{ ...account, kind, maxAgents: null }], orgId: "org", orgName: "Work" },
+      1,
+    );
+    expect(launchPickerGroups(list.accounts, HARNESS_CATALOG, "codex", 1)[0]?.options.map((model) => model.id)).toEqual(
+      expect.arrayContaining(["gpt-6.2-sol", "gpt-6.2-astra"]),
+    );
+    expect(initialLaunchSelection(list, HARNESS_CATALOG, "codex").model).toBe("gpt-6.1-sol");
+  }
 });

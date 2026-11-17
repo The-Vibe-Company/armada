@@ -907,6 +907,12 @@ describe("control API", () => {
         harnesses: ["claude", "codex"],
         capabilities: { launch: true },
       });
+      expect(
+        body.harnesses
+          .find((harness) => harness.id === "codex")
+          ?.models.slice(0, 2)
+          .map((model) => model.id),
+      ).toEqual(["gpt-6.2-sol", "gpt-6.2-astra"]);
       expect(body.dockerRuntime?.opencodeMcpProofVersion).toBe(0);
       expect(body.boatRuntime.opencodeMcpProofVersion).toBe(0);
       const hiddenDocker = body.providers.find((provider) => provider.id === "docker");

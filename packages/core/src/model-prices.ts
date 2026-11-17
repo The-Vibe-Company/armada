@@ -14,7 +14,7 @@
  * tokens and OpenAI above 272K input tokens cost more, and their figures are then a lower bound. Batch, priority,
  * fast-mode and data-residency rates are not applied.
  */
-export const MODEL_PRICES_AS_OF = "2026-11-10";
+export const MODEL_PRICES_AS_OF = "2026-11-17";
 
 export const MODEL_PRICE_SOURCES = {
   anthropic: "https://platform.claude.com/docs/en/about-claude/pricing",
@@ -63,6 +63,8 @@ export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
   // Prompts up to 100,000 tokens: Claude Code's background calls are short.
   "claude-haiku-5-5": anthropic(0.1, 0.125, 0.01, 0.5),
   // OpenAI: input, cached input, 30m cache write, output.
+  "gpt-6.2-sol": openai(2, 0.1, 2.5, 10),
+  "gpt-6.2-astra": openai(8, 0.4, 10, 40),
   "gpt-6-astra": openai(10, 1, 12.5, 50),
   "gpt-6.1-sol": openai(2, 0.1, 2.5, 10),
   "gpt-6.1-terra": openai(1, 0.05, 1.25, 5),
