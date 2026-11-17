@@ -67,8 +67,15 @@ function fixture(stage: "scrub" | "snapshot") {
     },
     poll: async () => (terminated ? 0 : null),
   };
+  let appLookups = 0,
+    missingAppAt = 0;
   const client = {
-    apps: { fromName: async () => ({ appId: "app" }) },
+    apps: {
+      fromName: async () => {
+        if (++appLookups === missingAppAt) throw Object.assign(Error("app missing"), { name: "NotFoundError" });
+        return { appId: "app" };
+      },
+    },
     sandboxes: { fromId: async () => sandbox },
     images: {
       delete: async (id: string) => {
@@ -105,6 +112,9 @@ function fixture(stage: "scrub" | "snapshot") {
     deletedImages,
     cleanupDelays,
     images: () => images,
+    missAppOnLookup: (lookup: number) => {
+      missingAppAt = appLookups + lookup;
+    },
     rejectNextImageDelete: () => {
       rejectImageDelete = true;
     },
@@ -125,6 +135,19 @@ test("a confirmed Modal stop is deleted without another termination, even across
   expect(f.state().phase).toBe("deleted");
   expect(f.terminated()).toBe(1);
   expect(f.deletedImages).toEqual(["prior-recovery", "fresh-recovery"]);
+});
+
+test("a missing App during termination never publishes deletion of a live machine", async () => {
+  const f = fixture("snapshot");
+  // The first lookup admits the delete; the one before termination finds no App.
+  f.missAppOnLookup(2);
+  await expect(f.provider.delete({ sandboxId: "logical" })).rejects.toMatchObject({ code: "unavailable" });
+  expect(f.state().phase).toBe("deleting");
+  expect(f.state().deletePhysicalExitGeneration).toBeUndefined();
+  expect(f.terminated()).toBe(0);
+  expect(f.deletedImages).toEqual([]);
+  await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
+  expect(f.terminated()).toBe(1);
 });
 
 test.each(["scrub", "snapshot"] as const)(

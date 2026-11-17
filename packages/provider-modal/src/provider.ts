@@ -738,6 +738,14 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
     }
   }
+  /** Deletion's App lookup. A missing or mismatched App says nothing about this sandbox, so
+   * its not_found must never read as absence, which would publish a deletion that never ran. */
+  async function boundForDelete() {
+    await bound().catch((error) => {
+      if (modalError(error).code !== "not_found") throw error;
+      throw refusal("unavailable", "Modal App lookup failed; the sandbox was not deleted.");
+    });
+  }
   function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
     if (
       target.provider !== "modal" ||
@@ -1691,12 +1699,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return { status: "deleted" };
     },
     async delete({ sandboxId }) {
-      // A missing or mismatched App says nothing about this sandbox: its not_found must
-      // never read as sandbox absence, which would publish deletion with nothing removed.
-      await bound().catch((error) => {
-        if (modalError(error).code !== "not_found") throw error;
-        throw refusal("unavailable", "Modal App lookup failed; the sandbox was not deleted.");
-      });
+      await boundForDelete();
       await store.lease(sandboxId, async (row, save) => {
         if (row.phase === "deleted") return;
         assertMachineSource(row);
@@ -1718,8 +1721,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         row.phase = "deleting";
         await save(row);
         if (!exitConfirmed && row.physicalId) {
+          // Only the machine's own not_found proves exit; look the App up outside that catch.
+          await boundForDelete();
           try {
-            const sb = await physical(row);
+            const sb = await client.sandboxes.fromId(row.physicalId);
             await sb.terminate({ wait: true });
             if ((await sb.poll()) === null)
               throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
