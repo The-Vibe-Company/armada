@@ -109,14 +109,20 @@ export async function deleteSmokeReceipts(
   );
   const selected = ordered.slice(0, limit);
   const remaining = ordered.slice(limit);
-  const waveDeadline = () => Math.min(now() + CLEANUP_WAVE_MS, io.deadline ?? Number.POSITIVE_INFINITY);
-  const cleanup = async (row: SmokeSandboxReceipt, parentWave?: Promise<void[]>) => {
-    let deadline = waveDeadline();
+  const startedAt = now();
+  let parentFinishedAt: number | undefined;
+  const cleanup = async (row: SmokeSandboxReceipt, scoped = false, onStopped?: () => void) => {
+    // Keep the original scoped observation window even when stop starts early.
+    const deadline = () =>
+      Math.min(
+        (scoped ? (parentFinishedAt ?? startedAt + CLEANUP_WAVE_MS) : startedAt) + CLEANUP_WAVE_MS,
+        io.deadline ?? Number.POSITIVE_INFINITY,
+      );
     let phase = "stop";
     let httpStatus: number | null = null;
     let code = "request_failed";
     async function request(action: "stop" | "status" | "delete") {
-      const budget = deadline - now();
+      const budget = deadline() - now();
       if (budget <= 0) {
         if (httpStatus === null) code = "cleanup_timeout";
         throw Error("cleanup_timeout");
@@ -150,8 +156,9 @@ export async function deleteSmokeReceipts(
       return { ok: response.ok, body };
     }
     async function pause() {
-      if (now() >= deadline) throw Error("cleanup_timeout");
-      await sleep(Math.min(5_000, deadline - now()));
+      const remainingMs = deadline() - now();
+      if (remainingMs <= 0) throw Error("cleanup_timeout");
+      await sleep(Math.min(5_000, remainingMs));
     }
     try {
       // Observe admitted/unknown stops without replaying hooks on archiving compute.
@@ -211,13 +218,10 @@ export async function deleteSmokeReceipts(
           await dispatchStop();
         if (status.body?.status === "stopping") retryStopAdmission = false;
       }
+      onStopped?.();
       if (!alreadyDeleted) {
-        // Child stop can overlap parent cleanup. Child delete needs the durable
-        // authority fence published by ordinary parent deletion.
-        if (parentWave) {
-          await parentWave;
-          deadline = waveDeadline();
-        }
+        // Child delete needs the durable authority fence from parent deletion.
+        if (scoped) await parentWave;
         while (true) {
           let deleted: Awaited<ReturnType<typeof request>>;
           try {
@@ -242,12 +246,23 @@ export async function deleteSmokeReceipts(
       io.out(JSON.stringify({ step: "delete_smoke_sandbox", pass: false, ...row, phase, httpStatus, code }));
     }
   };
-  const parentWave = Promise.all(
-    selected.filter((row) => !row.requestKey.startsWith("smoke-scoped-")).map((row) => cleanup(row)),
-  );
+  const parentStops: Promise<boolean>[] = [];
+  const parentDeletes = selected
+    .filter((row) => !row.requestKey.startsWith("smoke-scoped-"))
+    .map((row) => {
+      const stopped = Promise.withResolvers<boolean>();
+      parentStops.push(stopped.promise);
+      return cleanup(row, false, () => stopped.resolve(true)).finally(() => stopped.resolve(false));
+    });
+  const parentWave = Promise.all(parentDeletes).then(() => {
+    parentFinishedAt = now();
+  });
+  // A live parent can resume its child. Overlap only once ordinary stop is
+  // confirmed. If a refusal leaves stop uncertain, keep the original ordering.
+  if (!(await Promise.all(parentStops)).every(Boolean)) await parentWave;
   await Promise.all([
     parentWave,
-    ...selected.filter((row) => row.requestKey.startsWith("smoke-scoped-")).map((row) => cleanup(row, parentWave)),
+    ...selected.filter((row) => row.requestKey.startsWith("smoke-scoped-")).map((row) => cleanup(row, true)),
   ]);
   return remaining;
 }

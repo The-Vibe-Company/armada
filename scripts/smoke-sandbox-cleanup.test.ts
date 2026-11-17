@@ -283,6 +283,7 @@ test.each([1, 32])("child deletion follows parent deletion, even when the sweep 
           init.method === "DELETE" ? new URL(url).pathname.split("/").at(-1) : JSON.parse(String(init.body)).id;
         if (id === child.id) {
           if (init.method === "DELETE") expect(parentDeleted).toBe(true);
+          else expect(clock).toBeGreaterThanOrEqual(130_000);
           return Response.json({ id, status: init.method === "DELETE" ? "deleted" : "stopped" });
         }
         if (url.endsWith("/stop")) {
@@ -504,8 +505,9 @@ test("child stop overlaps slow parent deletion and child delete keeps its own ob
       if (id === child.id) {
         if (url.endsWith("/stop")) {
           childStopAt = clock;
-          return Response.json({ id, status: "stopped" });
+          return Response.json({ id, status: "stopping" });
         }
+        if (url.endsWith("/status")) return Response.json({ id, status: clock < 660_000 ? "stopping" : "stopped" });
         expect(parentDeleted).toBe(true);
         expect(init.method).toBe("DELETE");
         if (clock < 720_000) return Response.json({ error: { code: "sandbox_not_ready" } }, { status: 409 });
@@ -519,7 +521,7 @@ test("child stop overlaps slow parent deletion and child delete keeps its own ob
     },
   });
   expect(remaining).toEqual([]);
-  expect(childStopAt).toBe(0);
+  expect(childStopAt).toBeLessThan(360_000);
   expect(clock).toBe(720_000);
 });
 
