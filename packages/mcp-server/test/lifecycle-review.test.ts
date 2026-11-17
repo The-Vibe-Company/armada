@@ -189,9 +189,8 @@ test("actual Boat resume rearms deadline even when the earlier send sample was r
     // The rearm computes its deadline from the database clock, so bound it with
     // database clock samples taken around the send, never the runner's clock.
     const dbNow = async () =>
-      (
-        await f.server.db.query<{ ms: number }>("select (extract(epoch from clock_timestamp()) * 1000)::float8 as ms")
-      ).rows[0]!.ms;
+      (await f.server.db.query<{ ms: number }>("select (extract(epoch from clock_timestamp()) * 1000)::float8 as ms"))
+        .rows[0]!.ms;
     const before = await dbNow();
     expect((await f.control("send", provider))?.status).toBe(200);
     const after = await dbNow();

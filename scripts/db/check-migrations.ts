@@ -40,18 +40,16 @@ function guardNow(): number {
   return time;
 }
 
-// The next free second at or after now, above every version inside the window.
-// Versions beyond the window must be renamed, so they do not bound it.
-function suggestedVersion(versions: Iterable<string>, now: number): string | undefined {
-  const limit = now + FUTURE_WINDOW_MS;
-  let time = now;
-  for (const version of versions) {
-    const timestamp = parseVersion(version);
-    if (timestamp !== undefined && timestamp <= limit) time = Math.max(time, timestamp + 1000);
-  }
-  const next = new Date(time - (time % 1000));
-  if (next.getUTCSeconds() === 0) next.setUTCSeconds(1);
-  if (next.getTime() <= limit) return formatVersion(next);
+// A free version strictly between two neighbours, at or after now when the
+// interval allows it, never on a whole minute and never beyond the window.
+function freeVersion(after: number, before: number, now: number): string | undefined {
+  const lower = after + 1000;
+  const upper = Math.min(before - 1000, now + FUTURE_WINDOW_MS);
+  const start = Math.max(lower, Math.min(now, upper));
+  const next = new Date(start - (start % 1000));
+  if (next.getTime() < lower) next.setTime(next.getTime() + 1000);
+  if (next.getUTCSeconds() === 0) next.setTime(next.getTime() + (next.getTime() + 1000 <= upper ? 1000 : -1000));
+  if (next.getTime() >= lower && next.getTime() <= upper) return formatVersion(next);
 }
 
 try {
@@ -64,7 +62,7 @@ try {
   const latest = [...baseline.values()].sort().at(-1);
   const now = guardNow();
   const newest = formatVersion(new Date(now + FUTURE_WINDOW_MS));
-  let needsTimestamp = false;
+  const renames = new Set<string>();
   for (const [path, version] of head) {
     const previous = versions.get(version);
     if (previous) errors.push(`Duplicate migration version ${version}: ${previous}, ${path}`);
@@ -72,27 +70,51 @@ try {
     if (baseline.has(path)) continue;
     if (parseVersion(version) === undefined) {
       errors.push(`New migration ${path} must have a valid UTC timestamp as its version.`);
-      needsTimestamp = true;
+      renames.add(path);
     } else if (version.endsWith("00")) {
       errors.push(`New migration ${path} has a minute-rounded version. Use UTC seconds other than 00.`);
-      needsTimestamp = true;
+      renames.add(path);
     } else if (version > newest) {
       errors.push(
         `New migration ${path} is more than 24 hours ahead of the current UTC time. Use a version no later than ${newest}.`,
       );
-      needsTimestamp = true;
+      renames.add(path);
     }
     if (latest && version <= latest) {
       errors.push(`New migration ${path} must have a version strictly greater than ${latest} on ${base}`);
     }
   }
-  if (needsTimestamp) {
-    const suggestion = suggestedVersion([...baseline.values(), ...head.values()], now);
-    errors.push(
-      suggestion
-        ? `Use migration version ${suggestion} for the first rename. Preserve unapplied migration dependency order and rerun the guard.`
-        : `No version within 24 hours of the current UTC time is above ${latest ?? "the base"}; a base migration is too far ahead.`,
-    );
+  if (renames.size) {
+    // Each rename keeps its file's place among the unapplied migrations: it
+    // lands above the base and the preceding kept or renamed migration, and
+    // below the next kept one, so dependency order survives the rename.
+    const additions = [...head].filter(([path]) => !baseline.has(path)).sort(([, a], [, b]) => a.localeCompare(b));
+    const floor = latest ? (parseVersion(latest) ?? -Infinity) : -Infinity;
+    let previous = floor;
+    let previousName = latest ? `${latest} on ${base}` : undefined;
+    for (const [index, [path, version]] of additions.entries()) {
+      if (!renames.has(path)) {
+        const time = parseVersion(version) as number;
+        if (time > previous) [previous, previousName] = [time, path];
+        continue;
+      }
+      const next = additions
+        .slice(index + 1)
+        .find(([other, v]) => !renames.has(other) && (parseVersion(v) as number) > floor);
+      const suggestion = freeVersion(previous, next ? (parseVersion(next[1]) as number) : Infinity, now);
+      if (suggestion) {
+        errors.push(
+          `Use migration version ${suggestion} for ${path}. Preserve unapplied migration dependency order and rerun the guard.`,
+        );
+        [previous, previousName] = [parseVersion(suggestion) as number, path];
+      } else {
+        errors.push(
+          next || previous > floor
+            ? `No free version for ${path} within 24 hours of the current UTC time between ${previousName ?? "the base"} and ${next?.[0] ?? "the window end"}. Resequence those unapplied migrations.`
+            : `No version within 24 hours of the current UTC time is above ${latest ?? "the base"}; a base migration is too far ahead.`,
+        );
+      }
+    }
   }
   if (errors.length) throw new Error(errors.join("\n"));
   console.log(`Migration versions OK (${head.size} files; base ${base}, latest ${latest ?? "none"})`);
