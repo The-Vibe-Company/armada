@@ -11,3 +11,8 @@ export function publishedResponse(route: string): z.ZodType {
     operation.post.responses["200"].content["application/json"].schema as Parameters<typeof z.fromJSONSchema>[0],
   );
 }
+
+/** The checked-in OpenAPI failure envelope that every non-drain public API failure must satisfy. */
+export function publishedFailure(): z.ZodType {
+  return z.fromJSONSchema(published.components.schemas.Failure as Parameters<typeof z.fromJSONSchema>[0]);
+}

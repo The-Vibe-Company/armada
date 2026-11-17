@@ -141,9 +141,19 @@ const PRIVATE_POST_PATHS = new Set([
 type ControlVerb = "GET" | "POST" | "DELETE";
 const SANDBOX_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function fail(status: number, error: string): Response {
+/** Failures the proxy raises itself use the API's typed envelope, so integrations decode one shape. */
+const PROXY_FAILURE_CODE = {
+  400: "invalid",
+  401: "unauthorized",
+  404: "unknown_route",
+  413: "invalid",
+  502: "upstream",
+  503: "dependency_unavailable",
+} as const;
+
+function fail(status: keyof typeof PROXY_FAILURE_CODE, message: string): Response {
   return NextResponse.json(
-    status === 404 ? { error: { code: "unknown_route", message: "Unknown route." } } : { error },
+    { error: { code: PROXY_FAILURE_CODE[status], message: status === 404 ? "Unknown route." : message } },
     { status, headers: { "cache-control": "no-store" } },
   );
 }

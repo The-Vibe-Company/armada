@@ -596,3 +596,61 @@ test("the SDK keeps the drain refusal's Retry-After through the dashboard proxy,
     expect(response.headers.get("retry-after")).toBe(forwarded);
   }
 });
+
+test("proxy-generated failures match the published failure schema and decode to typed SDK codes", async () => {
+  const { publishedFailure } = await import("../../../packages/mcp-server/test/published-response.ts");
+  const { Armada, ArmadaError } = await import("../../../packages/sdk/src/index.ts");
+  const failure = publishedFailure();
+  const env = process.env.ARMADA_MCP_URL;
+  const decode = async (
+    response: Response,
+  ): Promise<{ status: number; valid: boolean; code: unknown; outcomeUnknown: unknown }> => {
+    const body = await response.clone().json();
+    const client = new Armada({
+      token: "service_placeholder",
+      url: "https://dashboard.test",
+      fetch: async () => response,
+    });
+    const error = await client.status({ id: "sandbox_placeholder" }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ArmadaError);
+    const typed = error as InstanceType<typeof ArmadaError>;
+    return {
+      status: response.status,
+      valid: failure.safeParse(body).success,
+      code: typed.code,
+      outcomeUnknown: typed.outcomeUnknown,
+    };
+  };
+  const request = (headers: Record<string, string>, body: BodyInit = "{}") =>
+    new Request("https://dashboard.test/api/v1/sandbox/status", { method: "POST", headers, body });
+  try {
+    delete process.env.ARMADA_MCP_URL;
+    const unconfigured = await decode(
+      await forwardControl(request({ authorization: "Bearer masked" }), ["sandbox", "status"]),
+    );
+    process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+    const unreachable = await decode(
+      await forwardControl(request({ authorization: "Bearer masked" }), ["sandbox", "status"], async () => {
+        throw new TypeError("connection refused");
+      }),
+    );
+    const anonymous = await decode(await forwardControl(request({}), ["golden", "list"]));
+    const oversized = await decode(
+      await forwardControl(request({ authorization: "Bearer masked" }, "x".repeat(128 * 1024 + 1)), [
+        "sandbox",
+        "status",
+      ]),
+    );
+    const unknown = await decode(await forwardControl(request({ authorization: "Bearer masked" }), ["no", "such"]));
+    expect([unconfigured, unreachable, anonymous, oversized, unknown]).toEqual([
+      { status: 503, valid: true, code: "dependency_unavailable", outcomeUnknown: false },
+      { status: 502, valid: true, code: "upstream", outcomeUnknown: false },
+      { status: 401, valid: true, code: "unauthorized", outcomeUnknown: false },
+      { status: 413, valid: true, code: "invalid", outcomeUnknown: false },
+      { status: 404, valid: true, code: "unknown_route", outcomeUnknown: false },
+    ]);
+  } finally {
+    if (env === undefined) delete process.env.ARMADA_MCP_URL;
+    else process.env.ARMADA_MCP_URL = env;
+  }
+});
