@@ -110,6 +110,7 @@ export interface ModalProvider extends Provider {
   restoreGoldenMaster(request: { sandboxId?: string; snapshotId: string }): Promise<SandboxInfo>;
   resourceReceipts(): Promise<ModalResourceReceipt[]>;
   collectGarbage(): Promise<void>;
+  collectRetiredSnapshot: NonNullable<Provider["collectRetiredSnapshot"]>;
   sshKey(request: {
     sandboxId: string;
     key: string;
@@ -1658,6 +1659,19 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         throw error;
       }
       await collectImages();
+    },
+    async collectRetiredSnapshot(name) {
+      if (scopeKey(source.scope) !== scopeKey(options.scope))
+        throw refusal(
+          "forbidden",
+          "Snapshot collection requires the golden-source provider scope, not a private-fork adapter.",
+        );
+      await snapshotBackend();
+      // A busy source is skipped, not failed: the caller (the retirement worker) retries later.
+      await collectImages(true);
+      for (const sourceId of await store.tombstoneSources())
+        if ((await store.images(sourceId)).some((image) => image.info.name === name)) return "pending";
+      return "collected";
     },
     quiesce: (r) => call(r.sandboxId, "interrupt", r),
     async extendLifetime({ sandboxId, ttlSeconds }) {

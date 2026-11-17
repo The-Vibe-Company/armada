@@ -555,13 +555,21 @@ export class GoldenSnapshotRetirements {
     if (!row) return processed;
     let started = row.delete_started;
     let deleting = false;
-    const finish = async (state: string, reason: string, retryDelete = false) => {
+    const finish = async (state: string, reason: string, retryDelete = false, retryAfter = "30 seconds") => {
       await sql.query(
         `update public.golden_snapshot_retirements set state=$3,reason=$4,claim_until=null,claim_id=null,
-        delete_started=case when $5 then false else delete_started end,next_attempt_at=clock_timestamp()+interval '30 seconds'
+        delete_started=case when $5 then false else delete_started end,next_attempt_at=clock_timestamp()+$6::interval
         where id=$1 and claim_id=$2`,
-        [row.id, claim, state, reason, retryDelete],
+        [row.id, claim, state, reason, retryDelete, retryAfter],
       );
+    };
+    // A deleted snapshot is retired only once its provider artifact is gone. A Modal image stays a
+    // durable tombstone while a fork references it or its source is leased; this row is the
+    // server-owned retry that collects it, across restarts and without any user request.
+    const retire = async (provider: Provider, reason: string) => {
+      if ((await provider.collectRetiredSnapshot?.(row.old_snapshot)) === "pending")
+        await finish("deferred", "artifact_collection_pending", false, "5 minutes");
+      else await finish("retired", reason);
     };
     try {
       const proof = (
@@ -581,7 +589,7 @@ export class GoldenSnapshotRetirements {
         return true;
       }
       if (checked.absent) {
-        await finish("retired", "already_absent");
+        await retire(checked.provider, "already_absent");
         return true;
       }
       if (started) {
@@ -623,7 +631,9 @@ export class GoldenSnapshotRetirements {
       started = true;
       deleting = true;
       await checked.provider.deleteSnapshot(row.old_snapshot);
-      await finish("retired", "deleted");
+      // The snapshot is deleted; a collection failure after this point is retried, never re-deleted.
+      deleting = false;
+      await retire(checked.provider, "deleted");
     } catch (e) {
       if (deleting && notFound(e)) await finish("retired", "already_absent");
       else if (deleting && isNonMutatingProviderRefusal(e)) await finish("deferred", "provider_unavailable", true);

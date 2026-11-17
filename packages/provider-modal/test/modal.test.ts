@@ -1361,9 +1361,14 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const ownImages = imageDeletes();
     expect((await f.store.get(fork.id)).phase).toBe("deleted");
     expect(f.log.filter((x) => x === "terminate")).toHaveLength(terminations);
-    // The tombstone stays durable; the next collection in scope removes the snapshot image.
+    // The tombstone stays durable. The retirement worker's retry reports it pending while the
+    // source is leased, then collects it once the lease clears, with no further user request.
     expect(await f.store.tombstoneSources()).toContain(builder.id);
-    await f.provider.collectGarbage();
+    await f.store.lease(builder.id, async () => {
+      expect(await f.provider.collectRetiredSnapshot(name)).toBe("pending");
+    });
+    expect(imageDeletes()).toBe(ownImages);
+    expect(await f.provider.collectRetiredSnapshot(name)).toBe("collected");
     expect(imageDeletes()).toBe(ownImages + 1);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });

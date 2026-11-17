@@ -75,6 +75,7 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
   let deleteGate: (() => Promise<void>) | undefined;
   let account = backend;
   let sourceActive = false;
+  let artifactPending = false;
   let vmActions = 0;
   const forbiddenVMAction = async () => {
     vmActions++;
@@ -109,6 +110,7 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
       await deleteGate?.();
       snapshots.delete(name);
     },
+    collectRetiredSnapshot: async () => (artifactPending ? "pending" : "collected"),
     fork: async () => {
       throw Error("A stale revision reached fork");
     },
@@ -159,6 +161,9 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
     },
     active: () => {
       sourceActive = true;
+    },
+    artifactPending: (pending: boolean) => {
+      artifactPending = pending;
     },
   };
 }
@@ -337,6 +342,33 @@ test.each(["success", "absent", "refusal", "busy", "unknown"])(
     await expect(f.store.setSnapshot(f.golden.id, f.old)).rejects.toThrow("unavailable");
   },
 );
+
+test("a deleted snapshot whose artifact awaits collection is retried by the worker, never re-deleted", async () => {
+  const db = database();
+  const f = await fixture(db, "modal");
+  await f.publish();
+  // Modal keeps the image as a tombstone while a fork references it or its source is leased.
+  f.artifactPending(true);
+  await f.retirement.runOne();
+  expect(f.snapshots.has(f.old)).toBe(false);
+  const row = async () =>
+    (
+      await db.query<{ state: string; reason: string; due: boolean }>(
+        "select state,reason,next_attempt_at<=now() as due from golden_snapshot_retirements",
+      )
+    ).rows[0]!;
+  expect(await row()).toEqual({ state: "deferred", reason: "artifact_collection_pending", due: false });
+  await f.due();
+  await f.retirement.runOne();
+  expect((await row()).state).toBe("deferred");
+  // Once the source lease clears, the next worker pass collects the artifact and retires the row.
+  f.artifactPending(false);
+  await f.due();
+  await f.retirement.runOne();
+  expect(await row()).toMatchObject({ state: "retired", reason: "already_absent" });
+  expect(f.deleted).toEqual([f.old]);
+  expect(f.vmActions()).toBe(0);
+});
 
 test("historical dry-run follows proven succeeded chains, mutates nothing, and never enqueues the current handle", async () => {
   const db = database();
