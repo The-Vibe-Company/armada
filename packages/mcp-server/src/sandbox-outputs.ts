@@ -15,6 +15,10 @@ try:
   for entry in itertools.islice(os.scandir(directory),32):
    name=entry.name
    if len(name)>255 or '/' in name or '\\\\' in name: continue
+   # Skip names the server would refuse so one bad entry never freezes the snapshot.
+   if any(ord(c)<32 or ord(c)==127 for c in name): continue
+   try: name.encode('utf-8')
+   except UnicodeEncodeError: continue
    try:
     fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
     try:
@@ -156,8 +160,14 @@ export function createSandboxOutputs(
         order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider_sandbox_id,outputs_checked_at::text as scan`)
       ).rows[0];
       if (!row) return false;
+      // A per-sandbox failure (no python3, provider refusal, bad entry) is that sandbox's
+      // problem: keep the previous snapshot, retry after the 30 s fence, and never stall
+      // the shared worker loop.
       const work = providerFor(row.id)
         .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, signal))
+        .catch(() => {
+          console.warn(JSON.stringify({ event: "sandbox_output_collection_failed", sandboxId: row.id }));
+        })
         .then(() => true);
       pending.add(work);
       try {

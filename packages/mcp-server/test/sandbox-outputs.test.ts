@@ -242,3 +242,47 @@ test("application-secret taint forbids output sampling, final capture, late pers
   expect((await route(new Request(url)))?.status).toBe(404);
   expect((await route(new Request(`${url}/memo.pdf`)))?.status).toBe(404);
 });
+
+test("a failed collection keeps the previous snapshot and never fails the shared worker tick", async () => {
+  const { db, people } = await database();
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
+    select $1,id,org_id,owner_id,'failing_fixture','codex','ready' from goldens
+    where owner_id=$2 and visibility='private' limit 1`,
+    [id, people.owner],
+  );
+  const sql: Sql = {
+    query: (q, p) => db.query(q, p),
+    transaction: async (work) => {
+      await db.exec("begin");
+      try {
+        const result = await work(sql);
+        await db.exec("commit");
+        return result;
+      } catch (e) {
+        await db.exec("rollback");
+        throw e;
+      }
+    },
+  };
+  let exitCode = 0;
+  const provider = {
+    exec: async () => ({
+      detached: false,
+      exitCode,
+      timedOut: false,
+      truncated: false,
+      stderr: "",
+      stdout: JSON.stringify([{ name: "memo.txt", base64: Buffer.from("draft").toString("base64") }]),
+    }),
+  } as unknown as Provider;
+  const service = createSandboxOutputs(sql, Buffer.alloc(32, 7).toString("base64"), async () => provider);
+  expect(await service.reconcileOne(new AbortController().signal)).toBe(true);
+  exitCode = 127;
+  await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
+  expect(await service.reconcileOne(new AbortController().signal)).toBe(true);
+  expect((await db.query(`select name from sandbox_outputs where sandbox_id=$1`, [id])).rows).toEqual([
+    { name: "memo.txt" },
+  ]);
+});
