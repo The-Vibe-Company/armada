@@ -5,6 +5,13 @@ import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor } from "./state.ts";
+
+/** Cut a preview without splitting a surrogate pair into a lone UTF-16 code unit. */
+function boundedPreview(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const end = limit > 0 && /[\uD800-\uDBFF]/.test(text[limit - 1] ?? "") ? limit - 1 : limit;
+  return text.slice(0, end);
+}
 export class Journal {
   readonly db: Database;
   readonly redact: (text: string) => string;
@@ -30,7 +37,7 @@ export class Journal {
     // the display preview, after redaction, so JSON escaping cannot erase the event.
     if ((event.kind === "prompt" || event.kind === "steer") && Buffer.byteLength(body) > 262144) {
       const safe = JSON.parse(body);
-      safe.text = `${safe.text.slice(0, 16000)}… [truncated]`;
+      safe.text = `${boundedPreview(safe.text, 16000)}… [truncated]`;
       body = JSON.stringify(safe);
     }
     const oversized = Buffer.byteLength(body) > 262144;
