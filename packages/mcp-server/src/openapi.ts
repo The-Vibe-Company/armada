@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import { REST_LAUNCH_RESPONSE, responseJsonSchema, TEMPLATE_LAUNCH_RESPONSE } from "./launch-response-schemas.ts";
+import { DRAIN_REFUSAL } from "./server-request-drain.ts";
 import { createArmadaServer, type ToolContext } from "./tools.ts";
 
 /** MCP input names that the REST adapters (`control.ts`, `control-logs.ts`) accept under another name. */
@@ -84,6 +85,23 @@ export async function generateOpenApi() {
                 },
               },
             },
+            "503": {
+              description:
+                "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+              headers: {
+                "Retry-After": {
+                  description: "Seconds to wait before retrying.",
+                  schema: { type: "integer", minimum: 0 },
+                },
+              },
+              content: {
+                "application/json": {
+                  schema: {
+                    anyOf: [{ $ref: "#/components/schemas/Failure" }, { $ref: "#/components/schemas/DrainRefusal" }],
+                  },
+                },
+              },
+            },
             default: {
               description: "Public API failure",
               content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
@@ -104,6 +122,11 @@ export async function generateOpenApi() {
       components: {
         securitySchemes: { serviceToken: { type: "http", scheme: "bearer" } },
         schemas: {
+          DrainRefusal: {
+            type: "object",
+            required: ["error"],
+            properties: { error: { type: "string", const: DRAIN_REFUSAL.body.error as string } },
+          },
           Failure: {
             type: "object",
             required: ["error"],

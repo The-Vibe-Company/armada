@@ -251,6 +251,15 @@ export async function forwardControl(
   // Preserve the configured Armada upstream's fixed, numeric phase timings.
   const serverTiming = response.headers.get("server-timing");
   if (serverTiming) headers.set("server-timing", serverTiming);
+  // Clients schedule retries from the upstream's delay; forward only well-formed values.
+  const retryAfter = response.headers.get("retry-after")?.trim();
+  if (
+    retryAfter &&
+    (/^\d{1,10}$/.test(retryAfter) ||
+      (/^[a-z]{3}, \d{2} [a-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/i.test(retryAfter) &&
+        Number.isFinite(Date.parse(retryAfter))))
+  )
+    headers.set("retry-after", retryAfter);
   headers.set("cache-control", "no-store");
   return new Response(response.body, { status: response.status, headers });
 }

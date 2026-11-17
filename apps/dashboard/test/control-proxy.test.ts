@@ -554,3 +554,45 @@ test("snapshot create forwards bounded golden configs up to one MiB and refuses 
     else process.env.ARMADA_MCP_URL = env;
   }
 });
+
+test("the SDK keeps the drain refusal's Retry-After through the dashboard proxy, and malformed delays are dropped", async () => {
+  const { Armada, ArmadaError } = await import("../../../packages/sdk/src/index.ts");
+  const { createServerRequestDrain } = await import("../../../packages/mcp-server/src/server-request-drain.ts");
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+  const drain = createServerRequestDrain(async () => Response.json({}));
+  drain.beginDrain();
+  let upstreamCalls = 0;
+  const client = new Armada({
+    token: "service_placeholder",
+    url: "https://dashboard.test",
+    readRetries: 3,
+    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname.replace(/^\/api\/v1\//, "").split("/");
+      return forwardControl(request, path, async (target, upstreamInit) => {
+        upstreamCalls++;
+        return drain.fetch(new Request(target, upstreamInit));
+      });
+    }) as import("../../../packages/sdk/src/index.ts").Fetch,
+  });
+  const error = await client.stop({ id: "sandbox_placeholder" }).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(ArmadaError);
+  expect(error).toMatchObject({ code: "unavailable", status: 503, outcomeUnknown: false, retryAfterSeconds: 5 });
+  expect(upstreamCalls).toBe(1);
+  for (const [upstream, forwarded] of [
+    ["Wed, 21 Oct 2026 07:28:00 GMT", "Wed, 21 Oct 2026 07:28:00 GMT"],
+    ["soon", null],
+    ["-5", null],
+  ] as const) {
+    const response = await forwardControl(
+      new Request("https://dashboard.test/api/v1/golden/list", {
+        method: "POST",
+        headers: { authorization: "Bearer masked" },
+        body: "{}",
+      }),
+      ["golden", "list"],
+      async () => new Response("{}", { status: 503, headers: { "retry-after": upstream } }),
+    );
+    expect(response.headers.get("retry-after")).toBe(forwarded);
+  }
+});

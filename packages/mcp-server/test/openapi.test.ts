@@ -38,3 +38,37 @@ test("published OpenAPI keeps the plain JSON layout that release version bumps w
   const text = await Bun.file(new URL("../../../docs/openapi.json", import.meta.url)).text();
   expect(text).toBe(`${JSON.stringify(JSON.parse(text), null, 2)}\n`);
 });
+
+test("published 503 schema accepts the real drain refusal and a structured unavailable failure", async () => {
+  const { z } = await import("zod");
+  const { AuthUnavailable } = await import("../src/caller.ts");
+  const { controlFailureResponse } = await import("../src/control-errors.ts");
+  const { createServerRequestDrain } = await import("../src/server-request-drain.ts");
+  type Operation = { post: { responses: Record<string, { content: { "application/json": { schema: unknown } } }> } };
+  const schemas = published.components.schemas as Record<string, unknown>;
+  // Inline component references so the validator sees the document as published.
+  const inline = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(inline);
+    if (!value || typeof value !== "object") return value;
+    const ref = (value as { $ref?: string }).$ref;
+    if (ref) return inline(schemas[ref.replace("#/components/schemas/", "")]);
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, inline(item)]));
+  };
+  const refusal = z.fromJSONSchema(
+    inline(
+      (published.paths as Record<string, Operation>)["/api/v1/sandbox/stop"]!.post.responses["503"]!.content[
+        "application/json"
+      ].schema,
+    ) as Parameters<typeof z.fromJSONSchema>[0],
+  );
+  const tracker = createServerRequestDrain(async () => new Response(null));
+  tracker.beginDrain();
+  const drained = await tracker.fetch(new Request("https://server.test/api/v1/sandbox/stop", { method: "POST" }));
+  expect(drained.status).toBe(503);
+  expect(drained.headers.get("retry-after")).toBe("5");
+  expect(refusal.safeParse(await drained.json()).success).toBe(true);
+  const structured = controlFailureResponse(new AuthUnavailable("synthetic outage"));
+  expect(structured.status).toBe(503);
+  expect(refusal.safeParse(await structured.json()).success).toBe(true);
+  expect(refusal.safeParse({ error: "something_else" }).success).toBe(false);
+});

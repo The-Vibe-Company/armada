@@ -1,3 +1,6 @@
+/** Refusal sent before dispatch while the server drains; `openapi.ts` publishes this exact shape. */
+export const DRAIN_REFUSAL = { body: { error: "temporarily_unavailable" }, retryAfterSeconds: 5 } as const;
+
 interface ServerRequestDrain {
   fetch(request: Request): Response | Promise<Response>;
   readonly requests: ReadonlySet<Promise<unknown>>;
@@ -10,7 +13,10 @@ export function createServerRequestDrain(handler: (request: Request) => Promise<
   const requests = new Set<Promise<unknown>>();
   const fetch = (request: Request) => {
     if (draining)
-      return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
+      return Response.json(DRAIN_REFUSAL.body, {
+        status: 503,
+        headers: { "retry-after": String(DRAIN_REFUSAL.retryAfterSeconds) },
+      });
     const pending = handler(request).then((response) => {
       // Gateway POST tools use SSE responses: the handler can return before the
       // admitted tool finishes. GET notification streams instead end at MCP close.
