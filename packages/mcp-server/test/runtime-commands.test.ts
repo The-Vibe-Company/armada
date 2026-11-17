@@ -405,6 +405,8 @@ test("Codex agent bridge translates Boat identity and reconciles prompt/status/j
           body: JSON.stringify(pending.command),
         }),
       );
+      const body = (await response.clone().json()) as { error?: unknown };
+      if (pending.command.requestId === "second") expect(body).toEqual({ error: "native_auth_writer_busy" });
       expect(
         (
           await f.request("results", active.runtimeToken, active.epoch, {

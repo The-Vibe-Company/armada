@@ -47,7 +47,6 @@ const errors: Record<string, ProviderErrorCode> = {
   workspace_launch_only: "conflict",
   skills_install_denied: "conflict",
   native_auth_writer_busy: "conflict",
-  checkpoint_upstream_unacknowledged: "conflict",
   checkpoint_in_progress: "sandbox_not_ready",
   workspace_setup_in_progress: "sandbox_not_ready",
   skills_install_in_progress: "sandbox_not_ready",
