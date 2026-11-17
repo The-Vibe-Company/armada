@@ -204,6 +204,9 @@ export function createDockerHostRoutes(
           (!Number.isSafeInteger(body.diskFreeBytes) || Number(body.diskFreeBytes) < 0)
         )
           throw new InvalidInput();
+        // Deadlines are the per-generation detail of the retention report; they
+        // are meaningless without the policy they belong to.
+        if ("deadlines" in body && !("retentionSeconds" in body)) throw new InvalidInput();
         const deadlines = "deadlines" in body ? deadlinesOf(body.deadlines) : undefined;
         const retentionSeconds = await store.retentionForHost(
           token,

@@ -282,6 +282,20 @@ export function httpApi(
           }
         }
         try {
+          // A server that knows retention but not per-generation deadlines still
+          // gets the policy; only the additive deadlines field is dropped.
+          const { deadlines: _deadlines, ...policy } = retention;
+          return (await post(state.server, "poll", state.hostToken, {
+            ...body,
+            ...policy,
+            resources: sampledResources,
+            resourcePolicyVersion: 1,
+          })) as Awaited<ReturnType<Api["poll"]>>;
+        } catch (deadlineCompatibilityError) {
+          if (!(deadlineCompatibilityError instanceof HostRequestDenied) || deadlineCompatibilityError.status !== 400)
+            throw deadlineCompatibilityError;
+        }
+        try {
           return (await post(state.server, "poll", state.hostToken, {
             ...body,
             resources: sampledResources,
