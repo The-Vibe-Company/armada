@@ -1251,3 +1251,62 @@ test("terminal capture refusal identifies its stop caller without forwarding con
     log.mockRestore();
   }
 });
+
+test("declared outputs of a stopped sandbox are read from its retained disk snapshot without contacting the machine", async () => {
+  const snapshot = {
+    id: "snap_1",
+    sandboxId: ID,
+    status: "completed",
+    generation: 3,
+    createdAt: "2026-11-09T09:00:00Z",
+  };
+  const boat = fakeBoat(
+    { body: { ok: true, sandbox: sandbox({ state: "archived" }) } },
+    { body: { ok: true, type: "snapshot.latest", snapshot } },
+    {
+      body: {
+        ok: true,
+        type: "snapshot.tree",
+        snapshotId: "snap_1",
+        sandboxId: ID,
+        generation: 3,
+        treeAvailable: true,
+        truncated: false,
+        fileCount: 4,
+        totalSizeBytes: 15,
+        entries: [
+          { path: "workspace/outputs/final.pdf", kind: "file", size: 5 },
+          { path: "workspace/outputs/link", kind: "symlink", size: 10 },
+          { path: "workspace/notes.txt", kind: "file", size: 5 },
+        ],
+      },
+    },
+    { raw: "final", headers: { "x-snapshot-entry-kind": "file" } },
+  );
+  const read = await boat.provider.readOutputs?.({ sandboxId: ID });
+  expect(read?.retained).toBe(true);
+  expect(read?.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
+  expect(boat.requests.every((request) => request.method === "GET")).toBe(true);
+  expect(boat.requests.at(-1)?.query.get("path")).toBe("workspace/outputs/final.pdf");
+  expect(boat.remaining()).toBe(0);
+  // A truncated listing cannot prove which outputs exist: unavailable, never an empty snapshot.
+  const truncated = fakeBoat(
+    { body: { ok: true, sandbox: sandbox({ state: "archived" }) } },
+    { body: { ok: true, type: "snapshot.latest", snapshot } },
+    {
+      body: {
+        ok: true,
+        type: "snapshot.tree",
+        snapshotId: "snap_1",
+        sandboxId: ID,
+        generation: 3,
+        treeAvailable: true,
+        truncated: true,
+        fileCount: 0,
+        totalSizeBytes: 0,
+        entries: [],
+      },
+    },
+  );
+  expect(await truncated.provider.readOutputs?.({ sandboxId: ID })).toBeNull();
+});

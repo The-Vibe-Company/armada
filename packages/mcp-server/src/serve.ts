@@ -566,7 +566,12 @@ export async function startServer(
   );
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const commitSha = sourceIdentity.commit ?? env.RAILWAY_GIT_COMMIT_SHA;
-  const outputs = createSandboxOutputs(sql, config.encryptionKey, createMcpSandboxProviderResolver(sql, providers));
+  const outputs = createSandboxOutputs(
+    sql,
+    config.encryptionKey,
+    // Stopped rows are read from their retained disk; the resolver must admit terminal rows.
+    createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true }),
+  );
   const handler = createHandler({
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,

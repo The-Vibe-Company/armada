@@ -18,7 +18,7 @@ import {
   parseMachineSize,
   resolveModelChoice,
 } from "@armada/core";
-import { runtimeBootstrapScript } from "@armada/core/server";
+import { OUTPUT_COLLECTOR, parseCollectorOutput, runtimeBootstrapScript } from "@armada/core/server";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
@@ -974,6 +974,28 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
         throw error;
       }
+    },
+    async readOutputs({ sandboxId, signal }) {
+      await bound();
+      signal?.throwIfAborted();
+      return store.lease(sandboxId, async (row) => {
+        assertMachineSource(row);
+        // Live compute only: a stopped Modal workspace is a recovery image, readable only by
+        // starting compute, which this read never does. Armada stops capture first instead.
+        if (row.golden || row.phase !== "active" || !row.physicalId) return null;
+        const sb = await physical(row);
+        // Fixed collector on the physical container, not the runner: it works for native and
+        // enrolled (dial-out) runtimes alike and never carries caller input.
+        const child = await sb.exec(
+          ["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sh", "-c", OUTPUT_COLLECTOR],
+          { mode: "text", env: {}, secrets: [], timeoutMs: 10_000, workdir: "/", stderr: "ignore" },
+        );
+        const output = child.stdout.readText();
+        await child.stdin.close();
+        const [status, stdout] = await Promise.all([child.wait(), output]);
+        if (status !== 0) return null;
+        return { files: parseCollectorOutput(stdout), retained: false };
+      });
     },
     async observeResources(id) {
       await bound();

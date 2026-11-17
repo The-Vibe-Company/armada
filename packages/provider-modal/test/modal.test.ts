@@ -1,7 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { type AgentEvent, ProviderError, type Sql } from "@armada/core";
-import { createSqlVaultStore, encryptSecret, GoldenBuildJobs, isNonMutatingProviderRefusal } from "@armada/core/server";
+import {
+  createSqlVaultStore,
+  encryptSecret,
+  GoldenBuildJobs,
+  isNonMutatingProviderRefusal,
+  OUTPUT_COLLECTOR,
+} from "@armada/core/server";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
@@ -129,6 +135,10 @@ function fixture(
               stdout: {
                 readText: async () => {
                   await closed.promise;
+                  if (argv.includes(OUTPUT_COLLECTOR)) {
+                    log.push("outputs");
+                    return JSON.stringify([{ name: "final.pdf", base64: Buffer.from("final").toString("base64") }]);
+                  }
                   return input?.op === "capture"
                     ? JSON.stringify({
                         version: 1,
@@ -2932,6 +2942,23 @@ test("only newly managed VM incarnations expose resource observations", async ()
   });
   expect(await f.provider.observeResources?.(fork.id)).toBeNull();
   expect(f.log.filter((x) => x === "resourceObservation")).toHaveLength(calls);
+});
+
+test("declared outputs are read on live compute only, never by resuming a stopped recovery image", async () => {
+  const f = fixture();
+  const builder = await f.provider.createGolden({});
+  const name = crypto.randomUUID();
+  await f.provider.snapshot({ sandboxId: builder.id, name });
+  const fork = await f.provider.fork({ from: name });
+  const read = await f.provider.readOutputs?.({ sandboxId: fork.id });
+  expect(read?.retained).toBe(false);
+  expect(read?.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
+  expect(f.sdkCommands.at(-1)?.argv.at(-1)).toBe(OUTPUT_COLLECTOR);
+  await f.provider.stop({ sandboxId: fork.id });
+  const creates = f.creates;
+  expect(await f.provider.readOutputs?.({ sandboxId: fork.id })).toBeNull();
+  expect(f.creates).toBe(creates);
+  expect(f.log.filter((x) => x === "outputs")).toHaveLength(1);
 });
 
 test("ordinary stop retains its new disk checkpoint across resume with generation-bound sealed controls", async () => {

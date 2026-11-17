@@ -1,72 +1,20 @@
 import { createHash } from "node:crypto";
-import { decryptSecret, encryptionKey, encryptSecret, type Provider, type Sql } from "@armada/core/server";
+import {
+  admitOutputs,
+  decryptSecret,
+  encryptionKey,
+  encryptSecret,
+  OUTPUT_DIRECTORY,
+  type Provider,
+  type Sql,
+} from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import type { Route } from "./http.ts";
 
-// No caller-controlled command, root, traversal, symlink following or special files.
-export const OUTPUT_COLLECTOR = `python3 - <<'PY'
-import os,stat,json,base64,itertools
-files=[]
-total=0
-try:
- root=os.open('/workspace',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
- directory=os.open('outputs',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=root)
- try:
-  for entry in itertools.islice(os.scandir(directory),32):
-   name=entry.name
-   if len(name)>255 or '/' in name or '\\\\' in name: continue
-   # Skip names the server would refuse so one bad entry never freezes the snapshot.
-   if any(ord(c)<32 or ord(c)==127 for c in name): continue
-   try: name.encode('utf-8')
-   except UnicodeEncodeError: continue
-   try:
-    fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
-    try:
-     info=os.fstat(fd)
-     if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>32768: continue
-     data=os.read(fd,32769)
-     if len(data)>32768 or total+len(data)>32768: continue
-     total+=len(data)
-     files.append({'name':name,'base64':base64.b64encode(data).decode()})
-    finally: os.close(fd)
-   except OSError: continue
- finally: os.close(directory); os.close(root)
-except FileNotFoundError: pass
-while len(json.dumps(files))>59000: files.pop()
-print(json.dumps(files))
-PY`;
-
-export function parseOutputs(stdout: string): { name: string; bytes: Buffer; digest: string }[] {
-  if (stdout.length > 60000) throw Error("output_limit");
-  const values: unknown = JSON.parse(stdout);
-  if (!Array.isArray(values) || values.length > 32) throw Error("output_limit");
-  let total = 0;
-  const names = new Set<string>();
-  return values.map((value) => {
-    if (
-      !value ||
-      typeof value.name !== "string" ||
-      !/^[^/\\]{1,255}$/.test(value.name) ||
-      [...value.name].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) ||
-      value.name === "." ||
-      value.name === ".." ||
-      names.has(value.name) ||
-      typeof value.base64 !== "string" ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.base64)
-    )
-      throw Error("invalid_output");
-    names.add(value.name);
-    const bytes = Buffer.from(value.base64, "base64");
-    total += bytes.length;
-    if (bytes.length > 32768 || total > 32768) throw Error("output_limit");
-    return { name: value.name, bytes, digest: createHash("sha256").update(bytes).digest("hex") };
-  });
-}
-
-// Native Boat/Modal only: enrolled runtimes refuse server exec, so neither sampling nor final capture applies.
+// Native and enrolled-runtime Boat/Modal sandboxes: providers read the declared directory through
+// their own fixed channel (Provider.readOutputs), never caller commands or the agent runtime.
 // Application-secret taint is irreversible and forbids every file egress (same policy as exec and work recovery).
-const ELIGIBLE = `provider in ('boat','modal') and not boat_runtime and runtime_transport is distinct from 'dialout'
-  and not application_secret_tainted`;
+const ELIGIBLE = `provider in ('boat','modal') and not application_secret_tainted`;
 
 async function collect(
   sql: Sql,
@@ -76,17 +24,26 @@ async function collect(
   scan: string,
   key: string,
   signal?: AbortSignal,
+  stopped = false,
 ) {
-  const result = await provider.exec({
-    sandboxId: providerId,
-    command: OUTPUT_COLLECTOR,
-    onlyIfRunning: true,
-    timeoutSeconds: 10,
-    ...(signal ? { signal } : {}),
-  });
-  if (result.detached || result.exitCode !== 0 || result.truncated || result.timedOut)
+  const read = provider.readOutputs
+    ? await provider.readOutputs({ sandboxId: providerId, ...(signal ? { signal } : {}) })
+    : null;
+  if (!read) {
+    // Stopped: the backend cannot read this retained disk without compute (Modal recovery image),
+    // so this stop keeps the snapshot captured before it. Do not poll it again until the next stop.
+    if (stopped)
+      await sql.query(
+        `update public.sandboxes set outputs_retained_at=now() where id=$1 and outputs_checked_at::text=$2`,
+        [id, scan],
+      );
     throw Error("output_collection_unavailable");
-  const files = parseOutputs(result.stdout);
+  }
+  const files = admitOutputs(read.files).map((file) => ({
+    name: file.name,
+    bytes: Buffer.from(file.bytes),
+    digest: createHash("sha256").update(file.bytes).digest("hex"),
+  }));
   // Replace the bounded snapshot atomically. Readers retain the last successful snapshot on collection failure.
   const payload = await Promise.all(
     files.map(async (file) => ({
@@ -113,13 +70,15 @@ async function collect(
       where sandbox_outputs.digest<>excluded.digest`,
       [id, JSON.stringify(payload)],
     );
+    // A retained-disk read is final for this stop: the workspace cannot change until compute resumes.
+    if (read.retained) await tx.query(`update public.sandboxes set outputs_retained_at=now() where id=$1`, [id]);
   });
 }
 
-/** Final capture on the stop path: after quiesce, before provider stop revokes compute.
- * Periodic sampling alone misses files written after its last pass. Taking a new scan
- * fence prevents an older in-flight sample from replacing this snapshot. Exec is
- * onlyIfRunning, so this never resumes stopped compute. */
+/** Final capture on Armada's stop path: after quiesce, before provider stop revokes compute.
+ * Needed where the stopped workspace cannot be read without compute (Modal recovery images);
+ * Boat retained disks are also re-read after stop by the worker. Taking a new scan fence
+ * prevents an older in-flight sample from replacing this snapshot. Never resumes compute. */
 export async function captureFinalOutputs(
   sql: Sql,
   provider: Provider,
@@ -154,17 +113,23 @@ export function createSandboxOutputs(
           id: string;
           provider_sandbox_id: string;
           scan: string;
+          stopped: boolean;
         }>(`update public.sandboxes set outputs_checked_at=now()
-        where id=(select id from public.sandboxes where status in ('running','ready') and ${ELIGIBLE}
-        and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds')
-        order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider_sandbox_id,outputs_checked_at::text as scan`)
+        where id=(select id from public.sandboxes where ${ELIGIBLE} and provider_sandbox_id is not null
+        and (status in ('running','ready')
+          -- Any stop (Armada, TTL, provider-initiated or reconciled later): read the retained disk once.
+          or (status='stopped' and stopped_at>now()-interval '1 day'
+            and (outputs_retained_at is null or outputs_retained_at<stopped_at)))
+        and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds'
+          or (status='stopped' and outputs_checked_at<stopped_at))
+        order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider_sandbox_id,outputs_checked_at::text as scan,status='stopped' as stopped`)
       ).rows[0];
       if (!row) return false;
-      // A per-sandbox failure (no python3, provider refusal, bad entry) is that sandbox's
+      // A per-sandbox failure (no python3, provider refusal, unreadable retained disk) is that sandbox's
       // problem: keep the previous snapshot, retry after the 30 s fence, and never stall
       // the shared worker loop.
       const work = providerFor(row.id)
-        .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, signal))
+        .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, signal, row.stopped))
         .catch(() => {
           console.warn(JSON.stringify({ event: "sandbox_output_collection_failed", sandboxId: row.id }));
         })
@@ -209,7 +174,7 @@ export function createSandboxOutputs(
             [row.id],
           );
           return Response.json(
-            { directory: "/workspace/outputs", files: files.rows },
+            { directory: OUTPUT_DIRECTORY, files: files.rows },
             { headers: { "cache-control": "private, no-store" } },
           );
         }

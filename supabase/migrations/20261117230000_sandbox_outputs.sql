@@ -1,5 +1,6 @@
 -- Bounded durable output snapshots, accessible only through authenticated server routes.
-alter table public.sandboxes add column outputs_checked_at timestamptz;
+-- outputs_retained_at: last successful read of the retained disk after a stop (once per stop).
+alter table public.sandboxes add column outputs_checked_at timestamptz, add column outputs_retained_at timestamptz;
 create table public.sandbox_outputs (
  sandbox_id uuid not null references public.sandboxes(id) on delete cascade,
  name text not null check (length(name) between 1 and 255 and name !~ '[/\\]'),

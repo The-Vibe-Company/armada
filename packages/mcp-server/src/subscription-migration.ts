@@ -7,6 +7,7 @@ import {
   sshPrivateAuthState,
   VaultError,
 } from "@armada/core/server";
+import { captureFinalOutputs } from "./sandbox-outputs.ts";
 import { configureBoatSubscription } from "./subscription-boat.ts";
 import { type SubscriptionConfiguration, SubscriptionTemporaryError } from "./subscription-broker.ts";
 
@@ -149,6 +150,10 @@ export function createSubscriptionMigration(
       // Older/unknown pins are not repointed. Stopping prevents future native
       // rotations when possible; Modal stop publishes its private checkpoint.
       await recheck(source);
+      // This stop bypasses preserveBeforeStop; a stopped Modal workspace cannot be read without compute.
+      await captureFinalOutputs(sql, target.provider, source.id, { signal: AbortSignal.timeout(10_000) }).catch(() => {
+        console.warn(JSON.stringify({ event: "sandbox_output_final_capture_failed", sandboxId: source.id }));
+      });
       try {
         await target.provider.stop({ sandboxId: target.providerSandboxId });
       } catch (error) {

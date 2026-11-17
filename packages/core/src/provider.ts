@@ -30,6 +30,14 @@ export interface Provider {
     sandboxId: string;
     configuration: GitHubRuntimeConfiguration | null;
   }): Promise<{ acknowledged: boolean }>;
+  /** Fixed bounded read of the declared output directory (`/workspace/outputs`) through the
+   * provider's own channel: never caller commands or the agent runtime, never starts compute.
+   * Live disk while active; the retained disk once stopped, where the backend can read it without
+   * compute. Null means unavailable now (callers keep their previous snapshot). */
+  readOutputs?(request: {
+    sandboxId: string;
+    signal?: AbortSignal;
+  }): Promise<{ files: import("./sandbox-outputs.ts").OutputFile[]; retained: boolean } | null>;
   /** Read-only fixed sampler. Null means isolation/runtime is unsupported or not attested. */
   observeResources?(sandboxId: string): Promise<import("./resource-observation.ts").ProviderResourceObservation | null>;
   readonly id: string;

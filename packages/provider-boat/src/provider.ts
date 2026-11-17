@@ -39,7 +39,14 @@ import {
   redact,
   validateReadableVariables,
 } from "@armada/core";
-import { isNonMutatingProviderRefusal, sshReadableVariables } from "@armada/core/server";
+import {
+  isNonMutatingProviderRefusal,
+  OUTPUT_COLLECTOR,
+  type OutputFile,
+  parseCollectorOutput,
+  selectRetainedOutputs,
+  sshReadableVariables,
+} from "@armada/core/server";
 import {
   BoatApi,
   Configuration,
@@ -406,6 +413,46 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         },
         request.idempotencyKey,
       );
+    },
+
+    async readOutputs({ sandboxId, signal }) {
+      const read = signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000);
+      const current = await call(() => api.get({ sandboxId }, { signal: read }));
+      if (!current.sandbox || current.sandbox.id !== sandboxId) return null;
+      const state = sandboxInfo(current.sandbox).state;
+      if (state === "ready" || state === "running") {
+        // Live disk: the fixed collector through the Boat command API (onlyIfRunning never resumes).
+        const result = await provider.exec({
+          sandboxId,
+          command: OUTPUT_COLLECTOR,
+          onlyIfRunning: true,
+          timeoutSeconds: 10,
+          signal: read,
+        });
+        if (result.detached || result.exitCode !== 0 || result.truncated || result.timedOut) return null;
+        return { files: parseCollectorOutput(result.stdout), retained: false };
+      }
+      if (state !== "stopped") return null;
+      // Retained disk: every Boat stop (ours, TTL or provider-initiated) saves the disk first.
+      // Read the latest completed snapshot directly; the machine is never contacted or resumed.
+      const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal: read }));
+      const snapshot = latest.snapshot;
+      if (!snapshot || snapshot.sandboxId !== sandboxId || snapshot.status !== "completed") return null;
+      const tree = await call(() => api.getSnapshotTree({ snapshotId: snapshot.id }, { signal: read }));
+      if (tree.snapshotId !== snapshot.id) return null;
+      const selected = selectRetainedOutputs(tree.entries ?? [], tree.treeAvailable && !tree.truncated);
+      if (!selected) return null;
+      const files: OutputFile[] = [];
+      for (const entry of selected) {
+        const response = await call(() =>
+          api.getSnapshotFileRaw({ snapshotId: snapshot.id, path: entry.path }, { signal: read }),
+        );
+        if (response.raw.headers.get("x-snapshot-entry-kind") !== "file") return null;
+        const bytes = new Uint8Array(await response.raw.arrayBuffer());
+        if (bytes.length !== entry.size) return null;
+        files.push({ name: entry.name, bytes });
+      }
+      return { files, retained: true };
     },
 
     async observeResources(sandboxId) {
