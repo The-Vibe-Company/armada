@@ -37,7 +37,12 @@ const START_RUNTIME =
 /** Called only after the daemon durably fences a newly admitted bootstrap job. */
 export function dockerRuntimeStarter(
   machine: Machine & Pick<ReturnType<typeof createDockerMachineExecutor>, "bootstrap">,
-  options: { serverUrl: string; cacheDir: string },
+  options: {
+    serverUrl: string;
+    cacheDir: string;
+    /** Background shared-cache warm-up keyed by the bootstrapped runtime digest (#2562). */
+    warmSharedArtifacts?: (runtime: string) => unknown;
+  },
   request: typeof fetch = fetch,
 ) {
   const install = dockerRuntimeInstaller(machine, request);
@@ -71,5 +76,8 @@ export function dockerRuntimeStarter(
     } catch {
       throw new Error("Docker runtime bootstrap failed");
     }
+    // Not awaited: the serial mailbox never waits on the cache, and this bootstrap's runtime
+    // downloads as before. Later launches of the same deployment find the archives locally.
+    void options.warmSharedArtifacts?.(bootstrap.artifact.sha256);
   };
 }

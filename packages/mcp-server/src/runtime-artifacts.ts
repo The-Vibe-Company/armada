@@ -30,3 +30,53 @@ export function createRuntimeArtifactRoute(directory: string | undefined): Route
     }
   };
 }
+
+export interface RuntimeArtifactSet {
+  runtime: { sha256: string; bytes: number };
+  artifacts: { sha256: string; bytes: number }[];
+}
+const pin = (value: unknown): { sha256: string; bytes: number } | undefined => {
+  const v = value as { sha256?: unknown; bytes?: unknown } | null;
+  return v &&
+    typeof v.sha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(v.sha256) &&
+    Number.isSafeInteger(v.bytes) &&
+    (v.bytes as number) > 0 &&
+    (v.bytes as number) <= 512 * 1024 * 1024
+    ? { sha256: v.sha256, bytes: v.bytes as number }
+    : undefined;
+};
+/** Public digests only (no file inventory, versions or configuration) from one deployed manifest. */
+export function runtimeArtifactSet(manifest: unknown): RuntimeArtifactSet | undefined {
+  const m = manifest as { runtime?: unknown; harnesses?: unknown; opencode?: unknown } | null;
+  const runtime = pin(m?.runtime);
+  if (!runtime || !m?.harnesses || typeof m.harnesses !== "object") return undefined;
+  const artifacts = new Map<string, { sha256: string; bytes: number }>();
+  for (const harness of Object.values(m.harnesses as Record<string, { archive?: unknown } | null>)) {
+    const archive = pin(harness?.archive);
+    if (archive) artifacts.set(archive.sha256, archive);
+  }
+  const opencode = pin(m.opencode);
+  if (opencode) artifacts.set(opencode.sha256, opencode);
+  return { runtime, artifacts: [...artifacts.values()] };
+}
+
+/**
+ * `GET /api/runtime/artifact-sets/<runtime sha256>` lets a Docker host warm its shared cache with the
+ * public artifacts deployed alongside the runtime it was asked to bootstrap (#2562). Unknown digests
+ * are 404; the response is a projection of already-public digest-named bytes, never credentials.
+ */
+export function createRuntimeArtifactSetRoute(manifest: unknown): Route {
+  const set = runtimeArtifactSet(manifest);
+  return async (request) => {
+    const path = new URL(request.url).pathname;
+    if (!path.startsWith("/api/runtime/artifact-sets/")) return null;
+    if (request.method !== "GET") return new Response(null, { status: 405, headers: { allow: "GET" } });
+    if (!set || path.slice("/api/runtime/artifact-sets/".length) !== set.runtime.sha256)
+      return new Response(null, { status: 404 });
+    return Response.json(set, {
+      // Keyed by runtime digest, but a redeploy may change archives: always revalidate.
+      headers: { "cache-control": "no-cache", "x-content-type-options": "nosniff" },
+    });
+  };
+}

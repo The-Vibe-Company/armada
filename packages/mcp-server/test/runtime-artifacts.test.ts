@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installRuntimeArtifact } from "../../agent-runtime/src/artifact-cache.ts";
-import { createRuntimeArtifactRoute } from "../src/runtime-artifacts.ts";
+import { createRuntimeArtifactRoute, createRuntimeArtifactSetRoute } from "../src/runtime-artifacts.ts";
 
 // Owner boundary: real route + filesystem cache, fake transport only (no sockets, clocks or inference).
 test("runtime bootstrap downloads only missing/corrupt digests and publishes verified executable bytes", async () => {
@@ -109,4 +109,32 @@ test("artifact route is opt-in, digest-only, read-only and refuses symlink publi
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("the artifact-set route projects only public digests of the deployed runtime's manifest", async () => {
+  const d = (c: string) => c.repeat(64);
+  const route = createRuntimeArtifactSetRoute({
+    protocol: 1,
+    runtime: { path: "armada-runtime", sha256: d("a"), bytes: 10 },
+    harnesses: {
+      codex: { version: "1", archive: { path: "codex.tar.gz", sha256: d("b"), bytes: 20 }, files: [{ path: "x" }] },
+      claude: { version: "2", archive: { path: "claude.tar.gz", sha256: d("c"), bytes: 30 }, files: [] },
+    },
+    opencode: { path: "opencode", sha256: d("e"), bytes: 40 },
+  });
+  const get = (path: string, method = "GET") =>
+    route(new Request(`https://armada.example${path}`, { method })) as Promise<Response | null>;
+  const response = (await get(`/api/runtime/artifact-sets/${d("a")}`))!;
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    runtime: { sha256: d("a"), bytes: 10 },
+    artifacts: [
+      { sha256: d("b"), bytes: 20 },
+      { sha256: d("c"), bytes: 30 },
+      { sha256: d("e"), bytes: 40 },
+    ],
+  });
+  expect((await get(`/api/runtime/artifact-sets/${d("f")}`))!.status).toBe(404);
+  expect((await get(`/api/runtime/artifact-sets/${d("a")}`, "POST"))!.status).toBe(405);
+  expect(await get(`/api/runtime/artifacts/${d("a")}`)).toBeNull();
 });
