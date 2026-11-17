@@ -4,12 +4,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-test("migration CLI rejects collisions and non-increasing additions against the current base", () => {
+test("migration CLI rejects collisions, rounded versions and non-increasing additions against the current base", () => {
   const script = resolve(import.meta.dir, "check-migrations.ts");
   const cases = [
     { files: ["20261112000001_next.sql"], ok: true },
     { files: [], ok: true },
-    { files: ["20261117120000_rounded.sql"], ok: false, message: "Use migration version" },
+    { files: ["20261117120000_rounded.sql"], ok: false, message: "minute-rounded version", rounded: true },
     { files: ["20261112000001_a.sql", "20261112000001_b.sql"], ok: false, message: "Duplicate migration version" },
     { files: ["20261112000000_equal.sql"], ok: false, message: "strictly greater" },
     { files: ["20261111000000_old.sql"], ok: false, message: "strictly greater" },
@@ -33,6 +33,12 @@ test("migration CLI rejects collisions and non-increasing additions against the 
       const result = spawnSync(process.execPath, [script, base], { cwd, encoding: "utf8" });
       expect(result.status).toBe(scenario.ok ? 0 : 1);
       if (scenario.message) expect(result.stderr).toContain(scenario.message);
+      if (scenario.rounded) {
+        const suggested = /Use migration version (\d{14})/.exec(result.stderr)?.[1];
+        expect(suggested).toBeDefined();
+        expect(suggested! > scenario.files[0]!.slice(0, 14)).toBe(true);
+        expect(suggested).not.toEndWith("00");
+      }
       // A concurrent merge advances main past the previously valid candidate.
       if (scenario.ok && scenario.files.length) {
         const candidate = git("rev-parse", "HEAD");

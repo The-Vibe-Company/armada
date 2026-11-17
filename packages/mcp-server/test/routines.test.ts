@@ -235,7 +235,7 @@ test("routine lifecycle enables, pauses and preserves accessible history after d
     const row = await f.create(await f.template());
     const enabled = (await f.command("enable", { id: row.id, expectedVersion: 1 })).item as Routine;
     expect(enabled).toMatchObject({ status: "enabled", version: 2, consecutiveFailures: 0 });
-    expect(enabled.nextDueAt).toBe("2026-11-17T08:30:00.000Z");
+    expect(new Date(enabled.nextDueAt!).toISOString()).toBe("2026-11-17T08:30:00.000Z");
     expect((await f.command("list", {})).items).toHaveLength(1);
     await expect(f.command("pause", { id: row.id, expectedVersion: 1 })).rejects.toMatchObject({ code: "conflict" });
     const paused = await f.command("pause", { id: row.id, expectedVersion: 2 });
