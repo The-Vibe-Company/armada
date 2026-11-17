@@ -161,6 +161,18 @@ test("an Alpha-scoped service token cannot list or revoke Alice's Beta token", a
   expect(revoke.status).toBe(403);
 });
 
+test("scoped token revocation re-reads current membership before using a listed token", async () => {
+  const { call, store } = makeServer();
+  const parent = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
+  store.listServiceTokens = async () => [
+    { id: parent.id, label: parent.label, orgName: "Alpha", createdAt: now().toISOString(), revokedAt: null },
+  ];
+  store.memberships = async () => [];
+
+  const revoke = await call("token/revoke", parent.token, { id: parent.id });
+  expect(revoke.status).toBe(403);
+});
+
 test("database organization names are globally unique, preventing duplicate-name scope confusion", () => {
   const migration = Bun.file("supabase/migrations/20261108160000_orgs_credentials.sql");
   return migration.text().then((sql) => {
