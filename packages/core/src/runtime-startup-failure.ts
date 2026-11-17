@@ -1,5 +1,6 @@
 /** Closed wire vocabulary: never persist exception messages or credential material. */
 export const RUNTIME_STARTUP_FAILURES = {
+  disk_full: "Host disk is full. Free disk space on the host and retry.",
   artifact_manifest_incompatible:
     "Runtime artifact manifest is incompatible. Ask the server operator to publish matching runtime and harness artifacts before launching again.",
   artifact_unavailable:
@@ -22,6 +23,7 @@ export function isRuntimeStartupFailure(value: unknown): value is RuntimeStartup
 
 /** Only exact internal codes are recognized; arbitrary exception text never leaves the process. */
 export function runtimeStartupFailure(error: unknown, phase: RuntimeStartupFailure): RuntimeStartupFailure {
+  if (error instanceof Error && "code" in error && error.code === "ENOSPC") return "disk_full";
   const code = error instanceof Error ? error.message : "";
   if (code === "incompatible_harness_manifest") return "artifact_manifest_incompatible";
   if (code === "runtime_artifact_unavailable") return "artifact_unavailable";
