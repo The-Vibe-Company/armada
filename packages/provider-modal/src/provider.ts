@@ -997,6 +997,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         { mode: "text", env: {}, secrets: [], timeoutMs: 10_000, workdir: "/", stderr: "ignore" },
       );
       const output = child.stdout.readText();
+      // Awaited below; never an unhandled rejection if closing stdin fails first.
+      output.catch(() => {});
       await child.stdin.close();
       // The caller's budget (the shared pre-stop deadline) bounds the wait, not only the exec timeout.
       const [status, stdout] = await abortable(Promise.all([child.wait(), output]), signal);

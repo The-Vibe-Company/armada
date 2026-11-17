@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { OutputFile, Provider, Sql } from "@armada/core/server";
-import { captureFinalOutputs, createSandboxOutputs } from "../src/sandbox-outputs.ts";
+import { captureFinalOutputs, createSandboxOutputs, drainFinalOutputs } from "../src/sandbox-outputs.ts";
 import { preserveBeforeStop } from "../src/work-preservation.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
@@ -46,6 +46,7 @@ function disks() {
     complete: true,
     // Set: reads hang like an SDK call that ignores cancellation, until released.
     hold: null as Promise<void> | null,
+    entered: () => {},
     reads: 0,
   };
   const provider = {
@@ -55,6 +56,7 @@ function disks() {
     exec: async () => ({ detached: false, exitCode: 0, timedOut: false, truncated: false, stderr: "", stdout: "{}" }),
     readOutputs: async () => {
       state.reads++;
+      state.entered();
       if (state.hold) await state.hold;
       if (!state.stopped) return { files: state.live, retained: false };
       if (!state.retained || state.retained === "retained_unreadable") return state.retained;
@@ -270,23 +272,54 @@ test("a hanging provider read yields at the caller deadline, stays tracked and n
   state.hold = new Promise<void>((resolve) => {
     release = resolve;
   });
+  const entered = () =>
+    new Promise<void>((resolve) => {
+      state.entered = resolve;
+    });
+  const rows = async () => (await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows;
   const service = createSandboxOutputs(sql, KEY, async () => provider);
+  // Worker lane: it returns at its deadline while the SDK promise is still pending, so the next
+  // lane (stop reconciliation, webhooks) runs; the read stays tracked and cannot persist late.
   const deadline = new AbortController();
+  let reading = entered();
   const lane = service.reconcileOne(deadline.signal);
-  await Bun.sleep(0);
+  await reading;
   deadline.abort();
-  // The worker lane returns while the SDK promise is still pending: the next lane can run.
   expect(await lane).toBe(true);
-  // The stop path's final capture is bounded the same way, so stop dispatch proceeds.
-  const stop = new AbortController();
-  const capture = captureFinalOutputs(sql, provider, id, { key: KEY, signal: stop.signal });
-  await Bun.sleep(0);
-  stop.abort();
-  await expect(capture).rejects.toBeDefined();
-  expect(state.reads).toBe(2);
-  // Released after the deadline, the reads are drained but never replace the snapshot.
   release();
   await service.drain();
-  await Bun.sleep(0);
-  expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
+  expect(await rows()).toHaveLength(0);
+  // Stop path: the final capture is bounded the same way, so stop dispatch proceeds.
+  state.hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const stop = new AbortController();
+  reading = entered();
+  const capture = captureFinalOutputs(sql, provider, id, { key: KEY, signal: stop.signal });
+  await reading;
+  stop.abort();
+  await expect(capture).rejects.toBeDefined();
+  release();
+  await drainFinalOutputs();
+  expect(await rows()).toHaveLength(0);
+  expect(state.reads).toBe(2);
+});
+
+test("listed files of a truncated retained listing win over unseen files when bounds are reached", async () => {
+  const { db, people, id, sql } = await fixture({ boatId: "partial_bounds_fixture" });
+  const { state, provider } = disks();
+  state.live = [file("annex.txt", "a".repeat(20000)), file("report.md", "r")];
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  expect(await service.reconcileOne(signal())).toBe(true);
+  state.stopped = true;
+  state.complete = false;
+  state.retained = [file("report.md", "R".repeat(14000))];
+  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
+  expect(await service.reconcileOne(signal())).toBe(true);
+  // 20000 + 14000 bytes exceeds the bound: the unseen annex is evicted, never the verified report.
+  expect((await db.query(`select name,size from sandbox_outputs where sandbox_id=$1`, [id])).rows).toEqual([
+    { name: "report.md", size: 14000 },
+  ]);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/report.md`;
+  expect(await (await routeFor(service, people.owner, people.org)(new Request(url)))?.text()).toBe("R".repeat(14000));
 });

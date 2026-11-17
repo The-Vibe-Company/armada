@@ -46,8 +46,8 @@ async function collect(
     ? await provider.readOutputs({ sandboxId: providerId, ...(signal ? { signal } : {}) })
     : "retained_unreadable";
   if (read === "retained_unreadable") {
-    // The backend can never read this stop's retained disk without compute (Modal recovery image,
-    // truncated snapshot listing): keep the snapshot captured before it; no polling until the next stop.
+    // The backend can never read this stop's retained disk without compute (Modal recovery image):
+    // keep the snapshot captured before it; no polling until the next stop.
     if (stopped)
       await sql.query(
         `update public.sandboxes set outputs_retained_at=now() where id=$1 and outputs_checked_at::text=$2`,
@@ -83,35 +83,33 @@ async function collect(
       [id, scan],
     );
     if (!authority.rows.length) return;
-    let incoming = payload;
+    // Previously captured files a partial read (truncated listing) does not list are kept: unseen is
+    // not deleted. Listed, verified files always win; unseen ones stay only while the merged
+    // snapshot fits the same count and byte bounds (in name order).
+    const kept: string[] = [];
     if (!complete) {
-      // Partial coverage (truncated listing): update or add the listed files, never delete unseen
-      // ones, and keep the merged snapshot within the same count and byte bounds.
-      const existing = new Map(
-        (
-          await tx.query<{ name: string; size: number }>(
-            `select name,size from public.sandbox_outputs where sandbox_id=$1`,
-            [id],
-          )
-        ).rows.map((row) => [row.name, row.size]),
+      let count = payload.length;
+      let total = payload.reduce((sum, file) => sum + file.size, 0);
+      const listed = new Set(payload.map((file) => file.name));
+      const previous = await tx.query<{ name: string; size: number }>(
+        `select name,size from public.sandbox_outputs where sandbox_id=$1 order by name`,
+        [id],
       );
-      incoming = [];
-      for (const file of payload) {
-        const merged = new Map(existing).set(file.name, file.size);
-        const total = [...merged.values()].reduce((sum, size) => sum + size, 0);
-        if (merged.size > OUTPUT_MAX_FILES || total > OUTPUT_MAX_BYTES) continue;
-        existing.set(file.name, file.size);
-        incoming.push(file);
+      for (const row of previous.rows) {
+        if (listed.has(row.name) || count >= OUTPUT_MAX_FILES || total + row.size > OUTPUT_MAX_BYTES) continue;
+        count++;
+        total += row.size;
+        kept.push(row.name);
       }
     }
     await tx.query(
       `with incoming as (select * from jsonb_to_recordset($2::jsonb) as f(name text,digest text,size integer,content text)),
-      removed as (delete from public.sandbox_outputs where $3 and sandbox_id=$1 and name not in(select name from incoming))
+      removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming) and name<>all($3::text[]))
       insert into public.sandbox_outputs(sandbox_id,name,digest,size,content_enc)
       select $1,name,digest,size,decode(content,'hex') from incoming
       on conflict(sandbox_id,name) do update set digest=excluded.digest,size=excluded.size,content_enc=excluded.content_enc,updated_at=now()
       where sandbox_outputs.digest<>excluded.digest`,
-      [id, JSON.stringify(incoming), complete],
+      [id, JSON.stringify(payload), kept],
     );
     // A retained-disk read is final for this stop: the workspace cannot change until compute resumes.
     if (read.retained) await tx.query(`update public.sandboxes set outputs_retained_at=now() where id=$1`, [id]);
@@ -119,6 +117,11 @@ async function collect(
 }
 
 const finalPending = new Set<Promise<void>>();
+
+/** Settle final captures that outlived their stop deadline (server shutdown, tests). */
+export async function drainFinalOutputs(): Promise<void> {
+  await Promise.allSettled(finalPending);
+}
 
 /** Final capture on Armada's stop path: after quiesce, before provider stop revokes compute.
  * Needed where the stopped workspace cannot be read without compute (Modal recovery images);
@@ -161,7 +164,7 @@ export function createSandboxOutputs(
   const pending = new Set<Promise<boolean>>();
   return {
     async reconcileOne(signal: AbortSignal): Promise<boolean> {
-      if (!key || pending.size >= OUTSTANDING_MAX) return false;
+      if (!key || signal.aborted || pending.size >= OUTSTANDING_MAX) return false;
       const row = (
         await sql.query<{
           id: string;
