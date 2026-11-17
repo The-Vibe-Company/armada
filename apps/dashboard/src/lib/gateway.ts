@@ -155,8 +155,11 @@ async function readMessage(response: Response, id?: number): Promise<Record<stri
 export function sandboxGateway(gateway: Gateway) {
   const conversation = (id?: string) => (id ? { conversation_id: id } : {});
   return {
-    logs: (sandboxId: string, since?: string | null, read: { all?: true; limit?: number } = {}) =>
-      gateway.call("logs", { id: sandboxId, ...(since ? { since_cursor: since } : {}), ...read }),
+    logs: (
+      sandboxId: string,
+      since?: string | null,
+      read: { all?: true; limit?: number; direction?: "forward" | "backward" } = {},
+    ) => gateway.call("logs", { id: sandboxId, ...(since ? { since_cursor: since } : {}), ...read }),
     status: (sandboxId: string) => gateway.call("status", { id: sandboxId }),
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     /** Permanent; the server refuses it unless the sandbox is stopped or failed. */

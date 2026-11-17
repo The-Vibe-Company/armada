@@ -4,7 +4,7 @@ import { isUuid } from "@/lib/action";
 import { viewerGateway } from "@/lib/data/gateway";
 import { getSandbox } from "@/lib/data/sandboxes";
 import { requireViewer } from "@/lib/data/viewer";
-import { readLogPages } from "@/lib/events";
+import { parseEventPage, readLogPages } from "@/lib/events";
 import { GatewayError } from "@/lib/gateway";
 import { createClient } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";
@@ -39,7 +39,9 @@ export async function GET(request: Request, context: Context) {
     });
   }
 
-  const cursor = new URL(request.url).searchParams.get("cursor");
+  const params = new URL(request.url).searchParams;
+  const cursor = params.get("cursor");
+  const backward = !cursor || params.get("direction") === "backward";
   // A broken log lane must not prevent status from collecting delayed usage.
   const statusRead = gateway.status(id).catch(() => ({}));
   const metadata = async () => {
@@ -62,7 +64,9 @@ export async function GET(request: Request, context: Context) {
     };
   };
   try {
-    const page = await readLogPages(gateway.logs, id, cursor);
+    const page = backward
+      ? { ...parseEventPage(await gateway.logs(id, cursor, { direction: "backward" })), backward: true }
+      : await readLogPages(gateway.logs, id, cursor);
     return NextResponse.json({
       ...(await metadata()),
       configured: true,

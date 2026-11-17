@@ -199,6 +199,8 @@ export function SandboxChat(props: Props) {
   const [loaded, setLoaded] = useState(false);
   const [chosen, setChosen] = useState<string | null>(null);
   const cursor = useRef<string | null>(null);
+  const olderCursor = useRef<string | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const known = useRef(initialStatus);
   const rendered = useRef({ status: initialStatus, usage: props.initialUsageRevision });
   const refreshing = useRef(false);
@@ -292,11 +294,20 @@ export function SandboxChat(props: Props) {
         if (page.hasMore && (!page.cursor || page.cursor === cursorBefore)) {
           return { kind: "retryable", message: "The server returned a conversation page without a new cursor." };
         }
+        const backward = body.backward === true;
+        if (backward) {
+          olderCursor.current = page.hasMore ? (page.olderCursor ?? null) : null;
+          setHasMore(olderCursor.current !== null);
+        }
         if (page.cursor) cursor.current = page.cursor;
         if (page.events.length > 0) setEvents((shown) => mergeEvents(shown, page.events));
-        setHasMore(page.hasMore);
+        if (!backward && olderCursor.current === null) setHasMore(false);
         setLoaded(true);
-        return { kind: "success", more: page.hasMore, active: isActiveStatus(metadata.next) || metadata.refreshNeeded };
+        return {
+          kind: "success",
+          more: !backward && page.hasMore,
+          active: isActiveStatus(metadata.next) || metadata.refreshNeeded,
+        };
       } catch (error) {
         if (isAbortError(error) || !isCurrent(session)) return { kind: "aborted" };
         return { kind: "retryable", message: "The dashboard lost contact with the server." };
@@ -306,6 +317,33 @@ export function SandboxChat(props: Props) {
     },
     [applyMetadata, isCurrent, sandboxId],
   );
+
+  const loadOlder = async () => {
+    const boundary = olderCursor.current;
+    const session = sessionRef.current;
+    if (!boundary || loadingOlder || !session || !isCurrent(session)) return;
+    setLoadingOlder(true);
+    try {
+      const url = new URL(`/api/sandboxes/${sandboxId}/events`, window.location.origin);
+      url.searchParams.set("cursor", boundary);
+      url.searchParams.set("direction", "backward");
+      const response = await fetch(url, { cache: "no-store" });
+      const body: unknown = await response.json();
+      if (!isCurrent(session)) return;
+      if (!response.ok || !isSuccessfulPage(body)) throw Error("Older messages could not be read.");
+      const page = parseEventPage(body);
+      if (page.hasMore && (!page.olderCursor || page.olderCursor === boundary))
+        throw Error("Older messages did not advance.");
+      setEvents((shown) => mergeEvents(page.events, shown));
+      olderCursor.current = page.hasMore ? (page.olderCursor ?? null) : null;
+      setHasMore(olderCursor.current !== null);
+    } catch {
+      if (isCurrent(session))
+        setPoll((current) => ({ ...current, error: "Older messages could not be read. Try again." }));
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
 
   /** Read until drained, inactive and rendered metadata is acknowledged. One loop at a time. */
   const tick = useCallback(
@@ -470,7 +508,7 @@ export function SandboxChat(props: Props) {
           loaded={loaded}
           poll={poll}
           hasMore={hasMore}
-          onMore={() => void tick()}
+          onMore={() => void loadOlder()}
         />
 
         <div id="sandbox-mobile-about" className="px-4 lg:hidden" />
@@ -673,6 +711,13 @@ export function Transcript({
         data-fit="history-scroll"
         className="max-h-[min(68vh,46rem)] min-h-40 overflow-y-auto overscroll-contain px-4 py-5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset sm:px-7"
       >
+        {hasMore && (
+          <div className="mb-4 flex justify-center">
+            <Button variant="outline" size="sm" onClick={onMore}>
+              Load older messages
+            </Button>
+          </div>
+        )}
         {items.length === 0 ? (
           loaded || !poll.configured || poll.error ? (
             <p className="text-sm text-muted-foreground">
@@ -711,13 +756,6 @@ export function Transcript({
               </li>
             )}
           </ol>
-        )}
-        {hasMore && (
-          <div className="mt-4 flex justify-center">
-            <Button variant="outline" size="sm" onClick={onMore}>
-              Load more
-            </Button>
-          </div>
         )}
       </div>
       {!atBottom && (
