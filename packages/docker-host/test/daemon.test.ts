@@ -1878,3 +1878,64 @@ test("native held polls report running work and fall back to the previous protoc
   expect(bodies[1]).not.toHaveProperty("running");
   expect(bodies).toHaveLength(2);
 });
+
+test("a ledger that cannot be saved before a held poll never overwrites a completion saved during it", async () => {
+  const f = fixture();
+  const gate = Promise.withResolvers<void>();
+  const executor: Executor = {
+    ...f.executor,
+    async create(request) {
+      await gate.promise;
+      await f.executor.create(request);
+    },
+  };
+  let failNextSave = false;
+  const store: Store = {
+    load: () => f.store.load(),
+    async save(next) {
+      if (failNextSave) {
+        failNextSave = false;
+        throw new Error("disk unavailable");
+      }
+      await f.store.save(next);
+    },
+  };
+  let work: Promise<void> | undefined;
+  let lostAck = true;
+  const api: Api = {
+    ...f.api,
+    async poll(state, options) {
+      if (options?.running?.length) {
+        // The running job completes durably while this poll is held; its ACK is lost.
+        gate.resolve();
+        await work?.catch(() => {});
+        return { job: null, held: true };
+      }
+      return { ...(await f.api.poll(state, options)), held: true };
+    },
+    async result(state, receipt, ...rest) {
+      if (lostAck) {
+        lostAck = false;
+        throw new Error("ACK lost");
+      }
+      await f.api.result(state, receipt, ...rest);
+    },
+  };
+  const dispatch = (_job: Job, running: Promise<void>) => {
+    work = running;
+  };
+  expect(await tick(store, api, executor, false, Date.now, { dispatch })).toBe("worked");
+  // The pre-poll save fails once; the completion's own save during the poll succeeds.
+  failNextSave = true;
+  const blocked = tick(store, api, executor, false, Date.now, { dispatch, running: new Set([f.job.requestId]) });
+  await expect(blocked).rejects.toThrow("disk unavailable");
+  gate.resolve();
+  await expect(work).rejects.toThrow("ACK lost");
+  // A tick with a ledger it could not save admitted nothing and wrote nothing afterwards.
+  expect(f.state().receipts.find((receipt) => receipt.requestId === f.job.requestId)?.outcome).toBe("completed");
+  // The re-delivered job replays its durable outcome instead of running again.
+  expect(await tick(store, api, executor, false, Date.now, { dispatch })).toBe("worked");
+  await work;
+  expect(f.executed).toEqual(["create"]);
+  expect(f.acknowledgements).toEqual(["completed"]);
+});

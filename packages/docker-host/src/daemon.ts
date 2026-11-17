@@ -466,17 +466,13 @@ async function admitLocked(
   // The poll may be held open by the server, so it runs outside the ledger
   // section: running jobs keep completing meanwhile. Only their completions can
   // write the ledger in that window, so with jobs running it is saved before
-  // and reloaded after. If it cannot be saved, this tick keeps its in-memory
-  // view, as before, so local physical expiry still runs.
-  let persisted = false;
-  if (options.running?.size) {
-    try {
-      await store.save(state);
-      persisted = true;
-    } catch {
-      /* Keep the in-memory view. */
-    }
-  }
+  // and reloaded after. A ledger that cannot be saved first could not be
+  // reconciled with a completion saved during the poll, and a later write of it
+  // would erase that completion and its replay fence. That save error therefore
+  // ends this tick before polling: everything computed above is derived again
+  // from the durable ledger on the next tick, and physical expiry runs on its own.
+  const reload = Boolean(options.running?.size);
+  if (reload) await store.save(state);
   lock.release();
   let polled: Awaited<ReturnType<Api["poll"]>> | undefined;
   let pollError: unknown;
@@ -492,7 +488,7 @@ async function admitLocked(
   } finally {
     lock.release = await acquire(store);
   }
-  if (persisted) {
+  if (reload) {
     state = await store.load();
     state.retention ??= [];
     expiredGenerations = expired(state);
