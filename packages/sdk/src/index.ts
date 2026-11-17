@@ -272,10 +272,8 @@ export class Armada {
     return this.request("sandbox/status", input, true, options);
   }
   wait(input: WaitInput, options?: RequestOptions): Promise<SandboxStatus & { timedOut: boolean }> {
-    return this.request("sandbox/wait", input, true, {
-      timeoutMs: ((input.timeout_seconds ?? 60) + 30) * 1000,
-      ...options,
-    });
+    // Precedence: per-call timeout, then the client timeout, then the server wait plus a margin.
+    return this.request("sandbox/wait", input, true, options, ((input.timeout_seconds ?? 60) + 30) * 1000);
   }
   logs(input: LogsInput, options?: RequestOptions): Promise<LogsResult> {
     return this.request("logs/read", input, true, options);
@@ -318,8 +316,14 @@ export class Armada {
     },
   };
 
-  private async request<T>(route: string, body: unknown, readOnly: boolean, options: RequestOptions = {}): Promise<T> {
-    const deadline = AbortSignal.timeout(options.timeoutMs ?? this.options.timeoutMs ?? 300000);
+  private async request<T>(
+    route: string,
+    body: unknown,
+    readOnly: boolean,
+    options: RequestOptions = {},
+    defaultTimeoutMs = 300000,
+  ): Promise<T> {
+    const deadline = AbortSignal.timeout(options.timeoutMs ?? this.options.timeoutMs ?? defaultTimeoutMs);
     const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
     for (let attempt = 0; ; attempt++) {
       let response: Response;

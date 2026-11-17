@@ -249,3 +249,26 @@ test("the SDK browser bundle reaches no Node builtin, server entry point or work
   const bundle = await built.outputs[0]!.text();
   expect(bundle).not.toMatch(/from\s*["'](node:|@armada\/)|require\(|supabase|postgres/i);
 });
+
+test("wait uses the per-call deadline, then the client deadline, then the server wait plus a margin", async () => {
+  const deadlines: number[] = [];
+  const timeout = AbortSignal.timeout;
+  AbortSignal.timeout = (milliseconds: number) => {
+    deadlines.push(milliseconds);
+    return new AbortController().signal;
+  };
+  try {
+    const fetch = (async () =>
+      Response.json({ id: "sandbox_placeholder", timedOut: false })) as import("../src/index.ts").Fetch;
+    const configured = new Armada({ token: "service_placeholder", timeoutMs: 2000, fetch });
+    const unconfigured = new Armada({ token: "service_placeholder", fetch });
+    await configured.status({ id: "sandbox_placeholder" });
+    await configured.wait({ id: "sandbox_placeholder" });
+    await configured.wait({ id: "sandbox_placeholder" }, { timeoutMs: 3000 });
+    await unconfigured.wait({ id: "sandbox_placeholder", timeout_seconds: 10 });
+    await unconfigured.status({ id: "sandbox_placeholder" });
+    expect(deadlines).toEqual([2000, 2000, 3000, 40_000, 300_000]);
+  } finally {
+    AbortSignal.timeout = timeout;
+  }
+});
