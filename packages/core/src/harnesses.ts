@@ -46,10 +46,12 @@ export const HARNESS_CATALOG = {
     credentialKinds: ["openai", "codex_auth", "morph"],
     boatProvider: "codex",
     capabilities: { ...COMMON_CAPABILITIES, steer: "restart" },
-    defaultModel: "gpt-6.1-sol",
+    defaultModel: "gpt-6.2-sol",
     defaultReasoningEffort: "medium",
     reasoningEfforts: CODEX_EFFORTS,
     models: [
+      { id: "gpt-6.2-sol", label: "GPT-6.2 Sol", reasoningEfforts: CODEX_EFFORTS },
+      { id: "gpt-6.2-astra", label: "GPT-6.2 Astra", reasoningEfforts: CODEX_EFFORTS },
       { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", reasoningEfforts: CODEX_EFFORTS },
       { id: "gpt-6.1-terra", label: "GPT-6.1 Terra", reasoningEfforts: CODEX_EFFORTS },
       { id: "gpt-6-astra", label: "GPT-6 Astra", reasoningEfforts: CODEX_EFFORTS },

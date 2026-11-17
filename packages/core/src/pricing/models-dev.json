@@ -1,7 +1,7 @@
 {
   "source": "https://models.dev/api.json",
-  "fetchedAt": "2026-11-12T10:33:13.013Z",
-  "sha256": "bf1b7897e56fb84df8c0ca5e44a2cf315119d6111c54f414064c12a3938f3dd7",
+  "fetchedAt": "2026-11-17T18:19:00.669Z",
+  "sha256": "d5d6ff2fff92fcfe45566f38f9c559c71ecc63a1b400b2e305ef7545b70a5c3a",
   "license": "MIT",
   "units": "USD per million tokens",
   "models": {
@@ -184,6 +184,16 @@
         "reasoning": null
       },
       "unsupported": false
+    },
+    "openai/chatgpt-image-latest": {
+      "rates": {
+        "input": "5",
+        "output": "10",
+        "cacheRead": "1.25",
+        "cacheWrite": null,
+        "reasoning": null
+      },
+      "unsupported": true
     },
     "openai/gpt-3.5-turbo": {
       "rates": {
@@ -535,6 +545,26 @@
       },
       "unsupported": true
     },
+    "openai/gpt-6.2-astra": {
+      "rates": {
+        "input": "8",
+        "output": "40",
+        "cacheRead": "0.4",
+        "cacheWrite": "10",
+        "reasoning": null
+      },
+      "unsupported": true
+    },
+    "openai/gpt-6.2-sol": {
+      "rates": {
+        "input": "2",
+        "output": "10",
+        "cacheRead": "0.1",
+        "cacheWrite": "2.5",
+        "reasoning": null
+      },
+      "unsupported": true
+    },
     "openai/gpt-daybreak-blue-latest": {
       "rates": {
         "input": "4",
@@ -555,10 +585,10 @@
       },
       "unsupported": false
     },
-    "openai/gpt-image-2": {
+    "openai/gpt-image-1.5": {
       "rates": {
         "input": "5",
-        "output": "30",
+        "output": "10",
         "cacheRead": "1.25",
         "cacheWrite": null,
         "reasoning": null

@@ -61,7 +61,7 @@ nativeTest("Codex waits for interrupt terminal then sends steer once on the same
         kind: "other",
         type: "armada/turnUsage",
         data: {
-          model: "gpt-6.1-sol",
+          model: "gpt-6.2-sol",
           inputTokens: 200,
           outputTokens: 40,
           cachedTokens: 60,
@@ -101,7 +101,7 @@ nativeTest("Codex usage snapshot includes all native turns restarted by steer wi
         kind: "other",
         type: "armada/turnUsage",
         data: {
-          model: "gpt-6.1-sol",
+          model: "gpt-6.2-sol",
           inputTokens: 200,
           outputTokens: 40,
           cachedTokens: 60,
@@ -144,7 +144,7 @@ nativeTest.each([
         kind: "other",
         type: "armada/turnUsage",
         data: {
-          model: "gpt-6.1-sol",
+          model: "gpt-6.2-sol",
           inputTokens: 100,
           outputTokens: 20,
           cachedTokens: 30,
@@ -567,7 +567,7 @@ nativeTest.each(["before", "after", "partial", "foreign", "invalid", "regressed"
           kind: "other",
           type: "armada/turnUsage",
           data: {
-            model: "gpt-6.1-sol",
+            model: "gpt-6.2-sol",
             inputTokens: measured ? 100 : null,
             outputTokens: measured ? 20 : null,
             cachedTokens: measured ? 30 : null,
@@ -614,7 +614,7 @@ nativeTest(
           kind: "other",
           type: "armada/turnUsage",
           data: {
-            model: "gpt-6.1-sol",
+            model: "gpt-6.2-sol",
             inputTokens: null,
             outputTokens: null,
             cachedTokens: null,

@@ -115,7 +115,7 @@ test("errors are never hidden: an invalid model stays focusable, a refused launc
   await expect(refusal).toBeFocused();
   await expect(dialog.getByLabel("Task")).toHaveValue("Keep me");
   await expect(dialog.getByRole("radio", { name: "Codex" })).toBeChecked();
-  await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue("gpt-6.1-sol");
+  await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue("gpt-6.2-sol");
   await page.setViewportSize({ width: 390, height: 664 });
   await expectPinnedLaunch(page);
   await page.screenshot({ path: "test-results/launch-error-mobile.png", animations: "disabled" });
