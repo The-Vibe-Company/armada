@@ -24,10 +24,9 @@ function formatVersion(date: Date): string {
   return date.toISOString().split(".")[0]!.replace(/\D/g, "");
 }
 
-function parseVersion(version: string): number | undefined {
-  const iso = version.replace(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/, "$1-$2-$3T$4:$5:$6Z");
-  const date = new Date(iso);
-  if (Number.isFinite(date.getTime()) && formatVersion(date) === version) return date.getTime();
+function isValidVersion(version: string): boolean {
+  const date = new Date(version.replace(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/, "$1-$2-$3T$4:$5:$6Z"));
+  return Number.isFinite(date.getTime()) && formatVersion(date) === version;
 }
 
 // The guard's clock. MIGRATION_GUARD_NOW (ISO 8601) fixes it for tests.
@@ -40,24 +39,6 @@ function guardNow(): number {
   return time;
 }
 
-// `count` ascending free versions strictly between two neighbours, never on a
-// whole minute and never beyond the window. They start at now when the
-// interval leaves room for all of them after it; otherwise they pack against
-// the upper neighbour. Undefined when the interval cannot hold them all.
-function freeVersions(after: number, before: number, now: number, count: number): string[] | undefined {
-  const lower = Math.ceil((after + 1) / 1000) * 1000;
-  const upper = Math.floor(Math.min(before - 1, now + FUTURE_WINDOW_MS) / 1000) * 1000;
-  const valid = (time: number) => new Date(time).getUTCSeconds() !== 0;
-  const forward: number[] = [];
-  for (let time = Math.max(lower, Math.ceil(now / 1000) * 1000); time <= upper && forward.length < count; time += 1000)
-    if (valid(time)) forward.push(time);
-  if (forward.length === count) return forward.map((time) => formatVersion(new Date(time)));
-  const backward: number[] = [];
-  for (let time = upper; time >= lower && backward.length < count; time -= 1000)
-    if (valid(time)) backward.unshift(time);
-  if (backward.length === count) return backward.map((time) => formatVersion(new Date(time)));
-}
-
 try {
   const base = process.argv[2];
   if (!base) throw new Error("Usage: bun scripts/db/check-migrations.ts <base-ref> [head-ref]");
@@ -68,70 +49,30 @@ try {
   const latest = [...baseline.values()].sort().at(-1);
   const now = guardNow();
   const newest = formatVersion(new Date(now + FUTURE_WINDOW_MS));
-  const renames = new Set<string>();
   for (const [path, version] of head) {
     const previous = versions.get(version);
     if (previous) errors.push(`Duplicate migration version ${version}: ${previous}, ${path}`);
     versions.set(version, path);
     if (baseline.has(path)) continue;
-    if (parseVersion(version) === undefined) {
+    if (!isValidVersion(version)) {
       errors.push(`New migration ${path} must have a valid UTC timestamp as its version.`);
-      renames.add(path);
     } else if (version.endsWith("00")) {
       errors.push(`New migration ${path} has a minute-rounded version. Use UTC seconds other than 00.`);
-      renames.add(path);
     } else if (version > newest) {
       errors.push(
         `New migration ${path} is more than 24 hours ahead of the current UTC time. Use a version no later than ${newest}.`,
       );
-      renames.add(path);
     }
     if (latest && version <= latest) {
       errors.push(`New migration ${path} must have a version strictly greater than ${latest} on ${base}`);
     }
   }
-  if (renames.size) {
-    // Renames keep their files' place among the unapplied migrations. Each run
-    // of consecutive rejected files is allocated as one group, above the base
-    // and the preceding kept migration and below the next kept one, so
-    // applying every suggestion preserves dependency order. A group that does
-    // not fit gets no partial assignment.
-    const additions = [...head].filter(([path]) => !baseline.has(path)).sort(([, a], [, b]) => a.localeCompare(b));
-    const floor = latest ? (parseVersion(latest) ?? -Infinity) : -Infinity;
-    let previous = floor;
-    let previousName = latest ? `${latest} on ${base}` : undefined;
-    let group: string[] = [];
-    const allocate = (next: [string, number] | undefined) => {
-      if (!group.length) return;
-      const suggestions = freeVersions(previous, next ? next[1] : Infinity, now, group.length);
-      if (suggestions) {
-        for (const [index, path] of group.entries())
-          errors.push(
-            `Use migration version ${suggestions[index]} for ${path}. Preserve unapplied migration dependency order and rerun the guard.`,
-          );
-      } else {
-        errors.push(
-          next || previous > floor
-            ? `No free version for ${group.join(", ")} within 24 hours of the current UTC time between ${previousName ?? "the base"} and ${next?.[0] ?? "the window end"}. Resequence those unapplied migrations.`
-            : `No version within 24 hours of the current UTC time is above ${latest ?? "the base"}; a base migration is too far ahead.`,
-        );
-      }
-      group = [];
-    };
-    for (const [path, version] of additions) {
-      if (renames.has(path)) {
-        group.push(path);
-        continue;
-      }
-      // A kept file at or below the base already fails; it bounds nothing.
-      const time = parseVersion(version) as number;
-      if (time <= floor) continue;
-      allocate([path, time]);
-      if (time > previous) [previous, previousName] = [time, path];
-    }
-    allocate(undefined);
+  if (errors.length) {
+    errors.push(
+      "Renumber each rejected new migration with the current UTC time to the second (date -u +%Y%m%d%H%M%S), keep your new migrations in their dependency order, and rerun the guard.",
+    );
+    throw new Error(errors.join("\n"));
   }
-  if (errors.length) throw new Error(errors.join("\n"));
   console.log(`Migration versions OK (${head.size} files; base ${base}, latest ${latest ?? "none"})`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
