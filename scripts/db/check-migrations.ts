@@ -72,7 +72,7 @@ try {
     // version ahead of the clock, so the instruction states both bounds.
     const above = latest ? `, greater than ${latest} (the latest version on ${base})` : "";
     const clock = latest
-      ? ` Start from the current UTC time (date -u +%Y%m%d%H%M%S) only when it is above ${latest}.`
+      ? ` Start from the current UTC time (date -u +%Y%m%d%H%M%S) when it is above ${latest}; otherwise pick a time well inside the range rather than right after ${latest}, so concurrent authors do not collide.`
       : " Start from the current UTC time (date -u +%Y%m%d%H%M%S).";
     errors.push(
       `Renumber each rejected new migration: use distinct valid UTC versions with seconds other than 00${above} and no later than ${newest}, keeping your new migrations in their dependency order.${clock} Then rerun the guard.`,

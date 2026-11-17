@@ -531,7 +531,7 @@ test("replicas lease one observation and resume admission fences old writes whil
     expect(row?.lifecycleGeneration).toBe(3);
     expect(row?.effectiveTtlSeconds).toBe(90);
     expect(row?.requestedTtlSeconds).toBe(90);
-    expect(Date.parse(row?.expiresAt ?? "")).toBe(renewed.expires_ms);
+    expect(Date.parse(row?.expiresAt ?? "")).toBe(Math.floor(renewed.expires_ms));
   } finally {
     gate.resolve();
     await Promise.allSettled([first]);
