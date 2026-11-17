@@ -11,6 +11,15 @@ export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, s
   "sandbox/launch": { ttl_seconds: "ttlSeconds", reasoning_effort: "reasoningEffort" },
   "logs/read": { since_cursor: "cursor", conversation_id: "conversationId" },
 };
+/**
+ * Dispatcher routes that the public dashboard endpoint (`/api/v1/*`) refuses: experimental
+ * runtime operations are not part of the integration contract. The dashboard proxy test
+ * asserts every published operation is forwarded, so a new unproxied route fails there.
+ */
+export const UNPUBLISHED_ROUTES: ReadonlySet<string> = new Set([
+  "sandbox/checkpoint-runtime-v1",
+  "sandbox/resume-runtime-v1",
+]);
 /** Rewrites every string (prose and `required` entries); object keys are renamed by the caller. */
 function restNames<T>(value: T, rename: Readonly<Record<string, string>>): T {
   if (typeof value === "string")
@@ -45,6 +54,7 @@ export async function generateOpenApi() {
       "logs/read": "logs",
     };
     for (const [route, name] of Object.entries(routes)) {
+      if (UNPUBLISHED_ROUTES.has(route)) continue;
       const tool = tools.find((tool) => tool.name === name);
       if (!tool) throw new Error(`No registered contract for ${route}`);
       const rename = REST_FIELD_NAMES[route] ?? {};

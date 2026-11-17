@@ -272,3 +272,54 @@ test("wait uses the per-call deadline, then the client deadline, then the server
     AbortSignal.timeout = timeout;
   }
 });
+
+test("a body that fails after the headers is a transport error, while a malformed body stays unknown_response", async () => {
+  const partial = (signal?: AbortSignal | null) =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"state":'));
+        if (!signal) controller.error(new TypeError("connection reset"));
+        else signal.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+      },
+    });
+  const client = (body: (init?: RequestInit) => ConstructorParameters<typeof Response>[0]) =>
+    new Armada({
+      token: "service_placeholder",
+      readRetries: 3,
+      fetch: (async (_url, init) =>
+        new Response(body(init), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as import("../src/index.ts").Fetch,
+    });
+  const failure = (promise: Promise<unknown>) =>
+    promise.then(
+      () => undefined,
+      (error: InstanceType<typeof ArmadaError>) => ({
+        code: error.code,
+        status: error.status,
+        outcomeUnknown: error.outcomeUnknown,
+      }),
+    );
+  const reset = client(() => partial());
+  const abort = new AbortController();
+  const stalled = client((init) => partial(init?.signal));
+  const pendingWait = failure(stalled.wait({ id: "sandbox_placeholder" }, { signal: abort.signal }));
+  abort.abort(new DOMException("deadline", "TimeoutError"));
+  expect(await failure(reset.status({ id: "sandbox_placeholder" }))).toEqual({
+    code: "transport_error",
+    status: 0,
+    outcomeUnknown: false,
+  });
+  expect(await pendingWait).toEqual({ code: "transport_error", status: 0, outcomeUnknown: false });
+  expect(await failure(reset.stop({ id: "sandbox_placeholder" }))).toEqual({
+    code: "transport_error",
+    status: 0,
+    outcomeUnknown: true,
+  });
+  expect(await failure(client(() => "{not json").status({ id: "sandbox_placeholder" }))).toEqual({
+    code: "unknown_response",
+    status: 200,
+    outcomeUnknown: false,
+  });
+});

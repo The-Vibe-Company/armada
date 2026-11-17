@@ -343,7 +343,20 @@ export class Armada {
         // No automatic transport replay: acceptance may already have happened.
         throw new ArmadaError("transport_error", 0, undefined, !readOnly);
       }
-      const value: unknown = await response.json().catch(() => null);
+      let text: string;
+      try {
+        text = await response.text();
+      } catch {
+        // The body stream failed or hit the deadline after headers: a transport failure,
+        // not a malformed payload. A mutation may already have been accepted.
+        throw new ArmadaError("transport_error", 0, undefined, !readOnly);
+      }
+      let value: unknown = null;
+      try {
+        value = JSON.parse(text);
+      } catch {
+        // Malformed payloads are classified below as unknown_response.
+      }
       const error = value && typeof value === "object" && "error" in value ? value.error : undefined;
       const retryAfterSeconds = response.ok ? undefined : retryAfter(response.headers.get("retry-after"), error);
       // A draining or auth-unavailable server refuses with this body before dispatching anything.

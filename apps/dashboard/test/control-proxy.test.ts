@@ -654,3 +654,38 @@ test("proxy-generated failures match the published failure schema and decode to 
     else process.env.ARMADA_MCP_URL = env;
   }
 });
+
+test("every operation in the published OpenAPI description crosses the public proxy with a bearer", async () => {
+  const published = (await import("../../../docs/openapi.json")).default as {
+    paths: Record<string, Record<string, unknown>>;
+  };
+  const env = process.env.ARMADA_MCP_URL;
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+  try {
+    const operations = Object.entries(published.paths).flatMap(([path, verbs]) =>
+      Object.keys(verbs).map((verb) => ({ path, verb: verb.toUpperCase() })),
+    );
+    expect(operations.length).toBeGreaterThan(0);
+    const blocked: string[] = [];
+    for (const { path, verb } of operations) {
+      const forwarded: string[] = [];
+      const response = await forwardControl(
+        new Request(`https://dashboard.test${path}`, {
+          method: verb,
+          headers: { authorization: "Bearer masked", "content-type": "application/json" },
+          ...(verb === "POST" ? { body: "{}" } : {}),
+        }),
+        path.replace(/^\/api\/v1\//, "").split("/"),
+        async (target) => {
+          forwarded.push(new URL(target).pathname);
+          return Response.json({});
+        },
+      );
+      if (response.status !== 200 || forwarded[0] !== path) blocked.push(`${verb} ${path}`);
+    }
+    expect(blocked).toEqual([]);
+  } finally {
+    if (env === undefined) delete process.env.ARMADA_MCP_URL;
+    else process.env.ARMADA_MCP_URL = env;
+  }
+});
