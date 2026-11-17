@@ -512,3 +512,25 @@ nativeTest.each([
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// Definite pre-side-effect refusal at the driver boundary: the stream is closed, nothing was steered.
+nativeTest("Claude refuses a steer after its stream closed with a replayable refusal", async () => {
+  const driver = new ClaudeDriver({
+    executable: `${import.meta.dir}/fixtures/claude-process.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "claude", text: "message-semantics" },
+      signal: AbortSignal.timeout(2000),
+      session: () => {},
+      emit: () => {},
+    });
+    expect(await turn.done).toBe("finished");
+    const { RequestRefused } = await import("../src/errors.ts");
+    await expect(turn.steer("too-late")).rejects.toBeInstanceOf(RequestRefused);
+  } finally {
+    await driver.close();
+  }
+});

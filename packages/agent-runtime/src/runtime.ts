@@ -632,7 +632,9 @@ export class Runner {
     }
     if (r.op === "steer") {
       const a = targets[0];
-      if (!a || targets.length !== 1) throw new RequestRefused("no_running_turn");
+      // A completed turn can stay active while native auth publication is pending. It has no
+      // running turn to steer, and refusing here keeps the outcome definite before any side effect.
+      if (!a || targets.length !== 1 || a.terminal) throw new RequestRefused("no_running_turn");
       await a.turn.steer(r.text);
       this.journal.append({
         id: crypto.randomUUID(),

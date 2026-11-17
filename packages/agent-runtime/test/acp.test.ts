@@ -161,3 +161,26 @@ test("ACP observes native events before prompt and releases the observer when it
     await driver.close();
   }
 });
+
+// Definite pre-side-effect refusal at the driver boundary: no continuation exists to steer.
+test("ACP refuses a steer after its turn stopped with a replayable refusal", async () => {
+  const driver = new AcpDriver({
+    executable: process.execPath,
+    args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
+    cwd: "/tmp",
+    env: {},
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "opencode", text: "DOCKER_OK", model: "test/model" },
+      signal: new AbortController().signal,
+      emit: () => {},
+      session: () => {},
+    });
+    expect(await turn.done).toBe("finished");
+    const { RequestRefused } = await import("../src/errors.ts");
+    await expect(turn.steer("too-late")).rejects.toBeInstanceOf(RequestRefused);
+  } finally {
+    await driver.close();
+  }
+});

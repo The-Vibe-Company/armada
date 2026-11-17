@@ -17,7 +17,7 @@ import { codexTurnFailureCode } from "./codex-turn-error.ts";
 import { codexTurnUsage } from "./codex-turn-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
-import { HarnessError, nativeHarnessError } from "./errors.ts";
+import { HarnessError, nativeHarnessError, RequestRefused } from "./errors.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 /** One app-server per conversation isolates credentials, process failure and notifications. */
 export class CodexDriver implements Driver {
@@ -597,7 +597,8 @@ export class CodexDriver implements Driver {
       done,
       interrupt,
       steer: async (text) => {
-        if (resumeOnly || closed || steering || stopping) throw Error("no_running_turn");
+        // Definite pre-side-effect refusal: no continuation has begun, so a retry is safe.
+        if (resumeOnly || closed || steering || stopping) throw new RequestRefused("no_running_turn");
         steering = true;
         steerFinished = (async () => {
           try {

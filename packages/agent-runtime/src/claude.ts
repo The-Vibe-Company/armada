@@ -5,7 +5,13 @@ import { ClaudeMessages } from "./claude-messages.ts";
 import { claudeResumeUsage, claudeUsageDelta } from "./claude-resume-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
-import { claudeResultFailureCode, HarnessError, type HarnessErrorCode, nativeHarnessError } from "./errors.ts";
+import {
+  claudeResultFailureCode,
+  HarnessError,
+  type HarnessErrorCode,
+  nativeHarnessError,
+  RequestRefused,
+} from "./errors.ts";
 import { PrivateMcpFile } from "./mcp-file.ts";
 import { ModelRateLimitWait } from "./model-rate-limit.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
@@ -348,7 +354,8 @@ export class ClaudeDriver implements Driver {
       done,
       interrupt,
       steer: async (text) => {
-        if (closed) throw Error("no_running_turn");
+        // Definite pre-side-effect refusal: the stream is closed, so nothing was steered.
+        if (closed) throw new RequestRefused("no_running_turn");
         steered = true;
         push(text);
       },
