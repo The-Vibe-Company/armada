@@ -1427,6 +1427,26 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.store.lease(builder.id, () => f.provider.collectGarbage());
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
+  test("a snapshot retired after restore read it never gains a restore reference", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    await f.provider.delete({ sandboxId: builder.id });
+    const lease = f.store.lease.bind(f.store);
+    // Retirement writes the tombstone between restore's read and its source lease.
+    f.store.lease = async (id, work) => {
+      f.store.lease = lease;
+      await f.store.removeImage(name);
+      return lease(id, work);
+    };
+    const creates = f.creates;
+    await expect(f.provider.restoreGoldenMaster({ snapshotId: name })).rejects.toMatchObject({ code: "not_found" });
+    const row = await f.store.get(builder.id);
+    expect(row.phase).toBe("deleted");
+    expect(row.goldenRestore).toBeUndefined();
+    expect(f.creates).toBe(creates);
+  });
   test("a busy snapshot source refuses retirement before any tombstone, as non-mutating", async () => {
     const f = fixture();
     const builder = await f.provider.createGolden({});

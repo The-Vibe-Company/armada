@@ -1194,6 +1194,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           if (row.phase !== "restoring") {
             if (!["deleted", "stopped"].includes(row.phase) && !(row.phase === "checkpoint" && row.quiesced))
               throw refusal("conflict", "Uncertain golden checkpoint retained; restore cannot discard that source.");
+            // Re-read under the source lease: a snapshot retired since the read above may already be
+            // claimed for physical collection, and a tombstone must never gain a reference.
+            if ((await source.store.image(snapshotId)).imageId !== snapshot.imageId)
+              throw refusal("conflict", "Golden snapshot changed during restore admission.");
             const latestBase = row.snapshotImages?.at(-1)?.name ?? row.goldenRestore?.snapshotId;
             const restoreImage =
               row.phase === "stopped" && latestBase === snapshotId && row.recoveryImageId
