@@ -42,7 +42,7 @@ function fixture(stage: "scrub" | "snapshot") {
         stored = structuredClone(value);
       }),
     images: async () => [],
-    list: async () => [],
+    tombstoneSources: async () => [],
     watermark: async () => 1,
   } as unknown as ModalStore;
   const sandbox = {

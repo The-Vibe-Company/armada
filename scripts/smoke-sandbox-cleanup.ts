@@ -153,7 +153,7 @@ export async function deleteSmokeReceipts(
         : typeof body?.error?.code === "string" && ERROR_CODES.has(body.error.code)
           ? body.error.code
           : "api_failed";
-      return { ok: response.ok, body };
+      return { ok: response.ok, body, httpStatus: response.status };
     }
     async function pause() {
       const remainingMs = deadline() - now();
@@ -243,10 +243,10 @@ export async function deleteSmokeReceipts(
           // during overlapping cleanup, and the server refuses its delete as not ready.
           // Observe after every refusal: transitional or unavailable status keeps
           // waiting, and only an observed active child is stopped again.
-          if (scoped && httpStatus === 409) {
-            const refusal = { phase, httpStatus, code };
+          if (scoped && deleted.httpStatus === 409) {
+            const refusal: { phase: string; httpStatus: number | null; code: string } = { phase, httpStatus, code };
             const status = await request("status").catch(() => null);
-            if (status && !status.ok && httpStatus === 404 && code === "not_found") break;
+            if (status && !status.ok && status.httpStatus === 404 && code === "not_found") break;
             if (status?.ok && status.body?.id === row.id) {
               if (status.body.status === "deleted") break;
               if (["ready", "running"].includes(String(status.body.status))) {

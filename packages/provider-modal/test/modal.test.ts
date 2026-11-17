@@ -1293,6 +1293,25 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.delete({ sandboxId: fork.id });
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
   });
+  test("stopped fork deletion completes while another controller holds its retired source", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const fork = await f.provider.fork({ from: name });
+    await f.provider.deleteSnapshot(name);
+    await f.provider.stop({ sandboxId: fork.id });
+    expect(await f.store.tombstoneSources()).toContain(builder.id);
+    const terminations = f.log.filter((x) => x === "terminate").length;
+    await f.store.lease(builder.id, async () => {
+      expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
+    });
+    expect(f.log.filter((x) => x === "terminate")).toHaveLength(terminations);
+    expect((await f.store.get(fork.id)).phase).toBe("deleted");
+    expect(await f.store.tombstoneSources()).toContain(builder.id);
+    await f.provider.collectGarbage();
+    expect(await f.store.tombstoneSources()).not.toContain(builder.id);
+  });
   test("recovery references do not depend on a saved label surviving retirement", async () => {
     const f = fixture();
     const builder = await f.provider.createGolden({});

@@ -675,7 +675,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     await save(row);
   }
   async function collectFrom(imagesStore: ModalStore) {
-    for (const source of await imagesStore.list()) {
+    // Visit only sources with retired images. Every scope machine ever launched stays in the
+    // store, so a full scan made each sandbox deletion cost minutes of SQL round trips.
+    for (const sourceId of await imagesStore.tombstoneSources()) {
+      const source = await imagesStore.get(sourceId);
       if (!matchesManagementAuthority(source.managementAuthority, managementAuthority)) continue;
       const pending = (await imagesStore.images(source.info.id)).filter((x) => x.deleted);
       if (!pending.length) continue;
@@ -1695,7 +1698,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         row.phase = "deleted";
         await save(row);
       });
-      await collectImages();
+      // The machine deletion is durable. Collection is shared scope work: a concurrent
+      // collector's lease or a transient SDK error must not turn it into a failed delete,
+      // which retains the caller's activity lease. The next collection retries.
+      await collectImages().catch(() => {});
       return { status: "deleted" };
     },
     async resourceReceipts() {

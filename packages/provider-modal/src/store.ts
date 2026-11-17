@@ -167,6 +167,15 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       );
       return result.rows.map((x) => x.record);
     },
+    async tombstoneSources() {
+      await authorize();
+      const result = await sql.query<{ id: string }>(
+        `select distinct m.id from public.modal_images i join public.modal_machines m on m.scope=i.scope and m.id=i.source_id
+         where i.scope=$1 and i.record->>'deleted'='true' and m.org_id=$2 and (m.visibility='org' or m.owner_id=$3)`,
+        [key, scope.orgId, scope.userId],
+      );
+      return result.rows.map((x) => x.id);
+    },
     async imageReferenced(imageId) {
       await authorize();
       // Authorization limits what this store may delete; references protect the

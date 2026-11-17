@@ -146,6 +146,8 @@ export interface ModalStore {
   removeImage(name: string): Promise<void>;
   purgeImage(name: string): Promise<void>;
   images(sourceId: string): Promise<SavedImage[]>;
+  /** Visible machines that still own a retired image record awaiting physical collection. */
+  tombstoneSources(): Promise<string[]>;
   /** Server-only boolean: checks references across target visibility scopes without exposing rows. */
   imageReferenced(imageId: string): Promise<boolean>;
   events(input: EventsRequest): Promise<EventPage>;

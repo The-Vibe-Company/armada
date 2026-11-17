@@ -132,6 +132,26 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     expect((await request(failed, adminToken)).status).toBe(200);
     expect(await usage(failed)).toBeNull();
 
+    // A Modal lifecycle-lease refusal never dispatched deletion. The stopped row keeps
+    // its state and admits the immediate retry instead of refusing it as not ready.
+    const leased = await insert();
+    boat.provider.delete = async () => {
+      throw new ProviderError({
+        provider: "modal",
+        code: "conflict",
+        providerCode: "lifecycle_lease_busy",
+        message: "leased",
+        retryable: true,
+      });
+    };
+    const busy = await request(leased);
+    expect(busy.status).toBe(409);
+    expect(await busy.json()).toMatchObject({ error: { code: "conflict" } });
+    expect((await state(leased)).status).toBe("stopped");
+    boat.provider.delete = async () => ({ status: "deleted" });
+    expect((await request(leased)).status).toBe(200);
+    expect((await state(leased)).status).toBe("deleted");
+
     const mcpId = await insert();
     expect((await call(owner, "delete", { id: mcpId })).data).toEqual({ id: mcpId, status: "deleted" });
     const parent = await insert();
