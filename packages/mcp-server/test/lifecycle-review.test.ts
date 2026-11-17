@@ -186,12 +186,24 @@ test("actual Boat resume rearms deadline even when the earlier send sample was r
   try {
     await f.insert();
     await f.server.db.query("update sandboxes set expires_at=now()+interval '1 hour' where id=$1", [f.id]);
+    // The rearm computes its deadline from the database clock, so bound it with
+    // database clock samples taken around the send, never the runner's clock.
+    const dbNow = async () =>
+      (
+        await f.server.db.query<{ ms: number }>("select (extract(epoch from clock_timestamp()) * 1000)::float8 as ms")
+      ).rows[0]!.ms;
+    const before = await dbNow();
     expect((await f.control("send", provider))?.status).toBe(200);
+    const after = await dbNow();
     const row = await f.scoped.sandboxes.get(f.id);
     expect(row?.status).toBe("running");
     expect(row?.requestedTtlSeconds).toBe(90);
     expect(row?.effectiveTtlSeconds).toBe(90);
-    expect(Date.parse(row?.expiresAt ?? "")).toBeGreaterThan(Date.now());
+    // A rearm leaves exactly one TTL between the send and the deadline; the
+    // seeded one-hour deadline would fall outside these bounds.
+    const deadline = Date.parse(row?.expiresAt ?? "");
+    expect(deadline).toBeGreaterThanOrEqual(Math.floor(before) + 90_000);
+    expect(deadline).toBeLessThanOrEqual(Math.ceil(after) + 90_000);
     expect(resumes).toBe(1);
     await createSandboxLifecycle(f.sql, async () => provider).reconcileOne();
     expect(stops).toBe(0);
