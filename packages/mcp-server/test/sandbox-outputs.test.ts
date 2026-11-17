@@ -318,3 +318,62 @@ test("concurrent stops within their deadline all take their final capture", asyn
     { name: "memo.txt" },
   ]);
 });
+
+test("a final capture whose deadline passes while its scan claim waits never holds stop or reads", async () => {
+  const { id, sql } = await fixture({ boatId: "claim_fixture" });
+  const { state, provider } = disks();
+  state.live = [file("memo.txt", "late")];
+  // The first query (the scan claim) is held, like a contended row lock or a stalled pool connection.
+  let release = () => {};
+  let claiming = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const waiting = new Promise<void>((resolve) => {
+    claiming = resolve;
+  });
+  const gated: Sql = {
+    ...sql,
+    query: async (q, p) => {
+      if (q.includes("outputs_checked_at=clock_timestamp()")) {
+        claiming();
+        await held;
+      }
+      return sql.query(q, p);
+    },
+  };
+  const stop = new AbortController();
+  const capture = captureFinalOutputs(gated, provider, id, { key: KEY, signal: stop.signal });
+  await waiting;
+  stop.abort();
+  await expect(capture).rejects.toBeDefined();
+  release();
+  await drainFinalOutputs();
+  expect(state.reads).toBe(0);
+  expect((await sql.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
+});
+
+test("a user stop of a failed sandbox whose compute still runs captures its final bytes", async () => {
+  const { db, people, id, sql } = await fixture({ boatId: "failed_fixture" });
+  const { state, provider } = disks();
+  state.live = [file("memo.txt", "draft")];
+  const previous = process.env.ARMADA_ENCRYPTION_KEY;
+  process.env.ARMADA_ENCRYPTION_KEY = KEY;
+  try {
+    const service = createSandboxOutputs(sql, KEY, async () => provider);
+    expect(await sample(service)).toBe(true);
+    state.live = [file("memo.txt", "final")];
+    // The user-stop path keeps the logical 'failed' status while it admits the stop.
+    await db.query(
+      `update sandboxes set status='failed',stop_requested_at=now(),stop_generation=stop_generation+1 where id=$1`,
+      [id],
+    );
+    await preserveBeforeStop(sql, provider, id, "failed_fixture", "user_stop");
+    const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/memo.txt`;
+    const download = await routeFor(service, people.owner, people.org)(new Request(url));
+    expect(await download?.text()).toBe("final");
+  } finally {
+    if (previous === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
+    else process.env.ARMADA_ENCRYPTION_KEY = previous;
+  }
+});

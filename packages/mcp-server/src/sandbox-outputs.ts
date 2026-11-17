@@ -111,22 +111,31 @@ export async function captureFinalOutputs(
   // Earlier captures outlived their deadline and still hang in the provider SDK: skip rather than
   // pile up; the snapshot stays. Concurrent stops that are still within their deadline never count.
   if (finalLate.size >= OUTSTANDING_MAX) throw Error("output_collection_busy");
-  const row = (
-    await sql.query<{ provider_sandbox_id: string; scan: string }>(
-      `update public.sandboxes set outputs_checked_at=clock_timestamp()
-      where id=$1 and status in ('ready','running','stopping') and provider_sandbox_id is not null and ${ELIGIBLE}
-      returning provider_sandbox_id,outputs_checked_at::text as scan`,
-      [id],
-    )
-  ).rows[0];
-  if (!row) return;
-  const work = collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, options.signal);
+  const { signal } = options;
+  // The whole capture is bounded, from the scan claim on: a claim that waits on a row lock or a
+  // pool connection must not hold stop dispatch either, and a claim that returns after the
+  // deadline never reaches the provider.
+  const work = (async () => {
+    // Live compute only: an admitted stop keeps 'failed' rows failed while compute may still run.
+    const row = (
+      await sql.query<{ provider_sandbox_id: string; scan: string }>(
+        `update public.sandboxes set outputs_checked_at=clock_timestamp()
+        where id=$1 and (status in ('ready','running','stopping') or (status='failed' and stop_requested_at is not null and stopped_at is null))
+        and provider_sandbox_id is not null and ${ELIGIBLE}
+        returning provider_sandbox_id,outputs_checked_at::text as scan`,
+        [id],
+      )
+    ).rows[0];
+    if (!row) return;
+    signal?.throwIfAborted();
+    await collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, signal);
+  })();
   work.catch(() => {});
   // Stop dispatch waits at most until the caller's deadline, even if the provider SDK does not.
   try {
-    await untilAborted(work, options.signal);
+    await untilAborted(work, signal);
   } catch (error) {
-    if (options.signal?.aborted) {
+    if (signal?.aborted) {
       finalLate.add(work);
       void work.catch(() => {}).finally(() => finalLate.delete(work));
     }
