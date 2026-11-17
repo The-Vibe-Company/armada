@@ -920,7 +920,7 @@ test("native poll retains sampled availability when an older server rejects rete
     async () => resources,
   );
   expect(await api.poll(await f.store.load())).toEqual({ job: null });
-  expect(calls).toBe(2);
+  expect(calls).toBe(3);
 });
 
 test("older policy-capable servers retain the quota handshake when availability fields are refused", async () => {
@@ -940,7 +940,7 @@ test("older policy-capable servers retain the quota handshake when availability 
     async () => ({ cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 2, availableMemoryBytes: 10 * 1024 ** 3 }),
   );
   expect(await api.poll(await f.store.load())).toMatchObject({ limits: { cpus: 1 } });
-  expect(calls).toBe(3);
+  expect(calls).toBe(4);
 });
 
 test("TTL index deduplicates active receipts, retires terminal history and rotates uncertain failures before mailbox polling", async () => {
@@ -1233,7 +1233,7 @@ test("a pre-disk server keeps retention and availability when refusing only disk
     async () => 123,
   );
   expect(await api.poll(await f.store.load())).toEqual({ job: null, retentionSeconds: 3600 });
-  expect(calls).toBe(2);
+  expect(calls).toBe(3);
 });
 
 test.each([false, true])(
