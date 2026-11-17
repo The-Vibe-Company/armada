@@ -118,7 +118,7 @@ async function collect(
 
 const finalPending = new Set<Promise<void>>();
 
-/** Settle final captures that outlived their stop deadline (server shutdown, tests). */
+/** Settle final captures that outlived their stop deadline (tests); late ones never persist. */
 export async function drainFinalOutputs(): Promise<void> {
   await Promise.allSettled(finalPending);
 }
