@@ -1558,7 +1558,10 @@ test("a resume behind another mailbox job still cancels its generation's due ret
     polls++;
     // The server reports every held generation with the poll, including a
     // resume queued behind this stop, not only the single job it hands out.
-    return { job: polls === 1 ? unrelated : resume, pendingStarts: [resume.request] };
+    return {
+      job: polls === 1 ? unrelated : resume,
+      pendingStarts: [{ sandboxId: resume.request.sandboxId, generation: resume.request.generation }],
+    };
   };
   await tick(f.store, f.api, executor, false, () => 0);
   // The due generation is not deleted while a resume for it is queued behind the stop.

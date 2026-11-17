@@ -71,7 +71,7 @@ export interface Api {
     limits?: DockerSandboxLimits;
     retentionSeconds?: number;
     /** Every generation with a queued resume/bootstrap, not only the job handed out. */
-    pendingStarts?: DockerMachineRequest[];
+    pendingStarts?: { sandboxId: string; generation: string }[];
   }>;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
   cleaned?(state: State, requestId: string): Promise<void>;
@@ -541,7 +541,7 @@ export async function tick(
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
-function generationKey(request: DockerMachineRequest): string {
+function generationKey(request: { sandboxId: string; generation: string }): string {
   return digest(JSON.stringify([request.sandboxId, request.generation]));
 }
 /** Lossless identity fences: old requests are rejected, never re-executed.
