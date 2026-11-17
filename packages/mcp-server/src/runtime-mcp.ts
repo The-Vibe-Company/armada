@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { Harness } from "@armada/core";
+import { MAX_MCP_CONNECTIONS } from "@armada/core";
 import {
   createSqlMcpLaunchPort,
   createSqlMcpLeasePort,
@@ -34,10 +35,10 @@ export function createRuntimeMcp(options: {
     if (
       !Array.isArray(values) ||
       !values.length ||
-      values.length > 32 ||
+      values.length > MAX_MCP_CONNECTIONS ||
       values.some((v) => typeof v !== "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(v))
     )
-      throw new VaultError("invalid", "Select 1–32 MCP connection UUIDs.");
+      throw new VaultError("invalid", `Select 1–${MAX_MCP_CONNECTIONS} MCP connection UUIDs.`);
     return [...new Set(values.map((v) => v.toLowerCase()))].sort();
   };
   async function connections(db: Sql, caller: Pick<Caller, "userId">, org: string, selected: string[]) {
@@ -295,7 +296,8 @@ export function createRuntimeMcp(options: {
   const connectionLifecycle = {
     ...launch,
     async validate(actor: Parameters<typeof launch.validate>[0], selection: string[], visibility: "private" | "org") {
-      if (selection.length > 32) throw new VaultError("invalid", "Select at most 32 remote MCP connections.");
+      if (selection.length > MAX_MCP_CONNECTIONS)
+        throw new VaultError("invalid", `Select at most ${MAX_MCP_CONNECTIONS} remote MCP connections.`);
       await launch.validate(actor, selection, visibility);
       await connections(sql, actor, actor.orgId, selection);
     },

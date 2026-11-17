@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { encryptSecret } from "./crypto.ts";
 import type { Sql } from "./golden-store.ts";
+import { isApplicationVariableName } from "./readable-variables.ts";
 import { APPLICATION_VAULT_CONFLICT_MESSAGES, VaultError } from "./vault-error.ts";
 
 type Kind = "variable" | "secret";
@@ -24,21 +25,6 @@ interface Row {
 }
 const columns = "id,org_id,owner_id,scope,name,version,epoch,status,created_at,updated_at";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const prefixes = /^(ARMADA_|BOAT_|MODAL_|ANTHROPIC_|OPENAI_|CLAUDE_|CODEX_|GH_|GITHUB_|MCP_|LD_|DYLD_)/i;
-const reserved = new Set([
-  "PATH",
-  "HOME",
-  "SHELL",
-  "ENV",
-  "BASH_ENV",
-  "NODE_OPTIONS",
-  "PYTHONPATH",
-  "SSL_CERT_FILE",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "ALL_PROXY",
-  "NO_PROXY",
-]);
 function invalid(): never {
   throw new VaultError("invalid", "Invalid application vault request.");
 }
@@ -53,9 +39,7 @@ function version(value: unknown): number {
 function name(value: unknown, kind: Kind): string {
   if (
     typeof value !== "string" ||
-    !/^[A-Z][A-Z0-9_]{0,127}$/.test(value) ||
-    prefixes.test(value) ||
-    reserved.has(value.toUpperCase()) ||
+    !isApplicationVariableName(value) ||
     (kind === "secret" && /^(NEXT_PUBLIC_|VITE_|PUBLIC_)/i.test(value))
   )
     invalid();

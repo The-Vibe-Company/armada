@@ -37,13 +37,20 @@ export interface LaunchTemplate {
 
 /** Closed, value-free launch refusal diagnostics shared by API clients and receipts. */
 export const TEMPLATE_REFUSAL_HELP = {
+  missing_credential: "No usable model credential is available. Add a model account before retrying.",
+  credential_refused: "The model credential is expired, revoked or incompatible. Reconnect the model account.",
+  credential_busy: "The model account is busy. Wait before retrying or choose another account.",
+  unauthorized: "Your authorization is no longer valid. Sign in again before retrying.",
+  launch_unavailable:
+    "The environment or a launch dependency is unavailable. Check the golden or Docker host before retrying.",
+  allocation_or_start_unknown:
+    "The launch outcome is uncertain. Check the existing request before retrying; a sandbox may have started.",
   reference_unavailable: "A template reference is missing or inaccessible. Check the template definition.",
   environment_unavailable:
     "Template environment is removed, unavailable or inaccessible. Check the golden or Docker host.",
   environment_binding_changed:
     "Template environment provider binding changed. Publish a revision with the current environment binding.",
-  environment_snapshot_unavailable:
-    "Template golden snapshot is unavailable or retired. Check the golden before retrying.",
+  environment_snapshot_unavailable: "Template snapshot is unavailable or retired. Check the snapshot before retrying.",
   environment_admission_unavailable:
     "Template golden became unavailable during admission. Check the golden before retrying.",
   connection_unavailable:
@@ -60,11 +67,11 @@ export const TEMPLATE_REFUSAL_HELP = {
   variable_delivery_unavailable:
     "Readable variable delivery is unavailable for this environment. Check runtime support.",
   model_account_unavailable:
-    "No usable model account is available for this agent in this organization. Add one in Build > Harness or choose another agent.",
+    "No usable model account is available for this agent in this organization. Add one in Models or choose another agent.",
   model_account_ambiguous:
-    "Several model accounts can run this agent. Set a default in Build > Harness or publish a revision with an explicit account binding.",
+    "Several model accounts can run this agent. Set a default in Models or publish a revision with an explicit account binding.",
   model_account_refused:
-    "The selected model account is expired, revoked, changed or incompatible. Reconnect it in Build > Harness or publish a revision with a usable account binding.",
+    "The selected model account is expired, revoked, changed or incompatible. Reconnect the model account in Models or publish a revision with a usable account binding.",
   model_account_version_changed:
     "Template model account version changed. Publish a revision with the current account version.",
   model_account_incompatible:

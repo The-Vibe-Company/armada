@@ -188,7 +188,8 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
         undefined,
         signal.aborted ? "launch_uncertain" : "launch_failed",
         !signal.aborted && error instanceof VaultError
-          ? routineLaunchRefusal(/^Template launch refused: ([a-z_]+)\.$/.exec(error.message)?.[1])
+          ? (routineLaunchRefusal(/^Template launch refused: ([a-z_]+)\.$/.exec(error.message)?.[1]) ??
+              routineLaunchRefusal(error.code))
           : null,
       );
     }

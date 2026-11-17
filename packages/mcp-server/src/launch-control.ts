@@ -3,6 +3,7 @@ import {
   goldenCompatibilityIds,
   isHarness,
   launchGitHubResponse,
+  MAX_MCP_CONNECTIONS,
   parseMachineSize,
   sandboxIdentity,
 } from "@armada/core";
@@ -70,7 +71,7 @@ export async function launchRoute(
   if (
     body.connections !== undefined &&
     (!Array.isArray(body.connections) ||
-      body.connections.length > 100 ||
+      body.connections.length > MAX_MCP_CONNECTIONS ||
       body.connections.some((id) => typeof id !== "string" || !UUID.test(id)))
   )
     throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");

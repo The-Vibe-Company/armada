@@ -1,9 +1,22 @@
-import { type OrgSummary, type Routine, routineReasonHelp, VaultError } from "@armada/core";
+import {
+  type OrgSummary,
+  type Routine,
+  routineLaunchRefusal,
+  routineReasonHelp,
+  skillRefusalMessage,
+  templateRefusalHelp,
+  VaultError,
+} from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
 import { resolveArmadaOrigin } from "./armada-api.ts";
 import { control } from "./control.ts";
 import { parseTtl } from "./operations.ts";
+import { snapshotText } from "./snapshot-text.ts";
 import type { VaultIo } from "./vault-commands.ts";
+
+function launchRefusalHelp(reason: string): string {
+  return reason.startsWith("skillpack_") ? skillRefusalMessage(reason) : snapshotText(templateRefusalHelp(reason));
+}
 
 const HELP = `Scheduled template launches (run as the routine owner):
   armada routine create NAME --file config.json [--scope personal|org] [--org NAME|UUID] [--json]
@@ -190,7 +203,7 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
     const items = result.items as Record<string, unknown>[];
     io.auth.out(
       items.length
-        ? `${items.map((r) => `${r.id}  ${r.scheduledDueAt}  ${r.state}  task ${r.taskState ?? "not observed"}  ${r.reasonHelp ?? r.reason ?? ""}${r.taskHelp ? `  ${r.taskHelp}` : ""}${r.sandboxId ? `  sandbox ${r.sandboxId}` : ""}`).join("\n")}\n`
+        ? `${items.map((r) => `${r.id}  ${r.scheduledDueAt}  ${r.state}  task ${r.taskState ?? "not observed"}  ${routineLaunchRefusal(r.launchRefusal) ? launchRefusalHelp(r.launchRefusal as string) : (r.reasonHelp ?? r.reason ?? "")}${r.taskHelp ? `  ${r.taskHelp}` : ""}${r.sandboxId ? `  sandbox ${r.sandboxId}` : ""}`).join("\n")}\n`
         : "No routine runs.\n",
     );
   } else {

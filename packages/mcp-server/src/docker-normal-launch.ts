@@ -13,6 +13,7 @@ import {
   type Harness,
   type LaunchCredentialResolver,
   LaunchError,
+  MAX_MCP_CONNECTIONS,
   normalizeGitHubGoldenConfig,
   officialSandboxImage,
   ProviderError,
@@ -229,7 +230,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
   if (
     body.connections !== undefined &&
     (!Array.isArray(body.connections) ||
-      body.connections.length > 32 ||
+      body.connections.length > MAX_MCP_CONNECTIONS ||
       body.connections.some((id) => typeof id !== "string" || !uuid.test(id)))
   )
     throw failure("invalid_request");
@@ -395,7 +396,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       }
       if (
         !Array.isArray(manifest.preparation.connections) ||
-        manifest.preparation.connections.length > 32 ||
+        manifest.preparation.connections.length > MAX_MCP_CONNECTIONS ||
         manifest.preparation.connections.some((id) => typeof id !== "string" || !uuid.test(id))
       )
         throw failure("conflict");

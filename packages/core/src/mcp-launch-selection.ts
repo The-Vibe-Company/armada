@@ -1,3 +1,6 @@
+/** Maximum remote MCP connections in a launch, template or runtime selection. */
+export const MAX_MCP_CONNECTIONS = 100;
+
 /** v1: candidates must already be scoped to the current actor and selected organization. */
 interface McpLaunchCandidate {
   id: string;
