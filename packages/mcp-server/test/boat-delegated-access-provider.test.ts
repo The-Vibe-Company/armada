@@ -151,4 +151,5 @@ test("Boat native bridge install removes its own SSH authorization on actual gue
     );
     await rm(home, { recursive: true, force: true });
   }
-});
+  // Real bash and node guest processes (about six spawns) exceed the 5s default on a loaded CI shard.
+}, 30_000);
