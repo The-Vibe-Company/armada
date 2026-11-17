@@ -35,7 +35,10 @@ function logSkipped(skipped: readonly SkippedSandboxRow[]) {
 }
 
 /** The interior row. Row level security returns it only to its owner or a current organization admin. */
-export async function getSandbox(supabase: Supabase, id: string): Promise<Sandbox | null> {
+export async function getSandbox(
+  supabase: Supabase,
+  id: string,
+): Promise<Omit<Sandbox, "docker_retention_deadline"> | null> {
   const selected = await selectedOrganization();
   if (!selected) return null;
   const { data, error } = await supabase

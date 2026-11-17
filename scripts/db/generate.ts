@@ -39,6 +39,7 @@ const ROW_ALIASES: Record<string, string> = {
   docker_queued_prompts: "DockerQueuedPromptRow",
   docker_hosts: "DockerHostRow",
   docker_host_jobs: "DockerHostJobRow",
+  docker_resume_claims: "DockerResumeClaimRow",
   docker_launch_requests: "DockerLaunchRequestRow",
   personal_skill_defaults: "PersonalSkillDefaultsRow",
   org_skill_defaults: "OrgSkillDefaultsRow",

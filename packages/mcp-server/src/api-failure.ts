@@ -21,6 +21,7 @@ export function apiFailureCode(error: unknown): ApiFailureCode | undefined {
     return undefined;
   }
   if (error instanceof ProviderError) {
+    if (error.code === "sandbox_retention_ended") return "sandbox_retention_ended";
     if (error.details?.keepSource || error.details?.resourceReceipt) return "outcome_unknown";
     if (error.code === "unauthorized") return "credential_refused";
     if (error.code === "unavailable" || error.code === "unknown") return "provider_unavailable";

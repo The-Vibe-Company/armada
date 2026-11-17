@@ -386,7 +386,7 @@ function DockerSandbox({
   choices,
   host,
 }: {
-  sandbox: Sandbox;
+  sandbox: Omit<Sandbox, "docker_retention_deadline">;
   viewer: Viewer;
   controls: DockerSandboxControls;
   org: string;

@@ -7,6 +7,7 @@ export const API_FAILURE_STATUS = {
   extension_not_found: 404,
   extension_not_allowed: 403,
   extension_state: 409,
+  sandbox_retention_ended: 409,
   extension_maximum: 400,
   credential_refused: 422,
   provider_unavailable: 502,
@@ -22,6 +23,8 @@ export const API_FAILURE_HELP: Record<ApiFailureCode, string> = {
   extension_not_found: "Sandbox not found or not accessible.",
   extension_not_allowed: "You are not allowed to extend this sandbox.",
   extension_state: "Sandbox cannot be extended in this state or to this deadline. Refresh status.",
+  sandbox_retention_ended:
+    "This sandbox's local retention period has ended, so its disk was removed. Launch a new sandbox.",
   extension_maximum: "Requested lifetime exceeds the provider maximum.",
   credential_refused:
     "The account credential was refused, revoked or expired. Replace or reconnect it before retrying.",

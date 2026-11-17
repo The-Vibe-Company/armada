@@ -39,6 +39,10 @@ const HELP: Record<string, FailureHelp> = {
     title: "Server dependency unavailable",
     hint: "An Armada dependency is temporarily unavailable. Try again later.",
   },
+  sandbox_retention_ended: {
+    title: "Retention ended",
+    hint: "This sandbox's local retention period has ended, so its disk was removed. Launch a new sandbox.",
+  },
   outcome_unknown: {
     title: "Outcome unknown",
     hint: "Check the operation status before retrying; it may already have started.",

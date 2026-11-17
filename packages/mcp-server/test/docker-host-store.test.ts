@@ -1362,3 +1362,120 @@ test("retirement cancels undispatchable startup without claiming physical cleanu
     expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
   }
 });
+
+test("a stale cleaned ACK cannot delete a sandbox with a later admitted resume", async () => {
+  const db = database();
+  const a = await boundStartup("bootstrap");
+  await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "completed" });
+  await db.query(`update public.sandboxes set status='stopped',stopped_at=now() where id=$1`, [a.sandboxId]);
+  const oldStop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, oldStop);
+  await store.complete(a.hostToken, a.installationId, { requestId: oldStop.requestId, outcome: "completed" });
+  const oldDelete = { requestId: randomUUID(), operation: "delete" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, oldDelete);
+  // The resume admission marks the retained allocation starting before enqueue.
+  await db.query(`update public.sandboxes set status='starting',stopped_at=null where id=$1`, [a.sandboxId]);
+  const ticket = await a.authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
+  const resume = { requestId: randomUUID(), operation: "resume" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, {
+    ...resume,
+    bootstrapDescriptor: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: ticket.enrolmentToken,
+    },
+  });
+  // The original create's physical cleanup arrives after the resume was admitted.
+  await store.cleaned(a.hostToken, a.installationId, { requestId: a.create.requestId });
+  expect((await lifecycle(a.sandboxId))?.status).toBe("starting");
+  await store.complete(a.hostToken, a.installationId, { requestId: resume.requestId, outcome: "completed" });
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+  expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
+  await store.cleaned(a.hostToken, a.installationId, { requestId: a.create.requestId });
+  expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
+  for (const oldJob of [oldStop, oldDelete]) {
+    await store.complete(a.hostToken, a.installationId, { requestId: oldJob.requestId, outcome: "completed" });
+    expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
+  }
+  // Cleanup of the latest lifecycle is still authoritative.
+  await store.cleaned(a.hostToken, a.installationId, { requestId: resume.requestId });
+  expect((await lifecycle(a.sandboxId))?.status).toBe("deleted");
+});
+
+test("poll reports every generation with pending start intent, and per-generation deadlines persist", async () => {
+  const db = database();
+  const a = await boundFixture();
+  const second = await boundFixture(a);
+  // Both creates are acknowledged; the second sandbox is then stopped and resumed.
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.enqueueSandbox(a.owner, second.sandboxId, second.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  await store.complete(a.hostToken, a.installationId, { requestId: second.create.requestId, outcome: "completed" });
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.owner, second.sandboxId, stop);
+  // Resume admission sets the sandbox starting, then issues a fresh ticket and enqueues.
+  await db.query("update public.sandboxes set status='starting',stopped_at=null,stop_requested_at=null where id=$1", [
+    second.sandboxId,
+  ]);
+  const ticket = await (await import("../src/runtime-enrolment.ts"))
+    .createRuntimeEnrolments(sql, key, {
+      allowDockerIssue: true,
+    })
+    .issue({ sandboxId: second.sandboxId, ownerId: second.owner.userId, configuration: {} });
+  await store.enqueueSandbox(a.owner, second.sandboxId, {
+    requestId: randomUUID(),
+    operation: "resume",
+    bootstrapDescriptor: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: ticket.enrolmentToken,
+    },
+  });
+  // Cleanup is served first, but the resume behind it is still reported as pending intent.
+  expect((await store.poll(a.hostToken, a.installationId))?.operation).toBe("stop");
+  expect(await store.pendingStartsForHost(a.hostToken, a.installationId)).toEqual([
+    { sandboxId: second.sandboxId, generation: second.generation },
+  ]);
+  // A host-reported per-generation deadline is persisted against that generation, not the host clock.
+  const deadline = "2026-11-20T12:00:00.000Z";
+  await store.retentionForHost(a.hostToken, a.installationId, {
+    retentionSeconds: 3600,
+    nextCleanupAt: deadline,
+    deadlines: [{ sandboxId: a.sandboxId, generation: a.generation, deadline }],
+  });
+  const saved = await db.query<{ docker_retention_deadline: Date | string | null }>(
+    "select docker_retention_deadline from public.sandboxes where id=$1",
+    [a.sandboxId],
+  );
+  expect(new Date(saved.rows[0]!.docker_retention_deadline!).toISOString()).toBe(deadline);
+  const other = await db.query<{ docker_retention_deadline: Date | string | null }>(
+    "select docker_retention_deadline from public.sandboxes where id=$1",
+    [second.sandboxId],
+  );
+  expect(other.rows[0]!.docker_retention_deadline).toBeNull();
+});
+
+test("a host that reports no obligation clears its stale per-generation deadline", async () => {
+  const db = database();
+  const a = await boundFixture();
+  const deadline = "2026-11-20T12:00:00.000Z";
+  await store.retentionForHost(a.hostToken, a.installationId, {
+    retentionSeconds: 3600,
+    nextCleanupAt: deadline,
+    deadlines: [{ sandboxId: a.sandboxId, generation: a.generation, deadline }],
+  });
+  expect(
+    (await db.query("select docker_retention_deadline from public.sandboxes where id=$1", [a.sandboxId])).rows[0],
+  ).toMatchObject({ docker_retention_deadline: expect.anything() });
+  // The host resumed or lost the obligation; it reports an empty set (not undefined).
+  await store.retentionForHost(a.hostToken, a.installationId, {
+    retentionSeconds: 3600,
+    nextCleanupAt: null,
+    deadlines: [],
+  });
+  expect(
+    (await db.query("select docker_retention_deadline from public.sandboxes where id=$1", [a.sandboxId])).rows[0],
+  ).toEqual({ docker_retention_deadline: null });
+});

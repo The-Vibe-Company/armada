@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type AgentEvent,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
+  DockerRetentionEnded,
   type DockerSandboxStatus,
   dockerSandboxFailureReason,
   GoldenError,
@@ -637,10 +638,11 @@ export function createDockerSandboxControls(
         "Update this Docker host daemon to Armada 2.28.0 or later before resuming. Keep its existing registration, then retry. No resume job was sent.",
       );
     const actor = { userId: caller.userId, orgId: row.org_id };
-    await options.resume.resume(actor, row.id, requestId);
+    let requested = await options.resume.resume(actor, row.id, requestId);
     const deadline = clock.now() + (options.timeoutMs ?? 45_000);
     const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
     for (;;) {
+      if (requested.state === "claiming") requested = await options.resume.resume(actor, row.id, requestId);
       // Host ACK is not runtime readiness.
       const state = (
         await sql.query<{ outcome: string | null }>(
@@ -848,6 +850,13 @@ export function createDockerSandboxControls(
         return { handled: true, result };
       } catch (error) {
         if (error instanceof ProviderError) throw error;
+        if (error instanceof DockerRetentionEnded)
+          throw new ProviderError({
+            provider: "docker",
+            code: "sandbox_retention_ended",
+            message: error.message,
+            retryable: false,
+          });
         if (error instanceof DockerHostDenied) throw failure("conflict", "Docker sandbox cleanup is unavailable.");
         throw failure("unavailable", "Docker sandbox operation is unavailable.");
       }

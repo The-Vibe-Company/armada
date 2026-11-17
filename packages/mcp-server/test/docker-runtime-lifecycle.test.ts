@@ -490,7 +490,10 @@ test("rebound Docker usage has its epoch's admitted prices before the accepted p
     { userId: f.actor.userId, orgs: [{ orgId: f.actor.orgId, role: "member" }], via: "supabase" },
     { id: f.sandbox.id, credentialId: selected },
   );
-  await bootstrap.resume(f.actor, f.sandbox.id, randomUUID());
+  const resumeId = randomUUID();
+  expect((await bootstrap.resume(f.actor, f.sandbox.id, resumeId)).state).toBe("claiming");
+  await hosts.claimResume(f.hostToken, f.installationId, resumeId, true);
+  expect((await bootstrap.resume(f.actor, f.sandbox.id, resumeId)).state).toBe("pending");
   const resumed = await hosts.poll(f.hostToken, f.installationId);
   if (resumed?.operation !== "resume") throw Error("missing fresh enrollment");
   const session = await authority.enrol(resumed.bootstrap.enrolmentToken);

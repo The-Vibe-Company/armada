@@ -45,7 +45,15 @@ export type State = {
   ][];
   cleanupLimit?: number;
   /** Local durable retention obligations survive receipt compaction and offline polls. */
-  retention?: { request: DockerMachineRequest; requestId: string; deadline: number; deleted?: true }[];
+  retention?: {
+    request: DockerMachineRequest;
+    requestId: string;
+    deadline: number;
+    cleanupAuthorized?: true;
+    deleted?: true;
+  }[];
+  cleanupGenerations?: string[];
+  resumeClaims?: { requestId: string; sandboxId: string; generation: string; accepted: boolean; active: boolean }[];
   retentionSeconds?: number;
   retentionPolicyFromServer?: true;
   retentionScanAfter?: string;
@@ -66,8 +74,16 @@ export interface Api {
   poll(
     state: State,
     options?: { skipSnapshots?: boolean },
-  ): Promise<{ job: Job | null; limits?: DockerSandboxLimits; retentionSeconds?: number }>;
+  ): Promise<{
+    job: Job | null;
+    limits?: DockerSandboxLimits;
+    retentionSeconds?: number;
+    /** Every generation with a queued resume/bootstrap, not only the job handed out. */
+    pendingStarts?: { sandboxId: string; generation: string }[];
+    resumeClaims?: { requestId: string; sandboxId: string; generation: string }[];
+  }>;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
+  claim?(state: State, requestId: string, accepted: boolean): Promise<void>;
   cleaned?(state: State, requestId: string): Promise<void>;
 }
 export interface Executor {
@@ -199,6 +215,22 @@ export async function tick(
   state.retention ??= [];
   const retentionSeconds = state.retentionSeconds ?? 86400;
   if (!Number.isSafeInteger(retentionSeconds) || retentionSeconds < 0) throw Error("Invalid retention policy");
+  // Claims cannot outlive the allocation's immutable physical expiry. A
+  // server cannot admit a resume beyond this same frozen expiry, so releasing
+  // the hold here is safe even while offline. Retain its historical ACK.
+  const expiredGenerations = new Set(
+    [...state.receipts, ...state.retention]
+      .filter((receipt) => receipt.request.expiresAt !== undefined && receipt.request.expiresAt <= now())
+      .map((receipt) => generationKey(receipt.request)),
+  );
+  let releasedClaim = false;
+  for (const claim of state.resumeClaims ?? []) {
+    if (claim.active && expiredGenerations.has(generationKey(claim))) {
+      claim.active = false;
+      releasedClaim = true;
+    }
+  }
+  if (releasedClaim) await store.save(state);
   // Observe exact owned allocations even while disconnected. Never infer physical exit from a failed RPC.
   if (executor.isStopped) {
     const candidates = new Map<string, Receipt>();
@@ -223,7 +255,11 @@ export async function tick(
           state.retention = state.retention.filter((entry) => entry !== scheduled);
           await store.save(state);
         }
-        if (stopped && !scheduled) {
+        if (
+          stopped &&
+          !scheduled &&
+          !state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key)
+        ) {
           state.retention.push({
             request: receipt.request,
             requestId: receipt.requestId,
@@ -237,6 +273,83 @@ export async function tick(
       }
     }
   }
+  // Poll once before local retention deletion. A resume already admitted by the
+  // server is only observable from the mailbox, and deleting its stopped
+  // allocation first would destroy the workspace the resume is claiming. Local
+  // retention still runs while offline: the poll error is rethrown after it.
+  let polled: Awaited<ReturnType<Api["poll"]>> | undefined;
+  let pollError: unknown;
+  try {
+    polled = await api.poll(state, { skipSnapshots });
+  } catch (error) {
+    pollError = error;
+  }
+  // A claim and cleanup authorization are serialized by this single durable
+  // host ledger. Merely requesting a resume on the server never admits it.
+  for (const intent of polled?.resumeClaims ?? []) {
+    state.resumeClaims ??= [];
+    let claim = state.resumeClaims.find((item) => item.requestId === intent.requestId);
+    if (!claim) {
+      const key = generationKey(intent);
+      const lost =
+        expiredGenerations.has(key) ||
+        state.cleanupGenerations?.includes(key) ||
+        state.retention.some(
+          (entry) => generationKey(entry.request) === key && (entry.cleanupAuthorized || entry.deleted),
+        ) ||
+        state.receipts.some(
+          (receipt) => generationKey(receipt.request) === key && (receipt.cleaned || receipt.operation === "delete"),
+        ) ||
+        state.retired?.some((receipt) => receipt[2] === key && receipt[4] === "delete");
+      claim = { ...intent, accepted: !lost, active: !lost };
+      state.resumeClaims.push(claim);
+      if (claim.accepted) state.retention = state.retention.filter((entry) => generationKey(entry.request) !== key);
+      await store.save(state); // fsync before acknowledging; crashes cannot resurrect cleanup.
+    }
+    if (expiredGenerations.has(generationKey(claim))) continue;
+    try {
+      await api.claim?.(state, claim.requestId, claim.accepted);
+    } catch (error) {
+      pollError = error;
+    }
+  }
+  // Resume intent cancels this generation's local cleanup deadline before the
+  // deletion pass; a later failed resume is rediscovered as a stopped receipt.
+  // The server serves one job per poll, ordered so every stop/delete precedes
+  // startup work, so a resume queued behind another job is invisible in
+  // `polled.job`. The poll therefore also reports every held generation with a
+  // pending resume/bootstrap; all of them fence deletion, not only the head.
+  // An entry already physically deleted keeps its pending cleaned report: the
+  // workspace is gone, so the server must still learn that fact.
+  const claimed = new Set<string>();
+  for (const request of polled?.pendingStarts ?? []) {
+    const key = generationKey(request);
+    if (!expiredGenerations.has(key)) claimed.add(key);
+  }
+  if (polled?.job) {
+    try {
+      const observed = parseDockerHostJob(polled.job);
+      if (observed.operation === "bootstrap" || observed.operation === "resume")
+        if (!expiredGenerations.has(generationKey(observed.request))) claimed.add(generationKey(observed.request));
+    } catch {
+      // An invalid mailbox payload is rejected when it is executed below.
+    }
+  }
+  if (claimed.size)
+    state.retention = state.retention.filter((entry) => entry.deleted || !claimed.has(generationKey(entry.request)));
+  if (polled) {
+    executor.configureLimits?.(polled.limits);
+    if (polled.retentionSeconds !== undefined) {
+      const seconds = polled.retentionSeconds;
+      if (!Number.isSafeInteger(seconds) || seconds < 0) throw Error("Invalid retention policy");
+      const previous = state.retentionSeconds ?? 86400;
+      for (const entry of state.retention ?? []) if (!entry.deleted) entry.deadline += (seconds - previous) * 1000;
+      state.retentionSeconds = seconds;
+      state.retentionPolicyFromServer = true;
+      await store.save(state);
+    }
+    state.lastPollAt = new Date().toISOString();
+  }
   // One physical cleanup per tick, rotated durably even when Docker refuses it.
   // Reporting is deliberately deferred until after all local physical TTL work.
   const deleteAfter = state.retention.findIndex((entry) => entry.requestId === state.retentionDeleteAfter);
@@ -246,6 +359,11 @@ export async function tick(
   if (due && executor.deleteStopped) {
     try {
       state.retentionDeleteAfter = due.requestId;
+      await store.save(state);
+      due.cleanupAuthorized = true;
+      state.cleanupGenerations ??= [];
+      if (!state.cleanupGenerations.includes(generationKey(due.request)))
+        state.cleanupGenerations.push(generationKey(due.request));
       await store.save(state);
       await executor.deleteStopped(due.request);
       due.deleted = true;
@@ -372,7 +490,21 @@ export async function tick(
           await executor.resume(receipt.request);
         }
         await executor.startRuntime(receipt.request, job.bootstrap);
-      } else await executor[receipt.operation](receipt.request);
+      } else {
+        if (
+          (receipt.operation === "stop" || receipt.operation === "delete") &&
+          state.resumeClaims?.some(
+            (claim) => claim.active && claim.accepted && generationKey(claim) === generationKey(receipt.request),
+          )
+        )
+          throw new Error("Generation claimed for resume");
+        if (receipt.operation === "delete") {
+          state.cleanupGenerations ??= [];
+          state.cleanupGenerations.push(generationKey(receipt.request));
+          await store.save(state);
+        }
+        await executor[receipt.operation](receipt.request);
+      }
       receipt.outcome = "completed";
     } catch (error) {
       receipt.outcome = "failed";
@@ -390,6 +522,12 @@ export async function tick(
     const saved = latest.receipts.find((item) => item.requestId === receipt.requestId);
     if (!saved) throw Error("Missing durable receipt");
     Object.assign(saved, receipt);
+    for (const claim of latest.resumeClaims ?? [])
+      if (
+        claim.requestId === receipt.requestId ||
+        (receipt.operation === "resume" && generationKey(claim) === generationKey(receipt.request))
+      )
+        claim.active = false;
     if (receipt.operation === "resume" && receipt.outcome === "completed")
       latest.retention = (latest.retention ?? []).filter(
         (entry) => generationKey(entry.request) !== generationKey(receipt.request),
@@ -398,18 +536,8 @@ export async function tick(
     Object.assign(state, latest);
     await store.save(state);
   }
-  const polled = await api.poll(state, { skipSnapshots });
-  executor.configureLimits?.(polled.limits);
-  if (polled.retentionSeconds !== undefined) {
-    const seconds = polled.retentionSeconds;
-    if (!Number.isSafeInteger(seconds) || seconds < 0) throw Error("Invalid retention policy");
-    const previous = state.retentionSeconds ?? 86400;
-    for (const entry of state.retention ?? []) if (!entry.deleted) entry.deadline += (seconds - previous) * 1000;
-    state.retentionSeconds = seconds;
-    state.retentionPolicyFromServer = true;
-    await store.save(state);
-  }
-  state.lastPollAt = new Date().toISOString();
+  if (pollError) throw pollError;
+  if (!polled) throw pollError ?? new Error("Host poll unavailable");
   if (!polled.job) {
     await store.save(state);
     return;
@@ -501,7 +629,7 @@ export async function tick(
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
-function generationKey(request: DockerMachineRequest): string {
+function generationKey(request: { sandboxId: string; generation: string }): string {
   return digest(JSON.stringify([request.sandboxId, request.generation]));
 }
 /** Lossless identity fences: old requests are rejected, never re-executed.

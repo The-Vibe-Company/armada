@@ -38,6 +38,19 @@ function string(value: unknown): string {
   if (typeof value !== "string") throw new InvalidInput();
   return value;
 }
+function deadlinesOf(value: unknown): { sandboxId: string; generation: string; deadline: string }[] {
+  if (!Array.isArray(value) || value.length > 4096) throw new InvalidInput();
+  return value.map((entry) => {
+    if (!object(entry)) throw new InvalidInput();
+    fields(entry, ["sandboxId", "generation", "deadline"]);
+    const sandboxId = string(entry.sandboxId);
+    const generation = string(entry.generation);
+    const deadline = string(entry.deadline);
+    if (!uuid.test(sandboxId) || !uuid.test(generation) || !Number.isFinite(Date.parse(deadline)))
+      throw new InvalidInput();
+    return { sandboxId, generation, deadline };
+  });
+}
 
 /** Mounted only by ARMADA_DOCKER_HOSTS=1. Machine authority never authenticates a user API. */
 export function createDockerHostRoutes(
@@ -116,7 +129,10 @@ export function createDockerHostRoutes(
       }
       const token = request.headers.get("authorization")?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
       if (!token) throw new DockerHostDenied();
-      const body: unknown = JSON.parse(await readBoundedText(request, 4096));
+      // The poll carries the host's per-generation retention deadlines, so its
+      // body grows with the number of retained sandboxes; other machine calls
+      // stay small. Bound it well above a full host's deadline list.
+      const body: unknown = JSON.parse(await readBoundedText(request, path.endsWith("/poll") ? 1048576 : 4096));
       if (!object(body)) throw new InvalidInput();
       // Registration-token capability, not user or installed-machine authority.
       if (path === reusePath) {
@@ -131,23 +147,27 @@ export function createDockerHostRoutes(
           ? [
               "installationId",
               "requestId",
-              ...("cleaned" in body
-                ? ["cleaned"]
-                : "expired" in body
-                  ? ["expired"]
-                  : "reason" in body
-                    ? ["outcome", "reason"]
-                    : ["outcome"]),
+              ...("claimed" in body
+                ? ["claimed"]
+                : "cleaned" in body
+                  ? ["cleaned"]
+                  : "expired" in body
+                    ? ["expired"]
+                    : "reason" in body
+                      ? ["outcome", "reason"]
+                      : ["outcome"]),
               ...("imageId" in body ? ["imageId"] : []),
             ]
           : path.endsWith("/poll") && "version" in body
             ? [
                 "installationId",
                 "version",
+                ...("resumeClaimProtocol" in body ? ["resumeClaimProtocol"] : []),
                 ...("resources" in body ? ["resources"] : []),
                 ...("resourcePolicyVersion" in body ? ["resourcePolicyVersion"] : []),
                 ...("skipSnapshots" in body ? ["skipSnapshots"] : []),
                 ...("retentionSeconds" in body ? ["retentionSeconds", "nextCleanupAt"] : []),
+                ...("deadlines" in body ? ["deadlines"] : []),
                 ...("diskFreeBytes" in body ? ["diskFreeBytes"] : []),
                 ...("stoppedSandboxBytes" in body ? ["stoppedSandboxBytes"] : []),
               ]
@@ -201,16 +221,25 @@ export function createDockerHostRoutes(
           (!Number.isSafeInteger(body.diskFreeBytes) || Number(body.diskFreeBytes) < 0)
         )
           throw new InvalidInput();
+        // Deadlines are the per-generation detail of the retention report; they
+        // are meaningless without the policy they belong to.
+        if ("deadlines" in body && !("retentionSeconds" in body)) throw new InvalidInput();
+        const deadlines = "deadlines" in body ? deadlinesOf(body.deadlines) : undefined;
         const retentionSeconds = await store.retentionForHost(
           token,
           installationId,
           "retentionSeconds" in body
-            ? { retentionSeconds: body.retentionSeconds as number, nextCleanupAt: body.nextCleanupAt as string | null }
+            ? {
+                retentionSeconds: body.retentionSeconds as number,
+                nextCleanupAt: body.nextCleanupAt as string | null,
+                ...(deadlines === undefined ? {} : { deadlines }),
+              }
             : undefined,
         );
         return Response.json(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
+            resumeClaims: body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [],
             job: await store.poll(
               token,
               installationId,
@@ -221,10 +250,19 @@ export function createDockerHostRoutes(
               body.diskFreeBytes as number | null | undefined,
               body.stoppedSandboxBytes as number | null | undefined,
             ),
+            // Every generation with a queued resume/bootstrap, so the daemon
+            // fences all of them, not only the single job it was handed.
+            pendingStarts: await store.pendingStartsForHost(token, installationId),
             ...(body.resourcePolicyVersion === 1 ? { limits: await store.limitsForHost(token, installationId) } : {}),
           },
           { headers },
         );
+      }
+      if ("claimed" in body) {
+        if (typeof body.claimed !== "boolean") throw new InvalidInput();
+        const requestId = string(body.requestId);
+        await store.claimResume(token, installationId, requestId, body.claimed);
+        return Response.json({ requestId }, { headers });
       }
       if ("cleaned" in body) {
         if (body.cleaned !== true) throw new InvalidInput();

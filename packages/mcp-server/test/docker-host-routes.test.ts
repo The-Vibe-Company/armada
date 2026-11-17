@@ -400,7 +400,7 @@ test("only the owner changes a drained capable host; policy reaches admission an
   expect(await raised.json()).toMatchObject({ resources: { capacity: 4, mode: "manual" } });
   expect((await post(endpoint, "fixture-user-token", { ...body, maxSandboxes: 2 })).status).toBe(409);
   // An older daemon cannot execute override-sensitive starts, but cleanup stays available.
-  expect(await (await poll(false)).json()).toEqual({ job: null });
+  expect(await (await poll(false)).json()).toEqual({ job: null, pendingStarts: [], resumeClaims: [] });
   const delivery = await (await poll(true)).json();
   expect(delivery).toMatchObject({
     job: { operation: "create" },
@@ -449,4 +449,26 @@ test("heartbeat availability is validated and drives the public busy-capacity su
     { cpus: 16, memoryBytes: 38 * 1024 ** 3, availableCpus: 8 },
   ])
     expect((await poll(invalid)).status).toBe(400);
+});
+
+test("a host reporting many retained deadlines still fits the poll body limit", async () => {
+  const { userId, orgId, store, post } = await fixture();
+  const ticket = await store.issueRegistration({ userId, orgId });
+  const installationId = randomUUID();
+  const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  // A busy host retains more generations than fit in the previous 4 KiB cap.
+  const deadlines = Array.from({ length: 128 }, () => ({
+    sandboxId: randomUUID(),
+    generation: randomUUID(),
+    deadline: new Date().toISOString(),
+  }));
+  const response = await post("/api/docker-host/poll", host.hostToken, {
+    installationId,
+    version: "2.33.0",
+    retentionSeconds: 3600,
+    nextCleanupAt: new Date().toISOString(),
+    deadlines,
+  });
+  expect(JSON.stringify({ deadlines }).length).toBeGreaterThan(4096);
+  expect(response.status).toBe(200);
 });
