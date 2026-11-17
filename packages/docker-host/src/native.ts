@@ -257,6 +257,10 @@ export function httpApi(
             deadline: new Date(entry.deadline).toISOString(),
           })),
       };
+      const legacyRetention = {
+        retentionSeconds: retention.retentionSeconds,
+        nextCleanupAt: retention.nextCleanupAt,
+      };
       const disk = diskFreeBytes ? { diskFreeBytes: await diskFreeBytes() } : {};
       const stopped = stoppedBytes ? { stoppedSandboxBytes: await stoppedBytes(state) } : {};
       const sampledResources = resources ? await resources(state) : dockerHostResources();
@@ -276,7 +280,7 @@ export function httpApi(
         try {
           return (await post(state.server, "poll", state.hostToken, {
             ...body,
-            ...retention,
+            ...legacyRetention,
             ...disk,
             ...stopped,
             resources: sampledResources,
@@ -290,7 +294,7 @@ export function httpApi(
           try {
             return (await post(state.server, "poll", state.hostToken, {
               ...body,
-              ...retention,
+              ...legacyRetention,
               ...disk,
               resources: sampledResources,
               resourcePolicyVersion: 1,
@@ -299,13 +303,12 @@ export function httpApi(
             if (!(compatibilityError instanceof HostRequestDenied) || compatibilityError.status !== 400)
               throw compatibilityError;
           }
-
         }
         if (diskFreeBytes) {
           try {
             return (await post(state.server, "poll", state.hostToken, {
               ...body,
-              ...retention,
+              ...legacyRetention,
               resources: sampledResources,
               resourcePolicyVersion: 1,
             })) as Awaited<ReturnType<Api["poll"]>>;
