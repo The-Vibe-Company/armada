@@ -9,6 +9,10 @@ export const RUNTIME_STARTUP_FAILURES = {
     "Runtime artifact verification failed. Ask the server operator to repair the published artifacts or cache before launching again.",
   artifact_preparation:
     "Runtime artifact preparation failed. Ask the server operator to check published harness artifacts and container filesystem access before launching again.",
+  artifact_permission:
+    "Runtime artifact filesystem permission check failed. Ask the operator to check cache ownership and access.",
+  artifact_rename: "Runtime artifact cache rename failed. Ask the operator to check cache filesystem access.",
+  artifact_write: "Runtime artifact cache write failed. Ask the operator to check cache filesystem health.",
   credential_projection:
     "Runtime credential projection failed. Reconnect the model account; ask the server operator to check runtime authentication configuration if it persists.",
   model_routing:
@@ -24,7 +28,13 @@ export function isRuntimeStartupFailure(value: unknown): value is RuntimeStartup
 /** Only exact internal codes are recognized; arbitrary exception text never leaves the process. */
 export function runtimeStartupFailure(error: unknown, phase: RuntimeStartupFailure): RuntimeStartupFailure {
   if (error instanceof Error && "code" in error && error.code === "ENOSPC") return "disk_full";
+  if (error instanceof Error && "code" in error && ["EACCES", "EPERM"].includes(String(error.code)))
+    return "artifact_permission";
   const code = error instanceof Error ? error.message : "";
+  if (["runtime_cache_not_private", "invalid_harness_cache", "invalid_runtime_tool_cache"].includes(code))
+    return "artifact_permission";
+  if (code === "runtime_artifact_rename_failed") return "artifact_rename";
+  if (code === "runtime_artifact_write_failed") return "artifact_write";
   if (code === "incompatible_harness_manifest") return "artifact_manifest_incompatible";
   if (code === "runtime_artifact_unavailable") return "artifact_unavailable";
   if (["runtime_artifact_size_mismatch", "runtime_artifact_digest_mismatch", "harness_archive_mismatch"].includes(code))
