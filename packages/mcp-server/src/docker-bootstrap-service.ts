@@ -183,12 +183,13 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           );
           if (!credential.rows.length) deny();
         }
-        const host = await tx.query(
-          `select id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and installation_id=$4
+        const host = await tx.query<{ id: string; draining_at: string | null }>(
+          `select id,draining_at from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and installation_id=$4
              and hash is not null and registration_hash is null and revoked_at is null for update`,
           [snapshot.hostId, actor.orgId, hint.issuer_id, snapshot.installationId],
         );
         if (!host.rows.length) deny();
+        if (host.rows[0]!.draining_at) throw new DockerHostDraining();
         // A stopped generation is only admitted after the host has durably
         // excluded cleanup. Until then this is a request, not a lifecycle change.
         if (resume && !known) {
