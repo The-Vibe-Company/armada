@@ -1387,6 +1387,16 @@ describe("prompt outcome", () => {
       }),
     ).toEqual({ state: "failed", reason: "Agent failed. Check the agent configuration before retrying." });
     expect(
+      await promptOutcome(outcomeProvider("failed", events([prompt("failed", "output_limit_exceeded")])), {
+        sandboxId: "bx_1",
+        promptId: "p1",
+      }),
+    ).toEqual({
+      state: "failed",
+      reason:
+        "Model output limit reached. The model stopped before it finished this response. Send a message to continue.",
+    });
+    expect(
       await promptOutcome(outcomeProvider("interrupted", events([])), { sandboxId: "bx_1", promptId: "p1" }),
     ).toEqual({
       state: "interrupted",

@@ -21,6 +21,9 @@ test("prompt failure text is bounded and actionable even without a diagnosis", (
   expect(promptFailureReason("model_unavailable")).toBe(
     "Model unavailable. Choose a model available to this account, then send the prompt again.",
   );
+  expect(promptFailureReason("output_limit_exceeded")).toBe(
+    "Model output limit reached. The model stopped before it finished this response. Send a message to continue.",
+  );
   expect(promptFailureReason("private upstream details")).toBe(
     "Agent failed. Check the agent configuration before retrying.",
   );
