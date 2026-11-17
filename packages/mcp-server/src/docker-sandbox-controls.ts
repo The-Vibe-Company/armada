@@ -288,11 +288,17 @@ export function createDockerSandboxControls(
     const selectedPrompt = selectedQueue?.prompt_id ?? promptId ?? admitted.receipt?.promptId;
     const queueOnly = selectedQueue && !selectedQueue.native_prompt_id;
     const readHistory = includeQueue ? history : nativeHistory;
-    let cursor: string | undefined;
+    // Status is a bounded observation, not an archive search. Busy turns can emit
+    // thousands of output events; scanning back to their prompt makes every status
+    // (and logs tail) read pay for the full turn, including after the host stops.
     const events: AgentEvent[] = [];
-    let complete = false;
     let newestCursor: string | undefined;
-    for (let count = 0; count < 100; count++) {
+    let cursor: string | undefined;
+    let complete = false;
+    // Explicit historical lookups retain archive search semantics. Latest-turn
+    // reads already have an admission receipt and need only the newest page.
+    const pageBudget = promptId && selectedPrompt !== admitted.receipt?.promptId && !queueOnly ? 100 : 1;
+    for (let count = 0; count < pageBudget; count++) {
       const page = await readHistory(caller, initial.id, {
         direction: "backward",
         limit: 500,
@@ -334,7 +340,7 @@ export function createDockerSandboxControls(
         reason: state === "failed" ? (limit ? planLimitMessage(limit) : promptFailureReason(event.reason)) : null,
       };
     }
-    if (!prompt && admitted.receipt && (!promptId || promptId === admitted.receipt.promptId)) {
+    if (!prompt && admitted.receipt && (!promptId || selectedPrompt === admitted.receipt.promptId)) {
       const state = terminal(row) ? (row.status === "failed" ? "failed" : "interrupted") : "running";
       prompt = {
         promptId: admitted.receipt.promptId,
@@ -401,14 +407,15 @@ export function createDockerSandboxControls(
       reasoningEffort: row.reasoning_effort,
       status: row.status,
       statusReason: reason(row),
-      statusMessage: idlePauseMessage(
-        {
-          status: row.status,
-          statusReason: reason(row),
-          expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
-        },
-        new Date(clock.now()),
-      ),
+      statusMessage:
+        idlePauseMessage(
+          {
+            status: row.status,
+            statusReason: reason(row),
+            expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
+          },
+          new Date(clock.now()),
+        ) ?? (!complete ? "Stored prompt state is incomplete; live data may be stale." : null),
       providerState:
         row.status === "deleted"
           ? null
