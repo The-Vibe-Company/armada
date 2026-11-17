@@ -30,8 +30,11 @@ case "$1" in
   view) [ "$MODE" = already-present ] ;;
   publish)
     # This upload completes only after another platform has started its registry check.
+    # Open the FIFO before checking the marker so a signal sent in between is never lost.
+    # The bounded read is only a deadlock guard: a serial script fails instead of hanging.
     if [ "$MODE" = overlap ] && [[ "$2" = *darwin-arm64* ]]; then
-      read -r -t 2 _ <> "$TEST_ROOT/handshake" || exit 1
+      exec 3<> "$TEST_ROOT/handshake"
+      [ -f "$TEST_ROOT/check-started" ] || read -r -t 5 _ <&3 || exit 1
     fi
     exit 0
     ;;
@@ -44,7 +47,9 @@ case "$1" in
     destination="$2"
     if [ "$MODE" = unavailable ]; then exit 1; fi
     if [ "$MODE" = overlap ] && [[ "$file" = *linux-x64* ]]; then
-      timeout 2 sh -c 'echo go > "$TEST_ROOT/handshake"' || true
+      : > "$TEST_ROOT/check-started"
+      # A read-write open never blocks, even when no upload is waiting any more.
+      echo go 1<> "$TEST_ROOT/handshake"
     fi
     if [ "$MODE" = independent-delay ]; then
       countfile="$TEST_ROOT/count-$file"
