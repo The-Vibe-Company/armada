@@ -215,10 +215,14 @@ function fixture(
     },
   };
   const cleanupDelays: number[] = [];
+  const detached: (() => Promise<void>)[] = [];
   const provider = createModalProvider({
     admissionSleep,
     cleanupSleep: async (milliseconds) => {
       cleanupDelays.push(milliseconds);
+    },
+    detachCollection: (work) => {
+      detached.push(work);
     },
     scope: accessScope,
     ...(commonRuntime ? { commonRuntime } : {}),
@@ -255,6 +259,10 @@ function fixture(
   });
   return {
     cleanupDelays,
+    /** Runs the retired-image collections that deletes detached, in order. */
+    runDetached: async () => {
+      for (let work = detached.shift(); work; work = detached.shift()) await work();
+    },
     provider,
     store,
     client,
@@ -1296,7 +1304,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
     expect((await f.provider.get(fork.id)).state).toBe("ready");
     await f.provider.delete({ sandboxId: fork.id });
+    // The receipt never waits on another source's retired images; the detached collection
+    // removes the last fork's snapshot image without any further user operation.
+    expect(f.log).not.toContain("delete-image");
+    await f.runDetached();
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
+    expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
   test("a busy retired source neither fails nor delays a fork's deletion", async () => {
     const f = fixture();
@@ -1311,6 +1324,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const imageDeletes = () => f.log.filter((x) => x === "delete-image").length;
     await f.store.lease(builder.id, async () => {
       expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
+      await f.runDetached();
     });
     // A busy source is skipped, not retried.
     expect(f.cleanupDelays).toEqual([]);
@@ -1692,7 +1706,11 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.snapshot({ sandboxId: builder.id, name: snapshot });
     const authorities: ModalManagementAuthority[] = [];
     let preparedFromComposition = false;
+    const detached: (() => Promise<void>)[] = [];
     const configuration: ComposedModalOptions = {
+      detachCollection: (work) => {
+        detached.push(work);
+      },
       beforePrompt: async (provider, id) => {
         await provider.get(id);
         await provider.configureMcp({
@@ -1802,6 +1820,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.deleteSnapshot(snapshot);
     expect(f.log).not.toContain("delete-image");
     await provider.delete({ sandboxId: launched.id });
+    expect(f.log).not.toContain("delete-image");
+    for (const work of detached.splice(0)) await work();
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
     close();
     const { resolveManagementCredentials: _resolver, ...operatorConfiguration } = configuration;

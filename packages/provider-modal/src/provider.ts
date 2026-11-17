@@ -63,6 +63,9 @@ export interface ModalProviderOptions extends ModalConnection {
   admissionSleep?(milliseconds: number): Promise<void>;
   /** Scheduler for deletion image-cleanup retries; defaults to the Bun timer. */
   cleanupSleep?(milliseconds: number): Promise<void>;
+  /** Runs the best-effort collection of other sources' retired images after a delete. Defaults to
+   * a detached task, so neither the delete receipt nor the server's activity lease waits on it. */
+  detachCollection?(work: () => Promise<void>): void;
   scope: Scope;
   /** Trusted immutable source credential selection; never a requested access visibility. */
   managementAuthority?: ModalManagementProvenance;
@@ -137,6 +140,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return options.runner.call(row, op, input);
     },
   };
+  const detachCollection =
+    options.detachCollection ??
+    ((work: () => Promise<void>) => {
+      void work();
+    });
   const measure: NonNullable<ModalProviderOptions["measure"]> = options.measure ?? ((_phase, work) => work());
   const source = options.source ?? { scope: options.scope, store };
   assertSourceTargetScopes(source.scope, options.scope);
@@ -1751,21 +1759,24 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         row.phase = "deleted";
         await save(row);
       });
-      // The target's compute and recovery images are gone and durably recorded. Retired images
-      // of other sources are collected on a best-effort basis: their tombstones stay durable
-      // for the next collection in scope, and their failure never withholds this receipt. One
-      // attempt only: retrying another source's failure would only delay this deletion.
-      await collectImages(true).catch((error) => {
-        const safe = modalError(error);
-        console.warn(
-          JSON.stringify({
-            event: "modal_delete_retired_collection_deferred",
-            sandboxId,
-            code: safe.code,
-            ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
-          }),
-        );
-      });
+      // The target's compute and recovery images are gone and durably recorded, so the receipt
+      // is published now. Retired images of other sources are collected detached, once, under
+      // each source's own lease with the same scope, authority and reference checks. A slow,
+      // busy or failing source never holds this receipt or the caller's activity lease; its
+      // tombstones stay durable for the next collection in scope.
+      detachCollection(() =>
+        collectImages(true).catch((error) => {
+          const safe = modalError(error);
+          console.warn(
+            JSON.stringify({
+              event: "modal_delete_retired_collection_deferred",
+              sandboxId,
+              code: safe.code,
+              ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
+            }),
+          );
+        }),
+      );
       return { status: "deleted" };
     },
     async resourceReceipts() {

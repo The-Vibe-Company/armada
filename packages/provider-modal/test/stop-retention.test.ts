@@ -96,6 +96,7 @@ function fixture(stage: "scrub" | "snapshot") {
       if (failing && stage === "scrub") throw Error("scrub refused");
     },
   } as unknown as RunnerDistribution;
+  const detached: (() => Promise<void>)[] = [];
   const provider = createModalProvider({
     scope,
     appName: "bound",
@@ -106,6 +107,9 @@ function fixture(stage: "scrub" | "snapshot") {
     cleanupSleep: async (milliseconds) => {
       cleanupDelays.push(milliseconds);
     },
+    detachCollection: (work) => {
+      detached.push(work);
+    },
   });
   return {
     provider,
@@ -114,6 +118,9 @@ function fixture(stage: "scrub" | "snapshot") {
     terminated: () => terminated,
     deletedImages,
     cleanupDelays,
+    runDetached: async () => {
+      for (let work = detached.shift(); work; work = detached.shift()) await work();
+    },
     images: () => images,
     missAppOnLookup: (lookup: number) => {
       missingAppAt = appLookups + lookup;
@@ -186,6 +193,8 @@ test("a failing retired image never withholds the receipt of a completed delete"
   f.retireImage("retired-elsewhere", { denied: true });
   await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
   expect(f.state().phase).toBe("deleted");
+  // The detached collection fails once on the denied image; the receipt was already published.
+  await f.runDetached();
   expect(f.deletedImages).toEqual(["prior-recovery", "fresh-recovery"]);
   // Another source's failure is not retried inside this delete.
   expect(f.cleanupDelays).toEqual([]);

@@ -407,6 +407,8 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
       appLookups = 0,
       missingAppAt = 0;
     const cleanupDelays: number[] = [];
+    const detachedRuns: Promise<void>[] = [];
+    let heldImage: { imageId: string; entered: () => void; released: Promise<void> } | undefined;
     const timeout = (message: string) => Object.assign(Error(message), { name: "TimeoutError" });
     const exited = new Set<string>();
     const client = {
@@ -433,6 +435,10 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
       },
       images: {
         delete: async (imageId: string) => {
+          if (imageId === heldImage?.imageId) {
+            heldImage.entered();
+            await heldImage.released;
+          }
           if (imageTimeouts-- > 0) throw timeout("image service timed out");
           sdk.push(`delete:${imageId}`);
         },
@@ -452,6 +458,10 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
         },
         cleanupSleep: async (milliseconds) => {
           cleanupDelays.push(milliseconds);
+        },
+        // Detached as in production; the test keeps each run only to settle it before teardown.
+        detachCollection: (work) => {
+          detachedRuns.push(work());
         },
       });
     const options: ControlOptions = {
@@ -579,6 +589,38 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
     expect(await row(lost.id)).toEqual({ status: "failed", leased: false });
     expect(await phase(lost.machine)).toBe("creating");
     expect(sdk.filter((x) => x.endsWith("-lost"))).toEqual([]);
+
+    // Another source's retired image is collected detached. While its image call is held open,
+    // the target's DELETE still answers 200, releases its activity lease, and a repeated DELETE
+    // is answered at once instead of 409 sandbox_not_ready.
+    await Promise.all(detachedRuns.splice(0));
+    const modalStore = createSqlModalStore(db, scope);
+    const retired = await launch("retired-source");
+    await modalStore.saveImage({
+      info: { name: "retired-elsewhere", status: "ready", createdAt: new Date() },
+      sourceId: retired.machine,
+      imageId: "retired-elsewhere",
+      managementAuthority: { credentialScope: "user", credentialOwnerId: p.owner },
+    });
+    await modalStore.removeImage("retired-elsewhere");
+    expect(await modalStore.tombstoneSources()).toContain(retired.machine);
+    const target = await launch("target");
+    expect((await control("sandbox/stop", "POST", { id: target.id })).status).toBe(200);
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    heldImage = { imageId: "retired-elsewhere", entered: entered.resolve, released: released.promise };
+    const receipt = await control(`sandboxes/${target.id}`, "DELETE");
+    expect(receipt.status).toBe(200);
+    expect(await receipt.json()).toEqual({ id: target.id, status: "deleted" });
+    await entered.promise;
+    expect(await row(target.id)).toEqual({ status: "deleted", leased: false });
+    expect(await phase(target.machine)).toBe("deleted");
+    expect((await control(`sandboxes/${target.id}`, "DELETE")).status).toBe(200);
+    expect(sdk).not.toContain("delete:retired-elsewhere");
+    released.resolve();
+    await Promise.all(detachedRuns.splice(0));
+    expect(sdk).toContain("delete:retired-elsewhere");
+    expect(await modalStore.tombstoneSources()).not.toContain(retired.machine);
   } finally {
     await server.close();
   }
