@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { DelegatedAuthorityDenied, type Sql } from "@armada/core/server";
 import { createDockerHostStore } from "./docker-host-store.ts";
+import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { runtimePreservationNote } from "./work-preservation.ts";
 
@@ -61,10 +62,17 @@ export async function requestSandboxFinish(sql: Sql, key: string, sandboxId: str
   return { id: row.id, status: "stopping", ...(preservationNote ? { preservationNote } : {}) };
 }
 
-export function createRuntimeSelfFinish(sql: Sql, key: string) {
+export function createRuntimeSelfFinish(
+  sql: Sql,
+  key: string,
+  outputs?: Parameters<typeof captureDockerStopOutputs>[3],
+) {
   const authority = createRuntimeEnrolments(sql, key);
   return async (token: string) => {
     const binding = bindingFromToken(key, token);
+    // Docker: the final output capture must precede stop admission (the runtime then refuses
+    // commands). Boat/Modal capture on the lifecycle stop path instead.
+    await captureDockerStopOutputs(sql, key, binding.sandboxId, outputs);
     return authority.withOwner(binding.sandboxId, binding.ownerId, async (tx, live) => {
       if (live.epoch !== binding.epoch) throw new DelegatedAuthorityDenied();
       const current = (

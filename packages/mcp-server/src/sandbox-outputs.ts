@@ -4,7 +4,7 @@ import {
   decryptSecret,
   encryptionKey,
   encryptSecret,
-  OUTPUT_DIRECTORY,
+  outputDirectory,
   type Provider,
   type Sql,
 } from "@armada/core/server";
@@ -13,8 +13,12 @@ import type { Route } from "./http.ts";
 
 // Native and enrolled-runtime Boat/Modal sandboxes: providers read the declared directory through
 // their own fixed channel (Provider.readOutputs), never caller commands or the agent runtime.
+// Docker sandboxes have no provider exec; their reader is the runtime's fixed read-only operation.
 // Application-secret taint is irreversible and forbids every file egress (same policy as exec and work recovery).
-const ELIGIBLE = `provider in ('boat','modal') and not application_secret_tainted`;
+const ELIGIBLE = `provider in ('boat','modal','docker') and not application_secret_tainted`;
+
+/** The only provider surface output collection uses. */
+type OutputReader = Pick<Provider, "readOutputs">;
 
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
  * their signal aborts; the outstanding read stays tracked, bounded and fenced from persisting. */
@@ -34,7 +38,7 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Pro
 
 async function collect(
   sql: Sql,
-  provider: Provider,
+  provider: OutputReader,
   id: string,
   providerId: string,
   scan: string,
@@ -102,7 +106,7 @@ export async function drainFinalOutputs(): Promise<void> {
  * Never resumes compute. */
 export async function captureFinalOutputs(
   sql: Sql,
-  provider: Provider,
+  provider: OutputReader,
   id: string,
   options: { key?: string | undefined; signal?: AbortSignal } = {},
 ): Promise<void> {
@@ -148,7 +152,8 @@ export async function captureFinalOutputs(
 export function createSandboxOutputs(
   sql: Sql,
   key: string | undefined,
-  providerFor: (id: string) => Promise<Provider>,
+  providerFor: (id: string) => Promise<OutputReader>,
+  docker?: (id: string) => OutputReader,
 ) {
   const pending = new Set<Promise<boolean>>();
   return {
@@ -157,12 +162,13 @@ export function createSandboxOutputs(
       const row = (
         await sql.query<{
           id: string;
+          provider: string;
           provider_sandbox_id: string;
           scan: string;
         }>(`update public.sandboxes set outputs_checked_at=now()
         where id=(select id from public.sandboxes where ${ELIGIBLE} and provider_sandbox_id is not null
         and status in ('running','ready') and (outputs_checked_at is null or outputs_checked_at<now()-interval '30 seconds')
-        order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider_sandbox_id,outputs_checked_at::text as scan`)
+        order by outputs_checked_at nulls first for update skip locked limit 1) returning id,provider::text,provider_sandbox_id,outputs_checked_at::text as scan`)
       ).rows[0];
       if (!row) return false;
       // The sample runs in the background under its own deadline (and the worker's shutdown), so
@@ -171,7 +177,8 @@ export function createSandboxOutputs(
       // A per-sandbox failure (no python3, provider refusal, compute stopping) is that sandbox's
       // problem: keep the previous snapshot and retry after the 30 s fence.
       const deadline = AbortSignal.any([signal, AbortSignal.timeout(SAMPLE_DEADLINE_MS)]);
-      const work = providerFor(row.id)
+      const reader = row.provider === "docker" ? Promise.resolve(docker?.(row.id) ?? {}) : providerFor(row.id);
+      const work = reader
         .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, deadline))
         .catch(() => {
           console.warn(JSON.stringify({ event: "sandbox_output_collection_failed", sandboxId: row.id }));
@@ -197,8 +204,8 @@ export function createSandboxOutputs(
         if (!auth.ok) return Response.json({ error: "unauthorized" }, { status: 401 });
         const caller = auth.caller;
         const row = (
-          await sql.query<{ id: string }>(
-            `select s.id from public.sandboxes s join public.members m on m.org_id=s.org_id
+          await sql.query<{ id: string; provider: string }>(
+            `select s.id,s.provider::text from public.sandboxes s join public.members m on m.org_id=s.org_id
           where s.id=$1 and s.status<>'deleted' and not s.application_secret_tainted and m.user_id=$2 and s.org_id=any($3::uuid[])
           and (s.owner_id=$2 or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
             [match[1], caller.userId, caller.orgs.map((o) => o.orgId)],
@@ -217,7 +224,7 @@ export function createSandboxOutputs(
             [row.id],
           );
           return Response.json(
-            { directory: OUTPUT_DIRECTORY, files: files.rows },
+            { directory: outputDirectory(row.provider), files: files.rows },
             { headers: { "cache-control": "private, no-store" } },
           );
         }

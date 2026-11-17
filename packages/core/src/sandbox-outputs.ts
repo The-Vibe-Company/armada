@@ -1,10 +1,14 @@
 /** Declared sandbox outputs (#2570): one fixed directory, bounded snapshot, no caller-supplied path. */
-export const OUTPUT_DIRECTORY = "/workspace/outputs";
-export const OUTPUT_MAX_FILES = 32;
-export const OUTPUT_MAX_BYTES = 32768;
-/** Directory entries the collector inspects. A larger directory is unreadable now (the previous
- * snapshot stays), never a partial read that would drop unseen files. */
-export const OUTPUT_MAX_ENTRIES = 4096;
+import { OUTPUT_MAX_BYTES, OUTPUT_MAX_ENTRIES, OUTPUT_MAX_FILES, validOutputName } from "./sandbox-output-limits.ts";
+
+export {
+  DOCKER_OUTPUT_DIRECTORY,
+  OUTPUT_DIRECTORY,
+  OUTPUT_MAX_BYTES,
+  OUTPUT_MAX_ENTRIES,
+  OUTPUT_MAX_FILES,
+  outputDirectory,
+} from "./sandbox-output-limits.ts";
 
 /** One declared output file as read by a provider. Callers still validate with `admitOutputs`. */
 export interface OutputFile {
@@ -59,25 +63,19 @@ if directory is not None:
 print(json.dumps(files))
 PY`;
 
-function validName(name: unknown): name is string {
-  return (
-    typeof name === "string" &&
-    /^[^/\\]{1,255}$/.test(name) &&
-    ![...name].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) &&
-    name !== "." &&
-    name !== ".."
-  );
-}
-
 /** Parse the fixed collector's stdout. Throws on anything the collector cannot have produced. */
 export function parseCollectorOutput(stdout: string): OutputFile[] {
   if (stdout.length > 60000) throw Error("output_limit");
-  const values: unknown = JSON.parse(stdout);
+  return parseOutputFiles(JSON.parse(stdout));
+}
+
+/** Parse a collector's `[{name, base64}]` list (Python collector or the agent runtime's read). */
+export function parseOutputFiles(values: unknown): OutputFile[] {
   if (!Array.isArray(values)) throw Error("invalid_output");
   return values.map((value) => {
     if (
       !value ||
-      !validName(value.name) ||
+      !validOutputName(value.name) ||
       typeof value.base64 !== "string" ||
       !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.base64)
     )
@@ -92,7 +90,7 @@ export function admitOutputs(files: readonly OutputFile[]): OutputFile[] {
   const names = new Set<string>();
   let total = 0;
   for (const file of files) {
-    if (!validName(file.name) || names.has(file.name) || !(file.bytes instanceof Uint8Array))
+    if (!validOutputName(file.name) || names.has(file.name) || !(file.bytes instanceof Uint8Array))
       throw Error("invalid_output");
     names.add(file.name);
     total += file.bytes.length;

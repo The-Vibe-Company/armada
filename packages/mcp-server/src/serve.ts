@@ -35,6 +35,7 @@ import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
 import { createDockerNormalSend } from "./docker-normal-send.ts";
+import { captureDockerStopOutputs, createDockerOutputReader } from "./docker-outputs.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
@@ -572,6 +573,7 @@ export async function startServer(
     config.encryptionKey,
     // Only live rows are sampled; stopped workspaces are never read.
     createMcpSandboxProviderResolver(sql, providers),
+    ...(config.encryptionKey ? [createDockerOutputReader(sql, config.encryptionKey)] : []),
   );
   const handler = createHandler({
     ...(dockerControls ? { dockerControls } : {}),
@@ -743,12 +745,15 @@ export async function startServer(
         delayMs: idleDelayMs,
         ...(dockerBootstrap
           ? {
-              dockerStop: (actor, id, requestId) =>
-                createDockerHostStore(sql, config.encryptionKey).enqueueSandbox(actor, id, {
+              dockerStop: async (actor, id, requestId) => {
+                // The runtime refuses commands once the stop is admitted: capture first.
+                await captureDockerStopOutputs(sql, config.encryptionKey, id);
+                return createDockerHostStore(sql, config.encryptionKey).enqueueSandbox(actor, id, {
                   operation: "stop",
                   requestId,
                   idleCheckpointRequest: requestId,
-                }),
+                });
+              },
             }
           : {}),
       }),
