@@ -4229,6 +4229,7 @@ export type Database = {
           runtime_transport: string | null;
           docker_snapshot_id: string | null;
           docker_retention_deadline: string | null;
+          external_ref: string | null;
         };
         Insert: {
           id?: string;
@@ -4290,6 +4291,7 @@ export type Database = {
           runtime_transport?: string | null;
           docker_snapshot_id?: string | null;
           docker_retention_deadline?: string | null;
+          external_ref?: string | null;
         };
         Update: {
           id?: string;
@@ -4351,6 +4353,7 @@ export type Database = {
           runtime_transport?: string | null;
           docker_snapshot_id?: string | null;
           docker_retention_deadline?: string | null;
+          external_ref?: string | null;
         };
         Relationships: [
           {
