@@ -20,6 +20,7 @@ function publish(mode: string, publishRelease = true) {
       writeFileSync(join(root, "dist/npm", short, "package.json"), JSON.stringify({ name, version }));
       writeFileSync(join(root, "dist/tarballs", `${name.slice(1).replace("/", "-")}-${version}.tgz`), name);
     }
+    if (mode === "overlap") Bun.spawnSync(["mkfifo", join(root, "handshake")]);
     writeFileSync(
       join(root, "bin/npm"),
       `#!/usr/bin/env bash
@@ -27,7 +28,13 @@ set -euo pipefail
 printf '%s\\n' "$*" >> "$TEST_ROOT/events"
 case "$1" in
   view) [ "$MODE" = already-present ] ;;
-  publish) exit 0 ;;
+  publish)
+    # This upload completes only after another platform has started its registry check.
+    if [ "$MODE" = overlap ] && [[ "$2" = *darwin-arm64* ]]; then
+      read -r -t 2 _ <> "$TEST_ROOT/handshake" || exit 1
+    fi
+    exit 0
+    ;;
   pack)
     spec="$2"
     file="\${spec%@*}"
@@ -36,6 +43,9 @@ case "$1" in
     while [ "$1" != --pack-destination ]; do shift; done
     destination="$2"
     if [ "$MODE" = unavailable ]; then exit 1; fi
+    if [ "$MODE" = overlap ] && [[ "$file" = *linux-x64* ]]; then
+      timeout 2 sh -c 'echo go > "$TEST_ROOT/handshake"' || true
+    fi
     if [ "$MODE" = independent-delay ]; then
       countfile="$TEST_ROOT/count-$file"
       count=0
@@ -107,6 +117,21 @@ test.each(["delayed", "independent-delay"])(
     }
   },
 );
+
+test("each platform starts its registry check without waiting for the other uploads", () => {
+  // darwin-arm64's upload blocks until linux-x64 starts its registry check.
+  const result = publish("overlap");
+  expect(result.exitCode).toBe(0);
+  const mainPublish = result.events.findIndex((event) =>
+    event.startsWith(`publish dist/tarballs/the-vibe-company-armada-${version}.tgz `),
+  );
+  expect(mainPublish).toBeGreaterThan(-1);
+  for (const name of platforms) {
+    const check = result.events.findLastIndex((event) => event.startsWith(`pack ${name}@${version} `));
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(mainPublish);
+  }
+});
 
 for (const mode of ["unavailable", "corrupt"]) {
   test(`publication refuses the launcher when platform tarballs are ${mode}`, () => {
