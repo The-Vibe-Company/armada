@@ -17,6 +17,8 @@ export interface ScopedProbeIo {
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
   stopSandbox(id: string): Promise<void>;
   recordSandbox?(id: string, requestKey: string): Promise<void>;
+  /** Sandboxes the same smoke run launched itself through the owner API (concurrent units), never children. */
+  siblingSandboxes?(): Promise<ReadonlySet<string>>;
   isNotReady(error: unknown): boolean;
   out(line: string): void;
 }
@@ -529,8 +531,11 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
           }
         }
         let after: Set<string> | undefined;
+        let siblings: ReadonlySet<string> = new Set();
         try {
           after = await snapshot();
+          // Read after the snapshot: every sibling it can contain was launched before it returned.
+          siblings = (await io.siblingSandboxes?.()) ?? siblings;
         } catch {
           ok = false;
         }
@@ -550,7 +555,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         const baseline = before;
         if (baseline && after)
           unattributed = [...after].filter(
-            (childId) => childId !== parent && !baseline.has(childId) && !claims.has(childId),
+            (childId) => childId !== parent && !baseline.has(childId) && !claims.has(childId) && !siblings.has(childId),
           );
         if (unattributed.length || sendUnknown || launchUnknown || evidenceUnknown) ok = false;
         io.out(
