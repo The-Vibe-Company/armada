@@ -4,6 +4,7 @@ import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, type Sql } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
+import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, selfFinishToken } from "../src/sandbox-finish.ts";
 import { migratedDatabase } from "./migrated-database.ts";
@@ -827,6 +828,51 @@ test("uninstall drains bound machines through stop/delete ACKs before idempotent
   expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
   await denied(store.poll(a.hostToken, a.installationId));
   await denied(store.unregister(a.hostToken, randomUUID()));
+});
+
+test("a completed uninstall ends the drain, so its snapshots report the revoked host instead of a retry", async () => {
+  const db = database();
+  const a = await boundFixture(),
+    snapshotId = randomUUID();
+  await db.query(
+    `insert into public.docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,request_hash,actor_epoch,issuer_epoch,generation,base_image,status,image_id,build_expires_at)
+     values($1,$2,$3,$4,$5,'retired-ready','private','{}'::jsonb,$6,1,1,$7,'example/worker@sha256:${"a".repeat(64)}','ready',$8,now()+interval '1 hour')`,
+    [
+      snapshotId,
+      a.actor.orgId,
+      a.actor.userId,
+      a.hostId,
+      a.installationId,
+      "b".repeat(64),
+      randomUUID(),
+      `sha256:${"c".repeat(64)}`,
+    ],
+  );
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
+  const stop = await store.poll(a.hostToken, a.installationId);
+  if (stop?.operation !== "stop") throw new Error("Missing stop");
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
+  const remove = await store.poll(a.hostToken, a.installationId);
+  if (remove?.operation !== "delete") throw new Error("Missing delete");
+  await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+  // The uninstall completed: the host is revoked and no longer draining, so its snapshot is not "Host draining".
+  expect((await store.list(a.actor)).find((host) => host.id === a.hostId)?.state).toBe("revoked");
+  expect(
+    (await db.query<{ draining_at: unknown }>("select draining_at from public.docker_hosts where id=$1", [a.hostId]))
+      .rows[0]?.draining_at,
+  ).toBeNull();
+  expect(
+    (
+      await db.query<{ host_draining: boolean }>(
+        `select ${SNAPSHOT_COLUMNS} from public.docker_snapshots s join public.docker_hosts h on h.id=s.host_id where s.id=$1`,
+        [snapshotId],
+      )
+    ).rows[0]?.host_draining,
+  ).toBe(false);
 });
 
 test("an old drain still refuses a resume while the uninstall's delete is queued, so cleanup cannot delete a resumed workspace", async () => {

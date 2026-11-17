@@ -889,9 +889,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
           [host.id],
         );
         if (!retained.rows.length && !pending.rows.length) {
-          await tx.query(`update public.docker_hosts set revoked_at=now(),registration_hash=null where id=$1`, [
-            host.id,
-          ]);
+          // The uninstall completed: retire the host and end the drain in the same transaction, so its snapshots
+          // report the revoked state instead of asking the user to retry an uninstall that already finished.
+          await tx.query(
+            `update public.docker_hosts set revoked_at=now(),registration_hash=null,draining_at=null where id=$1`,
+            [host.id],
+          );
           return null;
         }
         return { host, rows: pending.rows.length || !members.rows.length ? [] : retained.rows };
