@@ -29,7 +29,7 @@ test("custom endpoint models are not mistaken for a saved default", () => {
   expect(modelsPageModel({ ...account, models: [{ model: "deployment", input: null, output: null }] }, "codex")).toBe(
     "the model you choose at launch",
   );
-  expect(modelsPageModel(account, "codex")).toBe("gpt-6.1-sol");
+  expect(modelsPageModel(account, "codex")).toBe("gpt-6.2-sol");
 });
 
 test("personal per-agent accounts override account-wide defaults without billing fallback", () => {
@@ -67,7 +67,7 @@ test("launch initialization carries personal agent choices through the account p
   expect(initialLaunchSelection(missing, HARNESS_CATALOG, "codex").credentialId).toBe("");
 });
 
-test("OpenAI key and subscription accounts offer GPT-6.2 without changing the saved default", () => {
+test("OpenAI key and subscription accounts offer GPT-6.2 and select GPT-6.2 Sol by default", () => {
   for (const kind of ["openai", "codex_auth"] as const) {
     const list = launchAccounts(
       { state: "ready", accounts: [{ ...account, kind, maxAgents: null }], orgId: "org", orgName: "Work" },
@@ -76,6 +76,6 @@ test("OpenAI key and subscription accounts offer GPT-6.2 without changing the sa
     expect(launchPickerGroups(list.accounts, HARNESS_CATALOG, "codex", 1)[0]?.options.map((model) => model.id)).toEqual(
       expect.arrayContaining(["gpt-6.2-sol", "gpt-6.2-astra"]),
     );
-    expect(initialLaunchSelection(list, HARNESS_CATALOG, "codex").model).toBe("gpt-6.1-sol");
+    expect(initialLaunchSelection(list, HARNESS_CATALOG, "codex").model).toBe("gpt-6.2-sol");
   }
 });

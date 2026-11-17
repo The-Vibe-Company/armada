@@ -1985,7 +1985,7 @@ function templateRoute(route: string, body: Row, request: Request): Response {
       provider: d.provider,
       goldenBinding: null,
       harness: d.harness,
-      model: d.model ?? (d.harness === "codex" ? "gpt-6.1-sol" : "claude-opus-5-5"),
+      model: d.model ?? (d.harness === "codex" ? "gpt-6.2-sol" : "claude-opus-5-5"),
       reasoningEffort: d.reasoningEffort ?? "high",
       connections: d.connections ?? [],
       variables: d.variables ?? [],

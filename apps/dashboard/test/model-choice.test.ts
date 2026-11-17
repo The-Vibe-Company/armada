@@ -18,7 +18,10 @@ describe("model choice from the dashboard forms", () => {
       },
     });
     expect(launchArgs({ ...form, harness: "codex", prompt: "  Fix it " })).toMatchObject({
-      args: { model: "gpt-6.1-sol", reasoning_effort: "medium", prompt: "Fix it" },
+      args: { model: "gpt-6.2-sol", reasoning_effort: "medium", prompt: "Fix it" },
+    });
+    expect(launchArgs({ ...form, harness: "codex", model: "gpt-6.1-sol" })).toMatchObject({
+      args: { model: "gpt-6.1-sol" },
     });
     expect(
       launchArgs({
