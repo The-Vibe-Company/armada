@@ -235,15 +235,31 @@ export type TickOptions = {
   dispatch?: (job: Job, work: Promise<void>) => void;
 };
 
-const ledgers = new WeakMap<Store, Promise<unknown>>();
-/** Every read-modify-write of the durable ledger is serialized; machine operations are not. */
-function exclusive<T>(store: Store, work: () => Promise<T>): Promise<T> {
-  const current = (ledgers.get(store) ?? Promise.resolve()).then(work);
+const ledgers = new WeakMap<Store, Promise<void>>();
+/**
+ * Every read-modify-write of the durable ledger is serialized per store; machine
+ * operations and held polls are not, so a running job can always complete.
+ */
+async function acquire(store: Store): Promise<() => void> {
+  const previous = ledgers.get(store) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   ledgers.set(
     store,
-    current.catch(() => {}),
+    previous.then(() => next),
   );
-  return current;
+  await previous;
+  return release;
+}
+async function exclusive<T>(store: Store, work: () => Promise<T>): Promise<T> {
+  const release = await acquire(store);
+  try {
+    return await work();
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -260,7 +276,7 @@ export async function tick(
   now = Date.now,
   options: TickOptions = {},
 ): Promise<TickOutcome> {
-  const step = await exclusive(store, () => admit(store, api, executor, skipSnapshots, now, options));
+  const step = await admit(store, api, executor, skipSnapshots, now, options);
   if (typeof step === "string") return step;
   if (options.dispatch) {
     options.dispatch(step.job, step.work());
@@ -339,6 +355,7 @@ export async function runJobs(
   }
 }
 
+type Admission = TickOutcome | { job: Job; work: () => Promise<void> };
 async function admit(
   store: Store,
   api: Api,
@@ -346,8 +363,25 @@ async function admit(
   skipSnapshots: boolean,
   now: () => number,
   options: TickOptions,
-): Promise<TickOutcome | { job: Job; work: () => Promise<void> }> {
-  const state = await store.load();
+): Promise<Admission> {
+  const lock = { release: await acquire(store) };
+  try {
+    return await admitLocked(store, api, executor, skipSnapshots, now, options, lock);
+  } finally {
+    lock.release();
+  }
+}
+
+async function admitLocked(
+  store: Store,
+  api: Api,
+  executor: Executor,
+  skipSnapshots: boolean,
+  now: () => number,
+  options: TickOptions,
+  lock: { release: () => void },
+): Promise<Admission> {
+  let state = await store.load();
   state.retention ??= [];
   const retentionSeconds = state.retentionSeconds ?? 86400;
   if (!Number.isSafeInteger(retentionSeconds) || retentionSeconds < 0) throw Error("Invalid retention policy");
@@ -365,11 +399,13 @@ async function admit(
   // Claims cannot outlive the allocation's immutable physical expiry. A
   // server cannot admit a resume beyond this same frozen expiry, so releasing
   // the hold here is safe even while offline. Retain its historical ACK.
-  const expiredGenerations = new Set(
-    [...state.receipts, ...state.retention]
-      .filter((receipt) => receipt.request.expiresAt !== undefined && receipt.request.expiresAt <= now())
-      .map((receipt) => generationKey(receipt.request)),
-  );
+  const expired = (ledger: State) =>
+    new Set(
+      [...ledger.receipts, ...(ledger.retention ?? [])]
+        .filter((receipt) => receipt.request.expiresAt !== undefined && receipt.request.expiresAt <= now())
+        .map((receipt) => generationKey(receipt.request)),
+    );
+  let expiredGenerations = expired(state);
   let releasedClaim = false;
   for (const claim of state.resumeClaims ?? []) {
     if (claim.active && expiredGenerations.has(generationKey(claim))) {
@@ -425,6 +461,21 @@ async function admit(
   // server is only observable from the mailbox, and deleting its stopped
   // allocation first would destroy the workspace the resume is claiming. Local
   // retention still runs while offline: the poll error is rethrown after it.
+  // The poll may be held open by the server, so it runs outside the ledger
+  // section: running jobs keep completing meanwhile. Only their completions can
+  // write the ledger in that window, so with jobs running it is saved before
+  // and reloaded after. If it cannot be saved, this tick keeps its in-memory
+  // view, as before, so local physical expiry still runs.
+  let persisted = false;
+  if (options.running?.size) {
+    try {
+      await store.save(state);
+      persisted = true;
+    } catch {
+      /* Keep the in-memory view. */
+    }
+  }
+  lock.release();
   let polled: Awaited<ReturnType<Api["poll"]>> | undefined;
   let pollError: unknown;
   try {
@@ -436,6 +487,13 @@ async function admit(
     });
   } catch (error) {
     pollError = error;
+  } finally {
+    lock.release = await acquire(store);
+  }
+  if (persisted) {
+    state = await store.load();
+    state.retention ??= [];
+    expiredGenerations = expired(state);
   }
   // A claim and cleanup authorization are serialized by this single durable
   // host ledger. Merely requesting a resume on the server never admits it.

@@ -12,6 +12,7 @@ import {
   type Executor,
   type Job,
   register,
+  runJobs,
   type State,
   type Store,
   tick,
@@ -1744,4 +1745,110 @@ test("failed pressure image cleanup cannot suppress durable workspace-loss repor
   await tick(f.store, f.api, f.executor, false, () => 100);
   expect(reasons).toEqual(["disk_pressure"]);
   expect((await f.store.load()).retention).toEqual([]);
+});
+
+test("the mailbox loop drains ready jobs without idling and runs another sandbox's job while one executes", async () => {
+  const a = fixture();
+  const b = fixture();
+  let state = a.state();
+  const store: Store = {
+    async load() {
+      return structuredClone(state);
+    },
+    async save(next) {
+      state = structuredClone(next);
+    },
+  };
+  const queue = [a.job, b.job];
+  const acknowledged: string[] = [];
+  const polls: { waitSeconds: number | undefined; running: string[] | undefined }[] = [];
+  let changed = Promise.withResolvers<void>();
+  const api: Api = {
+    async register() {
+      throw new Error("unused");
+    },
+    async poll(_state, options) {
+      polls.push({ waitSeconds: options?.waitSeconds, running: options?.running });
+      const job = queue.find(
+        (item) => !acknowledged.includes(item.requestId) && !options?.running?.includes(item.requestId),
+      );
+      if (job) return { job: structuredClone(job) };
+      // The server holds the poll until something changes.
+      await changed.promise;
+      return { job: null, held: true };
+    },
+    async result(_state, receipt) {
+      acknowledged.push(receipt.requestId);
+      changed.resolve();
+      changed = Promise.withResolvers<void>();
+    },
+  };
+  const releaseFirst = Promise.withResolvers<void>();
+  let firstPendingWhileSecondRan = false;
+  const finished = new Set<string>();
+  const executor: Executor = {
+    async create(request) {
+      if (request.sandboxId === a.job.request.sandboxId) await releaseFirst.promise;
+      else {
+        firstPendingWhileSecondRan = !finished.has(a.job.request.sandboxId);
+        releaseFirst.resolve();
+      }
+      finished.add(request.sandboxId);
+    },
+    stop: async () => {},
+    delete: async () => {},
+    stopIfExpired: async () => {},
+  };
+  const sleeps: number[] = [];
+  await runJobs(store, api, executor, {
+    stopping: () => acknowledged.length === 2,
+    async sleep(ms) {
+      sleeps.push(ms);
+    },
+  });
+  expect(firstPendingWhileSecondRan).toBe(true);
+  expect(sleeps).toEqual([]);
+  expect(polls[0]).toEqual({ waitSeconds: 20, running: [] });
+  expect(polls[1]).toEqual({ waitSeconds: 20, running: [a.job.requestId] });
+  expect(state.receipts.map((receipt) => receipt.outcome)).toEqual(["completed", "completed"]);
+});
+
+test("a re-delivered job that is still executing here is neither run again nor recovered as uncertain", async () => {
+  const f = fixture();
+  let work: Promise<void> | undefined;
+  expect(
+    await tick(f.store, f.api, f.executor, false, Date.now, {
+      dispatch: (_job, running) => {
+        work = running;
+      },
+    }),
+  ).toBe("worked");
+  expect(await tick(f.store, f.api, f.executor, false, Date.now, { running: new Set([f.job.requestId]) })).toBe("busy");
+  await work;
+  expect(f.executed).toEqual(["create"]);
+  expect(f.acknowledgements).toEqual(["completed"]);
+});
+
+test("native held polls report running work and fall back to the previous protocol on older servers", async () => {
+  const f = fixture();
+  const bodies: Record<string, unknown>[] = [];
+  const api = httpApi(
+    Object.assign(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        if ("waitSeconds" in body) return new Response(null, { status: 400 });
+        return Response.json({ job: null });
+      },
+      { preconnect: fetch.preconnect },
+    ),
+    async () => ({ cpus: 8, memoryBytes: 32 * 1024 ** 3 }),
+  );
+  const running = crypto.randomUUID();
+  expect(await api.poll(await f.store.load(), { waitSeconds: 20, running: [running] })).toEqual({ job: null });
+  expect(bodies[0]).toMatchObject({ waitSeconds: 20, running: [running], resumeClaimProtocol: 1 });
+  expect(bodies[1]).toMatchObject({ resumeClaimProtocol: 1 });
+  expect(bodies[1]).not.toHaveProperty("waitSeconds");
+  expect(bodies[1]).not.toHaveProperty("running");
+  expect(bodies).toHaveLength(2);
 });
