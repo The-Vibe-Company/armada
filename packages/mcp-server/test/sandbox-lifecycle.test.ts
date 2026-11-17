@@ -472,6 +472,18 @@ test("replicas lease one observation and resume admission fences old writes whil
       activityToken,
       expectedGeneration: 1,
     });
+    // The renewal writes its deadline and reconcile_after from one transaction
+    // clock, so their gap is the TTL regardless of the runner's wall clock.
+    const renewed = (
+      await db.query<{ expires_ms: number; ttl_ms: number }>(
+        `select (extract(epoch from expires_at) * 1000)::float8 as expires_ms,
+          (extract(epoch from expires_at - reconcile_after) * 1000)::float8 as ttl_ms
+          from sandboxes where id=$1`,
+        [id],
+      )
+    ).rows[0];
+    if (!renewed) throw Error("missing renewed sandbox");
+    expect(renewed.ttl_ms).toBe(90000);
     await expect(data.sandboxes.update(id, { status: "stopped", expectedGeneration: 1 })).rejects.toThrow();
     await data.sandboxes.update(id, {
       status: "running",
@@ -484,7 +496,7 @@ test("replicas lease one observation and resume admission fences old writes whil
     expect(row?.lifecycleGeneration).toBe(3);
     expect(row?.effectiveTtlSeconds).toBe(90);
     expect(row?.requestedTtlSeconds).toBe(90);
-    expect(Date.parse(row?.expiresAt ?? "") - Date.now()).toBeGreaterThan(85000);
+    expect(Date.parse(row?.expiresAt ?? "")).toBe(renewed.expires_ms);
   } finally {
     gate.resolve();
     await Promise.allSettled([first]);

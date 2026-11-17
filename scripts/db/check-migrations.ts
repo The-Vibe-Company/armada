@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
 
+// A new version may lead the guard's clock by at most this window. It absorbs
+// a local time written as UTC and back-to-back migrations one second apart,
+// while a far-future placeholder can never become a base that no later valid
+// version can exceed.
+const FUTURE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 function migrations(ref: string): Map<string, string> {
   const paths = execFileSync("git", ["ls-tree", "-r", "--name-only", ref, "--", "supabase/migrations"], {
     encoding: "utf8",
@@ -24,15 +30,27 @@ function parseVersion(version: string): number | undefined {
   if (Number.isFinite(date.getTime()) && formatVersion(date) === version) return date.getTime();
 }
 
-function suggestedVersion(versions: Iterable<string>): string | undefined {
-  let time = Date.now();
+// The guard's clock. MIGRATION_GUARD_NOW (ISO 8601) fixes it for tests.
+function guardNow(): number {
+  const fixed = process.env.MIGRATION_GUARD_NOW;
+  if (!fixed) return Date.now();
+  const time = Date.parse(fixed);
+  if (!Number.isFinite(time)) throw new Error(`Invalid MIGRATION_GUARD_NOW: ${fixed}`);
+  return time;
+}
+
+// The next free second at or after now, above every version inside the window.
+// Versions beyond the window must be renamed, so they do not bound it.
+function suggestedVersion(versions: Iterable<string>, now: number): string | undefined {
+  const limit = now + FUTURE_WINDOW_MS;
+  let time = now;
   for (const version of versions) {
     const timestamp = parseVersion(version);
-    if (timestamp !== undefined) time = Math.max(time, timestamp + 1000);
+    if (timestamp !== undefined && timestamp <= limit) time = Math.max(time, timestamp + 1000);
   }
-  const next = new Date(time);
+  const next = new Date(time - (time % 1000));
   if (next.getUTCSeconds() === 0) next.setUTCSeconds(1);
-  if (next.getUTCFullYear() <= 9999) return formatVersion(next);
+  if (next.getTime() <= limit) return formatVersion(next);
 }
 
 try {
@@ -43,6 +61,8 @@ try {
   const errors: string[] = [];
   const versions = new Map<string, string>();
   const latest = [...baseline.values()].sort().at(-1);
+  const now = guardNow();
+  const newest = formatVersion(new Date(now + FUTURE_WINDOW_MS));
   let needsTimestamp = false;
   for (const [path, version] of head) {
     const previous = versions.get(version);
@@ -55,18 +75,23 @@ try {
     } else if (version.endsWith("00")) {
       errors.push(`New migration ${path} has a minute-rounded version. Use UTC seconds other than 00.`);
       needsTimestamp = true;
+    } else if (version > newest) {
+      errors.push(
+        `New migration ${path} is more than 24 hours ahead of the current UTC time. Use a version no later than ${newest}.`,
+      );
+      needsTimestamp = true;
     }
     if (latest && version <= latest) {
       errors.push(`New migration ${path} must have a version strictly greater than ${latest} on ${base}`);
     }
   }
   if (needsTimestamp) {
-    const suggestion = suggestedVersion([...baseline.values(), ...head.values()]);
-    if (suggestion) {
-      errors.push(
-        `Use migration version ${suggestion} for the first rename. Preserve unapplied migration dependency order and rerun the guard.`,
-      );
-    }
+    const suggestion = suggestedVersion([...baseline.values(), ...head.values()], now);
+    errors.push(
+      suggestion
+        ? `Use migration version ${suggestion} for the first rename. Preserve unapplied migration dependency order and rerun the guard.`
+        : `No version within 24 hours of the current UTC time is above ${latest ?? "the base"}; a base migration is too far ahead.`,
+    );
   }
   if (errors.length) throw new Error(errors.join("\n"));
   console.log(`Migration versions OK (${head.size} files; base ${base}, latest ${latest ?? "none"})`);
