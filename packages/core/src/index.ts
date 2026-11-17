@@ -153,6 +153,7 @@ export {
   GITHUB_CLIENT_ID_ENV,
   GITHUB_CLIENT_SECRET_ENV,
   GITHUB_NOT_CONNECTED,
+  GITHUB_REFRESH_MODAL_NATIVE,
   GITHUB_REVOKED,
   type GitHubAccess,
   type GitHubApp,
@@ -383,6 +384,8 @@ export type {
 export { ROUTINE_REASON_HELP, type Routine, routineLaunchRefusal, routineReasonHelp } from "./routines.ts";
 export {
   createSqlSandboxStore,
+  isExternalRef,
+  MAX_EXTERNAL_REF_LENGTH,
   MAX_STATUS_REASON_LENGTH,
   mapSandboxRow,
   type ResourceProject,

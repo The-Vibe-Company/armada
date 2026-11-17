@@ -14,6 +14,8 @@ export interface SandboxListMetadata {
   preservationNote?: string | null;
   /** Interior-only: null for organization metadata-only viewers. */
   taskOutcome?: TaskOutcome | null;
+  /** Interior-only opaque launch reference (#2568); absent when none or not visible. */
+  externalRef?: string;
   id: string;
   orgId: string;
   ownerId: string;

@@ -90,6 +90,8 @@ export interface ServerSandboxStore extends SandboxStore {
     harness?: Harness;
     goldenId?: string;
     ownerId?: string;
+    /** Interior-only: matches sandboxes the caller owns or administers. */
+    externalRef?: string;
     limit: number;
     page?: number;
   }): Promise<{ rows: SandboxListMetadata[]; total: number }>;
@@ -125,7 +127,7 @@ const SANDBOX_COLUMNS = `${SANDBOX_USAGE} as usage, s.runtime_transport,s.boat_r
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
   s.skills,s.expires_at,s.effective_ttl_seconds,s.requested_ttl_seconds,s.last_observed_at,s.lifecycle_error,s.lifecycle_generation,s.stop_requested_at,s.model, s.reasoning_effort, s.machine_size,s.resource_project, s.repository_dir, g.name as golden, s.visibility::text as visibility, s.access_owner_id,
   s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,
-  g.modal_environment, g.modal_app_id`;
+  g.modal_environment, g.modal_app_id, s.external_ref`;
 /** `$1` is the caller's orgs and `$2` the caller. */
 const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)
   and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2::uuid)`;
@@ -143,6 +145,7 @@ const SANDBOX_DELETION_MANAGED = `(exists(select 1 from public.orchestrators o w
       join public.sandboxes parent on parent.id=p.sandbox_id
       where p.id=c.orchestrator_id and p.org_id=c.org_id and p.owner_id=c.owner_id
         and p.kind='sandbox' and parent.status='deleted')))`;
+const SANDBOX_INTERIOR = `(s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin'))`;
 const SANDBOX_LIST_COLUMNS = `case when (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) then ${SANDBOX_USAGE} else null end as usage, s.preservation_note as "preservationNote", nullif(s.provider_sandbox_id,'') as "providerSandboxId",
   case when s.provider='boat' then nullif(s.provider_sandbox_id,'') else null end as "boatId", s.id, s.org_id as "orgId", s.owner_id as "ownerId",
   s.provider::text as provider, s.harness::text as harness, s.model, s.reasoning_effort as "reasoningEffort",
@@ -151,10 +154,13 @@ const SANDBOX_LIST_COLUMNS = `case when (s.owner_id=$2::uuid or exists(select 1 
   case when s.machine_size->>'effective' in ('small','medium','large','xlarge') then s.machine_size->>'effective' else null end as "machineSize",
   'Sandbox ' || s.id::text as "displayLabel",
   case when (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) then s.task_outcome else null end as "taskOutcome",
+  case when ${SANDBOX_INTERIOR} then s.external_ref else null end as "externalRef",
   (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) as "canOpen",
   (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) as "canManage"`;
 
-const SANDBOX_LIST_MATCH = `${SANDBOX_MEMBER}
+// Interior-only filter: a metadata-only org viewer cannot probe another member's external reference.
+const sandboxListMatch = (externalRef: number) => `${SANDBOX_MEMBER}
+               and ($${externalRef}::text is null or (s.external_ref = $${externalRef}::text and ${SANDBOX_INTERIOR}))
                and ($9::uuid is null or s.org_id=$9::uuid)
                and (($3::text[] is null and s.status <> 'deleted') or s.status::text = any($3::text[]))
                and ($4::text is null or s.harness::text = $4)
@@ -382,11 +388,11 @@ export function createSqlData(
         const result = await sql.query<SandboxViewRow>(
           `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid)
            insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-             reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport)
+             reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport, external_ref)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
-             $9::text, $10::text, $11::public.sandbox_provider,case when $21::text='private' then 'private'::public.visibility else visible.visibility end,$2::uuid,$12::text,$13::integer,$14::integer,coalesce($20::timestamptz,now()+$14 * interval '1 second'),$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb, $22::boolean,$23::text from visible
+             $9::text, $10::text, $11::public.sandbox_provider,case when $21::text='private' then 'private'::public.visibility else visible.visibility end,$2::uuid,$12::text,$13::integer,$14::integer,coalesce($20::timestamptz,now()+$14 * interval '1 second'),$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb, $22::boolean,$23::text,$24::text from visible
            returning runtime_transport,boat_runtime, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility`,
+             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility,external_ref`,
           [
             ...scope,
             input.goldenId,
@@ -410,6 +416,7 @@ export function createSqlData(
             input.visibility ?? null,
             input.boatRuntime === true,
             input.runtimeTransport ?? null,
+            input.externalRef ?? null,
           ],
         );
         const row = result.rows[0];
@@ -801,7 +808,7 @@ export function createSqlData(
              where m.user_id=$2::uuid and m.org_id=$9::uuid
            ), matched as materialized (
              select s.id,s.created_at from public.sandboxes s
-             where ${SANDBOX_LIST_MATCH}
+             where ${sandboxListMatch(10)}
            ), page as materialized (
              select id from matched order by created_at desc,id limit $7 offset $8
            ) select ${SANDBOX_LIST_COLUMNS}, totals.total,
@@ -818,6 +825,7 @@ export function createSqlData(
             filter.limit,
             ((filter.page ?? 1) - 1) * filter.limit,
             listOrgId ?? null,
+            filter.externalRef ?? null,
           ],
         );
         const page = result.rows[0];
@@ -915,9 +923,13 @@ export function createScopedSandboxData(sql: Sql, store: VaultStore) {
   };
 }
 
-function sandboxListRow(row: SandboxListMetadata): SandboxListMetadata {
+function sandboxListRow({
+  externalRef,
+  ...row
+}: Omit<SandboxListMetadata, "externalRef"> & { externalRef?: string | null }): SandboxListMetadata {
   return {
     ...row,
+    ...(externalRef ? { externalRef } : {}),
     usage: withServerCost(withUsageTotals(row.usage), row.harness),
     createdAt: new Date(row.createdAt).toISOString(),
     stoppedAt: row.stoppedAt === null ? null : new Date(row.stoppedAt).toISOString(),
@@ -951,7 +963,7 @@ async function namedSandboxPage(
            or lower(btrim(selection_name,$11::text) collate "C")=$10::text))
      ), matched as materialized (
        select s.id,s.org_id,s.created_at from public.sandboxes s
-       where ${SANDBOX_LIST_MATCH}
+       where ${sandboxListMatch(12)}
          and exists(select 1 from candidates c where c.selection_id=s.org_id)
      ), ranked as (
        select id,org_id,row_number() over(partition by org_id order by created_at desc,id) as ordinal from matched
@@ -974,6 +986,7 @@ async function namedSandboxPage(
       null,
       named.ref.trim().toLowerCase(),
       String.fromCharCode(32, 9, 10, 13, 11, 12),
+      filter.externalRef ?? null,
     ],
   );
   const orgs = new Map(

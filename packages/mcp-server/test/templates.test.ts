@@ -389,6 +389,25 @@ for (const retained of [false, true]) {
   });
 }
 
+test("template launch records externalRef on the sandbox and keys it into the request fingerprint", async () => {
+  const f = await fixture();
+  try {
+    const t = (await f.create()).item as LaunchTemplate;
+    await expect(f.launch(t.id, "request-1", { externalRef: "" })).rejects.toMatchObject({ code: "invalid" });
+    const result = await f.launch(t.id, "request-1", { externalRef: "tender:42" });
+    expect(result).toMatchObject({ state: "succeeded", externalRef: "tender:42" });
+    expect((await f.db.query("select external_ref from sandboxes where id=$1", [result.id])).rows).toEqual([
+      { external_ref: "tender:42" },
+    ]);
+    await expect(f.launch(t.id, "request-1", { externalRef: "tender:43" })).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect(f.boat.forks).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
 test("unknown provider outcomes remain durable reconciling across service restart and never allocate again", async () => {
   const f = await fixture();
   try {
