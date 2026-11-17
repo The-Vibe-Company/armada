@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.52.0](https://github.com/The-Vibe-Company/armada/compare/v2.51.0...v2.52.0) (2026-11-17)
+
+
+### Features
+
+* **api:** idempotency key and external reference on launch ([#2574](https://github.com/The-Vibe-Company/armada/issues/2574)) ([932a1e5](https://github.com/The-Vibe-Company/armada/commit/932a1e559a6c022a0d6b846039720b055e585448))
+* **api:** signed outbound webhooks for sandbox events ([#2583](https://github.com/The-Vibe-Company/armada/issues/2583)) ([7b52a9e](https://github.com/The-Vibe-Company/armada/commit/7b52a9e27f573a8eef46c04ca22372961fa5df54))
+* **api:** stream sandbox events with scoped viewer tokens ([#2590](https://github.com/The-Vibe-Company/armada/issues/2590)) ([2e3aa3b](https://github.com/The-Vibe-Company/armada/commit/2e3aa3bb80ccccec0c6abc529f381a1e821d0627))
+* **launch:** record and show launch time per stage ([#2575](https://github.com/The-Vibe-Company/armada/issues/2575)) ([df214ff](https://github.com/The-Vibe-Company/armada/commit/df214ff23e89384c5c27c13f1f632d67f4153119))
+* **models:** add GPT-6.2 Sol and Astra to Codex catalog ([#2588](https://github.com/The-Vibe-Company/armada/issues/2588)) ([6b6bab4](https://github.com/The-Vibe-Company/armada/commit/6b6bab4d81a3fef0855292d057af46eea2767283))
+* **observability:** export sandbox traces to Langfuse ([#2584](https://github.com/The-Vibe-Company/armada/issues/2584)) ([6bbf3b4](https://github.com/The-Vibe-Company/armada/commit/6bbf3b46e08f7f172967c54506926a24f6dbe845))
+
+
+### Bug Fixes
+
+* **modal:** return definite admission refusal for overlapping launches ([#2585](https://github.com/The-Vibe-Company/armada/issues/2585)) ([25cf5e7](https://github.com/The-Vibe-Company/armada/commit/25cf5e758f30f9ceb3f4ccec89a5c5ef6ed4cd12))
+* **runtime:** give every Modal harness the launch Git credential helper ([#2579](https://github.com/The-Vibe-Company/armada/issues/2579)) ([90f1e27](https://github.com/The-Vibe-Company/armada/commit/90f1e27e9f1e52a7849bbc9db22ec7dfd1b4eecb))
+* **runtime:** preserve concurrent artifact preparations ([#2558](https://github.com/The-Vibe-Company/armada/issues/2558)) ([86350bc](https://github.com/The-Vibe-Company/armada/commit/86350bc22a99d0f9dcf463684f23c16f33cb11cc))
+* **runtime:** preserve prompt evidence and distinguish refusals and stops ([#2553](https://github.com/The-Vibe-Company/armada/issues/2553)) ([4faee1e](https://github.com/The-Vibe-Company/armada/commit/4faee1e1c8b651760d6b03f68ccac269eac77625))
+* **server:** recover native dispatch failures and preserve status errors ([#2554](https://github.com/The-Vibe-Company/armada/issues/2554)) ([dc98236](https://github.com/The-Vibe-Company/armada/commit/dc982368b53c0c4187ee35992c0ec829f25c7d64))
+
+
+### Performance Improvements
+
+* **docker-host:** hold host polls, drain ready jobs and run sandboxes concurrently ([#2581](https://github.com/The-Vibe-Company/armada/issues/2581)) ([1cacec0](https://github.com/The-Vibe-Company/armada/commit/1cacec01e99e30befb8a8dc4c26b4186cf210b6e))
+* **modal:** expose launch allocation and bootstrap timings ([#2589](https://github.com/The-Vibe-Company/armada/issues/2589)) ([46785f8](https://github.com/The-Vibe-Company/armada/commit/46785f8a00a728c1b17f55662d052d3bed3591b8))
+* **runtime:** share a verified harness archive cache per Docker host ([#2580](https://github.com/The-Vibe-Company/armada/issues/2580)) ([a617ada](https://github.com/The-Vibe-Company/armada/commit/a617ada08df4e2c2682f64d1fd4b73d3c67d00bd))
+
 ## [2.51.0](https://github.com/The-Vibe-Company/armada/compare/v2.50.0...v2.51.0) (2026-11-17)
 
 
