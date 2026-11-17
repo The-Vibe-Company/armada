@@ -2,7 +2,7 @@ import { VERSION } from "@armada/core";
 import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
-import { acpStopReasonCode, HarnessError, nativeHarnessError } from "./errors.ts";
+import { acpStopReasonCode, HarnessError, nativeHarnessError, RequestRefused } from "./errors.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 
 type ObjectValue = Record<string, unknown>;
@@ -52,9 +52,10 @@ export class AcpDriver implements Driver {
   }
   private open(c: DriverContext, resumeOnly: boolean): Turn {
     c.signal.throwIfAborted();
-    if (c.request.fast) throw new HarnessError("invalid_harness_protocol");
+    // Definite refusal before spawn: replayed safely, including from native resume.
+    if (c.request.fast) throw new RequestRefused("invalid_harness_protocol");
     if (c.request.reasoningEffort !== undefined && c.request.reasoningEffort !== "default")
-      throw new HarnessError("invalid_harness_protocol");
+      throw new RequestRefused("invalid_harness_protocol");
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
     const child = this.children.spawn(this.options.executable, this.options.args ?? ["acp"], {
       cwd,
@@ -339,7 +340,8 @@ export class AcpDriver implements Driver {
       },
       steer: async (text) => {
         await ready;
-        if (!current || stopped || steering) throw Error("no_running_turn");
+        // Definite pre-side-effect refusal: no continuation was installed or cancelled.
+        if (!current || stopped || steering) throw new RequestRefused("no_running_turn");
         steering = true;
         try {
           const previous = current;

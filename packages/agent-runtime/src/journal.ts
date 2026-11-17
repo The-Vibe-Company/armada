@@ -5,6 +5,13 @@ import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor } from "./state.ts";
+
+/** Cut a preview without splitting a surrogate pair into a lone UTF-16 code unit. */
+function boundedPreview(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const end = limit > 0 && /[\uD800-\uDBFF]/.test(text[limit - 1] ?? "") ? limit - 1 : limit;
+  return text.slice(0, end);
+}
 export class Journal {
   readonly db: Database;
   readonly redact: (text: string) => string;
@@ -24,9 +31,17 @@ export class Journal {
  CREATE TABLE IF NOT EXISTS processes(pid INTEGER PRIMARY KEY,body TEXT NOT NULL);`);
   }
   append(event: AgentEvent): number {
-    let body = this.redact(JSON.stringify(event));
     const terminalSnapshot = event.kind === "message" && !event.partial && event.textMode === "snapshot";
-    const oversized = body.length > 262144;
+    // Control events must retain their identity, status and failure reason. Bound only
+    // the display preview, after redaction, so JSON escaping cannot erase the event.
+    let control = event;
+    if (
+      (event.kind === "prompt" || event.kind === "steer") &&
+      Buffer.byteLength(this.redact(JSON.stringify(event))) > 262144
+    )
+      control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
+    let body = this.redact(JSON.stringify(control));
+    const oversized = Buffer.byteLength(body) > 262144;
     if (oversized)
       body = JSON.stringify({
         id: event.id,

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { AcpDriver } from "./acp.ts";
 import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
-import { HarnessError } from "./errors.ts";
+import { HarnessError, RequestRefused } from "./errors.ts";
 import { ModelRateLimitWait } from "./model-rate-limit.ts";
 import {
   exportedModelThrottle,
@@ -127,6 +127,8 @@ export class OpenCodeDriver implements Driver {
   }
   async resumeSession(c: DriverResumeContext): Promise<{ sessionId: string }> {
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
+    // Definite refusal before any native work starts: replaying the same request ID is safe.
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(c.sessionId)) throw new RequestRefused("invalid_harness_protocol");
     await this.restore(c.sessionId, cwd);
     return this.acp.resumeSession(c);
   }

@@ -32,3 +32,36 @@ test("a terminal snapshot cannot silently disappear at the post-redaction journa
     journal.close();
   }
 });
+
+test("large prompt and steer previews preserve control metadata after escaping and redaction", () => {
+  const journal = new Journal(":memory:", createRedactor(["private_value"]));
+  try {
+    // The last case puts a surrogate pair across the preview boundary.
+    for (const text of ["a".repeat(262144), '"'.repeat(140000), "😀".repeat(65536), `a${"😀".repeat(65536)}`]) {
+      const prompt = {
+        promptId: "p",
+        conversationId: "c",
+        status: "queued" as const,
+        request: { sandboxId: "logical", harness: "claude" as const, text: `private_value ${text}` },
+      };
+      journal.transition(prompt, "failed", "authentication_failed");
+      journal.append({ id: "s", at: 1, kind: "steer", promptId: "p", conversationId: "c", text: prompt.request.text });
+    }
+    const events = journal.events().map((row) => row.event);
+    expect(events).toHaveLength(8);
+    for (const event of events) {
+      expect(["prompt", "steer"]).toContain(event.kind);
+      expect(JSON.stringify(event)).not.toContain("private_value");
+      expect(Buffer.byteLength(JSON.stringify(event))).toBeLessThan(262144);
+      expect(event).toMatchObject({ promptId: "p", conversationId: "c" });
+      if (event.kind === "prompt") expect(event).toMatchObject({ status: "failed", reason: "authentication_failed" });
+      if (event.kind === "prompt" || event.kind === "steer") {
+        expect(event.text).toContain("[truncated]");
+        // A preview must never contain an unpaired surrogate from a split pair.
+        expect(event.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+      }
+    }
+  } finally {
+    journal.close();
+  }
+});

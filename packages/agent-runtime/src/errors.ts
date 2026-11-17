@@ -117,3 +117,6 @@ export function claudeResultFailureCode(stopReason: unknown, errors: unknown): H
   if (Array.isArray(errors) && errors.includes("max_output_tokens")) return "output_limit_exceeded";
   return "harness_failed";
 }
+
+/** A pre-side-effect refusal whose outcome is known and safe to replay. */
+export class RequestRefused extends Error {}

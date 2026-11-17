@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ExecResult } from "@armada/core";
 import { validateHarnessCwd } from "./cwd.ts";
+import { RequestRefused } from "./errors.ts";
 import type { Journal } from "./journal.ts";
 import { groupState, processIdentity } from "./processes.ts";
 export interface WorkspaceExecutionHost {
@@ -44,7 +45,7 @@ export function validateWorkspaceExec(input: WorkspaceExec): WorkspaceExec {
     input.index > 100 ||
     ![0, 1].includes(input.attempt)
   )
-    throw Error("workspace_request_invalid");
+    throw new RequestRefused("workspace_request_invalid");
   return { ...input, cwd: validateHarnessCwd(input.cwd) };
 }
 /** Launch-only foreground work. No model environment, argv command, detached

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { RequestRefused } from "../src/errors.ts";
 import { AcpDriver, type DriverEvent } from "../src/index.ts";
 
 // The real stdio transport owns load replay, cancel-response races and multi-turn usage attribution.
@@ -157,6 +158,50 @@ test("ACP observes native events before prompt and releases the observer when it
     });
     await expect(turn.done).rejects.toThrow("observer_lost");
     expect(closed).toBe(true);
+  } finally {
+    await driver.close();
+  }
+});
+
+// Definite pre-side-effect refusal at the driver boundary: no continuation exists to steer.
+test("ACP refuses a steer after its turn stopped with a replayable refusal", async () => {
+  const driver = new AcpDriver({
+    executable: process.execPath,
+    args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
+    cwd: "/tmp",
+    env: {},
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "opencode", text: "DOCKER_OK", model: "test/model" },
+      signal: new AbortController().signal,
+      emit: () => {},
+      session: () => {},
+    });
+    expect(await turn.done).toBe("finished");
+    await expect(turn.steer("too-late")).rejects.toBeInstanceOf(RequestRefused);
+  } finally {
+    await driver.close();
+  }
+});
+
+// Preflight validation runs before the ACP child spawns, so the refusal is definite.
+test("ACP refuses an unsupported reasoning effort before spawning the child", async () => {
+  const driver = new AcpDriver({
+    executable: process.execPath,
+    args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
+    cwd: "/tmp",
+    env: {},
+  });
+  try {
+    expect(() =>
+      driver.start({
+        request: { sandboxId: "s", harness: "opencode", text: "hello", reasoningEffort: "high" },
+        signal: new AbortController().signal,
+        session: () => {},
+        emit: () => {},
+      }),
+    ).toThrow(RequestRefused);
   } finally {
     await driver.close();
   }
