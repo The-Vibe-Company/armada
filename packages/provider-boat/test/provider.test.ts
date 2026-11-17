@@ -1286,11 +1286,12 @@ test("declared outputs of a stopped sandbox are read from its retained disk snap
   const read = await boat.provider.readOutputs?.({ sandboxId: ID });
   if (!read || read === "retained_unreadable") throw Error("expected a retained read");
   expect(read?.retained).toBe(true);
+  expect(read?.complete).toBe(true);
   expect(read?.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
   expect(boat.requests.every((request) => request.method === "GET")).toBe(true);
   expect(boat.requests.at(-1)?.query.get("path")).toBe("workspace/outputs/final.pdf");
   expect(boat.remaining()).toBe(0);
-  // A truncated listing cannot prove which outputs exist: unavailable, never an empty snapshot.
+  // A truncated listing still publishes the outputs it lists, as partial coverage (no deletions).
   const truncated = fakeBoat(
     { body: { ok: true, sandbox: sandbox({ state: "archived" }) } },
     { body: { ok: true, type: "snapshot.latest", snapshot } },
@@ -1303,14 +1304,23 @@ test("declared outputs of a stopped sandbox are read from its retained disk snap
         generation: 3,
         treeAvailable: true,
         truncated: true,
-        fileCount: 0,
-        totalSizeBytes: 0,
-        entries: [],
+        fileCount: 2,
+        totalSizeBytes: 9000005,
+        entries: [
+          { path: "workspace/node_modules/big.bin", kind: "file", size: 9000000 },
+          { path: "workspace/outputs/final.pdf", kind: "file", size: 5 },
+        ],
       },
     },
+    { raw: "final", headers: { "x-snapshot-entry-kind": "file" } },
   );
-  // A completed snapshot's truncated listing never becomes complete: final for this stop.
-  expect(await truncated.provider.readOutputs?.({ sandboxId: ID })).toBe("retained_unreadable");
+  const partial = await truncated.provider.readOutputs?.({ sandboxId: ID });
+  if (!partial || partial === "retained_unreadable") throw Error("expected a partial retained read");
+  expect(partial.complete).toBe(false);
+  expect(partial.files.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([
+    ["final.pdf", "final"],
+  ]);
+  expect(truncated.remaining()).toBe(0);
   // The latest completed snapshot predates a stop whose own snapshot is pending or failed (Boat may
   // retry it): unavailable now, never read in place of the stopped disk.
   const pending = fakeBoat({

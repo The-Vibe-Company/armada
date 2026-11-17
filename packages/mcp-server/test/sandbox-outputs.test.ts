@@ -42,6 +42,10 @@ function disks() {
     // null: unavailable now (retryable); "retained_unreadable": never readable for this stop.
     retained: null as OutputFile[] | "retained_unreadable" | null,
     stopped: false,
+    // false: a truncated retained listing that covers only these files.
+    complete: true,
+    // Set: reads hang like an SDK call that ignores cancellation, until released.
+    hold: null as Promise<void> | null,
     reads: 0,
   };
   const provider = {
@@ -51,9 +55,10 @@ function disks() {
     exec: async () => ({ detached: false, exitCode: 0, timedOut: false, truncated: false, stderr: "", stdout: "{}" }),
     readOutputs: async () => {
       state.reads++;
+      if (state.hold) await state.hold;
       if (!state.stopped) return { files: state.live, retained: false };
       if (!state.retained || state.retained === "retained_unreadable") return state.retained;
-      return { files: state.retained, retained: true };
+      return { files: state.retained, retained: true, complete: state.complete };
     },
   } as unknown as Provider;
   return { state, provider };
@@ -232,4 +237,56 @@ test("a failed or out-of-bounds read keeps the previous snapshot and never fails
   expect((await db.query(`select name,size from sandbox_outputs where sandbox_id=$1`, [id])).rows).toEqual([
     { name: "memo.txt", size: 5 },
   ]);
+});
+
+test("a truncated retained listing publishes the outputs it lists without deleting unseen ones", async () => {
+  const { db, people, id, sql } = await fixture({ boatId: "partial_fixture" });
+  const { state, provider } = disks();
+  state.live = [file("annex.txt", "annex"), file("memo.txt", "draft")];
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  expect(await service.reconcileOne(signal())).toBe(true);
+  // Provider-initiated stop after the last sample; the listing is truncated but includes final.pdf.
+  state.stopped = true;
+  state.complete = false;
+  state.retained = [file("final.pdf", "final"), file("memo.txt", "final tender")];
+  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [id]);
+  expect(await service.reconcileOne(signal())).toBe(true);
+  const route = routeFor(service, people.owner, people.org);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+  const listed = (await (await route(new Request(url)))?.json()) as { files: { name: string }[] };
+  expect(listed.files.map((f) => f.name)).toEqual(["annex.txt", "final.pdf", "memo.txt"]);
+  expect(await (await route(new Request(`${url}/final.pdf`)))?.text()).toBe("final");
+  expect(await (await route(new Request(`${url}/memo.txt`)))?.text()).toBe("final tender");
+  // A completed snapshot never changes: the partial read completes collection for this stop.
+  await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
+  expect(await service.reconcileOne(signal())).toBe(false);
+});
+
+test("a hanging provider read yields at the caller deadline, stays tracked and never persists late", async () => {
+  const { db, id, sql } = await fixture({ boatId: "hanging_fixture" });
+  const { state, provider } = disks();
+  state.live = [file("memo.txt", "late")];
+  let release = () => {};
+  state.hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  const deadline = new AbortController();
+  const lane = service.reconcileOne(deadline.signal);
+  await Bun.sleep(0);
+  deadline.abort();
+  // The worker lane returns while the SDK promise is still pending: the next lane can run.
+  expect(await lane).toBe(true);
+  // The stop path's final capture is bounded the same way, so stop dispatch proceeds.
+  const stop = new AbortController();
+  const capture = captureFinalOutputs(sql, provider, id, { key: KEY, signal: stop.signal });
+  await Bun.sleep(0);
+  stop.abort();
+  await expect(capture).rejects.toBeDefined();
+  expect(state.reads).toBe(2);
+  // Released after the deadline, the reads are drained but never replace the snapshot.
+  release();
+  await service.drain();
+  await Bun.sleep(0);
+  expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
 });

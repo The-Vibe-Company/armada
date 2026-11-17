@@ -86,12 +86,10 @@ export function admitOutputs(files: readonly OutputFile[]): OutputFile[] {
 
 /** Select declared outputs from a retained-disk listing (paths relative to the disk root).
  * Only direct regular-file children of the declared directory, in name order, within bounds.
- * Returns the snapshot paths to fetch; `null` when the listing cannot prove completeness. */
+ * Returns the snapshot paths to fetch. A truncated listing still yields the outputs it lists. */
 export function selectRetainedOutputs(
   entries: readonly { path: string; kind: string; size?: number | null }[],
-  complete: boolean,
-): { name: string; path: string; size: number }[] | null {
-  if (!complete) return null;
+): { name: string; path: string; size: number }[] {
   const prefix = `${OUTPUT_DIRECTORY.slice(1)}/`;
   const selected: { name: string; path: string; size: number }[] = [];
   for (const entry of entries) {

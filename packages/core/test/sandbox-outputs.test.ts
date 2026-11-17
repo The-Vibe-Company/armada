@@ -27,20 +27,16 @@ test("server admission bounds any provider's read by count, size and unique name
 });
 
 test("retained-disk selection keeps only bounded direct regular files of the declared directory", () => {
-  const selected = selectRetainedOutputs(
-    [
-      { path: "workspace/outputs/b.pdf", kind: "file", size: 20000 },
-      { path: "/workspace/outputs/a.txt", kind: "file", size: 10 },
-      { path: "workspace/outputs/c.bin", kind: "file", size: 20000 },
-      { path: "workspace/outputs/link", kind: "symlink", size: 4 },
-      { path: "workspace/outputs/sub", kind: "dir" },
-      { path: "workspace/outputs/sub/x", kind: "file", size: 1 },
-      { path: "workspace/outputs/huge", kind: "file", size: 40000 },
-      { path: "workspace/secret", kind: "file", size: 1 },
-      { path: "home/user/workspace/outputs/z", kind: "file", size: 1 },
-    ],
-    true,
-  );
-  expect(selected?.map((entry) => entry.name)).toEqual(["a.txt", "b.pdf"]);
-  expect(selectRetainedOutputs([], false)).toBeNull();
+  const selected = selectRetainedOutputs([
+    { path: "workspace/outputs/b.pdf", kind: "file", size: 20000 },
+    { path: "/workspace/outputs/a.txt", kind: "file", size: 10 },
+    { path: "workspace/outputs/c.bin", kind: "file", size: 20000 },
+    { path: "workspace/outputs/link", kind: "symlink", size: 4 },
+    { path: "workspace/outputs/sub", kind: "dir" },
+    { path: "workspace/outputs/sub/x", kind: "file", size: 1 },
+    { path: "workspace/outputs/huge", kind: "file", size: 40000 },
+    { path: "workspace/secret", kind: "file", size: 1 },
+    { path: "home/user/workspace/outputs/z", kind: "file", size: 1 },
+  ]);
+  expect(selected.map((entry) => entry.name)).toEqual(["a.txt", "b.pdf"]);
 });

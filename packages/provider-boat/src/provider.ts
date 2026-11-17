@@ -453,10 +453,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (!snapshot || snapshot.sandboxId !== sandboxId || snapshot.status !== "completed") return null;
       const tree = await call(() => api.getSnapshotTree({ snapshotId: snapshot.id }, { signal: read }));
       if (tree.snapshotId !== snapshot.id) return null;
-      // A completed snapshot never changes: its truncated listing will never cover the directory.
-      if (tree.treeAvailable && tree.truncated) return "retained_unreadable";
-      const selected = selectRetainedOutputs(tree.entries ?? [], tree.treeAvailable && !tree.truncated);
-      if (!selected) return null;
+      if (!tree.treeAvailable) return null;
+      // Boat lists the whole disk; a truncated listing may still include declared outputs. Publish
+      // those it lists (verified below) as partial coverage: unseen outputs are not deletions.
+      // A completed snapshot never changes, so re-reading it cannot cover more.
+      const selected = selectRetainedOutputs(tree.entries ?? []);
       const files: OutputFile[] = [];
       for (const entry of selected) {
         const response = await call(() =>
@@ -467,7 +468,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         if (bytes.length !== entry.size) return null;
         files.push({ name: entry.name, bytes });
       }
-      return { files, retained: true };
+      return { files, retained: true, complete: !tree.truncated };
     },
 
     async observeResources(sandboxId) {
