@@ -1118,7 +1118,9 @@ test("default retention reclaims expired stopped workspaces with ample free disk
   f.executor.isStopped = async () => true;
   f.executor.diskFreeBytes = async () => 20_000_000_000;
   let deletes = 0;
-  f.executor.deleteStopped = async () => { deletes++; };
+  f.executor.deleteStopped = async () => {
+    deletes++;
+  };
   await tick(f.store, f.api, f.executor, false, () => 2000);
   expect(deletes).toBe(1);
 });
@@ -1210,9 +1212,9 @@ test("retention rotates failed deletions and runs local TTL before bounded offli
 
 test("server retention override persists and shifts pending deadlines without resetting their stopped age", async () => {
   const f = fixture();
-  await tick(f.store, f.api, f.executor);
-  const state = await f.store.load();
   f.job.request.expiresAt = 15000000;
+  await tick(f.store, f.api, f.executor, false, () => 0);
+  const state = await f.store.load();
   state.retentionSeconds = 86400;
   state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 100000000 }];
   await f.store.save(state);
