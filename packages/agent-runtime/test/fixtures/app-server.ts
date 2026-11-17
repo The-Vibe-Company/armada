@@ -173,7 +173,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           ? "replacement-model"
           : process.env.ARMADA_USAGE_MODEL === "missing"
             ? undefined
-            : (process.env.ARMADA_USAGE_MODEL ?? m.params.model ?? "gpt-6.1-sol"),
+            : (process.env.ARMADA_USAGE_MODEL ?? m.params.model ?? "gpt-6.2-sol"),
     });
     if (baselineMode === "after") pendingResumeBaseline = baseline;
   } else if (m.method === "turn/start") {
