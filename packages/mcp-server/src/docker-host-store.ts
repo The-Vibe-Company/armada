@@ -1,9 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
-  DOCKER_HOST_DRAINING_MESSAGE,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
+  DOCKER_SNAPSHOT_FAILURE_MESSAGES,
   type DockerHostSummary,
   type DockerJobFailureReason,
   type Sql,
@@ -874,8 +874,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         ]);
         if (!members.rows.length || !active.rows.length) {
           await tx.query(
-            "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Host retired before snapshot publication.' where host_id=$1 and status='building'",
-            [host.id],
+            "update public.docker_snapshots set status='failed',image_id=null,failure_reason=$2 where host_id=$1 and status='building'",
+            [host.id, DOCKER_SNAPSHOT_FAILURE_MESSAGES.retired],
           );
           await tx.query(
             "update public.docker_host_jobs set outcome='failed',completed_at=now() where host_id=$1 and outcome is null and (bound_operation is null or bound_operation not in ('stop','delete'))",
@@ -949,8 +949,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           );
         }
         await tx.query(
-          "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build expired before an image was published.' where host_id=$1 and status='building' and build_expires_at<=now()",
-          [host.id],
+          "update public.docker_snapshots set status='failed',image_id=null,failure_reason=$2 where host_id=$1 and status='building' and build_expires_at<=now()",
+          [host.id, DOCKER_SNAPSHOT_FAILURE_MESSAGES.expired],
         );
         await tx.query(
           "update public.docker_host_jobs j set outcome='failed',completed_at=now() from public.docker_snapshots s where j.snapshot_id=s.id and j.host_id=$1 and j.outcome is null and s.status='failed'",
@@ -1020,7 +1020,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               "update public.docker_snapshots set status='failed',image_id=null,failure_reason=$2 where id=$1 and status='building'",
               [
                 row.snapshot_id,
-                draining ? DOCKER_HOST_DRAINING_MESSAGE : "Snapshot build authorization is no longer valid.",
+                draining ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.draining : DOCKER_SNAPSHOT_FAILURE_MESSAGES.authorization,
               ],
             );
             await tx.query(
@@ -1190,12 +1190,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 eligible
                   ? null
                   : draining
-                    ? DOCKER_HOST_DRAINING_MESSAGE
+                    ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.draining
                     : result.outcome === "completed"
-                      ? "Snapshot build authorization is no longer valid."
+                      ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.authorization
                       : result.reason === "disk_full"
-                        ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
-                        : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
+                        ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.disk
+                        : DOCKER_SNAPSHOT_FAILURE_MESSAGES.build,
               ],
             );
           }

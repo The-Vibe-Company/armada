@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { type DockerSnapshotRecord, parseGoldenConfig } from "@armada/core";
+import { DOCKER_SNAPSHOT_FAILURE_MESSAGES, type DockerSnapshotRecord, parseGoldenConfig } from "@armada/core";
 import { type Sql, VaultError } from "@armada/core/server";
 import type { DockerHostJob } from "../../core/src/docker-host-job.ts";
 import { DockerHostDraining } from "./docker-capacity.ts";
@@ -55,10 +55,9 @@ export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
     image: row.image_id,
     failureReason:
       row.status === "building" && new Date(row.build_expires_at).getTime() <= Date.now()
-        ? "Snapshot build expired before an image was published."
+        ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.expired
         : row.status === "failed"
-          ? (row.failure_reason ??
-            "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.")
+          ? (row.failure_reason ?? DOCKER_SNAPSHOT_FAILURE_MESSAGES.build)
           : null,
     createdAt: new Date(row.created_at).toISOString(),
     hostName: row.host_name,

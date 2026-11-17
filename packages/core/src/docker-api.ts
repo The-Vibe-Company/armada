@@ -1,6 +1,7 @@
 import type { Harness } from "./contract.ts";
 import type { CredentialKind } from "./database.types.ts";
 import { DOCKER_DISK_FLOOR_MESSAGE } from "./docker-disk-policy.ts";
+import { DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
 import { GITHUB_CALLER_NOT_CONNECTED } from "./github.ts";
 import type { GitHubLaunchInfo } from "./launch.ts";
 import type { MachineSize, MachineSizeEvidence } from "./machine-size.ts";
@@ -154,6 +155,20 @@ export const DOCKER_LAUNCH_FAILURE_MESSAGES = {
     "Repository checkout failed or timed out. Check the repository branch and GitHub access, then launch again.",
   preparation: "Sandbox skill or MCP preparation failed. Check the launch configuration, then launch again.",
   prompt: "Sandbox first prompt admission failed. Inspect the sandbox and launch again.",
+} as const;
+
+/**
+ * Closed set of safe snapshot build diagnostics. The database constraint and every writer share this
+ * list so a new reason cannot be persisted by one path and rejected by the schema.
+ */
+export const DOCKER_SNAPSHOT_FAILURE_MESSAGES = {
+  expired: "Snapshot build expired before an image was published.",
+  authorization: "Snapshot build authorization is no longer valid.",
+  build:
+    "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
+  retired: "Host retired before snapshot publication.",
+  disk: DOCKER_DISK_FLOOR_MESSAGE,
+  draining: DOCKER_HOST_DRAINING_MESSAGE,
 } as const;
 
 /** Legacy operator/compatibility fixture image. Normal launches use officialSandboxImage(). */

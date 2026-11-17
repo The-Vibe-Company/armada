@@ -996,6 +996,27 @@ test("retired registrants retain only bound reconciliation and admin cleanup", a
   }
 });
 
+test("unregistering with a queued snapshot build persists the retirement reason the constraint admits", async () => {
+  const db = database();
+  const a = await fixture(),
+    snapshotId = randomUUID();
+  await db.query(
+    `insert into public.docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,request_hash,actor_epoch,issuer_epoch,generation,base_image,build_expires_at)
+     values($1,$2,$3,$4,$5,'retired-build','private','{}'::jsonb,$6,1,1,$7,'example/worker@sha256:${"a".repeat(64)}',now()+interval '1 hour')`,
+    [snapshotId, a.actor.orgId, a.actor.userId, a.hostId, a.installationId, "b".repeat(64), randomUUID()],
+  );
+  await db.query("delete from members where org_id=$1 and user_id=$2", [a.actor.orgId, a.actor.userId]);
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+  expect(
+    (
+      await db.query<{ status: string; failure_reason: string }>(
+        "select status,failure_reason from public.docker_snapshots where id=$1",
+        [snapshotId],
+      )
+    ).rows[0],
+  ).toEqual({ status: "failed", failure_reason: "Host retired before snapshot publication." });
+});
+
 test("retirement cancels undispatchable startup without claiming physical cleanup", async () => {
   const db = database();
   for (const retired of ["removed", "revoked"] as const) {
