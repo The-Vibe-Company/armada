@@ -100,15 +100,27 @@ export interface TemplateLaunchInput {
   skills?: string[];
   skipSkillDefaults?: boolean;
 }
-export interface TemplateLaunchResult {
+/** A durable launch request: `state` is "succeeded", "failed" or still "reconciling"/"allocating". Replay `requestKey` to read it again. */
+export interface TemplateLaunchReceipt {
   requestId: string;
   state: string;
-  id?: string;
+  id: string;
+  reason?: string;
+  message?: string;
   status?: string;
   promptId?: string | null;
   conversationId?: string | null;
   [key: string]: unknown;
 }
+/** Golden admission refused the launch before any request was recorded (HTTP 200, no `requestId`). Nothing was launched. */
+export interface TemplateLaunchRefusal {
+  requestId?: undefined;
+  state: "failed";
+  reason: GoldenErrorCode;
+  message: string;
+}
+/** Narrow with `result.requestId !== undefined` before reading the receipt. */
+export type TemplateLaunchResult = TemplateLaunchReceipt | TemplateLaunchRefusal;
 export interface StatusInput extends SandboxRef {
   prompt_id?: string;
   recorded?: boolean;
@@ -236,7 +248,10 @@ export class Armada {
       throw new TypeError("Use an HTTP(S) Armada origin.");
     if (!options.token || /[\r\n]/.test(options.token)) throw new TypeError("A service token is required.");
     this.origin = url.origin;
-    this.fetcher = options.fetch ?? globalThis.fetch;
+    // Never call fetch as a method of this client: browsers' native fetch throws
+    // "Illegal invocation" for any receiver other than the global object or undefined.
+    const fetcher = options.fetch;
+    this.fetcher = fetcher ? (input, init) => fetcher(input, init) : (input, init) => globalThis.fetch(input, init);
     this.retries = options.readRetries ?? 0;
     if (!Number.isInteger(this.retries) || this.retries < 0 || this.retries > 3)
       throw new TypeError("readRetries must be between 0 and 3.");

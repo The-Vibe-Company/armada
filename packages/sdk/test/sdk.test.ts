@@ -131,3 +131,43 @@ test("webhook verification binds exact body, timestamp and delivery id and rejec
   headers.set("Armada-Webhook-Id", "different_delivery");
   expect(await verifyWebhookSignature(input)).toBe(false);
 });
+
+test("the default transport calls fetch without the client as its receiver", async () => {
+  const original = globalThis.fetch;
+  const receivers: unknown[] = [];
+  // Mirrors browsers' native fetch, which throws "Illegal invocation" for any other receiver.
+  const nativeLike = function (this: unknown) {
+    receivers.push(this);
+    if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+    return Promise.resolve(Response.json({ id: "sandbox_placeholder" }));
+  } as unknown as typeof fetch;
+  globalThis.fetch = nativeLike;
+  try {
+    await new Armada({ token: "service_placeholder" }).status({ id: "sandbox_placeholder" });
+    await new Armada({ token: "service_placeholder", fetch: nativeLike }).status({ id: "sandbox_placeholder" });
+  } finally {
+    globalThis.fetch = original;
+  }
+  expect(receivers).toHaveLength(2);
+});
+
+test("template launch exposes the HTTP 200 pre-admission refusal without a request receipt", async () => {
+  const client = new Armada({
+    token: "service_placeholder",
+    fetch: (async () =>
+      Response.json({
+        state: "failed",
+        reason: "conflict",
+        message: "Golden has no snapshot.",
+      })) as import("../src/index.ts").Fetch,
+  });
+  const result = await client.launchFromTemplate({
+    org: "org_placeholder",
+    id: "template_placeholder",
+    requestKey: "request_placeholder",
+  });
+  // @ts-expect-error A refusal has no durable request; callers must narrow first.
+  expect(() => result.requestId.toUpperCase()).toThrow(TypeError);
+  if (result.requestId !== undefined) throw new Error("Expected a refusal");
+  expect(result).toEqual({ state: "failed", reason: "conflict", message: "Golden has no snapshot." });
+});

@@ -5196,7 +5196,7 @@
     "/api/v1/logs/read": {
       "post": {
         "operationId": "logs_read",
-        "description": "The agent's events oldest first: prompts (with status and failure reason), messages and tool calls, steers. The default is one bounded page (100 events). Set all to read every available page (up to 100 pages) in one response. Pass the returned cursor as since_cursor to read only what is new. An event read twice has the same id and the newer body; each id appears once per response.",
+        "description": "The agent's events oldest first: prompts (with status and failure reason), messages and tool calls, steers. The default is one bounded page (100 events). Set all to read every available page (up to 100 pages) in one response. Pass the returned cursor as cursor to read only what is new. An event read twice has the same id and the newer body; each id appears once per response.",
         "security": [
           {
             "serviceToken": []

@@ -4,6 +4,24 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import { createArmadaServer, type ToolContext } from "./tools.ts";
 
+/** MCP input names that the REST adapters (`control.ts`, `control-logs.ts`) accept under another name. */
+export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "sandbox/launch": { ttl_seconds: "ttlSeconds", reasoning_effort: "reasoningEffort" },
+  "logs/read": { since_cursor: "cursor", conversation_id: "conversationId" },
+};
+/** Rewrites every string (prose and `required` entries); object keys are renamed by the caller. */
+function restNames<T>(value: T, rename: Readonly<Record<string, string>>): T {
+  if (typeof value === "string")
+    return Object.entries(rename).reduce(
+      (text, [from, to]) => text.replace(new RegExp(`\\b${from}\\b`, "g"), to),
+      value as string,
+    ) as T;
+  if (Array.isArray(value)) return value.map((item) => restNames(item, rename)) as T;
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, restNames(item, rename)])) as T;
+  return value;
+}
+
 /**
  * Describe shared REST operations using the very schemas registered by the server.
  * Registration performs no provider/database I/O; no tool is invoked.
@@ -27,13 +45,11 @@ export async function generateOpenApi() {
     for (const [route, name] of Object.entries(routes)) {
       const tool = tools.find((tool) => tool.name === name);
       if (!tool) throw new Error(`No registered contract for ${route}`);
-      const input = structuredClone(tool.inputSchema);
-      const rename =
-        route === "sandbox/launch"
-          ? { ttl_seconds: "ttlSeconds", reasoning_effort: "reasoningEffort" }
-          : route === "logs/read"
-            ? { since_cursor: "cursor", conversation_id: "conversationId" }
-            : {};
+      const rename = REST_FIELD_NAMES[route] ?? {};
+      // REST handlers read their own field names (an unknown name is ignored, not
+      // refused), so schema keys, required lists and prose must all use them.
+      const input = restNames(structuredClone(tool.inputSchema), rename);
+      const description = restNames(tool.description ?? "", rename);
       for (const [from, to] of Object.entries(rename)) {
         if (input.properties?.[from]) {
           input.properties[to] = input.properties[from];
@@ -50,7 +66,7 @@ export async function generateOpenApi() {
       paths[`/api/v1/${route}`] = {
         post: {
           operationId: route.replaceAll("/", "_").replaceAll("-", "_"),
-          description: tool.description,
+          description,
           security: [{ serviceToken: [] }],
           requestBody: { required: true, content: { "application/json": { schema: input } } },
           responses: {

@@ -16,7 +16,7 @@ await armada.send({ id: sandbox.id, prompt: "Review the change", request_id: cry
 await armada.stop({ id: sandbox.id });
 ```
 
-`launchFromTemplate` accepts the server's `org`, template `id`, optional `revision`, and durable `requestKey`, plus supported prompt/resource overrides. Retain the original key and identical input after uncertain delivery. Ordinary launches also support a durable `idempotencyKey` when enabled by the server. Native send operations do not guarantee deduplication even when given a `request_id`.
+`launchFromTemplate` accepts the server's `org`, template `id`, optional `revision`, and durable `requestKey`, plus supported prompt/resource overrides. Retain the original key and identical input after uncertain delivery. The result is a `TemplateLaunchReceipt` with a `requestId` and `state` (`succeeded`, `failed` with a `reason`, or still in progress) or, when golden admission refuses the launch before any request is recorded, a `TemplateLaunchRefusal`: HTTP 200, `state: "failed"`, a golden `reason` and `message`, and no `requestId`. Nothing was launched in that case. Check `result.requestId !== undefined` before using the receipt. Ordinary launches also support a durable `idempotencyKey` when enabled by the server. Native send operations do not guarantee deduplication even when given a `request_id`.
 
 All methods accept a final `{ signal, timeoutMs }` request option. `wait` performs one bounded server wait and returns `timedOut`; call it again when necessary. Logs return one page by default; pass `cursor` into the next call. `follow` is bounded by the request timeout.
 

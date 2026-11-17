@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import published from "../../../docs/openapi.json";
 import releasePlease from "../../../release-please-config.json";
-import { generateOpenApi } from "../src/openapi.ts";
+import { generateOpenApi, REST_FIELD_NAMES } from "../src/openapi.ts";
 
 test("release version bumps update the published OpenAPI version with core", () => {
   const extraFiles = releasePlease.packages["."]["extra-files"];
@@ -16,9 +16,17 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
     string,
     { post: { requestBody: { content: { "application/json": { schema: { properties: Record<string, unknown> } } } } } }
   >;
-  const launch = paths["/api/v1/sandbox/launch"]!.post.requestBody.content["application/json"].schema.properties;
-  expect(launch.ttlSeconds).toBeDefined();
-  expect(launch.ttl_seconds).toBeUndefined();
+  // REST ignores MCP names (logs `since_cursor` would silently reread page one), so
+  // no key, required entry or prose of a renamed operation may name them.
+  for (const [route, rename] of Object.entries(REST_FIELD_NAMES)) {
+    const operation = paths[`/api/v1/${route}`]!.post;
+    const properties = operation.requestBody.content["application/json"].schema.properties;
+    for (const [mcp, rest] of Object.entries(rename)) {
+      expect(properties[rest]).toBeDefined();
+      expect(JSON.stringify(operation)).not.toMatch(new RegExp(`\\b${mcp}\\b`));
+    }
+  }
+  expect(JSON.stringify(paths["/api/v1/logs/read"]!.post)).toContain("Pass the returned cursor as cursor");
   expect(paths["/api/v1/logs/read"]!.post.requestBody.content["application/json"].schema.properties.follow).toEqual({
     type: "boolean",
     description: "Follow events within the bounded HTTP request.",
