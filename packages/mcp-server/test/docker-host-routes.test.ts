@@ -430,3 +430,25 @@ test("heartbeat availability is validated and drives the public busy-capacity su
   ])
     expect((await poll(invalid)).status).toBe(400);
 });
+
+test("a host reporting many retained deadlines still fits the poll body limit", async () => {
+  const { userId, orgId, store, post } = await fixture();
+  const ticket = await store.issueRegistration({ userId, orgId });
+  const installationId = randomUUID();
+  const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  // A busy host retains more generations than fit in the previous 4 KiB cap.
+  const deadlines = Array.from({ length: 128 }, () => ({
+    sandboxId: randomUUID(),
+    generation: randomUUID(),
+    deadline: new Date().toISOString(),
+  }));
+  const response = await post("/api/docker-host/poll", host.hostToken, {
+    installationId,
+    version: "2.33.0",
+    retentionSeconds: 3600,
+    nextCleanupAt: new Date().toISOString(),
+    deadlines,
+  });
+  expect(JSON.stringify({ deadlines }).length).toBeGreaterThan(4096);
+  expect(response.status).toBe(200);
+});

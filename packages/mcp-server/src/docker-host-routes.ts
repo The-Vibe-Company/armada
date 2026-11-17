@@ -125,7 +125,10 @@ export function createDockerHostRoutes(
       }
       const token = request.headers.get("authorization")?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
       if (!token) throw new DockerHostDenied();
-      const body: unknown = JSON.parse(await readBoundedText(request, 4096));
+      // The poll carries the host's per-generation retention deadlines, so its
+      // body grows with the number of retained sandboxes; other machine calls
+      // stay small. Bound it well above a full host's deadline list.
+      const body: unknown = JSON.parse(await readBoundedText(request, path.endsWith("/poll") ? 262144 : 4096));
       if (!object(body)) throw new InvalidInput();
       // Registration-token capability, not user or installed-machine authority.
       if (path === reusePath) {
