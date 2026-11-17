@@ -637,14 +637,16 @@ async function runPostDeploySmoke(
   // A model account admits a bounded number of working agents (possibly one), and every launch
   // reserves a slot before its fork: units that occupy the same account take turns across
   // lanes, in creation order, so no lane is refused with a conflict caused by its sibling.
-  // Distinct accounts stay concurrent. Expiry is queued first because it holds its account
-  // only until its sandbox is ready.
+  // Distinct accounts stay concurrent. Per account the order is templates, then expiry, then
+  // lifecycle: expiry holds its account only until its sandbox is ready, so queueing it right
+  // before the lifecycle runs makes its TTL wait overlap them. Queued ahead of a template probe
+  // (up to a 10-minute launch), the sandbox could expire before any lifecycle work started.
   const accountSlot = createKeyedQueue();
-  const expiryUnits = expiry ? cases.map((item, index) => expiryUnit(index, item)) : [];
-  if (expiry && args.length === 1) return settled(expiryUnits);
   const templateUnits = templatesSkills
     ? cases.map((item, index) => accountSlot(item.modelAccountId, () => templateUnit(index, item)))
     : [];
+  const expiryUnits = expiry ? cases.map((item, index) => expiryUnit(index, item)) : [];
+  if (expiry && args.length === 1) return settled(expiryUnits);
   // This mode is independently runnable; combined staging runs keep the existing
   // preservation baseline as well, under the same shared deadline.
   if (templatesSkills && !preservation && !lifecycle) return (await settled(templateUnits)) && vaultPassed;

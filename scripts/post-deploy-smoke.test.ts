@@ -1820,18 +1820,34 @@ test("lanes sharing a one-slot model account take turns, and the expiry wait sti
   }
 });
 
-test("a template case takes its model account between the expiry launch and the lifecycle", async () => {
+test("a template probe held beyond the TTL takes its account first, and the expiry wait still overlaps the lifecycle", async () => {
   const expiry = expiryApi(() => fake.io.now());
-  const fake = lifecycleFixture("none", (call) => expiry(call));
-  // The fake answers no template route, so the template lane fails; only its turn on the account is checked.
+  let templateCalls = 0;
+  const fake = lifecycleFixture("none", (call) => {
+    // The template lane holds its account for a full template launch timeout, far beyond the 180 s TTL,
+    // then fails; its account turn ends when it settles either way, so only the order is checked.
+    if (!call.path.startsWith("sandbox/") && !call.path.startsWith("logs/") && templateCalls++ === 0)
+      fake.advance(600_000);
+    return expiry(call);
+  });
   expect(await fake.run([selected], ["--expiry", "--templates-skills"])).toBe(false);
+  expect(templateCalls).toBeGreaterThan(0);
   const first = (match: (call: Call) => boolean) => fake.calls.findIndex(match);
-  const expiryReady = first((call) => call.path === "sandbox/status" && call.body.id === "exp-codex");
-  const template = first((call) => !call.path.startsWith("sandbox/"));
+  const template = first((call) => !call.path.startsWith("sandbox/") && !call.path.startsWith("logs/"));
+  const expiryLaunch = first((call) => call.path === "sandbox/launch" && call.body.ttlSeconds === 180);
   const lifecycleLaunch = first((call) => call.path === "sandbox/launch" && call.body.ttlSeconds !== 180);
-  expect(expiryReady).toBeGreaterThan(-1);
-  expect(template).toBeGreaterThan(expiryReady);
-  expect(lifecycleLaunch).toBeGreaterThan(template);
+  expect(template).toBeGreaterThan(-1);
+  expect(expiryLaunch).toBeGreaterThan(template);
+  expect(lifecycleLaunch).toBeGreaterThan(expiryLaunch);
+  const receipts = fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line));
+  const at = (lane: string, step: string) =>
+    receipts.findIndex((line) => line.lane === lane && line.step === step && line.case === 0);
+  // Lifecycle work runs while the expiry sandbox is still waiting out its TTL, and both lanes pass.
+  expect(at("expiry", "expiry_ready")).toBeGreaterThan(-1);
+  expect(at("lifecycle", "lifecycle_cleanup_summary")).toBeGreaterThan(at("expiry", "expiry_ready"));
+  expect(at("lifecycle", "lifecycle_cleanup_summary")).toBeLessThan(at("expiry", "expiry_as_stop"));
+  for (const lane of ["expiry", "lifecycle"])
+    expect(receipts.filter((line) => line.lane === lane && line.pass === false)).toEqual([]);
 });
 
 test("a keyed action that releases its key early lets the next one start before it finishes", async () => {
