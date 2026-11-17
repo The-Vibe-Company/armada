@@ -2,6 +2,7 @@ import { readBoundedText } from "@armada/auth";
 import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
+import { VERSION } from "../../core/src/version.ts";
 import type { CallerResult } from "./caller.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
@@ -111,7 +112,10 @@ export function createDockerHostRoutes(
           return Response.json(await store.setLimits(actor, string(hostId), patch), { headers });
         }
         if (listing)
-          return Response.json({ placement: options.placement === true, hosts: await store.list(actor) }, { headers });
+          return Response.json(
+            { serverVersion: VERSION, placement: options.placement === true, hosts: await store.list(actor) },
+            { headers },
+          );
         if (path.endsWith("/register-token")) {
           const origin = new URL(options.publicUrl ?? request.url).origin;
           if (!origin.startsWith("https://")) throw new InvalidInput();
@@ -165,6 +169,7 @@ export function createDockerHostRoutes(
                 ...("retentionSeconds" in body ? ["retentionSeconds", "nextCleanupAt"] : []),
                 ...("deadlines" in body ? ["deadlines"] : []),
                 ...("diskFreeBytes" in body ? ["diskFreeBytes"] : []),
+                ...("stoppedSandboxBytes" in body ? ["stoppedSandboxBytes"] : []),
               ]
             : ["installationId"],
       );
@@ -205,6 +210,12 @@ export function createDockerHostRoutes(
         )
           throw new InvalidInput();
         if (
+          body.stoppedSandboxBytes !== undefined &&
+          body.stoppedSandboxBytes !== null &&
+          (!Number.isSafeInteger(body.stoppedSandboxBytes) || Number(body.stoppedSandboxBytes) < 0)
+        )
+          throw new InvalidInput();
+        if (
           body.diskFreeBytes !== undefined &&
           body.diskFreeBytes !== null &&
           (!Number.isSafeInteger(body.diskFreeBytes) || Number(body.diskFreeBytes) < 0)
@@ -237,6 +248,7 @@ export function createDockerHostRoutes(
               body.resources as DockerHostResources | undefined,
               body.resourcePolicyVersion as 1 | undefined,
               body.diskFreeBytes as number | null | undefined,
+              body.stoppedSandboxBytes as number | null | undefined,
             ),
             // Every generation with a queued resume/bootstrap, so the daemon
             // fences all of them, not only the single job it was handed.

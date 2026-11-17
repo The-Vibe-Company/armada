@@ -155,6 +155,7 @@ export function httpApi(
   request: typeof fetch = fetch,
   resources?: (state: State) => Promise<DockerHostResources>,
   diskFreeBytes?: () => Promise<number | null>,
+  stoppedBytes?: (state: State) => Promise<number | null>,
 ): Api & {
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
@@ -257,6 +258,7 @@ export function httpApi(
           })),
       };
       const disk = diskFreeBytes ? { diskFreeBytes: await diskFreeBytes() } : {};
+      const stopped = stoppedBytes ? { stoppedSandboxBytes: await stoppedBytes(state) } : {};
       const sampledResources = resources ? await resources(state) : dockerHostResources();
       try {
         return (await post(state.server, "poll", state.hostToken, {
@@ -264,6 +266,7 @@ export function httpApi(
           resumeClaimProtocol: 1,
           ...retention,
           ...disk,
+          ...stopped,
           resources: sampledResources,
           resourcePolicyVersion: 1,
         })) as Awaited<ReturnType<Api["poll"]>>;
@@ -275,12 +278,28 @@ export function httpApi(
             ...body,
             ...retention,
             ...disk,
+            ...stopped,
             resources: sampledResources,
             resourcePolicyVersion: 1,
           })) as Awaited<ReturnType<Api["poll"]>>;
         } catch (claimCompatibilityError) {
           if (!(claimCompatibilityError instanceof HostRequestDenied) || claimCompatibilityError.status !== 400)
             throw claimCompatibilityError;
+        }
+        if (stoppedBytes) {
+          try {
+            return (await post(state.server, "poll", state.hostToken, {
+              ...body,
+              ...retention,
+              ...disk,
+              resources: sampledResources,
+              resourcePolicyVersion: 1,
+            })) as Awaited<ReturnType<Api["poll"]>>;
+          } catch (compatibilityError) {
+            if (!(compatibilityError instanceof HostRequestDenied) || compatibilityError.status !== 400)
+              throw compatibilityError;
+          }
+
         }
         if (diskFreeBytes) {
           try {

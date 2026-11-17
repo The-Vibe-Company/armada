@@ -3,6 +3,7 @@ import {
   type DockerHostListResponse,
   type DockerHostRegistrationResponse,
   dockerHostResourceDisplay,
+  dockerHostUpgradeMessage,
   GoldenError,
   parseDockerMemory,
   isRecord as record,
@@ -42,6 +43,9 @@ export async function listHosts(client: ArmadaApiClient, org: string): Promise<D
       !(host.version === undefined || host.version === null || typeof host.version === "string") ||
       (host.running !== undefined && (!Number.isSafeInteger(host.running) || Number(host.running) < 0)) ||
       (host.resources !== undefined && host.resources !== null && !validDockerHostResources(host.resources)) ||
+      (host.stoppedSandboxBytes !== undefined &&
+        host.stoppedSandboxBytes !== null &&
+        (!Number.isSafeInteger(host.stoppedSandboxBytes) || Number(host.stoppedSandboxBytes) < 0)) ||
       (host.diskFreeBytes !== undefined &&
         host.diskFreeBytes !== null &&
         (!Number.isSafeInteger(host.diskFreeBytes) || Number(host.diskFreeBytes) < 0)) ||
@@ -117,10 +121,17 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
           `${host.id}\t${host.name ?? "—"}\t${host.state}\t${host.lastSeenAt ?? "never"}\t${host.version ?? "unknown"}\t${host.sandboxes}\t${resources.machine}\t${resources.limits}\t${resources.usage}\n`,
         );
         if (host.state === "draining") auth.out(`Draining: ${DOCKER_HOST_DRAINING_MESSAGE}\n`);
+        if (operation === "list")
+          auth.out(
+            `Docker disk free: ${host.diskFreeBytes == null ? "unknown" : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB`}; stopped sandbox space: ${host.stoppedSandboxBytes == null ? "unknown" : `${(host.stoppedSandboxBytes / 1e9).toFixed(2)} GB`}\n`,
+          );
+        const upgrade = dockerHostUpgradeMessage(host.version, result.serverVersion);
+        if (upgrade && host.state !== "pending" && host.state !== "revoked") auth.out(`${upgrade}\n`);
         if (operation === "show")
           auth.out(`Retention: ${host.retentionSeconds == null ? "unknown (upgrade host)" : `${host.retentionSeconds}s`}
 Requested retention: ${host.retentionOverrideSeconds == null ? "host default" : `${host.retentionOverrideSeconds}s`}
 Docker disk free: ${host.diskFreeBytes == null ? "unknown (upgrade/check host)" : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB (${host.diskFreeBytes} bytes)`}; launch floor: 10 GB
+Stopped sandbox space: ${host.stoppedSandboxBytes == null ? "unknown (not reported)" : `${(host.stoppedSandboxBytes / 1e9).toFixed(2)} GB (${host.stoppedSandboxBytes} bytes)`}
 Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.lastSeenAt ?? "never"})
 `);
       }

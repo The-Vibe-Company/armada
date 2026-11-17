@@ -118,6 +118,7 @@ export {
 } from "./docker-api.ts";
 export { DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
 export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
+export { dockerHostUpgradeMessage } from "./docker-host-upgrade.ts";
 export {
   DOCKER_LOCAL_IMAGE_LABELS,
   type DockerSnapshotBinding,

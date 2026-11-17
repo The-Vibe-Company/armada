@@ -1,4 +1,9 @@
-import { type DockerSnapshotRecord, dockerHostResourceDisplay, type Harness } from "@armada/core";
+import {
+  type DockerSnapshotRecord,
+  dockerHostResourceDisplay,
+  dockerHostUpgradeMessage,
+  type Harness,
+} from "@armada/core";
 import { CircleAlertIcon, ServerIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -202,7 +207,15 @@ async function OwnServers({
   const visible = hosts.list.hosts.filter((host) => (host.state === "pending") === showSetup);
   const rows = sortResources(
     visible.map((host) =>
-      row(host, orgId, isAdmin, now, launch, snapshots.state === "ready" ? snapshots.snapshots : null),
+      row(
+        host,
+        orgId,
+        isAdmin,
+        now,
+        launch,
+        snapshots.state === "ready" ? snapshots.snapshots : null,
+        hosts.list.serverVersion,
+      ),
     ),
   );
 
@@ -300,12 +313,15 @@ function row(
   now: number,
   launch: Launch,
   snapshots: DockerSnapshotRecord[] | null,
+  serverVersion?: string,
 ): ResourceRow & { bucket: Bucket; actionLabel: string } {
   const resources = dockerHostResourceDisplay(host);
   const name = host.name ?? "Unnamed machine";
   const blocker = dockerLaunchBlocker(launch.option, launch.placement, host);
   const state = hostState(host, now);
   const seen = host.lastSeenAt ? relativeAge(host.lastSeenAt, now) : null;
+  const upgrade =
+    host.state !== "pending" && host.state !== "revoked" ? dockerHostUpgradeMessage(host.version, serverVersion) : null;
   return {
     key: host.id,
     name,
@@ -317,12 +333,20 @@ function row(
     state: (
       <div className="space-y-1">
         <StateCell tone={state.tone} label={state.label} data-host-state={host.state} />
+        {upgrade && <span className="text-xs text-amber-700 dark:text-amber-400">Daemon update needed</span>}
       </div>
     ),
     fact: (
       <div className="flex flex-wrap gap-1.5">
         <span className="rounded border bg-background px-2 py-0.5">{resources.usage}</span>
         <span className="rounded border bg-background px-2 py-0.5">Each {resources.limits}</span>
+        <span className="rounded border bg-background px-2 py-0.5">
+          Disk free: {host.diskFreeBytes == null ? "unknown" : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB`}
+        </span>
+        <span className="rounded border bg-background px-2 py-0.5">
+          Stopped space:{" "}
+          {host.stoppedSandboxBytes == null ? "unknown" : `${(host.stoppedSandboxBytes / 1e9).toFixed(2)} GB`}
+        </span>
       </div>
     ),
     actionLabel: "Edit",
@@ -332,6 +356,7 @@ function row(
           <p id={`host-${host.id}-title`} tabIndex={-1} className="text-sm outline-none">
             {state.detail}
           </p>
+          {upgrade && <p className="text-sm">{upgrade}</p>}
         </PanelSection>
         <PanelSection title="Launch">
           {blocker ? (

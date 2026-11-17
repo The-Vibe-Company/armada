@@ -14,3 +14,8 @@ test("startup diagnostics distinguish manifest, availability and integrity witho
     expect(runtimeStartupFailure(new Error(code), "artifact_preparation")).toBe(expected);
   expect(runtimeStartupFailure("runtime_artifact_unavailable", "model_routing")).toBe("model_routing");
 });
+
+test("filesystem ENOSPC names host disk exhaustion without exposing exception text", () => {
+  const error = Object.assign(new Error("private_diagnostic"), { code: "ENOSPC" });
+  expect(runtimeStartupFailure(error, "artifact_preparation")).toBe("disk_full");
+});
