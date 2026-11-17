@@ -347,7 +347,13 @@ const launchTiming = z
   .object({
     epoch: z.string(),
     stages: z.array(z.object({ stage: z.enum(LAUNCH_STAGES), at: z.string(), ms: z.number().nullable() })),
-    totalMs: z.number().nullable(),
+    ready: z.boolean().describe("Harness ready was recorded."),
+    totalMs: z
+      .number()
+      .nullable()
+      .describe(
+        "First stage to harness ready (or the last stage so far); first_event waits for a prompt and is excluded.",
+      ),
     slowest: z.object({ stage: z.enum(LAUNCH_STAGES), ms: z.number() }).nullable(),
   })
   .nullable()

@@ -13,7 +13,8 @@ export function LaunchTimes({ rows }: { rows: ProviderLaunchTimes | null }) {
         Launch time
       </h2>
       <p className="text-xs text-muted-foreground">
-        From sandbox creation to harness ready, last 30 days, for sandboxes you can open.
+        From sandbox creation to harness ready, for recent launches in the last 30 days of sandboxes you can open. Only
+        launches through the Armada runtime are measured.
       </p>
       <Table>
         <TableHeader>

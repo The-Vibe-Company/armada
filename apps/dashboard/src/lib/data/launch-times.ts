@@ -1,9 +1,9 @@
 import { launchReadyPercentiles } from "@armada/core";
 import type { Supabase } from "@/lib/supabase/server";
 
-/** Bounded sample: the latest stage rows of the last 30 days. */
+/** Bounded sample: the latest stage rows of the last 30 days, within PostgREST's default 1000-row page. */
 const WINDOW_DAYS = 30;
-const MAX_ROWS = 2000;
+const MAX_ROWS = 1000;
 
 export type ProviderLaunchTimes = ReturnType<typeof launchReadyPercentiles>;
 

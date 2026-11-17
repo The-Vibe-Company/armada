@@ -1,5 +1,6 @@
 import {
   type CredentialKind,
+  LAUNCH_STAGES,
   type LaunchTiming,
   type Sandbox,
   type SandboxCost,
@@ -161,7 +162,13 @@ export async function listSandboxHostNames(
  * may open. Timing is diagnostic: a failed read hides the fact instead of failing the page.
  */
 export async function getLaunchTiming(supabase: Supabase, id: string): Promise<LaunchTiming | null> {
-  const { data, error } = await supabase.from("sandbox_launch_stages").select("epoch,stage,at").eq("sandbox_id", id);
+  // Newest epoch first, at most one activation's worth of rows: summarizeLaunch keeps only the latest epoch.
+  const { data, error } = await supabase
+    .from("sandbox_launch_stages")
+    .select("epoch,stage,at")
+    .eq("sandbox_id", id)
+    .order("epoch", { ascending: false })
+    .limit(LAUNCH_STAGES.length);
   if (error) {
     console.error(`Launch timing unavailable for sandbox ${id}.`);
     return null;

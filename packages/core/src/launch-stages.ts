@@ -41,9 +41,14 @@ export interface LaunchTiming {
   epoch: string;
   /** Recorded stages in launch order; `ms` is the time since the previous recorded stage. */
   stages: { stage: LaunchStage; at: string; ms: number | null }[];
-  /** First to last recorded stage. */
+  /** Harness ready was recorded: the launch finished. */
+  ready: boolean;
+  /**
+   * First recorded stage to harness ready (or to the last stage reached so far). first_event is excluded: it waits
+   * for the first prompt, which an idle launch may receive hours later.
+   */
   totalMs: number | null;
-  /** Largest step between two recorded stages, named by the stage that ended it. */
+  /** Largest step within totalMs, named by the stage that ended it. */
   slowest: { stage: LaunchStage; ms: number } | null;
 }
 
@@ -59,15 +64,18 @@ export function summarizeLaunch(rows: readonly LaunchStageRow[]): LaunchTiming |
   const stages = ordered.map((row, index) => {
     const previous = ordered[index - 1];
     const ms = previous ? Math.max(0, Date.parse(row.at) - Date.parse(previous.at)) : null;
-    if (ms !== null && (!slowest || ms > slowest.ms)) slowest = { stage: row.stage as LaunchStage, ms };
+    if (ms !== null && row.stage !== "first_event" && (!slowest || ms > slowest.ms))
+      slowest = { stage: row.stage as LaunchStage, ms };
     return { stage: row.stage as LaunchStage, at: new Date(row.at).toISOString(), ms };
   });
-  const first = ordered[0]!;
-  const last = ordered[ordered.length - 1]!;
+  const launch = ordered.filter((row) => row.stage !== "first_event");
+  const first = launch[0];
+  const last = launch[launch.length - 1];
   return {
     epoch: epoch.toString(),
     stages,
-    totalMs: ordered.length > 1 ? Math.max(0, Date.parse(last.at) - Date.parse(first.at)) : null,
+    ready: ordered.some((row) => row.stage === "harness_ready"),
+    totalMs: first && last && launch.length > 1 ? Math.max(0, Date.parse(last.at) - Date.parse(first.at)) : null,
     slowest,
   };
 }

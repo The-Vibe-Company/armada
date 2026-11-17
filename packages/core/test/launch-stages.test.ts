@@ -8,6 +8,7 @@ test("summary keeps the latest activation in stage order with total and slowest 
     summarizeLaunch([
       { epoch: "1", stage: "created", at: at(0) },
       { epoch: "2", stage: "harness_ready", at: at(50) },
+      { epoch: "2", stage: "first_event", at: at(59) },
       { epoch: "2", stage: "machine_started", at: at(10) },
       { epoch: "2", stage: "enrolled", at: at(40) },
       { epoch: "2", stage: "unknown", at: at(1) },
@@ -18,11 +19,21 @@ test("summary keeps the latest activation in stage order with total and slowest 
       { stage: "machine_started", at: at(10), ms: null },
       { stage: "enrolled", at: at(40), ms: 30_000 },
       { stage: "harness_ready", at: at(50), ms: 10_000 },
+      { stage: "first_event", at: at(59), ms: 9_000 },
     ],
+    ready: true,
     totalMs: 40_000,
     slowest: { stage: "enrolled", ms: 30_000 },
   });
   expect(summarizeLaunch([])).toBeNull();
+  // An idle launch's first event waits for the first prompt: it never counts toward launch time.
+  expect(
+    summarizeLaunch([
+      { epoch: "1", stage: "machine_started", at: at(0) },
+      { epoch: "1", stage: "enrolled", at: at(5) },
+      { epoch: "1", stage: "first_event", at: at(58) },
+    ]),
+  ).toMatchObject({ ready: false, totalMs: 5_000, slowest: { stage: "enrolled", ms: 5_000 } });
 });
 
 test("provider percentiles use only complete first launches", () => {
