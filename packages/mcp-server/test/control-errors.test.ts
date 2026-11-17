@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { LaunchError } from "@armada/core";
 import { controlFailureResponse } from "../src/control-errors.ts";
-import { DockerHostFull } from "../src/docker-capacity.ts";
+import { DockerHostDraining, DockerHostFull } from "../src/docker-capacity.ts";
 
 test("Docker capacity refusal is a host_full HTTP conflict with actionable guidance", async () => {
   const response = controlFailureResponse(new DockerHostFull("build-host", 2, 2));
@@ -11,6 +11,18 @@ test("Docker capacity refusal is a host_full HTTP conflict with actionable guida
       code: "host_full",
       message:
         "The selected host has no free sandbox slots. Stop a sandbox or ask its administrator to raise the limit, then retry.",
+    },
+  });
+});
+
+test("a draining host is a host_draining conflict with the uninstall guidance, not a permission failure", async () => {
+  const response = controlFailureResponse(new DockerHostDraining());
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({
+    error: {
+      code: "host_draining",
+      message:
+        "This host is draining for uninstall. Finish or retry the uninstall on the machine; it takes new work again only after the uninstall completes.",
     },
   });
 });

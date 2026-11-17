@@ -1,4 +1,5 @@
 import {
+  DOCKER_HOST_DRAINING_MESSAGE,
   type DockerHostListResponse,
   type DockerHostRegistrationResponse,
   dockerHostResourceDisplay,
@@ -33,7 +34,7 @@ export async function listHosts(client: ArmadaApiClient, org: string): Promise<D
       !UUID.test(host.id) ||
       ids.has(host.id) ||
       !(host.name === null || (typeof host.name === "string" && host.name.trim().length > 0)) ||
-      !["pending", "online", "offline", "revoked"].includes(String(host.state)) ||
+      !["pending", "online", "offline", "draining", "revoked"].includes(String(host.state)) ||
       !(
         host.lastSeenAt === null ||
         (typeof host.lastSeenAt === "string" && Number.isFinite(Date.parse(host.lastSeenAt)))
@@ -115,6 +116,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
         auth.out(
           `${host.id}\t${host.name ?? "—"}\t${host.state}\t${host.lastSeenAt ?? "never"}\t${host.version ?? "unknown"}\t${host.sandboxes}\t${resources.machine}\t${resources.limits}\t${resources.usage}\n`,
         );
+        if (host.state === "draining") auth.out(`Draining: ${DOCKER_HOST_DRAINING_MESSAGE}\n`);
         if (operation === "show")
           auth.out(`Retention: ${host.retentionSeconds == null ? "unknown (upgrade host)" : `${host.retentionSeconds}s`}
 Requested retention: ${host.retentionOverrideSeconds == null ? "host default" : `${host.retentionOverrideSeconds}s`}

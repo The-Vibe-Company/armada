@@ -11,7 +11,14 @@ import {
   VaultError,
 } from "@armada/core";
 import { admitAccountCapacity } from "./account-capacity.ts";
-import { admitDockerCapacity, admitDockerDisk, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
+import {
+  admitDockerCapacity,
+  admitDockerDisk,
+  DockerHostDraining,
+  DockerHostFull,
+  DockerLimitsRefused,
+} from "./docker-capacity.ts";
+import { hostDrainingSql } from "./docker-host-drain.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
@@ -147,7 +154,12 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
       return await sql.transaction(work);
     } catch (error) {
       // Only trusted transaction-local placement policy raises public VaultError refusals.
-      if (error instanceof VaultError || error instanceof DockerHostFull || error instanceof DockerLimitsRefused)
+      if (
+        error instanceof VaultError ||
+        error instanceof DockerHostFull ||
+        error instanceof DockerHostDraining ||
+        error instanceof DockerLimitsRefused
+      )
         throw error;
       return deny();
     }
@@ -211,7 +223,10 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           if (!credential.rows.length) deny();
         }
         await authorize?.(tx);
-        const snapshot = snapshotId ? await resolveDockerSnapshot(tx, actor, snapshotId) : undefined;
+        // An existing request only validates the snapshot's identity; a drain must not hide its source.
+        const snapshot = snapshotId
+          ? await resolveDockerSnapshot(tx, actor, snapshotId, { allowDraining: Boolean(existing) })
+          : undefined;
         if (
           snapshot &&
           (snapshot.host_id !== request.hostId ||
@@ -221,9 +236,10 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           deny();
         const host =
           (
-            await tx.query<{ installation_id: string }>(
-              `select installation_id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
-           and draining_at is null and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null for update`,
+            await tx.query<{ installation_id: string; draining: boolean }>(
+              `select installation_id,${hostDrainingSql("docker_hosts")} as draining from public.docker_hosts
+           where id=$1 and org_id=$2 and owner_id=$3 and installation_id=$4 and hash is not null
+             and registration_hash is null and revoked_at is null for update`,
               [request.hostId, actor.orgId, hint.owner_id, hint.installation_id],
             )
           ).rows[0] ?? deny();
@@ -257,6 +273,9 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           if (!managed.rows.length) deny();
           return record(row);
         }
+        // A drain refuses new allocation with its own reason, never a permission failure. An
+        // already-admitted request replays above: admission is historical, not current.
+        if (host.draining) throw new DockerHostDraining();
         if (request.credentialId)
           await admitAccountCapacity(tx, request.credentialId, request.requestId, request.model);
         await admitDockerDisk(tx, request.hostId);

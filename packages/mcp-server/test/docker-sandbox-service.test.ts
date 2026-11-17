@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { Sql } from "@armada/core";
+import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import type { dockerRuntimeConfiguration } from "../src/docker-runtime-configuration.ts";
 import { createDockerSandboxService, DockerSandboxDenied } from "../src/docker-sandbox-service.ts";
@@ -193,6 +194,26 @@ test("first allocation validates account scope/version/status; retries reject ch
   await denied(service.reserve(f.actor, f.input)); // Rejoined member has a different actor epoch.
   await hosts.revoke(f.admin, f.hostId);
   expect((await service.get(f.actor, saved.id)).generation).toBe(saved.generation);
+});
+
+test("a draining host refuses a launch with host_draining, and stays refused however old the drain is", async () => {
+  const db = database();
+  const f = await fixture();
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
+  await expect(service.reserve(f.actor, f.input)).rejects.toBeInstanceOf(DockerHostDraining);
+  await expect(service.reserve(f.actor, f.input)).rejects.toThrow("draining for uninstall");
+  // A drain has no deadline: an interrupted uninstall keeps refusing new work until it completes.
+  await db.query(`update public.docker_hosts set draining_at=now()-interval '2 hours' where id=$1`, [f.hostId]);
+  await expect(service.reserve(f.actor, f.input)).rejects.toBeInstanceOf(DockerHostDraining);
+});
+
+test("a retry of an already-admitted launch replays the saved sandbox after a drain", async () => {
+  const db = database();
+  const f = await fixture();
+  const saved = await service.reserve(f.actor, f.input);
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
+  // Admission is historical: a lost response must replay the saved sandbox, not become a drain refusal.
+  expect(await service.reserve(f.actor, f.input)).toEqual(saved);
 });
 
 test("bound job insert failure rolls back both reservation and machine claim", async () => {

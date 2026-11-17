@@ -5,6 +5,7 @@ import {
   dockerHostActionFailure,
   dockerHostLimitsInput,
   expiryCountdown,
+  hostBuildBlocker,
   hostFact,
   hostName,
   hostNameInput,
@@ -124,6 +125,15 @@ test("a host's state reads in plain words and an offline or unregistered host so
     bucket: "rest",
     label: "Unlinked",
   });
+  expect(hostState(host({ state: "draining" }), NOW)).toMatchObject({
+    bucket: "action",
+    tone: "warning",
+    label: "Draining",
+  });
+  expect(hostState(host({ state: "draining" }), NOW).detail).toContain("uninstall");
+  expect(hostBuildBlocker({ state: "online" })).toBeNull();
+  expect(hostBuildBlocker({ state: "draining" })).toContain("draining for uninstall");
+  expect(hostBuildBlocker({ state: "offline" })).toBe("Bring this server online to build.");
   expect(hostName(host())).toBe("Unnamed server");
   expect(hostName(host({ name: "Workstation" }))).toBe("Workstation");
 });
