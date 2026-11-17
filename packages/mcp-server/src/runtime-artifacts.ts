@@ -75,7 +75,8 @@ export function createRuntimeArtifactSetRoute(manifest: unknown): Route {
     if (!set || path.slice("/api/runtime/artifact-sets/".length) !== set.runtime.sha256)
       return new Response(null, { status: 404 });
     return Response.json(set, {
-      headers: { "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" },
+      // Keyed by runtime digest, but a redeploy may change archives: always revalidate.
+      headers: { "cache-control": "no-cache", "x-content-type-options": "nosniff" },
     });
   };
 }
