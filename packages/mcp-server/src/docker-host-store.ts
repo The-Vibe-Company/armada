@@ -458,15 +458,34 @@ export function createDockerHostStore(sql: Sql, key: string) {
     retentionForHost(
       hostToken: string,
       installationId: string,
-      report?: { retentionSeconds: number; nextCleanupAt: string | null },
+      report?: {
+        retentionSeconds: number;
+        nextCleanupAt: string | null;
+        /** The daemon's authoritative per-generation local cleanup deadlines. */
+        deadlines?: { sandboxId: string; generation: string; deadline: string }[];
+      },
     ) {
       return transaction(async (tx) => {
         const host = await reconcileHost(tx, hostToken, installationId);
-        if (report)
+        if (report) {
           await tx.query(
             "update public.docker_hosts set reported_retention_seconds=$2,next_cleanup_at=case when retention_seconds is null or retention_seconds=$2 then $3::timestamptz else null end where id=$1",
             [host.id, report.retentionSeconds, report.nextCleanupAt],
           );
+          // Persist the exact deadline the daemon will delete at, keyed to the
+          // generation it belongs to. A stale report for a superseded generation
+          // must not fence a newer one, so match on the current generation.
+          for (const entry of report.deadlines ?? []) {
+            id(entry.sandboxId);
+            id(entry.generation);
+            if (!Number.isFinite(Date.parse(entry.deadline))) deny();
+            await tx.query(
+              `update public.sandboxes set docker_retention_deadline=$3::timestamptz
+               where id=$1 and docker_host_id=$2 and docker_generation=$4 and provider='docker'`,
+              [entry.sandboxId, host.id, entry.deadline, entry.generation],
+            );
+          }
+        }
         return (
           (
             await tx.query<{ retention_seconds: number | null }>(
@@ -475,6 +494,23 @@ export function createDockerHostStore(sql: Sql, key: string) {
             )
           ).rows[0]?.retention_seconds ?? undefined
         );
+      });
+    },
+    /** Every generation with a queued resume/bootstrap, so the daemon fences all of them, not only the head job. */
+    pendingStartsForHost(hostToken: string, installationId: string) {
+      return transaction(async (tx) => {
+        const host = await reconcileHost(tx, hostToken, installationId);
+        const rows = (
+          await tx.query<{ bound_sandbox_id: string; docker_generation: string }>(
+            `select distinct s.id as bound_sandbox_id,s.docker_generation
+             from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
+             where j.host_id=$1 and j.outcome is null and j.bound_operation in ('resume','bootstrap')
+               and s.provider='docker' and s.docker_host_id=$1 and s.docker_installation_id=$2
+             order by s.id`,
+            [host.id, installationId],
+          )
+        ).rows;
+        return rows.map((row) => ({ sandboxId: row.bound_sandbox_id, generation: row.docker_generation }));
       });
     },
     limitsForHost(hostToken: string, installationId: string) {

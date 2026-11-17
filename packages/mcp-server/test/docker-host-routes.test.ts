@@ -380,7 +380,7 @@ test("only the owner changes a drained capable host; policy reaches admission an
   expect(await raised.json()).toMatchObject({ resources: { capacity: 4, mode: "manual" } });
   expect((await post(endpoint, "fixture-user-token", { ...body, maxSandboxes: 2 })).status).toBe(409);
   // An older daemon cannot execute override-sensitive starts, but cleanup stays available.
-  expect(await (await poll(false)).json()).toEqual({ job: null });
+  expect(await (await poll(false)).json()).toEqual({ job: null, pendingStarts: [] });
   const delivery = await (await poll(true)).json();
   expect(delivery).toMatchObject({
     job: { operation: "create" },

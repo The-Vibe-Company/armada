@@ -246,6 +246,14 @@ export function httpApi(
             const at = new Date(entry.deadline).toISOString();
             return next === null || at < next ? at : next;
           }, null),
+        // The authoritative per-generation deadlines the daemon will delete at.
+        deadlines: (state.retention ?? [])
+          .filter((entry) => !entry.deleted)
+          .map((entry) => ({
+            sandboxId: entry.request.sandboxId,
+            generation: entry.request.generation,
+            deadline: new Date(entry.deadline).toISOString(),
+          })),
       };
       const disk = diskFreeBytes ? { diskFreeBytes: await diskFreeBytes() } : {};
       const sampledResources = resources ? await resources(state) : dockerHostResources();

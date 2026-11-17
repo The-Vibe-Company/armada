@@ -965,3 +965,27 @@ test("Docker status preserves safe native prompt diagnoses instead of replacing 
     },
   });
 });
+
+test("a resume past the host's retention deadline is a non-retryable conflict, not a provider outage", async () => {
+  const db = database();
+  const f = await fixture();
+  await ready(f);
+  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  const requestId = randomUUID();
+  await reservations.stop(f.actor, f.sandbox.id, requestId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
+  // The daemon's own deadline has passed: the workspace disk is gone.
+  await db.query(
+    "update public.sandboxes set docker_retention_deadline=now()-interval '1 second' where id=$1",
+    [f.sandbox.id],
+  );
+  const controller = createDockerSandboxControls(sql, key, { send: createDockerNormalSend(sql, key, { enabled: true }), resume: bootstrap });
+  try {
+    await invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller);
+    throw Error("resume unexpectedly allowed");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ProviderError);
+    expect(error).toMatchObject({ provider: "docker", code: "conflict", retryable: false });
+    expect((error as Error).message).toContain("retention period has ended");
+  }
+});

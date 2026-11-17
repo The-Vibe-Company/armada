@@ -182,20 +182,19 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           [snapshot.hostId, actor.orgId, hint.issuer_id, snapshot.installationId],
         );
         if (!host.rows.length) deny();
-        // A fresh resume must be admitted before this stopped sandbox's local
-        // cleanup deadline: once it passes, the daemon may already be deleting
-        // that exact workspace, so the resume could only race the deletion. The
-        // deadline is the stop age plus the host's reported retention policy;
-        // host-wide next_cleanup_at is a minimum across every retained sandbox
-        // and would wrongly fence unrelated resumes. A retried resume keeps its
-        // already persisted mailbox identity.
+        // A fresh resume must be admitted before this generation's local cleanup
+        // deadline: once it passes, the daemon may already be deleting that exact
+        // workspace, so the resume could only race the deletion. The deadline is
+        // the daemon's own reported per-generation value, not an estimate from the
+        // stop ACK age (which can be much later than the daemon's first physical
+        // observation) and not the host-wide next_cleanup_at (a minimum across
+        // every retained sandbox). A retried resume keeps its persisted identity.
         if (resume && !known) {
           const deadline = await tx.query(
-            `select 1 from public.docker_hosts h join public.sandboxes s on s.docker_host_id=h.id
-             where h.id=$1 and s.id=$2 and h.reported_retention_seconds is not null
-             and s.stopped_at is not null
-             and s.stopped_at + h.reported_retention_seconds*interval '1 second' <= now()`,
-            [snapshot.hostId, sandboxId],
+            `select 1 from public.sandboxes
+             where id=$1 and docker_host_id=$2 and docker_retention_deadline is not null
+             and docker_retention_deadline <= now()`,
+            [sandboxId, snapshot.hostId],
           );
           if (deadline.rows.length) deny();
         }
@@ -242,9 +241,11 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           if (resume) {
             await admitDockerCapacity(tx, current.hostId);
             if (JSON.stringify(await restoreCheckpoint(tx, sandboxId)) !== JSON.stringify(restore)) deny();
+            // Admission cancels the daemon's local obligation: the resume now
+            // claims this generation, so a later deadline must not fence it.
             const restarted = await tx.query(
               `update public.sandboxes set status='starting',status_reason=null,stop_requested_at=null,stopped_at=null,
-                 lifecycle_generation=lifecycle_generation+1
+                 docker_retention_deadline=null,lifecycle_generation=lifecycle_generation+1
                  where id=$1 and status='stopped' and deleted_at is null and expires_at>now() returning id`,
               [sandboxId],
             );
