@@ -201,3 +201,40 @@ test.each([false, true])("concurrent preparations retain verified generations (c
     await rm(f.root, { recursive: true, force: true });
   }
 });
+
+test("a digest-named shared archive replaces HTTP only when its size and digest match", async () => {
+  const f = await fixture();
+  const shared = join(f.root, "shared");
+  const entry = join(shared, f.codex.archive.sha256);
+  const offline = async () => {
+    throw Error("network must not be used when the shared archive verifies");
+  };
+  try {
+    await mkdir(shared);
+    // Same size, wrong bytes: ignored and left untouched; the normal download publishes.
+    const corrupt = new Uint8Array(f.archive.byteLength).fill(7);
+    await writeFile(entry, corrupt);
+    const cold = await installSelectedHarness({ ...f.input, sharedDir: shared }, f.fetcher);
+    expect(f.requests).toHaveLength(1);
+    expect(new Uint8Array(await readFile(entry))).toEqual(corrupt);
+    // A link is never followed, even to the right bytes.
+    await rm(f.input.cacheDir, { recursive: true });
+    await rm(entry);
+    await writeFile(join(f.root, "target"), f.archive);
+    await symlink(join(f.root, "target"), entry);
+    await installSelectedHarness({ ...f.input, sharedDir: shared }, f.fetcher);
+    expect(f.requests).toHaveLength(2);
+    // The exact archive is copied into the private cache and extracted with full inventory checks.
+    await rm(f.input.cacheDir, { recursive: true });
+    await rm(entry);
+    await writeFile(entry, f.archive);
+    await chmod(entry, 0o444);
+    const warm = await installSelectedHarness({ ...f.input, sharedDir: shared }, offline);
+    expect(warm).toEqual(cold);
+    expect(await readFile(warm.executable, "utf8")).toBe(files["bin/codex"]);
+    expect((await lstat(join(f.input.cacheDir, "archives", f.codex.archive.sha256))).mode & 0o777).toBe(0o700);
+    expect(f.requests).toHaveLength(2);
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
