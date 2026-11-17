@@ -696,10 +696,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     row.info.stoppedAt = new Date();
     await save(row);
   }
-  async function collectFrom(imagesStore: ModalStore, skipBusy = false) {
+  async function collectFrom(imagesStore: ModalStore, skipBusy = false, sources?: string[]) {
     // Visit only sources with retired images. Every scope machine ever launched stays in the
     // store, so a full scan made each sandbox deletion cost minutes of SQL round trips.
-    for (const sourceId of await imagesStore.tombstoneSources()) {
+    for (const sourceId of sources ?? (await imagesStore.tombstoneSources())) {
       const source = await imagesStore.get(sourceId);
       if (!matchesManagementAuthority(source.managementAuthority, managementAuthority)) continue;
       const retired = async () =>
@@ -1667,11 +1667,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           "Snapshot collection requires the golden-source provider scope, not a private-fork adapter.",
         );
       await snapshotBackend();
+      const owner = async () => {
+        for (const sourceId of await source.store.tombstoneSources())
+          if ((await source.store.images(sourceId)).some((image) => image.info.name === name)) return sourceId;
+      };
+      const sourceId = await owner();
+      if (!sourceId) return "collected";
+      // Only the snapshot's own source: another source's failing image never blocks this one.
       // A busy source is skipped, not failed: the caller (the retirement worker) retries later.
-      await collectImages(true);
-      for (const sourceId of await store.tombstoneSources())
-        if ((await store.images(sourceId)).some((image) => image.info.name === name)) return "pending";
-      return "collected";
+      await collectFrom(source.store, true, [sourceId]);
+      return (await owner()) ? "pending" : "collected";
     },
     quiesce: (r) => call(r.sandboxId, "interrupt", r),
     async extendLifetime({ sandboxId, ttlSeconds }) {

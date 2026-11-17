@@ -34,6 +34,7 @@ interface Candidate {
   publication_id: string;
   replacement_id: string;
   state: string;
+  reason: string | null;
   sealed: boolean;
   delete_started: boolean;
   claim_id: string | null;
@@ -389,6 +390,7 @@ export class GoldenSnapshotRetirements {
     proof: Proof,
     signal: AbortSignal = new AbortController().signal,
     reviewCurrent?: Proof,
+    collectOnly = false,
   ): Promise<{ provider: Provider; absent: boolean; currentSnapshot: string } | string> {
     if (
       proof.golden_id !== c.golden_id ||
@@ -424,6 +426,9 @@ export class GoldenSnapshotRetirements {
       )
     )
       return "authority_changed";
+    // The snapshot is already deleted: collecting its artifact needs only the proven source
+    // authority, not the deletion-safety checks on the golden's current revision.
+    if (collectOnly) return { provider, absent: true, currentSnapshot: "" };
     if (
       PROVIDER_LIMITS[c.provider].defaultGoldenCapacity !== undefined &&
       !(
@@ -566,9 +571,12 @@ export class GoldenSnapshotRetirements {
     // A deleted snapshot is retired only once its provider artifact is gone. A Modal image stays a
     // durable tombstone while a fork references it or its source is leased; this row is the
     // server-owned retry that collects it, across restarts and without any user request.
+    let collecting = false;
     const retire = async (provider: Provider, reason: string) => {
-      if ((await provider.collectRetiredSnapshot?.(row.old_snapshot)) === "pending")
-        await finish("deferred", "artifact_collection_pending", false, "5 minutes");
+      collecting = true;
+      const pending = (await provider.collectRetiredSnapshot?.(row.old_snapshot)) === "pending";
+      collecting = false;
+      if (pending) await finish("deferred", "artifact_collection_pending", false, "5 minutes");
       else await finish("retired", reason);
     };
     try {
@@ -579,7 +587,7 @@ export class GoldenSnapshotRetirements {
         await finish("deferred", "provenance_unavailable");
         return true;
       }
-      const checked = await this.inspect(row, proof, signal);
+      const checked = await this.inspect(row, proof, signal, undefined, row.reason === "artifact_collection_pending");
       if (typeof checked === "string") {
         await finish("deferred", checked);
         return true;
@@ -635,7 +643,8 @@ export class GoldenSnapshotRetirements {
       deleting = false;
       await retire(checked.provider, "deleted");
     } catch (e) {
-      if (deleting && notFound(e)) await finish("retired", "already_absent");
+      if (collecting) await finish("deferred", "artifact_collection_pending", false, "5 minutes");
+      else if (deleting && notFound(e)) await finish("retired", "already_absent");
       else if (deleting && isNonMutatingProviderRefusal(e)) await finish("deferred", "provider_unavailable", true);
       else if (started) await finish("uncertain", "delete_outcome_unknown");
       else await finish("deferred", "provider_unavailable");
@@ -846,6 +855,7 @@ export class GoldenSnapshotRetirements {
           publication_id: oldProof.id,
           replacement_id: nextProof.id,
           state: "pending",
+          reason: null,
           sealed: false,
           delete_started: false,
           claim_id: null,

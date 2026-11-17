@@ -75,7 +75,7 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
   let deleteGate: (() => Promise<void>) | undefined;
   let account = backend;
   let sourceActive = false;
-  let artifactPending = false;
+  let artifactPending: boolean | Error = false;
   let vmActions = 0;
   const forbiddenVMAction = async () => {
     vmActions++;
@@ -110,7 +110,10 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
       await deleteGate?.();
       snapshots.delete(name);
     },
-    collectRetiredSnapshot: async () => (artifactPending ? "pending" : "collected"),
+    collectRetiredSnapshot: async () => {
+      if (artifactPending instanceof Error) throw artifactPending;
+      return artifactPending ? "pending" : "collected";
+    },
     fork: async () => {
       throw Error("A stale revision reached fork");
     },
@@ -162,7 +165,7 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
     active: () => {
       sourceActive = true;
     },
-    artifactPending: (pending: boolean) => {
+    artifactPending: (pending: boolean | Error) => {
       artifactPending = pending;
     },
   };
@@ -358,9 +361,13 @@ test("a deleted snapshot whose artifact awaits collection is retried by the work
       )
     ).rows[0]!;
   expect(await row()).toEqual({ state: "deferred", reason: "artifact_collection_pending", due: false });
+  // A failed collection stays a collection retry; it is never read as an unknown delete outcome.
+  f.artifactPending(Error("image service unavailable"));
   await f.due();
   await f.retirement.runOne();
-  expect((await row()).state).toBe("deferred");
+  expect((await row()).reason).toBe("artifact_collection_pending");
+  // The deletion-safety checks on the golden's current revision no longer gate collection.
+  f.snapshots.delete(f.next);
   // Once the source lease clears, the next worker pass collects the artifact and retires the row.
   f.artifactPending(false);
   await f.due();

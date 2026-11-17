@@ -1372,6 +1372,24 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(imageDeletes()).toBe(ownImages + 1);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
+  test("another source's failing retired image never blocks a snapshot's collection retry", async () => {
+    const f = fixture();
+    const [a, b] = [await f.provider.createGolden({}), await f.provider.createGolden({})];
+    const [first, broken] = [crypto.randomUUID(), crypto.randomUUID()];
+    await f.provider.snapshot({ sandboxId: a.id, name: first });
+    await f.provider.snapshot({ sandboxId: b.id, name: broken });
+    const brokenImage = (await f.store.image(broken)).imageId;
+    f.onImageDelete(async (id) => {
+      if (id === brokenImage) throw new Error("image service refused");
+    });
+    await expect(f.provider.deleteSnapshot(broken)).rejects.toThrow();
+    const fork = await f.provider.fork({ from: first });
+    await f.provider.deleteSnapshot(first).catch(() => {});
+    await f.provider.delete({ sandboxId: fork.id });
+    expect(await f.store.tombstoneSources()).toEqual(expect.arrayContaining([a.id, b.id]));
+    expect(await f.provider.collectRetiredSnapshot(first)).toBe("collected");
+    expect(await f.store.tombstoneSources()).toEqual([b.id]);
+  });
   test("a held retired-image deletion never fences its source's lifecycle", async () => {
     const f = fixture();
     const builder = await f.provider.createGolden({});
