@@ -102,6 +102,8 @@ import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-cont
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 import { sandboxListInput } from "./tools.ts";
 
+import { viewerControl } from "./viewer-control.ts";
+
 export const CONTROL_PREFIX = "/api/v1/";
 
 export interface ControlOptions {
@@ -208,6 +210,8 @@ export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecov
 export async function handleControlRequest(request: Request, options: ControlOptions): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith(CONTROL_PREFIX)) return null;
+  const viewer = await viewerControl(request, options, (next) => handleControlRequest(next, options));
+  if (viewer) return viewer;
   const timing = new RequestTiming();
   const response = await withRequestTiming(timing, () =>
     timing.measure("total", () => timedControlRequest(request, { ...options, timing })),
@@ -271,7 +275,7 @@ async function timedControlRequest(
           route.startsWith("variables/") ||
           route.startsWith("secrets/")
         ? await readVaultBody(request)
-        : await readBody(request);
+        : await readBody(request, route === "logs/read" ? 512 * 1024 : undefined);
     if (
       ((route === "sandbox/launch" && body.provider === "docker") || route === "templates/launch") &&
       options.dockerLaunch
