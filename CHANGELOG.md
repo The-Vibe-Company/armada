@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.51.0](https://github.com/The-Vibe-Company/armada/compare/v2.50.0...v2.51.0) (2026-11-17)
+
+
+### Features
+
+* **docker-host:** reclaim stopped workspaces under disk pressure ([#2550](https://github.com/The-Vibe-Company/armada/issues/2550)) ([6b726e3](https://github.com/The-Vibe-Company/armada/commit/6b726e31f7a71d66f03fa2c456015538fd60dd57))
+
+
+### Bug Fixes
+
+* **dashboard:** keep Large sandbox journey deadlines valid ([#2556](https://github.com/The-Vibe-Company/armada/issues/2556)) ([b88305b](https://github.com/The-Vibe-Company/armada/commit/b88305b446e330ce280680662a8ce4e251d6b71f))
+* **docker-host:** retention deletion must not destroy a sandbox with a queued resume ([#2534](https://github.com/The-Vibe-Company/armada/issues/2534)) ([59a5afb](https://github.com/The-Vibe-Company/armada/commit/59a5afbd316920d274dc072d91b26cf0f77e191b))
+* **templates:** preserve launch refusal diagnostics across clients ([#2549](https://github.com/The-Vibe-Company/armada/issues/2549)) ([1d78639](https://github.com/The-Vibe-Company/armada/commit/1d786393651d91f578a1042155b04b54138596e1))
+
+
+### Performance Improvements
+
+* **server:** make retained thread polls incremental ([#2546](https://github.com/The-Vibe-Company/armada/issues/2546)) ([d241774](https://github.com/The-Vibe-Company/armada/commit/d24177476e28ee1c104200ebb66a6aff47348d7a))
+
 ## [2.50.0](https://github.com/The-Vibe-Company/armada/compare/v2.49.6...v2.50.0) (2026-11-17)
 
 
