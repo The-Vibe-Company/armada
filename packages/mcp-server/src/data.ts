@@ -765,11 +765,29 @@ export function createSqlData(
              and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
           params,
         );
-        if (!result.rows[0])
+        if (!result.rows[0]) {
+          if (patch.deleteRequested) {
+            // Record only admission predicates. The provider has not received this delete.
+            const observed = await sql
+              .query(
+                `select s.status::text as status,
+                  coalesce(s.activity_until>=now(),false) as "activityLeaseHeld",
+                  coalesce(s.reconcile_lease_until>=now(),false) as "reconcileLeaseHeld",
+                  s.lifecycle_generation<>$4::bigint as "generationChanged",
+                  ${SANDBOX_DELETION_MANAGED} as managed
+                 from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}`,
+                [...scope, id, patch.expectedGeneration ?? null],
+              )
+              .catch(() => null);
+            console.info(
+              JSON.stringify({ event: "sandbox_delete_admission_refused", sandboxId: id, observed: observed?.rows[0] }),
+            );
+          }
           throw new DataError(
             "The sandbox is busy or its lifecycle changed; retry after refreshing status.",
             "sandbox_not_ready",
           );
+        }
       },
       async reportTaskOutcome(id, promptId, outcome, expectedGeneration) {
         const result = await sql.query(

@@ -118,6 +118,9 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     expect(await providerFailure.json()).toMatchObject({ error: { code: "provider_unavailable" } });
     expect((await state(failed)).status).toBe("failed");
     expect((await state(failed)).deleted_at).toBeNull();
+    const retry = await request(failed);
+    expect(retry.status).toBe(409);
+    expect(await retry.json()).toMatchObject({ error: { code: "sandbox_not_ready" } });
     await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [failed]);
     boat.provider.delete = async () => ({ status: "pending" });
     expect((await request(failed)).status).toBe(409);
