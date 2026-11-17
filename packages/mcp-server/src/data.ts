@@ -4,10 +4,12 @@ import {
   type GoldenRow,
   type GoldenStore,
   type Harness,
+  type LaunchTiming,
   type ModalBinding,
   mapGoldenRow,
   mapSandboxRow,
   type OrgSummary,
+  recordLaunchStageSql,
   resolveOrg,
   type SandboxListMetadata,
   type SandboxRecord,
@@ -18,6 +20,7 @@ import {
   type Sql,
   sandboxRowModalBinding,
   statusReasonOf,
+  summarizeLaunch,
   type TaskOutcome,
   type TurnPriceContext,
   type TurnTokenUsage,
@@ -62,6 +65,8 @@ export interface ServerSandboxStore extends SandboxStore {
     | "credentialId"
   > | null>;
   recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
+  /** #2560: latest activation's recorded launch stages, for a visible sandbox; null before any. */
+  launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
   /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
@@ -304,6 +309,16 @@ export function createSqlData(
 
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
+      async launchTiming(id) {
+        const rows = await sql.query<{ activation: string; stage: string; at: string }>(
+          `select st.activation::text as activation,st.stage,to_json(st.at)#>>'{}' as at from public.sandbox_launch_stages st
+           join public.sandboxes s on s.id=st.sandbox_id
+           where ${SANDBOX_VISIBLE} and s.id=$3::uuid
+           and st.activation=(select max(l.activation) from public.sandbox_launch_stages l where l.sandbox_id=s.id)`,
+          [...scope, id],
+        );
+        return summarizeLaunch(rows.rows);
+      },
       async recordUsagePricingContext(id, context) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
         await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext!(id, context);
@@ -352,6 +367,14 @@ export function createSqlData(
       async recordTurnModelEvidence(id, promptId, evidence) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
         await createSqlSandboxStore(sql, { turnModels: true }).recordTurnModelEvidence!(id, promptId, evidence);
+      },
+      async recordLaunchStage(id, stage, elapsedMs) {
+        // Server measurement of the caller's own launch: the same owner fence as its skill receipts.
+        const owned = await sql.query("select 1 from public.sandboxes where id=$1::uuid and owner_id=$2::uuid", [
+          id,
+          caller.userId,
+        ]);
+        if (owned.rows.length) await recordLaunchStageSql(sql, id, stage, elapsedMs);
       },
       async recordSkills(id, skills) {
         const result = await sql.query(

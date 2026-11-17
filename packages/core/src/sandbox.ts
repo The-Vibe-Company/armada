@@ -3,6 +3,7 @@ import type { SandboxStatus } from "./database.types.ts";
 import type { SkillReceipt } from "./delegated-access.ts";
 import type { Sql } from "./golden-store.ts";
 import { isHarness } from "./harnesses.ts";
+import type { LaunchStage } from "./launch-stages.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
 import { type SandboxUsage, withUsageTotals } from "./sandbox-usage.ts";
@@ -127,6 +128,8 @@ export interface SandboxStore {
   readTurnModel?(id: string, promptId: string): Promise<{ requestedModel: string | null; evidence: unknown } | null>;
   recordTurnModelEvidence?(id: string, promptId: string, evidence: unknown): Promise<void>;
   recordSkills?(id: string, skills: SkillReceipt[]): Promise<void>;
+  /** #2560: server-only launch stage of the current activation, `elapsedMs` before now; earliest time wins. */
+  recordLaunchStage?(id: string, stage: LaunchStage, elapsedMs?: number): Promise<void>;
   /** Server store can atomically reserve activity ownership; caller-role stores keep their existing restricted grants. */
   activityOwnership?: true;
   insert(input: {

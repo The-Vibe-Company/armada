@@ -218,6 +218,62 @@ test("ACK follows contiguous encrypted persistence and shared usage projection; 
   expect(exportCalls).toBeGreaterThan(0);
 });
 
+// #2560: the first model output dates the activation's first token by the model event's own time, not the upload
+// time (a journal buffered while disconnected keeps its timestamps). Other events, tool results and output from
+// before the activation was accepted do not count; the earliest output wins.
+test("first model output of an activation is recorded once as its first token, dated by the event", async () => {
+  const f = await fixture();
+  try {
+    await f.db.query("update sandboxes set status='starting' where id=$1", [f.id]);
+    const accepted = Date.parse("2020-01-01T17:00:00.000Z");
+    await f.db.query("update sandbox_launch_stages set at=$2 where sandbox_id=$1 and stage='accepted'", [
+      f.id,
+      new Date(accepted).toISOString(),
+    ]);
+    const active = await f.enrol();
+    const message = (id: string, at: number, extra = {}): AgentEvent => ({
+      id,
+      at,
+      kind: "message",
+      text: "ok",
+      partial: true,
+      tools: [],
+      ...extra,
+    });
+    const firstToken = async () =>
+      (
+        await f.db.query<{ ms: number }>(
+          "select (extract(epoch from at)*1000)::float8 as ms from sandbox_launch_stages where sandbox_id=$1 and stage='first_token'",
+          [f.id],
+        )
+      ).rows.map((row) => Number(row.ms));
+    const buffered = Date.parse("2020-01-01T17:50:24.928Z");
+    await f.publish(active, [
+      { sequence: 1, event: f.other("other") },
+      { sequence: 2, event: message("tool-result", buffered - 1000, { responseKind: "tool_result" }) },
+      { sequence: 3, event: message("before-activation", accepted - 1000) },
+    ]);
+    expect(await firstToken()).toEqual([]);
+    // Uploaded now (years later), persisted at the model output's time.
+    await f.publish(active, [
+      { sequence: 4, event: message("first", buffered) },
+      { sequence: 5, event: message("second", buffered + 5000) },
+    ]);
+    expect(await firstToken()).toEqual([buffered]);
+    await f.publish(active, [{ sequence: 6, event: message("later", buffered + 60_000) }]);
+    expect(await firstToken()).toEqual([buffered]);
+    // A runtime clock ahead of the server never dates output in the future.
+    await f.db.query("delete from sandbox_launch_stages where sandbox_id=$1 and stage='first_token'", [f.id]);
+    const before = Date.now();
+    await f.publish(active, [{ sequence: 7, event: message("skewed", before + 3_600_000) }]);
+    const [skewed] = await firstToken();
+    expect(skewed).toBeGreaterThanOrEqual(before - 1000);
+    expect(skewed).toBeLessThanOrEqual(Date.now() + 1000);
+  } finally {
+    await f.close();
+  }
+});
+
 test("a maximum event batch uses bounded SQL and detects duplicate conflicts before committing", async () => {
   const f = await fixture();
   const active = await f.enrol();

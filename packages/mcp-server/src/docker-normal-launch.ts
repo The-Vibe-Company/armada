@@ -50,6 +50,7 @@ import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservat
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
+import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
@@ -783,6 +784,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               ...receipt.github,
               message: [receipt.github.message, ...warnings].filter(Boolean).join(" "),
             };
+          // #2560: the snapshot repositories were refreshed (a failed refresh threw above).
+          await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
         }
         if (manifest.request.repos) {
           if (!options.github) throw failure("unavailable");
@@ -830,6 +833,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               if (response.state !== "pending") throw failure("sandbox_not_ready");
               await wait();
             }
+            // #2560: the requested repositories were cloned successfully.
+            await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
           }
         }
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.preparation;

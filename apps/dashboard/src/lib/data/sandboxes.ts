@@ -1,4 +1,12 @@
-import type { CredentialKind, Sandbox, SandboxCost, SandboxListMetadata } from "@armada/core";
+import {
+  type CredentialKind,
+  LAUNCH_STAGES,
+  type LaunchTiming,
+  type Sandbox,
+  type SandboxCost,
+  type SandboxListMetadata,
+  summarizeLaunch,
+} from "@armada/core";
 import { isUuid } from "@/lib/action";
 import type { BillingAccountMetadata } from "@/lib/billing-account";
 import { boundedEnrichment } from "@/lib/bounded-enrichment";
@@ -150,4 +158,23 @@ export async function listSandboxHostNames(
     );
   }
   return names;
+}
+
+/**
+ * #2560: the latest launch or resume's recorded stages. Row level security returns them only with a sandbox the viewer
+ * may open. Timing is diagnostic: a failed read hides the fact instead of failing the page.
+ */
+export async function getLaunchTiming(supabase: Supabase, id: string): Promise<LaunchTiming | null> {
+  // Newest activation first, at most one activation's worth of rows: summarizeLaunch keeps only the latest one.
+  const { data, error } = await supabase
+    .from("sandbox_launch_stages")
+    .select("activation,stage,at")
+    .eq("sandbox_id", id)
+    .order("activation", { ascending: false })
+    .limit(LAUNCH_STAGES.length);
+  if (error) {
+    console.error(`Launch timing unavailable for sandbox ${id}.`);
+    return null;
+  }
+  return summarizeLaunch(data ?? []);
 }

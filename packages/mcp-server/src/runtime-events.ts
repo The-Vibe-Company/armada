@@ -4,6 +4,7 @@ import {
   type MemberRole,
   modelRateLimit,
   PROMPT_STATUSES,
+  recordFirstTokenSql,
   reportedTurnUsage,
   VaultError,
 } from "@armada/core";
@@ -288,6 +289,10 @@ export function createRuntimeEvents(
             : {}),
         });
       }
+      // #2560: first model output of this activation, dated by the event itself (a journal uploaded after a
+      // reconnect keeps its model time, not the upload time). Output before the activation was accepted is
+      // ignored; the earliest report wins.
+      await recordFirstTokenSql(tx, scope.sandboxId, fresh);
       exported = { sandboxId: scope.sandboxId, events: fresh, ack };
       if (initialAck === 0 && fresh.length) first = scope;
       return { acknowledgedSequence: ack };
