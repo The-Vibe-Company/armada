@@ -1110,6 +1110,19 @@ test("durable retention cleans only stopped allocations after the deadline while
   expect((await f.store.load()).retention).toEqual([]);
 });
 
+test("default retention reclaims expired stopped workspaces with ample free disk", async () => {
+  const f = fixture("stop");
+  f.job.request.expiresAt = 1000;
+  await tick(f.store, f.api, f.executor, false, () => 0);
+  f.api.poll = async () => ({ job: null });
+  f.executor.isStopped = async () => true;
+  f.executor.diskFreeBytes = async () => 20_000_000_000;
+  let deletes = 0;
+  f.executor.deleteStopped = async () => { deletes++; };
+  await tick(f.store, f.api, f.executor, false, () => 2000);
+  expect(deletes).toBe(1);
+});
+
 test("physical resume cancels retention even when its RPC outcome was uncertain", async () => {
   const f = fixture();
   let stopped = true;
