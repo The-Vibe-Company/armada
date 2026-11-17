@@ -1615,6 +1615,15 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
     await restarted.close();
   });
 
+/** #2560: recorded launch stages of the sandbox's latest activation. */
+async function launchStages(id: string) {
+  const { rows } = await database().query<{ stage: string }>(
+    "select stage from public.sandbox_launch_stages where sandbox_id=$1 and activation=(select max(activation) from public.sandbox_launch_stages where sandbox_id=$1)",
+    [id],
+  );
+  return rows.map((row) => row.stage);
+}
+
 for (const checkoutExitCode of [0, 1])
   test(`Docker checkout exit ${checkoutExitCode} gates its first prompt and scopes GitHub access`, async () => {
     const db = database();
@@ -1634,10 +1643,13 @@ for (const checkoutExitCode of [0, 1])
     if (checkoutExitCode !== 0) {
       await rejected(f.service().launch(f.caller, body), "sandbox_not_ready");
       expect((f.native as { op: string }[]).map((c) => c.op)).toEqual(["health", "configureGitHub", "exec"]);
+      expect(await launchStages(body.requestId)).not.toContain("checkout_done");
       return;
     }
     const launched = await f.service().launch(f.caller, body);
     expect(launched.github).toMatchObject({ status: "connected", login: "owner" });
+    // #2560: the successful clone is timed.
+    expect(await launchStages(body.requestId)).toContain("checkout_done");
     const native = f.native as { op: string; input?: { command?: string; cwd?: string } }[];
     expect(native.filter((c) => c.op !== "health").map((c) => c.op)).toEqual([
       "configureGitHub",
@@ -2669,6 +2681,8 @@ test.each([false, true])(
       expect(refresh?.input?.command).toContain("git fetch origin");
       expect(refresh?.input?.command).not.toContain("git clone");
       expect(refresh?.input?.command).not.toContain("printf built");
+      // #2560: the successful snapshot refresh is timed.
+      expect(await launchStages(result.sandbox.id)).toContain("checkout_done");
     } finally {
       await service.close();
     }

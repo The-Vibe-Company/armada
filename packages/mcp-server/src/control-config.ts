@@ -91,6 +91,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       },
     }));
   const providers = providerRegistry({
+    launchStageSql: sql,
     vault: store,
     encryptionKey,
     providerFor,

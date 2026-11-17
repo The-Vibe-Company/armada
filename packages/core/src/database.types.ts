@@ -4242,6 +4242,35 @@ export type Database = {
           },
         ];
       };
+      sandbox_launch_stages: {
+        Row: {
+          sandbox_id: string;
+          activation: number;
+          stage: string;
+          at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          activation: number;
+          stage: string;
+          at: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          activation?: number;
+          stage?: string;
+          at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_launch_stages_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_turn_models: {
         Row: {
           sandbox_id: string;
@@ -4811,6 +4840,7 @@ export type RuntimeIdleEvidenceRow = Database["public"]["Tables"]["runtime_idle_
 export type RuntimeIdleTurnRow = Database["public"]["Tables"]["runtime_idle_turns"]["Row"];
 export type RuntimeResumeRow = Database["public"]["Tables"]["runtime_resumes"]["Row"];
 export type SandboxAccountUsagePricingRow = Database["public"]["Tables"]["sandbox_account_usage_pricing"]["Row"];
+export type SandboxLaunchStageRow = Database["public"]["Tables"]["sandbox_launch_stages"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxUsagePricingRow = Database["public"]["Tables"]["sandbox_usage_pricing"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];

@@ -12,6 +12,7 @@ import { CopyButton } from "@/components/copy-button";
 import { CreatedAt } from "@/components/created-at";
 import { AddHostDialog, HostLimitsDialog, HostMark, HostRetention, RevokeHost } from "@/components/docker-hosts";
 import { DockerLaunchDialog } from "@/components/docker-launch";
+import { LaunchTimes } from "@/components/launch-times";
 import { MachinesSection } from "@/components/machines-catalog";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderConnection, type ProviderRowState } from "@/components/provider-connection";
@@ -24,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readSelectedDockerSnapshots } from "@/lib/data/docker-snapshots";
+import { readLaunchTimes } from "@/lib/data/launch-times";
 import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { type ProviderSetup, readProviderSetup } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -42,7 +44,7 @@ export const dynamic = "force-dynamic";
 export default async function CloudProvidersPage({ searchParams }: Props) {
   const supabase = await createClient();
   const selected = await selectedOrganization();
-  const [setup, admins, hosts] = await Promise.all([
+  const [setup, admins, hosts, launchTimes] = await Promise.all([
     selected ? readProviderSetup(selected.org.id) : null,
     // A member is told whom to ask; an admin manages the providers here.
     selected && selected.role !== "admin"
@@ -51,15 +53,19 @@ export default async function CloudProvidersPage({ searchParams }: Props) {
           .then(({ data }) => (data ?? []).filter((member) => member.role === "admin").map((member) => member.email))
       : [],
     readSelectedDockerHosts(),
+    selected ? readLaunchTimes(supabase, selected.org.id) : null,
   ]);
   const query = await searchParams;
   const cloud = (
-    <SandboxProviders
-      selected={selected}
-      setup={setup}
-      admins={admins}
-      initial={typeof query.item === "string" ? query.item : null}
-    />
+    <>
+      <SandboxProviders
+        selected={selected}
+        setup={setup}
+        admins={admins}
+        initial={typeof query.item === "string" ? query.item : null}
+      />
+      <LaunchTimes rows={launchTimes} />
+    </>
   );
   if (selected && hosts.state === "ready") {
     return OwnServers({ selected, hosts, query, cloud });
