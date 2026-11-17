@@ -117,7 +117,7 @@ export default async function RoutinesPage({
           </span>
           <span className="text-[13px]">
             <span className={styles.mobileLabel}>Last run: </span>
-            <SelectItem item={item.id} variant="link" size="sm" className="h-auto p-0">
+            <SelectItem item={item.id} variant="link" size="sm" className="relative z-10 h-auto p-0">
               See runs
             </SelectItem>
           </span>
