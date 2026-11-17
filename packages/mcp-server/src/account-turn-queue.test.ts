@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import { accountModelCountsSql, accountWaitingCountSql, type Sql, VaultError } from "@armada/core/server";
+import {
+  accountModelCountsSql,
+  accountWaitingCountSql,
+  accountWorkingCountSql,
+  type Sql,
+  VaultError,
+} from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
@@ -115,7 +121,7 @@ test("queued sends recheck actor revocation without dispatching or reserving a s
 test("uncertain native dispatch is not retried and confirmed stop releases the account for the next queued turn", async () => {
   for (const stopBeforeFailure of [false, true]) {
     await db.exec(
-      "delete from account_turn_queue; delete from account_agent_reservations; update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,lifecycle_generation=0",
+      "delete from account_turn_queue; delete from account_agent_reservations; update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,lifecycle_generation=0,activity_lease_id=null,model=null",
     );
     const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction", model: "gpt-5.4" };
     const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction", model: "gpt-5.4" };
@@ -125,7 +131,10 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
     let calls = 0;
     queue.setDispatch(async () => {
       calls++;
-      await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [ids[1]]);
+      await db.query(
+        "update sandboxes set lifecycle_generation=lifecycle_generation+1,model='default_model',activity_lease_id=id where id=$1",
+        [ids[1]],
+      );
       // Normal dispatch cleanup releases the transient reservation even on error.
       await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
       if (stopBeforeFailure)
@@ -135,6 +144,15 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
     expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
     await queue.drain();
     if (!stopBeforeFailure) {
+      const usage = await db.query<{ total: number; default_model: number; override_model: number }>(
+        `select ${accountWorkingCountSql("$1")} as total,
+          ${accountWorkingCountSql("$1", "null::uuid", "'default_model'")} as default_model,
+          ${accountWorkingCountSql("$1", "null::uuid", "'gpt-5.4'")} as override_model`,
+        [account],
+      );
+      expect(
+        usage.rows.map((row) => [Number(row.total), Number(row.default_model), Number(row.override_model)]),
+      ).toEqual([[1, 0, 1]]);
       expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
       expect(calls).toBe(1);
       // Exec/steer can advance generations without resolving the uncertain prompt.
@@ -160,7 +178,7 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
     }
     // A later resume must not resurrect the old uncertain model charge.
     await db.query(
-      "update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,lifecycle_generation=lifecycle_generation+1 where id=$1",
+      "update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,activity_lease_id=null,lifecycle_generation=lifecycle_generation+1 where id=$1",
       [ids[1]],
     );
     queue.setDispatch(async (_caller, input) => ({

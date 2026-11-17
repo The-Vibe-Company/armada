@@ -12,7 +12,7 @@ export const ACCOUNT_WORKING_PREDICATE = `s.deleted_at is null and s.stopped_at 
 export function accountWorkingCountSql(account: string, exclude = "null::uuid", model?: string): string {
   return `(select count(*) from (
     select s.id from public.sandboxes s where s.credential_id=${account}
-      ${model ? `and (exists(select 1 from public.account_turn_queue unknown_turn where unknown_turn.sandbox_id=s.id and unknown_turn.state in ('admitted','dispatching') and unknown_turn.model is null) or coalesce((select active.model from public.account_turn_queue active where active.sandbox_id=s.id and active.state in ('admitted','dispatching') order by active.sequence desc limit 1),s.model)=${model})` : ""} and s.id is distinct from ${exclude} and ${ACCOUNT_WORKING_PREDICATE}
+      ${model ? `and (exists(select 1 from public.account_turn_queue unknown_turn where unknown_turn.sandbox_id=s.id and (unknown_turn.state in ('admitted','dispatching') or (unknown_turn.state='failed' and unknown_turn.dispatch_generation is not null and unknown_turn.dispatch_until is null)) and unknown_turn.model is null) or coalesce((select active.model from public.account_turn_queue active where active.sandbox_id=s.id and (active.state in ('admitted','dispatching') or (active.state='failed' and active.dispatch_generation is not null and active.dispatch_until is null)) order by active.sequence desc limit 1),s.model)=${model})` : ""} and s.id is distinct from ${exclude} and ${ACCOUNT_WORKING_PREDICATE}
     -- A terminal uncertain native receipt still owns capacity, including its requested
     -- model, after ordinary admission cleanup removes the transient reservation.
     -- Pre-dispatch failures clear dispatch_generation; other terminalizations retain
