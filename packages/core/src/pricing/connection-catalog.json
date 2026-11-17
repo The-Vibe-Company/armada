@@ -1,7 +1,7 @@
 {
   "source": "https://models.dev/api.json",
-  "fetchedAt": "2026-11-13T13:44:29.844Z",
-  "sha256": "cfb9d84e0d8d859ff22baa4161af33a9b6e4ac689542ffc9145f8def3136655a",
+  "fetchedAt": "2026-11-17T18:20:00.183Z",
+  "sha256": "d5d6ff2fff92fcfe45566f38f9c559c71ecc63a1b400b2e305ef7545b70a5c3a",
   "license": "MIT",
   "units": "USD per million tokens",
   "providers": {
@@ -22,6 +22,13 @@
       }
     ],
     "openrouter": [
+      {
+        "id": "openai/gpt-6.2-astra",
+        "name": "GPT-6.2 Astra",
+        "input": "8",
+        "output": "40",
+        "cacheRead": "0.4"
+      },
       {
         "id": "google/gemini-4-hydrogen",
         "name": "Gemini 4 Hydrogen",

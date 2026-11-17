@@ -187,6 +187,14 @@ export function createSandboxLifecycle(
           );
           if (turn.promptId === row.task_prompt_id && turn.done && isFinalPromptStatus(turn.status)) {
             await sql.query(
+              `select public.enqueue_webhook_turn(id,task_prompt_id,$5) from public.sandboxes
+               where id=$1 and reconcile_lease=$2::uuid and lifecycle_generation=$3
+                 and reconcile_lease_until>now() and activity_lease_id is null
+                 and task_prompt_id=$4 and stop_requested_at is null
+                 and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)`,
+              [row.id, token, row.lifecycle_generation, row.task_prompt_id, turn.status],
+            );
+            await sql.query(
               `insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled)
                select id,task_prompt_id,true from public.sandboxes
                where id=$1 and reconcile_lease=$2::uuid and lifecycle_generation=$3

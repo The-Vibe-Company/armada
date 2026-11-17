@@ -1840,6 +1840,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
             .catch(unknownMutationOutcome),
         );
         acknowledged = true;
+        await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, receipt.promptId, args.request_id);
         try {
           await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null, pricingContext);
         } catch {

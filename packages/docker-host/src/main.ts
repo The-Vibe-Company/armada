@@ -11,7 +11,7 @@ import {
 import { VERSION } from "../../core/src/version.ts";
 import { sharedArtifactDirectory, sharedArtifactWarmer } from "./artifact-cache.ts";
 import { createAvailabilitySampler } from "./availability.ts";
-import { createPhysicalExpirySweep, register, serverOrigin, tick, validToken } from "./daemon.ts";
+import { createPhysicalExpirySweep, register, runJobs, serverOrigin, validToken } from "./daemon.ts";
 import { dockerDiskFreeBytes, stoppedSandboxBytes, withDiskFloor } from "./disk.ts";
 import { cleanupOfficialImages } from "./image-retention.ts";
 import { dockerCli, fileStore, httpApi } from "./native.ts";
@@ -259,24 +259,26 @@ async function main(args: string[]) {
     const expiryTimer = setInterval(sweep, 10_000);
     try {
       let nextImageCleanup = 0;
-      while (!stopping) {
-        if (Date.now() >= nextImageCleanup) {
+      await runJobs(store, api, runtime, {
+        stopping: () => stopping,
+        sleep: Bun.sleep,
+        async beforeTick() {
+          if (Date.now() < nextImageCleanup) return;
           nextImageCleanup = Date.now() + 60 * 60_000;
           try {
             await cleanupOfficialImages(dockerCli);
           } catch {
             /* Fail closed; retry next hour. */
           }
-        }
-        try {
-          await tick(store, api, runtime);
-        } catch {
+        },
+        failed(what) {
           console.error(
-            "Docker host iteration failed; local TTL sweep continues. If membership was removed or the host revoked, ask an organization admin to request cleanup; preserve daemon state until cleanup is confirmed.",
+            what === "tick"
+              ? "Docker host iteration failed; local TTL sweep continues. If membership was removed or the host revoked, ask an organization admin to request cleanup; preserve daemon state until cleanup is confirmed."
+              : "Docker host job could not be completed or reported; it is retried from its durable receipt.",
           );
-        }
-        if (!stopping) await Bun.sleep(20_000);
-      }
+        },
+      });
     } finally {
       clearInterval(expiryTimer);
       await Promise.all(scans);

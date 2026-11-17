@@ -69,10 +69,10 @@ test("missing or invalid observations and positive unrated classes never become 
 });
 
 test("rated token classes do not claim unreported non-token image charges", () => {
-  const snapshot = resolvePrice({ provider: "openai", model: "gpt-image-2", customEndpoint: false });
+  const snapshot = resolvePrice({ provider: "openai", model: "gpt-image-1.5", customEndpoint: false });
   // This is the default token estimate only, not an image-service invoice.
-  expect(priceTurn({ ...turn, model: "gpt-image-2", cacheWriteTokens: 0 }, "codex", snapshot, "other").usd).toBe(
-    "0.01325",
+  expect(priceTurn({ ...turn, model: "gpt-image-1.5", cacheWriteTokens: 0 }, "codex", snapshot, "other").usd).toBe(
+    "0.00725",
   );
 });
 
@@ -184,4 +184,14 @@ test("Claude coordinator turn prices 1h and mixed cache writes without double ch
     priceTurn({ ...native, cacheWriteTokensByTtl: { fiveMinute: 0, oneHour: 30 } }, "claude", snapshot, "other")
       .unknown,
   ).toBe("pricing_dimensions");
+});
+
+test("GPT-6.2 token usage resolves public prices including cache reads and writes", () => {
+  for (const [model, usd] of [
+    ["gpt-6.2-sol", "0.00467"],
+    ["gpt-6.2-astra", "0.01868"],
+  ]) {
+    const snapshot = resolvePrice({ provider: "openai", model: model!, customEndpoint: false });
+    expect(priceTurn({ ...turn, model: model! }, "codex", snapshot, "30m").usd).toBe(usd!);
+  }
 });

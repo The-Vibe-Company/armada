@@ -11,6 +11,7 @@ import {
 } from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import type { Caller } from "./caller.ts";
+import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 
@@ -263,13 +264,12 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           [[...wanted.keys()], caller.userId, caller.orgs.map((org) => org.orgId)],
         )
       ).rows;
-      for (const row of rows) {
-        const receipt = JSON.parse(await decryptSecret(row.result_enc!, key));
-        if (wanted.get(row.sandbox_id)?.has(receipt.promptId)) {
-          const aliases = ids.get(row.sandbox_id) ?? new Map<string, string>();
-          aliases.set(receipt.promptId, row.request_id);
-          ids.set(row.sandbox_id, aliases);
-        }
+      for (const sandboxId of wanted.keys()) {
+        const aliases = await queuedPromptAliases(
+          rows.filter((row) => row.sandbox_id === sandboxId),
+          key,
+        );
+        ids.set(sandboxId, new Map([...aliases].filter(([nativeId]) => wanted.get(sandboxId)?.has(nativeId))));
       }
       return ids;
     },

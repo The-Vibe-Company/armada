@@ -75,9 +75,17 @@ export interface Api {
   register(server: string, token: string, installationId: string): Promise<{ hostId: string; hostToken: string }>;
   poll(
     state: State,
-    options?: { skipSnapshots?: boolean },
+    options?: {
+      skipSnapshots?: boolean;
+      /** Ask the server to hold the poll until work exists, at most this long (#2561). */
+      waitSeconds?: number;
+      /** Request IDs still executing here; the server hands out other sandboxes' jobs. */
+      running?: string[];
+    },
   ): Promise<{
     job: Job | null;
+    /** The server held this poll until work existed or its hold elapsed. */
+    held?: true;
     limits?: DockerSandboxLimits;
     retentionSeconds?: number;
     /** Every generation with a queued resume/bootstrap, not only the job handed out. */
@@ -208,15 +216,190 @@ export function createPhysicalExpirySweep(store: Store, executor: Executor) {
   };
 }
 
-/** One serialized production iteration. Durable receipts precede all machine operations. */
+/**
+ * What a tick did, so the caller paces itself: `worked` and `held` poll again at
+ * once, `busy` waits for a running job, `idle` (a server that cannot hold a
+ * poll) waits out the daemon's own idle period.
+ */
+export type TickOutcome = "worked" | "held" | "busy" | "idle";
+export type TickOptions = {
+  /** Ask the server to hold the poll open until work exists, at most this long. */
+  waitSeconds?: number;
+  /**
+   * Request IDs whose machine operation is still executing in this process. This
+   * and the two sets below may be live: admission after a held poll reads them
+   * again, so work that completed during the hold no longer blocks anything.
+   */
+  running?: ReadonlySet<string>;
+  /** Sandboxes whose machine operation is still executing in this process. */
+  sandboxes?: ReadonlySet<string>;
+  /** Snapshot builds still executing in this process; when given, it replaces `skipSnapshots` after the poll. */
+  snapshots?: ReadonlySet<string>;
+  /**
+   * Receives an admitted machine operation instead of awaiting it, so the next
+   * tick can take another sandbox's job. The durable receipt is already saved;
+   * `work` runs the operation, durably completes the receipt and reports it.
+   */
+  dispatch?: (job: Job, work: Promise<void>) => void;
+};
+
+const ledgers = new WeakMap<Store, Promise<void>>();
+/**
+ * Every read-modify-write of the durable ledger is serialized per store; machine
+ * operations and held polls are not, so a running job can always complete.
+ */
+async function acquire(store: Store): Promise<() => void> {
+  const previous = ledgers.get(store) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  ledgers.set(
+    store,
+    previous.then(() => next),
+  );
+  await previous;
+  return release;
+}
+async function exclusive<T>(store: Store, work: () => Promise<T>): Promise<T> {
+  const release = await acquire(store);
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
+
+/**
+ * One production iteration. Durable receipts precede all machine operations.
+ * Ledger work is serialized per store; the admitted machine operation runs
+ * outside that section, so jobs of different sandboxes can run concurrently
+ * while the server keeps each sandbox's jobs serial (#2561).
+ */
 export async function tick(
   store: Store,
   api: Api,
   executor: Executor,
   skipSnapshots = false,
   now = Date.now,
+  options: TickOptions = {},
+): Promise<TickOutcome> {
+  const step = await admit(store, api, executor, skipSnapshots, now, options);
+  if (typeof step === "string") return step;
+  // Only a server that held the poll excludes `running` work; an older one gets
+  // the previous serial execution, so one sandbox's jobs never overlap.
+  if (options.dispatch && step.held) {
+    options.dispatch(step.job, step.work());
+    return "worked";
+  }
+  await step.work();
+  return "worked";
+}
+
+/** Most machine operations one daemon runs at once; each sandbox stays serial. */
+export const DOCKER_HOST_CONCURRENT_JOBS = 4;
+/** How long the daemon asks the server to hold an idle poll open. */
+export const DOCKER_HOST_POLL_WAIT_SECONDS = 20;
+/** Pause after a failed tick, or between polls when the server cannot hold one. */
+export const DOCKER_HOST_IDLE_MS = 20_000;
+
+/**
+ * The daemon's mailbox loop (#2561). It polls again as soon as a job was taken or
+ * a held poll ended, so ready jobs drain without an idle period, and it runs up to
+ * DOCKER_HOST_CONCURRENT_JOBS operations of different sandboxes at once. It
+ * pauses only after a failure, against a server that cannot hold a poll, or
+ * while the server can only re-deliver work that is already running.
+ */
+export async function runJobs(
+  store: Store,
+  api: Api,
+  executor: Executor,
+  loop: {
+    stopping(): boolean;
+    sleep(ms: number): Promise<unknown>;
+    beforeTick?(): Promise<void>;
+    failed?(what: "tick" | "job"): void;
+    now?: () => number;
+  },
 ): Promise<void> {
-  const state = await store.load();
+  const running = new Map<string, Promise<void>>();
+  // Live views of `running`, read again when a held poll returns: a job that
+  // completed during the hold must not block its sandbox's next job (#2561).
+  const live = { running: new Set<string>(), sandboxes: new Set<string>(), snapshots: new Set<string>() };
+  // Counts finished operations. If work finished after the tick refused a job
+  // as busy (it is then no longer in `settled()`), the loop polls again at once.
+  let finished = 0;
+  const settled = () => Promise.race(running.values());
+  try {
+    while (!loop.stopping()) {
+      await loop.beforeTick?.();
+      if (running.size >= DOCKER_HOST_CONCURRENT_JOBS) {
+        await settled();
+        continue;
+      }
+      const finishedBefore = finished;
+      let outcome: TickOutcome;
+      try {
+        outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
+          waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
+          ...live,
+          dispatch(job, work) {
+            const done = work
+              .catch(() => loop.failed?.("job"))
+              .finally(() => {
+                running.delete(job.requestId);
+                live.running.delete(job.requestId);
+                live.sandboxes.delete(job.request.sandboxId);
+                live.snapshots.delete(job.requestId);
+                finished++;
+              });
+            running.set(job.requestId, done);
+            live.running.add(job.requestId);
+            live.sandboxes.add(job.request.sandboxId);
+            if (job.operation === "buildSnapshot") live.snapshots.add(job.requestId);
+          },
+        });
+      } catch {
+        loop.failed?.("tick");
+        outcome = "idle";
+      }
+      if (loop.stopping()) break;
+      if (outcome === "busy" && finished !== finishedBefore) continue;
+      if (outcome === "busy" && running.size) await Promise.race([settled(), loop.sleep(DOCKER_HOST_IDLE_MS)]);
+      else if (outcome === "busy" || outcome === "idle") await loop.sleep(DOCKER_HOST_IDLE_MS);
+    }
+  } finally {
+    await Promise.all(running.values());
+  }
+}
+
+type Admission = TickOutcome | { job: Job; held: boolean; work: () => Promise<void> };
+async function admit(
+  store: Store,
+  api: Api,
+  executor: Executor,
+  skipSnapshots: boolean,
+  now: () => number,
+  options: TickOptions,
+): Promise<Admission> {
+  const lock = { release: await acquire(store) };
+  try {
+    return await admitLocked(store, api, executor, skipSnapshots, now, options, lock);
+  } finally {
+    lock.release();
+  }
+}
+
+async function admitLocked(
+  store: Store,
+  api: Api,
+  executor: Executor,
+  skipSnapshots: boolean,
+  now: () => number,
+  options: TickOptions,
+  lock: { release: () => void },
+): Promise<Admission> {
+  let state = await store.load();
   state.retention ??= [];
   const retentionSeconds = state.retentionSeconds ?? 86400;
   if (!Number.isSafeInteger(retentionSeconds) || retentionSeconds < 0) throw Error("Invalid retention policy");
@@ -234,11 +417,13 @@ export async function tick(
   // Claims cannot outlive the allocation's immutable physical expiry. A
   // server cannot admit a resume beyond this same frozen expiry, so releasing
   // the hold here is safe even while offline. Retain its historical ACK.
-  const expiredGenerations = new Set(
-    [...state.receipts, ...state.retention]
-      .filter((receipt) => receipt.request.expiresAt !== undefined && receipt.request.expiresAt <= now())
-      .map((receipt) => generationKey(receipt.request)),
-  );
+  const expired = (ledger: State) =>
+    new Set(
+      [...ledger.receipts, ...(ledger.retention ?? [])]
+        .filter((receipt) => receipt.request.expiresAt !== undefined && receipt.request.expiresAt <= now())
+        .map((receipt) => generationKey(receipt.request)),
+    );
+  let expiredGenerations = expired(state);
   let releasedClaim = false;
   for (const claim of state.resumeClaims ?? []) {
     if (claim.active && expiredGenerations.has(generationKey(claim))) {
@@ -294,15 +479,39 @@ export async function tick(
   // server is only observable from the mailbox, and deleting its stopped
   // allocation first would destroy the workspace the resume is claiming. Local
   // retention still runs while offline: the poll error is rethrown after it.
+  // The poll may be held open by the server, so it runs outside the ledger
+  // section: running jobs keep completing meanwhile. Only their completions can
+  // write the ledger in that window, so with jobs running it is saved before
+  // and reloaded after. A ledger that cannot be saved first could not be
+  // reconciled with a completion saved during the poll, and a later write of it
+  // would erase that completion and its replay fence. That save error therefore
+  // ends this tick before polling: everything computed above is derived again
+  // from the durable ledger on the next tick, and physical expiry runs on its own.
+  const reload = Boolean(options.running?.size);
+  if (reload) await store.save(state);
+  lock.release();
   let polled: Awaited<ReturnType<Api["poll"]>> | undefined;
   let pollError: unknown;
   try {
-    polled = await api.poll(state, { skipSnapshots });
+    polled = await api.poll(state, {
+      skipSnapshots,
+      ...(options.waitSeconds === undefined
+        ? {}
+        : { waitSeconds: options.waitSeconds, running: [...(options.running ?? [])] }),
+    });
   } catch (error) {
     pollError = error;
+  } finally {
+    lock.release = await acquire(store);
+  }
+  if (reload) {
+    state = await store.load();
+    state.retention ??= [];
+    expiredGenerations = expired(state);
   }
   // A claim and cleanup authorization are serialized by this single durable
   // host ledger. Merely requesting a resume on the server never admits it.
+  let unacknowledged = 0;
   for (const intent of polled?.resumeClaims ?? []) {
     state.resumeClaims ??= [];
     let claim = state.resumeClaims.find((item) => item.requestId === intent.requestId);
@@ -323,7 +532,10 @@ export async function tick(
       if (claim.accepted) state.retention = state.retention.filter((entry) => generationKey(entry.request) !== key);
       await store.save(state); // fsync before acknowledging; crashes cannot resurrect cleanup.
     }
-    if (expiredGenerations.has(generationKey(claim))) continue;
+    if (expiredGenerations.has(generationKey(claim))) {
+      unacknowledged++;
+      continue;
+    }
     try {
       await api.claim?.(state, claim.requestId, claim.accepted);
     } catch (error) {
@@ -559,18 +771,44 @@ export async function tick(
       // Offline/unknown ACK: retry this same durable fact on a later fair turn.
     }
   }
-  async function execute(receipt: Receipt, job: Job, admitted: boolean) {
-    if (receipt.outcome) return;
+  /** Ledger-side preconditions, inside the serialized section. Returns a refusal. */
+  async function prepare(receipt: Receipt): Promise<unknown> {
     try {
+      if (
+        (receipt.operation === "stop" || receipt.operation === "delete") &&
+        state.resumeClaims?.some(
+          (claim) => claim.active && claim.accepted && generationKey(claim) === generationKey(receipt.request),
+        )
+      )
+        throw new Error("Generation claimed for resume");
+      if (receipt.operation === "delete") {
+        state.cleanupGenerations ??= [];
+        state.cleanupGenerations.push(generationKey(receipt.request));
+        await store.save(state);
+      }
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  }
+  /** The machine operation itself, outside the serialized ledger section. */
+  const dispatched = Boolean(options.dispatch && polled?.held);
+  async function perform(receipt: Receipt, job: Job, admitted: boolean, refusal: unknown) {
+    try {
+      if (refusal) throw refusal;
       if (receipt.operation === "buildSnapshot") {
         if (job.operation !== "buildSnapshot" || !executor.buildSnapshot) throw Error("Snapshot builds unavailable.");
-        let sweeping: Promise<void> | undefined;
-        const timer = setInterval(async () => {
-          if (sweeping) return;
-          sweeping = tick(store, api, executor, true).catch(() => {});
-          await sweeping;
-          sweeping = undefined;
-        }, 10000);
+        let sweeping: Promise<unknown> | undefined;
+        // A caller that dispatched this build keeps ticking itself; a build run
+        // inline (serial caller, or a server that cannot hold a poll) sweeps from here.
+        const timer = dispatched
+          ? undefined
+          : setInterval(async () => {
+              if (sweeping) return;
+              sweeping = tick(store, api, executor, true).catch(() => {});
+              await sweeping;
+              sweeping = undefined;
+            }, 10000);
         try {
           receipt.imageId = await executor.buildSnapshot(job, !admitted);
         } finally {
@@ -587,18 +825,6 @@ export async function tick(
         }
         await executor.startRuntime(receipt.request, job.bootstrap);
       } else {
-        if (
-          (receipt.operation === "stop" || receipt.operation === "delete") &&
-          state.resumeClaims?.some(
-            (claim) => claim.active && claim.accepted && generationKey(claim) === generationKey(receipt.request),
-          )
-        )
-          throw new Error("Generation claimed for resume");
-        if (receipt.operation === "delete") {
-          state.cleanupGenerations ??= [];
-          state.cleanupGenerations.push(generationKey(receipt.request));
-          await store.save(state);
-        }
         await executor[receipt.operation](receipt.request);
       }
       receipt.outcome = "completed";
@@ -613,7 +839,10 @@ export async function tick(
         );
       } else if (error instanceof DockerMachineError && error.code === "image_unavailable") receipt.reason = error.code;
     } // Uncertain native failure is terminal for this request identity.
-    // Reload durable state before completing the receipt.
+  }
+  /** Durable completion, back inside the serialized section. */
+  async function finish(receipt: Receipt) {
+    // Reload durable state: other ticks may have saved while the operation ran.
     const latest = await store.load();
     const saved = latest.receipts.find((item) => item.requestId === receipt.requestId);
     if (!saved) throw Error("Missing durable receipt");
@@ -629,18 +858,36 @@ export async function tick(
         (entry) => generationKey(entry.request) !== generationKey(receipt.request),
       );
     updateActiveTtl(latest, saved);
+    await store.save(latest);
     Object.assign(state, latest);
-    await store.save(state);
   }
   if (pollError) throw pollError;
   if (!polled) throw pollError ?? new Error("Host poll unavailable");
   if (!polled.job) {
     await store.save(state);
-    return;
+    // A claim this host cannot acknowledge would end every held poll at once.
+    return polled.held && !unacknowledged ? "held" : "idle";
   }
   const job = parseDockerHostJob(polled.job);
   if ((job.operation === "bootstrap" || job.operation === "resume") && job.bootstrap.serverUrl !== state.server)
     throw new Error("Wrong bootstrap origin");
+  // A server that cannot exclude running work re-delivers it; never treat
+  // this process's own in-flight operation as an uncertain recovery. Such a
+  // server (no held poll) may also hand out a later job of a sandbox whose
+  // operation is still running, so nothing is admitted until local work drains;
+  // the unadmitted job is delivered again. The server frees a sandbox once a
+  // job's outcome is recorded, and it records one without the host when it
+  // cancels queued work (revocation, owner removal, snapshot build expiry). So
+  // this host keeps each sandbox, and snapshot builds, serial itself.
+  if (
+    options.running?.has(job.requestId) ||
+    (options.running?.size && !polled.held) ||
+    options.sandboxes?.has(job.request.sandboxId) ||
+    ((options.snapshots ? options.snapshots.size > 0 : skipSnapshots) && job.operation === "buildSnapshot")
+  ) {
+    await store.save(state);
+    return "busy";
+  }
   const inputHash =
     job.operation === "bootstrap" || job.operation === "resume" || job.operation === "buildSnapshot"
       ? createHash("sha256")
@@ -673,7 +920,7 @@ export async function tick(
         ...(old[7] ? { imageId: old[7] } : {}),
       } as Receipt;
       await api.result(state, replay);
-      return;
+      return "worked";
     }
     const oldGeneration = retired.filter((r) => r[2] === generationKey(job.request));
     const cleanup = job.operation === "stop" || job.operation === "delete";
@@ -718,8 +965,19 @@ export async function tick(
     await store.save(state);
     admitted = true;
   }
-  await execute(receipt, job, admitted);
-  await api.result(state, receipt);
+  const accepted = receipt;
+  const refusal = accepted.outcome ? undefined : await prepare(accepted);
+  return {
+    job,
+    held: polled.held === true,
+    async work() {
+      if (!accepted.outcome) {
+        await perform(accepted, job, admitted, refusal);
+        await exclusive(store, () => finish(accepted));
+      }
+      await api.result(state, accepted);
+    },
+  };
 }
 
 function digest(value: string): string {

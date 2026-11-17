@@ -1238,7 +1238,7 @@ class Component extends DCLogic {
     if (page === 'models') {
       const f = filt(MODELS, [['all','All'],['claude','Claude Code'],['codex','Codex']], (m, k) => m.agent.includes(k === 'claude' ? 'Claude Code' : 'Codex'), m => m.name + m.kind);
       cat = { title:'Models', desc:'The accounts agents run on. Your own accounts win over the organization’s. Keys are encrypted and never shown again.', primary:'Add an account', searchPh:'Search accounts', filters:f.filters,
-        hasNote:true, note:{ items:[{ logo:'claude', label:'Claude Code', value:'opus-5-5 · medium' }, { logo:'openai', label:'Codex', value:'gpt-6.1-sol · medium' }], caption:'Used when a launch names no model. Armada never swaps in another one.', hasAction:false },
+        hasNote:true, note:{ items:[{ logo:'claude', label:'Claude Code', value:'opus-5-5 · medium' }, { logo:'openai', label:'Codex', value:'gpt-6.2-sol · medium' }], caption:'Used when a launch names no model. Armada never swaps in another one.', hasAction:false },
         sections:[{ label:'', cards:f.items.map(m => card({ logo:m.logo, title:m.name, sub:m.kind + ' · ' + m.scope, status:m.status, foot:'For ' + m.agent + ' · ' + m.running, ...fixAction(m.status, () => this.fixModel(m)), open:openDr('model', m.id) })) }] };
     }
     if (page === 'tools') {

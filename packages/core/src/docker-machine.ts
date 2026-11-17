@@ -21,7 +21,7 @@ export interface DockerMachineCli {
 
 /**
  * How long a host may take to fetch an image it does not have yet: half the launch's 10-minute deadline, leaving the
- * rest for the container and the runtime. The daemon is serial, so it does nothing else while it pulls.
+ * rest for the container and the runtime. The pull blocks only its own sandbox; the daemon keeps taking other jobs.
  */
 export const DOCKER_IMAGE_PULL_TIMEOUT_MS = 5 * 60_000;
 

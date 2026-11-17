@@ -3,6 +3,7 @@ import type { AgentEvent, Sql } from "@armada/core";
 import * as coreServer from "@armada/core/server";
 import { createUsagePricingContext, decryptSecret, encryptSecret } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
@@ -780,4 +781,72 @@ test("runtime retry metadata is published without a status read and clears on pr
   expect(await retryAt()).toBeNull();
   await f.publish(active, [{ sequence: 1, event: retry }]);
   expect(await retryAt()).toBeNull();
+});
+
+test("terminal runtime prompts enqueue one private-content-free delivery across replay", async () => {
+  const f = await fixture({ provider: "modal" });
+  try {
+    await f.db.query(
+      "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
+      [f.people.org, await encryptSecret("webhook_secret", ENCRYPTION_KEY)],
+    );
+    const active = await f.enrol();
+    const event: AgentEvent = {
+      id: "terminal_event",
+      at: 10,
+      kind: "prompt",
+      promptId: "completed_prompt",
+      status: "failed",
+      text: "private_prompt_content",
+    };
+    const batch = [{ sequence: 1, event }];
+    expect((await f.publish(active, batch)).status).toBe(200);
+    expect((await f.publish(active, batch)).status).toBe(200);
+    const deliveries = (
+      await f.db.query<{ payload: Record<string, unknown> }>("select payload from outbound_webhook_deliveries")
+    ).rows;
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.payload).toMatchObject({
+      type: "turn.failed",
+      sandboxId: f.id,
+      promptId: "completed_prompt",
+      externalRef: null,
+      reason: "turn_failed",
+    });
+    expect(JSON.stringify(deliveries)).not.toContain("private_prompt_content");
+  } finally {
+    await f.close();
+  }
+});
+
+test("delivery failures release the lease, back off durably, and stop at five attempts", async () => {
+  const f = await fixture();
+  try {
+    const endpoint = (
+      await f.db.query<{ id: string }>(
+        "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2) returning id",
+        [f.people.org, await encryptSecret("webhook_secret", ENCRYPTION_KEY)],
+      )
+    ).rows[0]!;
+    await f.db.query("insert into outbound_webhook_deliveries(endpoint_id,payload) values($1,'{}')", [endpoint.id]);
+    // An unavailable encryption key fails before network I/O; the same durable
+    // failure settlement handles transport errors and unsuccessful responses.
+    const worker = createOutboundWebhooks(f.sql, "invalid_key", "https://armada.example");
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      expect(await worker.reconcileOne(new AbortController().signal)).toBe(true);
+      const row = (
+        await f.db.query<{ attempts: number; lease_until: unknown; seconds: number }>(
+          "select attempts,lease_until,extract(epoch from next_attempt_at-now())::float as seconds from outbound_webhook_deliveries",
+        )
+      ).rows[0]!;
+      expect(row.attempts).toBe(attempt);
+      expect(row.lease_until).toBeNull();
+      expect(row.seconds).toBeGreaterThan(30 * 2 ** (attempt - 1) - 1);
+      expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+      await f.db.query("update outbound_webhook_deliveries set next_attempt_at=now()-interval '1 second'");
+    }
+    expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+  } finally {
+    await f.close();
+  }
 });

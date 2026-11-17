@@ -719,6 +719,9 @@ test.each(["cleanup", "claim"] as const)(
     const requestId = randomUUID();
     expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("claiming");
     expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
+    // A held poll's read-only recheck wakes for the unacknowledged claim alone.
+    expect(await hosts.mayHaveWork(f.hostToken, f.installationId, false, [], false)).toBe(false);
+    expect(await hosts.mayHaveWork(f.hostToken, f.installationId, false, [], true)).toBe(true);
     if (winner === "claim") {
       await tick(store, api, executor, false, () => 999);
       // An abandoned request cannot reserve this lifecycle against a new caller

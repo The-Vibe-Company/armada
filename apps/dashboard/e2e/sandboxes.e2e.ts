@@ -531,7 +531,7 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
   const summary = page.locator("[data-launch-summary]");
   await expect(summary).toHaveText("1 MCP");
   await page.getByRole("radio", { name: "Codex" }).check();
-  await expect(page.getByLabel("Model")).toHaveValue("gpt-6.1-sol");
+  await expect(page.getByLabel("Model")).toHaveValue("gpt-6.2-sol");
   await expect(summary).toHaveText("1 MCP");
   await page.getByLabel("Model").selectOption("gpt-6-luna");
   await expect(page.getByLabel("Reasoning effort").locator("option[value=ultra]")).toHaveCount(0);

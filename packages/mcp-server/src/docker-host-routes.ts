@@ -52,12 +52,37 @@ function deadlinesOf(value: unknown): { sandboxId: string; generation: string; d
   });
 }
 
+/** Longest a daemon poll is held open waiting for work (#2561). */
+export const DOCKER_HOST_POLL_HOLD_SECONDS = 20;
+/** Most machine operations a daemon may report as still executing. */
+export const DOCKER_HOST_MAX_RUNNING = 16;
+export interface DockerHostPollClock {
+  now(): number;
+  wait(ms: number, signal: AbortSignal): Promise<void>;
+}
+const pollClock: DockerHostPollClock = {
+  now: () => Date.now(),
+  async wait(ms, signal) {
+    if (signal.aborted) return;
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, ms);
+      signal.addEventListener("abort", finish, { once: true });
+    });
+  },
+};
+
 /** Mounted only by ARMADA_DOCKER_HOSTS=1. Machine authority never authenticates a user API. */
 export function createDockerHostRoutes(
   store: ReturnType<typeof createDockerHostStore>,
   authenticate: (request: Request) => Promise<CallerResult>,
-  options: { placement?: boolean; publicUrl?: string; snapshots?: DockerSnapshots } = {},
+  options: { placement?: boolean; publicUrl?: string; snapshots?: DockerSnapshots; clock?: DockerHostPollClock } = {},
 ): Route {
+  const clock = options.clock ?? pollClock;
   return async (request) => {
     const path = new URL(request.url).pathname;
     const owner = ownerPaths.includes(path);
@@ -170,6 +195,8 @@ export function createDockerHostRoutes(
                 ...("deadlines" in body ? ["deadlines"] : []),
                 ...("diskFreeBytes" in body ? ["diskFreeBytes"] : []),
                 ...("stoppedSandboxBytes" in body ? ["stoppedSandboxBytes"] : []),
+                ...("waitSeconds" in body ? ["waitSeconds"] : []),
+                ...("running" in body ? ["running"] : []),
               ]
             : ["installationId"],
       );
@@ -225,6 +252,23 @@ export function createDockerHostRoutes(
         // are meaningless without the policy they belong to.
         if ("deadlines" in body && !("retentionSeconds" in body)) throw new InvalidInput();
         const deadlines = "deadlines" in body ? deadlinesOf(body.deadlines) : undefined;
+        // A daemon may opt into a held poll: the response waits until a job or an
+        // unacknowledged resume claim exists, so a launch never waits out the
+        // daemon's idle period, and the host still needs no inbound port (#2561).
+        // Validated before any write, as a daemon retries a refused poll without them.
+        const wait = body.waitSeconds;
+        if (wait !== undefined && (!Number.isSafeInteger(wait) || Number(wait) < 1)) throw new InvalidInput();
+        const holdUntil = clock.now() + Math.min(Number(wait ?? 0), DOCKER_HOST_POLL_HOLD_SECONDS) * 1000;
+        // Machine operations the daemon is still executing. Their sandboxes stay
+        // serial; jobs of other sandboxes are handed out while they run.
+        const running = body.running;
+        if (
+          running !== undefined &&
+          (!Array.isArray(running) ||
+            running.length > DOCKER_HOST_MAX_RUNNING ||
+            running.some((item) => typeof item !== "string" || !uuid.test(item)))
+        )
+          throw new InvalidInput();
         const retentionSeconds = await store.retentionForHost(
           token,
           installationId,
@@ -236,20 +280,59 @@ export function createDockerHostRoutes(
               }
             : undefined,
         );
+        let resumeClaims: Awaited<ReturnType<typeof store.resumeClaimsForHost>>;
+        let job: Awaited<ReturnType<typeof store.poll>>;
+        const skipSnapshots = body.skipSnapshots === true;
+        const runningIds = (running as string[] | undefined) ?? [];
+        let probed = false;
+        for (;;) {
+          resumeClaims = body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
+          job = await store.poll(
+            token,
+            installationId,
+            version,
+            skipSnapshots,
+            body.resources as DockerHostResources | undefined,
+            body.resourcePolicyVersion as 1 | undefined,
+            body.diskFreeBytes as number | null | undefined,
+            body.stoppedSandboxBytes as number | null | undefined,
+            runningIds,
+          );
+          if (job || resumeClaims.length) break;
+          // The probe is broader than the poll (admission refusals, job order). A
+          // probe the full poll could not serve is not retried within this hold,
+          // so such a job costs one more full poll per hold, not one per second.
+          if (probed) {
+            const remaining = holdUntil - clock.now();
+            if (remaining > 0) await clock.wait(remaining, request.signal);
+            break;
+          }
+          // Recheck every second with a read-only probe; the full poll above
+          // (host reconciliation, heartbeat and claim writes) runs again only
+          // when something may be ready, not once a second per idle host.
+          let ready = false;
+          while (!ready) {
+            const remaining = holdUntil - clock.now();
+            if (remaining <= 0 || request.signal.aborted) break;
+            await clock.wait(Math.min(1000, remaining), request.signal);
+            if (request.signal.aborted) break;
+            ready = await store.mayHaveWork(
+              token,
+              installationId,
+              skipSnapshots,
+              runningIds,
+              body.resumeClaimProtocol === 1,
+            );
+          }
+          if (!ready) break;
+          probed = true;
+        }
         return Response.json(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
-            resumeClaims: body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [],
-            job: await store.poll(
-              token,
-              installationId,
-              version,
-              body.skipSnapshots === true,
-              body.resources as DockerHostResources | undefined,
-              body.resourcePolicyVersion as 1 | undefined,
-              body.diskFreeBytes as number | null | undefined,
-              body.stoppedSandboxBytes as number | null | undefined,
-            ),
+            ...(wait === undefined ? {} : { held: true }),
+            resumeClaims,
+            job,
             // Every generation with a queued resume/bootstrap, so the daemon
             // fences all of them, not only the single job it was handed.
             pendingStarts: await store.pendingStartsForHost(token, installationId),
