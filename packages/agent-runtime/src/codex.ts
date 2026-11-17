@@ -13,6 +13,7 @@ import type { ThreadStartResponse } from "./codex-schema/v2/ThreadStartResponse.
 import type { TurnCompletedNotification } from "./codex-schema/v2/TurnCompletedNotification.ts";
 import type { TurnStartParams } from "./codex-schema/v2/TurnStartParams.ts";
 import type { TurnStartResponse } from "./codex-schema/v2/TurnStartResponse.ts";
+import { codexTurnFailureCode } from "./codex-turn-error.ts";
 import { codexTurnUsage } from "./codex-turn-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
@@ -557,17 +558,10 @@ export class CodexDriver implements Driver {
                 planLimitFromMessage(result.turn.error?.message) ??
                 codexPlanLimit(undefined, code === "rateLimitExceeded" ? "rate_limited" : "usage_limit_exceeded"),
             });
-          throw new HarnessError(
-            code === "unauthorized"
-              ? "authentication_failed"
-              : code === "usageLimitExceeded" || code === "sessionBudgetExceeded"
-                ? "usage_limit_exceeded"
-                : code === "rateLimitExceeded"
-                  ? "rate_limited"
-                  : code === "contextWindowExceeded"
-                    ? "context_window_exceeded"
-                    : "harness_failed",
-          );
+          // A response cut by the model's output limit is reported by pinned Codex as a
+          // generic `other` terminal with the exact Display text below; name that cause
+          // instead of collapsing it into a configuration failure.
+          throw new HarnessError(codexTurnFailureCode(code, result.turn.error?.message));
         }
       } finally {
         closed = true;

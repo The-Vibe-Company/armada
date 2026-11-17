@@ -200,7 +200,7 @@ export async function launchOnDockerHost(
     if (!(error instanceof ControlError)) throw error;
     if (error.outcomeUnknown || error.code === "outcome_unknown")
       return fail(UNKNOWN_DOCKER_LAUNCH, { href: "/sandboxes?owner=me&sort=newest", label: "See newest sandboxes" });
-    return fail(dockerHostActionFailure(error.status, "launch"));
+    return fail(dockerHostActionFailure(error.status, "launch", error.code));
   }
   if (!id) return fail("The Armada server did not answer with a Docker sandbox.");
   revalidatePath("/sandboxes");

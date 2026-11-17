@@ -119,6 +119,7 @@ nativeTest.each([
   ["recorded-failure", "harness_failed"],
   ["unauthorized", "authentication_failed"],
   ["usageLimitExceeded", "usage_limit_exceeded"],
+  ["output-limit", "output_limit_exceeded"],
 ])("Codex terminal %s is a typed failure, never successful completion", async (text, code) => {
   const driver = new CodexDriver({
     executable: `${import.meta.dir}/fixtures/app-server.ts`,

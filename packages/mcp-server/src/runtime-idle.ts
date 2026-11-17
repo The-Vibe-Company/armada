@@ -1,4 +1,5 @@
 import { type AgentEvent, isFinalPromptStatus, type Sql } from "@armada/core/server";
+import { hostDrainingSql } from "./docker-host-drain.ts";
 import { dockerHostSupportsResume } from "./docker-host-version.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
@@ -84,7 +85,7 @@ export function createRuntimeIdle(
            join public.runtime_enrolments r on r.sandbox_id=s.id
            left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
            left join public.docker_hosts h on h.id=s.docker_host_id and h.installation_id=s.docker_installation_id
-             and h.hash is not null and h.revoked_at is null and h.registration_hash is null and h.draining_at is null
+             and h.hash is not null and h.revoked_at is null and h.registration_hash is null and not ${hostDrainingSql("h")}
              and exists(select 1 from public.members hm where hm.org_id=h.org_id and hm.user_id=h.owner_id)
            where (s.boat_runtime or (s.provider='modal' and s.runtime_transport='dialout') or (s.provider='docker' and $2::boolean))
            and s.status in ('ready','running') and s.stop_requested_at is null

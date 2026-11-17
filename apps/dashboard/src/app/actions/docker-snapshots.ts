@@ -11,6 +11,7 @@ import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { launchedDockerSandbox, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import { snapshotBuildHostBlocker } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { LAUNCH_PATH, LAUNCH_TIMEOUT_MS, launchFailureMessage } from "@/lib/launch";
 import { LAUNCH_KEY_FIELD } from "@/lib/launch-key";
@@ -39,14 +40,11 @@ export async function buildDockerSnapshot(
   if (visibility === "org" && selected.role !== "admin")
     return createFail("Only an organization admin publishes shared snapshots.");
   const [hosts, option] = await Promise.all([readSelectedDockerHosts(), readDockerLaunchOption()]);
-  if (
-    hosts.state !== "ready" ||
-    !hosts.list.placement ||
-    !option?.enabled ||
-    !option.capabilities.goldens ||
-    !hosts.list.hosts.some((host) => host.id === hostId && host.state === "online")
-  )
+  if (hosts.state !== "ready" || !hosts.list.placement || !option?.enabled || !option.capabilities.goldens)
     return createFail("Choose an online host with snapshot support.");
+  // A stale form may still name a host that started draining; the shared blocker names the uninstall to finish.
+  const blocked = snapshotBuildHostBlocker(hosts.list.hosts, hostId);
+  if (blocked) return createFail(blocked);
   let config: ReturnType<typeof parseGoldenConfig>;
   try {
     config = parseGoldenConfig(JSON.parse(formString(data, "config")));
