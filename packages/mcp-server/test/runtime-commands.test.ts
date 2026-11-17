@@ -485,6 +485,93 @@ test("Codex agent bridge translates Boat identity and reconciles prompt/status/j
   }
 });
 
+// A definite admission refusal must stay definite at the public bridge. The same request ID
+// replays the stored 409, and neither response may claim an unknown outcome.
+test("agent bridge preserves a definite native-auth admission refusal without uncertainty metadata", async () => {
+  const { createRuntimeAgent } = await import("../src/runtime-agent.ts");
+  const { Journal, Runner } = await import("../../agent-runtime/src/index.ts");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const f = await fixture();
+  const root = await mkdtemp(join(tmpdir(), "runtime-refusal-"));
+  const journal = new Journal(join(root, "journal"), (value) => value);
+  const held = Promise.withResolvers<"finished">();
+  let runner!: InstanceType<typeof Runner>;
+  try {
+    const active = await f.enrol();
+    const driver: import("../../agent-runtime/src/protocol.ts").Driver = {
+      start(context) {
+        context.session("native-session");
+        return { done: held.promise, async interrupt() {}, async steer() {} };
+      },
+      async close() {},
+    };
+    runner = new Runner(
+      journal,
+      {
+        token: active.runtimeToken,
+        sandboxId: f.id,
+        generation: active.epoch,
+        expiresAt: Date.now() + 60000,
+      },
+      { codex: driver },
+      undefined,
+      undefined,
+      undefined,
+      { exclusiveNativeAuth: true },
+    );
+    const serve = async () => {
+      const pending = await f.bridge().next(active.runtimeToken, active.epoch);
+      if (!pending.command) throw Error("missing admitted command");
+      const response = await runner.handle(
+        new Request("http://runtime/v1", {
+          method: "POST",
+          headers: { "x-armada-runner-grant": active.runtimeToken },
+          body: JSON.stringify(pending.command),
+        }),
+      );
+      expect(
+        (
+          await f.request("results", active.runtimeToken, active.epoch, {
+            epoch: active.epoch,
+            requestId: pending.command.requestId,
+            status: response.status,
+            body: await response.json(),
+          })
+        ).status,
+      ).toBe(200);
+    };
+    const agent = createRuntimeAgent(f.bridge(), {
+      harness: "codex",
+      ownerId: f.people.owner,
+      sandboxId: f.id,
+      providerSandboxId: "bx-physical",
+      cwd: root,
+      defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+    });
+    f.onWait(serve);
+    await agent.prompt({ sandboxId: "bx-physical", harness: "codex", text: "first" }, "first");
+    const request = { sandboxId: "bx-physical", harness: "codex" as const, text: "second" };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      f.onWait(serve);
+      let failure: import("@armada/core").ProviderError | undefined;
+      try {
+        await agent.prompt(request, "second");
+      } catch (error) {
+        failure = error as import("@armada/core").ProviderError;
+      }
+      expect(failure).toMatchObject({ provider: "boat", code: "conflict", retryable: false });
+      expect(failure?.details).toBeUndefined();
+    }
+  } finally {
+    held.resolve("finished");
+    await runner.close();
+    journal.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test.each(["wrong-id", "unknown-error", "prototype-error", "stale-health"] as const)(
   "agent bridge refuses %s replies without reflecting private diagnostics",
   async (kind) => {

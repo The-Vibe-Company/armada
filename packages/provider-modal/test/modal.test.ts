@@ -2592,6 +2592,11 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       expect(new Headers(init?.headers).get("x-armada-runner-grant")).toBe("current-generation-grant");
       if (mode === "conflict")
         return Response.json({ version: 1, requestId: request.requestId, error: "conflict" }, { status: 409 });
+      if (mode === "native-auth-busy")
+        return Response.json(
+          { version: 1, requestId: request.requestId, error: "native_auth_writer_busy" },
+          { status: 409 },
+        );
       if (mode === "foreign-error")
         return Response.json({ version: 1, requestId: "foreign", error: "conflict" }, { status: 409 });
       return Response.json({
@@ -2615,6 +2620,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       code: "conflict",
       message: "Runner operation refused.",
     });
+    mode = "native-auth-busy";
+    await expect(transport.call(row, "configureMcp", { configuration })).rejects.toMatchObject({ code: "conflict" });
     mode = "foreign-error";
     await expect(transport.call(row, "configureMcp", { configuration })).rejects.toMatchObject({ code: "unavailable" });
     mode = "wrong-version";
