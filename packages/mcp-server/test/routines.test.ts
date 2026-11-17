@@ -12,11 +12,21 @@ import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const database = rowOnlyDatabase();
+const routineNow = "2026-11-17T07:30:00.000Z";
 
 // Primary owner for routine CRUD/admission and grants: real services over the real migrations.
 async function fixture() {
   const { db, people } = await database();
-  const sql: Sql = { query: (s, p) => db.query(s, p), transaction: (work) => db.transaction((tx) => work(tx)) };
+  const sql: Sql = {
+    query: (s, p) => db.query(s, p),
+    transaction: (work) =>
+      db.transaction((tx) =>
+        work({
+          query: (s, p) =>
+            s === "select now() as now" ? tx.query("select $1::timestamptz as now", [routineNow]) : tx.query(s, p),
+        }),
+      ),
+  };
   const actor = (userId = people.owner) => ({ userId, orgs: [{ orgId: people.org }] });
   const templates = createTemplateService(sql);
   const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!.id;
@@ -225,7 +235,7 @@ test("routine lifecycle enables, pauses and preserves accessible history after d
     const row = await f.create(await f.template());
     const enabled = (await f.command("enable", { id: row.id, expectedVersion: 1 })).item as Routine;
     expect(enabled).toMatchObject({ status: "enabled", version: 2, consecutiveFailures: 0 });
-    expect(new Date(enabled.nextDueAt!).getTime()).toBeGreaterThan(Date.now());
+    expect(enabled.nextDueAt).toBe("2026-11-17T08:30:00.000Z");
     expect((await f.command("list", {})).items).toHaveLength(1);
     await expect(f.command("pause", { id: row.id, expectedVersion: 1 })).rejects.toMatchObject({ code: "conflict" });
     const paused = await f.command("pause", { id: row.id, expectedVersion: 2 });
@@ -259,7 +269,7 @@ test("routine lifecycle enables, pauses and preserves accessible history after d
   }
 });
 
-test("cron API validates schedules, previews three instants from the database clock and enables the next calendar slot", async () => {
+test("cron API validates schedules, previews three instants from the supplied clock and enables the next calendar slot", async () => {
   const f = await fixture();
   try {
     const templateId = await f.template();
@@ -283,6 +293,7 @@ test("cron API validates schedules, previews three instants from the database cl
     ).item as Routine;
     expect(legacyUpdated).toMatchObject({ cron: null, intervalHours: 25, version: 2 });
     const preview = await f.command("preview", { cron: item.cron, timezone: item.timezone });
+    expect(preview.asOf).toBe(routineNow);
     const dates = preview.nextRuns as string[];
     expect(dates).toHaveLength(3);
     expect(dates.every((date, index) => date > (index ? dates[index - 1]! : (preview.asOf as string)))).toBe(true);
