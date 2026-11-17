@@ -31,12 +31,21 @@ public final class URLSessionTransport: ArmadaTransport, Sendable {
     private let session: URLSession
 
     public init() {
+        session = URLSession(configuration: Self.ephemeralConfiguration(),
+                             delegate: RedirectDenyingDelegate(), delegateQueue: nil)
+    }
+
+    init(configuration: URLSessionConfiguration) {
+        session = URLSession(configuration: configuration, delegate: RedirectDenyingDelegate(), delegateQueue: nil)
+    }
+
+    static func ephemeralConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.httpCookieStorage = nil
         configuration.urlCredentialStorage = nil
         configuration.urlCache = nil
-        session = URLSession(configuration: configuration, delegate: RedirectDenyingDelegate(), delegateQueue: nil)
+        return configuration
     }
 
     deinit { session.invalidateAndCancel() }
