@@ -5,6 +5,7 @@ import {
   type Machine,
   type ModalStore,
   type RunnerDistribution,
+  type SavedImage,
   type Scope,
 } from "../src/index.ts";
 
@@ -32,6 +33,8 @@ function fixture(stage: "scrub" | "snapshot") {
     snapshots = 0;
   let rejectImageDelete = false;
   const deletedImages: string[] = [];
+  const retries: number[] = [];
+  let images: SavedImage[] = [];
   const store = {
     get: async () => structuredClone(stored),
     lease: async <T>(
@@ -41,8 +44,15 @@ function fixture(stage: "scrub" | "snapshot") {
       work(structuredClone(stored), async (value) => {
         stored = structuredClone(value);
       }),
-    images: async () => [],
-    tombstoneSources: async () => [],
+    saveImage: async (image: SavedImage) => {
+      images = [...images.filter((x) => x.info.name !== image.info.name), structuredClone(image)];
+    },
+    images: async () => structuredClone(images),
+    purgeImage: async (name: string) => {
+      images = images.filter((x) => x.info.name !== name || !x.deleted);
+    },
+    imageReferenced: async () => false,
+    tombstoneSources: async () => (images.some((x) => x.deleted) ? [stored.info.id] : []),
     watermark: async () => 1,
   } as unknown as ModalStore;
   const sandbox = {
@@ -82,6 +92,9 @@ function fixture(stage: "scrub" | "snapshot") {
     client,
     store,
     distribution,
+    collectionSleep: async (milliseconds: number) => {
+      retries.push(milliseconds);
+    },
     runner: { call: async <T>() => ({ generation: "1", watermark: 1, acknowledgedSequence: 1 }) as T },
   });
   return {
@@ -90,6 +103,8 @@ function fixture(stage: "scrub" | "snapshot") {
     snapshots: () => snapshots,
     terminated: () => terminated,
     deletedImages,
+    retries,
+    images: () => images,
     rejectNextImageDelete: () => {
       rejectImageDelete = true;
     },
@@ -99,15 +114,18 @@ function fixture(stage: "scrub" | "snapshot") {
   };
 }
 
-test("a confirmed Modal stop lets deletion remove recovery images without another termination", async () => {
+test("a confirmed Modal stop deletes at once and collects recovery images after a transient failure", async () => {
   const f = fixture("snapshot");
   f.recover();
   await f.provider.stop({ sandboxId: "logical" });
   f.rejectNextImageDelete();
-  await expect(f.provider.delete({ sandboxId: "logical" })).rejects.toMatchObject({ code: "unavailable" });
   await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
-  expect(f.deletedImages).toEqual(["prior-recovery", "fresh-recovery"]);
   expect(f.state().phase).toBe("deleted");
+  expect(f.terminated()).toBe(1);
+  await f.provider.deferredCollection();
+  expect(f.retries).toEqual([5_000]);
+  expect(f.deletedImages).toEqual(["prior-recovery", "fresh-recovery"]);
+  expect(f.images()).toEqual([]);
 });
 
 test.each(["scrub", "snapshot"] as const)(

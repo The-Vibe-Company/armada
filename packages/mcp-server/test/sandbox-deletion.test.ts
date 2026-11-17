@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
 import { encryptSecret, type Provider, ProviderError } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
+import {
+  createModalProvider,
+  createSqlModalStore,
+  type Machine,
+  type ModalProvider,
+  type RunnerDistribution,
+  type Scope,
+} from "@armada/provider-modal";
+import type { ModalClient } from "modal";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";
@@ -367,6 +376,114 @@ test("admin extension and deletion resolve private-source resources through thei
       expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toEqual([]);
     }
     expect(accounts).toEqual(["owner", "owner", "owner", "owner"]);
+  } finally {
+    await server.close();
+  }
+});
+
+// #2594: a confirmed Modal stop is deletable at once. An image-service timeout no longer
+// fails the delete and retains the activity lease; the server collects images afterwards.
+test("a stopped Modal sandbox is deleted on the first request and its images are collected after a timeout", async () => {
+  const server = await harness({}, await sharedDatabase());
+  try {
+    const { people: p, db } = server;
+    const ownerToken = await server.token(p.owner);
+    const binding = { workspace: "ws", environment: "main", appId: "ap-delete" };
+    const scope: Scope = { orgId: p.org, userId: p.owner, visibility: "private", binding };
+    const machine: Machine = {
+      info: { id: "modal-logical", name: "worker", state: "stopped", providerState: "stopped", labels: {} },
+      generation: 1,
+      phase: "stopped",
+      physicalId: "modal-physical",
+      physicalName: "owned-worker",
+      golden: false,
+      ttlSeconds: 3600,
+      managementAuthority: { credentialScope: "user", credentialOwnerId: p.owner },
+      recoveryImageId: "recovery-image",
+    };
+    await createSqlModalStore(db, scope).reserve("modal-delete", machine);
+    await db.query(
+      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+      values($1,$2,'delete-modal','private','modal','master','image',$3,$4,$5,'{"repos":[],"init":[]}')`,
+      [p.org, p.owner, binding.workspace, binding.environment, binding.appId],
+    );
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,stopped_at)
+      select $1,id,$2,$3,'modal',$4,'claude','stopped',now() from goldens where name='delete-modal'`,
+      [id, p.org, p.owner, machine.info.id],
+    );
+    const sdk: string[] = [];
+    let timeouts = 1;
+    const client = {
+      apps: { fromName: async () => ({ appId: binding.appId }) },
+      sandboxes: {
+        fromId: async () => {
+          sdk.push("sandbox-lookup");
+          throw Error("A confirmed stop must not reach the machine again.");
+        },
+      },
+      images: {
+        delete: async (imageId: string) => {
+          if (timeouts-- > 0) throw Object.assign(Error("image service timed out"), { name: "TimeoutError" });
+          sdk.push(`delete:${imageId}`);
+        },
+      },
+    } as unknown as ModalClient;
+    const retries: number[] = [];
+    let adapter: ModalProvider | undefined;
+    const vault = createSqlVaultStore(db);
+    const options: ControlOptions = {
+      authStore: server.auth,
+      store: vault,
+      encryptionKey: ENCRYPTION_KEY,
+      supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon" },
+      data: createSqlData(db),
+      providers: providerRegistry({
+        vault,
+        encryptionKey: ENCRYPTION_KEY,
+        providerFor: () => {
+          throw Error("Unexpected Boat fallback");
+        },
+        modalTokensFor: async () => ({ tokenId: "modal_id", tokenSecret: "modal_secret", scope: "user" }),
+        modalProviderFor: async () => {
+          adapter = createModalProvider({
+            scope,
+            appName: "bound",
+            client,
+            store: createSqlModalStore(db, scope),
+            distribution: {} as RunnerDistribution,
+            runner: { call: async () => Promise.reject(Error("No runner call during deletion.")) },
+            collectionSleep: async (milliseconds) => {
+              retries.push(milliseconds);
+            },
+          });
+          return adapter;
+        },
+      }),
+      now: () => server.clock.now,
+    };
+    const response = await handleControlRequest(
+      new Request(`${PUBLIC_URL}/api/v1/sandboxes/${id}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${ownerToken}` },
+      }),
+      options,
+    );
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toEqual({ id, status: "deleted" });
+    const row = (
+      await db.query<{ status: string; leased: boolean }>(
+        "select status::text,coalesce(activity_until>=now(),false) as leased from sandboxes where id=$1",
+        [id],
+      )
+    ).rows[0];
+    expect(row).toEqual({ status: "deleted", leased: false });
+    expect((await createSqlModalStore(db, scope).get(machine.info.id)).phase).toBe("deleted");
+    await adapter?.deferredCollection();
+    expect(retries).toEqual([5_000]);
+    expect(sdk).toEqual(["delete:recovery-image"]);
+    expect((await db.query("select name from modal_images where source_id=$1", [machine.info.id])).rows).toEqual([]);
   } finally {
     await server.close();
   }
