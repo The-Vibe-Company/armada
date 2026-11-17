@@ -1,5 +1,46 @@
 # Changelog
 
+## [2.50.0](https://github.com/The-Vibe-Company/armada/compare/v2.49.6...v2.50.0) (2026-11-17)
+
+
+### Features
+
+* **dashboard:** align launch, routines and settings with prototype ([#2515](https://github.com/The-Vibe-Company/armada/issues/2515)) ([226a83e](https://github.com/The-Vibe-Company/armada/commit/226a83e49146cc017db2d8a26a9b85033b17157b))
+* **dashboard:** align Machines catalog with prototype ([#2507](https://github.com/The-Vibe-Company/armada/issues/2507)) ([6ef1127](https://github.com/The-Vibe-Company/armada/commit/6ef1127d42059bedabcc0c83ab1ecdc7b69e639a))
+* **dashboard:** match Models, Tools, Skills and Variables redesign ([#2510](https://github.com/The-Vibe-Company/armada/issues/2510)) ([cf68be3](https://github.com/The-Vibe-Company/armada/commit/cf68be3308872ade892d825da8e26d6c586b778c))
+* **dashboard:** redesign catalog cards and detail drawers ([#2496](https://github.com/The-Vibe-Company/armada/issues/2496)) ([b2babc4](https://github.com/The-Vibe-Company/armada/commit/b2babc41948f9a25b5b2d850c9356e0867e3e693))
+* **dashboard:** redesign launch composer and machine size selection ([#2502](https://github.com/The-Vibe-Company/armada/issues/2502)) ([ed74ec3](https://github.com/The-Vibe-Company/armada/commit/ed74ec38d49880845441badf2189eb32a603f8b8))
+* **dashboard:** redesign routines organization and sign-in ([#2503](https://github.com/The-Vibe-Company/armada/issues/2503)) ([c6c5eed](https://github.com/The-Vibe-Company/armada/commit/c6c5eed130abf13ec7816d5310bfd2d513a4c775))
+* **dashboard:** redesign sandbox thread, composer and details ([#2497](https://github.com/The-Vibe-Company/armada/issues/2497)) ([1c11292](https://github.com/The-Vibe-Company/armada/commit/1c112923f99ec52865faeabc0217597a68550b4f))
+* **dashboard:** redesign Sandboxes list ([#2498](https://github.com/The-Vibe-Company/armada/issues/2498)) ([0358199](https://github.com/The-Vibe-Company/armada/commit/0358199ed3e980c8431f4214cb84a39df036a3f5))
+* **dashboard:** redesign visual system and application shell ([#2495](https://github.com/The-Vibe-Company/armada/issues/2495)) ([319e66c](https://github.com/The-Vibe-Company/armada/commit/319e66c887453608309c17b91aaadf6442289fe1))
+* **dashboard:** refine shell and sandbox list fidelity ([#2516](https://github.com/The-Vibe-Company/armada/issues/2516)) ([d769f73](https://github.com/The-Vibe-Company/armada/commit/d769f731ab6138b3857a190517fab1789505d625))
+* **dashboard:** reproduce snapshot and template catalog layouts ([#2505](https://github.com/The-Vibe-Company/armada/issues/2505)) ([44981d2](https://github.com/The-Vibe-Company/armada/commit/44981d2ad8a7701dd690a5783f0909eed9ea03d9))
+
+
+### Bug Fixes
+
+* **dashboard:** address desktop fidelity audit differences ([#2523](https://github.com/The-Vibe-Company/armada/issues/2523)) ([147a23d](https://github.com/The-Vibe-Company/armada/commit/147a23d69adcec0107e38ffbe7e98d7d492e7c4c))
+* **dashboard:** align sandbox thread header and details with prototype ([#2514](https://github.com/The-Vibe-Company/armada/issues/2514)) ([cc114a4](https://github.com/The-Vibe-Company/armada/commit/cc114a45fe7769e754687fb4e3c7b399547fbabe))
+* **dashboard:** bound catalog chips so long names stay inside their cards ([#2524](https://github.com/The-Vibe-Company/armada/issues/2524)) ([486816a](https://github.com/The-Vibe-Company/armada/commit/486816aaaf9db49e1519981491c7498a08a67c38))
+* **dashboard:** expose thread pickers and fit phone details ([#2517](https://github.com/The-Vibe-Company/armada/issues/2517)) ([325fd50](https://github.com/The-Vibe-Company/armada/commit/325fd5040b5b13dc943c153a41e84c69044b3c67))
+* **dashboard:** keep provider actions visible and deduplicate tool metadata ([#2484](https://github.com/The-Vibe-Company/armada/issues/2484)) ([66013c0](https://github.com/The-Vibe-Company/armada/commit/66013c06ceb29e6265eb2384c4409b30a4546bed))
+* **dashboard:** restore tester-army journeys and Variables actions after the redesign ([#2529](https://github.com/The-Vibe-Company/armada/issues/2529)) ([62b8db7](https://github.com/The-Vibe-Company/armada/commit/62b8db7a1511111fe19afb6b027bac69af874106))
+* **docker-host:** expose outdated daemons and disk exhaustion ([#2541](https://github.com/The-Vibe-Company/armada/issues/2541)) ([e258602](https://github.com/The-Vibe-Company/armada/commit/e258602af235e06b050ca9ee606e19e6e7724d9b))
+* **docker-host:** show a draining host as draining and refuse it with its own reason ([#2532](https://github.com/The-Vibe-Company/armada/issues/2532)) ([67dbe50](https://github.com/The-Vibe-Company/armada/commit/67dbe509eb72a5bc005c2e62cf3bd1c836f48c2a))
+* **ios:** align sandbox recovery and preservation guidance ([#2508](https://github.com/The-Vibe-Company/armada/issues/2508)) ([85a245e](https://github.com/The-Vibe-Company/armada/commit/85a245e2530156b384d165960b7694b51124e8ba))
+* **ios:** intercept transport tests on the session and bound their waits ([#2538](https://github.com/The-Vibe-Company/armada/issues/2538)) ([d31a147](https://github.com/The-Vibe-Company/armada/commit/d31a14794e91a46a0b5f4138ee3f22572e106f40))
+* **release:** admit ordinary staging despite stale queued runs ([#2513](https://github.com/The-Vibe-Company/armada/issues/2513)) ([f6d792c](https://github.com/The-Vibe-Company/armada/commit/f6d792c980b7218f202f441e1aa39d1bcc456b70))
+* **release:** defer ordinary staging through publishing releases ([#2470](https://github.com/The-Vibe-Company/armada/issues/2470)) ([39f7d4c](https://github.com/The-Vibe-Company/armada/commit/39f7d4c9b412988ba555aab8d91f48bc528fee68))
+* **runtime:** name a turn cut by the model output limit ([#2535](https://github.com/The-Vibe-Company/armada/issues/2535)) ([1461cdf](https://github.com/The-Vibe-Company/armada/commit/1461cdf663f16ef386239e5ffee7f06508d40a85))
+* **server:** bound Docker status journal observations ([#2542](https://github.com/The-Vibe-Company/armada/issues/2542)) ([a038738](https://github.com/The-Vibe-Company/armada/commit/a0387383516a411d1657121328f20e714819a524))
+* **server:** revoking a Docker host must retire queued startup work and release capacity ([#2530](https://github.com/The-Vibe-Company/armada/issues/2530)) ([fcb2ddc](https://github.com/The-Vibe-Company/armada/commit/fcb2ddc1775b66ca179ab7d428da5bea7039c1c2))
+
+
+### Performance Improvements
+
+* **docker-host:** reduce sandbox thread read amplification ([#2544](https://github.com/The-Vibe-Company/armada/issues/2544)) ([87400a9](https://github.com/The-Vibe-Company/armada/commit/87400a937a7b802fea59a6df41346aed4cbb78b1))
+
 ## [2.49.6](https://github.com/The-Vibe-Company/armada/compare/v2.49.5...v2.49.6) (2026-11-16)
 
 
