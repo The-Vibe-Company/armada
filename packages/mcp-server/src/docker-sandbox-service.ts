@@ -223,7 +223,10 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           if (!credential.rows.length) deny();
         }
         await authorize?.(tx);
-        const snapshot = snapshotId ? await resolveDockerSnapshot(tx, actor, snapshotId) : undefined;
+        // An existing request only validates the snapshot's identity; a drain must not hide its source.
+        const snapshot = snapshotId
+          ? await resolveDockerSnapshot(tx, actor, snapshotId, { allowDraining: Boolean(existing) })
+          : undefined;
         if (
           snapshot &&
           (snapshot.host_id !== request.hostId ||
@@ -240,8 +243,6 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
               [request.hostId, actor.orgId, hint.owner_id, hint.installation_id],
             )
           ).rows[0] ?? deny();
-        // A drain is a state refusal with its own reason, never a permission failure.
-        if (host.draining) throw new DockerHostDraining();
         if (existing) {
           const row =
             (await tx.query<Row>(`select * from public.sandboxes where id=$1 for update`, [request.requestId]))
@@ -272,6 +273,9 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           if (!managed.rows.length) deny();
           return record(row);
         }
+        // A drain refuses new allocation with its own reason, never a permission failure. An
+        // already-admitted request replays above: admission is historical, not current.
+        if (host.draining) throw new DockerHostDraining();
         if (request.credentialId)
           await admitAccountCapacity(tx, request.credentialId, request.requestId, request.model);
         await admitDockerDisk(tx, request.hostId);

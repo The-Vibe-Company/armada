@@ -2883,6 +2883,32 @@ test("launching a saved snapshot on a draining host names the uninstall, not an 
   expect(f.jobs).toEqual([]);
 });
 
+test("a retry of an already-admitted launch from a saved snapshot replays it after a drain", async () => {
+  const db = database();
+  const f = await snapshotFixture(),
+    id = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: id,
+    name: "draining-retry",
+    visibility: "private",
+    config: f.config,
+  });
+  const build = await hosts.poll(f.hostToken, f.installationId);
+  if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: id,
+    outcome: "completed",
+    imageId: `sha256:${"e".repeat(64)}`,
+  });
+  const { hostId: _, ...body } = f.body;
+  const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
+  // Admission is historical: a lost response replays the saved sandbox, not a drain refusal.
+  expect((await f.service().launch(f.caller, { ...body, snapshotId: id })).sandbox.id).toBe(launched.sandbox.id);
+});
+
 test("rebuilding a snapshot on a draining host names the uninstall, not a missing original host", async () => {
   const db = database();
   const f = await snapshotFixture(),

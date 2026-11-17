@@ -9,5 +9,5 @@ alter table public.docker_snapshots add constraint docker_snapshots_failure_reas
     'Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.',
     'Host retired before snapshot publication.',
     'Host disk free space is below the required 10 GB floor or unavailable; free space and retry.',
-    'This host is draining for uninstall. Finish or retry the uninstall on the machine; it can take new work again after the uninstall completes or an abandoned drain expires.'
+    'This host is draining for uninstall. Finish or retry the uninstall on the machine; it takes new work again only after the uninstall completes.'
   ));

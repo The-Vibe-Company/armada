@@ -204,7 +204,7 @@ export function hostState(host: DockerHost, now: number): ResourceState & { deta
         tone: "warning",
         label: "Draining",
         detail:
-          "An uninstall is in progress, so this server takes no new work. Finish or retry the uninstall on the machine; an abandoned drain expires on its own.",
+          "An uninstall is in progress, so this server takes no new work. Finish or retry the uninstall on the machine; it takes new work again only after the uninstall completes.",
       };
     case "pending":
       if (now - Date.parse(host.createdAt) > REGISTRATION_TTL_MS)
@@ -303,7 +303,7 @@ export function dockerHostActionFailure(
 ): string {
   // A draining host is a state refusal, not a permission failure: name the uninstall to finish or retry.
   if (code === "host_draining")
-    return "This host is draining for uninstall. Finish or retry the uninstall on the machine; it can take new work again after the uninstall completes or an abandoned drain expires.";
+    return "This host is draining for uninstall. Finish or retry the uninstall on the machine; it takes new work again only after the uninstall completes.";
   if (status === 401) return "This session cannot manage Hosts. Sign in again, then reload Hosts.";
   if (status === 403)
     return action === "limits"

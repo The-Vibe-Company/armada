@@ -22,7 +22,7 @@ test("a draining host is a host_draining conflict with the uninstall guidance, n
     error: {
       code: "host_draining",
       message:
-        "This host is draining for uninstall. Finish or retry the uninstall on the machine; it can take new work again after the uninstall completes or an abandoned drain expires.",
+        "This host is draining for uninstall. Finish or retry the uninstall on the machine; it takes new work again only after the uninstall completes.",
     },
   });
 });

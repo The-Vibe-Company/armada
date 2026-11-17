@@ -773,13 +773,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
               [hint.docker_host_id, actor.orgId, hint.issuer_id, hint.docker_installation_id, cleanup],
             )
           ).rows[0] ?? deny();
-        if (selection.operation === "bootstrap" || selection.operation === "resume") {
-          const draining = await tx.query(
-            `select 1 from public.docker_hosts where id=$1 and ${hostDrainingSql("docker_hosts")}`,
-            [host.id],
-          );
-          if (draining.rows.length) deny();
-        }
         const row = await sandbox(tx, sandboxId, host, hint.docker_installation_id);
         if (row.owner_id !== hint.owner_id) deny();
         if (selection.operation === "stop" && selection.onlyIfIdle && !["ready", "stopped"].includes(row.status))
@@ -790,6 +783,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const known =
           (await tx.query(`select 1 from public.docker_host_jobs where request_id=$1`, [selection.requestId])).rows
             .length > 0;
+        // A drain refuses new bootstrap/resume work with its own reason, but an already-admitted
+        // request replays: admission is historical and a lost response must not become a refusal.
+        if (!known && (selection.operation === "bootstrap" || selection.operation === "resume")) {
+          const draining = await tx.query(
+            `select 1 from public.docker_hosts where id=$1 and ${hostDrainingSql("docker_hosts")}`,
+            [host.id],
+          );
+          if (draining.rows.length) throw new DockerHostDraining();
+        }
         if (!known) await state(tx, row, selection.operation);
         if (!known && selection.operation === "stop" && selection.idleCheckpointRequest !== undefined) {
           id(selection.idleCheckpointRequest);
@@ -860,8 +862,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           host.org_id,
           host.owner_id,
         ]);
-        // A retried uninstall starts a fresh bounded window, so an abandoned drain cannot refuse
-        // new work forever; the flag itself still fences admission until it completes or expires.
+        // A retried uninstall continues the same drain; the flag fences admission until the
+        // uninstall completes, with no deadline that could re-admit work while cleanup is queued.
         await tx.query(`update public.docker_hosts set draining_at=now() where id=$1`, [host.id]);
         const retained = await tx.query<{ id: string; status: string }>(
           `select id,status from public.sandboxes where docker_host_id=$1 and status<>'deleted' order by id`,

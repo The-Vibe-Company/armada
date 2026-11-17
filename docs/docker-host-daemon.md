@@ -701,11 +701,11 @@ the service and removes only the verified installation. The host registration's
 issuer must retain cleanup authority (current admin for other owners' sandboxes).
 Offline/uncertain cleanup, unknown labelled resources and changed managed files
 refuse removal, preserving state for reconciliation. Shared images, other workloads
-and account-wide linger are preserved. Drain is bounded; failure is not deletion.
-The drain window is one hour from its last start: retrying the uninstall starts a
-fresh window, and an interrupted drain that is left alone expires so the host can
-take new work again without a new command. Fencing never waits on the deadline
-for a drain that is actively finishing.
+and account-wide linger are preserved. Failure is not deletion.
+A drain has no deadline: the host stays draining until the uninstall completes, so
+an interrupted uninstall cannot re-admit work while its cleanup may still be queued.
+Retrying the uninstall continues the same drain. An abandoned drain has no cancel
+path; it is an open question for the owner, not a new command.
 
 Single coordinator check on the real machine previously registered as
 `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`: record container/volume baseline,

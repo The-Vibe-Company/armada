@@ -196,15 +196,24 @@ test("first allocation validates account scope/version/status; retries reject ch
   expect((await service.get(f.actor, saved.id)).generation).toBe(saved.generation);
 });
 
-test("a draining host refuses a launch with host_draining, and an expired drain admits again", async () => {
+test("a draining host refuses a launch with host_draining, and stays refused however old the drain is", async () => {
   const db = database();
   const f = await fixture();
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
   await expect(service.reserve(f.actor, f.input)).rejects.toBeInstanceOf(DockerHostDraining);
   await expect(service.reserve(f.actor, f.input)).rejects.toThrow("draining for uninstall");
-  // An interrupted uninstall's window ends: the host takes new work again without a new command.
+  // A drain has no deadline: an interrupted uninstall keeps refusing new work until it completes.
   await db.query(`update public.docker_hosts set draining_at=now()-interval '2 hours' where id=$1`, [f.hostId]);
-  expect((await service.reserve(f.actor, f.input)).status).toBe("starting");
+  await expect(service.reserve(f.actor, f.input)).rejects.toBeInstanceOf(DockerHostDraining);
+});
+
+test("a retry of an already-admitted launch replays the saved sandbox after a drain", async () => {
+  const db = database();
+  const f = await fixture();
+  const saved = await service.reserve(f.actor, f.input);
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
+  // Admission is historical: a lost response must replay the saved sandbox, not become a drain refusal.
+  expect(await service.reserve(f.actor, f.input)).toEqual(saved);
 });
 
 test("bound job insert failure rolls back both reservation and machine claim", async () => {

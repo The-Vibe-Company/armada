@@ -116,7 +116,7 @@ export {
   type DockerJobFailureReason,
   type DockerSnapshotRecord,
 } from "./docker-api.ts";
-export { DOCKER_HOST_DRAIN_SECONDS, DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
+export { DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
 export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export {
   DOCKER_LOCAL_IMAGE_LABELS,
