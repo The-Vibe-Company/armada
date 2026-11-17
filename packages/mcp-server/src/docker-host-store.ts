@@ -1386,8 +1386,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         // Persist terminal receipts below, but never replay old stop/delete
         // effects onto a lifecycle admitted after that job.
         const staleCleanup =
-          (job.bound_operation === "stop" || job.bound_operation === "delete") &&
-          (await supersededLifecycle(tx, job));
+          (job.bound_operation === "stop" || job.bound_operation === "delete") && (await supersededLifecycle(tx, job));
         if (result.outcome === "completed" && job.bound_sandbox_id && !staleCleanup) {
           if (job.bound_operation === "stop")
             await tx.query(

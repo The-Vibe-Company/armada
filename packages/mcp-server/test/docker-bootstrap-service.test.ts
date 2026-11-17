@@ -368,7 +368,7 @@ test("revoking a host retires a queued resume and releases the slot its complete
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   expect((await hosts.list(f.admin))[0]?.running).toBe(0);
   const resumeId = randomUUID();
-  await service.resume(f.actor, f.sandbox.id, resumeId);
+  await admittedResume(f, resumeId);
   // The queued resume reserves a slot even though the earlier create is complete.
   expect((await hosts.list(f.admin))[0]?.running).toBe(1);
   await hosts.revoke(f.admin, f.hostId);
