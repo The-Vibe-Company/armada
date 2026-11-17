@@ -9,7 +9,7 @@ Each snapshot has at most 32 files, 32 KiB per file and 32 KiB total (below the 
 Supported providers are Boat and Modal, both native and enrolled-runtime sandboxes (Boat runtime, Modal dial-out). Docker sandboxes are not supported. The server reads the directory through `Provider.readOutputs`: a fixed, bounded read of live compute. It never runs caller commands, never goes through the agent runtime and never starts or resumes compute. A fixed collector reads the live disk without following symlinks; it needs Python 3 in the guest. Boat runs it through its command API. Modal runs it on the physical container, so enrolled runtimes that refuse server exec are covered too.
 
 - **Running sandboxes** are sampled approximately every 30 seconds.
-- **Armada stops** (user, managed-child, idle, expiry, agent-finished and credential-migration stops, including a stop of a `failed` sandbox whose compute has not been confirmed stopped) take a final live snapshot before provider stop is dispatched, after the agent is quiesced where work preservation runs. If that capture fails or its shared pre-stop budget is exhausted, the last successful sample remains.
+- **Armada stops** (user, managed-child, idle, expiry, agent-finished and credential-migration stops, including a user stop of a `failed` sandbox, whose compute may still run) take a final live snapshot before provider stop is dispatched, after the agent is quiesced where work preservation runs. If that capture fails or its shared pre-stop budget is exhausted, the last successful sample remains.
 - **Stopped sandboxes are never read**, on any provider. Their downloads serve the last snapshot taken while compute was live.
 
 ### Known limit

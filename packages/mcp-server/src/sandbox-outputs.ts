@@ -116,6 +116,8 @@ export async function captureFinalOutputs(
   // pool connection must not hold stop dispatch either, and a claim that returns after the
   // deadline never reaches the provider.
   const work = (async () => {
+    // An expired capture must not even move the scan fence of an in-flight sample.
+    signal?.throwIfAborted();
     // Live compute only: an admitted stop keeps 'failed' rows failed while compute may still run.
     const row = (
       await sql.query<{ provider_sandbox_id: string; scan: string }>(
