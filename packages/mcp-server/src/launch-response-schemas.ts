@@ -142,25 +142,10 @@ export const LAUNCH_OPTIONS_RESPONSE = z
   .passthrough();
 
 /**
- * `logs/read`: the MCP `logs` output plus what the REST handler adds. A Docker sandbox reports
- * a prompt the runtime has not admitted yet (queued behind startup, or failed before admission)
- * as `queuedPrompt`. The record stays open: providers and later releases add fields.
+ * `logs/read`: the MCP `logs` output, including the Docker `queuedPrompt`. The REST record
+ * stays open: providers and later releases add fields.
  */
-export const REST_LOGS_RESPONSE = z
-  .object({
-    ...LOGS_OUTPUT,
-    queuedPrompt: z
-      .object({
-        promptId: z.string(),
-        conversationId: z.string().nullable(),
-        state: z.string(),
-        reason: z.string().nullable(),
-      })
-      .passthrough()
-      .optional()
-      .describe("Docker only: the latest prompt while the runtime has not admitted it. Absent once the agent has it."),
-  })
-  .passthrough();
+export const REST_LOGS_RESPONSE = z.object(LOGS_OUTPUT).passthrough();
 
 export function responseJsonSchema(schema: z.ZodType): Record<string, unknown> {
   return z.toJSONSchema(schema, { target: "draft-7", io: "output" }) as Record<string, unknown>;

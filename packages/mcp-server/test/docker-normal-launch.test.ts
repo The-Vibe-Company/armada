@@ -29,6 +29,7 @@ import {
 } from "@armada/core/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { z } from "zod";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
@@ -44,12 +45,13 @@ import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { responseJsonSchema } from "../src/launch-response-schemas.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
-import { createArmadaServer } from "../src/tools.ts";
+import { createArmadaServer, LOGS_OUTPUT } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { publishedRequest, publishedResponse } from "./published-response.ts";
 
@@ -1181,10 +1183,14 @@ test.each([false, true])(
       handled: true,
       result: { prompt: { promptId: queued.promptId, state: "queued" }, settled: false },
     });
-    // The REST logs read reports the queued turn, and the published response accepts it.
+    // Logs report the queued turn. The published REST response and the MCP `logs` output schema
+    // (closed, as MCP clients validate it) both accept it.
     const queuedLogs = await readLogs({ dockerControls: controls }, f.caller, f.body.requestId, {});
     expect(queuedLogs).toMatchObject({ queuedPrompt: { promptId: queued.promptId, state: "queued" } });
     publishedResponse("logs/read").parse(queuedLogs);
+    z.fromJSONSchema(responseJsonSchema(z.object(LOGS_OUTPUT)) as Parameters<typeof z.fromJSONSchema>[0]).parse(
+      queuedLogs,
+    );
     await server.drain();
     if (initial) {
       await server.drainQueued();

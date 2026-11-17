@@ -427,7 +427,7 @@ const event = z.looseObject({
   promptId: z.string().optional(),
 });
 
-/** Output of the `logs` tool. The REST `logs/read` response extends it (`REST_LOGS_RESPONSE`). */
+/** Output of the `logs` tool, also published (open) as the REST `logs/read` response (`REST_LOGS_RESPONSE`). */
 export const LOGS_OUTPUT = {
   events: z.array(event),
   cursor: z.string().nullable(),
@@ -439,6 +439,17 @@ export const LOGS_OUTPUT = {
     .object({ status: z.string(), statusMessage: z.string().nullable(), prompt: z.unknown(), usage: z.unknown() })
     .optional(),
   runtimeFailure: z.object({ status: z.literal("failed"), reason: z.string() }).optional(),
+  queuedPrompt: z
+    .object({
+      promptId: z.string(),
+      conversationId: z.string().nullable(),
+      state: z.string(),
+      reason: z.string().nullable(),
+    })
+    .optional()
+    .describe(
+      "Docker only: the latest prompt while the runtime has not admitted it (queued behind startup, or failed before admission).",
+    ),
 };
 
 export const sandboxListInput = z.object({

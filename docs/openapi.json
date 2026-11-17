@@ -6555,7 +6555,7 @@
                       "additionalProperties": false
                     },
                     "queuedPrompt": {
-                      "description": "Docker only: the latest prompt while the runtime has not admitted it. Absent once the agent has it.",
+                      "description": "Docker only: the latest prompt while the runtime has not admitted it (queued behind startup, or failed before admission).",
                       "type": "object",
                       "properties": {
                         "promptId": {
@@ -6583,7 +6583,7 @@
                         "state",
                         "reason"
                       ],
-                      "additionalProperties": {}
+                      "additionalProperties": false
                     }
                   },
                   "required": [
