@@ -2051,3 +2051,27 @@ test("a job of a sandbox whose operation still runs here waits, even if the serv
   expect(f.state().receipts).toEqual([]);
   expect(f.executed).toEqual([]);
 });
+
+test("retention never removes a generation whose delete still runs here, under disk pressure or a due deadline", async () => {
+  const f = fixture();
+  const state = await f.store.load();
+  const deleteId = crypto.randomUUID();
+  state.receipts = [
+    { requestId: crypto.randomUUID(), request: f.job.request, operation: "stop", outcome: "completed" },
+    { requestId: deleteId, request: f.job.request, operation: "delete" },
+  ];
+  state.retention = [{ request: f.job.request, requestId: state.receipts[0]!.requestId, deadline: 0 }];
+  await f.store.save(state);
+  f.api.poll = async () => ({ job: null, held: true });
+  f.executor.diskFreeBytes = async () => 1;
+  f.executor.isStopped = async () => true;
+  const removed: string[] = [];
+  f.executor.deleteStopped = async (request) => {
+    removed.push(request.generation);
+  };
+  await tick(f.store, f.api, f.executor, false, () => 100, { waitSeconds: 20, running: new Set([deleteId]) });
+  expect(removed).toEqual([]);
+  // Once the delete is no longer running here, retention may clean the generation up.
+  await tick(f.store, f.api, f.executor, false, () => 100, { waitSeconds: 20, running: new Set() });
+  expect(removed).toEqual([f.job.request.generation]);
+});

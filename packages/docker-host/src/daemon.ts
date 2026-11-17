@@ -566,6 +566,14 @@ async function admitLocked(
   }
   if (claimed.size)
     state.retention = state.retention.filter((entry) => entry.deleted || !claimed.has(generationKey(entry.request)));
+  // Generations whose machine operation (a stop or delete) still runs in this
+  // process (#2561). Retention never removes their container underneath it; it
+  // reconsiders them once the operation has recorded its outcome.
+  const inFlight = new Set(
+    state.receipts
+      .filter((receipt) => !receipt.outcome && options.running?.has(receipt.requestId))
+      .map((receipt) => generationKey(receipt.request)),
+  );
   if (polled) {
     executor.configureLimits?.(polled.limits);
     if (polled.retentionSeconds !== undefined) {
@@ -631,6 +639,7 @@ async function admitLocked(
       if (
         entry.deleted ||
         claimed.has(key) ||
+        inFlight.has(key) ||
         state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key)
       )
         continue;
@@ -661,7 +670,7 @@ async function admitLocked(
   // Reporting is deliberately deferred until after all local physical TTL work.
   const deleteAfter = state.retention.findIndex((entry) => entry.requestId === state.retentionDeleteAfter);
   const due = [...state.retention.slice(deleteAfter + 1), ...state.retention.slice(0, deleteAfter + 1)].find(
-    (entry) => !entry.deleted && entry.deadline <= now(),
+    (entry) => !entry.deleted && entry.deadline <= now() && !inFlight.has(generationKey(entry.request)),
   );
   if (due && executor.deleteStopped) {
     try {
