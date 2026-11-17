@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { RequestRefused } from "../src/errors.ts";
 import { AcpDriver, type DriverEvent } from "../src/index.ts";
 
 // The real stdio transport owns load replay, cancel-response races and multi-turn usage attribution.
@@ -178,7 +179,6 @@ test("ACP refuses a steer after its turn stopped with a replayable refusal", asy
       session: () => {},
     });
     expect(await turn.done).toBe("finished");
-    const { RequestRefused } = await import("../src/errors.ts");
     await expect(turn.steer("too-late")).rejects.toBeInstanceOf(RequestRefused);
   } finally {
     await driver.close();

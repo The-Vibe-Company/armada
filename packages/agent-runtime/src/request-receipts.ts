@@ -4,6 +4,22 @@ import type { RunnerRequest } from "./protocol.ts";
 
 const READ_ONLY_OPERATIONS = new Set(["events", "health", "getPrompt", "getExec", "checkpoint", "observeOrchestrator"]);
 
+/** A stored definite refusal replays as 409; only genuine uncertainty replays as 200. */
+function replayStatus(body: string): number {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return 200;
+  }
+  return parsed !== null &&
+    typeof parsed === "object" &&
+    "error" in parsed &&
+    (parsed as { error: unknown }).error !== "request_outcome_unknown"
+    ? 409
+    : 200;
+}
+
 /** Preserve uncertain mutation outcomes across crashes; never dispatch a replay twice. */
 export async function executeWithReceipt(
   journal: Journal,
@@ -15,7 +31,7 @@ export async function executeWithReceipt(
   } | null;
   if (old && request.op !== "checkpoint")
     return new Response(old.body, {
-      status: "error" in JSON.parse(old.body) && JSON.parse(old.body).error !== "request_outcome_unknown" ? 409 : 200,
+      status: replayStatus(old.body),
       headers: { "content-type": "application/json" },
     });
   const mutating = !READ_ONLY_OPERATIONS.has(request.op);

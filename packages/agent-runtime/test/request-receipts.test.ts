@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { Journal } from "../src/journal.ts";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { RequestRefused } from "../src/errors.ts";
+import { AUTH_HEADER, CodexDriver, type Driver, Journal, Runner } from "../src/index.ts";
 import { executeWithReceipt } from "../src/request-receipts.ts";
 
 test("checkpoint retries dispatch afresh instead of replaying an old request receipt", async () => {
@@ -24,7 +28,6 @@ test("checkpoint retries dispatch afresh instead of replaying an old request rec
 });
 
 test("definite refusals replay their status while ambiguous failures retain the crash fence", async () => {
-  const { RequestRefused } = await import("../src/errors.ts");
   const journal = new Journal(":memory:", (value) => value);
   try {
     for (const definite of [true, false]) {
@@ -54,10 +57,6 @@ test("definite refusals replay their status while ambiguous failures retain the 
 // Real CodexDriver + local wire peer: a completed turn stays active while auth publication awaits,
 // so the steer is refused before any continuation begins. The identical retry must replay the 409.
 test("a driver-level steer refusal replays its definite status instead of the crash fence", async () => {
-  const { mkdtemp, rm } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const { AUTH_HEADER, CodexDriver, Runner } = await import("../src/index.ts");
   const root = await mkdtemp(join(tmpdir(), "armada-steer-receipt-"));
   const journal = new Journal(":memory:", (value) => value);
   const driver = new CodexDriver({
@@ -117,10 +116,9 @@ test("a driver-level steer refusal replays its definite status instead of the cr
 
 // A turn that finished but is still admitted while auth publication awaits has nothing to steer.
 test("steer refuses an already-terminal admitted turn before the driver is called", async () => {
-  const { AUTH_HEADER, Runner } = await import("../src/index.ts");
   const journal = new Journal(":memory:", (value) => value);
   let steerCalls = 0;
-  const driver = {
+  const driver: Driver = {
     start: () => ({
       done: Promise.resolve("finished" as const),
       interrupt: async () => {},
@@ -134,7 +132,7 @@ test("steer refuses an already-terminal admitted turn before the driver is calle
   const { promise: publication, resolve: publish } = Promise.withResolvers<void>();
   const { promise: started, resolve: observe } = Promise.withResolvers<void>();
   let observed = false;
-  const runner = new Runner(journal, grant, { codex: driver } as never, undefined, undefined, undefined, {
+  const runner = new Runner(journal, grant, { codex: driver }, undefined, undefined, undefined, {
     publishNativeAuth: async () => {
       if (!observed) {
         observed = true;

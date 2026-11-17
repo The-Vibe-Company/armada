@@ -3,6 +3,7 @@ import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reportedTurnUsage } from "@armada/core";
+import { RequestRefused } from "../src/errors.ts";
 import { ClaudeDriver, type DriverEvent, type Turn } from "../src/index.ts";
 
 const nativeTest = process.platform === "linux" ? test : test.skip;
@@ -528,7 +529,6 @@ nativeTest("Claude refuses a steer after its stream closed with a replayable ref
       emit: () => {},
     });
     expect(await turn.done).toBe("finished");
-    const { RequestRefused } = await import("../src/errors.ts");
     await expect(turn.steer("too-late")).rejects.toBeInstanceOf(RequestRefused);
   } finally {
     await driver.close();
