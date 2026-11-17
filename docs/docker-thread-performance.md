@@ -9,9 +9,9 @@ milliseconds or production latency**. No provider, network or daemon is used.
 
 | Operation | SQL calls | Decryptions |
 | --- | ---: | ---: |
-| Thread open (status + first 500 events) | 26 | 1502 |
+| Thread open (status + first 100 events) | 26 | 1102 |
 | Status | 11 | 501 |
-| Logs page (500 events) | 15 | 1001 |
+| Logs page (100 events) | 15 | 601 |
 | Live tail (status + empty forward page) | 26 | 1002 |
 
 Fixture scope: no queued admissions or command receipts. Queued prompts and
@@ -34,7 +34,7 @@ manifests. Ciphertext reuse reduces fixture setup cost; it does not cache reads.
 4. Docker controls authorize owner/admin membership, read queue/admission state,
    and read/decrypt retained SQL runtime events. Status reads at most 500 events
    for the latest turn after #2542; explicit historical prompt lookup can still
-   read 100 pages. Logs reads one forward page (default 500) and then runs status
+   read 100 pages. Logs reads one forward page (default 100) and then runs status
    internally for settlement/failure/queued-prompt metadata. This repeats status
    work alongside the route's explicit status call.
 5. Browser immediately follows advancing historical cursors (`setTimeout(0)`),
@@ -45,7 +45,11 @@ manifests. Ciphertext reuse reduces fixture setup cost; it does not cache reads.
    Daemon `main.ts` sleeps 20 seconds after each tick; this adds up to roughly
    20 seconds plus tick duration for host jobs (bootstrap/cleanup), not journal
    reads. Runtime events POST directly to `/api/runtime/events` through dialout;
-   the host daemon is not the event courier.
+   the host daemon is not the event courier. `agent-runtime/src/main.ts` flushes
+   the outbox every 1,000 ms; each flush drains batches of up to 100 events /
+   1 MiB until caught up. Failed flushes retry on the next tick. Normal event
+   visibility therefore includes up to one second before ingest, independently
+   of the browser polling interval.
 
 Modal runtime and experimental Boat runtime use retained runtime history too;
 Boat native uses provider events. All share the same browser cursor/poll loop.
@@ -69,3 +73,25 @@ revocation and bounded backpressure, with existing polling as fallback. The runt
 WSS is machine-scoped and must not be exposed to browsers. No evidence here
 justifies a new relay service, inbound port, or credential; those require an owner
 decision and production timing separating ingest from browser observation.
+
+## First cheap fix
+
+Logs now skips the repository launch-manifest query/decryption used only by the
+public status response. It retains its fresh status/settlement calculation and
+all access checks. Public status still returns repositoryDir. The repeated
+journal reads remain: sharing across separately authenticated MCP requests would
+need explicit snapshot/freshness semantics; no global decrypted cache is added.
+
+| Operation | Before SQL / decryptions | After SQL / decryptions |
+| --- | ---: | ---: |
+| Thread open | 26 / 1102 | 25 / 1101 |
+| Status | 11 / 501 | 11 / 501 |
+| Logs page | 15 / 601 | 14 / 600 |
+| Live tail | 26 / 1002 | 25 / 1001 |
+
+This is a small work reduction, not evidence the owner's production delay is
+resolved. Dominant remaining work is the two status journal reads per browser
+poll (500 decryptions each), plus the forward page. Browser observation also
+adds 0–2 seconds plus response time. Ask the coordinator to time page metadata,
+MCP negotiation, SQL and ingest-to-browser delay after release before changing
+transport. The benchmark intentionally does not extrapolate network latency.
