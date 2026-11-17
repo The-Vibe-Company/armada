@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
+import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { viewerControl } from "../src/viewer-control.ts";
 
 async function fixture() {
@@ -42,6 +43,7 @@ async function fixture() {
   calls.length = 0;
   return {
     api,
+    options,
     grant,
     calls,
     id,
@@ -98,4 +100,47 @@ test("stream resumes bounded pages on demand and rechecks access between pages",
   expect(new TextDecoder().decode((await reader.read()).value)).toContain("access-ended");
   expect(f.calls[1]!.body).toEqual({ id: f.id, cursor: "opaque_cursor", limit: 100, maxBytes: 65536 });
   expect((await reader.read()).done).toBe(true);
+});
+
+test("mint refuses invisible sandboxes and non-service bearers", async () => {
+  const f = await fixture();
+  f.hide();
+  expect((await f.api("sandbox/viewer-token", f.token, { id: f.id }))!.status).toBe(403);
+  expect((await f.api("sandbox/viewer-token", "invalid_bearer", { id: f.id }))!.status).toBe(403);
+});
+
+test("stream does not deliver its prefetched page after grant expiry", async () => {
+  const f = await fixture();
+  const stream = await f.api("viewer/events", f.grant.token);
+  f.expire();
+  const reader = stream!.body!.getReader();
+  expect((await reader.read()).done).toBe(true);
+});
+
+test("viewer polling preserves large provider continuation cursors through control HTTP", async () => {
+  const f = await fixture();
+  let received: unknown;
+  const options = {
+    ...f.options,
+    dockerControls: {
+      invoke: async (_caller: unknown, _tool: string, args: Record<string, unknown>) => {
+        received = args.since_cursor;
+        return {
+          handled: true,
+          result: { events: [], cursor: args.since_cursor ?? null, hasMore: false, settled: true },
+        };
+      },
+    },
+  } as unknown as ControlOptions;
+  const cursor = "opaque_" + "x".repeat(150000);
+  const response = await handleControlRequest(
+    new Request("https://example.test/api/v1/viewer/logs", {
+      method: "POST",
+      headers: { authorization: `Bearer ${f.grant.token}` },
+      body: JSON.stringify({ cursor }),
+    }),
+    options,
+  );
+  expect(response!.status).toBe(200);
+  expect(received).toBe(cursor);
 });

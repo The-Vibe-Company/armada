@@ -274,7 +274,7 @@ async function timedControlRequest(
           route.startsWith("variables/") ||
           route.startsWith("secrets/")
         ? await readVaultBody(request)
-        : await readBody(request);
+        : await readBody(request, route === "logs/read" ? 512 * 1024 : undefined);
     if (
       ((route === "sandbox/launch" && body.provider === "docker") || route === "templates/launch") &&
       options.dockerLaunch

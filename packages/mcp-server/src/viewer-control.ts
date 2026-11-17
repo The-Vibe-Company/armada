@@ -73,14 +73,14 @@ export async function viewerControl(
     const action = url.pathname.slice("/api/v1/viewer/".length);
     if (!["logs", "status", "send", "events"].includes(action)) return fail(403);
     if (request.method !== (action === "events" ? "GET" : "POST")) return fail(405);
-    const body = action === "events" ? {} : await readBody(request);
+    const body = action === "events" ? {} : await readBody(request, action === "logs" ? 512 * 1024 : undefined);
     // Explicit field selection prevents org, sandbox, lifecycle or tool overrides.
     const cursor =
       action === "events" ? (url.searchParams.get("cursor") ?? request.headers.get("last-event-id")) : body.cursor;
     if (
       cursor !== undefined &&
       cursor !== null &&
-      (typeof cursor !== "string" || cursor.length > 4096 || /[\r\n]/.test(cursor))
+      (typeof cursor !== "string" || cursor.length > 262144 || /[\r\n]/.test(cursor))
     )
       return fail(400);
     const invoke = async (route: string, fields: Record<string, unknown>) => {
