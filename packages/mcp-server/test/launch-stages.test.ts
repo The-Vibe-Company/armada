@@ -1,5 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
-import { type AgentEvent, LAUNCH_STAGES, type Provider, type ProviderTarget } from "@armada/core";
+import {
+  type AgentEvent,
+  LAUNCH_STAGES,
+  launchReadyPercentiles,
+  type Provider,
+  type ProviderTarget,
+} from "@armada/core";
 import { createSqlSandboxStore, createSqlVaultStore, type Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
@@ -112,6 +118,60 @@ test("launch stages persist per activation and status reads only the latest, vis
   }
 });
 
+// #2560: a sandbox launched before the stage table existed has no history; its first measured activation is a resume.
+test("the first resume of a sandbox launched before measurement stays a resume", async () => {
+  const { db, people } = await database();
+  const sql: Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  try {
+    const golden = (
+      await db.query<{ id: string }>("select id from goldens where org_id=$1 and visibility='org'", [people.org])
+    ).rows[0]!;
+    const sandbox = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "physical-retained",
+      goldenId: golden.id,
+      orgId: people.org,
+      ownerId: people.owner,
+      harness: "claude",
+      status: "starting",
+      visibility: "org",
+      model: "claude-opus-4-5",
+      reasoningEffort: "high",
+    });
+    await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [sandbox.id]);
+    // Retained from before the migration: no stage was ever recorded for it.
+    await db.query("delete from sandbox_launch_stages where sandbox_id=$1", [sandbox.id]);
+    await db.query("update sandboxes set status='starting',stopped_at=null where id=$1", [sandbox.id]);
+    await db.query("update sandboxes set status='ready' where id=$1", [sandbox.id]);
+    const rows = (
+      await db.query<{ activation: string; stage: string; at: string }>(
+        "select activation::text,stage,at::text from sandbox_launch_stages where sandbox_id=$1 order by at",
+        [sandbox.id],
+      )
+    ).rows;
+    expect(rows.map((row) => `${row.activation}:${row.stage}`)).toEqual(["2:accepted", "2:harness_ready"]);
+    expect(
+      launchReadyPercentiles(rows.map((row) => ({ ...row, sandbox_id: sandbox.id, provider: "boat" }))),
+    ).toMatchObject([{ provider: "boat", kind: "resume", count: 1 }]);
+    const owner = createSqlData(sql)({
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+      via: "service",
+    });
+    expect((await owner.sandboxes.launchTiming!(sandbox.id))?.activation).toBe("2");
+    // The next resume continues from the measured one.
+    await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [sandbox.id]);
+    await db.query("update sandboxes set status='starting',stopped_at=null where id=$1", [sandbox.id]);
+    expect((await owner.sandboxes.launchTiming!(sandbox.id))?.activation).toBe("3");
+  } finally {
+    await db.close();
+  }
+});
+
 // #2560: native Boat/Modal output reaches the server only through provider event reads, never the runtime upload.
 test("native Boat and Modal event reads record first_token per activation at the event's own time", async () => {
   const { db, people } = await database();
@@ -193,7 +253,16 @@ test("native Boat and Modal event reads record first_token per activation at the
       await db.query("update sandboxes set status='starting',stopped_at=null where id=$1", [sandbox.id]);
       await read();
       expect(await firstToken(sandbox.id)).toEqual([`1:${accepted + 1800}`]);
-      const resumed = Date.now() + 60_000;
+      // The resume was accepted half an hour ago; its output follows it.
+      const resumedAt = Date.parse(
+        (
+          await db.query<{ at: string }>(
+            "update sandbox_launch_stages set at=at-interval '30 minutes' where sandbox_id=$1 and activation=2 and stage='accepted' returning at::text",
+            [sandbox.id],
+          )
+        ).rows[0]!.at,
+      );
+      const resumed = resumedAt + 1000;
       events = [message(accepted + 1800), message(resumed)];
       await read();
       expect(await firstToken(sandbox.id)).toEqual([`1:${accepted + 1800}`, `2:${resumed}`]);

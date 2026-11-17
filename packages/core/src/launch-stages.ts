@@ -20,7 +20,7 @@ export const LAUNCH_STAGES = [
   "enrolled",
   /** The sandbox can take a prompt: workspace, skills and connections are ready. */
   "harness_ready",
-  /** First model output of the activation (runtime paths, where events reach the server). */
+  /** First model output of the activation, dated by the model event (runtime uploads and native event reads). */
   "first_token",
 ] as const;
 export type LaunchStage = (typeof LAUNCH_STAGES)[number];
@@ -182,9 +182,10 @@ export const isModelOutput = (event: AgentEvent): boolean =>
   event.kind === "message" && event.responseKind !== "tool_result" && event.retracted !== true;
 
 /**
- * Server-only SQL: record first_token for the sandbox's latest activation from model output observed outside the
- * runtime upload path (native Boat/Modal event reads), dated by the event's own time. Only output at or after the
- * activation was accepted counts, so reading an earlier activation's history never dates a resume. Earliest wins.
+ * Server-only SQL: record first_token for the sandbox's latest activation from model output (runtime uploads and
+ * native Boat/Modal event reads), dated by the event's own time and never later than the database clock. Only output
+ * at or after the activation was accepted counts, so an earlier activation's history never dates a resume. Earliest
+ * wins.
  */
 export async function recordFirstTokenSql(
   sql: { query(text: string, values?: unknown[]): Promise<unknown> },
@@ -198,7 +199,7 @@ export async function recordFirstTokenSql(
        select sandbox_id,activation,at from public.sandbox_launch_stages
         where sandbox_id=$1::uuid and stage='accepted' order by activation desc limit 1),
      observed as (
-       select l.sandbox_id,l.activation,min(to_timestamp(t.ms/1000.0)) as at
+       select l.sandbox_id,l.activation,least(min(to_timestamp(t.ms/1000.0)),clock_timestamp()) as at
          from latest l cross join unnest($2::double precision[]) as t(ms)
         where to_timestamp(t.ms/1000.0)>=l.at
         group by l.sandbox_id,l.activation)

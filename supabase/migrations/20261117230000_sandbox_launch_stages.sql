@@ -1,5 +1,6 @@
 -- #2560: one timestamp per launch stage, per activation (a launch or a resume) of a sandbox.
--- Activation 1 is the launch; each later transition into 'starting' opens the next one (a resume).
+-- Activation 1 is the launch (the row is inserted 'starting'); each later transition into 'starting' opens the
+-- next one (a resume). A resume of a sandbox launched before this migration opens activation 2.
 -- This is provider-neutral: native Boat/Modal, runtime Boat/Modal and Docker all move a sandbox
 -- through 'starting'. Written only by the server; a stage keeps its earliest timestamp.
 create table public.sandbox_launch_stages (
@@ -32,8 +33,13 @@ create function public.record_sandbox_launch_activation() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
   if new.status = 'starting' and (tg_op = 'INSERT' or old.status is distinct from 'starting') then
+    -- Only an inserted row is a launch (activation 1). Re-entering 'starting' is a resume: without history (a
+    -- sandbox launched before this migration) it opens activation 2, so it stays a resume and no earlier
+    -- activation's timestamps are invented.
     insert into public.sandbox_launch_stages (sandbox_id, activation, stage, at)
-    select new.id, coalesce(max(l.activation), 0) + 1, 'accepted', clock_timestamp()
+    select new.id,
+           case when tg_op = 'INSERT' then 1 else greatest(coalesce(max(l.activation), 0), 1) + 1 end,
+           'accepted', clock_timestamp()
       from public.sandbox_launch_stages l where l.sandbox_id = new.id;
   elsif tg_op = 'UPDATE' and old.status = 'starting' and new.status in ('ready', 'running') then
     insert into public.sandbox_launch_stages (sandbox_id, activation, stage, at)
