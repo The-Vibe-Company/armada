@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { AUTH_HEADER, type Driver, type DriverContext, Journal, type McpConfiguration, Runner } from "../src/index.ts";
+import { validateMcpConfiguration } from "../src/mcp.ts";
 
 const secret1 = "dynamic-fixture-credential-first",
   secret2 = "dynamic-fixture-credential-second";
@@ -156,7 +157,7 @@ test("configure rejects malformed unions/limits and stale or expired grants with
       { revision: "bad", servers: { x: { type: "stdio", command: "x", args: Array(65).fill("arg") } } },
       {
         revision: "bad",
-        servers: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`s${i}`, { type: "stdio", command: "x" }])),
+        servers: Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`s${i}`, { type: "stdio", command: "x" }])),
       },
     ];
     for (const configuration of bad) {
@@ -190,4 +191,19 @@ test("configure rejects malformed unions/limits and stale or expired grants with
   } finally {
     journal.close();
   }
+});
+
+test("MCP configuration allows 100 connections plus armada_self and rejects an extra connection", () => {
+  const servers = Object.fromEntries(
+    Array.from({ length: 100 }, (_, i) => [`connection_${i}`, { type: "http", url: "https://example.invalid/mcp" }]),
+  );
+  servers.armada_self = { type: "http", url: "https://armada.test/self" };
+  expect(Object.keys(validateMcpConfiguration({ revision: "limit", servers }).servers)).toHaveLength(101);
+  expect(() =>
+    validateMcpConfiguration({ revision: "limit", servers: { ...servers, extra: servers.connection_0 } }),
+  ).toThrow("invalid_mcp_configuration");
+  const { armada_self: _self, ...remoteOnly } = servers;
+  expect(() =>
+    validateMcpConfiguration({ revision: "limit", servers: { ...remoteOnly, extra: servers.connection_0 } }),
+  ).toThrow("invalid_mcp_configuration");
 });

@@ -12,6 +12,7 @@ import { LaunchError } from "./launch-error.ts";
 import { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
 import { resolveLaunchVariables } from "./launch-variables.ts";
 import { parseMachineSize } from "./machine-size.ts";
+import { MAX_MCP_CONNECTIONS } from "./mcp-launch-selection.ts";
 import { resolveModelChoice } from "./models.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
@@ -337,7 +338,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       if (d.goldenId !== undefined && d.goldenId !== null) invalid();
     } else if (d.hostId !== undefined || d.snapshotId !== undefined) invalid();
     const connections: TemplateDefinition["connections"] = [];
-    if (d.connections !== undefined && (!Array.isArray(d.connections) || d.connections.length > 100)) invalid();
+    if (d.connections !== undefined && (!Array.isArray(d.connections) || d.connections.length > MAX_MCP_CONNECTIONS))
+      invalid();
     for (const connection of (d.connections ?? []) as unknown[]) {
       const connectionId = id(connection);
       if (connections.includes(connectionId)) invalid();
