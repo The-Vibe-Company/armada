@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs/promises";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,16 +60,17 @@ test("selected pinned harness installs private verified files, reuses image cach
       }),
     ).toEqual(first);
     await writeFile(join(first.root, "resources/info.json"), "corrupt");
-    expect(await installSelectedHarness(f.input, f.fetcher)).toEqual(first);
-    expect(await readFile(join(first.root, "resources/info.json"), "utf8")).toBe(files["resources/info.json"]);
+    const repaired = await installSelectedHarness(f.input, f.fetcher);
+    expect(await readFile(join(repaired.root, "resources/info.json"), "utf8")).toBe(files["resources/info.json"]);
     expect(f.requests).toHaveLength(2);
-    await chmod(first.executable, 0o600);
+    await chmod(repaired.executable, 0o600);
     expect(
       await installSelectedHarness(f.input, async () => {
         throw Error("archive cache already exists");
       }),
-    ).toEqual(first);
-    expect((await lstat(first.executable)).mode & 0o777).toBe(0o700);
+    ).toMatchObject({ version: first.version, sha256: first.sha256 });
+    const final = await installSelectedHarness(f.input, f.fetcher);
+    expect((await lstat(final.executable)).mode & 0o777).toBe(0o700);
     expect((await readdir(f.input.cacheDir)).some((name) => name.startsWith(".codex-install-"))).toBe(false);
   } finally {
     await rm(f.root, { recursive: true, force: true });
@@ -161,6 +163,41 @@ test("truncated native archive reads cannot pass a complete per-file inventory",
     ).rejects.toThrow();
     expect(await readdir(f.input.cacheDir)).toEqual(["archives"]);
   } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test.each([false, true])("concurrent preparations retain verified generations (corrupt cache: %s)", async (corrupt) => {
+  const f = await fixture();
+  if (corrupt) {
+    const broken = join(f.input.cacheDir, `codex-${f.codex.archive.sha256}`);
+    await mkdir(broken, { recursive: true, mode: 0o700 });
+    await writeFile(join(broken, "broken"), "corrupt");
+  }
+  const original = fs.rename;
+  let arrivals = 0;
+  let release!: () => void;
+  const both = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const rename = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+    if (String(to).includes(`codex-${f.codex.archive.sha256}`)) {
+      if (++arrivals === 2) release();
+      await both;
+    }
+    return original(from, to);
+  });
+  try {
+    const results = await Promise.allSettled([
+      installSelectedHarness(f.input, f.fetcher),
+      installSelectedHarness(f.input, f.fetcher),
+    ]);
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    const installed = await installSelectedHarness(f.input, f.fetcher);
+    expect(await readFile(installed.executable, "utf8")).toBe(files["bin/codex"]);
+    expect((await readdir(f.input.cacheDir)).filter((name) => name.startsWith("."))).toEqual([]);
+  } finally {
+    rename.mockRestore();
     await rm(f.root, { recursive: true, force: true });
   }
 });

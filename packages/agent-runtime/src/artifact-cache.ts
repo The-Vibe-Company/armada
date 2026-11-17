@@ -49,6 +49,7 @@ export async function installRuntimeArtifact(
     }
   }
   const temporary = join(cacheDir, `.${artifact.sha256}.${crypto.randomUUID()}`);
+  let step = "download";
   try {
     const response = await fetcher(new URL(`/api/runtime/artifacts/${artifact.sha256}`, server), {
       redirect: "error",
@@ -56,25 +57,40 @@ export async function installRuntimeArtifact(
       signal: AbortSignal.timeout(120000),
     });
     if (response.status !== 200 || !response.body) throw Error("runtime_artifact_unavailable");
+    step = "write";
     const file = await open(temporary, "wx", 0o600);
     const hash = createHash("sha256");
     let bytes = 0;
     try {
+      step = "download";
       for await (const chunk of response.body) {
         bytes += chunk.byteLength;
         if (bytes > artifact.bytes) throw Error("runtime_artifact_size_mismatch");
         hash.update(chunk);
+        step = "write";
         await file.writeFile(chunk);
+        step = "download";
       }
       if (bytes !== artifact.bytes || hash.digest("hex") !== artifact.sha256)
         throw Error("runtime_artifact_digest_mismatch");
+      step = "write";
       await file.chmod(0o700);
       await file.sync();
     } finally {
       await file.close();
     }
+    step = "rename";
     await rename(temporary, target);
     return target;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.startsWith("runtime_artifact_") ||
+        error.message === "invalid_runtime_tool_redirect" ||
+        ("code" in error && ["ENOSPC", "EACCES", "EPERM"].includes(String(error.code))))
+    )
+      throw error;
+    throw Error(step === "download" ? "runtime_artifact_unavailable" : `runtime_artifact_${step}_failed`);
   } finally {
     await rm(temporary, { force: true });
   }

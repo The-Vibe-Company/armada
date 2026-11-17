@@ -143,7 +143,7 @@ export async function installSelectedHarness(
   const cache = await lstat(input.cacheDir);
   if (!cache.isDirectory() || cache.isSymbolicLink() || (cache.mode & 0o777) !== 0o700)
     throw Error("invalid_harness_cache");
-  const root = join(input.cacheDir, `${input.harness}-${harness.archive.sha256}`);
+  let root = join(input.cacheDir, `${input.harness}-${harness.archive.sha256}`);
   const existing = await lstat(root).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
     throw error;
@@ -157,6 +157,20 @@ export async function installSelectedHarness(
     sha256: harness.archive.sha256,
   });
   if (existing && (await verified(root, harness.files))) return receipt();
+  // Corrupt generations are never removed while another preparation may read
+  // or repair them. Reuse a verified repair, or publish a new immutable generation.
+  if (existing) {
+    const prefix = `${input.harness}-${harness.archive.sha256}-repair-`;
+    for (const name of await readdir(input.cacheDir)) {
+      if (!name.startsWith(prefix)) continue;
+      const candidate = join(input.cacheDir, name);
+      if (await verified(candidate, harness.files)) {
+        root = candidate;
+        return receipt();
+      }
+    }
+    root = join(input.cacheDir, `${prefix}${crypto.randomUUID()}`);
+  }
   const archive = await installRuntimeArtifact(
     { serverUrl: input.serverUrl, cacheDir: join(input.cacheDir, "archives"), artifact: harness.archive },
     fetcher,
@@ -189,8 +203,21 @@ export async function installSelectedHarness(
     // This directory is per sandbox and installation runs only while native work
     // is quiescent. Never remove a verified warm cache, even if another installer won.
     if (await verified(root, harness.files)) return receipt();
-    await rm(root, { recursive: true, force: true });
-    await rename(temporary, root);
+    // Published generations are immutable; never remove a competing winner.
+    try {
+      await rename(temporary, root);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        ["EEXIST", "ENOTEMPTY"].includes(String(error.code)) &&
+        (await verified(root, harness.files))
+      )
+        return receipt();
+      if (error instanceof Error && "code" in error && ["ENOSPC", "EACCES", "EPERM"].includes(String(error.code)))
+        throw error;
+      throw Error("runtime_artifact_rename_failed");
+    }
     return receipt();
   } finally {
     await rm(temporary, { recursive: true, force: true });
