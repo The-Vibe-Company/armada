@@ -284,7 +284,8 @@ async function startProvider(url: URL, request: Request, options: OAuthServerOpt
 
 async function callback(url: URL, request: Request, options: OAuthServerOptions): Promise<Response> {
   const pending = await pendingFrom(request, options);
-  if (!pending?.supabaseVerifier) return page("Login failed", "<p>Start again from your client.</p>", 400);
+  if (!pending?.supabaseVerifier)
+    return finish(page("Login failed", "<p>Start again from your client.</p>", 400), options);
   if (url.searchParams.get("error")) return finish(page("Login failed", "<p>Login was declined.</p>", 400), options);
   const code = url.searchParams.get("code");
   if (!code) return finish(page("Login failed", "<p>Login was declined.</p>", 400), options);
