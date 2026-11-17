@@ -23,9 +23,12 @@ Before opening a PR, and again against current main before merge:
   be unique across `supabase/migrations` and strictly newer than the largest
   version on current `origin/main`, not just the branch's original base.
   Use a valid UTC timestamp with nonzero seconds, no more than 24 hours ahead
-  of the current UTC time (`date -u +%Y%m%d%H%M%S`). The migration guard
-  rejects invalid, minute-rounded and far-future new versions. When renumbering
-  multiple unapplied migrations, preserve their dependency order.
+  of the current UTC time (`date -u +%Y%m%d%H%M%S`). Main may already hold a
+  version ahead of the clock; the current time is valid only when it is above
+  main's largest version, otherwise pick a version above that largest version.
+  The migration guard rejects invalid, minute-rounded and far-future new
+  versions and prints both bounds. When renumbering multiple unapplied
+  migrations, give each a distinct version and preserve their dependency order.
 - Fetch current main and compare its migration versions with your additions:
 
   ```sh

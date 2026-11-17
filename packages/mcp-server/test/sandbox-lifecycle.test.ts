@@ -12,6 +12,20 @@ import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
+// Lifecycle deadlines come from the database clock. Tests bound them with
+// database clock samples taken around the write, never with the runner's clock.
+async function databaseNowMs(sql: Sql): Promise<number> {
+  const row = (await sql.query<{ ms: number }>("select (extract(epoch from clock_timestamp()) * 1000)::float8 as ms"))
+    .rows[0];
+  if (!row) throw Error("missing database clock sample");
+  return row.ms;
+}
+
+function expectDeadlineWithin(deadline: number, before: number, after: number, ttlSeconds: number) {
+  expect(deadline).toBeGreaterThanOrEqual(Math.floor(before) + ttlSeconds * 1000);
+  expect(deadline).toBeLessThanOrEqual(Math.ceil(after) + ttlSeconds * 1000);
+}
+
 // Private Docker reservations have their own mailbox/local TTL owner, not a full
 // Provider adapter. The generic worker must neither claim nor diagnose them.
 test("private Docker reservations remain untouched while the generic lifecycle reconciles a coexisting Boat candidate", async () => {
@@ -384,6 +398,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
       if (!confirmed) throw Error("missing confirmed failed sandbox");
       // The production send-admission owner rearms the persisted policy, then the
       // real SDK resumes the stopped machine and admits its next native prompt.
+      const beforeRearm = await databaseNowMs(sql);
       await sandboxActivity(
         store,
         confirmed,
@@ -398,6 +413,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
           return { result: receipt, patch: { status: "running", stoppedAt: null } };
         },
       );
+      const afterRearm = await databaseNowMs(sql);
       const resumed = await store.get(id);
       expect(resumed?.stoppedAt).toBeNull();
       expect(resumed?.status).toBe("running");
@@ -409,6 +425,14 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
         [id],
       );
       expect(rearmed.rows[0]?.gap_seconds).toBe(resumed?.effectiveTtlSeconds);
+      // A shared clock error in the write (for example an expired deadline)
+      // falls outside the database samples taken around the rearm.
+      expectDeadlineWithin(
+        Date.parse(resumed?.expiresAt ?? ""),
+        beforeRearm,
+        afterRearm,
+        resumed?.effectiveTtlSeconds ?? 0,
+      );
       const beforeObservation = methods.length;
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect(resolutions).toBe(2);
@@ -472,12 +496,14 @@ test("replicas lease one observation and resume admission fences old writes whil
     gate.resolve();
     await first;
     const activityToken = crypto.randomUUID();
+    const beforeRenewal = await databaseNowMs(sql);
     await data.sandboxes.update(id, {
       renewLifecycle: true,
       advanceGeneration: true,
       activityToken,
       expectedGeneration: 1,
     });
+    const afterRenewal = await databaseNowMs(sql);
     // The renewal writes its deadline and reconcile_after from one transaction
     // clock, so their gap is the TTL regardless of the runner's wall clock.
     const renewed = (
@@ -490,6 +516,9 @@ test("replicas lease one observation and resume admission fences old writes whil
     ).rows[0];
     if (!renewed) throw Error("missing renewed sandbox");
     expect(renewed.ttl_ms).toBe(90000);
+    // The gap alone would accept a renewal backdated as a whole; bound the
+    // deadline with database clock samples taken around the renewal.
+    expectDeadlineWithin(renewed.expires_ms, beforeRenewal, afterRenewal, 90);
     await expect(data.sandboxes.update(id, { status: "stopped", expectedGeneration: 1 })).rejects.toThrow();
     await data.sandboxes.update(id, {
       status: "running",

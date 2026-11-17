@@ -68,8 +68,14 @@ try {
     }
   }
   if (errors.length) {
+    // The current UTC time alone is not enough: the base may already hold a
+    // version ahead of the clock, so the instruction states both bounds.
+    const above = latest ? `, greater than ${latest} (the latest version on ${base})` : "";
+    const clock = latest
+      ? ` Start from the current UTC time (date -u +%Y%m%d%H%M%S) only when it is above ${latest}.`
+      : " Start from the current UTC time (date -u +%Y%m%d%H%M%S).";
     errors.push(
-      "Renumber each rejected new migration with the current UTC time to the second (date -u +%Y%m%d%H%M%S), keep your new migrations in their dependency order, and rerun the guard.",
+      `Renumber each rejected new migration: use distinct valid UTC versions with seconds other than 00${above} and no later than ${newest}, keeping your new migrations in their dependency order.${clock} Then rerun the guard.`,
     );
     throw new Error(errors.join("\n"));
   }
