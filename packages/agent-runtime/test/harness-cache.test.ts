@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import { expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -161,6 +162,34 @@ test("truncated native archive reads cannot pass a complete per-file inventory",
     ).rejects.toThrow();
     expect(await readdir(f.input.cacheDir)).toEqual(["archives"]);
   } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+ test("concurrent preparations of one harness retain the verified winner", async () => {
+  const f = await fixture();
+  const original = fs.rename;
+  let arrivals = 0;
+  let release!: () => void;
+  const both = new Promise<void>((resolve) => { release = resolve; });
+  const rename = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+    if (String(to).endsWith(`codex-${f.codex.archive.sha256}`)) {
+      if (++arrivals === 2) release();
+      await both;
+    }
+    return original(from, to);
+  });
+  try {
+    const results = await Promise.allSettled([
+      installSelectedHarness(f.input, f.fetcher),
+      installSelectedHarness(f.input, f.fetcher),
+    ]);
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    const installed = await installSelectedHarness(f.input, f.fetcher);
+    expect(await readFile(installed.executable, "utf8")).toBe(files["bin/codex"]);
+    expect((await readdir(f.input.cacheDir)).filter((name) => name.startsWith("."))).toEqual([]);
+  } finally {
+    rename.mockRestore();
     await rm(f.root, { recursive: true, force: true });
   }
 });
