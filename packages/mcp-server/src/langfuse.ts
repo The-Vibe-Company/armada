@@ -83,7 +83,15 @@ export function langfuseSpans(sandboxId: string, events: AgentEvent[], turns: Tu
       if (e.kind === "message")
         for (const tool of e.tools) {
           const previous = tools.get(tool.id);
-          tools.set(tool.id, { first: previous?.first ?? e.at, last: e.at, tool: { ...previous?.tool, ...tool } });
+          tools.set(tool.id, {
+            first: previous?.first ?? e.at,
+            last: e.at,
+            tool: {
+              ...previous?.tool,
+              ...tool,
+              name: e.responseKind === "tool_result" && previous ? previous.tool.name : tool.name,
+            },
+          });
         }
     for (const [id, t] of tools)
       spans.push({

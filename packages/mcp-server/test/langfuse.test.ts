@@ -45,6 +45,21 @@ test("completed turns use stable OTLP identities, durations and opt-in content",
     expect(JSON.stringify(full)).toContain(text);
   expect(langfuseSpans("sandbox", events.slice(1), [], true)).toEqual([]);
 });
+test("tool results retain the invoked tool identity and input", () => {
+  const result: AgentEvent = {
+    id: "result",
+    at: 1150,
+    promptId: "turn",
+    kind: "message",
+    responseKind: "tool_result",
+    text: "",
+    partial: false,
+    tools: [{ id: "tool", name: "tool_result", result: { output: "customer_result", isError: true } }],
+  };
+  const spans = langfuseSpans("sandbox", [events[0]!, events[1]!, result, events[2]!], [], true);
+  expect(spans[1]).toMatchObject({ name: "exec", status: { code: 2 }, endTimeUnixNano: "1150000000" });
+  expect(JSON.stringify(spans[1])).toContain("customer_argument");
+});
 test("only an org admin can store encrypted configuration and keys are never returned", async () => {
   const key = Buffer.alloc(32, 1).toString("base64");
   const calls: unknown[][] = [];
@@ -182,7 +197,7 @@ test("worker exports the persisted usage envelope and reconstructed archive thro
   }) as unknown as typeof setTimeout);
   const requests: Request[] = [];
   const exporter = createLangfuse(db, key, (async (url, init) => {
-    requests.push(new Request(url, init));
+    requests.push(url instanceof Request ? new Request(url, init) : new Request(String(url), init));
     return new Response(null, { status: 200 });
   }) as typeof fetch);
   try {
@@ -194,12 +209,14 @@ test("worker exports the persisted usage envelope and reconstructed archive thro
   expect(exporter.counters).toEqual({ exported: 1, failed: 0, dropped: 0 });
   expect(requests[0]?.url).toBe("https://langfuse.test/api/public/otel/v1/traces");
   expect(requests[0]?.headers.get("x-langfuse-ingestion-version")).toBe("4");
-  const body = await requests[0]!.json();
-  const attributes = body.resourceSpans[0].scopeSpans[0].spans[0].attributes;
-  expect(attributes.find((a: { key: string }) => a.key === "langfuse.observation.output").value.stringValue).toBe(
+  const body = (await requests[0]!.json()) as {
+    resourceSpans: { scopeSpans: { spans: { attributes: { key: string; value: { stringValue: string } }[] }[] }[] }[];
+  };
+  const attributes = body.resourceSpans[0]!.scopeSpans[0]!.spans[0]!.attributes;
+  expect(attributes.find((a: { key: string }) => a.key === "langfuse.observation.output")!.value.stringValue).toBe(
     "Hello",
   );
   expect(
-    attributes.find((a: { key: string }) => a.key === "langfuse.observation.usage_details").value.stringValue,
+    attributes.find((a: { key: string }) => a.key === "langfuse.observation.usage_details")!.value.stringValue,
   ).toBe('{"output":0}');
 });
