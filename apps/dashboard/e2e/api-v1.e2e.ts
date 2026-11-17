@@ -13,7 +13,7 @@ test("API v1 reaches its bearer route without a dashboard cookie", async ({ requ
 
   const privateResponse = await request.post("/api/v1/golden/list", { data: {} });
   expect(privateResponse.status()).toBe(401);
-  expect(await privateResponse.json()).toEqual({ error: "Unauthorized." });
+  expect(await privateResponse.json()).toEqual({ error: { code: "unauthorized", message: "Unauthorized." } });
 
   const bearerResponse = await request.post("/api/v1/golden/list", {
     data: {},
