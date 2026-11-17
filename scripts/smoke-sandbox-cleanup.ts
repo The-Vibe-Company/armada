@@ -109,9 +109,9 @@ export async function deleteSmokeReceipts(
   );
   const selected = ordered.slice(0, limit);
   const remaining = ordered.slice(limit);
-  // Deleted ordinary parents are the durable authority fence required before
-  // their delegated children may be removed. Do not race the two admissions.
-  const cleanup = async (row: SmokeSandboxReceipt, deadline: number) => {
+  const waveDeadline = () => Math.min(now() + CLEANUP_WAVE_MS, io.deadline ?? Number.POSITIVE_INFINITY);
+  const cleanup = async (row: SmokeSandboxReceipt, parentWave?: Promise<void[]>) => {
+    let deadline = waveDeadline();
     let phase = "stop";
     let httpStatus: number | null = null;
     let code = "request_failed";
@@ -211,7 +211,13 @@ export async function deleteSmokeReceipts(
           await dispatchStop();
         if (status.body?.status === "stopping") retryStopAdmission = false;
       }
-      if (!alreadyDeleted)
+      if (!alreadyDeleted) {
+        // Child stop can overlap parent cleanup. Child delete needs the durable
+        // authority fence published by ordinary parent deletion.
+        if (parentWave) {
+          await parentWave;
+          deadline = waveDeadline();
+        }
         while (true) {
           let deleted: Awaited<ReturnType<typeof request>>;
           try {
@@ -229,20 +235,19 @@ export async function deleteSmokeReceipts(
           io.out(JSON.stringify({ step: "delete_smoke_sandbox_retry", ...row, phase, httpStatus, code }));
           await pause();
         }
+      }
       io.out(JSON.stringify({ step: "delete_smoke_sandbox", pass: true, ...row }));
     } catch {
       remaining.push(row);
       io.out(JSON.stringify({ step: "delete_smoke_sandbox", pass: false, ...row, phase, httpStatus, code }));
     }
   };
-  for (const scoped of [false, true]) {
-    // The dependent wave must not inherit a deadline consumed by parent shutdown/deletion.
-    const deadline = Math.min(now() + CLEANUP_WAVE_MS, io.deadline ?? Number.POSITIVE_INFINITY);
-    await Promise.all(
-      selected
-        .filter((row) => row.requestKey.startsWith("smoke-scoped-") === scoped)
-        .map((row) => cleanup(row, deadline)),
-    );
-  }
+  const parentWave = Promise.all(
+    selected.filter((row) => !row.requestKey.startsWith("smoke-scoped-")).map((row) => cleanup(row)),
+  );
+  await Promise.all([
+    parentWave,
+    ...selected.filter((row) => row.requestKey.startsWith("smoke-scoped-")).map((row) => cleanup(row, parentWave)),
+  ]);
   return remaining;
 }

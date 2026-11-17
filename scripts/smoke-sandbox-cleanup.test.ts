@@ -259,7 +259,7 @@ test("a terminal stop receipt goes directly to idempotent deletion even if the p
   expect(remaining).toEqual([]);
 });
 
-test.each([1, 32])("late parent settles before scoped child, even when the sweep limit is %s", async (limit) => {
+test.each([1, 32])("child deletion follows parent deletion, even when the sweep limit is %s", async (limit) => {
   let clock = 0;
   let parentDeleted = false;
   let stopCalls = 0;
@@ -282,7 +282,7 @@ test.each([1, 32])("late parent settles before scoped child, even when the sweep
         const id =
           init.method === "DELETE" ? new URL(url).pathname.split("/").at(-1) : JSON.parse(String(init.body)).id;
         if (id === child.id) {
-          expect(parentDeleted).toBe(true);
+          if (init.method === "DELETE") expect(parentDeleted).toBe(true);
           return Response.json({ id, status: init.method === "DELETE" ? "deleted" : "stopped" });
         }
         if (url.endsWith("/stop")) {
@@ -484,7 +484,7 @@ test("cleanup reconciles transient status refusal and acknowledged pending delet
   expect(deletes).toBe(3);
 });
 
-test("slow parent deletion cannot consume the dependent child's entire observation window", async () => {
+test("child stop overlaps slow parent deletion and child delete keeps its own observation window", async () => {
   let clock = 0;
   let parentDeleted = false;
   let childStopAt: number | undefined;
@@ -502,12 +502,12 @@ test("slow parent deletion cannot consume the dependent child's entire observati
     fetch: async (url, init) => {
       const id = init.method === "DELETE" ? new URL(url).pathname.split("/").at(-1) : JSON.parse(String(init.body)).id;
       if (id === child.id) {
-        expect(parentDeleted).toBe(true);
         if (url.endsWith("/stop")) {
           childStopAt = clock;
-          return Response.json({ id, status: "stopping" });
+          return Response.json({ id, status: "stopped" });
         }
-        if (url.endsWith("/status")) return Response.json({ id, status: clock < 660_000 ? "stopping" : "stopped" });
+        expect(parentDeleted).toBe(true);
+        expect(init.method).toBe("DELETE");
         if (clock < 720_000) return Response.json({ error: { code: "sandbox_not_ready" } }, { status: 409 });
         return Response.json({ id, status: "deleted" });
       }
@@ -519,7 +519,7 @@ test("slow parent deletion cannot consume the dependent child's entire observati
     },
   });
   expect(remaining).toEqual([]);
-  expect(childStopAt).toBe(360_000);
+  expect(childStopAt).toBe(0);
   expect(clock).toBe(720_000);
 });
 
