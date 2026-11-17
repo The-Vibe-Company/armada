@@ -39,7 +39,6 @@
     "apps/dashboard/src/components/landing/Copy.tsx",
     "apps/dashboard/e2e/**",
     "apps/dashboard/test/**",
-    "apps/dashboard/playwright.config.ts",
     "apps/dashboard/vercel.json",
     "README.md",
     "AGENTS.md",
