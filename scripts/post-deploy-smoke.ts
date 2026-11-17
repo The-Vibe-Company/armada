@@ -632,7 +632,8 @@ async function runPostDeploySmoke(
     );
   }
   // Every probe owns its sandbox, so the per-case lanes run concurrently: the expiry TTL
-  // wait and template launches overlap the lifecycle work instead of adding to it. Each
+  // wait overlaps the lifecycle work instead of adding to it, subject to the account turns
+  // below. Each
   // lane keeps its own receipts, failure report and cleanup; the run passes only if all do.
   // A model account admits a bounded number of working agents (possibly one), and every launch
   // reserves a slot before its fork: units that occupy the same account take turns across

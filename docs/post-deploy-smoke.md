@@ -177,7 +177,8 @@ Default-pin reads and the vault family (no compute) run first, in case order.
 After that every independent sandbox runs concurrently in its own lane, one per
 case and family: `templates`, `expiry` and `lifecycle` (the clean worker, then
 the dirty preservation worker of the same case, in that order). The expiry TTL
-wait therefore overlaps the lifecycle and template work instead of adding to it.
+wait therefore overlaps the lifecycle work instead of adding to it (work on one
+model account takes turns, see below).
 Every step receipt from a lane carries its `case` index and `lane`, so
 interleaved output still gives one attributable failure report per case. Each
 lane keeps its own cleanup reserve: one lane entering cleanup never extends or
@@ -193,7 +194,7 @@ delay scoped cleanup or the next preservation worker. A scoped child is register
 golden without an owner API launch, so the run cannot attribute another case's
 child: scoped Codex lifecycle runs that share an org and golden run one after
 another, from the baseline snapshot through scoped cleanup. Expiry, templates
-and scoped runs on other goldens stay concurrent.
+and scoped runs on other goldens are not held by that queue.
 
 A model account admits a bounded number of working agents, possibly one, and
 every launch reserves a slot before its fork. Work that occupies the same
