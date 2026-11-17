@@ -1656,16 +1656,19 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       await store.lease(sandboxId, async (row, save) => {
         if (row.phase === "deleted") return;
         assertMachineSource(row);
+        // Stop only commits this phase after observing exit (or proving no create was issued).
+        // Carry that proof through an interrupted image deletion too.
+        if (row.phase === "stopped") row.deletePhysicalExitConfirmed = true;
         // Reserved is provably pre-create: SQL commits creating before issuing any remote request.
         // Creating/booting/deleting without ID is NOT proof of absence, even if name lookup says 404.
-        if (!row.physicalId && row.phase !== "reserved") {
+        if (!row.deletePhysicalExitConfirmed && !row.physicalId && row.phase !== "reserved") {
           const reconciled = await namedOwned(row);
           row.physicalId = reconciled.sandboxId;
           await save(row);
         }
         row.phase = "deleting";
         await save(row);
-        if (row.physicalId) {
+        if (!row.deletePhysicalExitConfirmed && row.physicalId) {
           try {
             const sb = await physical(row);
             await sb.terminate({ wait: true });
@@ -1674,6 +1677,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           } catch (error) {
             if (modalError(error).code !== "not_found") throw error;
           }
+          row.deletePhysicalExitConfirmed = true;
+          await save(row);
         }
         for (const imageId of new Set([
           ...(row.retainedRecoveryIds ?? []),

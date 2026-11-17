@@ -30,6 +30,7 @@ function fixture(stage: "scrub" | "snapshot") {
   let failing = true,
     terminated = 0,
     snapshots = 0;
+  const deletedImages: string[] = [];
   const store = {
     get: async () => structuredClone(stored),
     lease: async <T>(
@@ -40,6 +41,7 @@ function fixture(stage: "scrub" | "snapshot") {
         stored = structuredClone(value);
       }),
     images: async () => [],
+    list: async () => [],
     watermark: async () => 1,
   } as unknown as ModalStore;
   const sandbox = {
@@ -49,6 +51,7 @@ function fixture(stage: "scrub" | "snapshot") {
       return { imageId: "fresh-recovery" };
     },
     terminate: async () => {
+      if (terminated) throw Error("terminated machine is unavailable for another stop");
       terminated++;
     },
     poll: async () => (terminated ? 0 : null),
@@ -56,6 +59,7 @@ function fixture(stage: "scrub" | "snapshot") {
   const client = {
     apps: { fromName: async () => ({ appId: "app" }) },
     sandboxes: { fromId: async () => sandbox },
+    images: { delete: async (id: string) => deletedImages.push(id) },
   } as unknown as ModalClient;
   const distribution = {
     capabilities: {},
@@ -76,11 +80,21 @@ function fixture(stage: "scrub" | "snapshot") {
     state: () => stored,
     snapshots: () => snapshots,
     terminated: () => terminated,
+    deletedImages,
     recover: () => {
       failing = false;
     },
   };
 }
+
+test("a confirmed Modal stop lets deletion remove recovery images without another termination", async () => {
+  const f = fixture("snapshot");
+  f.recover();
+  await f.provider.stop({ sandboxId: "logical" });
+  await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
+  expect(f.deletedImages).toEqual(["prior-recovery", "fresh-recovery"]);
+  expect(f.state().phase).toBe("deleted");
+});
 
 test.each(["scrub", "snapshot"] as const)(
   "retention-required idle stop never discards workspace after %s failure",
