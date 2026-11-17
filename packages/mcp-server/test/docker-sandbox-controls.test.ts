@@ -311,6 +311,26 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
   await rejected(invoke(who, "status", { id: f.sandbox.id }), "not_found");
 });
 
+test("logs remain available without reading the launch manifest", async () => {
+  const f = await fixture();
+  const controller = createDockerSandboxControls(
+    {
+      async query(query, values) {
+        if (query.includes("select request_enc from public.docker_launch_requests")) {
+          throw new Error("Launch manifest is unavailable");
+        }
+        return sql.query(query, values);
+      },
+    },
+    key,
+  );
+  expect(await invoke(caller(f.actor), "logs", { id: f.sandbox.id }, controller)).toMatchObject({
+    events: [],
+    hasMore: false,
+    source: "armada-runtime",
+  });
+});
+
 test("normal logs preserve raw cursors through private diagnostics and conversation filters, backward paging and all", async () => {
   const f = await fixture(),
     session = await ready(f),
