@@ -68,6 +68,7 @@ const controls = createDockerSandboxControls(sql, key, {
   },
 });
 const caller = { userId, orgs: [{ orgId, role: "member" as const }], via: "supabase" as const };
+let targetsFailed = false;
 for (const [name, operations] of Object.entries({
   threadOpen: [
     ["status", {}],
@@ -86,4 +87,9 @@ for (const [name, operations] of Object.entries({
     if (!reply.handled) throw Error("Benchmark did not reach Docker controls");
   }
   console.log(JSON.stringify({ name, queries, decryptions: ciphertextRows, logicalSqlWork: now }));
+  if (name === "liveTail" && (queries > 6 || ciphertextRows > 1)) targetsFailed = true;
+}
+
+if (process.argv.includes("--assert-targets") && targetsFailed) {
+  throw Error("Unchanged tail exceeds target: at most 6 SQL statements and 1 decryption.");
 }
