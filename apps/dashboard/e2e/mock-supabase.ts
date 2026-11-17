@@ -53,9 +53,7 @@ type State = {
   events: Map<string, Row[]>;
   /** Every launch body that reached allocation, as the dashboard sent it. */
   launches: Row[];
-  /** A launch asking for this size is refused by the provider, as Boat refuses a plan-gated size. */
-  /** The database has #653's columns but the server predates it: `size` is ignored and its routes are unknown. */
-  /** Per provider: the limit the server reads for the org, or why it cannot (such as not configured). */
+  /** Per-provider snapshot capacity returned by the mock. */
   capabilities: Record<
     "boat" | "modal",
     {
@@ -65,24 +63,15 @@ type State = {
   /** The registry's connections. `authentication` is the write-only value; no response ever includes it. */
   connections: Row[];
   agentDefaults: Record<string, Row[]>;
-  /** `creds/accounts/usage` per account id: a report, or a failure. An account with none: the route is unknown. */
-  usage: Record<string, Row | { fail: number }>;
-  /** `creds/accounts/auth-capabilities` (#604): what this deployment offers, or null for a server without the route. */
-  authCapabilities: Row | null;
-  /** `creds/accounts/models` (#1483): declared models per account id; an account not listed declares none. */
-  connectionModels: Record<string, Row[]>;
-  /** While set, `org/provider/status` answers this failure instead of the stored state; `html` is an edge page body. */
   /** Organization invitations (#640 contract v1). `token` is what the email link carries; no response includes it. */
   invitations: Row[];
-  /** The delivery state the next create or resend records: what the mail transport answered. */
-  nextDelivery: "not_configured" | "pending" | "sent" | "failed";
   /**
    * #921's application vault: readable variables (`value`) and write-only secrets (`sealed`, which no response ever
    * includes; a deleted or revoked item has none).
    */
   vault: Row[];
   /**
-   * #938's launch templates: headers (`deleted` tombstones kept), their immutable revisions, every `templates/*` call
+   * #938's launch templates: headers (`deleted` tombstones kept), their immutable revisions
    * and the launch requests by key.
    */
   templates: Row[];
@@ -296,14 +285,9 @@ function seed(): State {
     events: new Map(),
     launches: [],
     agentDefaults: {},
-    usage: {},
-    // #604 v1 contract (root-native-auth-contract.json): an additive base map, no --name placeholder.
-    authCapabilities: { hostedOAuth: false, nativeCLI: { codex_auth: "armada creds login codex" } },
-    connectionModels: {},
     // A Boat account holds one golden; Modal is unbounded.
     capabilities: { boat: { maxGoldens: 1 }, modal: { maxGoldens: null } },
     invitations: [],
-    nextDelivery: "sent",
     connections: [
       mcpConnection(id(60), "Acme Docs", ACME, "org", ALICE, {
         url: "https://docs.acme.test/mcp",
@@ -2022,7 +2006,7 @@ function invitations(route: string, body: Row, request: Request): Response {
       role: body.role,
       expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
       status: "pending",
-      delivery: state.nextDelivery,
+      delivery: "sent",
       token: fresh(),
     };
     state.invitations.push(row);
@@ -2032,7 +2016,7 @@ function invitations(route: string, body: Row, request: Request): Response {
   if (row?.status !== "pending") return controlFail(404, "not_found", "Invitation not found.");
   if (route === "resend") {
     row.token = fresh();
-    row.delivery = state.nextDelivery;
+    row.delivery = "sent";
     return json({ invitation: invitationDto(row) });
   }
   if (route === "revoke") {
@@ -2761,19 +2745,10 @@ function accounts(route: string, body: Row, request: Request): Response {
     return json({ ok: true });
   }
   if (route === "creds/accounts/auth-capabilities") {
-    return state.authCapabilities ? json(state.authCapabilities) : json({ error: { message: "Unknown route." } }, 404);
+    return json({ hostedOAuth: false, nativeCLI: { codex_auth: "armada creds login codex" } });
   }
-  if (route === "creds/accounts/models") {
-    return json({
-      connections: Object.entries(state.connectionModels).map(([id, models]) => ({ id, models })),
-    });
-  }
-  if (route === "creds/accounts/usage") {
-    const report = state.usage[String(body.id)];
-    if (!report) return json({ error: { code: undefined, message: "Unknown route." } }, 404);
-    if ("fail" in report) return controlFail(Number(report.fail), "unavailable", "Usage could not be read.");
-    return json({ usage: report });
-  }
+  if (route === "creds/accounts/models") return json({ connections: [] });
+  if (route === "creds/accounts/usage") return json({ error: { message: "Unknown route." } }, 404);
   const scope = body.scope === "org" ? "org" : body.scope === "user" ? "user" : null;
   if (!scope) return controlFail(400, "invalid", "Scope is user or org.");
   if (scope === "org" && !isAdmin(body.org, userId))
