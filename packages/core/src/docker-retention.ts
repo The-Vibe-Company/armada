@@ -4,7 +4,18 @@ export const DOCKER_RETENTION_ENDED_MESSAGE =
 
 export class DockerRetentionEnded extends Error {
   override readonly name = "DockerRetentionEnded";
-  constructor() {
-    super(DOCKER_RETENTION_ENDED_MESSAGE);
+  constructor(reason?: string | null) {
+    super(dockerWorkspaceReclaimedMessage(reason) ?? DOCKER_RETENTION_ENDED_MESSAGE);
   }
+}
+
+export type DockerCleanupReason = "retention_elapsed" | "disk_pressure";
+
+/** Durable machine cleanup facts, also used by status and resume surfaces. */
+export function dockerWorkspaceReclaimedMessage(reason: string | null | undefined): string | null {
+  if (reason === "disk_pressure")
+    return "Workspace reclaimed because this Docker host was low on disk space. It cannot be resumed. Launch a new sandbox.";
+  if (reason === "retention_elapsed")
+    return "Workspace reclaimed because its retention period elapsed. It cannot be resumed. Launch a new sandbox.";
+  return null;
 }

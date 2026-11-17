@@ -365,14 +365,27 @@ export async function tick(
     const latest = new Map<string, Receipt>();
     for (const receipt of state.receipts) latest.set(generationKey(receipt.request), receipt);
     for (const [key, receipt] of latest) {
-      if (!receipt.outcome || receipt.cleaned || receipt.operation === "delete" || receipt.operation === "buildSnapshot" ||
-          claimed.has(key) || state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key) ||
-          state.retention.some((entry) => generationKey(entry.request) === key)) continue;
+      if (
+        !receipt.outcome ||
+        receipt.cleaned ||
+        receipt.operation === "delete" ||
+        receipt.operation === "buildSnapshot" ||
+        claimed.has(key) ||
+        state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key) ||
+        state.retention.some((entry) => generationKey(entry.request) === key)
+      )
+        continue;
       try {
         if (await executor.isStopped?.(receipt.request)) {
-          state.retention.push({ request: receipt.request, requestId: receipt.requestId, deadline: now() + retentionSeconds * 1000 });
+          state.retention.push({
+            request: receipt.request,
+            requestId: receipt.requestId,
+            deadline: now() + retentionSeconds * 1000,
+          });
         }
-      } catch { /* An uncertain inspection never authorizes deletion. */ }
+      } catch {
+        /* An uncertain inspection never authorizes deletion. */
+      }
     }
     await store.save(state);
     const stoppedTimes = new Map<string, number>();
@@ -380,13 +393,21 @@ export async function tick(
       try {
         const stoppedAt = await executor.stoppedAt?.(entry.request);
         if (stoppedAt !== null && stoppedAt !== undefined) stoppedTimes.set(entry.requestId, stoppedAt);
-      } catch { /* Ownership is checked again before deletion. */ }
+      } catch {
+        /* Ownership is checked again before deletion. */
+      }
     }
-    const age = (entry: NonNullable<State["retention"]>[number]) => stoppedTimes.get(entry.requestId) ?? entry.deadline - retentionSeconds * 1000;
+    const age = (entry: NonNullable<State["retention"]>[number]) =>
+      stoppedTimes.get(entry.requestId) ?? entry.deadline - retentionSeconds * 1000;
     for (const entry of [...state.retention].sort((a, b) => age(a) - age(b))) {
       if (!(await pressure())) break;
       const key = generationKey(entry.request);
-      if (entry.deleted || claimed.has(key) || state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key)) continue;
+      if (
+        entry.deleted ||
+        claimed.has(key) ||
+        state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key)
+      )
+        continue;
       if (!executor.deleteStopped) break;
       try {
         if (!(await executor.isStopped?.(entry.request))) continue;
@@ -398,9 +419,17 @@ export async function tick(
         await executor.deleteStopped(entry.request);
         entry.deleted = true;
         await store.save(state);
-      } catch { /* Preserve the authorization and reason for safe retry. */ }
+      } catch {
+        /* Preserve the authorization and reason for safe retry. */
+      }
     }
-    if (await pressure()) await executor.cleanupImages?.();
+    if (await pressure()) {
+      try {
+        await executor.cleanupImages?.();
+      } catch {
+        /* Best-effort image cleanup must not block TTL or deletion reports. */
+      }
+    }
   }
   // One physical cleanup per tick, rotated durably even when Docker refuses it.
   // Reporting is deliberately deferred until after all local physical TTL work.

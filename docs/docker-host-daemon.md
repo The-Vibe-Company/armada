@@ -1167,8 +1167,8 @@ Server admission refuses known-below-floor hosts before dispatch. The daemon
 also takes a fresh measurement before create and new snapshot builds,
 before image pulls/builds can consume space. Unknown measurements fail closed
 locally with a safe disk-space diagnostic; stop/delete/expiry and retention
-cleanup remain available. Retained resume starts the existing container without
-pulling an image or allocating a new home and remains available below the floor.
+cleanup remain available. Retained resume also requires fresh disk proof; a low-disk
+refusal identifies the disk floor rather than a runtime artifact failure.
 A pending snapshot build recovery does not allocate
 new space and is not gated. The floor is a preflight, not a disk quota or a
 prediction of how much an arbitrary image/build will consume.
@@ -1246,7 +1246,7 @@ Source audit of tag `v2.46.0` against the incident report:
   from server expiry or shorten retention to mask missing evidence.
 
 This change leaves all deletion policy unchanged, including the known queued
-resume race tracked in #2525 / PR #2534. No disk-pressure deletion is enabled.
+resume race tracked in #2525 / PR #2534. Disk-pressure deletion is implemented by part 2 below.
 A host upgrade is explicit operator work; there is no automatic daemon update.
 
 Stopped workspace usage is an approximate, read-only observation of writable
@@ -1260,3 +1260,32 @@ is unknown. CLI and Machines display it alongside free disk and version guidance
 Deploy migration `20261117080000_docker_host_stopped_disk_observation.sql` and
 the server through the normal release process before upgrading host daemons.
 No migration or deployment was performed during this implementation.
+
+
+### Disk-pressure reclamation (#2540 part 2)
+
+Every mailbox iteration measures free space. Below the existing 10 GB floor,
+cleanup reclaims stopped/failed owned allocations oldest first (Docker finished
+ time when available, otherwise the durable observed stop age). It rechecks free
+space after each deletion and stops once the floor is restored. Only then may
+unreferenced official images be removed, under the existing two-generation
+retention rule. User snapshots and foreign resources are never pruning targets.
+Running/starting allocations and queued or durably claimed resumes are protected.
+Cleanup authorization and its reason are saved before physical deletion; reports
+retry after disconnection. Sandbox status records `retention_elapsed` or
+`disk_pressure`, displays the workspace loss, and refuses resume with that cause.
+Old daemons can continue reporting without the optional reason and retain the
+outdated-version guidance from part 1. Upgrade daemons to enable pressure cleanup.
+The cleanup-reason migration must deploy before the new server accepts reports;
+no migration was applied during development.
+
+Owner decisions remain open: keep or shorten the unchanged 24-hour retention,
+and whether to warn users before reclamation. Measured on the affected 930 GB
+host: 136 exited containers and 217 volumes held 1.17 TB (520 GB reclaimable);
+after manual cleanup, free space fell from 411 GB to 242 GB in six hours with
+57 stopped sandboxes, approximately 3 GB each, inside the 24-hour window.
+
+Modal stops retain workspace storage for resume under its existing lifecycle;
+Boat stop retains disk/conversations as described in the provider contract.
+Neither provider shares this host's local disk admission boundary; no provider
+lifecycle changes are included here.

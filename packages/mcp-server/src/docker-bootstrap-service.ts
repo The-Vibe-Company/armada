@@ -1,5 +1,5 @@
 import type { GoldenActor, LaunchCredentialResolver, Sql } from "@armada/core";
-import { DockerRetentionEnded, HARNESS_KINDS } from "@armada/core";
+import { DockerRetentionEnded, dockerWorkspaceReclaimedMessage, HARNESS_KINDS } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
 import { type BootstrapDescriptor, parseDockerHostJob } from "../../core/src/docker-host-job.ts";
@@ -102,6 +102,8 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
       // This read must precede resolution: an admin may diagnose, but not bootstrap, an owner's sandbox.
       const snapshot = await createDockerSandboxService(sql, key).get(actor, sandboxId);
       if (snapshot.ownerId !== actor.userId) deny();
+      if (resume && snapshot.status === "deleted" && dockerWorkspaceReclaimedMessage(snapshot.statusReason))
+        throw new DockerRetentionEnded(snapshot.statusReason);
       const member =
         (
           await sql.query<{ role: GoldenActor["role"] }>(
