@@ -226,7 +226,6 @@ export async function deleteSmokeReceipts(
       if (!alreadyDeleted) {
         // Child delete needs the durable authority fence from parent deletion.
         if (scoped) await parentWave;
-        let recheckedStop = false;
         while (true) {
           let deleted: Awaited<ReturnType<typeof request>>;
           try {
@@ -241,18 +240,22 @@ export async function deleteSmokeReceipts(
           if (!RETRY_CODES.has(code) && !(deleted.ok && deleted.body?.id === row.id)) throw Error(code);
           io.out(JSON.stringify({ step: "delete_smoke_sandbox_retry", ...row, phase, httpStatus, code }));
           // A delegated message dispatched before parent stop can still resume a child
-          // during overlapping cleanup. Re-stop only after observing renewed activity.
-          if (scoped && !recheckedStop && httpStatus === 409 && code === "conflict") {
-            recheckedStop = true;
+          // during overlapping cleanup, and the server refuses its delete as not ready.
+          // Observe after every refusal: transitional or unavailable status keeps
+          // waiting, and only an observed active child is stopped again.
+          if (scoped && httpStatus === 409) {
+            const refusal = { phase, httpStatus, code };
             const status = await request("status").catch(() => null);
-            if (status?.ok && status.body?.id === row.id && ["ready", "running"].includes(String(status.body.status))) {
-              await stopAndObserve();
-              if (alreadyDeleted) break;
-              continue;
+            if (status && !status.ok && httpStatus === 404 && code === "not_found") break;
+            if (status?.ok && status.body?.id === row.id) {
+              if (status.body.status === "deleted") break;
+              if (["ready", "running"].includes(String(status.body.status))) {
+                await stopAndObserve();
+                if (alreadyDeleted) break;
+                continue;
+              }
             }
-            phase = "delete";
-            httpStatus = 409;
-            code = "conflict";
+            ({ phase, httpStatus, code } = refusal);
           }
           // Pending deletes are reconciled by repeating the same idempotent delete.
           await pause();

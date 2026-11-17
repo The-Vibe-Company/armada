@@ -525,6 +525,73 @@ test("child stop overlaps slow parent deletion and child delete keeps its own ob
   expect(clock).toBe(720_000);
 });
 
+test("scoped cleanup keeps observing a child resumed after parent deletion and stops it once active", async () => {
+  const child = {
+    ...row,
+    id: "33333333-3333-4333-8333-333333333333",
+    requestKey: "smoke-scoped-11111111-1111-4111-8111-111111111111",
+  };
+  const childActions: string[] = [];
+  let clock = 0;
+  let parentDeleted = false;
+  // A pre-fence delegated resume: starting at parent deletion, running 12 s later.
+  let childState: "stopped" | "starting" | "running" = "stopped";
+  let resumedAt = 0;
+  let statusFailed = false;
+  const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, "token", [row, child], {
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+      if (childState === "starting" && clock >= resumedAt + 12_000) childState = "running";
+    },
+    out: () => {},
+    fetch: async (url, init) => {
+      const deleting = init.method === "DELETE";
+      const id = deleting ? new URL(url).pathname.split("/").at(-1) : JSON.parse(String(init.body)).id;
+      const action = deleting ? "delete" : url.split("/").at(-1)!;
+      if (id === row.id) {
+        if (deleting && !childActions.includes("stop"))
+          return Response.json({ error: { code: "sandbox_not_ready" } }, { status: 409 });
+        if (deleting) {
+          parentDeleted = true;
+          childState = "starting";
+          resumedAt = clock;
+        }
+        return Response.json({ id, status: deleting ? "deleted" : "stopped" });
+      }
+      childActions.push(action === "status" ? `status:${childState}` : action);
+      if (action === "stop") {
+        childState = "stopped";
+        return Response.json({ id, status: "stopped" });
+      }
+      if (action === "status") {
+        if (childState === "starting" && !statusFailed) {
+          statusFailed = true;
+          return Response.json({ error: { code: "unavailable" } }, { status: 503 });
+        }
+        return Response.json({ id, status: childState });
+      }
+      expect(parentDeleted).toBe(true);
+      if (childState !== "stopped") return Response.json({ error: { code: "sandbox_not_ready" } }, { status: 409 });
+      return Response.json({ id, status: "deleted" });
+    },
+  });
+  expect(remaining).toEqual([]);
+  expect(childActions).toEqual([
+    "stop",
+    "delete",
+    "status:starting",
+    "delete",
+    "status:starting",
+    "delete",
+    "status:starting",
+    "delete",
+    "status:running",
+    "stop",
+    "delete",
+  ]);
+});
+
 test("scoped cleanup re-stops a child observed running after parent deletion", async () => {
   const child = {
     ...row,
