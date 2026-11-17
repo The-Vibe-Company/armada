@@ -1,4 +1,3 @@
-import { largeSandboxExpiry } from "./fixture-expiry";
 import {
   accountBindingAvailability,
   type Harness,
@@ -10,6 +9,7 @@ import {
   ROUTINE_REASON_HELP,
   resolveMachineSize,
 } from "@armada/core";
+import { largeSandboxExpiry } from "./fixture-expiry";
 
 /**
  * A stand-in for Supabase Auth, PostgREST and the Armada MCP server, for the browser tests.
