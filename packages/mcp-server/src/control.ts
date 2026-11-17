@@ -73,6 +73,7 @@ import { launchOptions, launchProviderOptions } from "./launch-options.ts";
 import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
 import { type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
 import type { ModelUsageApi } from "./model-usage.ts";
+import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import {
   connectOrgProvider,
   disconnectOrgProvider,
@@ -166,6 +167,8 @@ export interface ControlOptions {
   data?: DataSource;
   vault?: VaultStore;
   launch?: LaunchOptions;
+  /** Durable launch receipts shared with MCP `launch`: `idempotencyKey` on REST launch routes. Absent: a keyed launch is refused. */
+  ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   /** Service-role access: orgs, members and ciphertext. See `createSqlVaultStore`. */
   store: VaultStore;
   /**
@@ -929,6 +932,7 @@ export async function dispatchControlCommand(
           "repo",
           "skills",
           "skipSkillDefaults",
+          "externalRef",
         ];
         if (
           Object.keys(body).some(

@@ -60,6 +60,8 @@ export interface PromptReport {
 
 export interface StatusReport {
   statusMessage?: string | null;
+  /** Opaque launch reference (#2568); absent when none was given. */
+  externalRef?: string;
   usage?: SandboxUsage | null;
   preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
@@ -341,6 +343,7 @@ function report(
         : (sandbox.usage ?? null),
     taskOutcome: sandbox.taskOutcome ?? null,
     id: sandbox.id,
+    ...(sandbox.externalRef ? { externalRef: sandbox.externalRef } : {}),
     golden: sandbox.golden,
     visibility: sandbox.visibility,
     harness: sandbox.harness,

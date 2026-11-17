@@ -55,6 +55,7 @@ export function launchResponse(result: LaunchResult) {
     ...sandboxIdentity(sandbox),
     golden: result.golden.name,
     repositoryDir: sandbox.repositoryDir ?? null,
+    ...(sandbox.externalRef ? { externalRef: sandbox.externalRef } : {}),
     harness: sandbox.harness,
     model: sandbox.model,
     skills: sandbox.skills ?? [],

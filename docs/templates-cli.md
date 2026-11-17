@@ -131,7 +131,7 @@ fields/query parameters refuse at direct control; the proxy strips query strings
 | get | `id`, optional `revision` (default current) |
 | publish | `id`, `expectedRevision`, complete `definition` |
 | delete | `id`, `expectedRevision` |
-| launch | `id`, optional `revision`, required `requestKey`, optional `prompt`, `ttlSeconds`, `size`, `repo` |
+| launch | `id`, optional `revision`, required `requestKey`, optional `prompt`, `ttlSeconds`, `size`, `repo`, `externalRef` ([launch idempotency](launch-idempotency.md)) |
 
 `requestKey` is 1–128 ASCII characters from letters, digits, `.`, `_`, `:`, `-`.
 Stale publication/deletion conflicts; publication is a new immutable revision,

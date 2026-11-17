@@ -17,6 +17,7 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 - [Self-hosting](self-hosting.md#operator-setup): configure and run the real server and dashboard.
 - [CLI/web parity](cli-web-parity.md) and [paging/JSON contract](cli-web-parity-556.md): complementary interface contracts.
 - [API error codes](api-error-codes.md) and [event history](events-history.md): failure and event-stream contracts.
+- [Launch idempotency](launch-idempotency.md): exactly-once launch keys, `externalRef` and the retry contract for an uncertain launch.
 - [Templates](templates-cli.md): CLI/API definitions, frozen manifests, recovery and raw-delivery limits; [deployed checks](post-deploy-smoke.md#targeted-staging-checks) cover staging acceptance, distinct from [proposed hardening](design/templates-variables-secrets.md).
 
 ## Runtime and hosts

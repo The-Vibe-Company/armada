@@ -17,6 +17,7 @@ import { resolveModelChoice } from "./models.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { parseReadableVariableBindings, validateReadableVariables } from "./readable-variables.ts";
+import { isExternalRef } from "./sandbox.ts";
 import { isSandboxPlacementProvider, ProviderRoutingError } from "./sandbox-provider.ts";
 import { createSkillDefaultsService } from "./skill-defaults.ts";
 import { skillRefusalMessage } from "./skill-diagnostics.ts";
@@ -436,6 +437,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         "skills",
         "skipSkillDefaults",
         "modelAccount",
+        "externalRef",
       ],
     };
     if (!allowed[operation]) invalid();
@@ -516,6 +518,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     if (input.ttlSeconds !== undefined) integer(input.ttlSeconds);
     if (input.repo !== undefined) text(input.repo);
     if (input.skipSkillDefaults !== undefined && typeof input.skipSkillDefaults !== "boolean") invalid();
+    if (input.externalRef !== undefined && !isExternalRef(input.externalRef)) invalid();
     try {
       validateSkillPins(input.skills ?? []);
     } catch {
@@ -544,6 +547,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       return { a, h, r: await revision(tx, h, input.revision) };
     });
     const def = selection.r.definition;
+    // Docker launches record no external reference; refuse rather than drop it.
+    if (input.externalRef !== undefined && def.provider === "docker") unavailable("external_ref_unavailable");
     await runtime.validateDefinition?.(def);
     let account = def.modelAccount;
     if (input.modelAccount !== undefined) {
@@ -755,6 +760,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                   provider: g.provider,
                   ...(size === undefined ? {} : { size }),
                   ...(input.repo === undefined ? {} : { repo: input.repo as string }),
+                  ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
                 },
                 {
                   ...runtime.options,
@@ -802,6 +808,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
           ? { runtimeTransport: "dialout" as const }
           : {}),
         providerSandboxId: result.sandbox.providerSandboxId,
+        ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
         promptId: result.promptId ?? null,
         conversationId: result.conversationId ?? null,
         status: result.sandbox.status,
