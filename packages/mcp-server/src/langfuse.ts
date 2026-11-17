@@ -33,6 +33,12 @@ export function langfuseSpans(sandboxId: string, events: AgentEvent[], turns: Tu
           key,
           value: { stringValue: typeof value === "string" ? value : JSON.stringify(value) },
         }));
+    const messages = new Map<string, string>();
+    for (const e of history)
+      if (e.kind === "message" && !e.retracted && e.responseKind !== "tool_result") {
+        const id = e.messageId ?? e.id;
+        messages.set(id, e.textMode === "delta" ? (messages.get(id) ?? "") + e.text : e.text);
+      }
     const usage = turns.filter((t) => t.promptId === end.promptId);
     const cost = usage.map((t) => t.pricing?.usd);
     spans.push({
@@ -50,10 +56,15 @@ export function langfuseSpans(sandboxId: string, events: AgentEvent[], turns: Tu
             .map((t) => t.model)
             .filter(Boolean)
             .join(",") || history.flatMap((e) => (e.kind === "message" && e.model ? [e.model] : []))[0],
-        "langfuse.observation.usage_details": {
-          input: usage.reduce((n, t) => n + (t.inputTokens ?? 0), 0),
-          output: usage.reduce((n, t) => n + (t.outputTokens ?? 0), 0),
-        },
+        "langfuse.observation.usage_details": usage.length
+          ? Object.fromEntries(
+              (["inputTokens", "outputTokens"] as const).flatMap((dimension, index) =>
+                usage.every((t) => t[dimension] !== null)
+                  ? [[index === 0 ? "input" : "output", usage.reduce((sum, t) => sum + (t[dimension] ?? 0), 0)]]
+                  : [],
+              ),
+            )
+          : undefined,
         "langfuse.observation.cost_details":
           cost.length && cost.every((c) => c != null) ? { total: cost.reduce((n, c) => n + Number(c), 0) } : undefined,
         "langfuse.observation.metadata.status": end.status,
@@ -64,12 +75,7 @@ export function langfuseSpans(sandboxId: string, events: AgentEvent[], turns: Tu
             : undefined,
         "langfuse.observation.metadata.usage": usage,
         "langfuse.observation.input": full && start.kind === "prompt" ? start.text : undefined,
-        "langfuse.observation.output": full
-          ? history
-              .filter((e) => e.kind === "message")
-              .map((e) => e.text)
-              .join("\n")
-          : undefined,
+        "langfuse.observation.output": full ? [...messages.values()].join("\n") : undefined,
       }),
     });
     const tools = new Map<string, { first: number; last: number; tool: import("@armada/core").ToolCall }>();
@@ -117,7 +123,7 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
               content_mode: string;
               usage_turns: TurnTokenUsage[];
             }>(
-              `select c.config_enc,c.content_mode,s.usage_turns from public.org_langfuse c join public.sandboxes s on s.org_id=c.org_id where s.id=$1 and c.enabled`,
+              `select c.config_enc,c.content_mode,s.usage_turns->'turns' as usage_turns from public.org_langfuse c join public.sandboxes s on s.org_id=c.org_id where s.id=$1 and c.enabled`,
               [job.sandboxId],
             )
           ).rows[0];
@@ -195,9 +201,7 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
     }
     queue.push({ sandboxId, promptIds, ack });
     // Defers even the settings lookup until after the ingest response can proceed.
-    setTimeout(() => {
-      void drain();
-    }, 0);
+    setTimeout(() => drain(), 0);
   }
   function route(authenticate: (request: Request) => Promise<CallerResult>): Route {
     return async (request) => {
