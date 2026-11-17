@@ -54,6 +54,9 @@ function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {})
     purgeImage: async (name: string) => {
       images = images.filter((x) => x.info.name !== name || !x.deleted);
     },
+    claimImage: async (name: string) => {
+      images = images.map((x) => (x.info.name === name && x.deleted ? { ...x, collecting: true } : x));
+    },
     imageReferenced: async () => false,
     tombstoneSources: async () => (images.some((x) => x.deleted) ? [stored.info.id] : []),
     watermark: async () => 1,

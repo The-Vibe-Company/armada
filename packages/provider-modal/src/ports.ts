@@ -131,6 +131,10 @@ export interface SavedImage {
   sourceId: string;
   managementAuthority?: ModalManagementProvenance;
   deleted?: boolean;
+  /** Set under the source lease once a tombstone is proven unreferenced. A tombstone never gains
+   * a reference (every reference writer reads a live image under that lease), so the remote image
+   * deletion and its retries run without holding the source machine's lifecycle lease. */
+  collecting?: boolean;
 }
 /** Store instances are bound to the authenticated caller AND immutable Modal binding. No unscoped lookup. */
 export interface ModalStore {
@@ -145,6 +149,8 @@ export interface ModalStore {
   saveImage(image: SavedImage): Promise<void>;
   removeImage(name: string): Promise<void>;
   purgeImage(name: string): Promise<void>;
+  /** Durably claims a tombstone for physical collection; a live image is never claimed. */
+  claimImage(name: string): Promise<void>;
   images(sourceId: string): Promise<SavedImage[]>;
   /** Visible machines that still own a retired image record awaiting physical collection. */
   tombstoneSources(): Promise<string[]>;

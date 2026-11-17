@@ -137,7 +137,7 @@ function trackDetachedCollection(work: () => Promise<void>) {
   detachedCollections.add(run);
 }
 /** Settles every detached retired-image collection. The server awaits this before closing SQL,
- * so shutdown never strands a source's store lease mid-collection. */
+ * so shutdown never interrupts a claim or purge mid-collection. */
 export async function settleDetachedModalCollections(): Promise<void> {
   while (detachedCollections.size) await Promise.allSettled([...detachedCollections]);
 }
@@ -701,43 +701,46 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     for (const sourceId of await imagesStore.tombstoneSources()) {
       const source = await imagesStore.get(sourceId);
       if (!matchesManagementAuthority(source.managementAuthority, managementAuthority)) continue;
-      // Lease a source only when it has an image to remove now. A tombstone still referenced by
-      // a live machine stays put, and leasing its source for nothing would refuse that source's
-      // own lifecycle requests. The lease re-checks every condition before any removal.
-      let collectable = false;
-      for (const image of await imagesStore.images(source.info.id))
-        if (
-          image.deleted &&
-          image.imageId &&
-          matchesManagementAuthority(image.managementAuthority, managementAuthority) &&
-          !(await imagesStore.imageReferenced(image.imageId))
-        ) {
-          collectable = true;
+      const retired = async () =>
+        (await imagesStore.images(source.info.id)).filter(
+          (x): x is SavedImage & { imageId: string } =>
+            Boolean(x.deleted && x.imageId) && matchesManagementAuthority(x.managementAuthority, managementAuthority),
+        );
+      // Lease a source only to claim a tombstone that can be removed now. A tombstone still
+      // referenced by a live machine stays put, and leasing its source for nothing would refuse
+      // that source's own lifecycle requests. The lease re-checks every condition before a claim.
+      let claimable = false;
+      for (const image of await retired())
+        if (!image.collecting && !(await imagesStore.imageReferenced(image.imageId))) {
+          claimable = true;
           break;
         }
-      if (!collectable) continue;
-      const collect = imagesStore.lease(source.info.id, async () => {
-        for (const image of (await imagesStore.images(source.info.id)).filter(
-          (x) => x.deleted && matchesManagementAuthority(x.managementAuthority, managementAuthority),
-        )) {
-          if (!image.imageId || (await imagesStore.imageReferenced(image.imageId))) continue;
-          if (image.imageId) {
-            try {
-              await client.images.delete(image.imageId);
-            } catch (error) {
-              if (modalError(error).code !== "not_found") throw error;
-            }
-          }
-          await imagesStore.purgeImage(image.info.name);
+      if (claimable) {
+        const claim = imagesStore.lease(source.info.id, async () => {
+          for (const image of await retired())
+            if (!image.collecting && !(await imagesStore.imageReferenced(image.imageId)))
+              await imagesStore.claimImage(image.info.name);
+        });
+        // Another controller owns this source now (a golden prompt, snapshot, restore or a
+        // concurrent delete). Its tombstones stay durable for the next collection in scope.
+        await (skipBusy
+          ? claim.catch((error) => {
+              if (modalError(error).providerCode !== "lifecycle_lease_busy") throw error;
+            })
+          : claim);
+      }
+      // The source lease is released before any remote call: a slow or failing image deletion
+      // never refuses the source's own lifecycle (delete, snapshot, fork). A claim survives a
+      // failure or crash and is retried by the next collection in scope, again without the lease.
+      for (const image of await retired()) {
+        if (!image.collecting || (await imagesStore.imageReferenced(image.imageId))) continue;
+        try {
+          await client.images.delete(image.imageId);
+        } catch (error) {
+          if (modalError(error).code !== "not_found") throw error;
         }
-      });
-      // Another controller owns this source now (a golden prompt, snapshot, restore or a
-      // concurrent delete). Its tombstones stay durable for the next collection in scope.
-      await (skipBusy
-        ? collect.catch((error) => {
-            if (modalError(error).providerCode !== "lifecycle_lease_busy") throw error;
-          })
-        : collect);
+        await imagesStore.purgeImage(image.info.name);
+      }
     }
   }
   async function collectImages(skipBusy = false) {
@@ -1629,10 +1632,27 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         await collectImages();
         return;
       }
-      await store.lease(image.sourceId, async () => {
-        const current = await store.image(name);
-        await store.removeImage(current.info.name);
-      });
+      let admitted = false;
+      try {
+        await store.lease(image.sourceId, async () => {
+          admitted = true;
+          const current = await store.image(name);
+          await store.removeImage(current.info.name);
+        });
+      } catch (error) {
+        // Only acquisition refusal proves the tombstone was never written, so the caller may
+        // retry the retirement as non-mutating instead of treating the outcome as unknown.
+        if (!admitted && modalError(error).providerCode === "lifecycle_lease_busy")
+          throw new ProviderError({
+            provider: "modal",
+            code: "conflict",
+            providerCode: "snapshot_source_busy",
+            message:
+              "The Modal snapshot source is busy. The snapshot was not deleted; retry after the current operation.",
+            retryable: true,
+          });
+        throw error;
+      }
       await collectImages();
     },
     quiesce: (r) => call(r.sandboxId, "interrupt", r),
@@ -1779,8 +1799,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         await save(row);
       });
       // The target's compute and recovery images are gone and durably recorded, so the receipt
-      // is published now. Retired images of other sources are collected detached, once, under
-      // each source's own lease with the same scope, authority and reference checks. A slow,
+      // is published now. Retired images of other sources are collected detached, once. Each is
+      // claimed under its source's lease with the same scope, authority and reference checks. A slow,
       // busy or failing source never holds this receipt or the caller's activity lease; its
       // tombstones stay durable for the next collection in scope.
       detachCollection(() =>

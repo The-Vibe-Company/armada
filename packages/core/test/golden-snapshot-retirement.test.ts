@@ -290,7 +290,7 @@ test.each([
   }
 });
 
-test.each(["success", "absent", "refusal", "unknown"])(
+test.each(["success", "absent", "refusal", "busy", "unknown"])(
   "retirement %s outcome is idempotent and never deletes a raw artifact",
   async (mode) => {
     const db = database();
@@ -299,10 +299,21 @@ test.each(["success", "absent", "refusal", "unknown"])(
     if (mode === "absent") f.snapshots.delete(f.old);
     if (mode === "refusal")
       f.fail(new ProviderError({ provider: "boat", code: "forbidden", message: "refused", retryable: false }));
+    // A Modal snapshot source leased by another controller refuses before writing any tombstone.
+    if (mode === "busy")
+      f.fail(
+        new ProviderError({
+          provider: "modal",
+          code: "conflict",
+          providerCode: "snapshot_source_busy",
+          message: "busy",
+          retryable: true,
+        }),
+      );
     if (mode === "unknown") f.fail(Error("lost response"));
     await f.retirement.runOne();
     expect(f.snapshots.has(f.next)).toBe(true);
-    if (mode === "refusal") {
+    if (mode === "refusal" || mode === "busy") {
       f.fail(undefined);
       await f.due();
       await f.retirement.runOne();

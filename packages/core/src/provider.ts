@@ -560,6 +560,8 @@ export function isNonMutatingProviderRefusal(error: unknown): boolean {
       "provider_routing_unavailable",
     ].includes(error.code) ||
       isProviderStartRateLimit(error) ||
-      (error.provider === "modal" && error.code === "conflict" && error.providerCode === "fork_source_busy"))
+      (error.provider === "modal" &&
+        error.code === "conflict" &&
+        (error.providerCode === "fork_source_busy" || error.providerCode === "snapshot_source_busy")))
   );
 }

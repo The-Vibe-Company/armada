@@ -70,6 +70,7 @@ function fixture(
   let onLookup: (() => Promise<void>) | undefined;
   let onScrub: (() => Promise<void>) | undefined;
   let onTerminate: (() => Promise<void>) | undefined;
+  let onImageDelete: ((id: string) => Promise<void>) | undefined;
   let onRpc: ((row: Machine, op: string, input: object) => Promise<unknown>) | undefined;
   let provisioned = false;
   let ownershipOverride: Record<string, string> | undefined;
@@ -86,7 +87,8 @@ function fixture(
     images: {
       fromRegistry: () => ({ dockerfileCommands: () => ({ imageId: "im_base" }) }),
       fromId: async (id: string) => ({ imageId: id }),
-      delete: async () => {
+      delete: async (id: string) => {
+        await onImageDelete?.(id);
         log.push("delete-image");
       },
     },
@@ -280,6 +282,9 @@ function fixture(
     },
     onTerminate(work: () => Promise<void>) {
       onTerminate = work;
+    },
+    onImageDelete(work: ((id: string) => Promise<void>) | undefined) {
+      onImageDelete = work;
     },
     onScrub(work: () => Promise<void>) {
       onScrub = work;
@@ -1361,6 +1366,82 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.collectGarbage();
     expect(imageDeletes()).toBe(ownImages + 1);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
+  });
+  test("a held retired-image deletion never fences its source's lifecycle", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const [first, restore, second] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    await f.provider.snapshot({ sandboxId: builder.id, name: first });
+    // Restore from a later snapshot so the builder itself no longer references the first image.
+    await f.provider.delete({ sandboxId: builder.id });
+    await f.provider.restoreGoldenMaster({ snapshotId: first });
+    await f.provider.snapshot({ sandboxId: builder.id, name: restore });
+    await f.provider.delete({ sandboxId: builder.id });
+    await f.provider.restoreGoldenMaster({ snapshotId: restore });
+    await f.provider.snapshot({ sandboxId: builder.id, name: second });
+    const fork = await f.provider.fork({ from: first });
+    await f.provider.deleteSnapshot(first);
+    await f.runDetached();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const firstImage = (await f.store.images(builder.id)).find((x) => x.info.name === first)?.imageId;
+    let held = false;
+    f.onImageDelete(async (id) => {
+      // Hold only the detached collector's call; a later collection may retry the claim at once.
+      if (id !== firstImage || held) return;
+      held = true;
+      entered.resolve();
+      await release.promise;
+    });
+    expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
+    const collecting = f.runDetached();
+    await entered.promise;
+    // The claim is durable and the source lease is already released while the image call is open.
+    expect((await f.store.images(builder.id)).find((x) => x.info.name === first)?.collecting).toBe(true);
+    // Retiring another snapshot of the same source is admitted and writes its tombstone.
+    await f.provider.deleteSnapshot(second);
+    await expect(f.provider.getSnapshot(second)).rejects.toMatchObject({ code: "not_found" });
+    // Deleting the source machine itself is admitted too.
+    expect(await f.provider.delete({ sandboxId: builder.id })).toEqual({ status: "deleted" });
+    expect((await f.store.get(builder.id)).phase).toBe("deleted");
+    release.resolve();
+    await collecting;
+    f.onImageDelete(undefined);
+    await f.runDetached();
+    expect((await f.store.images(builder.id)).filter((x) => x.deleted)).toEqual([]);
+  });
+  test("a claimed retired image whose deletion failed is retried without its source lease", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    // The first physical deletion fails after the claim; the tombstone stays claimed.
+    let failures = 1;
+    f.onImageDelete(async () => {
+      if (failures-- > 0) throw Object.assign(new Error("image service unavailable"), { name: "TimeoutError" });
+    });
+    await expect(f.provider.deleteSnapshot(name)).rejects.toThrow();
+    await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
+    expect((await f.store.images(builder.id)).find((x) => x.info.name === name)?.collecting).toBe(true);
+    // The source is busy with its own lifecycle, and the claimed image is still collected.
+    await f.store.lease(builder.id, () => f.provider.collectGarbage());
+    expect(await f.store.tombstoneSources()).not.toContain(builder.id);
+  });
+  test("a busy snapshot source refuses retirement before any tombstone, as non-mutating", async () => {
+    const f = fixture();
+    const builder = await f.provider.createGolden({});
+    const name = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name });
+    let refused: unknown;
+    await f.store.lease(builder.id, async () => {
+      refused = await f.provider.deleteSnapshot(name).catch((error) => error);
+    });
+    expect(refused).toMatchObject({ code: "conflict", providerCode: "snapshot_source_busy", retryable: true });
+    expect(isNonMutatingProviderRefusal(refused)).toBe(true);
+    expect((await f.provider.getSnapshot(name)).name).toBe(name);
+    // The retirement's next attempt succeeds once the lease clears.
+    await f.provider.deleteSnapshot(name);
+    await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
   });
   test("recovery references do not depend on a saved label surviving retirement", async () => {
     const f = fixture();

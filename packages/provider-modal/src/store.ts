@@ -159,6 +159,13 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         name,
       ]);
     },
+    async claimImage(name) {
+      await authorize();
+      await sql.query(
+        `update public.modal_images set record=jsonb_set(record,'{collecting}','true') where scope=$1 and name=$2 and record->>'deleted'='true'`,
+        [key, name],
+      );
+    },
     async images(sourceId) {
       await get(sourceId);
       const result = await sql.query<{ record: SavedImage }>(
