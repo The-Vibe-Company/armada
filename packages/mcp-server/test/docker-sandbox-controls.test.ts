@@ -826,6 +826,22 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
   ).toEqual([{ request_id: args.request_id }]);
 });
 
+test("resuming on a draining host names the uninstall, not a generic unavailable operation", async () => {
+  const db = database();
+  const f = await fixture();
+  await ready(f);
+  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  const stopId = randomUUID();
+  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
+  const controller = createDockerSandboxControls(sql, key, { resume: bootstrap });
+  await rejected(
+    invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller),
+    "host_draining",
+  );
+});
+
 test("Docker mutations reuse the fenced runtime mailbox and reconcile identical request IDs", async () => {
   const db = database();
   const f = await fixture();

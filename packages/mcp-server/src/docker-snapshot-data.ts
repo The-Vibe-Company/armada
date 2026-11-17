@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { type DockerSnapshotRecord, parseGoldenConfig } from "@armada/core";
+import { DOCKER_SNAPSHOT_FAILURE_MESSAGES, type DockerSnapshotRecord, parseGoldenConfig } from "@armada/core";
 import { type Sql, VaultError } from "@armada/core/server";
 import type { DockerHostJob } from "../../core/src/docker-host-job.ts";
-export const SNAPSHOT_COLUMNS = `s.*,h.name as host_name,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and h.draining_at is null and (h.last_seen_at>now()-interval '90 seconds') is true) as host_available`;
+import { DockerHostDraining } from "./docker-capacity.ts";
+import { hostDrainingSql } from "./docker-host-drain.ts";
+export const SNAPSHOT_COLUMNS = `s.*,h.name as host_name,${hostDrainingSql("h")} as host_draining,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and (h.last_seen_at>now()-interval '90 seconds') is true) as host_online,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and not ${hostDrainingSql("h")} and (h.last_seen_at>now()-interval '90 seconds') is true) as host_available`;
 export type SnapshotRow = {
   id: string;
   org_id: string;
@@ -24,6 +26,8 @@ export type SnapshotRow = {
   failure_reason?: string | null;
   created_at: Date | string;
   host_name: string | null;
+  host_draining: boolean;
+  host_online: boolean;
   host_available: boolean;
 };
 export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
@@ -51,17 +55,26 @@ export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
     image: row.image_id,
     failureReason:
       row.status === "building" && new Date(row.build_expires_at).getTime() <= Date.now()
-        ? "Snapshot build expired before an image was published."
+        ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.expired
         : row.status === "failed"
-          ? (row.failure_reason ??
-            "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.")
+          ? (row.failure_reason ?? DOCKER_SNAPSHOT_FAILURE_MESSAGES.build)
           : null,
     createdAt: new Date(row.created_at).toISOString(),
     hostName: row.host_name,
     hostAvailable: row.host_available,
   };
 }
-export async function resolveDockerSnapshot(sql: Sql, actor: { userId: string; orgId: string }, id: string) {
+/**
+ * Resolve a snapshot for a new launch. Existence and readiness are separate from host availability: a draining
+ * host is a state refusal with its own reason, never "Snapshot is unavailable". `allowDraining` is for callers
+ * that only validate an existing sandbox's identity (cleanup and replay), not new admission.
+ */
+export async function resolveDockerSnapshot(
+  sql: Sql,
+  actor: { userId: string; orgId: string },
+  id: string,
+  options: { allowDraining?: boolean } = {},
+) {
   const row = (
     await sql.query<SnapshotRow>(
       `select ${SNAPSHOT_COLUMNS} from public.docker_snapshots s join public.docker_hosts h on h.id=s.host_id and h.org_id=s.org_id
@@ -70,8 +83,9 @@ export async function resolveDockerSnapshot(sql: Sql, actor: { userId: string; o
       [id, actor.userId, actor.orgId],
     )
   ).rows[0];
-  if (!row || row.status !== "ready" || !row.host_available || !row.image_id)
-    throw new VaultError("not_found", "Snapshot is unavailable.");
+  if (!row || row.status !== "ready" || !row.image_id) throw new VaultError("not_found", "Snapshot is unavailable.");
+  if (row.host_draining && options.allowDraining !== true) throw new DockerHostDraining();
+  if (!row.host_online) throw new VaultError("not_found", "Snapshot is unavailable.");
   return row;
 }
 /** Host and both source actors are already locked by mailbox admission. */
@@ -83,18 +97,20 @@ export async function authorizeSnapshotBuild(
 ) {
   const row = (
     await sql.query<SnapshotRow>(
-      `select s.* from public.docker_snapshots s
+      `select s.*,${hostDrainingSql("h")} as host_draining from public.docker_snapshots s
     join public.docker_hosts h on h.id=s.host_id and h.org_id=s.org_id
     join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
     join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=s.actor_epoch
     join public.mcp_actor_epochs i on i.org_id=s.org_id and i.user_id=h.owner_id and i.epoch=s.issuer_epoch
-    where s.id=$1 and s.host_id=$2 and s.installation_id=$3 and h.installation_id=$3 and h.revoked_at is null and h.draining_at is null
+    where s.id=$1 and s.host_id=$2 and s.installation_id=$3 and h.installation_id=$3 and h.revoked_at is null
     and s.status='building' and s.build_expires_at>now() and (s.visibility='private' or m.role='admin') for update of s`,
       [job.build.id, hostId, installationId],
     )
   ).rows[0];
+  if (!row) throw new VaultError("forbidden", "Snapshot build denied.");
+  // A drain is a state refusal, not lost authorization: the poll path persists its own reason.
+  if (row.host_draining) throw new DockerHostDraining();
   if (
-    !row ||
     row.id !== job.request.sandboxId ||
     row.generation !== job.request.generation ||
     row.base_image !== job.request.image ||

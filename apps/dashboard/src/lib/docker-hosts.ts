@@ -33,7 +33,7 @@ export type DockerHostState = DockerHost["state"];
 /** `skipped`: hosts the server listed that do not match the contract, left out of the list (#1398). */
 export type DockerHostList = Omit<DockerHostListResponse, "hosts"> & { hosts: DockerHost[]; skipped: number };
 
-const STATES: readonly DockerHostState[] = ["pending", "online", "offline", "revoked"];
+const STATES: readonly DockerHostState[] = ["pending", "online", "offline", "draining", "revoked"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -172,6 +172,14 @@ export function hostName(host: Pick<DockerHost, "id" | "name">): string {
   return host.name ?? "Unnamed server";
 }
 
+/** Why a host cannot take a snapshot build now, in the dialog's words; null when it can. */
+export function hostBuildBlocker(host: Pick<DockerHost, "state">): string | null {
+  if (host.state === "online") return null;
+  if (host.state === "draining")
+    return "This server is draining for uninstall. Finish or retry the uninstall on the machine before building.";
+  return "Bring this server online to build.";
+}
+
 /** A host's state in the page's words and where it sorts: an offline host needs a look first. */
 export function hostState(host: DockerHost, now: number): ResourceState & { detail: string } {
   const seen = host.lastSeenAt ? relativeAge(host.lastSeenAt, now) : null;
@@ -189,6 +197,14 @@ export function hostState(host: DockerHost, now: number): ResourceState & { deta
         tone: "warning",
         label: "Offline",
         detail: `${seen ? `Last seen ${seen}. ` : ""}Check that the machine is on and Docker is running.`,
+      };
+    case "draining":
+      return {
+        bucket: "action",
+        tone: "warning",
+        label: "Draining",
+        detail:
+          "An uninstall is in progress, so this server takes no new work. Finish or retry the uninstall on the machine; it takes new work again only after the uninstall completes.",
       };
     case "pending":
       if (now - Date.parse(host.createdAt) > REGISTRATION_TTL_MS)
@@ -283,7 +299,11 @@ export function dockerHostLimitsInput(
 export function dockerHostActionFailure(
   status: number | undefined,
   action: "register" | "revoke" | "limits" | "launch",
+  code?: string,
 ): string {
+  // A draining host is a state refusal, not a permission failure: name the uninstall to finish or retry.
+  if (code === "host_draining")
+    return "This host is draining for uninstall. Finish or retry the uninstall on the machine; it takes new work again only after the uninstall completes.";
   if (status === 401) return "This session cannot manage Hosts. Sign in again, then reload Hosts.";
   if (status === 403)
     return action === "limits"

@@ -70,6 +70,12 @@ The list returns `placement` and safe `hosts` metadata: id, name (currently null
 state, createdAt, lastSeenAt, revokedAt and retained non-deleted sandbox count.
 Pending means unregistered; online requires current registration/issuer membership
 and a heartbeat within 60 seconds; otherwise offline, with revoked taking priority.
+A host inside an active uninstall drain is `draining`, not online: it takes no new
+launch, snapshot create or rebuild, and a launch from a saved snapshot names the
+drain rather than "Snapshot is unavailable". The list, launch dialog, snapshots,
+CLI and doctor name the uninstall to finish or retry rather than reporting a
+permission failure. A queued snapshot build interrupted by a drain fails with the
+same uninstall reason, not "authorization is no longer valid".
 Online is not scheduling eligibility, capacity or runtime readiness. SQL current
 membership scopes every list; no credentials, token hashes or installation secrets
 are returned and no direct user-JWT host-table grant is added.
@@ -711,7 +717,11 @@ the service and removes only the verified installation. The host registration's
 issuer must retain cleanup authority (current admin for other owners' sandboxes).
 Offline/uncertain cleanup, unknown labelled resources and changed managed files
 refuse removal, preserving state for reconciliation. Shared images, other workloads
-and account-wide linger are preserved. Drain is bounded; failure is not deletion.
+and account-wide linger are preserved. Failure is not deletion.
+A drain has no deadline: the host stays draining until the uninstall completes, so
+an interrupted uninstall cannot re-admit work while its cleanup may still be queued.
+Retrying the uninstall continues the same drain. An abandoned drain has no cancel
+path; it is an open question for the owner, not a new command.
 
 Single coordinator check on the real machine previously registered as
 `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`: record container/volume baseline,

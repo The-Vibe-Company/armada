@@ -3,6 +3,7 @@ import {
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
+  DOCKER_SNAPSHOT_FAILURE_MESSAGES,
   type DockerHostSummary,
   type DockerJobFailureReason,
   type Sql,
@@ -18,12 +19,14 @@ import type { DockerHostResources } from "../../core/src/docker-resources.ts";
 import { type DockerResourceOverrides, dockerResourcePolicy } from "../../core/src/docker-resources.ts";
 import {
   DOCKER_CAPACITY_USAGE_SQL,
+  DockerHostDraining,
   DockerHostFull,
   DockerLimitsRefused,
   type DockerPolicyRow,
   hostResourcePolicy,
 } from "./docker-capacity.ts";
 
+import { hostDrainingSql } from "./docker-host-drain.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
@@ -118,6 +121,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     } catch (error) {
       if (
         error instanceof DockerHostDenied ||
+        error instanceof DockerHostDraining ||
         error instanceof DockerHostFull ||
         error instanceof DockerLimitsRefused ||
         error instanceof VaultError
@@ -301,8 +305,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
     ).rows[0];
     if (!original) {
       if (operation !== "create") deny();
+      // Cleanup and replay validate an existing sandbox's identity; a drain must not hide its source.
       const source = row.docker_snapshot_id
-        ? await resolveDockerSnapshot(tx, { userId: row.owner_id, orgId: row.org_id }, row.docker_snapshot_id)
+        ? await resolveDockerSnapshot(tx, { userId: row.owner_id, orgId: row.org_id }, row.docker_snapshot_id, {
+            allowDraining: true,
+          })
         : undefined;
       if (
         source &&
@@ -394,6 +401,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           `select h.id,
             case when h.revoked_at is not null then 'revoked'
               when h.installation_id is null then 'pending'
+              when ${hostDrainingSql("h")} then 'draining'
               when h.hash is not null and h.registration_hash is null
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
@@ -794,7 +802,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const host =
           (
             await tx.query<Host & { installation_id: string }>(
-              "select id,org_id,owner_id,installation_id from public.docker_hosts where id=$1 and org_id=$2 and hash is not null and revoked_at is null and draining_at is null for update",
+              `select id,org_id,owner_id,installation_id from public.docker_hosts where id=$1 and org_id=$2 and hash is not null and revoked_at is null and not ${hostDrainingSql("docker_hosts")} for update`,
               [hostId, actor.orgId],
             )
           ).rows[0] ?? deny();
@@ -849,12 +857,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
               [hint.docker_host_id, actor.orgId, hint.issuer_id, hint.docker_installation_id, cleanup],
             )
           ).rows[0] ?? deny();
-        if (selection.operation === "bootstrap" || selection.operation === "resume") {
-          const draining = await tx.query(`select 1 from public.docker_hosts where id=$1 and draining_at is not null`, [
-            host.id,
-          ]);
-          if (draining.rows.length) deny();
-        }
         const row = await sandbox(tx, sandboxId, host, hint.docker_installation_id);
         if (row.owner_id !== hint.owner_id) deny();
         if (selection.operation === "stop" && selection.onlyIfIdle && !["ready", "stopped"].includes(row.status))
@@ -865,6 +867,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const known =
           (await tx.query(`select 1 from public.docker_host_jobs where request_id=$1`, [selection.requestId])).rows
             .length > 0;
+        // A drain refuses new bootstrap/resume work with its own reason, but an already-admitted
+        // request replays: admission is historical and a lost response must not become a refusal.
+        if (!known && (selection.operation === "bootstrap" || selection.operation === "resume")) {
+          const draining = await tx.query(
+            `select 1 from public.docker_hosts where id=$1 and ${hostDrainingSql("docker_hosts")}`,
+            [host.id],
+          );
+          if (draining.rows.length) throw new DockerHostDraining();
+        }
         if (!known) await state(tx, row, selection.operation);
         if (!known && selection.operation === "stop" && selection.idleCheckpointRequest !== undefined) {
           id(selection.idleCheckpointRequest);
@@ -935,7 +946,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
           host.org_id,
           host.owner_id,
         ]);
-        await tx.query(`update public.docker_hosts set draining_at=coalesce(draining_at,now()) where id=$1`, [host.id]);
+        // A retried uninstall continues the same drain; the flag fences admission until the
+        // uninstall completes, with no deadline that could re-admit work while cleanup is queued.
+        await tx.query(`update public.docker_hosts set draining_at=now() where id=$1`, [host.id]);
         const retained = await tx.query<{ id: string; status: string }>(
           `select id,status from public.sandboxes where docker_host_id=$1 and status<>'deleted' order by id`,
           [host.id],
@@ -947,8 +960,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         ]);
         if (!members.rows.length || !active.rows.length) {
           await tx.query(
-            "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Host retired before snapshot publication.' where host_id=$1 and status='building'",
-            [host.id],
+            "update public.docker_snapshots set status='failed',image_id=null,failure_reason=$2 where host_id=$1 and status='building'",
+            [host.id, DOCKER_SNAPSHOT_FAILURE_MESSAGES.retired],
           );
           await tx.query(
             "update public.docker_host_jobs set outcome='failed',completed_at=now() where host_id=$1 and outcome is null and (bound_operation is null or bound_operation not in ('stop','delete'))",
@@ -960,9 +973,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
           [host.id],
         );
         if (!retained.rows.length && !pending.rows.length) {
-          await tx.query(`update public.docker_hosts set revoked_at=now(),registration_hash=null where id=$1`, [
-            host.id,
-          ]);
+          // The uninstall completed: retire the host and end the drain in the same transaction, so its snapshots
+          // report the revoked state instead of asking the user to retry an uninstall that already finished.
+          await tx.query(
+            `update public.docker_hosts set revoked_at=now(),registration_hash=null,draining_at=null where id=$1`,
+            [host.id],
+          );
           return null;
         }
         return { host, rows: pending.rows.length || !members.rows.length ? [] : retained.rows };
@@ -1022,8 +1038,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           );
         }
         await tx.query(
-          "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build expired before an image was published.' where host_id=$1 and status='building' and build_expires_at<=now()",
-          [host.id],
+          "update public.docker_snapshots set status='failed',image_id=null,failure_reason=$2 where host_id=$1 and status='building' and build_expires_at<=now()",
+          [host.id, DOCKER_SNAPSHOT_FAILURE_MESSAGES.expired],
         );
         await tx.query(
           "update public.docker_host_jobs j set outcome='failed',completed_at=now() from public.docker_snapshots s where j.snapshot_id=s.id and j.host_id=$1 and j.outcome is null and s.status='failed'",
@@ -1081,11 +1097,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
             if (job.operation !== "buildSnapshot") deny();
             await authorizeSnapshotBuild(tx, host.id, installationId, job);
           } catch (error) {
-            if (!(error instanceof DockerHostDenied) && !(error instanceof VaultError && error.code === "forbidden"))
+            // A drain is a state refusal, not lost authorization: persist the uninstall reason the user can act on.
+            const draining = error instanceof DockerHostDraining;
+            if (
+              !draining &&
+              !(error instanceof DockerHostDenied) &&
+              !(error instanceof VaultError && error.code === "forbidden")
+            )
               throw error;
             await tx.query(
-              "update public.docker_snapshots set status='failed',image_id=null,failure_reason='Snapshot build authorization is no longer valid.' where id=$1 and status='building'",
-              [row.snapshot_id],
+              "update public.docker_snapshots set status='failed',image_id=null,failure_reason=$2 where id=$1 and status='building'",
+              [
+                row.snapshot_id,
+                draining ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.draining : DOCKER_SNAPSHOT_FAILURE_MESSAGES.authorization,
+              ],
             );
             await tx.query(
               "update public.docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1 and outcome is null",
@@ -1247,13 +1272,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
           )
             deny();
           if (job.outcome === null) {
-            let eligible = false;
+            let eligible = false,
+              draining = false;
             if (result.outcome === "completed") {
               try {
                 await authorizeSnapshotBuild(tx, host.id, installationId, parsed);
                 eligible = true;
               } catch (error) {
-                if (!(error instanceof VaultError && error.code === "forbidden")) throw error;
+                if (error instanceof DockerHostDraining) draining = true;
+                else if (!(error instanceof VaultError && error.code === "forbidden")) throw error;
               }
             }
             await tx.query(
@@ -1264,11 +1291,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 eligible ? result.imageId : null,
                 eligible
                   ? null
-                  : result.outcome === "completed"
-                    ? "Snapshot build authorization is no longer valid."
-                    : result.reason === "disk_full"
-                      ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
-                      : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
+                  : draining
+                    ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.draining
+                    : result.outcome === "completed"
+                      ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.authorization
+                      : result.reason === "disk_full"
+                        ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.disk
+                        : DOCKER_SNAPSHOT_FAILURE_MESSAGES.build,
               ],
             );
           }

@@ -261,6 +261,18 @@ test("public Docker preview dispatches two same-conversation prompts through run
   expect(JSON.stringify(archive)).not.toMatch(/armada_enrol_|armada_runtime_/);
 });
 
+test("a draining host refusal is an actionable HTTP conflict naming the uninstall, not a permission failure", async () => {
+  const db = database();
+  const f = await fixture();
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
+  const response = await f.post("launch", f.launch);
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({
+    error: "host_draining",
+    message: expect.stringContaining("draining for uninstall"),
+  });
+});
+
 test("full host refusal is an actionable HTTP conflict rather than a generic server failure", async () => {
   const f = await fixture();
   await f.hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });

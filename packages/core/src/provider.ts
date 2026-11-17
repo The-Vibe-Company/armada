@@ -486,6 +486,8 @@ export type ProviderErrorCode =
   | "sandbox_not_ready"
   /** The selected Docker host has no free sandbox slots. */
   | "host_full"
+  /** The selected Docker host is draining for uninstall and takes no new work. */
+  | "host_draining"
   /** Any other refusal because of the state of a resource. */
   | "conflict"
   /** A Docker sandbox's host-local retention ended: its disk is gone, so retrying cannot help. */
@@ -553,6 +555,7 @@ export function isNonMutatingProviderRefusal(error: unknown): boolean {
       "invalid_request",
       "payment_required",
       "host_full",
+      "host_draining",
       "provider_not_configured",
       "provider_routing_unavailable",
     ].includes(error.code) ||

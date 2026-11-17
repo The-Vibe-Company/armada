@@ -1,4 +1,4 @@
-import { ProviderError, type Sql } from "@armada/core";
+import { DOCKER_HOST_DRAINING_MESSAGE, ProviderError, type Sql } from "@armada/core";
 import { DOCKER_DISK_FLOOR_BYTES, DOCKER_DISK_FLOOR_MESSAGE } from "../../core/src/docker-disk-policy.ts";
 import { dockerResourcePolicy } from "../../core/src/docker-resources.ts";
 
@@ -42,6 +42,18 @@ export function hostResourcePolicy(host: DockerPolicyRow, running = 0) {
 export class DockerLimitsRefused extends ProviderError {
   constructor(code: "conflict" | "invalid_request", message: string) {
     super({ provider: "docker", code, retryable: false, message });
+  }
+}
+
+/** A draining host is a state refusal, not an authorization failure: name the uninstall that must finish. */
+export class DockerHostDraining extends ProviderError {
+  constructor() {
+    super({
+      provider: "docker",
+      code: "host_draining",
+      retryable: false,
+      message: DOCKER_HOST_DRAINING_MESSAGE,
+    });
   }
 }
 

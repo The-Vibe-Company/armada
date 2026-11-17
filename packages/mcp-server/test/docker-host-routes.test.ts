@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { DockerHostListResponse, Sql } from "@armada/core";
+import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
@@ -56,6 +57,23 @@ async function fixture() {
   }
   return { db, userId, memberId, orgId, store, authenticate, route, post };
 }
+
+test("a draining snapshot refusal is a typed conflict the dashboard can show, not a generic snapshot refusal", async () => {
+  const f = await fixture();
+  const route = createDockerHostRoutes(f.store, f.authenticate, {
+    publicUrl: "https://public.example",
+    snapshots: {
+      command: async () => {
+        throw new DockerHostDraining();
+      },
+    },
+  });
+  const response = await f.post("/api/v1/docker/snapshots/create", "fixture-user-token", { org: f.orgId }, {}, route);
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({
+    error: { code: "host_draining", message: expect.stringContaining("draining for uninstall") },
+  });
+});
 
 // HTTP owns bearer separation, bounded shape admission and cache/error policy.
 // Mailbox authority/replay/durability contracts remain owned by docker-host-store.test.ts.

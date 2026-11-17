@@ -3,7 +3,7 @@ import { DockerRetentionEnded, HARNESS_KINDS } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
 import { type BootstrapDescriptor, parseDockerHostJob } from "../../core/src/docker-host-job.ts";
-import { admitDockerCapacity, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
+import { admitDockerCapacity, DockerHostDraining, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { dockerRuntimeConfiguration } from "./docker-runtime-configuration.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
@@ -285,10 +285,13 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         };
       });
     } catch (error) {
-      if (error instanceof DockerHostFull || error instanceof DockerLimitsRefused) throw error;
-      // A durable, non-retryable refusal: the workspace disk is gone, so the
-      // caller must launch a new sandbox rather than retry a provider outage.
-      if (error instanceof DockerRetentionEnded) throw error;
+      if (
+        error instanceof DockerHostDraining ||
+        error instanceof DockerHostFull ||
+        error instanceof DockerLimitsRefused ||
+        error instanceof DockerRetentionEnded
+      )
+        throw error;
       return deny();
     }
   }
