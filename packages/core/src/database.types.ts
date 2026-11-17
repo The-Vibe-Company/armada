@@ -4242,6 +4242,41 @@ export type Database = {
           },
         ];
       };
+      sandbox_outputs: {
+        Row: {
+          sandbox_id: string;
+          name: string;
+          digest: string;
+          size: number;
+          content_enc: string;
+          updated_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          name: string;
+          digest: string;
+          size: number;
+          content_enc: string;
+          updated_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          name?: string;
+          digest?: string;
+          size?: number;
+          content_enc?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_outputs_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_turn_models: {
         Row: {
           sandbox_id: string;
@@ -4394,6 +4429,7 @@ export type Database = {
           docker_snapshot_id: string | null;
           docker_retention_deadline: string | null;
           external_ref: string | null;
+          outputs_checked_at: string | null;
         };
         Insert: {
           id?: string;
@@ -4456,6 +4492,7 @@ export type Database = {
           docker_snapshot_id?: string | null;
           docker_retention_deadline?: string | null;
           external_ref?: string | null;
+          outputs_checked_at?: string | null;
         };
         Update: {
           id?: string;
@@ -4518,6 +4555,7 @@ export type Database = {
           docker_snapshot_id?: string | null;
           docker_retention_deadline?: string | null;
           external_ref?: string | null;
+          outputs_checked_at?: string | null;
         };
         Relationships: [
           {
@@ -4811,6 +4849,7 @@ export type RuntimeIdleEvidenceRow = Database["public"]["Tables"]["runtime_idle_
 export type RuntimeIdleTurnRow = Database["public"]["Tables"]["runtime_idle_turns"]["Row"];
 export type RuntimeResumeRow = Database["public"]["Tables"]["runtime_resumes"]["Row"];
 export type SandboxAccountUsagePricingRow = Database["public"]["Tables"]["sandbox_account_usage_pricing"]["Row"];
+export type SandboxOutputRow = Database["public"]["Tables"]["sandbox_outputs"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxUsagePricingRow = Database["public"]["Tables"]["sandbox_usage_pricing"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];

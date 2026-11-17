@@ -202,6 +202,7 @@ describe("database", () => {
         "organization_invitations.token_enc",
         "orgs.boat_api_key_enc",
         "outbound_webhook_endpoints.secret_enc",
+        "sandbox_outputs.content_enc",
         "runtime_commands.request_enc",
         "runtime_commands.result_enc",
         "runtime_enrolments.configuration_enc",

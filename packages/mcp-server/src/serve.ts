@@ -1,3 +1,4 @@
+import { createSandboxOutputs } from "./sandbox-outputs.ts";
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
 import {
   createApplicationVault,
@@ -565,6 +566,7 @@ export async function startServer(
   );
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const commitSha = sourceIdentity.commit ?? env.RAILWAY_GIT_COMMIT_SHA;
+  const outputs = createSandboxOutputs(sql, config.encryptionKey, createMcpSandboxProviderResolver(sql, providers));
   const handler = createHandler({
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
@@ -606,6 +608,7 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
+      outputs.route((request) => authenticateCaller(request.headers.get("authorization"), { store: authStore, supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey }, now: new Date() })),
       webhooks.route((request) =>
         authenticateCaller(request.headers.get("authorization"), {
           store: authStore,
@@ -717,6 +720,7 @@ export async function startServer(
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
     [
+      outputs,
       webhooks,
       createNativeWebhookPrompts(sql, createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true })),
       delegatedAccess.childWorker,

@@ -28,6 +28,7 @@ type Schema = {
 
 const ROW_ALIASES: Record<string, string> = {
   native_webhook_prompts: "NativeWebhookPromptRow",
+  sandbox_outputs: "SandboxOutputRow",
   outbound_webhook_endpoints: "OutboundWebhookEndpointRow",
   outbound_webhook_deliveries: "OutboundWebhookDeliveryRow",
   org_langfuse: "OrgLangfuseRow",
