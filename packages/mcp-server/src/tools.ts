@@ -2465,12 +2465,9 @@ function describe(error: unknown): { code: string; message: string } {
   }
   if (error instanceof VaultError)
     return {
-      code:
-        error.code === "credential_busy" || error.code.startsWith("credential_binding_")
-          ? error.code
-          : error.code === "unavailable"
-            ? "dependency_unavailable"
-            : "missing_credential",
+      // Shared typed classification above handles unavailable and credential refusal.
+      // All remaining vault codes already match the public HTTP categories.
+      code: error.code,
       message: error.message,
     };
   if (error instanceof EncryptionKeyError) return { code: "dependency_unavailable", message: error.message };

@@ -16,9 +16,12 @@ test("idle pause wording promises wake only for a confirmed, unexpired idle stop
     expect(idlePauseMessage({ ...paused, ...change }, now)).toBeNull();
 });
 
-test("idle stop reason survives stopped/stopping patches and clears on wake", async () => {
-  const { statusReasonOf } = await import("../src/sandbox.ts");
-  expect(statusReasonOf({ status: "stopped", statusReason: "idle_paused" })).toBe("idle_paused");
-  expect(statusReasonOf({ status: "stopping", statusReason: "idle_paused" })).toBe("idle_paused");
-  expect(statusReasonOf({ status: "running", statusReason: "idle_paused" })).toBeNull();
-});
+test.each(["idle_paused", "agent_finished"])(
+  "%s stop reason survives stopped/stopping patches and clears on wake",
+  async (reason) => {
+    const { statusReasonOf } = await import("../src/sandbox.ts");
+    expect(statusReasonOf({ status: "stopped", statusReason: reason })).toBe(reason);
+    expect(statusReasonOf({ status: "stopping", statusReason: reason })).toBe(reason);
+    expect(statusReasonOf({ status: "running", statusReason: reason })).toBeNull();
+  },
+);

@@ -313,7 +313,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
  */
 export function statusReasonOf(patch: SandboxPatch): string | null | undefined {
   if (
-    ["expired", "idle_paused"].includes(patch.statusReason ?? "") &&
+    ["expired", "idle_paused", "agent_finished"].includes(patch.statusReason ?? "") &&
     (patch.status === "stopped" || patch.status === "stopping")
   )
     return patch.statusReason;
