@@ -41,11 +41,14 @@ export interface DockerHostSummary {
   nextCleanupAt?: string | null;
   /** Available bytes on the Docker data filesystem; absent/null on older or unreadable hosts. */
   diskFreeBytes?: number | null;
+  /** Approximate container writable layers plus attached volumes for owned stopped sandboxes. */
+  stoppedSandboxBytes?: number | null;
   limitsSupported?: boolean;
   /** Retained sandboxes, including stopped/failed, excluding deleted. */
   sandboxes: number;
 }
 export interface DockerHostListResponse {
+  serverVersion?: string;
   /** Normal launch is wired and opted in, not merely private preview availability. */
   placement: boolean;
   hosts: DockerHostSummary[];

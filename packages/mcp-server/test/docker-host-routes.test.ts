@@ -237,7 +237,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     return (await response.json()) as DockerHostListResponse;
   };
   const result = await list();
-  expect(Object.keys(result).sort()).toEqual(["hosts", "placement"]);
+  expect(Object.keys(result).sort()).toEqual(["hosts", "placement", "serverVersion"]);
   expect(result.placement).toBe(false);
   expect(result.hosts).toHaveLength(6);
   const byId = new Map(result.hosts.map((host) => [host.id, host]));
@@ -245,6 +245,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
   expect(byId.get(revokedPending.hostId)?.state).toBe("revoked");
   expect(byId.get(pending.hostId)).toEqual({
     diskFreeBytes: null,
+    stoppedSandboxBytes: null,
     retentionSeconds: null,
     retentionOverrideSeconds: null,
     nextCleanupAt: null,
@@ -286,6 +287,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       "running",
       "sandboxes",
       "state",
+      "stoppedSandboxBytes",
       "version",
     ]);
     for (const value of [host.createdAt, host.lastSeenAt, host.revokedAt]) {

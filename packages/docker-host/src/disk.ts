@@ -47,3 +47,78 @@ export function withDiskFloor(executor: Executor, sample: () => Promise<number |
       : {}),
   };
 }
+
+/** Read-only, approximate inventory. Only volumes attached to stopped containers
+ * with both installation labels are counted; shared volumes are counted once.
+ * Docker's human-readable volume sizes are rounded, so this is not reclaimable space. */
+export async function stoppedSandboxBytes(
+  cli: DockerMachineCli,
+  state: { installationId: string; hostId: string },
+): Promise<number | null> {
+  try {
+    const listing = await cli.run(
+      [
+        "container",
+        "ls",
+        "--all",
+        "--filter",
+        "status=exited",
+        "--filter",
+        "status=dead",
+        "--filter",
+        `label=dev.armada.machine.installation=${state.installationId}`,
+        "--filter",
+        `label=dev.armada.machine.host=${state.hostId}`,
+        "--format",
+        "{{.ID}}",
+      ],
+      undefined,
+      { timeoutMs: 3000 },
+    );
+    if (listing.exitCode !== 0) return null;
+    const ids = listing.stdout.trim().split(/\s+/).filter(Boolean);
+    if (!ids.length) return 0;
+    if (ids.length > 1000 || ids.some((id) => !/^[a-f0-9]{12,64}$/.test(id))) return null;
+    const inspection = await cli.run(["container", "inspect", "--size", ...ids], undefined, { timeoutMs: 3000 });
+    if (inspection.exitCode !== 0) return null;
+    const containers = JSON.parse(inspection.stdout);
+    if (!Array.isArray(containers) || containers.length !== ids.length) return null;
+    let total = 0;
+    const volumes = new Set<string>();
+    for (const item of containers) {
+      const labels = item.Config?.Labels;
+      if (
+        labels?.["dev.armada.machine.installation"] !== state.installationId ||
+        labels?.["dev.armada.machine.host"] !== state.hostId ||
+        !["exited", "dead"].includes(item.State?.Status) ||
+        !Number.isSafeInteger(item.SizeRw) ||
+        item.SizeRw < 0 ||
+        !Array.isArray(item.Mounts)
+      )
+        return null;
+      total += item.SizeRw;
+      for (const mount of item.Mounts)
+        if (mount.Type === "volume" && typeof mount.Name === "string") volumes.add(mount.Name);
+    }
+    if (volumes.size) {
+      const usage = await cli.run(
+        ["system", "df", "--verbose", "--format", "{{range .Volumes}}{{.Name}}|{{.Size}}{{println}}{{end}}"],
+        undefined,
+        { timeoutMs: 3000 },
+      );
+      if (usage.exitCode !== 0) return null;
+      for (const line of usage.stdout.trim().split("\n")) {
+        const [name, size] = line.split("|");
+        if (!name || !volumes.has(name)) continue;
+        const match = /^(\d+(?:\.\d+)?)\s*(B|kB|MB|GB|TB|PB)$/.exec(size ?? "");
+        if (!match) return null;
+        total += Math.round(Number(match[1]) * 1000 ** ["B", "kB", "MB", "GB", "TB", "PB"].indexOf(match[2]!));
+        volumes.delete(name);
+      }
+      if (volumes.size) return null;
+    }
+    return Number.isSafeInteger(total) && total >= 0 ? total : null;
+  } catch {
+    return null;
+  }
+}

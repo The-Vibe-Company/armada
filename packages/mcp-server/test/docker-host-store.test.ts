@@ -946,8 +946,18 @@ test("retention belongs to the adding member and reports physical cleanup deadli
 test("reported Docker filesystem bytes gate new reservations below 10 GB and unknown older hosts stay compatible", async () => {
   const a = await fixture();
   for (const diskFreeBytes of [null, 10_000_000_000, 0, 9_999_999_999]) {
-    await store.poll(a.hostToken, a.installationId, "2.48.0", false, undefined, undefined, diskFreeBytes);
+    await store.poll(
+      a.hostToken,
+      a.installationId,
+      "2.48.0",
+      false,
+      undefined,
+      undefined,
+      diskFreeBytes,
+      diskFreeBytes,
+    );
     expect((await store.list(a.actor))[0]?.diskFreeBytes).toBe(diskFreeBytes);
+    expect((await store.list(a.actor))[0]?.stoppedSandboxBytes).toBe(diskFreeBytes);
     const admission = admitDockerDisk(sql, a.hostId);
     if (diskFreeBytes !== null && diskFreeBytes < 10_000_000_000)
       await expect(admission).rejects.toThrow("10 GB floor");
