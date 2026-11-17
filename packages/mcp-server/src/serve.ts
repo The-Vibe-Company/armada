@@ -751,11 +751,12 @@ export async function startServer(
         delayMs: idleDelayMs,
         ...(dockerBootstrap
           ? {
-              dockerStop: (actor, id, requestId) =>
+              dockerStop: (actor, id, requestId, workMerged) =>
                 createDockerHostStore(sql, config.encryptionKey).enqueueSandbox(actor, id, {
                   operation: "stop",
                   requestId,
                   idleCheckpointRequest: requestId,
+                  workMerged,
                 }),
             }
           : {}),

@@ -144,6 +144,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       ? {}
       : { reasoningEffort: single(args, "--reasoning-effort")! }),
     ...(skills.length ? { skills } : {}),
+    ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
     ...(flag(args, "--no-connections") ? { connections: [] } : selected ? { connections: selected } : {}),
     ...(version === undefined ? {} : { credentialVersion: Number(version) }),
     ...(ttl === undefined ? {} : { ttlSeconds: parseTtl(ttl) }),

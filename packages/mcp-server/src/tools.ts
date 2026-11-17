@@ -1264,6 +1264,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
             .optional()
             .describe("Reuse this key for retries; inspect launch_receipt after an unknown outcome."),
           externalRef: externalRefInput.optional(),
+          stopWhenWorkMerged: z.boolean().optional(),
           visibility: z.enum(["private", "org"]).optional(),
           skills: z.array(z.string()).max(20).optional(),
           skipSkillDefaults: z.boolean().optional(),
@@ -1371,6 +1372,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
               ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
               ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
               ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
+              ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
               ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
             },
             { ...context.launch, ...(receiptId ? { newId: () => receiptId } : {}) },

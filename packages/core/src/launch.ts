@@ -85,6 +85,7 @@ export interface LaunchRequest {
   reasoningEffort?: string;
   /** Opaque caller reference stored on the sandbox (#2568). Refused before any allocation when malformed. */
   externalRef?: string;
+  stopWhenWorkMerged?: boolean;
 }
 
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
@@ -276,6 +277,8 @@ export async function launchSandbox(
   }
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
+  if (request.stopWhenWorkMerged !== undefined && typeof request.stopWhenWorkMerged !== "boolean")
+    throw new LaunchError("invalid_request", "stopWhenWorkMerged must be a boolean.");
   if (request.externalRef !== undefined && !isExternalRef(request.externalRef))
     throw new LaunchError("invalid_request", "externalRef must be 1 to 200 characters without control characters.");
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
@@ -566,6 +569,7 @@ export async function launchSandbox(
         model: choice.model,
         reasoningEffort: choice.reasoningEffort,
         visibility,
+        ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
         ...(request.externalRef === undefined ? {} : { externalRef: request.externalRef }),
       });
       childRecorded = true;

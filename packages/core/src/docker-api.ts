@@ -203,6 +203,7 @@ export interface DockerLaunchRequest {
   skills?: string[];
   connections?: string[];
   skipSkillDefaults?: boolean;
+  stopWhenWorkMerged?: boolean;
 }
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";

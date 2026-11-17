@@ -25,10 +25,10 @@ import {
   type DockerPolicyRow,
   hostResourcePolicy,
 } from "./docker-capacity.ts";
-
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStage, recordLaunchStageForActivation } from "./launch-stage-record.ts";
+import { mergedWorkProof } from "./merged-work.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -70,7 +70,7 @@ type Sandbox = {
 };
 type Selection = { requestId: string } & (
   | { operation: "create" | "delete" }
-  | { operation: "stop"; idleCheckpointRequest?: string; onlyIfIdle?: boolean }
+  | { operation: "stop"; idleCheckpointRequest?: string; workMerged?: boolean; onlyIfIdle?: boolean }
   | { operation: "bootstrap" | "resume"; bootstrapDescriptor: BootstrapDescriptor }
 );
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -923,6 +923,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ...(selection.operation === "stop" && selection.idleCheckpointRequest !== undefined
             ? ["idleCheckpointRequest"]
             : []),
+          ...(selection.operation === "stop" &&
+          selection.idleCheckpointRequest !== undefined &&
+          selection.workMerged !== undefined
+            ? ["workMerged"]
+            : []),
           ...(selection.operation === "bootstrap" || selection.operation === "resume" ? ["bootstrapDescriptor"] : []),
         ]);
         id(selection.requestId);
@@ -978,8 +983,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
              where s.id=$1 and p.request_id=$2 and p.watermark is not null
              and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
              and s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at>now()
-             and s.activity_lease_id is null and not s.application_secret_tainted`,
-            [sandboxId, selection.idleCheckpointRequest],
+             and s.activity_lease_id is null and not s.application_secret_tainted
+             and (not $3 or ${mergedWorkProof("s")})`,
+            [sandboxId, selection.idleCheckpointRequest, selection.workMerged === true],
           );
           if (!proof.rows.length) deny();
         }
@@ -1024,9 +1030,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         if (selection.operation === "stop")
           await tx.query(
-            `update public.sandboxes set status='stopping',status_reason=case when $2::boolean then 'idle_paused' else status_reason end,stop_requested_at=coalesce(stop_requested_at,now()),
+            `update public.sandboxes set status='stopping',status_reason=coalesce($2::text,status_reason),stop_requested_at=coalesce(stop_requested_at,now()),
            lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running')`,
-            [sandboxId, selection.operation === "stop" && selection.idleCheckpointRequest !== undefined],
+            [
+              sandboxId,
+              selection.idleCheckpointRequest === undefined
+                ? null
+                : selection.workMerged
+                  ? "work_merged"
+                  : "idle_paused",
+            ],
           );
         return enqueue();
       });

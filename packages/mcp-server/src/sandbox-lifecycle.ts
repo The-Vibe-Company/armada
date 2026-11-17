@@ -7,6 +7,7 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
+import { mergedWorkProof } from "./merged-work.ts";
 
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
@@ -65,6 +66,7 @@ export function createSandboxLifecycle(
           credential_id: string | null;
           credential_version: number | null;
           owner_is_member: boolean;
+          work_merged: boolean | null;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
         }>(
@@ -79,6 +81,7 @@ export function createSandboxLifecycle(
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
           order by candidate.reconcile_after limit 1 for update of candidate skip locked)
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
+          ${mergedWorkProof("s")} as work_merged,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
           [token, providerId],
         )
@@ -153,7 +156,7 @@ export function createSandboxLifecycle(
               statusReason:
                 row.status_reason === null
                   ? null
-                  : ["idle_paused", "expired", "agent_finished"].includes(row.status_reason)
+                  : ["idle_paused", "expired", "agent_finished", "work_merged"].includes(row.status_reason)
                     ? row.status_reason
                     : "other",
               expired,
@@ -206,10 +209,11 @@ export function createSandboxLifecycle(
             );
           }
         }
+        const workMerged = row.work_merged === true && !row.stop_requested_at;
         const idleStop =
           native &&
           !expired &&
-          (row.status_reason === "idle_paused" ||
+          (["idle_paused", "work_merged"].includes(row.status_reason ?? "") ||
             (!row.stop_requested_at &&
               row.activity_lease_id === null &&
               !row.application_secret_tainted &&
@@ -217,7 +221,7 @@ export function createSandboxLifecycle(
               row.credential_version !== null &&
               ["ready", "running"].includes(row.status) &&
               (await operation(signal, () =>
-                nativeIdleDue(provider, info, row.task_prompt_id, now(), delay, signal),
+                nativeIdleDue(provider, info, row.task_prompt_id, now(), workMerged ? 0 : delay, signal),
               ))));
         if (
           !physicalExit &&
@@ -236,11 +240,13 @@ export function createSandboxLifecycle(
               stop_requested_at=coalesce(stop_requested_at,clock_timestamp()),
               stop_generation=case when stop_requested_at is null then stop_generation+1 else stop_generation end,
               status=case when status in ('starting','failed') then status else 'stopping'::public.sandbox_status end,
-              status_reason=case when $4 and status not in ('starting','failed') then 'expired' when $5 then 'idle_paused' else status_reason end
+              status_reason=case when $4 and status not in ('starting','failed') then 'expired' when $5 then case when $6 or status_reason='work_merged' then 'work_merged' else 'idle_paused' end else status_reason end
             where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
               and reconcile_lease_until>now() and (activity_until is null or activity_until<now())
+              and (not $6 or (activity_lease_id is null and stop_requested_at is null and expires_at>now()
+                and ${mergedWorkProof("sandboxes")}))
               and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id) returning id`,
-            [row.id, token, row.lifecycle_generation, expired, idleStop],
+            [row.id, token, row.lifecycle_generation, expired, idleStop, workMerged && idleStop],
           );
           if (!owned.rows[0]) return true;
           signal?.throwIfAborted();
@@ -331,7 +337,7 @@ export function createSandboxLifecycle(
         `update public.sandboxes set
         -- A failed launch keeps its diagnostic even after its machine is confirmed stopped.
         status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status else status end,
-        status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(nullif(status_reason,'idle_paused'),'Provider confirmed physical exit without a new verified recovery checkpoint.') when $4 and $10 and status<>'failed' then 'expired' else status_reason end,
+        status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(case when status_reason not in ('idle_paused','work_merged') then status_reason end,'Provider confirmed physical exit without a new verified recovery checkpoint.') when $4 and $10 and status<>'failed' then 'expired' else status_reason end,
         stop_requested_at=case when $4 then null when status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
         stopped_at=case when $4 then coalesce(stopped_at,$9::timestamptz,now()) else stopped_at end,
         last_observed_at=case when $5::text is null then now() else last_observed_at end,
