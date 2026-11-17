@@ -38,6 +38,8 @@ export function createSandboxAccessServices(input: {
   connections: LaunchStores["connections"];
   encryptionKey: string;
   scopedMcpUrl: string;
+  /** Docker final output capture before agent-finished stops (tests inject the runtime reader). */
+  outputs?: Parameters<typeof captureDockerStopOutputs>[3];
 }) {
   const { sql } = input;
   const authority = new DelegatedAuthority(sql, async (tx, account) => {
@@ -245,7 +247,7 @@ export function createSandboxAccessServices(input: {
         return parent.rows[0]?.sandbox_id;
       })
       .catch(() => undefined);
-    if (target) await captureDockerStopOutputs(sql, input.encryptionKey, target);
+    if (target) await captureDockerStopOutputs(sql, input.encryptionKey, target, input.outputs);
     return authority.admit(token, { method: "finish" }, async (tx, principal) => {
       const row = (
         await tx.query<{ sandbox_id: string }>(
@@ -258,7 +260,11 @@ export function createSandboxAccessServices(input: {
     });
   }
   return {
-    scopedToolsRoute: createSandboxScopedGateway(children, finish, createRuntimeSelfFinish(sql, input.encryptionKey)),
+    scopedToolsRoute: createSandboxScopedGateway(
+      children,
+      finish,
+      createRuntimeSelfFinish(sql, input.encryptionKey, input.outputs),
+    ),
     childWorker: children,
   };
 }

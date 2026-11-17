@@ -1,20 +1,23 @@
 # Sandbox outputs
 
-Write deliverables as regular files directly inside `/workspace/outputs` (create it if absent). This fixed directory is the declaration; no API accepts arbitrary filesystem paths. Subdirectories, symlinks, hard links and special files are excluded. Use short filenames without control characters.
+Write deliverables as regular files directly inside the declared directory (create it if absent): `/workspace/outputs` on Boat and Modal, `/home/user/outputs` on Docker. Docker sandboxes run as uid 1000 without privilege escalation and cannot create `/workspace`, so their directory sits in the retained home volume. This fixed directory is the declaration; no API accepts arbitrary filesystem paths. Subdirectories, symlinks, hard links and special files are excluded. Use short filenames without control characters.
 
 Each snapshot has at most 32 files, 32 KiB per file and 32 KiB total (below the provider transport budget, including base64 and metadata). The bounds count admitted files only, in name order: excluded entries never take a file's place, and a file that does not fit is skipped. A directory with more than 4096 entries is not read at all. A failed or out-of-bounds read keeps the previous snapshot; it never blocks a stop or the shared worker. Periodic samples run in the background with a 25-second deadline, at most four at a time, so the shared worker loop never waits for a provider read. The final pre-stop capture waits only until the shared pre-stop budget, from its scan claim on (a claim held by a row lock or a pool connection counts, and a claim that returns late never reaches the provider), even when the provider SDK ignores cancellation; a capture that outlives it stays tracked, and new final captures are skipped while four such late captures are outstanding. No read persists after its deadline: the deadline is checked again under the row lock and after the write, before commit, so time spent waiting for the database counts and an expired write rolls back with its webhook events.
 
 ## How outputs are read
 
-Supported providers are Boat and Modal, both native and enrolled-runtime sandboxes (Boat runtime, Modal dial-out). Docker sandboxes are not supported. The server reads the directory through `Provider.readOutputs`: a fixed, bounded read of live compute. It never runs caller commands, never goes through the agent runtime and never starts or resumes compute. A fixed collector reads the live disk without following symlinks; it needs Python 3 in the guest. Boat runs it through its command API. Modal runs it on the physical container, so enrolled runtimes that refuse server exec are covered too.
+Supported providers are Boat, Modal and Docker. On Boat and Modal, both native and enrolled-runtime sandboxes (Boat runtime, Modal dial-out), the server reads the directory through `Provider.readOutputs`: a fixed, bounded read of live compute. It never runs caller commands, never goes through the agent runtime and never starts or resumes compute. A fixed collector reads the live disk without following symlinks; it needs Python 3 in the guest. Boat runs it through its command API. Modal runs it on the physical container, so enrolled runtimes that refuse server exec are covered too.
+
+Docker sandboxes have no provider exec: the host daemon only manages the machine, and the only server-to-sandbox channel is the enrolled Armada runtime. The server queues the runtime's fixed, read-only `readOutputs` operation (no caller command or path) under the owner's live runtime fence. The runtime reads the directory with the same bounds and exclusions, opening the directory and every file without following symlinks; it needs no Python. The answered command is deleted, so samples never accumulate as runtime history. A read is skipped, keeping the previous snapshot, while another runtime command is still unanswered, because the runtime answers its queue in order. Sandboxes whose runtime predates this operation refuse it and keep no snapshot until they are relaunched.
 
 - **Running sandboxes** are sampled approximately every 30 seconds.
 - **Armada stops** (user, managed-child, idle, expiry, agent-finished and credential-migration stops, including a user stop of a `failed` sandbox, whose compute may still run) take a final live snapshot before provider stop is dispatched, after the agent is quiesced where work preservation runs. If that capture fails or its shared pre-stop budget is exhausted, the last successful sample remains.
+- **Armada Docker stops** (user, idle and agent-finished) take the final snapshot, bounded to 12 seconds, before the stop job is queued: once a stop is requested the runtime refuses commands. Docker stops queued by a host uninstall or the host-bound preview API rely on the last sample.
 - **Stopped sandboxes are never read**, on any provider. Their downloads serve the last snapshot taken while compute was live.
 
 ### Known limit
 
-Files written or changed after the last capture are not collected. This covers files written between the last 30-second sample and a stop Armada did not initiate (Boat TTL or a provider-initiated stop), and a background writer that finishes after the final pre-stop capture. Armada does not reread a stopped sandbox's retained workspace (Boat disk snapshots, Modal recovery images); that is tracked in #2609. Until then, finish writing deliverables before the agent's turn ends.
+Files written or changed after the last capture are not collected. This covers files written between the last 30-second sample and a stop Armada did not initiate (Boat TTL, Docker host expiry or uninstall, or a provider-initiated stop), and a background writer that finishes after the final pre-stop capture. Armada does not reread a stopped sandbox's retained workspace (Boat disk snapshots, Modal recovery images); that is tracked in #2609. Until then, finish writing deliverables before the agent's turn ends.
 
 Application-secret exposed (tainted) sandboxes are never read. Their existing snapshots are purged when taint is recorded, and their outputs routes return 404, matching the exec and work-recovery refusal.
 
@@ -22,7 +25,7 @@ Application-secret exposed (tainted) sandboxes are never read. Their existing sn
 
 Authenticated owner/admin callers can use:
 
-- `GET /api/v1/sandboxes/{id}/outputs`: declared directory and file metadata (`name`, `size`, `sha256`, `updatedAt`).
+- `GET /api/v1/sandboxes/{id}/outputs`: the sandbox's declared directory and file metadata (`name`, `size`, `sha256`, `updatedAt`).
 - `GET /api/v1/sandboxes/{id}/outputs/{encodedName}`: attachment bytes, content type, length, nosniff and private/no-store headers.
 
 Collected snapshots are encrypted using `ARMADA_ENCRYPTION_KEY` and stay readable after stop without contacting the provider. Deleted sandboxes are inaccessible. A new snapshot replaces the previous file set; files removed from the directory disappear on the next successful read. The bounded last snapshot is kept until the sandbox row is purged.
@@ -33,4 +36,4 @@ Each new or changed file emits `sandbox.output.available` through the existing s
 
 Provider exec was the only file egress path, and it is gone once compute stops. The server samples the declared directory while compute is live and once more before Armada dispatches a stop, and stores encrypted bounded snapshots. That gives downloads after stop without arbitrary filesystem reads or waking stopped machines. Outputs are opt-in by writing to the declared directory; do not put credentials there.
 
-Staging must still confirm Python 3 availability in goldens; this repository's tests use provider stand-ins.
+Staging must still confirm Python 3 availability in Boat and Modal goldens; this repository's tests use provider stand-ins and a runtime stand-in that answers with the runtime's own directory read.

@@ -11,8 +11,8 @@ type OutputReader = Pick<Provider, "readOutputs">;
  * server-to-sandbox channel is the enrolled runtime. Outputs use its fixed, read-only
  * `readOutputs` operation (never caller commands), under the owner's live runtime fence. */
 const READ_TIMEOUT_MS = 25_000;
-/** A read still unanswered after this long means the runtime queue is stuck behind other work. */
-const STUCK_MS = 30_000;
+/** Answered reads younger than this may still be consumed by a concurrent reader. */
+const ANSWERED_GRACE_MS = 60_000;
 
 export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key, clock);
@@ -29,19 +29,20 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
       const started = now();
       // Reads are fresh data, not history: drop answered reads and those of an older runtime
       // epoch. Recent answered rows belong to a concurrent read that has not consumed them yet.
-      const stale = (
-        await sql.query<{ stuck: boolean }>(
+      const queue = (
+        await sql.query<{ busy: boolean }>(
           `with current as (select epoch from public.runtime_enrolments where sandbox_id=$1),
           removed as (delete from public.runtime_commands c where c.sandbox_id=$1 and starts_with(c.request_id,'outputs_')
             and (c.epoch is distinct from (select epoch from current)
               or (c.result_enc is not null and split_part(c.request_id,'_',2)::bigint<$2::bigint)))
-          select exists(select 1 from public.runtime_commands c where c.sandbox_id=$1 and starts_with(c.request_id,'outputs_')
-            and c.epoch=(select epoch from current) and c.result_enc is null and split_part(c.request_id,'_',2)::bigint<$2::bigint) as stuck`,
-          [id, String(started - STUCK_MS)],
+          select exists(select 1 from public.runtime_commands c where c.sandbox_id=$1
+            and c.epoch=(select epoch from current) and c.result_enc is null) as busy`,
+          [id, String(started - ANSWERED_GRACE_MS)],
         )
       ).rows[0];
-      // Never pile reads up behind a busy runtime queue; the previous snapshot stays.
-      if (stale?.stuck) return null;
+      // The runtime answers its queue in order: never wait behind an unanswered command (a long
+      // exec, a prompt a stop is about to cancel) or pile reads up. The previous snapshot stays.
+      if (queue?.busy) return null;
       const requestId = `outputs_${started}_${randomUUID().replaceAll("-", "")}`;
       try {
         const reply = await commands.call(

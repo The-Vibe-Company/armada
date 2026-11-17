@@ -29,7 +29,7 @@ import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts"
 import { dockerHostSupportsResume } from "./docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
-import { captureDockerStopOutputs } from "./docker-outputs.ts";
+import { captureDockerStopOutputs, createDockerOutputReader } from "./docker-outputs.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
@@ -591,7 +591,11 @@ export function createDockerSandboxControls(
       throw failure("conflict", "Stop the Docker sandbox before deleting it.");
     // Final declared-output capture while the runtime still accepts commands (#2570). Bounded
     // and optional; skipped when a stop is already pending (a retried request).
-    if (operation === "stop") await captureDockerStopOutputs(sql, key, row.id, options.outputs ?? {});
+    if (operation === "stop")
+      await captureDockerStopOutputs(sql, key, row.id, {
+        reader: createDockerOutputReader(sql, key, { now: clock.now, wait: (ms) => clock.wait(ms) }),
+        ...options.outputs,
+      });
     // Serialize selection with existing store admission. Reuse unknown pending
     // intent; a new caller request may retry a known failure. Never wait under SQL locks.
     if (!sql.transaction) throw failure("unavailable", "Docker sandbox cleanup is unavailable.");
