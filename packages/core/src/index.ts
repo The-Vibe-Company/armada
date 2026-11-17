@@ -111,10 +111,12 @@ export {
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_JOB_FAILURE_REASONS,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
+  DOCKER_SNAPSHOT_FAILURE_MESSAGES,
   DOCKER_SNAPSHOT_STATUSES,
   type DockerJobFailureReason,
   type DockerSnapshotRecord,
 } from "./docker-api.ts";
+export { DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
 export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export { dockerHostUpgradeMessage } from "./docker-host-upgrade.ts";
 export {

@@ -75,7 +75,7 @@ for await (const line of lines) {
         break;
       }
       reply({
-        stopReason: "end_turn",
+        stopReason: text === "output-limit" ? "max_tokens" : "end_turn",
         ...(text === "unknown"
           ? {}
           : {

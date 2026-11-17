@@ -65,6 +65,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { listSelectedTemplates, lookupsFrom, type TemplateList } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
+import type { DockerHostState } from "@/lib/docker-hosts";
 import { dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
 import { hasDockerHost, snapshotLaunchEnabled, snapshotRebuildAvailable, snapshotState } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
@@ -233,6 +234,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     accounts,
     templates,
     templateList,
+    hostStates: new Map((hostRead.state === "ready" ? hostRead.list.hosts : []).map((host) => [host.id, host.state])),
   };
 
   const now = Date.now();
@@ -613,6 +615,8 @@ type RowContext = {
   /** Every template the viewer can launch, with the environment each starts from. */
   templates: readonly TemplateLaunchTarget[];
   templateList: TemplateList;
+  /** Listed host states, so a draining host reads as draining rather than merely unavailable. */
+  hostStates: Map<string, DockerHostState>;
 };
 
 type EnvironmentRow = ResourceRow & {
@@ -960,7 +964,7 @@ function dockerSnapshotRow(
   currentVersion: string | null,
   canBuild: boolean,
 ): ResourceRow & { bucket: Bucket; tie: string } {
-  const state = snapshotState(snapshot, launchEnabled);
+  const state = snapshotState(snapshot, launchEnabled, context.hostStates.get(snapshot.hostId));
   const canRebuild = snapshotRebuildAvailable(
     snapshot,
     currentVersion,
@@ -992,7 +996,9 @@ function dockerSnapshotRow(
       : snapshot.status === "failed"
         ? (snapshot.failureReason ?? "The build did not publish a snapshot.")
         : !snapshot.hostAvailable
-          ? "Bring the original registered host online. Snapshots are local to its installation; they are not copied to other hosts."
+          ? context.hostStates.get(snapshot.hostId) === "draining"
+            ? "The original host is draining for uninstall. Finish or retry the uninstall on the machine; snapshots are local to its installation."
+            : "Bring the original registered host online. Snapshots are local to its installation; they are not copied to other hosts."
           : !launchEnabled
             ? "Snapshot launches are unavailable on this server. Check Docker placement and the server version."
             : "Launch the saved workspace on its original host, with your current account and GitHub access.";

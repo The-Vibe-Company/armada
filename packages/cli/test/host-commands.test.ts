@@ -110,6 +110,22 @@ test("host add pending waits respect token expiry and five-minute limit without 
   }
 });
 
+// A draining host is valid list metadata, not a malformed answer, so it is shown with its state and the uninstall reason.
+test("host list accepts a draining host and prints the shared uninstall reason", async () => {
+  const result = await capture(["host", "list"], async () =>
+    Response.json({
+      placement: true,
+      serverVersion: "2.49.6",
+      hosts: [{ ...summary, state: "draining", diskFreeBytes: 12_000_000_000, stoppedSandboxBytes: 4_000_000_000 }],
+    }),
+  );
+  expect(result.code).toBe(0);
+  expect(result.out).toContain("draining");
+  expect(result.out).toContain("draining for uninstall");
+  expect(result.out).toContain("stopped sandbox space: 4.00 GB");
+  expect(result.out).toContain("is outdated");
+});
+
 test("host list exposes safe metadata as text or JSON and revoke uses host UUID", async () => {
   for (const json of [false, true]) {
     const result = await capture(["host", "list", ...(json ? ["--json"] : [])], async (request) => {

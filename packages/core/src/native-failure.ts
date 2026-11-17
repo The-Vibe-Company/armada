@@ -13,6 +13,10 @@ const HELP: Record<string, { title: string; hint: string }> = {
     hint: "Check the account plan or billing limit before retrying.",
   },
   context_window_exceeded: { title: "Context limit reached", hint: "Start a new conversation with a shorter prompt." },
+  output_limit_exceeded: {
+    title: "Model output limit reached",
+    hint: "The model stopped before it finished this response. Send a message to continue.",
+  },
   harness_failed: { title: "Agent failed", hint: "Check the agent configuration before retrying." },
 
   authentication_failed: {

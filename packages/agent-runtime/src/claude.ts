@@ -5,7 +5,7 @@ import { ClaudeMessages } from "./claude-messages.ts";
 import { claudeResumeUsage, claudeUsageDelta } from "./claude-resume-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
-import { HarnessError, type HarnessErrorCode, nativeHarnessError } from "./errors.ts";
+import { claudeResultFailureCode, HarnessError, type HarnessErrorCode, nativeHarnessError } from "./errors.ts";
 import { PrivateMcpFile } from "./mcp-file.ts";
 import { ModelRateLimitWait } from "./model-rate-limit.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
@@ -304,7 +304,13 @@ export class ClaudeDriver implements Driver {
             }
             if (terminalError) throw new HarnessError(terminalError);
             if (interrupted) return "interrupted" as const;
-            if (event.subtype !== "success" || event.is_error) throw new HarnessError("harness_failed");
+            if (event.subtype !== "success" || event.is_error) {
+              // A failed result can carry the output-limit cause only on its own closed
+              // fields, with no preceding assistant error frame. Classify those here
+              // instead of collapsing them into the generic configuration failure.
+              const failed = event as { stop_reason?: unknown; errors?: unknown };
+              throw new HarnessError(claudeResultFailureCode(failed.stop_reason, failed.errors));
+            }
             return "finished" as const;
           } else c.emit({ kind: "other", type: event.type, data: event });
         }

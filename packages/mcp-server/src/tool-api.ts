@@ -56,7 +56,7 @@ export class ToolApiError extends Error {
     if (["unknown", "start_failed", "init_failed", "prompt_failed"].includes(this.code)) return 502;
     if (this.code === "rate_limited") return 429;
     if (this.code === "payment_required") return 402;
-    if (this.code === "host_full") return 409;
+    if (this.code === "host_full" || this.code === "host_draining") return 409;
     if (this.code === "not_found") return 404;
     if (this.code === "forbidden") return 403;
     if (

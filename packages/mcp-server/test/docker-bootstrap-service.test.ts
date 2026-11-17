@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Harness, Sql } from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
+import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
@@ -182,6 +183,17 @@ test("sealed account configuration is delivered only by enrolment, host gets tic
   expect(enrolled.configuration).toEqual(configuration);
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+});
+
+test("bootstrap and resume on a draining host name the uninstall, not a permission failure", async () => {
+  const db = database();
+  const f = await fixture();
+  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
+  await expect(service.bootstrap(f.actor, f.sandbox.id, f.requestId)).rejects.toBeInstanceOf(DockerHostDraining);
+  await expect(service.bootstrap(f.actor, f.sandbox.id, f.requestId)).rejects.toThrow("draining for uninstall");
+  await db.query(`update public.sandboxes set status='stopped',stopped_at=now() where id=$1`, [f.sandbox.id]);
+  await expect(service.resume(f.actor, f.sandbox.id, randomUUID())).rejects.toBeInstanceOf(DockerHostDraining);
+  expect(await pending(f.sandbox.id)).toBeUndefined();
 });
 
 test("lost commit response retries retain original encrypted job and do not rotate an enrolled runtime", async () => {

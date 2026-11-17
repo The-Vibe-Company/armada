@@ -75,6 +75,31 @@ test.each([VERSION, "0.0.1", null])(
   },
 );
 
+test("doctor names the uninstall for a draining host instead of telling the user to inspect the machine", async () => {
+  const f = fixture({
+    "/api/v1/account/status": { version: VERSION, orgs: [{ orgId: "org", name: "Team" }] },
+    "/api/v1/docker/hosts/list": {
+      placement: true,
+      hosts: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          name: "desk",
+          state: "draining",
+          lastSeenAt: null,
+          version: VERSION,
+          sandboxes: 0,
+        },
+      ],
+    },
+    "/api/v1/creds/list": { user: [{ id: "model", name: "Work", kind: "openai", status: "active" }], orgs: [] },
+    "/api/v1/github/status": { connection: { status: "not_connected", login: null } },
+  });
+  expect(await doctor(["--json"], f.auth)).toBe(0);
+  const host = JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "Host desk");
+  expect(host.detail).toContain("draining for uninstall");
+  expect(host.detail).not.toContain("Check the host machine");
+});
+
 test.each([
   [{ status: "not_connected", login: null }, "warning", "armada github connect"],
   [{ status: "not_connected", login: null, configured: false }, "unknown", "server operator"],

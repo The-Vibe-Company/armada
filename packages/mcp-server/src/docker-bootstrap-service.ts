@@ -3,7 +3,7 @@ import { HARNESS_KINDS } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
 import { type BootstrapDescriptor, parseDockerHostJob } from "../../core/src/docker-host-job.ts";
-import { admitDockerCapacity, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
+import { admitDockerCapacity, DockerHostDraining, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { dockerRuntimeConfiguration } from "./docker-runtime-configuration.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
@@ -252,7 +252,13 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         };
       });
     } catch (error) {
-      if (error instanceof DockerHostFull || error instanceof DockerLimitsRefused) throw error;
+      // A drain is a state refusal with its own reason, not a permission failure.
+      if (
+        error instanceof DockerHostDraining ||
+        error instanceof DockerHostFull ||
+        error instanceof DockerLimitsRefused
+      )
+        throw error;
       return deny();
     }
   }

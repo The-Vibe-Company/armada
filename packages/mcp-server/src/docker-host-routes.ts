@@ -4,7 +4,7 @@ import { type DockerHostResources, validDockerAvailability } from "../../core/sr
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
 import type { CallerResult } from "./caller.ts";
-import { DockerLimitsRefused } from "./docker-capacity.ts";
+import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import type { DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
@@ -261,6 +261,9 @@ export function createDockerHostRoutes(
           { error: { code: error.code, message: error.message } },
           { status: error.code === "invalid_request" ? 400 : 409, headers },
         );
+      // A drain is a typed state refusal so the dashboard can show the uninstall reason, not a generic conflict.
+      if (error instanceof DockerHostDraining)
+        return Response.json({ error: { code: error.code, message: error.message } }, { status: 409, headers });
       return Response.json(
         {
           error:
