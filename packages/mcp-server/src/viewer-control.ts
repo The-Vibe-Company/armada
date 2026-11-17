@@ -16,7 +16,7 @@ interface Grant {
 /** Separate from ordinary and machine authentication: these bearers are never principals. */
 export async function viewerControl(
   request: Request,
-  options: ControlOptions,
+  options: Pick<ControlOptions, "authStore" | "supabase" | "encryptionKey" | "now">,
   dispatch: Dispatch,
 ): Promise<Response | null> {
   const url = new URL(request.url);
@@ -36,7 +36,7 @@ export async function viewerControl(
       if (typeof body.id !== "string" || !/^[0-9a-f-]{36}$/i.test(body.id)) return fail(400);
       // Existing authorized log resolution checks membership and sandbox visibility on all providers.
       const probe = await dispatch(
-        new Request(new URL("/api/v1/logs/read", url), {
+        new Request(new URL("/api/v1/logs/read", url).href, {
           method: "POST",
           headers: { authorization, "content-type": "application/json" },
           body: JSON.stringify({ id: body.id, limit: 1, maxBytes: 1024 }),
@@ -86,13 +86,13 @@ export async function viewerControl(
     const invoke = async (route: string, fields: Record<string, unknown>) => {
       if (grant.expires <= now()) return fail(401);
       const caller = await authenticatedControlCaller(
-        new Request(url, { headers: { authorization: grant.authorization } }),
+        new Request(url.href, { headers: { authorization: grant.authorization } }),
         options,
       );
       if (caller?.via !== "service") return fail(401);
       return (
         (await dispatch(
-          new Request(new URL(`/api/v1/${route}`, url), {
+          new Request(new URL(`/api/v1/${route}`, url).href, {
             method: "POST",
             headers: { authorization: grant.authorization, "content-type": "application/json" },
             body: JSON.stringify({ ...fields, id: grant.id }),
@@ -133,7 +133,7 @@ export async function viewerControl(
               controller.close();
               return;
             }
-            const data = await response.json();
+            const data = (await response.json()) as { cursor?: string; hasMore?: boolean };
             if (cancelled || request.signal.aborted) {
               controller.close();
               return;

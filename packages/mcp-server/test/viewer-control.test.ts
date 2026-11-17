@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
-import type { ControlOptions } from "../src/control.ts";
 import { viewerControl } from "../src/viewer-control.ts";
 
 async function fixture() {
@@ -18,11 +17,11 @@ async function fixture() {
     supabase: { supabaseUrl: "https://example.test", anonKey: "placeholder" },
     encryptionKey: Buffer.alloc(32, 7).toString("base64"),
     now: () => time,
-  } as ControlOptions;
+  };
   const calls: { path: string; body: Record<string, unknown> }[] = [];
   let visible = true;
   const dispatch = async (request: Request) => {
-    const body = await request.json();
+    const body = (await request.json()) as Record<string, unknown>;
     calls.push({ path: new URL(request.url).pathname, body });
     return visible
       ? Response.json({ events: [{ type: "message", text: "hello" }], cursor: "opaque_cursor", hasMore: true })
@@ -39,7 +38,7 @@ async function fixture() {
       dispatch,
     );
   const minted = await api("sandbox/viewer-token", token, { id });
-  const grant = await minted!.json();
+  const grant = (await minted!.json()) as { token: string };
   calls.length = 0;
   return {
     api,
