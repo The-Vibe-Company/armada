@@ -964,3 +964,51 @@ test("cancelled queued runtime turns defer webhooks until the first durable comm
     await f.db.query("delete from outbound_webhook_deliveries");
   }
 });
+
+test("a superseded unfinished queued command cannot hold stop or later turn webhooks", async () => {
+  const f = await fixture();
+  await f.enrol();
+  const sql: Sql = { query: (q, p) => f.db.query(q, p) };
+  // Invalid encryption prevents any network send; a claim (true) proves admission.
+  const worker = createOutboundWebhooks(sql, "invalid_key", "https://armada.example");
+  await f.db.query("delete from outbound_webhook_deliveries");
+  await f.db.query(
+    "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
+    [f.people.org, new Uint8Array([1])],
+  );
+  const publicId = crypto.randomUUID();
+  await f.db.query(
+    `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+      actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation)
+     select s.id,$2,c.id,s.owner_id,s.org_id,1,c.version,'input_hash',$3,'conversation','failed',s.lifecycle_generation
+     from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai'
+     where s.id=$1 limit 1`,
+    [f.id, publicId, new Uint8Array([1])],
+  );
+  await f.bridge().enqueue(f.people.owner, {
+    ...f.command(`follow_${publicId}`),
+    op: "prompt",
+    input: { sandboxId: f.id, harness: "codex", text: "queued_prompt" },
+  } as RunnerRequest);
+  const attempts = async () =>
+    (
+      await f.db.query<{ type: string; attempts: number }>(
+        "select payload->>'type' as type,attempts from outbound_webhook_deliveries where payload->>'sandboxId'=$1 order by type",
+        [f.id],
+      )
+    ).rows;
+  await f.db.query("select enqueue_webhook_turn($1,'native_uncertain','finished')", [f.id]);
+  // While the reply can still arrive, the alias may still be published.
+  expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+  await f.enrol();
+  expect(await f.bridge().result(f.people.owner, f.id, `follow_${publicId}`)).toEqual({ state: "superseded" });
+  await f.db.query("select enqueue_webhook_turn($1,'native_later','finished')", [f.id]);
+  await f.db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [f.id]);
+  while (await worker.reconcileOne(new AbortController().signal));
+  expect(await attempts()).toEqual([
+    { type: "sandbox.stopped", attempts: 1 },
+    { type: "turn.finished", attempts: 1 },
+    { type: "turn.finished", attempts: 1 },
+  ]);
+  await f.db.query("delete from outbound_webhook_deliveries");
+});

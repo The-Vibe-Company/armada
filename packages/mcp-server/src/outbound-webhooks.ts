@@ -197,12 +197,22 @@ export function createOutboundWebhooks(sql: Sql, key: string | undefined, dashbo
           select d.id from public.outbound_webhook_deliveries d join public.outbound_webhook_endpoints e on e.id=d.endpoint_id
           where e.enabled and d.delivered_at is null and d.attempts<5 and d.next_attempt_at<=now()
           and (d.lease_until is null or d.lease_until<now())
-          and not exists(select 1 from public.account_turn_queue q
+          -- Only a prompt identity can need a public alias, and only one not yet captured.
+          -- A pending command blocks only while its epoch can still complete it (an
+          -- active session in the sandbox's current lifecycle); a superseded command can
+          -- never produce the alias, so it must not hold any delivery.
+          and (d.payload->>'promptId' is null
+            or exists(select 1 from public.account_turn_queue a
+              where a.sandbox_id::text=d.payload->>'sandboxId' and a.native_prompt_id=d.payload->>'promptId')
+            or not exists(select 1 from public.account_turn_queue q
             where q.sandbox_id::text=d.payload->>'sandboxId'
               and q.native_prompt_id is null and q.result_enc is null
               and (q.state='dispatching' or exists(select 1 from public.runtime_commands c
+                join public.sandboxes s on s.id=c.sandbox_id
+                join public.runtime_enrolments r on r.sandbox_id=c.sandbox_id and r.epoch=c.epoch
+                  and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null
                 where c.sandbox_id=q.sandbox_id and c.result_enc is null
-                  and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))))
+                  and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text)))))
           order by d.next_attempt_at,d.id
           for update of d skip locked limit 1
         ), claimed as (
