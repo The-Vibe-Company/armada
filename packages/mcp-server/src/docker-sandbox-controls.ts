@@ -5,6 +5,7 @@ import {
   DockerRetentionEnded,
   type DockerSandboxStatus,
   dockerSandboxFailureReason,
+  dockerWorkspaceReclaimedMessage,
   GoldenError,
   HARNESS_CAPABILITIES,
   HARNESS_KINDS,
@@ -75,6 +76,7 @@ const denied = () => failure("not_found", "Sandbox not found.");
 const invalid = () => failure("invalid_request", "Invalid Docker sandbox request.");
 const terminal = (row: Row) => ["stopped", "deleted", "failed"].includes(row.status);
 function reason(row: Row) {
+  if (row.status === "deleted" && dockerWorkspaceReclaimedMessage(row.status_reason)) return row.status_reason;
   if (row.status_reason === "expired") return "expired";
   if (row.status_reason === "idle_paused" && ["stopping", "stopped"].includes(row.status)) return "idle_paused";
   if (row.status !== "failed") return null;
@@ -443,6 +445,7 @@ export function createDockerSandboxControls(
       status: row.status,
       statusReason: reason(row),
       statusMessage:
+        dockerWorkspaceReclaimedMessage(row.status_reason) ??
         idlePauseMessage(
           {
             status: row.status,
@@ -450,7 +453,8 @@ export function createDockerSandboxControls(
             expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
           },
           new Date(clock.now()),
-        ) ?? (!complete ? "Stored prompt state is incomplete; live data may be stale." : null),
+        ) ??
+        (!complete ? "Stored prompt state is incomplete; live data may be stale." : null),
       providerState:
         row.status === "deleted"
           ? null
@@ -625,6 +629,8 @@ export function createDockerSandboxControls(
   async function resume(caller: Caller, row: Row, requestId?: string) {
     if (!options.resume) throw failure("unavailable", "Docker sandbox resume is unavailable.");
     if (row.owner_id !== caller.userId) throw denied();
+    const reclaimed = dockerWorkspaceReclaimedMessage(row.status_reason);
+    if (row.status === "deleted" && reclaimed) throw new DockerRetentionEnded(row.status_reason);
     if (!requestId) throw invalid();
     const host = (
       await sql.query<{ daemon_version: string | null }>(
@@ -645,12 +651,18 @@ export function createDockerSandboxControls(
       if (requested.state === "claiming") requested = await options.resume.resume(actor, row.id, requestId);
       // Host ACK is not runtime readiness.
       const state = (
-        await sql.query<{ outcome: string | null }>(
-          `select outcome from public.docker_host_jobs where request_id=$1 and bound_sandbox_id=$2 and bound_operation='resume'`,
+        await sql.query<{ outcome: string | null; status_reason: string | null }>(
+          `select j.outcome,s.status_reason from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id where j.request_id=$1 and j.bound_sandbox_id=$2 and j.bound_operation='resume'`,
           [requestId, row.id],
         )
       ).rows[0];
-      if (state?.outcome === "failed") throw failure("conflict", "Docker resume failed.");
+      if (state?.outcome === "failed")
+        throw failure(
+          "conflict",
+          state.status_reason === DOCKER_LAUNCH_FAILURE_MESSAGES.disk
+            ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
+            : "Docker resume failed.",
+        );
       if (state?.outcome === "completed") {
         const ready = await runtime.ready(actor, row.id, requestId);
         if (ready.state === "ready") {

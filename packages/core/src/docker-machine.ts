@@ -436,6 +436,11 @@ export function createDockerMachineExecutor(options: {
       const state = await owned(request);
       return !state.container && !state.volume;
     },
+    async stoppedAt(request: DockerMachineRequest): Promise<number | null> {
+      const state = await owned(request);
+      const finished = state.container ? Date.parse(String(object(state.container.State).FinishedAt)) : NaN;
+      return Number.isFinite(finished) && finished > 0 ? finished : null;
+    },
     async isStopped(request: DockerMachineRequest): Promise<boolean> {
       const state = await owned(request);
       return !!state.volume && (!state.container || object(state.container.State).Running === false);
