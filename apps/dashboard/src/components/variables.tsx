@@ -372,7 +372,8 @@ export function VaultPanel({
   const onResult = useCallback(
     (next: ActionResult) => {
       setResult(next);
-      // The refresh that follows a write can remount this panel; a toast keeps the confirmation visible.
+      // The refresh that follows a write can remount this panel (in the table or the detail dialog), dropping its
+      // ResultLine; a toast keeps the confirmation visible either way.
       if (next.ok) toast({ tone: "success", title: next.message });
     },
     [toast],
@@ -410,7 +411,9 @@ export function VaultPanel({
             <dt className="text-muted-foreground">Who can change it</dt>
             <dd>{item.scope === "personal" ? "Only you" : `${orgName}'s admins`}</dd>
             <dt className="text-muted-foreground">Version</dt>
-            <dd className="tabular-nums">{item.version}</dd>
+            <dd className="tabular-nums" data-vault-version={item.version}>
+              {item.version}
+            </dd>
             <dt className="text-muted-foreground">Created</dt>
             <dd>
               <CreatedAt iso={item.createdAt} now={now} />

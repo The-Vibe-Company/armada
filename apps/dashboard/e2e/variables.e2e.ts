@@ -65,9 +65,12 @@ for (const mobile of [false, true]) {
     await expect(row(page, "APP_REGION")).toContainText("Variable");
     await expect(row(page, "OLD_WEBHOOK_SECRET")).toContainText("Revoked");
     await expect(row(page, "STRIPE_API_KEY")).toContainText("Everyone in Acme");
-    // A revoked secret is not a fault: no readiness strip, nothing in red.
+    // A revoked secret is not a fault: no readiness strip, no alert, and its state is not in the destructive tone.
     await expect(page.locator("[data-readiness]")).toHaveCount(0);
     await expect(page.locator("p[role=alert]:visible")).toHaveCount(0);
+    await expect(row(page, "OLD_WEBHOOK_SECRET").getByText("Revoked", { exact: true })).not.toHaveClass(
+      /text-destructive/,
+    );
     await page.screenshot({ path: `test-results/variables-${mobile ? "phone" : "desktop"}.png`, fullPage: true });
 
     const dialog = await openAdd(page);
@@ -154,6 +157,7 @@ test("a variable's value is read on request and edited as a new version", async 
   await edit.getByRole("button", { name: "Save changes" }).click();
   await expect(edit).toBeHidden();
   await expect(page.getByText("APP_REGION is saved.").first()).toBeVisible();
+  await expect(variable.locator("[data-vault-version]")).toHaveAttribute("data-vault-version", "4");
   await expect(variable.getByRole("button", { name: "Edit" })).toBeVisible();
   // A new version drops what was read: the value is read again on request.
   await expect(variable.locator("[data-variable-value]")).toHaveCount(0);
