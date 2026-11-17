@@ -690,7 +690,14 @@ test.each(["cleanup", "claim"] as const)(
     const requestId = randomUUID();
     expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("claiming");
     expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
-    if (winner === "claim") await tick(store, api, executor, false, () => 999);
+    if (winner === "claim") {
+      await tick(store, api, executor, false, () => 999);
+      // An abandoned request cannot reserve this lifecycle against a new caller
+      // request. The replacement must get its own durable host acknowledgement.
+      const replacementId = randomUUID();
+      expect((await service.resume(f.actor, f.sandbox.id, replacementId)).state).toBe("claiming");
+      await tick(store, api, executor, false, () => 999);
+    }
     offline = true;
     await expect(tick(store, api, executor, false, () => 1001)).rejects.toThrow("network unavailable");
     offline = false;
@@ -701,13 +708,17 @@ test.each(["cleanup", "claim"] as const)(
       expect(resumed).toBe(false);
     } else {
       expect(deleted).toBe(false);
+      const lateId = randomUUID();
+      expect((await service.resume(f.actor, f.sandbox.id, lateId)).state).toBe("claiming");
       expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+      expect(await hosts.resumeClaimsForHost(f.hostToken, f.installationId)).toEqual([]);
       const job = await hosts.poll(f.hostToken, f.installationId);
       if (job?.operation !== "resume") throw Error("missing resume");
       api.poll = async () => ({ job });
       await tick(store, api, executor, false, () => 1003);
       expect(resumed).toBe(true);
       expect(deleted).toBe(false);
+      expect(durable.resumeClaims?.every((claim) => !claim.active)).toBe(true);
     }
   },
 );

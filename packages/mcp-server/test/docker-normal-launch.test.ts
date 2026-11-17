@@ -165,9 +165,12 @@ async function fixture(
     native: unknown[] = [],
     checkoutStatuses: string[] = [];
   async function step() {
+    for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
+      await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
     const job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
     if (job) {
       jobs.push(job);
+      if (job.operation === "stop" || job.operation === "delete") session = undefined;
       if (job.operation === "bootstrap" || job.operation === "resume")
         session = await authority.enrol(job.bootstrap.enrolmentToken);
       const failed = failCreate && job.operation === "create";

@@ -529,7 +529,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           `select c.request_id,c.sandbox_id,c.generation from public.docker_resume_claims c
            join public.sandboxes s on s.id=c.sandbox_id
            where c.host_id=$1 and c.installation_id=$2 and c.accepted is null
-             and s.docker_generation=c.generation`,
+             and s.docker_generation=c.generation and s.lifecycle_generation=c.lifecycle_generation
+             and s.status='stopped' and s.deleted_at is null and s.expires_at>now()`,
           [host.id, installationId],
         );
         return result.rows.map((row) => ({

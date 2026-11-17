@@ -522,7 +522,12 @@ export async function tick(
     const saved = latest.receipts.find((item) => item.requestId === receipt.requestId);
     if (!saved) throw Error("Missing durable receipt");
     Object.assign(saved, receipt);
-    for (const claim of latest.resumeClaims ?? []) if (claim.requestId === receipt.requestId) claim.active = false;
+    for (const claim of latest.resumeClaims ?? [])
+      if (
+        claim.requestId === receipt.requestId ||
+        (receipt.operation === "resume" && generationKey(claim) === generationKey(receipt.request))
+      )
+        claim.active = false;
     if (receipt.operation === "resume" && receipt.outcome === "completed")
       latest.retention = (latest.retention ?? []).filter(
         (entry) => generationKey(entry.request) !== generationKey(receipt.request),
