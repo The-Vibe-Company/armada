@@ -46,7 +46,7 @@ test("native receipts survive replacement and stopping, without duplicate runtim
         "select payload from outbound_webhook_deliveries where payload->>'type'='agent.report.ready'",
       )
     ).rows.map(({ payload }) => payload.promptId),
-  ).toEqual([publicPrompt]);
+  ).toEqual(["old_prompt"]);
   await db.query("update account_turn_queue set state='admitted' where sandbox_id=$1", [id]);
   await db.query(
     "update sandboxes set task_prompt_id='new_prompt',status='stopped',stopped_at=now(),lifecycle_generation=lifecycle_generation+1 where id=$1",
@@ -82,8 +82,8 @@ test("native receipts survive replacement and stopping, without duplicate runtim
       )
     ).rows.map(({ payload }) => [payload.promptId, payload.type]),
   ).toEqual([
-    [publicPrompt, "turn.finished"],
     ["new_prompt", "turn.failed"],
+    ["old_prompt", "turn.finished"],
   ]);
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime,task_prompt_id)

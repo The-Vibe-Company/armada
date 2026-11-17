@@ -168,7 +168,7 @@ export function createRuntimeCommands(
       const reply = JSON.parse(await decryptSecret(row.result_enc, key));
       const result = reply.body?.result;
       const queued = /^(?:follow_|docker_prompt_|resume_)([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/i.exec(
-        value.requestId,
+        row.request_id,
       );
       if (queued && typeof result?.promptId === "string" && reply.status >= 200 && reply.status < 300) {
         await tx.query(
