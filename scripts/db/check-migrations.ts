@@ -106,7 +106,7 @@ try {
         errors.push(
           `Use migration version ${suggestion} for ${path}. Preserve unapplied migration dependency order and rerun the guard.`,
         );
-        [previous, previousName] = [parseVersion(suggestion) as number, path];
+        [previous, previousName] = [parseVersion(suggestion) as number, `${suggestion} (suggested for ${path})`];
       } else {
         errors.push(
           next || previous > floor
