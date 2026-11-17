@@ -144,6 +144,30 @@ test("a secret is stored once and never shown again: replace, revoke and delete 
   await expect(page.getByRole("button", { name: "Add a variable", exact: true })).toBeFocused();
 });
 
+test("the row's own Revoke is reachable and confirms without opening the panel", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/variables");
+  const dialog = await openAdd(page);
+  await dialog.getByLabel("Name").fill("ROW_REVOKE_SETTING");
+  await dialog.getByLabel("Value").fill("eu-central-1");
+  await dialog.getByRole("button", { name: "Save setting" }).click();
+  await expect(dialog).toBeHidden();
+  const created = row(page, "ROW_REVOKE_SETTING");
+  // The action lives on the row itself: the detail panel for this entry is not open.
+  await expect(page.locator('[data-vault-panel="ROW_REVOKE_SETTING"]').filter({ visible: true })).toHaveCount(0);
+  await expect(created.getByRole("button", { name: "Edit", exact: true })).toBeVisible();
+  // Revoke is part of the row's inline actions, not only the panel's.
+  const revokeOnRow = created.getByRole("button", { name: "Revoke", exact: true });
+  await expect(revokeOnRow).toBeVisible();
+  await revokeOnRow.click();
+  const confirm = page.getByRole("alertdialog", { name: "Revoke ROW_REVOKE_SETTING?" });
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole("button", { name: "Revoke", exact: true }).click();
+  await expect(confirm).toBeHidden();
+  // The row now states the revoked status, and its action is gone.
+  await expect(row(page, "ROW_REVOKE_SETTING")).toContainText("Revoked");
+  await expect(row(page, "ROW_REVOKE_SETTING").getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
+});
+
 test("a variable's value is read on request and edited as a new version", async ({ page }) => {
   await signIn(page, "alice@example.com", "/variables");
   const variable = await panel(page, "APP_REGION");
