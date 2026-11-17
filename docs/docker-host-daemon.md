@@ -1320,8 +1320,13 @@ started about a minute apart.
   (`DOCKER_HOST_CONCURRENT_JOBS`). The daemon reports their request IDs as
   `running`. The server never hands out a running job, a later job of the same
   sandbox, or a second snapshot build while one runs, so each sandbox stays
-  serial. Docker's per-container limits and the server's capacity admission
-  still bound what runs.
+  serial. A reported job blocks only until its completion is recorded: the
+  daemon completes jobs while a poll is held, so a bootstrap or stop queued
+  behind a create that just finished is handed out on the next recheck, not
+  after the hold. A held poll therefore omits `skipSnapshots`, which could not
+  change during the hold; the server serializes builds from `running`. Docker's
+  per-container limits and the server's capacity admission still bound what
+  runs.
 - **Durable protocol unchanged.** Every ledger read-modify-write (admission
   receipt, resume-claim acknowledgement, retention, TTL, completion) is
   serialized per state file. Only the machine operation and the held poll run

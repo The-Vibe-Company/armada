@@ -103,10 +103,13 @@ function hash(token: unknown): string {
   return createHash("sha256").update(token).digest("hex");
 }
 /** SQL predicate over job alias `j`: not reported running, not behind a running job of
- * its sandbox, and no second snapshot build while one runs. `$n` is the running uuid[]. */
+ * its sandbox, and no second snapshot build while one runs. `$n` is the running uuid[].
+ * Only a running job whose outcome is not yet recorded blocks: the daemon reports the
+ * list once per held poll, and a job completed during the hold must free its sandbox
+ * and the snapshot slot at once, not when the hold expires (#2561). */
 function notRunning(n: number): string {
   return `not (j.request_id=any($${n}::uuid[])) and not exists(select 1 from public.docker_host_jobs r
-    where r.host_id=j.host_id and r.request_id=any($${n}::uuid[])
+    where r.host_id=j.host_id and r.request_id=any($${n}::uuid[]) and r.outcome is null
     and (r.bound_sandbox_id=j.bound_sandbox_id or (r.snapshot_id is not null and j.snapshot_id is not null)))`;
 }
 function input(job: Job): string {

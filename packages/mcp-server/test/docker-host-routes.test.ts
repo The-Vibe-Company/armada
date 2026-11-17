@@ -529,7 +529,7 @@ test("a held host poll answers as soon as work appears and never beyond its hold
 });
 
 test("a host poll skips work the daemon reports running and hands out another sandbox's job", async () => {
-  const { db, userId, orgId, store, post } = await fixture();
+  const { db, userId, orgId, store, post, authenticate: fixtureAuth } = await fixture();
   const actor = { userId, orgId };
   const ticket = await store.issueRegistration(actor);
   const installationId = randomUUID();
@@ -564,4 +564,40 @@ test("a host poll skips work the daemon reports running and hands out another sa
   const next = await job([head!.requestId]);
   expect(next).toMatchObject({ operation: "create", request: { sandboxId: second.id } });
   expect(await job([head!.requestId, next!.requestId])).toBeNull();
+
+  // Held: a stop queued behind the running create stays fenced until the create's
+  // completion is recorded, then is handed out on the next recheck, not after the hold.
+  let time = 0;
+  const steps = [
+    () => sandboxes.stop(actor, first.id, randomUUID()),
+    () => store.complete(host.hostToken, installationId, { requestId: head!.requestId, outcome: "completed" }),
+  ];
+  const held = createDockerHostRoutes(store, fixtureAuth, {
+    clock: {
+      now: () => time,
+      async wait(ms) {
+        await steps.shift()?.();
+        time += ms;
+      },
+    },
+  });
+  const response = await post(
+    "/api/docker-host/poll",
+    host.hostToken,
+    {
+      installationId,
+      version: "2.51.0",
+      resources: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
+      resourcePolicyVersion: 1,
+      waitSeconds: 20,
+      running: [head!.requestId, next!.requestId],
+    },
+    {},
+    held,
+  );
+  expect(await response.json()).toMatchObject({
+    held: true,
+    job: { operation: "stop", request: { sandboxId: first.id } },
+  });
+  expect(time).toBe(2000);
 });

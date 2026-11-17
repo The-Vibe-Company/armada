@@ -1845,9 +1845,13 @@ test("native held polls report running work and fall back to the previous protoc
     async () => ({ cpus: 8, memoryBytes: 32 * 1024 ** 3 }),
   );
   const running = crypto.randomUUID();
-  expect(await api.poll(await f.store.load(), { waitSeconds: 20, running: [running] })).toEqual({ job: null });
+  expect(await api.poll(await f.store.load(), { skipSnapshots: true, waitSeconds: 20, running: [running] })).toEqual({
+    job: null,
+  });
   expect(bodies[0]).toMatchObject({ waitSeconds: 20, running: [running], resumeClaimProtocol: 1 });
-  expect(bodies[1]).toMatchObject({ resumeClaimProtocol: 1 });
+  // A held poll leaves snapshot serialization to `running`: the flag would stay stale for the hold.
+  expect(bodies[0]).not.toHaveProperty("skipSnapshots");
+  expect(bodies[1]).toMatchObject({ resumeClaimProtocol: 1, skipSnapshots: true });
   expect(bodies[1]).not.toHaveProperty("waitSeconds");
   expect(bodies[1]).not.toHaveProperty("running");
   expect(bodies).toHaveLength(2);

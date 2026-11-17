@@ -280,7 +280,11 @@ export function httpApi(
             "poll",
             state.hostToken,
             {
-              ...body,
+              // No skipSnapshots: it would stay stale for the whole hold. The
+              // server serializes snapshot builds from `running` instead and
+              // frees the slot as soon as the running build completes.
+              installationId: body.installationId,
+              version: body.version,
               resumeClaimProtocol: 1,
               ...retention,
               ...disk,
