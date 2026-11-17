@@ -762,8 +762,10 @@ export function createSqlData(
         const cancelTurns = patch.stopRequested === true;
         const wrapped = releaseReservation || cancelTurns;
         const admission = !!patch.advanceGeneration && !!patch.activityToken;
-        // A refused delete admission names its predicates from the snapshot the CAS evaluated,
-        // not a later read that a concurrent lease release could already have cleared.
+        // A refused delete admission names its predicates from the CAS statement's own snapshot,
+        // not a later read that a concurrent lease release could already have cleared. A row
+        // changed while this statement waited on its lock is rechecked at its newest version,
+        // so then the CAS may refuse a holder that this snapshot predates.
         const observeRefusal = !!patch.deleteRequested && admission && !wrapped;
         const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}

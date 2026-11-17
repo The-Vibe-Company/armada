@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { encryptSecret, type Provider, ProviderError } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
 import {
@@ -121,6 +121,7 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     boat.provider.delete = async () => {
       throw new ProviderError({ provider: "boat", code: "unavailable", message: "offline", retryable: true });
     };
+    const info = spyOn(console, "info");
     const providerFailure = await request(failed);
     expect(providerFailure.status).toBe(502);
     expect(await providerFailure.json()).toMatchObject({ error: { code: "provider_unavailable" } });
@@ -129,6 +130,30 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     const retry = await request(failed);
     expect(retry.status).toBe(409);
     expect(await retry.json()).toMatchObject({ error: { code: "sandbox_not_ready" } });
+    // The refusal names the live lease from its own statement, and that lease names its writer.
+    const events = info.mock.calls.flatMap(([line]) => {
+      try {
+        return [JSON.parse(String(line))];
+      } catch {
+        return [];
+      }
+    });
+    info.mockRestore();
+    const deleteAdmission = events.find((e) => e.event === "sandbox_activity_admitted" && e.sandboxId === failed);
+    expect(deleteAdmission).toMatchObject({ kind: "delete", activityLeaseId: expect.any(String) });
+    expect(events.find((e) => e.event === "sandbox_delete_admission_refused" && e.sandboxId === failed)).toEqual({
+      event: "sandbox_delete_admission_refused",
+      sandboxId: failed,
+      observed: {
+        status: "failed",
+        activityLeaseId: deleteAdmission.activityLeaseId,
+        activityLeaseHeld: true,
+        reconcileLeaseHeld: false,
+        stopRequested: false,
+        generationChanged: false,
+        managed: false,
+      },
+    });
     await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [failed]);
     boat.provider.delete = async () => ({ status: "pending" });
     expect((await request(failed)).status).toBe(409);

@@ -1298,7 +1298,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.delete({ sandboxId: fork.id });
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
   });
-  test("a busy retired source fails deletion only after the fork is durably gone", async () => {
+  test("a busy retired source neither fails nor delays a fork's deletion", async () => {
     const f = fixture();
     const builder = await f.provider.createGolden({});
     const name = crypto.randomUUID();
@@ -1308,18 +1308,19 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.stop({ sandboxId: fork.id });
     expect(await f.store.tombstoneSources()).toContain(builder.id);
     const terminations = f.log.filter((x) => x === "terminate").length;
+    const imageDeletes = () => f.log.filter((x) => x === "delete-image").length;
     await f.store.lease(builder.id, async () => {
-      await expect(f.provider.delete({ sandboxId: fork.id })).rejects.toMatchObject({
-        providerCode: "lifecycle_lease_busy",
-      });
+      expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
     });
-    // Collection retried inside the request before failing it.
-    expect(f.cleanupDelays).toEqual([1_000, 5_000]);
-    // The fork is gone and the source tombstone stays durable for the caller's retry.
+    // A busy source is skipped, not retried.
+    expect(f.cleanupDelays).toEqual([]);
+    const ownImages = imageDeletes();
     expect((await f.store.get(fork.id)).phase).toBe("deleted");
-    expect(await f.store.tombstoneSources()).toContain(builder.id);
-    expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
     expect(f.log.filter((x) => x === "terminate")).toHaveLength(terminations);
+    // The tombstone stays durable; the next collection in scope removes the snapshot image.
+    expect(await f.store.tombstoneSources()).toContain(builder.id);
+    await f.provider.collectGarbage();
+    expect(imageDeletes()).toBe(ownImages + 1);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
   test("recovery references do not depend on a saved label surviving retirement", async () => {

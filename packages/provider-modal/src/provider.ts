@@ -679,7 +679,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     row.info.stoppedAt = new Date();
     await save(row);
   }
-  async function collectFrom(imagesStore: ModalStore) {
+  async function collectFrom(imagesStore: ModalStore, skipBusy = false) {
     // Visit only sources with retired images. Every scope machine ever launched stays in the
     // store, so a full scan made each sandbox deletion cost minutes of SQL round trips.
     for (const sourceId of await imagesStore.tombstoneSources()) {
@@ -687,7 +687,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       if (!matchesManagementAuthority(source.managementAuthority, managementAuthority)) continue;
       const pending = (await imagesStore.images(source.info.id)).filter((x) => x.deleted);
       if (!pending.length) continue;
-      await imagesStore.lease(source.info.id, async () => {
+      const collect = imagesStore.lease(source.info.id, async () => {
         for (const image of (await imagesStore.images(source.info.id)).filter(
           (x) => x.deleted && matchesManagementAuthority(x.managementAuthority, managementAuthority),
         )) {
@@ -702,10 +702,17 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           await imagesStore.purgeImage(image.info.name);
         }
       });
+      // Another controller owns this source now (a golden prompt, snapshot, restore or a
+      // concurrent delete). Its tombstones stay durable for the next collection in scope.
+      await (skipBusy
+        ? collect.catch((error) => {
+            if (modalError(error).providerCode !== "lifecycle_lease_busy") throw error;
+          })
+        : collect);
     }
   }
-  async function collectImages() {
-    await collectFrom(source.store);
+  async function collectImages(skipBusy = false) {
+    await collectFrom(source.store, skipBusy);
   }
   /** Retries a transient image-service failure inside the delete request, so one DELETE
    * completes. A persistent failure still fails the delete; the durable phase resumes it. */
@@ -1737,7 +1744,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         row.phase = "deleted";
         await save(row);
       });
-      await cleanupStep(sandboxId, collectImages);
+      // A busy retired source must not fail a delete whose own resources are already gone.
+      await cleanupStep(sandboxId, () => collectImages(true));
       return { status: "deleted" };
     },
     async resourceReceipts() {
