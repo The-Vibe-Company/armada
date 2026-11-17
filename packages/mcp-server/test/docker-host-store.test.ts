@@ -1029,3 +1029,55 @@ test("a stale cleaned ACK cannot delete a sandbox with a later admitted resume",
   await store.cleaned(a.hostToken, a.installationId, { requestId: a.create.requestId });
   expect((await lifecycle(a.sandboxId))?.status).toBe("starting");
 });
+
+test("poll reports every generation with pending start intent, and per-generation deadlines persist", async () => {
+  const db = database();
+  const a = await boundFixture();
+  const second = await boundFixture(a);
+  // Both creates are acknowledged; the second sandbox is then stopped and resumed.
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.enqueueSandbox(a.owner, second.sandboxId, second.create);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  await store.complete(a.hostToken, a.installationId, { requestId: second.create.requestId, outcome: "completed" });
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.owner, second.sandboxId, stop);
+  // Resume admission sets the sandbox starting, then issues a fresh ticket and enqueues.
+  await db.query(
+    "update public.sandboxes set status='starting',stopped_at=null,stop_requested_at=null where id=$1",
+    [second.sandboxId],
+  );
+  const ticket = await (await import("../src/runtime-enrolment.ts")).createRuntimeEnrolments(sql, key, {
+    allowDockerIssue: true,
+  }).issue({ sandboxId: second.sandboxId, ownerId: second.owner.userId, configuration: {} });
+  await store.enqueueSandbox(a.owner, second.sandboxId, {
+    requestId: randomUUID(),
+    operation: "resume",
+    bootstrapDescriptor: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: ticket.enrolmentToken,
+    },
+  });
+  // Cleanup is served first, but the resume behind it is still reported as pending intent.
+  expect((await store.poll(a.hostToken, a.installationId))?.operation).toBe("stop");
+  expect(await store.pendingStartsForHost(a.hostToken, a.installationId)).toEqual([
+    { sandboxId: second.sandboxId, generation: second.generation },
+  ]);
+  // A host-reported per-generation deadline is persisted against that generation, not the host clock.
+  const deadline = "2026-11-20T12:00:00.000Z";
+  await store.retentionForHost(a.hostToken, a.installationId, {
+    retentionSeconds: 3600,
+    nextCleanupAt: deadline,
+    deadlines: [{ sandboxId: a.sandboxId, generation: a.generation, deadline }],
+  });
+  const saved = await db.query<{ docker_retention_deadline: Date | string | null }>(
+    "select docker_retention_deadline from public.sandboxes where id=$1",
+    [a.sandboxId],
+  );
+  expect(new Date(saved.rows[0]!.docker_retention_deadline!).toISOString()).toBe(deadline);
+  const other = await db.query<{ docker_retention_deadline: Date | string | null }>(
+    "select docker_retention_deadline from public.sandboxes where id=$1",
+    [second.sandboxId],
+  );
+  expect(other.rows[0]!.docker_retention_deadline).toBeNull();
+});

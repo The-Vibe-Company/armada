@@ -66,7 +66,13 @@ export interface Api {
   poll(
     state: State,
     options?: { skipSnapshots?: boolean },
-  ): Promise<{ job: Job | null; limits?: DockerSandboxLimits; retentionSeconds?: number }>;
+  ): Promise<{
+    job: Job | null;
+    limits?: DockerSandboxLimits;
+    retentionSeconds?: number;
+    /** Every generation with a queued resume/bootstrap, not only the job handed out. */
+    pendingStarts?: DockerMachineRequest[];
+  }>;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
   cleaned?(state: State, requestId: string): Promise<void>;
 }
@@ -250,19 +256,25 @@ export async function tick(
   }
   // Resume intent cancels this generation's local cleanup deadline before the
   // deletion pass; a later failed resume is rediscovered as a stopped receipt.
+  // The server serves one job per poll, ordered so every stop/delete precedes
+  // startup work, so a resume queued behind another job is invisible in
+  // `polled.job`. The poll therefore also reports every held generation with a
+  // pending resume/bootstrap; all of them fence deletion, not only the head.
   // An entry already physically deleted keeps its pending cleaned report: the
   // workspace is gone, so the server must still learn that fact.
+  const claimed = new Set<string>();
+  for (const request of polled?.pendingStarts ?? []) claimed.add(generationKey(request));
   if (polled?.job) {
     try {
       const observed = parseDockerHostJob(polled.job);
-      if (observed.operation === "bootstrap" || observed.operation === "resume") {
-        const key = generationKey(observed.request);
-        state.retention = state.retention.filter((entry) => entry.deleted || generationKey(entry.request) !== key);
-      }
+      if (observed.operation === "bootstrap" || observed.operation === "resume")
+        claimed.add(generationKey(observed.request));
     } catch {
       // An invalid mailbox payload is rejected when it is executed below.
     }
   }
+  if (claimed.size)
+    state.retention = state.retention.filter((entry) => entry.deleted || !claimed.has(generationKey(entry.request)));
   if (polled) {
     executor.configureLimits?.(polled.limits);
     if (polled.retentionSeconds !== undefined) {
