@@ -402,7 +402,13 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
       expect(resumed?.stoppedAt).toBeNull();
       expect(resumed?.status).toBe("running");
       expect(resumed?.lifecycleGeneration).toBe(3);
-      expect(Date.parse(resumed?.expiresAt ?? "")).toBeGreaterThan(Date.now());
+      // The rearm writes the deadline and reconcile_after from one transaction
+      // clock; their gap is the TTL regardless of the runner's wall clock.
+      const rearmed = await db.query<{ gap_seconds: number }>(
+        "select extract(epoch from expires_at - reconcile_after)::float8 as gap_seconds from sandboxes where id=$1",
+        [id],
+      );
+      expect(rearmed.rows[0]?.gap_seconds).toBe(resumed?.effectiveTtlSeconds);
       const beforeObservation = methods.length;
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect(resolutions).toBe(2);

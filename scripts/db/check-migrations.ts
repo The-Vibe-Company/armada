@@ -33,9 +33,10 @@ function parseVersion(version: string): number | undefined {
 // The guard's clock. MIGRATION_GUARD_NOW (ISO 8601) fixes it for tests.
 function guardNow(): number {
   const fixed = process.env.MIGRATION_GUARD_NOW;
-  if (!fixed) return Date.now();
+  if (fixed === undefined) return Date.now();
   const time = Date.parse(fixed);
-  if (!Number.isFinite(time)) throw new Error(`Invalid MIGRATION_GUARD_NOW: ${fixed}`);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(fixed) || !Number.isFinite(time))
+    throw new Error(`MIGRATION_GUARD_NOW must be a UTC ISO 8601 timestamp: ${fixed}`);
   return time;
 }
 
