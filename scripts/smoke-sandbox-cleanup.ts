@@ -232,6 +232,9 @@ export async function deleteSmokeReceipts(
             deleted = await request("delete");
           } catch (error) {
             if (code !== "request_failed") throw error;
+            // A lost response can still have been admitted, so log it: later refusals then
+            // read as that delete's lease rather than an unexplained first refusal.
+            io.out(JSON.stringify({ step: "delete_smoke_sandbox_retry", ...row, phase, httpStatus, code }));
             await pause();
             continue;
           }

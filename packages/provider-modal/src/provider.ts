@@ -22,7 +22,7 @@ import { runtimeBootstrapScript } from "@armada/core/server";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
-import { deleteRetrySafe, lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
+import { lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
 import type {
   Machine,
@@ -38,9 +38,6 @@ import type {
 } from "./ports.ts";
 import { createSshPreparation, SSH_PORT } from "./ssh.ts";
 import { scopeKey } from "./store.ts";
-
-/** In-request image-collection retry delays after the first attempt during deletion. */
-const COLLECTION_RETRY_MS = [1_000, 5_000];
 
 export type ModalPromptPhase =
   | "modal_prepare"
@@ -61,8 +58,6 @@ export interface ModalProviderOptions extends ModalConnection {
   storedReads?: boolean;
   /** Scheduler for lifecycle admission backoff; defaults to the Bun timer. */
   admissionSleep?(milliseconds: number): Promise<void>;
-  /** Scheduler for deletion image-collection retries; defaults to the Bun timer. */
-  collectionSleep?(milliseconds: number): Promise<void>;
   scope: Scope;
   /** Trusted immutable source credential selection; never a requested access visibility. */
   managementAuthority?: ModalManagementProvenance;
@@ -706,33 +701,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   async function collectImages() {
     await collectFrom(source.store);
-  }
-  /** Collects this deletion's tombstones before the delete reports success, retrying a
-   * transient image-service failure inside the request. Tombstones stay durable, so the
-   * caller's retry (or any later collection in this scope) resumes what remains. */
-  async function collectAfterDelete(sandboxId: string) {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        // A private fork's recovery tombstones live in its target store, not the source.
-        if (store !== source.store) await collectFrom(store);
-        await collectImages();
-        return;
-      } catch (error) {
-        const safe = modalError(error);
-        console.warn(
-          JSON.stringify({
-            event: "modal_delete_image_collection_failed",
-            sandboxId,
-            attempt,
-            code: safe.code,
-            ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
-          }),
-        );
-        const delay = COLLECTION_RETRY_MS[attempt - 1];
-        if (delay === undefined) throw error;
-        await (options.collectionSleep ?? Bun.sleep)(delay);
-      }
-    }
   }
   function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
     if (
@@ -1687,74 +1655,53 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return { status: "deleted" };
     },
     async delete({ sandboxId }) {
-      // A missing or mismatched App says nothing about this sandbox: never let its
-      // not_found read as sandbox absence. Nothing has been written yet.
-      await bound().catch((error) => {
-        throw deleteRetrySafe(error, "unavailable");
-      });
-      // The server keeps its activity fence only while the physical outcome is unknown:
-      // after "deleting" is durable and before physical exit is durably proven.
-      let outcomeKnown = true;
-      try {
-        await store.lease(sandboxId, async (row, save) => {
-          if (row.phase === "deleted") return;
-          assertMachineSource(row);
-          // Stop confirms exit. A reservation without an ID is pre-create because
-          // SQL commits creating before issuing the remote request. Carry either
-          // proof through an interrupted image deletion.
-          if (row.phase === "stopped" || (row.phase === "reserved" && !row.physicalId))
-            row.deletePhysicalExitGeneration = row.generation;
-          const exitConfirmed = row.deletePhysicalExitGeneration === row.generation;
-          // Creating/booting/deleting without ID is NOT proof of absence, even if name lookup says 404.
-          if (!exitConfirmed && !row.physicalId) {
-            const reconciled = await namedOwned(row);
-            row.physicalId = reconciled.sandboxId;
-            await save(row);
-          }
-          row.phase = "deleting";
-          outcomeKnown = exitConfirmed;
+      await bound();
+      await store.lease(sandboxId, async (row, save) => {
+        if (row.phase === "deleted") return;
+        assertMachineSource(row);
+        // Stop confirms exit. A reservation without an ID is pre-create because SQL
+        // commits creating before issuing the remote request. Carry either proof,
+        // scoped to this physical generation, through an interrupted deletion so a
+        // retry never terminates and waits on a machine that has already exited.
+        if (row.phase === "stopped" || (row.phase === "reserved" && !row.physicalId))
+          row.deletePhysicalExitGeneration = row.generation;
+        const exitConfirmed = row.deletePhysicalExitGeneration === row.generation;
+        // Creating/booting/deleting without ID is NOT proof of absence, even if name lookup says 404.
+        if (!exitConfirmed && !row.physicalId) {
+          const reconciled = await namedOwned(row);
+          row.physicalId = reconciled.sandboxId;
           await save(row);
-          if (!exitConfirmed && row.physicalId) {
-            try {
-              const sb = await physical(row);
-              await sb.terminate({ wait: true });
-              if ((await sb.poll()) === null)
-                throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
-            } catch (error) {
-              if (modalError(error).code !== "not_found") throw error;
-            }
+        }
+        // Durable before any remote mutation. Every resume path refuses a deleting record, so
+        // this phase and the store lease, not the server's activity lease, fence a failed delete.
+        row.phase = "deleting";
+        await save(row);
+        if (!exitConfirmed && row.physicalId) {
+          try {
+            const sb = await physical(row);
+            await sb.terminate({ wait: true });
+            if ((await sb.poll()) === null)
+              throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
+          } catch (error) {
+            if (modalError(error).code !== "not_found") throw error;
           }
-          if (!exitConfirmed) {
-            row.deletePhysicalExitGeneration = row.generation;
-            await save(row);
-            outcomeKnown = true;
-          }
-          // Physical exit is durable. Record recovery images as tombstones so an interrupted
-          // cleanup resumes from durable state; "saving" keeps the upsert idempotent on retry
-          // and deleted records are never served.
-          for (const imageId of new Set([
-            ...(row.retainedRecoveryIds ?? []),
-            ...(row.recoveryImageId ? [row.recoveryImageId] : []),
-          ]))
-            await store.saveImage({
-              info: { name: `recovery:${row.info.id}:${imageId}`, status: "saving" },
-              imageId,
-              sourceId: row.info.id,
-              managementAuthority: { ...managementAuthority },
-              deleted: true,
-            });
-          row.phase = "deleted";
+          row.deletePhysicalExitGeneration = row.generation;
           await save(row);
-        });
-      } catch (error) {
-        throw outcomeKnown ? deleteRetrySafe(error) : error;
-      }
-      // Success means the machine and its recovery images are gone, so collection finishes
-      // before the receipt. Its failure fails the delete without proving absence; the
-      // durable tombstones let the caller's immediate retry resume the collection.
-      await collectAfterDelete(sandboxId).catch((error) => {
-        throw deleteRetrySafe(error, "unavailable");
+        }
+        for (const imageId of new Set([
+          ...(row.retainedRecoveryIds ?? []),
+          ...(row.recoveryImageId ? [row.recoveryImageId] : []),
+        ])) {
+          try {
+            await client.images.delete(imageId);
+          } catch (error) {
+            if (modalError(error).code !== "not_found") throw error;
+          }
+        }
+        row.phase = "deleted";
+        await save(row);
       });
+      await collectImages();
       return { status: "deleted" };
     },
     async resourceReceipts() {

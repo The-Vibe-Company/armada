@@ -69,7 +69,6 @@ function fixture(
   let lookupError: Error | undefined;
   let onLookup: (() => Promise<void>) | undefined;
   let onScrub: (() => Promise<void>) | undefined;
-  let collectionSleep: (milliseconds: number) => Promise<void> = async () => {};
   let onTerminate: (() => Promise<void>) | undefined;
   let onRpc: ((row: Machine, op: string, input: object) => Promise<unknown>) | undefined;
   let provisioned = false;
@@ -217,7 +216,6 @@ function fixture(
   };
   const provider = createModalProvider({
     admissionSleep,
-    collectionSleep: (milliseconds) => collectionSleep(milliseconds),
     scope: accessScope,
     ...(commonRuntime ? { commonRuntime } : {}),
     ...(beforePrompt ? { beforePrompt } : {}),
@@ -269,9 +267,6 @@ function fixture(
     },
     onTerminate(work: () => Promise<void>) {
       onTerminate = work;
-    },
-    onCollectionSleep(work: (milliseconds: number) => Promise<void>) {
-      collectionSleep = work;
     },
     onScrub(work: () => Promise<void>) {
       onScrub = work;
@@ -1298,7 +1293,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.delete({ sandboxId: fork.id });
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
   });
-  test("stopped fork deletion collects its retired source once another controller lets go", async () => {
+  test("a busy retired source fails deletion only after the fork is durably gone", async () => {
     const f = fixture();
     const builder = await f.provider.createGolden({});
     const name = crypto.randomUUID();
@@ -1308,32 +1303,17 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.stop({ sandboxId: fork.id });
     expect(await f.store.tombstoneSources()).toContain(builder.id);
     const terminations = f.log.filter((x) => x === "terminate").length;
-    let release!: () => void;
-    const released = new Promise<void>((resolve) => {
-      release = resolve;
+    await f.store.lease(builder.id, async () => {
+      await expect(f.provider.delete({ sandboxId: fork.id })).rejects.toMatchObject({
+        providerCode: "lifecycle_lease_busy",
+      });
     });
-    let entered!: () => void;
-    const holding = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const holder = f.store.lease(builder.id, async () => {
-      entered();
-      await released;
-    });
-    await holding;
-    const delays: number[] = [];
-    // The other controller lets go while collection backs off inside the same request.
-    f.onCollectionSleep(async (milliseconds) => {
-      delays.push(milliseconds);
-      release();
-      await holder;
-    });
-    expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
-    expect(delays).toEqual([1_000]);
-    expect(f.log.filter((x) => x === "terminate")).toHaveLength(terminations);
+    // The fork is gone and the source tombstone stays durable for the caller's retry.
     expect((await f.store.get(fork.id)).phase).toBe("deleted");
+    expect(await f.store.tombstoneSources()).toContain(builder.id);
+    expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
+    expect(f.log.filter((x) => x === "terminate")).toHaveLength(terminations);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
-    expect(await f.store.tombstoneSources()).not.toContain(fork.id);
   });
   test("recovery references do not depend on a saved label surviving retirement", async () => {
     const f = fixture();
