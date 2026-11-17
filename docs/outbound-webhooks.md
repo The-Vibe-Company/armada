@@ -61,6 +61,6 @@ successful. Response bodies are not retained. Disabling an endpoint stops furthe
 delivery. A worker lease allows restart recovery without holding a database
 transaction across a network request.
 
-Deployment requires the additive `20261117210000_outbound_webhooks.sql` migration
+Deployment requires the additive `20261117220000_outbound_webhooks.sql` migration
 and the existing encryption key. This document describes the contract, not
 provider or deployed acceptance evidence. No new CI job is required.

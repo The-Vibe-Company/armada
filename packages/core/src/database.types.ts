@@ -3339,6 +3339,35 @@ export type Database = {
           },
         ];
       };
+      org_langfuse: {
+        Row: {
+          org_id: string;
+          enabled: boolean;
+          content_mode: string;
+          config_enc: string;
+        };
+        Insert: {
+          org_id: string;
+          enabled?: boolean;
+          content_mode: string;
+          config_enc: string;
+        };
+        Update: {
+          org_id?: string;
+          enabled?: boolean;
+          content_mode?: string;
+          config_enc?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "org_langfuse_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: true;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       org_skill_defaults: {
         Row: {
           org_id: string;
@@ -4761,6 +4790,7 @@ export type OrchestratorRuntimeEventRow = Database["public"]["Tables"]["orchestr
 export type OrchestratorWait = Database["public"]["Tables"]["orchestrator_waits"]["Row"];
 export type OrchestratorIdentityRow = Database["public"]["Tables"]["orchestrators"]["Row"];
 export type OrdinaryLaunchReceiptRow = Database["public"]["Tables"]["ordinary_launch_receipts"]["Row"];
+export type OrgLangfuseRow = Database["public"]["Tables"]["org_langfuse"]["Row"];
 export type OrgSkillDefaultsRow = Database["public"]["Tables"]["org_skill_defaults"]["Row"];
 export type OrganizationInvitationRow = Database["public"]["Tables"]["organization_invitations"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
