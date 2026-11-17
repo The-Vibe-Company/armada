@@ -52,7 +52,10 @@ begin
     insert into public.outbound_webhook_deliveries(id,endpoint_id,payload)
     values(delivery_id,endpoint.id,jsonb_build_object(
       'id',delivery_id,'type',event_type,'occurredAt',clock_timestamp(),
-      'orgId',saved.org_id,'sandboxId',saved.id,'promptId',prompt,
+      'orgId',saved.org_id,'sandboxId',saved.id,'promptId',coalesce((
+        select q.request_id::text from public.account_turn_queue q
+        where q.sandbox_id=saved.id and (q.native_prompt_id=prompt or q.request_id::text=prompt)
+        order by q.sequence desc limit 1),prompt),
       'state',status,'externalRef',to_jsonb(saved)->'external_ref',
       'reason',case when status='interrupted' then 'interrupted'
         when status='failed' then 'turn_failed' else null end))
@@ -99,7 +102,10 @@ begin
       insert into public.outbound_webhook_deliveries(id,endpoint_id,payload)
       values(delivery_id,endpoint.id,jsonb_build_object(
         'id',delivery_id,'type',event_type,'occurredAt',clock_timestamp(),
-        'orgId',new.org_id,'sandboxId',new.id,'promptId',new.task_prompt_id,
+        'orgId',new.org_id,'sandboxId',new.id,'promptId',coalesce((
+          select q.request_id::text from public.account_turn_queue q
+          where q.sandbox_id=new.id and (q.native_prompt_id=new.task_prompt_id or q.request_id::text=new.task_prompt_id)
+          order by q.sequence desc limit 1),new.task_prompt_id),
         'state',new.status,'externalRef',to_jsonb(new)->'external_ref','reason',public_reason));
     end loop;
   end loop;
@@ -109,3 +115,55 @@ $$;
 revoke all on function public.enqueue_sandbox_webhooks() from public,anon,authenticated;
 create trigger sandbox_outbound_webhooks after update of status,task_outcome,task_prompt_id on public.sandboxes
   for each row execute function public.enqueue_sandbox_webhooks();
+
+-- Native receipts outlive the mutable current task and machine lifecycle. Keep
+-- only identities/observation metadata; provider transcript bytes never persist.
+create table public.native_webhook_prompts (
+  sandbox_id uuid not null references public.sandboxes(id) on delete cascade,
+  prompt_id text not null,
+  provider public.sandbox_provider not null,
+  provider_sandbox_id text not null,
+  owner_id uuid not null,
+  org_id uuid not null,
+  failures integer not null default 0 check (failures between 0 and 5),
+  next_attempt_at timestamptz not null default now(),
+  lease_id uuid,
+  lease_until timestamptz,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  primary key(sandbox_id,prompt_id)
+);
+create index native_webhook_prompts_due on public.native_webhook_prompts(next_attempt_at)
+  where completed_at is null and failures<5;
+alter table public.native_webhook_prompts enable row level security;
+revoke all on public.native_webhook_prompts from public,anon,authenticated;
+grant all on public.native_webhook_prompts to service_role;
+-- Capture the public queue identity in the provider-publication transaction,
+-- before a fast terminal receipt can precede encrypted send-result persistence.
+alter table public.account_turn_queue add column native_prompt_id text;
+create function public.track_native_webhook_prompt() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+  if new.task_prompt_id is not null and (tg_op='INSERT' or new.task_prompt_id is distinct from old.task_prompt_id) then
+    update public.account_turn_queue q set native_prompt_id=new.task_prompt_id
+      where q.sandbox_id=new.id and q.owner_id=new.owner_id and q.org_id=new.org_id
+        and q.state='dispatching' and q.native_prompt_id is null;
+  end if;
+  if new.task_prompt_id is not null and new.provider in ('boat','modal')
+    and not new.boat_runtime and new.runtime_transport is distinct from 'dialout' then
+    insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id)
+    values(new.id,new.task_prompt_id,new.provider,new.provider_sandbox_id,new.owner_id,new.org_id)
+    on conflict do nothing;
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.track_native_webhook_prompt() from public,anon,authenticated;
+create trigger sandbox_native_webhook_prompt after insert or update of task_prompt_id on public.sandboxes
+  for each row execute function public.track_native_webhook_prompt();
+-- Seed existing current native turns; subsequent replacements are captured by
+-- the trigger in the same transaction as publication of their provider ID.
+insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id)
+select id,task_prompt_id,provider,provider_sandbox_id,owner_id,org_id from public.sandboxes
+where task_prompt_id is not null and provider in ('boat','modal') and not boat_runtime
+  and runtime_transport is distinct from 'dialout';

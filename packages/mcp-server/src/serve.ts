@@ -57,6 +57,7 @@ import { modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
+import { createNativeWebhookPrompts } from "./native-webhook-prompts.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
@@ -707,6 +708,7 @@ export async function startServer(
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
     [
       webhooks,
+      createNativeWebhookPrompts(sql, createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true })),
       delegatedAccess.childWorker,
       createFinishedDockerCleanup(sql, config.encryptionKey),
       accountTurns,

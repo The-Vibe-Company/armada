@@ -24,8 +24,14 @@ time, a public reason code, links, and **always** `externalRef` (null when absen
 There is no message, prompt, agent report text, or provider diagnostic by default.
 Repeated terminal observations of one prompt are deduplicated durably per endpoint
 and event type. Runtime archive ingestion enqueues terminal prompts atomically;
-native lifecycle reconciliation observes terminal prompt receipts and uses the same admission function. Startup failures
+native prompt publication retains a durable receipt identity ledger. A bounded
+observer reads those receipts even after stop or replacement of the current turn,
+and uses the same admission function. It retains the persisted owner and provider
+binding checks; it never resumes or mutates a stopped machine. Startup failures
 without an admitted prompt do not manufacture turn events.
+Queued sends use the same public prompt/request ID as the send/status API.
+The provider-to-public mapping is captured with prompt publication and frozen in
+the event payload, including when a fast terminal event precedes send-result storage.
 Failure reasons use the public code `turn_failed` (or `interrupted` for an interrupted turn); a blocked report uses
 `agent_blocked`. Fetch authorized sandbox details for further diagnostics.
 The external reference follows the launch contract in

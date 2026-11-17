@@ -27,6 +27,7 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  native_webhook_prompts: "NativeWebhookPromptRow",
   outbound_webhook_endpoints: "OutboundWebhookEndpointRow",
   outbound_webhook_deliveries: "OutboundWebhookDeliveryRow",
   agent_defaults: "AgentDefaultsRow",

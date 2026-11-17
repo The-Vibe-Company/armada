@@ -55,6 +55,7 @@ export type Database = {
           failure_reason: string | null;
           queued_generation: number;
           model: string | null;
+          native_prompt_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -75,6 +76,7 @@ export type Database = {
           failure_reason?: string | null;
           queued_generation: number;
           model?: string | null;
+          native_prompt_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -95,6 +97,7 @@ export type Database = {
           failure_reason?: string | null;
           queued_generation?: number;
           model?: string | null;
+          native_prompt_id?: string | null;
         };
         Relationships: [
           {
@@ -2463,6 +2466,59 @@ export type Database = {
           },
         ];
       };
+      native_webhook_prompts: {
+        Row: {
+          sandbox_id: string;
+          prompt_id: string;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id: string;
+          owner_id: string;
+          org_id: string;
+          failures: number;
+          next_attempt_at: string;
+          lease_id: string | null;
+          lease_until: string | null;
+          completed_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          prompt_id: string;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id: string;
+          owner_id: string;
+          org_id: string;
+          failures?: number;
+          next_attempt_at?: string;
+          lease_id?: string | null;
+          lease_until?: string | null;
+          completed_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          prompt_id?: string;
+          provider?: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id?: string;
+          owner_id?: string;
+          org_id?: string;
+          failures?: number;
+          next_attempt_at?: string;
+          lease_id?: string | null;
+          lease_until?: string | null;
+          completed_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_webhook_prompts_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       notify_subscriptions: {
         Row: {
           sandbox_id: string;
@@ -4688,6 +4744,7 @@ export type ModalServerHarnessRow = Database["public"]["Tables"]["modal_server_h
 export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_scopes"]["Row"];
 export type ModelAuthOwnershipRow = Database["public"]["Tables"]["model_auth_ownership"]["Row"];
 export type ModelAuthStateRow = Database["public"]["Tables"]["model_auth_state"]["Row"];
+export type NativeWebhookPromptRow = Database["public"]["Tables"]["native_webhook_prompts"]["Row"];
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
 export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];
