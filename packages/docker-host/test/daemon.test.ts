@@ -1485,3 +1485,29 @@ test("a queued resume is observed before a due local retention deletion", async 
   expect(order).toEqual(["poll", "resume", "startRuntime"]);
   expect((await f.store.load()).retention).toEqual([]);
 });
+
+test("a resume does not drop an already deleted entry's pending cleaned report", async () => {
+  const f = fixture();
+  await tick(f.store, f.api, f.executor);
+  const state = await f.store.load();
+  state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 0, deleted: true }];
+  await f.store.save(state);
+  const reports: string[] = [];
+  const resume: Job = {
+    requestId: crypto.randomUUID(),
+    operation: "resume",
+    request: f.job.request,
+    bootstrap: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
+    },
+  };
+  f.api.poll = async () => ({ job: resume });
+  f.api.cleaned = async (_state, requestId) => {
+    reports.push(requestId);
+  };
+  await tick(f.store, f.api, f.executor, false, () => 0);
+  expect(reports).toEqual([f.job.requestId]);
+  expect((await f.store.load()).retention).toEqual([]);
+});

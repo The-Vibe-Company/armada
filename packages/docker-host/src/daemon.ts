@@ -250,12 +250,14 @@ export async function tick(
   }
   // Resume intent cancels this generation's local cleanup deadline before the
   // deletion pass; a later failed resume is rediscovered as a stopped receipt.
+  // An entry already physically deleted keeps its pending cleaned report: the
+  // workspace is gone, so the server must still learn that fact.
   if (polled?.job) {
     try {
       const observed = parseDockerHostJob(polled.job);
       if (observed.operation === "bootstrap" || observed.operation === "resume") {
         const key = generationKey(observed.request);
-        state.retention = state.retention.filter((entry) => generationKey(entry.request) !== key);
+        state.retention = state.retention.filter((entry) => entry.deleted || generationKey(entry.request) !== key);
       }
     } catch {
       // An invalid mailbox payload is rejected when it is executed below.
