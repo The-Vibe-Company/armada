@@ -1,3 +1,4 @@
+import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
 import {
   createApplicationVault,
@@ -118,6 +119,7 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl, config.databasePoolMax);
+  const webhooks = createOutboundWebhooks(sql, config.encryptionKey, config.publicUrl);
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands, {
@@ -598,6 +600,9 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
+      webhooks.route((request) => authenticateCaller(request.headers.get("authorization"), {
+        store, supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey }, now: new Date(),
+      })),
       ...(env.ARMADA_DOCKER_HOSTS === "1"
         ? [
             createDockerSandboxRoutes(
@@ -694,6 +699,7 @@ export async function startServer(
     goldenRetirements,
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
     [
+      webhooks,
       delegatedAccess.childWorker,
       createFinishedDockerCleanup(sql, config.encryptionKey),
       accountTurns,
