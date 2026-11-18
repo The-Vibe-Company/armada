@@ -26,7 +26,9 @@ export function langfuseSpans(sandboxId: string, events: AgentEvent[], turns: Tu
   for (const end of events) {
     if (end.kind !== "prompt" || end.status === "running" || end.status === "queued" || !end.promptId) continue;
     const history = events.filter((e) => e.promptId === end.promptId);
-    const start = history.find((e) => e.kind === "prompt" && (e.status === "running" || e.status === "queued"));
+    const start = history.find(
+      (e): e is TerminalEvent => e.kind === "prompt" && (e.status === "running" || e.status === "queued"),
+    );
     const startAt = start?.at || end.at;
     const traceId = hash(sandboxId, 32);
     const spanId = hash(`${sandboxId}/${end.promptId}`, 16);
@@ -140,7 +142,7 @@ interface ExportJob {
 export function createLangfuse(
   sql: Sql,
   key: string,
-  nativeProviderFor: (id: string) => Promise<{ provider: Provider; providerSandboxId: string }>,
+  nativeProviderFor: (id: string) => Promise<{ provider: Pick<Provider, "id" | "events">; providerSandboxId: string }>,
   send: typeof fetch = fetch,
 ) {
   async function history(job: ExportJob, signal: AbortSignal): Promise<AgentEvent[] | null> {

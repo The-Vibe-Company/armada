@@ -106,7 +106,7 @@ export async function promptOutcome(
 
 /** Bounded newest-first read stopping at this prompt's own start, not sandbox creation. */
 export async function readPromptEvents(
-  provider: Provider,
+  provider: Pick<Provider, "id" | "events">,
   request: { sandboxId: string; promptId: string; conversationId?: string; signal?: AbortSignal },
 ): Promise<{ events: AgentEvent[]; complete: boolean }> {
   const all: AgentEvent[] = [];

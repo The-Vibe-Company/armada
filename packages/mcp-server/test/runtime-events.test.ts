@@ -795,13 +795,17 @@ test("runtime retry metadata is published without a status read and clears on pr
   expect(await retryAt()).toBeNull();
 });
 
-test("terminal runtime prompts enqueue one private-content-free delivery across replay", async () => {
+test("terminal runtime prompts admit one webhook and one Langfuse export across replay", async () => {
   const f = await fixture({ provider: "modal" });
   try {
     await f.db.query(
       "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
       [f.people.org, await encryptSecret("webhook_secret", ENCRYPTION_KEY)],
     );
+    await f.db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
+      f.people.org,
+      await encryptSecret("langfuse_config", ENCRYPTION_KEY),
+    ]);
     const active = await f.enrol();
     const event: AgentEvent = {
       id: "terminal_event",
@@ -826,6 +830,9 @@ test("terminal runtime prompts enqueue one private-content-free delivery across 
       reason: "turn_failed",
     });
     expect(JSON.stringify(deliveries)).not.toContain("private_prompt_content");
+    expect(
+      (await f.db.query("select sandbox_id,prompt_id,runtime_ack,terminal_status from langfuse_turn_exports")).rows,
+    ).toEqual([{ sandbox_id: f.id, prompt_id: "completed_prompt", runtime_ack: 1, terminal_status: "failed" }]);
   } finally {
     await f.close();
   }

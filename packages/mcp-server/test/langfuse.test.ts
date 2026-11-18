@@ -135,15 +135,13 @@ test("native settlement exports once and a new server reads only its organizatio
   expect(await native.reconcileOne(signal)).toBe(true);
 
   let payload = "";
-  const exporter = createLangfuse(
-    db,
-    key,
-    async () => ({ provider: provider as Provider, providerSandboxId: "native_export" }),
-    (async (_url, init) => {
-      payload = String(init?.body);
-      return new Response(null, { status: 200 });
-    }) as typeof fetch,
-  );
+  const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "native_export" }), (async (
+    _url,
+    init,
+  ) => {
+    payload = String(init?.body);
+    return new Response(null, { status: 200 });
+  }) as typeof fetch);
   expect(await exporter.reconcileOne(signal)).toBe(true);
   expect(payload).toContain("customer_reply");
   expect(payload).toContain("customer_prompt");

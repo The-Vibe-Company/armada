@@ -255,9 +255,10 @@ export async function startServer(
     modalProviderFor,
     modalTokensFor: modal.modalTokensFor,
   });
+  const historicalProviderFor = createHistoricalSandboxProviderResolver(providers);
   subscriptionMigration = createSubscriptionMigration(
     sql,
-    createHistoricalSandboxProviderResolver(providers),
+    historicalProviderFor,
     (provider, id, caller, quiesced) => modelAuth.capture(provider, id, caller, quiesced),
     modelAuth.broker!,
   );
@@ -558,7 +559,7 @@ export async function startServer(
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
-  const langfuse = createLangfuse(sql, config.encryptionKey, createHistoricalSandboxProviderResolver(providers));
+  const langfuse = createLangfuse(sql, config.encryptionKey, (id) => historicalProviderFor(sql, id));
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
     config.encryptionKey,
