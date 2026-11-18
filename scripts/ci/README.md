@@ -65,4 +65,5 @@ worker timings or old isolated-file sums are not an observed six-shard result.
 files over 200,000 bytes. The generated `docs-guard-allowlist.json` records
 the exact paths and SHA-256 hashes of existing violations while #2713 is in
 progress. Delete the corresponding entry when a file is removed or made
-compliant. CI compares the inventory with the base commit and rejects additions or hash changes.
+compliant. CI compares the inventory with the base commit of the checked-out candidate
+and rejects additions or hash changes.
