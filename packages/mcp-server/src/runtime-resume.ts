@@ -356,8 +356,6 @@ export function createRuntimeResume(
             )
           ).rows[0];
           if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
-          // Issuance occurs after provider activation. Without a pending ticket we cannot
-          // tell a failed activation from a late provider create/resume.
           const retained = Boolean(
             found.provider === "boat" &&
               runtime?.pending &&
