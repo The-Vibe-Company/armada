@@ -43,6 +43,9 @@ type Scan = {
   // Sticky: once a push may have escaped the ledger (a ledger gap, a reflog
   // push it lacks, or a missing hook), coverage is unprovable.
   untracked?: true;
+  // Per repository and checkout directory, each branch's latest pushed SHA as
+  // that checkout last read it. Kept for a checkout a later grant no longer lists.
+  heads?: Record<string, Record<string, Record<string, string>>>;
 };
 type Target = {
   id: string;
@@ -225,10 +228,6 @@ export function createSandboxPullRequests(
       // push, or an accepted one whose tracking update failed (a held ref lock,
       // a killed process). Only the commit's absence from GitHub tells them apart.
       const unresolved = new Set<string>();
-      // Each checkout's own latest push per branch. Checkouts of one repository
-      // keep separate ledgers with no order between them, so any of these may be
-      // the branch's latest push, and every one must be at a pull request head.
-      const heads = new Map<string, Map<string, Set<string>>>();
       let pending = false;
       let uncovered = false;
       // GitHub's head filter receives the owner as configured, not lowercased.
@@ -305,12 +304,24 @@ export function createSandboxPullRequests(
           pushed.set(ref, [...(pushed.get(ref) ?? []), sha]);
         }
         // This read is newer than the retained evidence; a re-pushed SHA moves first.
+        for (const [ref, shas] of pushed) names.set(ref, [...new Set([...shas, ...(names.get(ref) ?? [])])]);
+        scan.heads = {
+          ...scan.heads,
+          [repository]: {
+            ...scan.heads?.[repository],
+            [repo.dir]: Object.fromEntries([...pushed].map(([ref, shas]) => [ref, shas[0] as string])),
+          },
+        };
+      }
+      // Each checkout's own latest push per branch. Checkouts of one repository
+      // keep separate ledgers with no order between them, so any of these may be
+      // the branch's latest push, and every one must be at a pull request head.
+      const heads = new Map<string, Map<string, Set<string>>>();
+      for (const [repository, dirs] of Object.entries(scan.heads ?? {})) {
         const latest = heads.get(repository) ?? new Map<string, Set<string>>();
         heads.set(repository, latest);
-        for (const [ref, shas] of pushed) {
-          names.set(ref, [...new Set([...shas, ...(names.get(ref) ?? [])])]);
-          latest.set(ref, (latest.get(ref) ?? new Set()).add(shas[0] as string));
-        }
+        for (const refs of Object.values(dirs))
+          for (const [ref, sha] of Object.entries(refs)) latest.set(ref, (latest.get(ref) ?? new Set()).add(sha));
       }
       // Retain push evidence when Git prunes a tracking ref or expires its reflog.
       scan.pushes = Object.fromEntries([...branches].map(([repo, names]) => [repo, [...names]]));

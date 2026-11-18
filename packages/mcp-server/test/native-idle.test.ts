@@ -436,6 +436,7 @@ test.each([
   "unrecorded URL push",
   "later push in first checkout",
   "later push in second checkout",
+  "later push in dropped checkout",
 ] as const)("GitHub observation and idle admission agree for %s work", async (state) => {
   const f = await fixture(state === "running-turn" ? state : "quiet");
   const owner = f.caller.userId;
@@ -516,10 +517,10 @@ test.each([
     async (url: Parameters<typeof fetch>[0]) => {
       if (String(url) === "https://api.github.com/user")
         return Response.json({ id: 123, login: "owner", name: "Owner" });
-      if (state === "corrected report") {
-        expect(String(url)).toBe(`https://api.github.com/repos/${repository}/pulls/12`);
-        return Response.json(pull);
-      }
+      // A pull request already known from an earlier scan is read by number.
+      if (String(url) === `https://api.github.com/repos/${repository}/pulls/12`) return Response.json(pull);
+      // A corrected report needs no branch lookup.
+      expect(state).not.toBe("corrected report");
       // Only the rejected attempt's commit is unknown to GitHub.
       if (String(url).includes(`/repos/${repository}/commits/`))
         return String(url).endsWith("9".repeat(40)) ? new Response("", { status: 404 }) : Response.json({});
@@ -548,7 +549,7 @@ test.each([
         // head, the other later at a commit with no PR yet. Their ledgers carry
         // no order between them, whichever checkout is configured first.
         stdout: state.startsWith("later push in")
-          ? request.cwd === (state === "later push in first checkout" ? "/home/user/repo" : "/home/user/copy")
+          ? request.cwd === (state === "later push in second checkout" ? "/home/user/copy" : "/home/user/repo")
             ? `topic\t${"b".repeat(40)}\n`
             : stdout
           : stdout,
@@ -569,6 +570,16 @@ test.each([
       (await f.db.query("select pull_request_scan->'untracked' as u from sandboxes where id=$1", [f.id])).rows[0],
     ).toEqual({ u: true });
     await f.db.query("update sandboxes set pull_request_check_after=now() where id=$1", [f.id]);
+  }
+  if (state === "later push in dropped checkout") {
+    // A revised grant drops the checkout whose later push has no PR yet. Its
+    // latest push, read before, still has to be at a pull request head.
+    await observe(`topic\t${sha}\n`);
+    await f.db.query(
+      `update sandboxes set pull_request_check_after=now(),
+         pull_request_source=jsonb_set(pull_request_source,'{repositories}',$2::jsonb) where id=$1`,
+      [f.id, JSON.stringify([{ url: `https://github.com/${repository}.git`, dir: "copy" }])],
+    );
   }
   await observe(
     git
