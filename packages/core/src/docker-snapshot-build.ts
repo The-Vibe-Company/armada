@@ -17,6 +17,7 @@ import {
   snapshotBaselineFailureMessage,
   snapshotBaselineInstall,
   snapshotBaselineVerify,
+  snapshotBaselineVerifyAfterSetup,
 } from "./snapshot-baseline.ts";
 
 export interface DockerSnapshotBuildReceipt {
@@ -163,7 +164,7 @@ RUN chmod 0755 /opt/armada-build && chmod 0444 /opt/armada-build/*
 ARG ARMADA_SNAPSHOT_BUILD_ID
 RUN --mount=type=secret,id=github,uid=0,gid=0,mode=0400,required=true test -n "$ARMADA_SNAPSHOT_BUILD_ID" && bash /opt/armada-build/checkout.sh && chown -h -R -P -- user:user ${directories} ${initCommands ? `&& ${initCommands}` : ""} && test ! -e /home/user/armada-runtime && test ! -L /home/user/armada-runtime && bash /opt/armada-build/scan.sh
 USER 1000:1000
-RUN ${snapshotBaselineVerify}
+RUN ${snapshotBaselineVerifyAfterSetup}
 `;
     await writeFile(join(directory, "Dockerfile"), dockerfile, { mode: 0o600, flag: "wx" });
     const limits = dockerResourceLimits(dockerHostResources(), options.limits?.());

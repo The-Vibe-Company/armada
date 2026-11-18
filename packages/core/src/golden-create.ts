@@ -25,6 +25,7 @@ import {
   snapshotBaselineFailureMessage,
   snapshotBaselineInstall,
   snapshotBaselineVerify,
+  snapshotBaselineVerifyAfterSetup,
 } from "./snapshot-baseline.ts";
 import { sshStdinCheckout } from "./ssh-executor.ts";
 
@@ -134,8 +135,9 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         throw new GoldenError("setup_failed", message, { safeMessage: message });
       }
     },
-    async verifyBaseline(provider, sandboxId) {
-      const command = `export PATH=/usr/local/bin:/usr/bin:/bin; ${snapshotBaselineVerify}`;
+    async verifyBaseline(provider, sandboxId, stage) {
+      const verify = stage === "setup" ? snapshotBaselineVerifyAfterSetup : snapshotBaselineVerify;
+      const command = `export PATH=/usr/local/bin:/usr/bin:/bin; ${verify}`;
       const result = await provider.exec({
         sandboxId,
         timeoutSeconds: 30,

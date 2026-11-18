@@ -88,7 +88,8 @@ export interface GoldenCreateDeps {
     context?: { buildId: string; repositories?: readonly string[] },
   ): Promise<void>;
   installBaseline?(provider: Provider, sandboxId: string): Promise<void>;
-  verifyBaseline?(provider: Provider, sandboxId: string): Promise<void>;
+  /** `provisioned` runs before checkout; `setup` checks what will be saved after repository setup. */
+  verifyBaseline?(provider: Provider, sandboxId: string, stage: "provisioned" | "setup"): Promise<void>;
   verifyHelper?(provider: Provider, sandboxId: string): Promise<Omit<HelperReceipt, "snapshotId">>;
   /** Reserve capacity before any builder starts. Returns an opaque server-only reservation. */
   reserve?(provider: Provider, actor: GoldenActor, existingGolden?: GoldenRecord): Promise<string | undefined>;
@@ -220,7 +221,7 @@ export class GoldenCreateService {
       }
       // Check the provisioned image before checkout needs Git or init tooling.
       // A second pass below verifies what will actually be saved after init.
-      await this.deps.verifyBaseline?.(provider, builder.id);
+      await this.deps.verifyBaseline?.(provider, builder.id, "provisioned");
       // Each installation token is scoped to exactly the authorized repositories
       // from that installation. Public/no-App checkouts retain the caller path.
       await enter("checkout_credentials");
@@ -285,7 +286,7 @@ export class GoldenCreateService {
       await enter("secret_scan");
       await this.deps.scan(provider, builder.id, { buildId, repositories: prepared.map((repo) => repo.dir) });
       const helperReceipt = await this.deps.verifyHelper?.(provider, builder.id);
-      await this.deps.verifyBaseline?.(provider, builder.id);
+      await this.deps.verifyBaseline?.(provider, builder.id, "setup");
       requestedSnapshot = input.existingGolden
         ? `golden-r-${crypto.randomUUID()}`
         : `golden-${builder.id.replaceAll("_", "-")}`;

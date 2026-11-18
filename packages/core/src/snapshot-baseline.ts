@@ -50,7 +50,8 @@ export function snapshotBaselineInstall(
     "install -m 555 /usr/local/lib/node_modules/bun/bin/bun.exe /opt/armada/runtime-bun/bun",
     `curl -fsSL --retry 3 -o git.tar.xz 'https://www.kernel.org/pub/software/scm/git/git-${GIT}.tar.xz'`,
     `printf '%s  git.tar.xz\\n' 3cd8fee86f69a949cb610fee8cd9264e6873d07fa58411f6060b3d62729ed7c5 | sha256sum -c -; tar -xJf git.tar.xz; cd git-${GIT}`,
-    "make -s -j2 prefix=/usr NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_PYTHON=YesPlease INSTALL_SYMLINKS=YesPlease install",
+    // HTTPS uses libcurl; OpenSSL would only serve imap-send, so its headers are not required.
+    "make -s -j2 prefix=/usr NO_OPENSSL=YesPlease NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_PYTHON=YesPlease INSTALL_SYMLINKS=YesPlease install",
     "rm -rf /var/lib/apt/lists/*",
   ].join("; ");
 }
@@ -75,10 +76,24 @@ const checks = {
   "util-linux": "flock --version",
 };
 
+// Repository setup owns per-project toolchains: after it runs, a PATH node, npm,
+// git or bun may be a project pin. The baseline's own fixed paths stay exact.
+const afterSetupChecks: Record<keyof typeof checks, string> = {
+  ...checks,
+  node: "node --version",
+  npm: "npm --version",
+  git: `[ "$(/usr/bin/git --version)" = 'git version ${GIT}' ] && git --version`,
+};
+
 const failurePrefix = `ARMADA_BASELINE_${SNAPSHOT_BASELINE_VERSION}_FAILED`;
-export const snapshotBaselineVerify = Object.entries(checks)
-  .map(([tool, check]) => `{ ${check}; } >/dev/null 2>&1 || { echo '${failurePrefix} ${tool}' >&2; exit 1; }`)
-  .join("; ");
+const verifyScript = (entries: Record<string, string>) =>
+  Object.entries(entries)
+    .map(([tool, check]) => `{ ${check}; } >/dev/null 2>&1 || { echo '${failurePrefix} ${tool}' >&2; exit 1; }`)
+    .join("; ");
+/** Verifies the provisioned image before any repository checkout or setup. */
+export const snapshotBaselineVerify = verifyScript(checks);
+/** Verifies what will be saved after repository setup, allowing project toolchain pins on PATH. */
+export const snapshotBaselineVerifyAfterSetup = verifyScript(afterSetupChecks);
 
 export type SnapshotBaselineTool = keyof typeof checks;
 

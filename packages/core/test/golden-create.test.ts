@@ -22,6 +22,7 @@ import {
   type SandboxInfo,
   type Sql,
 } from "../src/server.ts";
+import { snapshotBaselineVerify, snapshotBaselineVerifyAfterSetup } from "../src/snapshot-baseline.ts";
 
 import { migratedDatabase } from "./support/database.ts";
 
@@ -496,8 +497,8 @@ test("rebuild retains last-good artifacts/config through verification, scan, sna
         detached: false,
         exitCode:
           (failure === "scan" && command.includes("ARMADA_SCAN")) ||
-          ((failure === "initial-baseline" || (failure === "baseline" && checkoutRan)) &&
-            command.includes("ARMADA_BASELINE_1_FAILED"))
+          (failure === "initial-baseline" && command.includes(snapshotBaselineVerify)) ||
+          (failure === "baseline" && checkoutRan && command.includes(snapshotBaselineVerifyAfterSetup))
             ? 97
             : 0,
         stdout: command.includes("/helper/0.1.0/armada-helper") ? helperOutput : "",
