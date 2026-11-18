@@ -6,8 +6,13 @@ user before minting. Minting needs only read access to the sandbox, but
 sending needs ownership (see `viewer/send` below). For an interactive embed,
 mint with a service token created by the sandbox owner, and check that your
 product user may send prompts to this sandbox before you hand over the token.
-The response is `{ token, expiresAt }`. Forward only this
-opaque token to the browser. It expires after five minutes; renew through your
+The viewer token has no read-only scope: a token minted with the owner's
+service token can send, even in a view-only product screen. For a read-only
+embed, mint with a service token created by a non-owner organization member
+who can read the sandbox, or keep the viewer token on your backend and proxy
+only `viewer/status`, `viewer/logs` and `viewer/events`.
+The response is `{ token, expiresAt }`. When the browser holds a
+token, forward only this opaque token. It expires after five minutes; renew through your
 backend. Never send the service bearer to the browser or put tokens in URLs.
 
 The viewer bearer works only on these routes:

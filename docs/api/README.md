@@ -128,8 +128,21 @@ sandbox owner. Otherwise it returns HTTP 404 `not_found` ("No owned sandbox"),
 even for an organization admin who can read an organization-visible sandbox.
 For an interactive embed, mint with a service token created by the sandbox
 owner, and check that your product user may send prompts to this sandbox
-before you hand over the token. For a read-only embed, any service token that
-can read the sandbox works.
+before you hand over the token.
+
+A viewer token has no read-only scope. It carries the full send authority of
+its issuer, so a token minted with the owner's service token can always send,
+even if your product only shows a read-only view. A backend that launches a
+sandbox with its own service token owns that sandbox. If it reuses that token
+to mint for a view-only user, that user can send prompts with
+`viewer/send`. For a read-only embed, do one of the following:
+
+- Mint with a service token created by another organization member who can
+  read the sandbox, for example on an organization-visible sandbox. Sends from
+  that token return 404 `not_found`.
+- Keep the bearer on your backend and expose only proxy routes for
+  `viewer/status`, `viewer/logs` and `viewer/events`. Do not give the browser
+  the viewer token or a route to `viewer/send`.
 
 | Viewer route | Input |
 | --- | --- |
