@@ -7,6 +7,7 @@ import { nativeQuiescent } from "../src/native-idle.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { createSandboxPullRequests } from "../src/sandbox-pull-requests.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { recreatedAtFetchedCommit, rejectedRecreation } from "./push-ledger-git.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
@@ -421,11 +422,20 @@ test.each([
   "running-turn",
   "corrected report",
   "out-of-grant report",
+  "rejected recreation",
+  "recreated at fetched commit",
 ] as const)("GitHub observation and idle admission agree for %s work", async (state) => {
   const f = await fixture(state === "running-turn" ? state : "quiet");
   const owner = f.caller.userId;
   const repository = "example/repo";
-  const sha = "a".repeat(40);
+  // Real Git evidence: the reader output that reaches admission.
+  const git =
+    state === "rejected recreation"
+      ? rejectedRecreation()
+      : state === "recreated at fetched commit"
+        ? (({ stdout, first }) => ({ stdout, sha: first }))(recreatedAtFetchedCommit())
+        : undefined;
+  const sha = git?.sha ?? "a".repeat(40);
   await f.db.query(
     `insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
        values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
@@ -512,9 +522,11 @@ test.each([
     await f.db.query("update sandboxes set pull_request_check_after=now() where id=$1", [f.id]);
   }
   await observe(
-    state === "no push" || state === "corrected report"
-      ? ""
-      : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : ""}topic\t${sha}\n${state === "merged after closed" ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}`,
+    git
+      ? git.stdout
+      : state === "no push" || state === "corrected report"
+        ? ""
+        : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : ""}topic\t${sha}\n${state === "merged after closed" ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}`,
   );
   if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
@@ -524,7 +536,7 @@ test.each([
   expect(f.stops()).toBe(shouldStop ? 1 : 0);
   if (shouldStop) expect(sandbox?.statusReason).toBe("work_merged");
   expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
-    state === "no push" || state === "other commit"
+    state === "no push" || state === "other commit" || state === "rejected recreation"
       ? []
       : state === "merged after closed"
         ? ["merged", "closed"]

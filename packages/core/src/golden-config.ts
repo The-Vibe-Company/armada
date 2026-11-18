@@ -255,7 +255,9 @@ export const REPOSITORY_FETCH_FAILED_MARKER = "ARMADA_REPOSITORY_FETCH_FAILED";
 export const PUSH_LEDGER_MARKER = "# armada-push-ledger v1";
 /**
  * Per-repository ledger in the common Git directory, one `<unix time>\t<branch>\t<sha>`
- * line per push. A `<unix time>\t!gap` line records a push the ledger could not attribute.
+ * line per confirmed push. A `<unix time>\t!push\t<pid>\t<branch>\t<sha>` line
+ * records an attempt before the remote answers; a `<unix time>\t!gap` line
+ * records a push the ledger could not attribute.
  */
 export const PUSH_LEDGER_FILE = "armada-pushes";
 /** Hooks that must all carry the marker for the ledger to prove coverage. */
@@ -295,11 +297,15 @@ exec "$chain" "$@"
 // Runs the repository's own hook with the same input; exits with its status.
 const runChained = `if [ -n "$input" ]; then printf '%s\\n' "$input"; fi | "$chain" "$@"`;
 
-// A reference-transaction hook cannot be skipped with --no-verify and runs after
-// the tracking ref's reflog entry is written, so "update by push" separates a
-// push from a fetch. The ledger survives pruning or deleting the tracking ref,
-// which also deletes that ref's reflog. An origin-tracking update without its
-// reflog entry (reflogs disabled) cannot be told apart from a push: it is a gap.
+// Git updates the tracking ref only for a ref the remote accepted, in the same
+// process that ran pre-push, even when the tracking ref already held the SHA
+// (recreating a deleted branch). That update confirms the attempt pre-push
+// recorded for this process. A reference-transaction hook cannot be skipped
+// with --no-verify and runs after the tracking ref's reflog entry is written, so
+// without an attempt "update by push" still separates a push from a fetch. The
+// ledger survives pruning or deleting the tracking ref, which also deletes that
+// ref's reflog. An origin-tracking update without its reflog entry (reflogs
+// disabled) cannot be told apart from a push: it is a gap.
 const referenceTransactionHook = `#!/bin/sh
 ${PUSH_LEDGER_MARKER}
 input=$(cat)
@@ -308,7 +314,10 @@ if [ "$1" = committed ] && ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDG
     case "$ref" in refs/remotes/origin/HEAD) continue ;; refs/remotes/origin/*) ;; *) continue ;; esac
     case "$new" in ref:*) continue ;; *[!0]*) ;; *) continue ;; esac
     entry="$(git reflog show --format='%H %gs' -n 1 "$ref" -- 2>/dev/null)"
-    if [ "$entry" = "$new update by push" ]; then
+    if [ -f "$ledger" ] && awk -F '\\t' -v pid="$PPID" -v ref="\${ref#refs/remotes/origin/}" -v sha="$new" -v since="$(($(date +%s) - 3600))" \\
+      '$2 == "!push" && $3 == pid && $4 == ref && $5 == sha && $1 + 0 >= since { found = 1 } END { exit !found }' "$ledger"; then
+      printf '%s\\t%s\\t%s\\n' "$(date +%s)" "\${ref#refs/remotes/origin/}" "$new" >>"$ledger"
+    elif [ "$entry" = "$new update by push" ]; then
       printf '%s\\t%s\\t%s\\n' "$(date +%s)" "\${ref#refs/remotes/origin/}" "$new" >>"$ledger"
     elif [ "\${entry%% *}" != "$new" ]; then
       printf '%s\\t!gap\\n' "$(date +%s)" >>"$ledger"
@@ -322,11 +331,10 @@ ${runChained}
 
 // The reference-transaction hook only sees pushes that update an origin-tracking
 // ref. A push to a URL or another remote, or through origin without the wide
-// tracking refspec, updates none: record it as a gap before it happens. Neither
-// does recreating a deleted branch at the SHA its tracking ref still holds, so
-// every branch update is recorded here too once the repository's own hook
-// allowed the push. A push that then fails is recorded anyway: at worst it
-// withholds a stop.
+// tracking refspec, updates none: record it as a gap before it happens. Every
+// branch update the repository's own hook allowed is recorded as an attempt
+// with this push's process; only the tracking update above confirms it, so a
+// rejected push is never push evidence.
 const prePushHook = `#!/bin/sh
 ${PUSH_LEDGER_MARKER}
 input=$(cat)
@@ -340,7 +348,7 @@ fi
 printf '%s\\n' "$input" | while read -r lref sha remote old; do
   case "$remote" in refs/heads/*) ;; *) continue ;; esac
   case "$sha" in *[!0]*) ;; *) continue ;; esac
-  printf '%s\\t%s\\t%s\\n' "$(date +%s)" "\${remote#refs/heads/}" "$sha" >>"$ledger"
+  printf '%s\\t!push\\t%s\\t%s\\t%s\\n' "$(date +%s)" "$PPID" "\${remote#refs/heads/}" "$sha" >>"$ledger"
 done
 exit 0
 `;

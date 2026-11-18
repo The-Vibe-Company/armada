@@ -72,7 +72,11 @@ const maxPushesPerBranch = 16;
 // A local branch name or matching SHA alone also describes a checkout made by
 // another sandbox. Only pushes qualify for discovery: the launch-installed
 // ledger (which survives a pruned or deleted tracking ref) and reflog records
-// written by a push. Output lists each branch's pushes newest first. A ledger
+// written by a push. Output lists confirmed pushes newest first, in the
+// ledger's single chronological order (reflog pushes it lacks, which already
+// void coverage, follow). An attempt no tracking update confirmed (rejected,
+// or its result unknown) prints `?\t<branch>\t<sha>` and never counts as a push;
+// one younger than ten minutes may still be in flight and prints `!pending`. A ledger
 // gap (a push to a URL or another remote, or an origin update without a
 // reflog entry) or a reflog push the ledger lacks prints `!untracked`. A
 // missing hook (a tool such as husky can move core.hooksPath) prints
@@ -93,11 +97,12 @@ if [ -n "$missing" ]; then
 fi
 entries=$(if [ -f "$ledger" ]; then cat "$ledger"; fi) || exit 1
 logs=$(git reflog show --all --date=unix --format='%gD%x09%gs%x09%H') || exit 1
-{ printf '%s\\n' "$logs"; if [ -n "$entries" ]; then printf '%s\\n' "$entries" | awk '{ print "L\\t" $0 }'; fi; } |
-awk -v since="$1" -F '\\t' '$1 == "L" {
+{ if [ -n "$entries" ]; then printf '%s\\n' "$entries" | awk '{ print "L\\t" $0 }'; fi; printf '%s\\n' "$logs"; } |
+awk -v since="$1" -v now="$(date +%s)" -F '\\t' '$1 == "L" {
     if ($2+0 < since) next
     if ($3 == "!gap" && $4 == "") gap=1
-    else if ($3 != "" && $4 != "") { n++; lref[n]=$3; lsha[n]=$4; ledger[$3 "\\t" $4]=1 }
+    else if ($3 == "!push") { if ($5 != "" && $6 != "") { key=$5 "\\t" $6; if (!(key in listed)) { listed[key]=1; order[++a]=key }; attempt[key]=$2 } }
+    else if ($3 != "" && $4 != "") { key=$3 "\\t" $4; n++; lkey[n]=key; ledger[key]=1; delete attempt[key] }
     next
   }
   $1 ~ /^refs\\/remotes\\/origin\\// && $2 == "update by push" {
@@ -106,15 +111,16 @@ awk -v since="$1" -F '\\t' '$1 == "L" {
     if (timestamp+0 < since) next
     sub(/@\\{[^@]*\\}$/, "", $1)
     sub(/^refs\\/remotes\\/origin\\//, "", $1)
-    m++; rref[m]=$1; rsha[m]=$3
+    m++; rkey[m]=$1 "\\t" $3
   }
   END {
     if (gap) print "!untracked"
-    for (i=1; i<=m; i++) {
-      if (!ledger[rref[i] "\\t" rsha[i]]) print "!untracked"
-      if (!seen[rref[i] "\\t" rsha[i]]++) print rref[i] "\\t" rsha[i]
-    }
-    for (i=n; i>=1; i--) if (!seen[lref[i] "\\t" lsha[i]]++) print lref[i] "\\t" lsha[i]
+    for (i=1; i<=m; i++) if (!ledger[rkey[i]]) print "!untracked"
+    for (i=1; i<=a; i++) if ((order[i] in attempt) && attempt[order[i]] + 600 > now) pending=1
+    if (pending) print "!pending"
+    for (i=n; i>=1; i--) if (!seen[lkey[i]]++) print lkey[i]
+    for (i=1; i<=m; i++) if (!seen[rkey[i]]++) print rkey[i]
+    for (i=1; i<=a; i++) if (order[i] in attempt) print "?\\t" order[i]
   }'`;
 const readPushes = `remote=$(git remote get-url --push --all origin) || exit 1
 case "$remote" in
@@ -180,6 +186,10 @@ export function createSandboxPullRequests(
       const configured = repos.parse(row.repositories);
       const scan = row.pull_request_scan ?? { pushes: {}, discovered: [] };
       const branches = new Map<string, Map<string, string[]>>();
+      // Unconfirmed push attempts: never evidence, but a pull request still
+      // unmerged at one of them may be work of this sandbox.
+      const attempted = new Map<string, Map<string, string[]>>();
+      let pending = false;
       // GitHub's head filter receives the owner as configured, not lowercased.
       const owners = new Map<string, string>();
       for (const repo of configured) {
@@ -227,12 +237,23 @@ export function createSandboxPullRequests(
         const pushed = new Map<string, string[]>();
         for (const line of lines) {
           if (line === "!untracked" || line === "!unproven") continue;
-          const [ref, sha] = line.split("\t");
+          if (line === "!pending") {
+            pending = true;
+            continue;
+          }
+          const attempt = line.startsWith("?\t");
+          const [ref, sha, extra] = (attempt ? line.slice(2) : line).split("\t");
           if (!ref || ref.length > 255 || /\s/.test(ref) || [...ref].some((char) => char.charCodeAt(0) < 32)) return;
-          if (!sha || !/^[a-f0-9]{40}$/.test(sha)) return;
+          if (!sha || !/^[a-f0-9]{40}$/.test(sha) || extra !== undefined) return;
+          if (attempt) {
+            const refs = attempted.get(repository) ?? new Map<string, string[]>();
+            attempted.set(repository, refs);
+            refs.set(ref, [...(refs.get(ref) ?? []), sha]);
+            continue;
+          }
           pushed.set(ref, [...(pushed.get(ref) ?? []), sha]);
         }
-        // The reflog is newer than the retained evidence; a re-pushed SHA moves first.
+        // This read is newer than the retained evidence; a re-pushed SHA moves first.
         for (const [ref, shas] of pushed) names.set(ref, [...new Set([...shas, ...(names.get(ref) ?? [])])]);
       }
       // Retain push evidence when Git prunes a tracking ref or expires its reflog.
@@ -276,12 +297,33 @@ export function createSandboxPullRequests(
         const identity = { repository, number };
         numbers.set(urlFor(identity), identity);
       }
-      const branchCount = [...branches.values()].reduce((sum, refs) => sum + refs.size, 0);
+      // Confirmed pushes and unconfirmed attempts share one lookup per branch.
+      const lookups = new Map<string, Map<string, { shas: string[]; attempts: string[] }>>();
+      for (const [source, attempts] of [
+        [branches, false],
+        [attempted, true],
+      ] as const) {
+        for (const [repository, refs] of source) {
+          const lookup = lookups.get(repository) ?? new Map<string, { shas: string[]; attempts: string[] }>();
+          lookups.set(repository, lookup);
+          for (const [ref, shas] of refs) {
+            const entry = lookup.get(ref) ?? { shas: [], attempts: [] };
+            lookup.set(ref, entry);
+            if (attempts) entry.attempts = shas;
+            else entry.shas = shas;
+          }
+        }
+      }
+      const branchCount = [...lookups.values()].reduce((sum, refs) => sum + refs.size, 0);
       // Dropping an older push could hide its closed PR, so too many is incomplete.
       if (
         branchCount > maxBranches ||
         numbers.size > maxKnownPulls ||
-        [...branches.values()].some((refs) => [...refs.values()].some((shas) => shas.length > maxPushesPerBranch))
+        [...lookups.values()].some((refs) =>
+          [...refs.values()].some(
+            ({ shas, attempts }) => shas.length > maxPushesPerBranch || attempts.length > maxPushesPerBranch,
+          ),
+        )
       )
         return;
       const found = new Map<string, SandboxPullRequest>();
@@ -348,8 +390,8 @@ export function createSandboxPullRequests(
           );
           for (const result of batch) if (result.status === "rejected") throw result.reason;
         }
-        for (const [headRepository, refs] of branches) {
-          for (const [ref, shas] of refs) {
+        for (const [headRepository, refs] of lookups) {
+          for (const [ref, { shas, attempts }] of refs) {
             const params = new URLSearchParams({
               state: "all",
               head: `${owners.get(headRepository)}:${ref}`,
@@ -379,8 +421,11 @@ export function createSandboxPullRequests(
                   discovered.set(urlFor(identity), identity);
                   record(repository, pull);
                   if (pull.head.sha === shas[0]) matched = true;
-                } else if (pull.state === "open") {
-                  // A moved open head blocks stopping without becoming work of this sandbox.
+                } else if (pull.state === "open" || (attempts.includes(pull.head.sha) && !pull.merged_at)) {
+                  // A moved open head blocks stopping without becoming work of
+                  // this sandbox. So does an unmerged PR at an unconfirmed
+                  // attempt, which may be a push whose result was lost; a merged
+                  // PR at a rejected attempt is neither.
                   complete = false;
                 }
               }
@@ -389,7 +434,7 @@ export function createSandboxPullRequests(
             // unfinished work; the merge proof still needs one merged PR. A
             // push after the branch's pull requests (none at the latest pushed
             // head) is unmerged work and blocks stopping.
-            if (named && !matched) complete = false;
+            if (named && shas.length && !matched) complete = false;
           }
         }
       }
@@ -399,6 +444,7 @@ export function createSandboxPullRequests(
         row.active &&
         row.launch_authorized &&
         complete &&
+        !pending &&
         !scan.untracked &&
         list.length > 0 &&
         list.every((pr) => pr.state === "merged")
