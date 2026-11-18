@@ -42,6 +42,7 @@ import {
   resolveModelChoice,
   resolveOrg,
   resolveSkillpackCredential,
+  retainFailureDiagnostic,
   type SkillDefaultsService,
   sandboxActivity,
   setCredential,
@@ -502,7 +503,7 @@ export async function dispatchControlCommand(
         error instanceof ProviderError && code === "rate_limited"
           ? providerRateLimitDetails({ ...error.details, retryAfterSeconds: error.retryAfterSeconds })
           : undefined;
-      throw new ToolApiError(code, message, details);
+      throw retainFailureDiagnostic(new ToolApiError(code, message, details), error);
     }
   }
   if (route === "sandbox/test-model-connection") {
