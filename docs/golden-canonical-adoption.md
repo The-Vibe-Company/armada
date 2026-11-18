@@ -12,28 +12,14 @@ and org admins can adopt; membership is required. Other historical goldens,
 their snapshots, histories and ACLs remain untouched. Adoption does not make
 those other goldens usable through the canonical binding.
 
-## MCP syntax
-
-MCP dry run:
-
-```json
-{"name":"golden_adopt","arguments":{"id":"<existing-golden-uuid>"}}
-```
-
-Apply, using the receipt returned by that dry run within ten minutes:
-
-```json
-{"name":"golden_adopt","arguments":{"id":"<same-existing-golden-uuid>","confirmation":"<receipt-uuid>"}}
-```
-
-Equivalent authenticated HTTP requests (POST, Content-Type: application/json,
-Authorization: Bearer your Armada token) to `/api/v1/golden/adopt`:
+Send authenticated HTTP requests (POST, Content-Type: application/json,
+Authorization: Bearer your Armada token) to `/api/v1/golden/adopt`. Start with a dry run:
 
 ```json
 {"id":"<existing-golden-uuid>"}
 ```
 
-then:
+Confirm with the receipt from the dry run within ten minutes:
 
 ```json
 {"id":"<same-existing-golden-uuid>","confirmation":"<receipt-uuid>"}

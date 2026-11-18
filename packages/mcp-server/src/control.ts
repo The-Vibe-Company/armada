@@ -6,12 +6,14 @@ import {
   OPENCODE_ENDPOINT_ENV,
   PUBLIC_CONTROL_ROUTES,
   parseMachineSizePolicy,
+  providerRateLimitDetails,
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
 import {
   type ApplicationVault,
   addMember,
+  assertGoldenMutation,
   createOrg,
   createSkillCatalog,
   type GitHubApp,
@@ -40,6 +42,7 @@ import {
   resolveModelChoice,
   resolveOrg,
   resolveSkillpackCredential,
+  retainFailureDiagnostic,
   type SkillDefaultsService,
   sandboxActivity,
   setCredential,
@@ -72,6 +75,7 @@ import {
   snapshotGoldenRoute,
   updateGoldenRoute,
 } from "./golden-control.ts";
+import { GOLDEN_ADOPTION_REQUEST } from "./golden-rest-schemas.ts";
 import type { Invitations } from "./invitations.ts";
 import { launchActor, launchRoute, templateRuntime } from "./launch-control.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
@@ -112,7 +116,7 @@ import type { RuntimeResume } from "./runtime-resume.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
-import { sandboxListInput } from "./tools.ts";
+import { describeToolFailure, sandboxListInput } from "./tools.ts";
 
 import { viewerControl } from "./viewer-control.ts";
 
@@ -468,6 +472,40 @@ export async function dispatchControlCommand(
       throw new VaultError("unavailable", "Read-only provider metadata is not configured.");
     return options.providerMetadata({ orgId: member.orgId, provider: backend }, caller);
   }
+  if (route === "golden/adopt") {
+    if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
+    const org = optional(body, "org");
+    const scoped = await selectedCaller(options, caller, org);
+    const input = GOLDEN_ADOPTION_REQUEST.safeParse({ ...body, org });
+    if (!input.success) {
+      const details = input.error.issues.map((issue) => `${issue.message} at ${issue.path.join(".")}`).join("\n");
+      throw new ToolApiError(
+        "internal",
+        `MCP error -32602: Input validation error: Invalid arguments for tool golden_adopt: ${details}`,
+      );
+    }
+    if (!options.goldenAdoption) throw new ToolApiError("unsupported", "Canonical adoption is not configured.");
+    const data = options.data(scoped);
+    try {
+      for (const { orgId, role } of scoped.orgs) {
+        const golden = (await data.goldens.list(orgId)).find((row) => row.id === input.data.id);
+        if (!golden) continue;
+        const actor = { userId: scoped.userId, orgId, role };
+        assertGoldenMutation(actor, golden);
+        const providers = options.providers;
+        const provider = await measureRequestPhase(options.timing, "provider", () => providers.resolve(golden, scoped));
+        return await options.goldenAdoption(provider, actor, golden, input.data.confirmation);
+      }
+      throw new GoldenError("not_found", "Canonical adoption unavailable.");
+    } catch (error) {
+      const { code, message } = describeToolFailure(error);
+      const details =
+        error instanceof ProviderError && code === "rate_limited"
+          ? providerRateLimitDetails({ ...error.details, retryAfterSeconds: error.retryAfterSeconds })
+          : undefined;
+      throw retainFailureDiagnostic(new ToolApiError(code, message, details), error);
+    }
+  }
   if (route === "sandbox/test-model-connection") {
     if (Object.keys(body).some((key) => !["id", "model", "org"].includes(key)))
       throw new VaultError("invalid", "Connection checks accept only id, model and org.");
@@ -556,19 +594,7 @@ export async function dispatchControlCommand(
         );
       body = { ...fields, ttl_seconds: ttl };
     }
-    if (
-      route === "golden/capabilities" &&
-      optional(body, "provider") !== undefined &&
-      !isSandboxProvider(required(body, "provider"))
-    )
-      throw new VaultError("invalid", "Provider is boat or modal.");
     if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
-    if (
-      route === "golden/capabilities" &&
-      optional(body, "org") !== undefined &&
-      !caller.orgs.some((member) => member.orgId === scopedOrg(caller, optional(body, "org")))
-    )
-      throw new VaultError("forbidden", "You are not a member of this org.");
     const ref = optional(body, "org");
     const listRef =
       route === "sandbox/list" &&
@@ -586,7 +612,6 @@ export async function dispatchControlCommand(
         : await selectedCaller(options, caller, ref);
     const result = await callSharedTool(
       {
-        ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
         ...(options.sandboxBillingAccount
           ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(scopedCaller, id) }
@@ -618,11 +643,6 @@ export async function dispatchControlCommand(
           options.providers
             ? options.providers.resolve(sandbox, { userId: sandbox.ownerId })
             : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
-        ...(options.providerMetadata
-          ? {
-              providerMetadata: (selection) => options.providerMetadata!(selection, scopedCaller),
-            }
-          : {}),
         launchCredentials: launchCredentials(
           options.store,
           options.encryptionKey,

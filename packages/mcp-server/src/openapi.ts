@@ -15,6 +15,12 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import { DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
+import {
+  GOLDEN_ADOPTION_REQUEST,
+  GOLDEN_ADOPTION_RESPONSE,
+  GOLDEN_CAPABILITIES_REQUEST,
+  GOLDEN_CAPABILITIES_RESPONSE,
+} from "./golden-rest-schemas.ts";
 import { LAUNCH_REQUEST_VARIANTS } from "./launch-request-schema.ts";
 import {
   GOLDEN_LIST_RESPONSE,
@@ -47,14 +53,26 @@ const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
 const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
   "launch/options": LAUNCH_OPTIONS_RESPONSE,
   "golden/list": GOLDEN_LIST_RESPONSE,
+  "golden/adopt": GOLDEN_ADOPTION_RESPONSE,
+  "golden/capabilities": GOLDEN_CAPABILITIES_RESPONSE,
   "sandbox/launch": z.union([REST_LAUNCH_RESPONSE, TEMPLATE_LAUNCH_RESPONSE]),
   "templates/launch": TEMPLATE_LAUNCH_RESPONSE,
   "logs/read": REST_LOGS_RESPONSE,
 };
 /** Handled directly by the REST dispatcher, not through an MCP tool. */
 const REST_ONLY: Readonly<
-  Record<string, { description: string; input: { type: "object"; properties: Record<string, object> } }>
+  Record<string, { description: string; input: { properties?: Record<string, unknown>; [key: string]: unknown } }>
 > = {
+  "golden/adopt": {
+    description:
+      "Dry-run first: select an existing visible golden by id. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
+    input: requestJsonSchema(GOLDEN_ADOPTION_REQUEST),
+  },
+  "golden/capabilities": {
+    description:
+      "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown/unbounded, not a workspace quota.",
+    input: requestJsonSchema(GOLDEN_CAPABILITIES_REQUEST),
+  },
   "launch/options": {
     description:
       "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. Read it before offering launch choices.",

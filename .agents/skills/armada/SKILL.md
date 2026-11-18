@@ -40,6 +40,8 @@ any receipt UUID returned.
   To refresh a shared snapshot, update its build configuration with the owner authorization.
   A golden is a provider-specific saved environment; a template is an immutable
   revision specifying a golden, harness and configuration. Use IDs if names clash.
+  Use `armada snapshot capabilities --json` for provider capacity and the
+  authenticated REST adoption endpoint for canonical Boat golden adoption.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
