@@ -46,6 +46,10 @@ Supabase/Armada server on **54399**; both ports must be free. Sign in as
 production credentials are needed. Ctrl-C stops both processes. This loop is for
 UI work, not evidence of a working provider lifecycle or deployment.
 
+`bun run e2e` starts a separate dashboard and mock on **3101** and
+**54400**, so the browser journeys can run while `bun run dev` is active.
+If a journey port is occupied, the runner exits and reports the collision.
+
 ### Validate your change
 
 From the repository root:
