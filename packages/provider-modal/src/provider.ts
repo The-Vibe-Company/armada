@@ -749,7 +749,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         } catch (error) {
           if (modalError(error).code !== "not_found") {
             failure ??= { error };
-            await imagesStore.releaseImage(image.info.name, image.sourceId, image.imageId, token);
+            // Best-effort: an unreleased claim expires, and must not stop the remaining images.
+            await imagesStore.releaseImage(image.info.name, image.sourceId, image.imageId, token).catch(() => {});
             continue;
           }
         }
