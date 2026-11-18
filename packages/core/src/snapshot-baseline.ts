@@ -21,6 +21,7 @@ const packages = [
   "ripgrep",
   "ca-certificates",
   "openssh-client",
+  "util-linux",
   "xz-utils",
   "perl",
   "libcurl4-openssl-dev",
@@ -47,19 +48,19 @@ export function snapshotBaselineInstall(
     `npm install -g --force --no-audit --no-fund bun@${SNAPSHOT_BASELINE_BUN}; npm cache clean --force`,
     `curl -fsSL --retry 3 -o git.tar.xz 'https://www.kernel.org/pub/software/scm/git/git-${GIT}.tar.xz'`,
     `printf '%s  git.tar.xz\\n' 3cd8fee86f69a949cb610fee8cd9264e6873d07fa58411f6060b3d62729ed7c5 | sha256sum -c -; tar -xJf git.tar.xz; cd git-${GIT}`,
-    "make -s -j2 prefix=/usr/local NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_PYTHON=YesPlease INSTALL_SYMLINKS=YesPlease install",
+    "make -s -j2 prefix=/usr NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_PYTHON=YesPlease INSTALL_SYMLINKS=YesPlease install",
     "rm -rf /var/lib/apt/lists/*",
   ].join("; ");
 }
 
 const checks = {
-  python3: `python3 -c 'import sys; assert sys.version_info >= (3, 11)'`,
+  python3: `python3 -c 'import sys; assert sys.version_info >= (3, 11)' && /usr/bin/python3 -c 'import sys; assert sys.version_info >= (3, 11)'`,
   "python3-venv": "python3 -c 'import venv, ensurepip'",
   "python3-pip": "python3 -m pip --version",
   node: `[ "$(node --version)" = 'v${NODE}' ]`,
   npm: `[ "$(npm --version)" = '${NPM}' ]`,
   bun: `[ "$(bun --version)" = '${SNAPSHOT_BASELINE_BUN}' ]`,
-  git: `[ "$(git --version)" = 'git version ${GIT}' ]`,
+  git: `[ "$(/usr/bin/git --version)" = 'git version ${GIT}' ] && [ "$(git --version)" = 'git version ${GIT}' ]`,
   gh: "gh --version",
   "build-essential": "cc --version && c++ --version && make --version && test -r /usr/include/stdio.h",
   curl: "curl --version",
@@ -68,6 +69,7 @@ const checks = {
   ripgrep: "rg --version",
   "ca-certificates": "test -s /etc/ssl/certs/ca-certificates.crt",
   "openssh-client": "ssh -V",
+  "util-linux": "flock --version",
 };
 
 const failurePrefix = `ARMADA_BASELINE_${SNAPSHOT_BASELINE_VERSION}_FAILED`;
@@ -76,7 +78,7 @@ export const snapshotBaselineVerify = Object.entries(checks)
   .join("; ");
 
 export function snapshotBaselineFailure(output: string): string | undefined {
-  const lines = new Set(output.split("\n").map((line) => line.trim()));
+  const lines = new Set(output.split("\n").map((line) => line.replace(/^#\d+ \d+(?:\.\d+)? /, "").trim()));
   for (const tool of Object.keys(checks)) {
     if (lines.has(`${failurePrefix} ${tool}`))
       return `Snapshot baseline ${SNAPSHOT_BASELINE_VERSION} requires a working ${tool} at the declared version.`;

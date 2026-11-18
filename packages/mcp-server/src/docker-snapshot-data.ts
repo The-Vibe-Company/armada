@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { DOCKER_SNAPSHOT_FAILURE_MESSAGES, type DockerSnapshotRecord, parseGoldenConfig } from "@armada/core";
-import { type Sql, VaultError } from "@armada/core/server";
+import { SNAPSHOT_BASELINE_VERSION, type Sql, VaultError } from "@armada/core/server";
 import type { DockerHostJob } from "../../core/src/docker-host-job.ts";
 import { DockerHostDraining } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
@@ -20,6 +20,7 @@ export type SnapshotRow = {
   generation: string;
   base_image: string;
   built_on_version: string | null;
+  baseline_version: number | null;
   build_expires_at: Date | string;
   status: DockerSnapshotRecord["status"];
   image_id: string | null;
@@ -33,6 +34,8 @@ export type SnapshotRow = {
 export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
   return {
     builtOnVersion: row.built_on_version,
+    baselineVersion: row.baseline_version ?? null,
+    baselineOutdated: row.status === "ready" && (row.baseline_version ?? 0) < SNAPSHOT_BASELINE_VERSION,
     id: row.id,
     orgId: row.org_id,
     ownerId: row.owner_id,

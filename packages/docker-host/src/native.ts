@@ -399,11 +399,17 @@ export function httpApi(
         ...(expired ? { expired: true } : { outcome: receipt.outcome }),
         ...(receipt.operation === "buildSnapshot" && receipt.imageId ? { imageId: receipt.imageId } : {}),
       };
-      if (expired || !receipt.reason) return void (await post(state.server, "results", state.hostToken, body));
+      const baselineVersion = receipt.operation === "buildSnapshot" ? receipt.baselineVersion : undefined;
+      if (expired || (!receipt.reason && baselineVersion === undefined))
+        return void (await post(state.server, "results", state.hostToken, body));
       try {
-        await post(state.server, "results", state.hostToken, { ...body, reason: receipt.reason });
+        await post(state.server, "results", state.hostToken, {
+          ...body,
+          ...(receipt.reason ? { reason: receipt.reason } : {}),
+          ...(baselineVersion === undefined ? {} : { baselineVersion }),
+        });
       } catch (error) {
-        // Only a server older than failure reasons refuses the field (400): the plain outcome is still the machine
+        // An older server may refuse optional receipt metadata (400): the plain outcome is still the machine
         // fact. Any other failure is retried with the reason on the next tick.
         if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
         await post(state.server, "results", state.hostToken, body);
@@ -424,7 +430,18 @@ export const dockerCli: DockerMachineCli = {
       env.ARMADA_SNAPSHOT_GITHUB_TOKEN = options.githubBuildToken;
     }
     return new Promise((resolve, reject) => {
-      const child = spawn("docker", [...argv], { stdio: ["pipe", "pipe", "ignore"], env });
+      const captureBuildDiagnostic = options?.githubBuildToken !== undefined;
+      const child = spawn("docker", [...argv], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env,
+      });
+      let buildStderr = "";
+      // Keep only a bounded tail in memory. The builder admits only fixed tool
+      // names as errors and never forwards the raw stream to logs or the API.
+      child.stderr.on("data", (data: Buffer) => {
+        if (!captureBuildDiagnostic) return;
+        buildStderr = (buildStderr + data.toString("utf8")).slice(-32768);
+      });
       let output = "";
       let bytes = 0;
       let failed = false;
@@ -446,7 +463,7 @@ export const dockerCli: DockerMachineCli = {
       child.on("close", (code) => {
         clearTimeout(timer);
         if (failed || code === null) reject(new Error("Docker command failed"));
-        else resolve({ exitCode: code, stdout: output });
+        else resolve({ exitCode: code, stdout: output, ...(captureBuildDiagnostic ? { stderr: buildStderr } : {}) });
       });
       child.stdin.end(stdin);
     });

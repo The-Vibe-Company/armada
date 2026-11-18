@@ -1342,7 +1342,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
     complete(
       hostToken: string,
       installationId: string,
-      result: { requestId: string; outcome: "completed" | "failed"; reason?: DockerJobFailureReason; imageId?: string },
+      result: {
+        requestId: string;
+        outcome: "completed" | "failed";
+        reason?: DockerJobFailureReason;
+        imageId?: string;
+        baselineVersion?: number;
+      },
     ) {
       return transaction(async (tx) => {
         exact(result, [
@@ -1350,6 +1356,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           "outcome",
           ...(result.reason !== undefined ? ["reason"] : []),
           ...(result.imageId !== undefined ? ["imageId"] : []),
+          ...(result.baselineVersion !== undefined ? ["baselineVersion"] : []),
         ]);
         if (
           result.reason !== undefined &&
@@ -1403,6 +1410,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
         )
           deny();
         if (result.reason === "snapshot_build_failed" && !job.snapshot_id) deny();
+        if (
+          result.baselineVersion !== undefined &&
+          (!job.snapshot_id ||
+            result.outcome !== "completed" ||
+            !Number.isSafeInteger(result.baselineVersion) ||
+            result.baselineVersion < 1 ||
+            result.baselineVersion > 2147483647)
+        )
+          deny();
         if (job.snapshot_id) {
           const parsed = await readJob(job);
           if (
@@ -1425,7 +1441,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               }
             }
             await tx.query(
-              "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4 where id=$1 and status='building'",
+              "update public.docker_snapshots set status=$2,image_id=$3,failure_reason=$4,baseline_version=$5 where id=$1 and status='building'",
               [
                 job.snapshot_id,
                 eligible ? "ready" : "failed",
@@ -1439,6 +1455,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                       : result.reason === "disk_full"
                         ? DOCKER_SNAPSHOT_FAILURE_MESSAGES.disk
                         : DOCKER_SNAPSHOT_FAILURE_MESSAGES.build,
+                eligible ? (result.baselineVersion ?? null) : null,
               ],
             );
           }

@@ -19,7 +19,12 @@ import { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, PROVIDER_LIMITS } from "./sandbox-provider.ts";
 import { shellQuote } from "./shell-quote.ts";
-import { snapshotBaselineFailure, snapshotBaselineInstall, snapshotBaselineVerify } from "./snapshot-baseline.ts";
+import {
+  SNAPSHOT_BASELINE_VERSION,
+  snapshotBaselineFailure,
+  snapshotBaselineInstall,
+  snapshotBaselineVerify,
+} from "./snapshot-baseline.ts";
 import { sshStdinCheckout } from "./ssh-executor.ts";
 
 export interface GoldenBackendSlot {
@@ -363,6 +368,10 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         }
         step = "snapshot_pointer";
         await transactionalStore.setSnapshot(inserted.id, snapshot);
+        await sql.query("update public.goldens set baseline_version=$2 where id=$1", [
+          inserted.id,
+          SNAPSHOT_BASELINE_VERSION,
+        ]);
         if (publication) {
           publication.golden_id = inserted.id;
           const duplicate = await sql.query<{ source_id: string | null; proven: boolean; golden_id: string }>(

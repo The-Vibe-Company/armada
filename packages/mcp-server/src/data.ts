@@ -121,7 +121,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility, g.owner_id,
   g.provider::text as provider, g.provider_sandbox_id, g.provider_snapshot_id, g.modal_workspace,
-  g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.build_warnings, g.helper_receipt, g.created_at`;
+  g.modal_environment, g.modal_app_id, g.config, g.size_policy, g.build_warnings, g.helper_receipt, g.baseline_version, g.created_at`;
 // Include admitted prompts even before their native usage is collected; never show a stale subtotal as complete.
 const SANDBOX_USAGE = `(public.sandbox_usage(s) || jsonb_build_object('turnCount',
   greatest((s.usage_turns->>'turnCount')::int, (select nullif(count(distinct prompt_id),0)::int from (

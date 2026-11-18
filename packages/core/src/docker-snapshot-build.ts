@@ -10,7 +10,21 @@ import { SNAPSHOT_INIT_SUPERVISOR } from "./docker-snapshot-init.ts";
 import { normalizeGitHubGoldenConfig } from "./golden-config.ts";
 import { goldenCheckoutScript } from "./golden-create-service.ts";
 import { goldenScanScript } from "./golden-scan.ts";
-import { snapshotBaselineInstall, snapshotBaselineVerify } from "./snapshot-baseline.ts";
+import {
+  SNAPSHOT_BASELINE_VERSION,
+  snapshotBaselineFailure,
+  snapshotBaselineInstall,
+  snapshotBaselineVerify,
+} from "./snapshot-baseline.ts";
+
+export interface DockerSnapshotBuildReceipt {
+  imageId: string;
+  baselineVersion: number | null;
+}
+
+export class DockerSnapshotBaselineError extends Error {}
+
+const baselineLabel = "dev.armada.environment.baseline-version";
 
 /** BuildKit secret mount and shared golden checkout/init/scan. No credential file or model account. */
 export async function buildDockerSnapshot(
@@ -23,7 +37,7 @@ export async function buildDockerSnapshot(
   },
   input: Extract<DockerHostJob, { operation: "buildSnapshot" }>,
   recoverOnly = false,
-): Promise<string> {
+): Promise<DockerSnapshotBuildReceipt> {
   const job = parseDockerHostJob(input);
   if (job.operation !== "buildSnapshot") throw Error("Snapshot build denied.");
   const tag = `armada-snapshot-${options.installationId}-${job.build.id}`;
@@ -54,10 +68,14 @@ export async function buildDockerSnapshot(
             ...(githubBuildToken === undefined ? {} : { githubBuildToken }),
           },
     );
-    if (result.exitCode !== 0) throw Error("Snapshot build failed.");
+    if (result.exitCode !== 0) {
+      const diagnostic = githubBuildToken === undefined ? undefined : snapshotBaselineFailure(result.stderr ?? "");
+      if (diagnostic) throw new DockerSnapshotBaselineError(diagnostic);
+      throw Error("Snapshot build failed.");
+    }
     return result.stdout;
   };
-  const verify = async () => {
+  const verify = async (newBuild: boolean): Promise<DockerSnapshotBuildReceipt> => {
     const rows = JSON.parse(await checked(["image", "inspect", tag]));
     const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : null;
     if (
@@ -66,7 +84,14 @@ export async function buildDockerSnapshot(
       Object.entries(labels).some(([key, value]) => row.Config?.Labels?.[key] !== value)
     )
       throw Error("Snapshot build denied.");
-    return row.Id as string;
+    const baseline = row.Config?.Labels?.[baselineLabel];
+    const version = baseline === undefined ? null : Number(baseline);
+    if (
+      (version !== null && (!Number.isSafeInteger(version) || version < 1 || version > 2147483647)) ||
+      (newBuild && version !== SNAPSHOT_BASELINE_VERSION)
+    )
+      throw Error("Snapshot build denied.");
+    return { imageId: row.Id as string, baselineVersion: version };
   };
   try {
     const existing = await checked([
@@ -78,7 +103,7 @@ export async function buildDockerSnapshot(
       "--format",
       "{{.ID}}",
     ]);
-    if (existing.trim()) return await verify();
+    if (existing.trim()) return await verify(false);
     if (recoverOnly) throw Error("Snapshot build outcome unknown.");
     const remaining = (job.request.expiresAt ?? 0) - options.now();
     if (remaining <= 0) throw Error("Snapshot build expired.");
@@ -122,7 +147,7 @@ export async function buildDockerSnapshot(
     const dockerfile = `# syntax=docker/dockerfile:1
 FROM ${job.request.image}
 USER root
-RUN ${snapshotBaselineInstall({}, ["util-linux"])}
+RUN ${snapshotBaselineInstall()}
 RUN (id user >/dev/null 2>&1 || useradd --create-home --uid 1000 user) && mkdir -p /home/user && chown 1000:1000 /home/user
 ENV HOME=/home/user
 WORKDIR /home/user
@@ -161,13 +186,15 @@ RUN ${snapshotBaselineVerify}
         "--builder",
         builder,
         "--load",
-        "--quiet",
+        "--progress=plain",
         "--tag",
         tag,
         "--secret",
         "id=github,type=env,env=ARMADA_SNAPSHOT_GITHUB_TOKEN",
         "--build-arg",
         `ARMADA_SNAPSHOT_BUILD_ID=${job.requestId}`,
+        "--label",
+        `${baselineLabel}=${SNAPSHOT_BASELINE_VERSION}`,
         ...Object.entries(labels).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
         directory,
       ],
@@ -175,8 +202,9 @@ RUN ${snapshotBaselineVerify}
       Math.min(3600000, buildRemaining),
       job.build.token,
     );
-    return await verify();
-  } catch {
+    return await verify(true);
+  } catch (error) {
+    if (error instanceof DockerSnapshotBaselineError) throw error;
     throw Error("Docker snapshot build failed or outcome unknown.");
   } finally {
     // Removal is scoped to this request's disposable builder, never the shared Docker builder.

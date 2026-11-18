@@ -2545,10 +2545,23 @@ test.each(["private", "org"] as const)(
       ).rejects.toMatchObject({ code: "invalid" });
     expect(build.build.token).toBe(visibility === "private" ? "offline-snapshot-access" : "offline-admin-access");
     const image = `sha256:${"d".repeat(64)}`;
-    await hosts.complete(f.hostToken, f.installationId, { requestId: id, outcome: "completed", imageId: image });
-    await hosts.complete(f.hostToken, f.installationId, { requestId: id, outcome: "completed", imageId: image });
+    const result = {
+      requestId: id,
+      outcome: "completed",
+      imageId: image,
+      ...(visibility === "private" ? { baselineVersion: 1 } : {}),
+    } as const;
+    await hosts.complete(f.hostToken, f.installationId, result);
+    await hosts.complete(f.hostToken, f.installationId, result);
     expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id })).toMatchObject({
-      snapshot: { id, status: "ready", image, hostAvailable: true },
+      snapshot: {
+        id,
+        status: "ready",
+        image,
+        hostAvailable: true,
+        baselineVersion: visibility === "private" ? 1 : null,
+        baselineOutdated: visibility === "org",
+      },
     });
     if (visibility === "private") {
       await expect(f.snapshots.command(f.adminCaller, "get", { org: f.actor.orgId, id })).rejects.toMatchObject({
