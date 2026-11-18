@@ -694,79 +694,99 @@ test("durable golden recovery persists an interrupted Modal builder before exact
 });
 
 // The job owns a rolled-back artifact's collection: the real provider's builder history must not retain it forever.
-test("a rolled-back Modal build artifact is collected by the job reconciler before its interrupted builder delete is resumed", async () => {
-  const f = fixture();
-  const key = Buffer.alloc(32, 62).toString("base64");
-  await db.query(
-    "insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at) values($1,77,'builder',$2,$3,now()+interval '8 hours') on conflict (user_id) do update set refresh_token_enc=excluded.refresh_token_enc,access_token_enc=excluded.access_token_enc,access_expires_at=excluded.access_expires_at",
-    [scope.userId, await encryptSecret("fixture-refresh", key), await encryptSecret("fixture-access", key)],
-  );
-  const githubFetch = (async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url === "https://api.github.com/user") return Response.json({ id: 77, login: "builder", name: null });
-    if (url.startsWith("https://api.github.com/user/installations")) return Response.json({ installations: [] });
-    if (url === "https://api.github.com/repos/acme/web")
-      return Response.json({ id: 1, name: "web", owner: { login: "acme" }, default_branch: "main", private: false });
-    throw new Error("Unexpected fixture GitHub route");
-  }) as typeof fetch;
-  const jobs = new GoldenBuildJobs({
-    sql: db,
-    encryptionKey: key,
-    service: {
-      github: {
-        store: createSqlVaultStore(db),
-        encryptionKey: key,
-        app: { clientId: "fixture", clientSecret: "fixture" },
+// `interrupted`: the worker retired the artifact, then its builder delete failed mid-termination.
+// `abandoned`: the worker died right after recording the artifact, before any remote cleanup.
+test.each(["interrupted", "abandoned"] as const)(
+  "a rolled-back Modal build artifact is collected by the job reconciler before its %s builder is deleted",
+  async (mode) => {
+    const f = fixture();
+    const key = Buffer.alloc(32, 62).toString("base64");
+    await db.query(
+      "insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at) values($1,77,'builder',$2,$3,now()+interval '8 hours') on conflict (user_id) do update set refresh_token_enc=excluded.refresh_token_enc,access_token_enc=excluded.access_token_enc,access_expires_at=excluded.access_expires_at",
+      [scope.userId, await encryptSecret("fixture-refresh", key), await encryptSecret("fixture-access", key)],
+    );
+    const githubFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://api.github.com/user") return Response.json({ id: 77, login: "builder", name: null });
+      if (url.startsWith("https://api.github.com/user/installations")) return Response.json({ installations: [] });
+      if (url === "https://api.github.com/repos/acme/web")
+        return Response.json({ id: 1, name: "web", owner: { login: "acme" }, default_branch: "main", private: false });
+      throw new Error("Unexpected fixture GitHub route");
+    }) as typeof fetch;
+    const jobs = new GoldenBuildJobs({
+      sql: db,
+      encryptionKey: key,
+      service: {
+        github: {
+          store: createSqlVaultStore(db),
+          encryptionKey: key,
+          app: { clientId: "fixture", clientSecret: "fixture" },
+          fetch: githubFetch,
+        },
         fetch: githubFetch,
+        installationApp: null,
+        ssh: async () => {
+          throw Error("Build commands must not replay");
+        },
       },
-      fetch: githubFetch,
-      installationApp: null,
-      ssh: async () => {
-        throw Error("Build commands must not replay");
-      },
-    },
-    provider: async () => f.provider,
-  });
-  const actor = { userId: scope.userId, orgId: scope.orgId, role: "admin" as const };
-  const job = await jobs.admit(
-    f.provider,
-    actor,
-    { name: "rolled-back", visibility: "private", repos: ["acme/web"], modal: scope.binding },
-    crypto.randomUUID(),
-  );
-  // What the worker leaves after a confirmed rollback: tombstoned artifact, pending collection, deleted builder.
-  const builder = await f.provider.createGolden({ idempotencyKey: job.jobId, labels: { armada: "golden-builder" } });
-  const artifact = crypto.randomUUID();
-  await f.provider.snapshot({ sandboxId: builder.id, name: artifact });
-  f.onImageDelete(async () => {
-    throw new ProviderError({ provider: "modal", code: "unavailable", message: "image service down", retryable: true });
-  });
-  await f.provider.deleteSnapshot(artifact);
-  await expect(f.provider.collectRetiredSnapshot(artifact)).rejects.toMatchObject({ code: "unavailable" });
-  // A transient termination failure leaves the builder's own delete interrupted in `deleting`.
-  let terminations = 0;
-  f.onTerminate(async () => {
-    if (++terminations === 1)
-      throw new ProviderError({ provider: "modal", code: "unavailable", message: "terminate failed", retryable: true });
-  });
-  await expect(f.provider.delete({ sandboxId: builder.id })).rejects.toBeDefined();
-  expect((await f.store.get(builder.id)).phase).toBe("deleting");
-  await db.query(
-    "update golden_build_jobs set state='recovery_required',phase='persist',error_code='build_failed',fence=$2,builder_id=$3,snapshot=$4 where id=$1",
-    [job.jobId, crypto.randomUUID(), builder.id, artifact],
-  );
-  const state = async () =>
-    (await db.query<{ state: string }>("select state from golden_build_jobs where id=$1", [job.jobId])).rows[0]?.state;
-  await jobs.reconcileOne();
-  expect(await state()).toBe("recovery_required");
-  expect((await f.store.get(builder.id)).phase).toBe("deleting");
-  f.onImageDelete(undefined);
-  await jobs.reconcileOne();
-  expect(await state()).toBe("failed");
-  expect(await f.provider.collectRetiredSnapshot(artifact)).toBe("collected");
-  expect((await f.store.get(builder.id)).phase).toBe("deleted");
-  expect(terminations).toBe(2);
-});
+      provider: async () => f.provider,
+    });
+    const actor = { userId: scope.userId, orgId: scope.orgId, role: "admin" as const };
+    const job = await jobs.admit(
+      f.provider,
+      actor,
+      { name: "rolled-back", visibility: "private", repos: ["acme/web"], modal: scope.binding },
+      crypto.randomUUID(),
+    );
+    const builder = await f.provider.createGolden({ idempotencyKey: job.jobId, labels: { armada: "golden-builder" } });
+    const artifact = crypto.randomUUID();
+    await f.provider.snapshot({ sandboxId: builder.id, name: artifact });
+    f.onImageDelete(async () => {
+      throw new ProviderError({
+        provider: "modal",
+        code: "unavailable",
+        message: "image service down",
+        retryable: true,
+      });
+    });
+    // A transient termination failure leaves the builder's own delete interrupted in `deleting`.
+    let terminations = 0;
+    f.onTerminate(async () => {
+      if (++terminations === 1 && mode === "interrupted")
+        throw new ProviderError({
+          provider: "modal",
+          code: "unavailable",
+          message: "terminate failed",
+          retryable: true,
+        });
+    });
+    const parked = mode === "interrupted" ? "deleting" : "checkpoint";
+    if (mode === "interrupted") {
+      await f.provider.deleteSnapshot(artifact);
+      await expect(f.provider.collectRetiredSnapshot(artifact)).rejects.toMatchObject({ code: "unavailable" });
+      await expect(f.provider.delete({ sandboxId: builder.id })).rejects.toBeDefined();
+    }
+    expect((await f.store.get(builder.id)).phase).toBe(parked);
+    await db.query(
+      "update golden_build_jobs set state='recovery_required',phase='persist',error_code='build_failed',fence=$2,builder_id=$3,snapshot=$4 where id=$1",
+      [job.jobId, crypto.randomUUID(), builder.id, artifact],
+    );
+    const state = async () =>
+      (await db.query<{ state: string }>("select state from golden_build_jobs where id=$1", [job.jobId])).rows[0]
+        ?.state;
+    await jobs.reconcileOne();
+    expect(await state()).toBe("recovery_required");
+    expect((await f.store.get(builder.id)).phase).toBe(parked);
+    // Recovery itself retired a still-live artifact; only the image service blocks its collection.
+    await expect(f.provider.getSnapshot(artifact)).rejects.toMatchObject({ code: "not_found" });
+    f.onImageDelete(undefined);
+    await jobs.reconcileOne();
+    expect(await state()).toBe("failed");
+    expect(await f.provider.collectRetiredSnapshot(artifact)).toBe("collected");
+    expect((await f.store.get(builder.id)).phase).toBe("deleted");
+    expect(terminations).toBe(mode === "interrupted" ? 2 : 1);
+  },
+);
 
 // Authoring gate: SDK-bound resource requests, no-allocation rejection and restoration
 // are provider-owned behavior; pure policy tests cannot detect dropped SDK options.

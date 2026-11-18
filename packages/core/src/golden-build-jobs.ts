@@ -484,15 +484,24 @@ export class GoldenBuildJobs {
         return;
       const provider = await this.resolve(row, actor, input);
       if (reservationRecovery && (!provider.findGoldenBuilder || !provider.disposeGoldenBuilder)) return;
-      // The unpublished artifact must be gone before the builder or the capacity is released. Its
-      // retirement is idempotent (an already-tombstoned or absent artifact is a no-op), so recovery
-      // resumes wherever the worker stopped; a pending collection is retried on a later tick with
-      // the job's original authority.
+      // The unpublished artifact must be gone before the builder or the capacity is released.
+      // Recovery resumes wherever the worker stopped: a still-live artifact is retired first (an
+      // already-retired one is not retired again), and a pending collection is retried on a later
+      // tick with the job's original authority.
       if (rolledBack) {
         if (!provider.collectRetiredSnapshot) return;
-        await provider.deleteSnapshot(rolledBack);
+        const live = await provider.getSnapshot(rolledBack).then(
+          () => true,
+          (error: unknown) => {
+            if ((error as { code?: unknown } | null)?.code === "not_found") return false;
+            throw error;
+          },
+        );
+        if (live) await provider.deleteSnapshot(rolledBack);
         if ((await provider.collectRetiredSnapshot(rolledBack)) !== "collected") return;
       }
+      // Proof for the provider that this builder's own snapshot was this collected rolled-back artifact.
+      const collected = rolledBack ? { collected: rolledBack } : {};
       let builderId = row.builder_id;
       let retained = false;
       if (reservationRecovery && provider.findGoldenBuilder) {
@@ -500,6 +509,7 @@ export class GoldenBuildJobs {
           requestKey: row.id,
           ownerId: row.owner_id,
           target: buildTarget(row.provider, row.org_id, input),
+          ...collected,
         });
         if (!found || !found.sandboxId || (builderId !== null && builderId !== found.sandboxId)) return;
         builderId = found.sandboxId;
@@ -543,6 +553,7 @@ export class GoldenBuildJobs {
           ownerId: row.owner_id,
           target: buildTarget(row.provider, row.org_id, input),
           sandboxId: builderId,
+          ...collected,
         });
         if (receipt.status !== "deleted") return;
       } else await provider.stop({ sandboxId: builderId });

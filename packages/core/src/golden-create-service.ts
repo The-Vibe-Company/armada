@@ -435,14 +435,16 @@ export class GoldenCreateService {
           // An unpublished artifact has no retirement row to retry its collection, so cleanup is
           // safe only once a deferred-collection provider confirms the artifact itself is gone.
           // The job records the artifact under its fence first: its reconciler then owns the
-          // retirement, collection and builder disposal, whatever happens to this attempt.
+          // retirement, collection and builder disposal, whatever happens to this attempt. If the
+          // record cannot be written, the known-unpublished artifact is still retired here.
           const owned = ownedSnapshot;
           const deferred = provider.collectRetiredSnapshot?.bind(provider);
-          await (deferred && this.deps.execution?.discarding
-            ? this.deps.execution.discarding(owned)
-            : Promise.resolve()
-          )
-            .then(() => provider.deleteSnapshot(owned))
+          if (deferred && this.deps.execution?.discarding)
+            await this.deps.execution.discarding(owned).catch(() => {
+              cleanupSafe = false;
+            });
+          await provider
+            .deleteSnapshot(owned)
             .then(async () => {
               if (deferred && (await deferred(owned)) !== "collected") throw new Error("collection pending");
             })

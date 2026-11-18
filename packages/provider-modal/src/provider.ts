@@ -842,20 +842,27 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       throw refusal("forbidden", "Golden builder reservation authority does not match.");
     assertMachineSource(row);
   }
-  async function retainBuilder(row: Machine): Promise<boolean> {
+  async function retainBuilder(row: Machine, collected?: string): Promise<boolean> {
+    // Images still recorded with it as source (published, saving or tombstoned) always retain it.
+    if ((await store.images(row.info.id)).length > 0) return true;
     // A deleting or deleted machine's deletion is already committed: its compute is going or gone
-    // and the delete itself removes its recovery images. Only images still recorded with it as
-    // source (published, saving or tombstoned) need it retained; its snapshot history alone must
-    // not strand a job whose rolled-back artifact was collected, nor an interrupted delete.
-    if (row.phase === "deleting" || row.phase === "deleted") return (await store.images(row.info.id)).length > 0;
+    // and the delete itself removes its recovery images. Its snapshot history alone must not strand
+    // a job whose rolled-back artifact was collected, nor an interrupted delete.
+    if (row.phase === "deleting" || row.phase === "deleted") return false;
+    // The job confirmed this builder's only snapshot was never published and is now collected: a
+    // builder parked after that snapshot (`checkpoint`) has no other reason to be retained.
+    const onlyCollected =
+      !!collected &&
+      row.phase === "checkpoint" &&
+      !!row.snapshotImages?.length &&
+      row.snapshotImages.every((image) => image.name === collected);
     return (
       row.generation !== 1 ||
       !!row.goldenRestore ||
-      ["checkpoint", "snapshot", "stopped", "terminate"].includes(row.phase) ||
+      (!onlyCollected && ["checkpoint", "snapshot", "stopped", "terminate"].includes(row.phase)) ||
       !!row.recoveryImageId ||
       !!row.retainedRecoveryIds?.length ||
-      !!row.snapshotImages?.length ||
-      (await store.images(row.info.id)).length > 0
+      (!onlyCollected && !!row.snapshotImages?.length)
     );
   }
   const provider: ModalProvider = {
@@ -1777,7 +1784,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       const row = await store.findByRequestKey(request.requestKey);
       if (!row) return null;
       assertRecoveryBuilder(row, request.ownerId);
-      return { sandboxId: row.info.id, disposition: (await retainBuilder(row)) ? "retained" : "disposable" };
+      return {
+        sandboxId: row.info.id,
+        disposition: (await retainBuilder(row, request.collected)) ? "retained" : "disposable",
+      };
     },
     async disposeGoldenBuilder(request) {
       assertRecoveryTarget(request);
@@ -1788,7 +1798,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       let resume = false;
       await store.lease(request.sandboxId, async (row, save) => {
         assertRecoveryBuilder(row, request.ownerId);
-        if (await retainBuilder(row))
+        if (await retainBuilder(row, request.collected))
           throw refusal("conflict", "Builder has retained snapshot or recovery proof; source retained.");
         if (row.phase === "deleted") return;
         // An interrupted deletion (the builder's own cleanup or an earlier disposal) is resumed
@@ -1803,11 +1813,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           if (row.physicalId && row.physicalId !== reconciled.sandboxId)
             throw refusal("conflict", "Named builder differs from recorded physical identity; source retained.");
           // Recheck after remote observation, before any destructive operation.
-          if (await retainBuilder(row)) throw refusal("conflict", "Builder retention changed; source retained.");
+          if (await retainBuilder(row, request.collected))
+            throw refusal("conflict", "Builder retention changed; source retained.");
           row.physicalId = reconciled.sandboxId;
           await save(row);
         }
-        if (await retainBuilder(row)) throw refusal("conflict", "Builder retention changed; source retained.");
+        if (await retainBuilder(row, request.collected))
+          throw refusal("conflict", "Builder retention changed; source retained.");
         row.phase = "deleting";
         await save(row);
         if (row.physicalId) {

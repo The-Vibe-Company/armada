@@ -345,10 +345,10 @@ test("a persist failure deletes only a confirmed unreferenced ready snapshot and
 test.each([
   ["pending", undefined, ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "stop"]],
   ["refused", "delete", ["discard:golden-bx", "delete:golden-bx", "stop"]],
-  // Without the durable record the reconciler could not resume it: the artifact is never touched.
-  ["unrecorded", "discard", ["discard:golden-bx", "stop"]],
+  // Without the durable record the known-unpublished artifact is still retired by the worker itself.
+  ["unrecorded", "discard", ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "stop"]],
 ] as const)(
-  "an unpublished artifact is recorded before its retirement and a %s cleanup never reports safe",
+  "an unpublished artifact is recorded before its retirement and never reports cleanup safe (%s)",
   async (_, refused, expected) => {
     const log: string[] = [];
     const safety: boolean[] = [];
