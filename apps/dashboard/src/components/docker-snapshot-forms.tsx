@@ -55,6 +55,7 @@ export function SnapshotPlacementWord() {
 export type EmbeddedSnapshotBuild = {
   repository: string;
   name: string;
+  confirmedDockerBuild?: string | undefined;
   onBuilding: (name: string) => void;
   readDocker: (
     id: string,
@@ -206,19 +207,20 @@ function DockerSnapshotForm({
   const paramsForComposer = embedded && embeddedSnapshotParams(orgId, embedded.repository);
   const param = paramsForComposer?.dockerKey ?? `snapshot-build-key.${orgId}`;
   const receiptParam = paramsForComposer?.dockerReceipt ?? "";
+  const confirmedDockerBuild = embedded?.confirmedDockerBuild;
   const readDocker = embedded?.readDocker;
   const onBuilding = embedded?.onBuilding;
   useEffect(() => {
     const params = new URL(window.location.href).searchParams;
     const stored = params.get(param);
-    const receipt = receiptParam && params.get(receiptParam);
+    const receipt = (receiptParam && params.get(receiptParam)) || confirmedDockerBuild;
     if (receipt && isUuid(receipt)) setEmbeddedReceipt(receipt);
     setRequestId(stored && isUuid(stored) ? stored : crypto.randomUUID());
     const keep = (event: Event) => event.preventDefault();
     const node = form.current;
     node?.addEventListener("reset", keep);
     return () => node?.removeEventListener("reset", keep);
-  }, [param, receiptParam]);
+  }, [param, receiptParam, confirmedDockerBuild]);
   useEffect(() => {
     if (!result?.ok || embedded) return;
     const url = new URL(window.location.href);

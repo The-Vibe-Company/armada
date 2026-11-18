@@ -297,18 +297,13 @@ export function LaunchStart(
     setRepository(value);
     setTemplateId("");
     const params = new URLSearchParams(window.location.search);
-    const recovery = value && embeddedSnapshotParams(props.orgId, value);
-    setShowBuild(
-      Boolean(
-        recovery &&
-          (params.has(recovery.dockerReceipt) ||
-            params.has(recovery.cloudJob) ||
-            params.has(recovery.cloudKey) ||
-            params.has(recovery.dockerKey)),
-      ),
-    );
+    const recovery = value ? embeddedSnapshotParams(props.orgId, value) : null;
+    const receipt = recovery && (params.get(recovery.dockerReceipt) ?? params.get(recovery.dockerKey));
+    const recovered = receipt ? starts.find((source) => source.snapshotId === receipt) : undefined;
+    setBuilding(recovered?.building ? recovered.golden : "");
+    setShowBuild(Boolean(recovery && (receipt || params.has(recovery.cloudJob) || params.has(recovery.cloudKey))));
     setOthersOpen(false);
-    const next = launchRepositoryStarts(starts, value).preferred;
+    const next = recovered && !recovered.failed ? recovered : launchRepositoryStarts(starts, value).preferred;
     if (next) {
       selectedTarget.current = next;
       setSelected(next.id);

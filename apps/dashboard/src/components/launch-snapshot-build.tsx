@@ -21,16 +21,8 @@ export const LaunchSnapshotBuild = memo(function LaunchSnapshotBuild({
   onSaved: (target: LaunchStartTarget, options: Options) => void;
 }) {
   const { orgId } = options;
-  const [buildInfo, setBuildInfo] = useState<Options["build"]>();
+  const [buildOptions, setBuildOptions] = useState<Options>();
   const [capacityError, setCapacityError] = useState(false);
-  const [initialPlacement] = useState(() => {
-    if (typeof window === "undefined") return undefined;
-    const receipt = new URLSearchParams(window.location.search).get(
-      embeddedSnapshotParams(orgId, repository).dockerReceipt,
-    );
-    if (!receipt) return undefined;
-    return options.targets.find((target) => target.snapshotId === receipt)?.snapshotHostId;
-  });
   const mounted = useRef(false);
   useEffect(() => {
     mounted.current = true;
@@ -43,7 +35,7 @@ export const LaunchSnapshotBuild = memo(function LaunchSnapshotBuild({
     void readLaunchDialogOptions(true)
       .then((next) => {
         if (!active) return;
-        if (next.orgId === orgId) setBuildInfo(next.build);
+        if (next.orgId === orgId) setBuildOptions(next);
         else setCapacityError(true);
       })
       .catch(() => {
@@ -53,7 +45,12 @@ export const LaunchSnapshotBuild = memo(function LaunchSnapshotBuild({
       active = false;
     };
   }, [orgId]);
-  const build = buildInfo ?? options.build;
+  const available = buildOptions ?? options;
+  const { build } = available;
+  const params = typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
+  const keys = embeddedSnapshotParams(orgId, repository);
+  const receipt = params?.get(keys.dockerReceipt) ?? params?.get(keys.dockerKey);
+  const recoveredDocker = receipt ? available.targets.find((target) => target.snapshotId === receipt) : undefined;
   const readOptions = useCallback(async () => {
     const next = await readLaunchDialogOptions();
     if (next.orgId !== orgId) throw new Error("Switch to this organization before launching.");
@@ -114,18 +111,18 @@ export const LaunchSnapshotBuild = memo(function LaunchSnapshotBuild({
   return (
     <section aria-label="Snapshot build" className="mx-5 mb-7 space-y-4 rounded-xl border p-4 sm:mx-8">
       <h3 className="font-semibold">Create a snapshot</h3>
-      {!buildInfo && !capacityError ? (
+      {!buildOptions && !capacityError ? (
         <p role="status">Loading build placements…</p>
       ) : build.providers.length || build.hosts.length ? (
         <SnapshotCreateChoice
           cloudForms={cloudForms}
-          initialPlacement={initialPlacement}
+          initialPlacement={recoveredDocker?.snapshotHostId}
           hosts={build.hosts}
           orgId={orgId}
           isAdmin={build.isAdmin}
           canBuild={build.hosts.length > 0}
           githubConnected={build.githubConnected}
-          embedded={{ repository, name, onBuilding, readDocker }}
+          embedded={{ repository, name, onBuilding, readDocker, confirmedDockerBuild: recoveredDocker?.snapshotId }}
         />
       ) : (
         <p>No build placement is available. Open Snapshots to configure a provider or Docker host.</p>
