@@ -447,6 +447,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       );
     },
 
+    // Match the bounded concurrency of Boat work preservation's chunk reads.
+    outputReadConcurrency: 8,
     listOutputEntries(request) {
       return collectOutputs(request, outputEntryCollector(null), readCollectorEntries);
     },

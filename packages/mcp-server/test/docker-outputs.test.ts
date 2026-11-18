@@ -120,6 +120,26 @@ test("a Docker file produced while live is sampled through the runtime and stays
     expect(await f.service.reconcileOne(new AbortController().signal)).toBe(true);
     await f.service.drain();
     expect(f.ops).toEqual(["readOutputs", "readOutputs"]);
+    const lastRead = (
+      await f.db.query<{ request_id: string; result_enc: Uint8Array<ArrayBuffer> }>(
+        "select request_id,result_enc from runtime_commands where sandbox_id=$1 order by sequence desc limit 1",
+        [f.id],
+      )
+    ).rows[0]!;
+    expect(JSON.parse(await decryptSecret(lastRead.result_enc, ENCRYPTION_KEY)).body).toEqual({
+      requestId: lastRead.request_id,
+      error: "output_consumed",
+    });
+    // A retry of the completed chunk acknowledgement still succeeds.
+    expect(
+      await f.runtime.complete(f.session.runtimeToken, f.session.epoch, {
+        requestId: lastRead.request_id,
+        epoch: f.session.epoch,
+        status: 200,
+        body: { requestId: lastRead.request_id },
+      }),
+    ).toMatchObject({ requestId: lastRead.request_id });
+
     // The answered read stays (the runtime may still retry its acknowledgement) until a later
     // answer proves it was acknowledged; it never holds the queue.
     expect(

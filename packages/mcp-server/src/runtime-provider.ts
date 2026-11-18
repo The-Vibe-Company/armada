@@ -90,6 +90,7 @@ export function createRuntimeProvider(
           },
         }
       : {}),
+    ...(host.outputReadConcurrency !== undefined ? { outputReadConcurrency: host.outputReadConcurrency } : {}),
     ...(host.outputReadBytes !== undefined ? { outputReadBytes: host.outputReadBytes } : {}),
     ...(host.readOutputChunk
       ? {

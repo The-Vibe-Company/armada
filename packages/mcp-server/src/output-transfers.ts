@@ -9,7 +9,7 @@ import {
 import { decryptSecret, encryptSecret, OutputCollectionError, type Provider, type Sql } from "@armada/core/server";
 
 export type ChunkedOutputReader = Required<Pick<Provider, "listOutputEntries" | "readOutputChunk">> &
-  Pick<Provider, "outputReadBytes">;
+  Pick<Provider, "outputReadBytes" | "outputReadConcurrency">;
 
 const CAN_WRITE = `not application_secret_tainted
           and (status in ('ready','running','stopping') or (status='failed' and stop_requested_at is not null and stopped_at is null))
@@ -86,7 +86,16 @@ export async function collectOutputTransfers(
         )
       ).rows[0];
       if (!transfer && size > remaining) {
-        files.push({ entry, skipped: "org_limit" });
+        const previous =
+          (
+            await tx.query<{ size: number }>(
+              "select size::integer from public.sandbox_outputs where sandbox_id=$1 and name=$2 and skipped is null",
+              [id, name],
+            )
+          ).rows[0]?.size ?? 0;
+        const fits = sandboxBytes + previous <= OUTPUT_MAX_SANDBOX_BYTES;
+        if (fits) sandboxBytes += previous;
+        files.push({ entry, skipped: fits ? "org_limit" : "sandbox_limit" });
         continue;
       }
       if (transfer) {
@@ -112,6 +121,7 @@ export async function collectOutputTransfers(
   });
 
   const readBytes = provider.outputReadBytes ?? OUTPUT_CHUNK_BYTES;
+  const concurrency = provider.outputReadConcurrency ?? 1;
   const files: PublishedFile[] = [];
   for (const { entry, transfer, skipped } of planned) {
     const { name, size } = entry;
@@ -119,27 +129,49 @@ export async function collectOutputTransfers(
       files.push({ name, size, skipped: skipped! });
       continue;
     }
-    for (let offset = transfer.received; offset < size; offset += readBytes) {
+    let offset = transfer.received;
+    while (offset < size) {
       signal?.throwIfAborted();
-      // Repeat the current taint fence before each provider call, including long transfers.
-      if (!(await sql.query(`select 1 from public.sandboxes where id=$1 and ${CAN_WRITE}`, [id, scan])).rows.length)
-        throw new OutputCollectionError("output_unavailable");
-      signal?.throwIfAborted();
-      const bytes = await provider.readOutputChunk({ ...request, chunk: { entry, offset, length: readBytes } });
-      const length = Math.min(readBytes, size - offset);
-      if (!bytes || bytes.length !== length) throw new OutputCollectionError("output_unavailable");
+      const batchSize = Math.min(concurrency, Math.ceil((size - offset) / readBytes));
+      const replies = await Promise.allSettled(
+        Array.from({ length: batchSize }, async (_, index) => {
+          const start = offset + index * readBytes;
+          // Enforce current authority immediately before each provider call, including concurrent reads.
+          if (!(await sql.query(`select 1 from public.sandboxes where id=$1 and ${CAN_WRITE}`, [id, scan])).rows.length)
+            throw new OutputCollectionError("output_unavailable");
+          signal?.throwIfAborted();
+          const bytes = await provider.readOutputChunk({
+            ...request,
+            chunk: { entry, offset: start, length: readBytes },
+          });
+          if (!bytes || bytes.length !== Math.min(readBytes, size - start))
+            throw new OutputCollectionError("output_unavailable");
+          return bytes;
+        }),
+      );
       const parts: { byte_offset: number; content: string }[] = [];
-      for (let start = 0; start < length; start += OUTPUT_CHUNK_BYTES) {
-        signal?.throwIfAborted();
-        const content = await encryptSecret(
-          Buffer.from(bytes.subarray(start, start + OUTPUT_CHUNK_BYTES)).toString("base64"),
-          key,
-        );
-        parts.push({ byte_offset: offset + start, content: Buffer.from(content).toString("hex") });
+      let length = 0;
+      let failure: PromiseRejectedResult | undefined;
+      for (const reply of replies) {
+        if (reply.status === "rejected") {
+          failure = reply;
+          break;
+        }
+        const bytes = reply.value;
+        for (let start = 0; start < bytes.length; start += OUTPUT_CHUNK_BYTES) {
+          signal?.throwIfAborted();
+          const content = await encryptSecret(
+            Buffer.from(bytes.subarray(start, start + OUTPUT_CHUNK_BYTES)).toString("base64"),
+            key,
+          );
+          parts.push({ byte_offset: offset + length + start, content: Buffer.from(content).toString("hex") });
+        }
+        length += bytes.length;
       }
+      if (failure && length === 0) throw failure.reason;
       await update(async (tx) => {
         const advanced = await tx.query(
-          "update public.sandbox_output_transfers set received=$2 where id=$1 and received=$3 returning id",
+          "update public.sandbox_output_transfers set received=$2,progress_at=clock_timestamp() where id=$1 and received=$3 returning id",
           [transfer.id, offset + length, offset],
         );
         if (!advanced.rows.length) {
@@ -157,6 +189,8 @@ export async function collectOutputTransfers(
           [transfer.id, JSON.stringify(parts)],
         );
       });
+      if (failure) throw failure.reason;
+      offset += length;
     }
     const digest = transfer.digest ?? (await hashTransfer(sql, transfer.id, size, key, signal));
     if (!transfer.digest) {
@@ -172,6 +206,14 @@ export async function collectOutputTransfers(
   }
 
   await update(async (tx) => {
+    // Hold the completed revisions through publication against expiration in another sandbox's
+    // quota transaction. A swept transfer cannot publish a reference to deleted data.
+    const transferIds = files.flatMap((file) => (file.transfer_id ? [file.transfer_id] : []));
+    const ready = await tx.query(
+      "select id from public.sandbox_output_transfers where sandbox_id=$1 and id=any($2::uuid[]) for key share",
+      [id, transferIds],
+    );
+    if (ready.rows.length !== transferIds.length) throw new OutputCollectionError("output_unavailable");
     await tx.query(
       `with incoming as (select * from jsonb_to_recordset($2::jsonb)
          as f(name text,size bigint,digest text,transfer_id uuid,skipped text)),
@@ -182,7 +224,8 @@ export async function collectOutputTransfers(
          transfer_id=excluded.transfer_id,skipped=excluded.skipped,content_enc=null,
          updated_at=case when (sandbox_outputs.digest,sandbox_outputs.skipped,sandbox_outputs.size)
            is distinct from (excluded.digest,excluded.skipped,excluded.size) then now() else sandbox_outputs.updated_at end
-       where (sandbox_outputs.transfer_id,sandbox_outputs.skipped,sandbox_outputs.size)
+       where (excluded.skipped is distinct from 'org_limit' or sandbox_outputs.digest is null)
+         and (sandbox_outputs.transfer_id,sandbox_outputs.skipped,sandbox_outputs.size)
          is distinct from (excluded.transfer_id,excluded.skipped,excluded.size)`,
       [id, JSON.stringify(files)],
     );
@@ -198,6 +241,24 @@ export async function collectOutputTransfers(
 /** Serialize chunk reservations and legacy publication for a single organization. */
 export async function remainingOutputOrgBytes(tx: Sql, orgId: string): Promise<number> {
   await tx.query("select pg_advisory_xact_lock(hashtextextended($1::text, 2629))", [orgId]);
+  // Sampling alone does not renew a reservation. Reclaim stalled and terminal work without
+  // waiting on a collector that is saving bytes or publishing the corresponding revision.
+  const stale = await tx.query<{ id: string }>(
+    `select t.id from public.sandbox_output_transfers t
+      join public.sandboxes s on s.id=t.sandbox_id
+      where s.org_id=$1 and t.progress_at<now()-interval '15 minutes'
+      and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)
+      for update of t skip locked`,
+    [orgId],
+  );
+  if (stale.rows.length) {
+    // Recheck published references with the locks held and a fresh PostgreSQL snapshot.
+    await tx.query(
+      `delete from public.sandbox_output_transfers t where t.id=any($1::uuid[])
+        and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
+      [stale.rows.map(({ id }) => id)],
+    );
+  }
   const usage = (
     await tx.query<{ bytes: string }>(
       `select (coalesce((select sum(t.size) from public.sandbox_output_transfers t

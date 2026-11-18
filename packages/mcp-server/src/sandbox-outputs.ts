@@ -32,7 +32,7 @@ const ELIGIBLE = `provider in ('boat','modal','docker') and not application_secr
 /** The only provider surface output collection uses. */
 type OutputReader = Pick<
   Provider,
-  "readOutputs" | "probeOutputs" | "listOutputEntries" | "readOutputChunk" | "outputReadBytes"
+  "readOutputs" | "probeOutputs" | "listOutputEntries" | "readOutputChunk" | "outputReadBytes" | "outputReadConcurrency"
 >;
 
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
@@ -145,6 +145,9 @@ async function collect(
       await collectOutputTransfers(
         sql,
         {
+          ...(provider.outputReadConcurrency !== undefined
+            ? { outputReadConcurrency: provider.outputReadConcurrency }
+            : {}),
           ...(provider.outputReadBytes !== undefined ? { outputReadBytes: provider.outputReadBytes } : {}),
           listOutputEntries: provider.listOutputEntries.bind(provider),
           readOutputChunk: provider.readOutputChunk.bind(provider),

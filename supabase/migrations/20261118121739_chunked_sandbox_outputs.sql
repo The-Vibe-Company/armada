@@ -7,6 +7,7 @@ create table public.sandbox_output_transfers (
  size integer not null check (size between 0 and 33554432),
  received integer not null default 0 check (received between 0 and size),
  scan timestamptz not null,
+ progress_at timestamptz not null default now(),
  digest text,
  unique (sandbox_id, name, revision, size),
  unique (sandbox_id, id)
@@ -57,12 +58,15 @@ language plpgsql set search_path='' as $$
 begin
  delete from public.sandbox_output_transfers t
  where t.sandbox_id=new.id and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id);
+ update public.runtime_commands set result_enc=null
+ where sandbox_id=new.id and starts_with(request_id,'outputs_') and result_enc is not null;
  return new;
 end;
 $$;
 revoke all on function public.discard_stopped_output_transfers() from public,anon,authenticated;
-create trigger discard_stopped_output_transfers after update of status on public.sandboxes
- for each row when (new.status in ('stopped','deleted') and new.status is distinct from old.status)
+create trigger discard_stopped_output_transfers after update of status, stopped_at on public.sandboxes
+ for each row when ((new.status in ('stopped','deleted') and new.status is distinct from old.status)
+   or (new.stopped_at is not null and new.stopped_at is distinct from old.stopped_at))
  execute function public.discard_stopped_output_transfers();
 
 create or replace function public.enqueue_output_webhook() returns trigger

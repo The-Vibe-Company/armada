@@ -213,6 +213,13 @@ export async function forwardControl(
   const method: ControlVerb = request.method;
   const sandboxOutputs = method === "GET" ? sandboxOutputsPath(request.url) : null;
   const relative = sandboxOutputs ?? path.join("/");
+  const downloadHeaders = new Headers();
+  if (sandboxOutputs && !sandboxOutputs.endsWith("/outputs")) {
+    for (const name of ["range", "if-range"]) {
+      const value = request.headers.get(name);
+      if (value) downloadHeaders.set(name, value);
+    }
+  }
   const sandboxDeletion =
     method === "DELETE" && path.length === 2 && path[0] === "sandboxes" && SANDBOX_ID.test(path[1] ?? "");
   const publicMethods: readonly string[] = Object.hasOwn(PUBLIC_CONTROL_ROUTES, relative)
@@ -240,6 +247,7 @@ export async function forwardControl(
     response = await fetchImpl(target, {
       method,
       headers: {
+        ...Object.fromEntries(downloadHeaders),
         ...(authorization ? { authorization } : {}),
         ...(method === "POST" ? { "content-type": request.headers.get("content-type") ?? "application/json" } : {}),
         accept: "application/json",
@@ -285,7 +293,7 @@ export async function forwardControl(
     headers.set("retry-after", retryAfter);
   if (sandboxOutputs) {
     // A download must stay an attachment the browser never sniffs; the length is exact only for an unencoded body.
-    for (const name of ["content-disposition", "x-content-type-options"]) {
+    for (const name of ["content-disposition", "x-content-type-options", "accept-ranges", "content-range", "etag"]) {
       const value = response.headers.get(name);
       if (value) headers.set(name, value);
     }

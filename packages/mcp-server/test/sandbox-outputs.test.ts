@@ -719,15 +719,31 @@ test("other sandboxes' in-progress reservations count toward the organization li
       from occupied cross join generate_series(1,2) n`,
     [id],
   );
+  let revision = "1:2:3:4";
   const reader = {
-    listOutputEntries: async () => [{ name: "report.pdf", size: 1, revision: "1:2:3:4" }],
-    readOutputChunk: async () => {
-      throw Error("quota must be reserved before transferring bytes");
-    },
+    listOutputEntries: async () => [{ name: "report.pdf", size: 1, revision }],
+    readOutputChunk: async () => new Uint8Array([revision === "1:2:3:4" ? 97 : 98]),
   };
   await captureFinalOutputs(sql, reader, id, { key: KEY });
   const service = createSandboxOutputs(sql, KEY, async () => reader);
   const route = routeFor(service, people.owner, people.org);
-  const list = await route(new Request(`https://armada.example/api/v1/sandboxes/${id}/outputs`));
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+  const list = await route(new Request(url));
   expect(await list?.json()).toMatchObject({ files: [{ name: "report.pdf", size: 1, skipped: "org_limit" }] });
+
+  await db.query(
+    `update sandbox_output_transfers set progress_at=now()-interval '16 minutes'
+      where id=(select id from sandbox_output_transfers order by id limit 1)`,
+  );
+  await captureFinalOutputs(sql, reader, id, { key: KEY });
+  expect(await (await route(new Request(url + "/report.pdf")))?.text()).toBe("a");
+
+  await db.query(
+    `insert into sandbox_output_transfers(sandbox_id,name,revision,size,scan)
+      select t.sandbox_id, 'remaining', '1:2:3:4', 33554431, now()
+      from sandbox_output_transfers t group by t.sandbox_id having count(*)=1 and min(t.size)=33554432 limit 1`,
+  );
+  revision = "1:2:3:5";
+  await captureFinalOutputs(sql, reader, id, { key: KEY });
+  expect(await (await route(new Request(url + "/report.pdf")))?.text()).toBe("a");
 });

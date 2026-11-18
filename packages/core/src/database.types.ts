@@ -4448,6 +4448,7 @@ export type Database = {
           size: number;
           received: number;
           scan: string;
+          progress_at: string;
           digest: string | null;
         };
         Insert: {
@@ -4458,6 +4459,7 @@ export type Database = {
           size: number;
           received?: number;
           scan: string;
+          progress_at?: string;
           digest?: string | null;
         };
         Update: {
@@ -4468,6 +4470,7 @@ export type Database = {
           size?: number;
           received?: number;
           scan?: string;
+          progress_at?: string;
           digest?: string | null;
         };
         Relationships: [

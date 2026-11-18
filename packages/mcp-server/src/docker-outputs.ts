@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { OUTPUT_MAX_READ_BYTES, type OutputChunkRequest } from "@armada/core";
 import {
+  encryptSecret,
   OutputCollectionError,
   type OutputFile,
   type Provider,
@@ -100,7 +101,27 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
         if (part === null && reply.body.error === "invalid_request")
           throw new OutputCollectionError("output_protocol_unsupported");
         if (reply.status !== 200 || reply.body.requestId !== requestId) return null;
-        return files === undefined ? decode(reply.body.result) : files;
+        const decoded = files === undefined ? decode(reply.body.result) : files;
+        if (part && decoded) {
+          // The original reader has consumed the reply. Keep an ACK-compatible tombstone so a
+          // lost acknowledgement can be retried without retaining a second copy of the chunk.
+          const receipt = await encryptSecret(
+            JSON.stringify({
+              epoch: reply.epoch,
+              requestId,
+              status: 410,
+              body: { requestId, error: "output_consumed" },
+            }),
+            key,
+          );
+          await sql
+            .query(
+              "update public.runtime_commands set result_enc=$3 where sandbox_id=$1 and request_id=$2 and result_enc is not null",
+              [id, requestId, receipt],
+            )
+            .catch(() => {});
+        }
+        return decoded;
       } catch (error) {
         if (error instanceof OutputCollectionError) throw error;
         // Not live (stop requested, no enrolment, other epoch), refused or timed out: keep the

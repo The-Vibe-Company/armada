@@ -46,6 +46,7 @@ export interface Provider {
   }): Promise<import("./sandbox-output-limits.ts").OutputEntry[] | null>;
   /** Plaintext bytes allowed by this transport in one read. */
   readonly outputReadBytes?: number;
+  readonly outputReadConcurrency?: number;
   readOutputChunk?(request: {
     sandboxId: string;
     signal?: AbortSignal;
