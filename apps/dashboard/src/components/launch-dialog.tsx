@@ -177,7 +177,8 @@ export function LaunchStart(
         });
       })
       .catch(() => {
-        if (active) setLoadingError("Other snapshots and servers could not be loaded. Close and reopen to try again.");
+        if (active)
+          setLoadingError("Other snapshots and Docker hosts could not be loaded. Close and reopen to try again.");
       });
     return () => {
       active = false;
@@ -186,7 +187,7 @@ export function LaunchStart(
   const freshSelection = options?.targets.find((item) => item.id === selected);
   const missing = {
     ...fallback,
-    reason: "This starting point is no longer available. Pick another snapshot or server.",
+    reason: "This starting point is no longer available. Pick another snapshot or Docker host.",
   };
   const starts = options ? (freshSelection ? options.targets : [missing, ...options.targets]) : [fallback];
   const target = starts.find((item) => item.id === selected) ?? (options ? missing : fallback);

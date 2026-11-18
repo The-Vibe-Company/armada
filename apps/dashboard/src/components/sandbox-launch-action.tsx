@@ -91,7 +91,7 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
                     <p className="font-medium">{item.label}</p>
                     <p className="text-muted-foreground">{item.reason}</p>
                     <Link className="underline underline-offset-4" href={item.hostId ? "/hosts" : "/snapshots"}>
-                      {item.hostId ? "Open Hosts" : "Open Snapshots"}
+                      {item.hostId ? "Open Docker hosts" : "Open Snapshots"}
                     </Link>
                   </li>
                 ))}

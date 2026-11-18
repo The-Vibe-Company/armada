@@ -726,7 +726,7 @@ Boat/Modal:
   build-status Inspect a job or recover admission using its saved key.
   build-cancel Cancel your queued, never-started build.
   connect      Prepare the canonical master for maintenance.
-  snapshot     Scan and freeze the maintained master.
+  snapshot     Scan the master sandbox and save it as a snapshot.
   capabilities Read server-authoritative capacity.
   size-policy  Inspect or replace future-launch size defaults.
   remove       Remove from launch selection, retaining children/provider artifacts.
@@ -938,7 +938,7 @@ Prints the sandbox ID and a web URL when available; does not open your browser.
 Example: armada snapshot connect starter --provider modal --org my-team
 `,
   "snapshot snapshot": `Usage: armada snapshot snapshot <name> [--provider boat|modal] [--org <org>] [--json]
-Scan and freeze the canonical master after maintenance. Requires Armada login.
+Scan the master sandbox after maintenance and save it as a snapshot. Requires Armada login.
 Do not leave secrets in the master; the server scans before saving.
 Example: armada snapshot snapshot starter --provider modal --org my-team
 `,
