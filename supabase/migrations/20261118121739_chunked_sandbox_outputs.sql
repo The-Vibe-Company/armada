@@ -53,18 +53,25 @@ $$;
 create trigger reject_tainted_sandbox_output_transfers before insert or update on public.sandbox_output_transfers
  for each row execute function public.reject_tainted_sandbox_outputs();
 
--- Runs as definer: members stop sandboxes through RLS but hold no grant on transfer storage.
+-- Runs as definer: members stop and delete sandboxes through RLS but hold no grant on output storage.
+-- A deleted sandbox's outputs are no longer downloadable, so they stop holding organization quota.
 create function public.discard_stopped_output_transfers() returns trigger
 language plpgsql security definer set search_path='' as $$
 begin
- delete from public.sandbox_output_transfers t
- where t.sandbox_id=new.id and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id);
+ if new.status='deleted' then
+  delete from public.sandbox_outputs where sandbox_id=new.id;
+  delete from public.sandbox_output_transfers where sandbox_id=new.id;
+ else
+  delete from public.sandbox_output_transfers t
+  where t.sandbox_id=new.id and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id);
+ end if;
  update public.runtime_commands set result_enc=null
  where sandbox_id=new.id and starts_with(request_id,'outputs_') and result_enc is not null;
  return new;
 end;
 $$;
 revoke all on function public.discard_stopped_output_transfers() from public,anon,authenticated;
+delete from public.sandbox_outputs o using public.sandboxes s where s.id=o.sandbox_id and s.status='deleted';
 create trigger discard_stopped_output_transfers after update of status, stopped_at on public.sandboxes
  for each row when ((new.status in ('stopped','deleted') and new.status is distinct from old.status)
    or (new.stopped_at is not null and new.stopped_at is distinct from old.stopped_at))
