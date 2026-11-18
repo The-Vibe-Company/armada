@@ -655,6 +655,8 @@ export async function launchSandbox(
           secrets,
           progress,
           options.sleep,
+          undefined,
+          connected !== null,
         );
         if (warnings.length) launchGithub.message = [launchGithub.message, ...warnings].filter(Boolean).join(" ");
         await mark("checkout_done");
@@ -962,6 +964,7 @@ export async function prepareLaunchWorkspace(
     request: Parameters<Provider["exec"]>[0],
     step: { phase: "repository" | "init"; index: number; attempt: number },
   ) => ReturnType<Provider["exec"]>,
+  trackPushes = false,
 ): Promise<string[]> {
   const runner = (phase: "repository" | "init", index: number) => {
     let attempt = 0;
@@ -978,7 +981,7 @@ export async function prepareLaunchWorkspace(
     const warning = await run(
       runner("repository", index),
       sandboxId,
-      pullCommand(repo),
+      pullCommand(repo, trackPushes),
       `git pull of ${repo.dir}`,
       secrets,
       {

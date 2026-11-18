@@ -783,6 +783,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               await live();
               return agent.workspaceExec(command, step, receipt.epoch);
             },
+            true,
           );
           if (warnings.length)
             receipt.github = {

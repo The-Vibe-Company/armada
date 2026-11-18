@@ -259,10 +259,16 @@ export function createSandboxPullRequests(
             state: pull.merged_at ? "merged" : pull.state,
           });
         }
-        for (const { repository, number } of numbers.values()) {
-          const pull = githubPull.parse(await get(repository, `/${number}`));
-          if (pull.number !== number) return;
-          record(repository, pull);
+        const known = [...numbers.values()];
+        for (let offset = 0; offset < known.length; offset += 8) {
+          const batch = await Promise.allSettled(
+            known.slice(offset, offset + 8).map(async ({ repository, number }) => {
+              const pull = githubPull.parse(await get(repository, `/${number}`));
+              if (pull.number !== number) throw Error("Pull request number changed.");
+              record(repository, pull);
+            }),
+          );
+          for (const result of batch) if (result.status === "rejected") throw result.reason;
         }
         for (const [headRepository, refs] of branches) {
           for (const [ref, sha] of refs) {
@@ -348,7 +354,7 @@ export function createSandboxPullRequests(
     async reconcileOne(signal: AbortSignal) {
       if (running || Date.now() < next) return false;
       next = Date.now() + 15_000;
-      const deadline = AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
+      const deadline = AbortSignal.any([signal, AbortSignal.timeout(45_000)]);
       running = check(deadline)
         .catch(() => {})
         .finally(() => {

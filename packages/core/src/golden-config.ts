@@ -252,10 +252,15 @@ export const REPOSITORY_FETCH_FAILED_EXIT = 75;
 export const REPOSITORY_FETCH_FAILED_MARKER = "ARMADA_REPOSITORY_FETCH_FAILED";
 
 /** Fast-forward refresh using the caller-authorized helper already installed by launch. Never prompts. */
-export function pullCommand(repo: GoldenRepo): ShellCommand {
+export function pullCommand(repo: GoldenRepo, trackPushes = false): ShellCommand {
   // Fetch cannot mutate the checkout. Only its completed failures may safely
   // fall back to the snapshot; merge/filter failures can have partial effects.
-  const command = `git config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 || :; if env GIT_TERMINAL_PROMPT=0 git fetch origin ${shQuote(repo.branch)}; then env GIT_TERMINAL_PROMPT=0 git merge --ff-only FETCH_HEAD; else printf '%s\\n' ${REPOSITORY_FETCH_FAILED_MARKER} >&2; exit ${REPOSITORY_FETCH_FAILED_EXIT}; fi`;
+  // Upgrade the default narrow clone mapping while preserving custom refspecs.
+  const singleBranch = shQuote(`+refs/heads/${repo.branch}:refs/remotes/origin/${repo.branch}`);
+  const tracking = trackPushes
+    ? `if [ "$(git config --local --get-all remote.origin.fetch 2>/dev/null)" = ${singleBranch} ]; then git config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 || :; fi; `
+    : "";
+  const command = `${tracking}if env GIT_TERMINAL_PROMPT=0 git fetch origin ${shQuote(repo.branch)}; then env GIT_TERMINAL_PROMPT=0 git merge --ff-only FETCH_HEAD; else printf '%s\\n' ${REPOSITORY_FETCH_FAILED_MARKER} >&2; exit ${REPOSITORY_FETCH_FAILED_EXIT}; fi`;
   return { command, cwd: `${GOLDEN_ROOT}/${repo.dir}`, timeoutSeconds: CLONE_TIMEOUT_SECONDS };
 }
 
