@@ -343,28 +343,26 @@ test("a persist failure deletes only a confirmed unreferenced ready snapshot and
 });
 
 test.each([
-  ["pending", undefined, "pending", ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "stop"], false],
-  ["refused", "delete", "pending", ["discard:golden-bx", "delete:golden-bx", "stop"], false],
-  // Without the durable record the known-unpublished artifact is still retired by the worker itself,
-  // and the record is retried once before the builder cleanup.
   [
-    "unrecorded",
-    "discard",
     "pending",
-    ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "discard:golden-bx", "stop"],
+    undefined,
+    "pending",
+    ["record:golden-bx", "persist", "delete:golden-bx", "collect:golden-bx", "stop"],
     false,
   ],
-  ["collected", undefined, "collected", ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "stop"], true],
-  // A failed record alone never makes confirmed cleanup unsafe: nothing is left for recovery.
+  ["refused", "delete", "pending", ["record:golden-bx", "persist", "delete:golden-bx", "stop"], false],
   [
-    "unrecorded but collected",
-    "discard",
     "collected",
-    ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "discard:golden-bx", "stop"],
+    undefined,
+    "collected",
+    ["record:golden-bx", "persist", "delete:golden-bx", "collect:golden-bx", "stop"],
     true,
   ],
+  // Unrecorded, the candidate is never published and never retired: a retired artifact nobody names
+  // could never be collected. It stays live for the job's fenced recovery write.
+  ["unrecorded", "record", "collected", ["record:golden-bx", "record:golden-bx", "stop"], false],
 ] as const)(
-  "an unpublished artifact is recorded before its retirement and reports cleanup safe only once collected (%s)",
+  "an unpublished artifact is recorded before publication and reports cleanup safe only once collected (%s)",
   async (_, refused, collection, expected, safe) => {
     const log: string[] = [];
     const safety: boolean[] = [];
@@ -373,9 +371,9 @@ test.each([
       execution: {
         id: "job",
         cleaned: (safe) => void safety.push(safe),
-        discarding: async (name) => {
-          log.push(`discard:${name}`);
-          if (refused === "discard") throw new Error("lease lost");
+        candidate: async (name) => {
+          log.push(`record:${name}`);
+          if (refused === "record") throw new Error("lease lost");
         },
         phase: async () => {},
         builder: async () => {},
@@ -384,6 +382,7 @@ test.each([
       ssh: async () => {},
       scan: async () => {},
       persist: async () => {
+        log.push("persist");
         throw new Error("database is down");
       },
     });

@@ -468,8 +468,10 @@ export class GoldenBuildJobs {
       });
       return;
     }
-    // A recovery row carries a snapshot only when its worker confirmed the artifact was never
-    // published and recorded it under the fence before any remote cleanup (see runOne's discarding).
+    // A recovery row's snapshot is the candidate its worker recorded under the fence before
+    // publication (see runOne's candidate). Publication commits only together with complete(),
+    // which requires this fence in state running under the same row lock; a committed row in
+    // recovery_required therefore proves that candidate was never published and never can be.
     const rolledBack = row.snapshot;
     // Never dispose a source whose snapshot/publication outcome may still depend on it.
     if (reservationRecovery && !rolledBack && (row.phase === "snapshot" || row.phase === "persist")) return;
@@ -490,6 +492,15 @@ export class GoldenBuildJobs {
       // tick with the job's original authority.
       if (rolledBack) {
         if (!provider.collectRetiredSnapshot) return;
+        // Defence in depth: never retire an artifact some golden still names.
+        if (
+          (
+            await this.options.sql.query("select 1 from public.goldens where provider_snapshot_id=$1 limit 1", [
+              rolledBack,
+            ])
+          ).rows.length
+        )
+          return;
         const live = await provider.getSnapshot(rolledBack).then(
           () => true,
           (error: unknown) => {
@@ -617,8 +628,8 @@ export class GoldenBuildJobs {
     if (!job) return false;
     if (job.state !== "running") return true;
     let safeToRelease = true;
-    // The confirmed-unpublished artifact this attempt is discarding, kept even when its durable
-    // record failed: an unsafe outcome retries that record under the fence in the final write.
+    // The candidate this attempt tried to record before publication, kept even when that record
+    // failed: an unsafe outcome retries it under the fence in the final write.
     let unpublished: string | null = null;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
@@ -651,8 +662,8 @@ export class GoldenBuildJobs {
             safeToRelease = safe;
           },
           // Under the attempt's fence even after a lease-expiry sweep moved it to recovery: the
-          // sweep keeps the fence, so this proof reaches the reconciler that now owns the row.
-          discarding: async (snapshot) => {
+          // sweep keeps the fence, so this record reaches the reconciler that now owns the row.
+          candidate: async (snapshot) => {
             unpublished = snapshot;
             const saved = await this.options.sql.query(
               "update public.golden_build_jobs set snapshot=$3,updated_at=now() where id=$1 and fence=$2 and state in ('running','recovery_required') and (snapshot is null or snapshot=$3) returning id",
@@ -693,7 +704,7 @@ export class GoldenBuildJobs {
         if (!current || current.fence !== job.fence) return;
         if (current.state === "recovery_required") {
           // A lease-expiry sweep kept this fence and moved the attempt to recovery. If its earlier
-          // record failed, hand the confirmed-unpublished artifact to the reconciler now.
+          // record failed, hand the never-published candidate to the reconciler now.
           if (unpublished && current.snapshot === null)
             await sql.query("update public.golden_build_jobs set snapshot=$2,updated_at=now() where id=$1", [
               job.id,
@@ -704,9 +715,10 @@ export class GoldenBuildJobs {
         if (current.state !== "running") return;
         if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(
-          // An unpublished artifact (discarding) stays as durable cleanup work unless its cleanup
-          // was confirmed, and is written here if its earlier record failed: reconcileOne then
-          // finishes collection, builder and capacity.
+          // The candidate stays as durable cleanup work unless its cleanup was confirmed, and is
+          // written here if its earlier record failed: this write proves it unpublished (state
+          // running under the fence), so reconcileOne retires and collects it, then frees the
+          // builder and capacity.
           "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,snapshot=case when $5::boolean then null else coalesce(snapshot,$6) end,lease_until=null,updated_at=now() where id=$1",
           [
             job.id,

@@ -490,58 +490,90 @@ test("a lease that expires during rollback cleanup hands the recorded artifact t
   }
 });
 
-test.each([
-  ["collection confirmed", "collected", false],
-  ["collection pending", "pending", false],
-  ["collection pending and lease swept", "pending", true],
-  ["collection confirmed and lease swept", "collected", true],
-] as const)("a rejected rollback handoff write never strands the build (%s)", async (_, first, sweep) => {
+test("a rejected candidate record blocks publication and retirement, and the fenced final write hands the live candidate to recovery", async () => {
   const f = await fixture();
   try {
-    // Publication rolls back, and every snapshot write while the attempt is running is rejected:
-    // the worker's pre-cleanup handoff record fails, its later recovery-state write does not.
+    // Every snapshot write while the attempt is running is rejected; its recovery-state write is not.
     await f.db.exec(
-      "create function reject_modal_handoff() returns trigger language plpgsql as $$ begin if new.state='succeeded' then raise exception 'fixture publication failure'; end if; if new.state='running' and new.snapshot is distinct from old.snapshot then raise exception 'fixture handoff failure'; end if; return new; end $$; create trigger reject_modal_handoff before update on golden_build_jobs for each row execute function reject_modal_handoff();",
+      "create function reject_modal_record() returns trigger language plpgsql as $$ begin if new.state='succeeded' then raise exception 'fixture publication reached'; end if; if new.state='running' and new.snapshot is distinct from old.snapshot then raise exception 'fixture record failure'; end if; return new; end $$; create trigger reject_modal_record before update on golden_build_jobs for each row execute function reject_modal_record();",
     );
-    let available = first === "collected";
-    let swept = false;
-    f.collect(async () => {
-      if (sweep && !swept) {
-        swept = true;
-        await f.db.query("update golden_build_jobs set lease_until=clock_timestamp()-interval '1 second'");
-        await f.jobs.runOne();
-      }
-      return available ? "collected" : "pending";
-    });
     const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
     await f.jobs.runOne();
-    const row = async () =>
-      (
-        await f.db.query<{ state: string; phase: string; snapshot: string | null }>(
-          "select state,phase,snapshot from golden_build_jobs where id=$1",
-          [job.jobId],
-        )
-      ).rows[0]!;
-    expect(f.retired).toHaveLength(1);
-    expect(f.deleted).toEqual(["modal-builder-1"]);
-    if (available && !sweep) {
-      // Image collected, builder deleted: the failed record alone leaves nothing to recover.
-      expect(await row()).toMatchObject({ state: "failed", snapshot: null });
-      return;
-    }
-    // Cleanup incomplete, or the row already swept to recovery: the artifact identity is carried
-    // into the recovery state under the fence.
-    const handed = await row();
-    expect(handed).toMatchObject({ state: "recovery_required", phase: "persist", snapshot: f.retired[0] });
-    await f.db.exec("drop trigger reject_modal_handoff on golden_build_jobs");
-    available = true;
+    const row = (
+      await f.db.query<{ state: string; snapshot: string | null }>(
+        "select state,snapshot from golden_build_jobs where id=$1",
+        [job.jobId],
+      )
+    ).rows[0]!;
+    // Never published, never retired: a retired artifact nobody names could never be collected.
+    expect(f.retired).toEqual([]);
+    expect((await f.db.query("select 1 from goldens where name=$1", [f.input.name])).rows).toEqual([]);
+    expect(row.state).toBe("recovery_required");
+    expect(row.snapshot).toBeTruthy();
+    await f.db.exec("drop trigger reject_modal_record on golden_build_jobs");
     await f.jobs.reconcileOne();
-    expect(f.collections).toEqual([f.retired[0]!, f.retired[0]!]);
+    expect(f.retired).toEqual([row.snapshot!]);
+    expect(f.collections).toEqual([row.snapshot!]);
     expect(f.deleted).toEqual(["modal-builder-1", "modal-builder-1"]);
     expect((await f.jobs.status(f.actor.userId, job.jobId)).state).toBe("failed");
   } finally {
     await f.db.exec(
-      "drop trigger if exists reject_modal_handoff on golden_build_jobs; drop function if exists reject_modal_handoff()",
+      "drop trigger if exists reject_modal_record on golden_build_jobs; drop function if exists reject_modal_record()",
+    );
+  }
+});
+
+test("a worker replaced during the image call after a failed first record leaves its candidate to recovery", async () => {
+  const f = await fixture();
+  try {
+    // The first snapshot write fails (a sequence survives the rollback); publication always rolls back.
+    await f.db.exec(
+      "create sequence modal_record_attempts; create function reject_modal_first_record() returns trigger language plpgsql as $$ begin if new.state='succeeded' then raise exception 'fixture publication failure'; end if; if new.state='running' and new.snapshot is distinct from old.snapshot and nextval('modal_record_attempts')=1 then raise exception 'fixture record failure'; end if; return new; end $$; create trigger reject_modal_first_record before update on golden_build_jobs for each row execute function reject_modal_first_record();",
+    );
+    let replaced!: () => void;
+    const held = new Promise<void>((resolve) => {
+      replaced = resolve;
+    });
+    let release!: (value: "pending") => void;
+    let calls = 0;
+    f.collect(async () => {
+      if (++calls > 1) return "collected";
+      // The worker's lease expires while its image call is open and another tick sweeps it. The
+      // call then never returns before recovery: the original worker is gone.
+      await f.db.query("update golden_build_jobs set lease_until=clock_timestamp()-interval '1 second'");
+      await f.jobs.runOne();
+      replaced();
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    });
+    const job = await f.jobs.admit(f.provider, f.actor, f.input, crypto.randomUUID());
+    const worker = f.jobs.runOne();
+    await held;
+    const row = async () =>
+      (
+        await f.db.query<{ state: string; snapshot: string | null }>(
+          "select state,snapshot from golden_build_jobs where id=$1",
+          [job.jobId],
+        )
+      ).rows[0]!;
+    const swept = await row();
+    expect(swept.state).toBe("recovery_required");
+    expect(swept.snapshot).toBeTruthy();
+    expect(f.retired).toEqual([swept.snapshot!]);
+    expect(f.deleted).toEqual([]);
+    await f.jobs.reconcileOne();
+    expect(f.collections).toEqual([swept.snapshot!, swept.snapshot!]);
+    expect(f.deleted).toEqual(["modal-builder-1"]);
+    expect((await f.jobs.status(f.actor.userId, job.jobId)).state).toBe("failed");
+    expect((await f.db.query("select 1 from goldens where name=$1", [f.input.name])).rows).toEqual([]);
+    // A late return from the replaced worker changes nothing.
+    release("pending");
+    await worker;
+    expect(await row()).toMatchObject({ state: "failed", snapshot: swept.snapshot });
+  } finally {
+    await f.db.exec(
+      "drop trigger if exists reject_modal_first_record on golden_build_jobs; drop function if exists reject_modal_first_record(); drop sequence if exists modal_record_attempts",
     );
   }
 });

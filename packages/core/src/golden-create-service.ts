@@ -46,11 +46,12 @@ export interface GoldenCreateDeps {
   execution?: {
     id: string;
     cleaned(safe: boolean): void;
-    /** Durably records a confirmed-unpublished artifact under the job fence BEFORE its remote
-     * cleanup, so the job's reconciler can resume its retirement and deferred collection even if
-     * this attempt's lease expires mid-cleanup. A failure leaves the artifact untouched; the job
-     * retries the record with its unsafe-cleanup outcome, under the same fence. */
-    discarding?(snapshot: string): Promise<void>;
+    /** Durably records the settled candidate artifact under the job fence, BEFORE publication and
+     * before any remote cleanup. Publication commits only together with the job's completion under
+     * that fence, so a job that reaches recovery with this record proves the candidate was never
+     * published: its reconciler can then retire and collect it under the job's original authority,
+     * whatever happened to this attempt. A failure blocks publication and leaves the artifact live. */
+    candidate?(snapshot: string): Promise<void>;
     phase(phase: string): Promise<void>;
     builder(id: string): Promise<void>;
   };
@@ -180,6 +181,18 @@ export class GoldenCreateService {
     const buildId = this.deps.execution?.id ?? crypto.randomUUID();
     const startedAt = Date.now();
     let phase = "builder";
+    // Only a deferred-collection provider leaves a retired artifact that needs recovery to collect it.
+    const deferred = provider.collectRetiredSnapshot?.bind(provider);
+    const candidate = deferred ? this.deps.execution?.candidate : undefined;
+    let recorded = false;
+    const recordCandidate = async (snapshot: string) => {
+      if (!candidate || recorded) return true;
+      recorded = await candidate(snapshot).then(
+        () => true,
+        () => false,
+      );
+      return recorded;
+    };
     const enter = async (next: string) => {
       await this.deps.execution?.phase(next);
       phase = next;
@@ -289,6 +302,9 @@ export class GoldenCreateService {
       const settled = started.status === "ready" ? started : await waitSnapshot(provider, snapshot, limits);
       uncertainSnapshot = false;
       artifactSettled = true;
+      // Publication never starts unless a recovery could name the candidate it might strand.
+      if (!(await recordCandidate(snapshot)))
+        throw new GoldenError("build_failed", "The build could not record its snapshot before publication.");
       if (settled.status !== "ready") {
         throw new GoldenError("snapshot_failed", settled.error ?? `Snapshot '${snapshot}' failed.`);
       }
@@ -435,32 +451,21 @@ export class GoldenCreateService {
         if (ownedSnapshot && artifactSettled && (!persistAttempted || knownUnpublished)) {
           // An unpublished artifact has no retirement row to retry its collection, so cleanup is
           // safe only once a deferred-collection provider confirms the artifact itself is gone.
-          // The job records the artifact under its fence first: its reconciler then owns the
-          // retirement, collection and builder disposal, whatever happens to this attempt. If the
-          // record cannot be written, the known-unpublished artifact is still retired here, and the
-          // job carries it into its final recovery write: the record's outcome alone never makes
-          // confirmed cleanup unsafe. A failed record is retried once before the builder cleanup,
-          // so a worker lost during that cleanup still leaves the artifact to its reconciler.
+          // It is retired only once the job durably names it (normally before publication; an
+          // artifact settled here is recorded now): the job's reconciler then owns retirement,
+          // collection and builder disposal, whatever happens to this attempt. A retired artifact
+          // nobody names could never be collected, so an unrecorded one stays live and unsafe.
           const owned = ownedSnapshot;
-          const deferred = provider.collectRetiredSnapshot?.bind(provider);
-          const discarding = deferred ? this.deps.execution?.discarding : undefined;
-          const record = async () =>
-            discarding
-              ? discarding(owned).then(
-                  () => true,
-                  () => false,
-                )
-              : true;
-          const recorded = await record();
-          await provider
-            .deleteSnapshot(owned)
-            .then(async () => {
-              if (deferred && (await deferred(owned)) !== "collected") throw new Error("collection pending");
-            })
-            .catch(() => {
-              cleanupSafe = false;
-            });
-          if (!recorded) await record();
+          if (!(await recordCandidate(owned))) cleanupSafe = false;
+          else
+            await provider
+              .deleteSnapshot(owned)
+              .then(async () => {
+                if (deferred && (await deferred(owned)) !== "collected") throw new Error("collection pending");
+              })
+              .catch(() => {
+                cleanupSafe = false;
+              });
         }
       }
       if (!persisted && requestedSnapshot && !artifactSettled && snapshotAttempted) cleanupSafe = false;
