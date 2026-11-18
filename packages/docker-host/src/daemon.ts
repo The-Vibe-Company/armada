@@ -147,17 +147,22 @@ export function createExpiryOutputSweep(
 ) {
   let pending: Promise<void> | undefined;
   let after: string | undefined;
-  let nextAttempt = 0;
+  const retryAfter = new Map<string, number>();
   async function capture() {
-    if (now() < nextAttempt) return;
     const state = await store.load();
-    const cursor = state.receipts.findIndex((receipt) => receipt.requestId === after);
-    const receipt = [...state.receipts.slice(cursor + 1), ...state.receipts.slice(0, cursor + 1)].find(
+    const candidates = state.receipts.filter(
       (item) => item.expiryReported && !item.cleaned && item.expiryOutputsPending,
+    );
+    const ids = new Set(candidates.map(({ requestId }) => requestId));
+    for (const id of retryAfter.keys()) if (!ids.has(id)) retryAfter.delete(id);
+    const cursor = candidates.findIndex((receipt) => receipt.requestId === after);
+    const time = now();
+    const receipt = [...candidates.slice(cursor + 1), ...candidates.slice(0, cursor + 1)].find(
+      ({ requestId }) => (retryAfter.get(requestId) ?? 0) <= time,
     );
     if (!receipt) return;
     after = receipt.requestId;
-    nextAttempt = now() + 120_000;
+    retryAfter.set(receipt.requestId, time + 120_000);
     await upload(state, receipt.requestId, () => read(receipt.request));
     await exclusive(store, async () => {
       const current = await store.load();
@@ -166,7 +171,7 @@ export function createExpiryOutputSweep(
       delete target.expiryOutputsPending;
       await store.save(current);
     });
-    nextAttempt = 0;
+    retryAfter.delete(receipt.requestId);
   }
   return {
     sweep() {
@@ -549,14 +554,12 @@ async function admitLocked(
   // allocation first would destroy the workspace the resume is claiming. Local
   // retention still runs while offline: the poll error is rethrown after it.
   // The poll may be held open by the server, so it runs outside the ledger
-  // section: running jobs keep completing meanwhile. Only their completions can
-  // write the ledger in that window, so with jobs running it is saved before
-  // and reloaded after. A ledger that cannot be saved first could not be
-  // reconciled with a completion saved during the poll, and a later write of it
-  // would erase that completion and its replay fence. That save error therefore
+  // section: running jobs and the independent output sweep can save meanwhile.
+  // Save before releasing the lock and reload afterward when either can write.
+  // A save error therefore
   // ends this tick before polling: everything computed above is derived again
   // from the durable ledger on the next tick, and physical expiry runs on its own.
-  const reload = Boolean(options.running?.size);
+  const reload = Boolean(options.running?.size || api.retainedOutputs);
   if (reload) await store.save(state);
   lock.release();
   let polled: Awaited<ReturnType<Api["poll"]>> | undefined;

@@ -339,9 +339,16 @@ test("expired outputs retry with backoff independently of the physical stop repo
   let attempts = 0,
     reports = 0,
     now = 0;
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let holdPoll = false;
   const api: Api = {
     ...f.api,
     async poll() {
+      if (holdPoll) {
+        entered.resolve();
+        await release.promise;
+      }
       return { job: null };
     },
     async result(_state, _receipt, expired) {
@@ -375,8 +382,16 @@ test("expired outputs retry with backoff independently of the physical stop repo
   await sweep.drain();
   expect(attempts).toBe(1);
   now++;
-  sweep.sweep();
-  await sweep.drain();
+  holdPoll = true;
+  const polled = tick(f.store, api, f.executor);
+  await entered.promise;
+  try {
+    sweep.sweep();
+    await sweep.drain();
+  } finally {
+    release.resolve();
+    await polled;
+  }
   expect(attempts).toBe(2);
   expect(f.state().receipts[0]?.expiryOutputsPending).toBeUndefined();
   sweep.sweep();

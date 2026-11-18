@@ -477,6 +477,8 @@ export function createDockerMachineExecutor(options: {
         "--network",
         "none",
         "--read-only",
+        "--workdir",
+        "/",
         "--memory",
         "128m",
         "--pids-limit",

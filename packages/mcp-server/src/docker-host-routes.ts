@@ -96,7 +96,13 @@ const pollClock: DockerHostPollClock = {
 export function createDockerHostRoutes(
   store: ReturnType<typeof createDockerHostStore>,
   authenticate: (request: Request) => Promise<CallerResult>,
-  options: { placement?: boolean; publicUrl?: string; snapshots?: DockerSnapshots; clock?: DockerHostPollClock } = {},
+  options: {
+    placement?: boolean;
+    publicUrl?: string;
+    snapshots?: DockerSnapshots;
+    clock?: DockerHostPollClock;
+    configureArchiveTimeout?: (request: Request) => void;
+  } = {},
 ): Route {
   const clock = options.clock ?? pollClock;
   let uploadingOutputs = false;
@@ -182,7 +188,10 @@ export function createDockerHostRoutes(
         if (!uuid.test(installationId) || !uuid.test(requestId)) throw new InvalidInput();
         if (request.body && request.headers.get("content-type") !== "application/x-tar") throw new InvalidInput();
         if (request.body && uploadingOutputs) return new Response(null, { status: 503, headers });
-        if (request.body) uploadingOutputs = true;
+        if (request.body) {
+          options.configureArchiveTimeout?.(request);
+          uploadingOutputs = true;
+        }
         try {
           return await withRequestBodyCeiling(request, OUTPUT_ARCHIVE_LIMIT, async (bounded) => {
             const signal = AbortSignal.any([bounded.signal, AbortSignal.timeout(40_000)]);
