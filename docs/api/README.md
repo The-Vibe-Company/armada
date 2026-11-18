@@ -121,10 +121,14 @@ For a launch that sent a prompt, read the prompt receipt by replaying the same
 request and checking the response for `promptId` and `conversationId`, not its
 status. A `starting` response without
 them means the launch is still pending, so replay again later. A `stopped`,
-`failed` or `deleted` response without them is a separate outcome: the sandbox
-ended before the worker sent the launch prompt (for example, it was stopped
-while the launch was queued), so no prompt receipt will ever exist. Do not launch
-with a new `requestId` until you know that the first launch failed or ended.
+`failed` or `deleted` response without them is a separate outcome: no prompt
+receipt will ever exist, but that does not prove the prompt never ran. The
+sandbox may have ended while the launch was queued, before the prompt was sent.
+It may also have ended after the worker sent the prompt but before it recorded
+the receipt, so the agent may already have acted on it. Treat the prompt outcome
+as uncertain: inspect the original sandbox with `sandbox/status` and its
+transcript with `logs/read` before you repeat the work. Do not launch with a
+new `requestId` until you know that the first launch failed or ended.
 See
 [Docker hosts](../docker-host-daemon.md) for an example body.
 
@@ -185,6 +189,13 @@ These routes are POSTs under `/api/v1/`. The table shows JSON body fields.
 `id` is the Armada sandbox UUID. Supply an `org` selector when needed for
 organization routing. For service or Armada OAuth bearers, omit `org` or use
 the UUID bound to the token.
+
+Each request body is limited to 128 KiB (131,072 bytes) of serialized JSON,
+counted before parsing. `logs/read` accepts up to 512 KiB. A larger body is
+rejected before any sandbox check or queue admission with HTTP 413 and code
+`invalid`, so nothing is sent. This includes a `sandbox/send` whose `prompt`
+pushes the body over the limit. Shorten the prompt, or put large context in a
+repository or file the agent can read, then send again.
 
 | Route | Required | Optional | Result |
 | --- | --- | --- | --- |
@@ -307,7 +318,8 @@ for sampling, exclusions and stop-time limits.
 ## Handle errors
 
 Ordinary control errors use `{"error":{"code":"…","message":"…"}}`. Branch on the
-code. Handle 400 `invalid` for request correction, 401 `unauthorized` for
+code. Handle 400 `invalid` for request correction, 413 `invalid` for a request
+body over the size limit, 401 `unauthorized` for
 authentication, 403 `forbidden` for permission, and 404 `not_found` for a
 missing or inaccessible sandbox. A 409 `conflict` or `sandbox_not_ready`
 requires checking the current state or request before retrying. A 409

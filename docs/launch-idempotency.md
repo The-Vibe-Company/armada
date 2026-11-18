@@ -70,9 +70,12 @@ After an uncertain Docker launch, poll `sandbox/status` with that UUID as
 `id`. For a launch that sent a prompt, replay the same request and look for
 `promptId` and `conversationId` rather than at the status. `starting` without
 them means the launch is still pending. `stopped`, `failed` or `deleted`
-without them is a separate outcome: the sandbox ended before the launch prompt
-was sent, so no receipt will appear. Do not launch with a new `requestId`
-until you know that the first launch failed or ended.
+without them is a separate outcome: no receipt will appear, and the prompt
+outcome is uncertain. The sandbox may have ended before the launch prompt was
+sent, or after the worker sent it but before the receipt was recorded, in which
+case the agent may already have acted on it. Inspect the original sandbox's
+status and logs before you repeat the work. Do not launch with a new
+`requestId` until you know that the first launch failed or ended.
 See
 [Docker hosts](docker-host-daemon.md) for an example body.
 The rest of this page covers Boat and Modal launches.
