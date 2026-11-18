@@ -2523,6 +2523,35 @@ export type Database = {
           },
         ];
       };
+      native_steer_cursors: {
+        Row: {
+          sandbox_id: string;
+          after_prompt_id: string | null;
+          steer_id: string;
+          pending_since: string | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          after_prompt_id?: string | null;
+          steer_id: string;
+          pending_since?: string | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          after_prompt_id?: string | null;
+          steer_id?: string;
+          pending_since?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_steer_cursors_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       native_webhook_prompts: {
         Row: {
           sandbox_id: string;
@@ -4892,6 +4921,7 @@ export type ModalServerHarnessRow = Database["public"]["Tables"]["modal_server_h
 export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_scopes"]["Row"];
 export type ModelAuthOwnershipRow = Database["public"]["Tables"]["model_auth_ownership"]["Row"];
 export type ModelAuthStateRow = Database["public"]["Tables"]["model_auth_state"]["Row"];
+export type NativeSteerCursorRow = Database["public"]["Tables"]["native_steer_cursors"]["Row"];
 export type NativeWebhookPromptRow = Database["public"]["Tables"]["native_webhook_prompts"]["Row"];
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];

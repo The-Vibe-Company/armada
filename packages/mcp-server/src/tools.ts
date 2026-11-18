@@ -1973,9 +1973,11 @@ export function createArmadaServer(context: ToolContext, version: string, option
           acknowledged = true;
           // Register the concrete run like send does, so native settlement (and
           // its Langfuse export) sees the steered turn. Empty stays the marker
-          // when the run cannot be proven; report then resolves it from events.
+          // when the run cannot be proven yet; report then resolves it from events,
+          // and a durable steer cursor lets lifecycle reconciliation register it.
           const taskPromptId = await steeredRun(provider, found, receipt.promptId, delivery, signal);
           if (taskPromptId) await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, taskPromptId);
+          else await data.sandboxes.recordPendingSteer?.(found.id, found.providerSandboxId, found.taskPromptId || null);
           return {
             patch: {
               status: "running",

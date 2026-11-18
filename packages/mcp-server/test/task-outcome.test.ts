@@ -6,6 +6,7 @@ import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
+import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, type FakeBoat, harness, PUBLIC_URL } from "./support.ts";
 
@@ -233,6 +234,49 @@ test("a restart steer after an unresolved steer keeps the marker instead of the 
     interrupting = "prompt_2";
     expect((await call(mcp, "steer", { id, text: "again" })).isError).toBe(false);
     expect(await taskPromptId()).toBe("");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a restart steer whose replacement appears after the response still reaches export", async () => {
+  const server = await harness({}, await sharedDatabase());
+  try {
+    const { client, token, people, boat, db } = server;
+    const mcp = await client(await token(people.member));
+    const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
+    await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
+      people.org,
+      await encryptSecret("{}", ENCRYPTION_KEY),
+    ]);
+    boat.provider.steer = async (input) => {
+      boat.finish(input.sandboxId, "prompt_1", "interrupted");
+      return { conversationId: "conv_1", promptId: "unpollable-steer-record", mode: "restart" };
+    };
+    expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
+    expect((await db.query("select task_prompt_id from sandboxes where id=$1", [id])).rows[0]).toEqual({
+      task_prompt_id: "",
+    });
+    // The replacement run is published only after the steer response, then finishes.
+    await boat.provider.prompt({ sandboxId: "bx_1", harness: "codex", text: "change course" });
+    boat.finish("bx_1", "prompt_2", "finished");
+    await db.query("update sandboxes set reconcile_after=now() where id=$1", [id]);
+    await createSandboxLifecycle(db, async () => boat.provider).reconcileOne();
+    const native = createNativeWebhookPrompts(db, async () => boat.provider);
+    while (await native.reconcileOne(new AbortController().signal));
+    expect(
+      (
+        await db.query("select prompt_id,terminal_status from langfuse_turn_exports where sandbox_id=$1 order by 1", [
+          id,
+        ])
+      ).rows,
+    ).toEqual([
+      { prompt_id: "prompt_1", terminal_status: "interrupted" },
+      { prompt_id: "prompt_2", terminal_status: "finished" },
+    ]);
+    expect(
+      (await db.query("select after_prompt_id,pending_since from native_steer_cursors where sandbox_id=$1", [id])).rows,
+    ).toEqual([{ after_prompt_id: "prompt_2", pending_since: null }]);
   } finally {
     await server.close();
   }

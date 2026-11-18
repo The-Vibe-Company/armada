@@ -33,6 +33,7 @@ const ROW_ALIASES: Record<string, string> = {
   org_langfuse: "OrgLangfuseRow",
   org_langfuse_export_stats: "OrgLangfuseExportStatsRow",
   langfuse_turn_exports: "LangfuseTurnExportRow",
+  native_steer_cursors: "NativeSteerCursorRow",
   agent_defaults: "AgentDefaultsRow",
   account_turn_queue: "AccountTurnQueueRow",
   account_agent_reservations: "AccountAgentReservationRow",

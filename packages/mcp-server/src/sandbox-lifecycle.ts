@@ -9,7 +9,7 @@ import {
 } from "@armada/core/server";
 
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
-import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
+import { INTERRUPTED_LAUNCH_REASON, promptsAfter } from "./turns.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
@@ -67,6 +67,8 @@ export function createSandboxLifecycle(
           owner_is_member: boolean;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
+          steer_id: string | null;
+          steer_after: string | null;
         }>(
           `update public.sandboxes s set reconcile_lease=$1::uuid,
           reconcile_lease_until=now()+interval '2 minutes'
@@ -79,7 +81,10 @@ export function createSandboxLifecycle(
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
           order by candidate.reconcile_after limit 1 for update of candidate skip locked)
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
-          exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
+          exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member,
+          (select c.steer_id from public.native_steer_cursors c
+            where c.sandbox_id=s.id and c.pending_since>now()-interval '1 hour') as steer_id,
+          (select c.after_prompt_id from public.native_steer_cursors c where c.sandbox_id=s.id) as steer_after`,
           [token, providerId],
         )
       ).rows[0];
@@ -167,6 +172,44 @@ export function createSandboxLifecycle(
         }
         const host = isSandboxProvider(provider.id) ? HOST_CAPABILITIES[provider.id] : undefined;
         physicalExit = info.physicalExitConfirmed === true;
+        // A steer accepted without a provable run left a durable cursor. Register
+        // each later run as a native receipt so shared settlement exports it.
+        if (native && row.steer_id) {
+          try {
+            const later = await operation(signal, () =>
+              promptsAfter(provider, row.provider_sandbox_id, row.steer_after, signal),
+            );
+            if (later.prompts.length)
+              await sql.query(
+                `with target as (
+                  select s.id,s.provider,s.provider_sandbox_id,s.owner_id,s.org_id from public.sandboxes s
+                  where s.id=$1::uuid and s.reconcile_lease=$2::uuid and s.lifecycle_generation=$3
+                    and s.reconcile_lease_until>now() and s.provider in ('boat','modal') and not s.boat_runtime
+                    and s.runtime_transport is distinct from 'dialout'
+                    and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
+                ), advanced as (
+                  update public.native_steer_cursors c set after_prompt_id=$6,
+                    pending_since=case when $7 then null else c.pending_since end
+                  from target t where c.sandbox_id=t.id and c.steer_id=$4::uuid returning c.sandbox_id
+                ) insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id)
+                  select t.id,p.id,t.provider,t.provider_sandbox_id,t.owner_id,t.org_id
+                  from target t join advanced a on a.sandbox_id=t.id cross join unnest($5::text[]) as p(id)
+                  on conflict do nothing`,
+                [
+                  row.id,
+                  token,
+                  row.lifecycle_generation,
+                  row.steer_id,
+                  later.prompts,
+                  later.prompts.at(-1),
+                  later.proven,
+                ],
+              );
+          } catch (caught) {
+            // Optional evidence: a retry follows on the next pass while the cursor is fresh.
+            if (signal?.aborted) throw caught;
+          }
+        }
         // A native turn's terminal receipt frees model capacity immediately on observation,
         // independently of the later machine-idle timer. Never let a stale receipt settle
         // a new task or an uncertain activity lease.

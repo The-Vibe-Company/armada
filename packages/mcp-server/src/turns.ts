@@ -402,6 +402,43 @@ export async function latestPrompt(
   return latest?.promptId ? { promptId: latest.promptId, conversationId: latest.conversationId ?? null } : null;
 }
 
+/** Runs that started after `afterPromptId`, oldest first, from a bounded backward
+ * read. When the cursor run is unknown or outside the window, only the newest
+ * run is returned, unproven: the same resolution `report` gives a steer marker. */
+export async function promptsAfter(
+  provider: Provider,
+  sandboxId: string,
+  afterPromptId: string | null,
+  signal?: AbortSignal,
+  maxPages = 5,
+): Promise<{ prompts: string[]; proven: boolean }> {
+  const prompts = new Map<string, number>();
+  let cursor: string | undefined;
+  let reachedCursor = false;
+  for (let page = 0; page < maxPages; page++) {
+    const read = await provider.events({
+      sandboxId,
+      direction: "backward",
+      limit: EVENT_PAGE_LIMIT,
+      ...(cursor ? { cursor } : {}),
+      ...(signal ? { signal } : {}),
+    });
+    for (const event of read.events) {
+      if (event.kind !== "prompt" || !event.promptId) continue;
+      if (event.promptId === afterPromptId) reachedCursor = true;
+      const at = prompts.get(event.promptId);
+      if (at === undefined || event.at < at) prompts.set(event.promptId, event.at);
+    }
+    if (reachedCursor || !read.hasMore || !read.olderCursor || read.olderCursor === cursor) break;
+    cursor = read.olderCursor;
+  }
+  const ordered = [...prompts].sort((a, b) => a[1] - b[1]);
+  if (!reachedCursor) return { prompts: ordered.length ? [ordered.at(-1)![0]] : [], proven: false };
+  const after = prompts.get(afterPromptId!)!;
+  const later = ordered.filter(([id, at]) => id !== afterPromptId && at > after).map(([id]) => id);
+  return { prompts: later.slice(-20), proven: true };
+}
+
 async function allEvents(
   provider: Provider,
   sandboxId: string,
