@@ -29,7 +29,7 @@ import { VaultError } from "./vault-error.ts";
 export interface TemplateRuntime {
   stores: LaunchStores;
   provider(golden: GoldenRecord): Promise<Provider>;
-  /** Trusted fresh-admission policy; historical receipts never revalidate mutable template sources. */
+  /** Validate the selected definition at admission and the frozen definition on replay. */
   validateDefinition?(definition: TemplateDefinition): void | Promise<void>;
   options?: LaunchOptions;
   launchDocker?(

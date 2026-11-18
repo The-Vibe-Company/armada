@@ -156,9 +156,10 @@ Use `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use `runtimeVersion: 1
 runtime admission checks and server opt-ins apply on both the canonical and
 compatibility routes. For a pinned Modal template, send the same Modal selectors
 with `org` (UUID), `id`, `revision`, `requestKey` and the template's `harness` to
-`sandbox/launch`. This returns the durable template launch receipt, including
-the frozen manifest on success. Replay the same body and request key to recover
-that receipt, and use its top-level `id` for sandbox operations. Ordinary
+`sandbox/launch`. When admission records a request, it returns a durable template
+launch receipt, including the frozen manifest on success. Replay the same body
+and request key to recover that receipt, and use its top-level `id` for sandbox
+operations. A pre-admission refusal has no request ID or sandbox ID. Ordinary
 template launches continue to use `templates/launch`.
 
 For REST extensions, use `ttlSeconds` on `POST /api/v1/sandbox/extend`
