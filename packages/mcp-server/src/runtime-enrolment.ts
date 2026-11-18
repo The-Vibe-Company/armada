@@ -12,6 +12,12 @@ const SOURCE_TRANSACTION = Symbol("runtime_source_transaction");
 
 import { currentRequestId, recordOperatorDiagnostic } from "./request-observability.ts";
 
+function supportsProtocol(version: number) {
+  return version > 0 && (version === PROTOCOL_VERSION || version === PROTOCOL_VERSION - 1);
+}
+
+type LiveRuntime = { epoch: string; runtime_protocol_version: number };
+
 export class RuntimeEnrolmentDenied extends Error {
   constructor() {
     super("runtime_enrolment_denied");
@@ -165,9 +171,9 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
   }
   async function enrol(enrolmentToken: string, wireProtocol: string | null = String(PROTOCOL_VERSION)) {
     // The original v1 wire request had no protocol header. This encoding ages out with v1.
-    const version = wireProtocol ?? "1";
-    const previous = PROTOCOL_VERSION > 1 && version === String(PROTOCOL_VERSION - 1);
-    const supported = version === String(PROTOCOL_VERSION) || previous;
+    const encodedVersion = wireProtocol ?? "1";
+    const version = Number(encodedVersion);
+    const supported = String(version) === encodedVersion && supportsProtocol(version);
     if (!valid(enrolmentToken, "enrol")) throw new RuntimeEnrolmentDenied();
     const hash = await sha256Hex(enrolmentToken);
     const runtimeToken = token("runtime");
@@ -197,8 +203,9 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       const updated = (
         await tx.query<{ epoch: string }>(
           `update public.runtime_enrolments set epoch=epoch+1,runtime_hash=$2,enrolment_hash=null,
-         enrolment_expires_at=null,configuration_enc=null where sandbox_id=$1 returning epoch::text`,
-          [sandbox.id, runtimeHash],
+         enrolment_expires_at=null,configuration_enc=null,runtime_protocol_version=$3
+         where sandbox_id=$1 returning epoch::text`,
+          [sandbox.id, runtimeHash, version],
         )
       ).rows[0];
       if (!updated) throw new RuntimeEnrolmentDenied();
@@ -249,14 +256,14 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!candidate) throw new RuntimeEnrolmentDenied();
       const sandbox = await lockSandbox(tx, candidate.sandbox_id, undefined, source);
       const row = (
-        await tx.query<{ epoch: string }>(
-          `select epoch::text from public.runtime_enrolments where sandbox_id=$1 and runtime_hash=$2
+        await tx.query<LiveRuntime>(
+          `select epoch::text,runtime_protocol_version from public.runtime_enrolments where sandbox_id=$1 and runtime_hash=$2
          and epoch::text=$3 and lifecycle_generation=$4
          and docker_issuer_fence is not distinct from $5::text for update`,
           [sandbox.id, hash, epoch, sandbox.lifecycle_generation, sandbox.docker_issuer_fence],
         )
       ).rows[0];
-      if (!row) throw new RuntimeEnrolmentDenied();
+      if (!row || !supportsProtocol(row.runtime_protocol_version)) throw new RuntimeEnrolmentDenied();
       return work(tx, { sandboxId: sandbox.id, epoch: row.epoch });
     });
   }
@@ -272,14 +279,14 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (expectedLifecycleGeneration !== undefined && sandbox.lifecycle_generation !== expectedLifecycleGeneration)
         throw new RuntimeEnrolmentDenied();
       const row = (
-        await tx.query<{ epoch: string }>(
-          `select epoch::text from public.runtime_enrolments where sandbox_id=$1
+        await tx.query<LiveRuntime>(
+          `select epoch::text,runtime_protocol_version from public.runtime_enrolments where sandbox_id=$1
          and lifecycle_generation=$2 and runtime_hash is not null
          and docker_issuer_fence is not distinct from $3::text for update`,
           [sandbox.id, sandbox.lifecycle_generation, sandbox.docker_issuer_fence],
         )
       ).rows[0];
-      if (!row) throw new RuntimeEnrolmentDenied();
+      if (!row || !supportsProtocol(row.runtime_protocol_version)) throw new RuntimeEnrolmentDenied();
       return work(tx, {
         sandboxId: sandbox.id,
         epoch: row.epoch,
