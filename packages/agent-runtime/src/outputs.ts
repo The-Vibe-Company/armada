@@ -1,5 +1,6 @@
+import { CString, dlopen, FFIType, ptr } from "bun:ffi";
 import { constants } from "node:fs";
-import { type FileHandle, open, opendir } from "node:fs/promises";
+import { type FileHandle, open } from "node:fs/promises";
 import {
   DOCKER_OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
@@ -8,23 +9,41 @@ import {
   validOutputName,
 } from "@armada/core";
 
+// libc's opendir/readdir, not node:fs: Bun's Dir loads the whole directory on its first read
+// (readdirSync), so it cannot stop early. Each readdir call here consumes one entry from a small
+// kernel buffer. The runtime only runs on Linux glibc images (x64/arm64 share this dirent layout).
+let libc: ReturnType<typeof openLibc> | undefined;
+function openLibc() {
+  return dlopen("libc.so.6", {
+    opendir: { args: [FFIType.ptr], returns: FFIType.ptr },
+    readdir: { args: [FFIType.ptr], returns: FFIType.ptr },
+    closedir: { args: [FFIType.ptr], returns: FFIType.i32 },
+  }).symbols;
+}
+/** Offset of `d_name` in Linux 64-bit `struct dirent` (d_ino 8, d_off 8, d_reclen 2, d_type 1). */
+const DIRENT_NAME_OFFSET = 19;
+
 /**
- * Names of a directory, enumerated in bounded batches. Stops at the first entry past
+ * Names of a directory, read one entry at a time. Stops at the first entry past
  * `OUTPUT_MAX_ENTRIES`: a larger directory is unreadable now (the previous snapshot stays), never
  * a partial read, and never a full enumeration whose memory and time grow with the directory.
- * `onEntry` lets tests count how many entries were consumed.
+ * `onEntry` counts the entries actually read from the directory.
  */
-export async function listEntries(path: string, onEntry?: () => void): Promise<string[]> {
+export function listEntries(path: string, onEntry?: () => void): string[] {
+  libc ??= openLibc();
+  const directory = libc.opendir(ptr(Buffer.from(`${path}\0`)));
+  if (!directory) throw Error("output_directory_unreadable");
   const names: string[] = [];
-  const directory = await opendir(path, { bufferSize: 64 });
   try {
-    for (let entry = await directory.read(); entry; entry = await directory.read()) {
+    for (let entry = libc.readdir(directory); entry; entry = libc.readdir(directory)) {
+      const name = new CString(entry, DIRENT_NAME_OFFSET).toString();
+      if (name === "." || name === "..") continue;
       onEntry?.();
       if (names.length === OUTPUT_MAX_ENTRIES) throw Error("output_limit");
-      names.push(entry.name);
+      names.push(name);
     }
   } finally {
-    await directory.close();
+    libc.closedir(directory);
   }
   return names;
 }
@@ -50,7 +69,7 @@ export async function readOutputDirectory(
   try {
     // Linux resolves this magic link to the opened directory itself (openat semantics).
     const base = `/proc/self/fd/${handle.fd}`;
-    const entries = await listEntries(base);
+    const entries = listEntries(base);
     const files: { name: string; base64: string }[] = [];
     let total = 0;
     for (const name of entries.filter(validOutputName).sort()) {

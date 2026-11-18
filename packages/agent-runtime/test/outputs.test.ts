@@ -44,11 +44,11 @@ test("the runtime output read stops enumerating at the first entry past the boun
   try {
     for (let i = 0; i < OUTPUT_MAX_ENTRIES * 2; i++) writeFileSync(join(root, `e${i}`), "");
     let consumed = 0;
-    await expect(listEntries(root, () => consumed++)).rejects.toThrow("output_limit");
+    expect(() => listEntries(root, () => consumed++)).toThrow("output_limit");
     expect(consumed).toBe(OUTPUT_MAX_ENTRIES + 1);
     rmSync(join(root, "e0"));
     for (let i = OUTPUT_MAX_ENTRIES + 1; i < OUTPUT_MAX_ENTRIES * 2; i++) rmSync(join(root, `e${i}`));
-    expect(await listEntries(root)).toHaveLength(OUTPUT_MAX_ENTRIES);
+    expect(listEntries(root)).toHaveLength(OUTPUT_MAX_ENTRIES);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
