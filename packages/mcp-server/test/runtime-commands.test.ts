@@ -228,14 +228,30 @@ test("a held runtime poll returns a locally enqueued command with the clock froz
   const f = await fixture();
   const active = await f.enrol();
   const command = f.command("arrived-during-idle");
+  const waiting = Promise.withResolvers<AbortSignal>();
+  const delay = Promise.withResolvers<void>();
   const commands = f.bridge({
     now: () => 0,
-    async wait(_ms, signal) {
-      await f.bridge().enqueue(f.people.owner, command);
-      expect(signal.aborted).toBe(true);
+    wait(_ms, signal) {
+      signal.addEventListener("abort", () => delay.resolve(), { once: true });
+      waiting.resolve(signal);
+      return delay.promise;
     },
   });
-  const response = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch }, commands);
+  const poll = f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch }, commands);
+  const signal = await Promise.race([
+    waiting.promise,
+    poll.then(() => {
+      throw new Error("Runtime poll returned before waiting");
+    }),
+  ]);
+  try {
+    await f.bridge().enqueue(f.people.owner, command);
+    expect(signal.aborted).toBe(true);
+  } finally {
+    if (!signal.aborted) delay.reject(new Error("Runtime poll received no enqueue wake"));
+  }
+  const response = await poll;
   expect(await response.json()).toEqual({ epoch: active.epoch, command });
 });
 
@@ -243,8 +259,18 @@ test("empty polls release the transaction while waiting and private routes/grant
   const f = await fixture();
 
   const active = await f.enrol();
-  const response = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch });
+  let time = 0;
+  const waits: number[] = [];
+  const commands = f.bridge({
+    now: () => time,
+    async wait(ms) {
+      waits.push(ms);
+      time += ms;
+    },
+  });
+  const response = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch }, commands);
   expect(await response.json()).toEqual({ epoch: active.epoch, command: null });
+  expect(waits).toEqual(Array(20).fill(1000));
   expect((await f.request("poll", "invalid", active.epoch, { epoch: active.epoch })).status).toBe(401);
   expect((await f.request("poll", active.runtimeToken, active.epoch, { epoch: "wrong" })).status).toBe(409);
   for (const role of ["anon", "authenticated"]) {

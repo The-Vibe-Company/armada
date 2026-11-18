@@ -519,22 +519,38 @@ test("a held host poll returns a locally enqueued job with the clock frozen", as
       ttlSeconds: 300,
     },
   };
+  const waiting = Promise.withResolvers<AbortSignal>();
+  const delay = Promise.withResolvers<void>();
   const held = createDockerHostRoutes(store, authenticate, {
     clock: {
       now: () => 0,
-      async wait(_ms, signal) {
-        await store.enqueue(actor, host.hostId, job);
-        expect(signal.aborted).toBe(true);
+      wait(_ms, signal) {
+        signal.addEventListener("abort", () => delay.resolve(), { once: true });
+        waiting.resolve(signal);
+        return delay.promise;
       },
     },
   });
-  const response = await post(
+  const poll = post(
     "/api/docker-host/poll",
     host.hostToken,
     { installationId, version: "2.51.0", waitSeconds: 20 },
     {},
     held,
   );
+  const signal = await Promise.race([
+    waiting.promise,
+    poll.then(() => {
+      throw new Error("Host poll returned before waiting");
+    }),
+  ]);
+  try {
+    await store.enqueue(actor, host.hostId, job);
+    expect(signal.aborted).toBe(true);
+  } finally {
+    if (!signal.aborted) delay.reject(new Error("Host poll received no enqueue wake"));
+  }
+  const response = await poll;
   expect(await response.json()).toMatchObject({ held: true, job });
 });
 
