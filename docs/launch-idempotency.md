@@ -107,3 +107,49 @@ or may not exist. Never retry with a new key: that is how duplicates happen.
 3. If the sandbox is still missing, escalate to an operator with the
    organization, original key, `externalRef` and receipt UUID when available.
    An unregistered allocation can exist even when the sandbox list is empty.
+
+Template launches follow the same rule with `requestKey`: a replay answers the
+recorded state (`succeeded`, `failed`, `reconciling`), and `reconciling` is
+never re-dispatched.
+
+## Reading the reference back
+
+- `sandbox/status` (and MCP `status`/`wait`) return `externalRef` when set.
+- `sandbox/list` returns `externalRef` and accepts it as a filter. Both are
+  interior-only: a member who cannot open another member's sandbox sees the row
+  without its reference, and filtering by reference never matches it.
+- The launch answer returns it too.
+
+Signed [outbound webhooks](outbound-webhooks.md) include `externalRef` in
+each payload, with null when the sandbox has no reference.
+
+## Canonical launch API
+
+The [OpenAPI contract](../packages/mcp-server/openapi.json) describes the validated request variants for
+`POST /api/v1/sandbox/launch`: golden, explicit Boat runtime, explicit Modal
+runtime from a golden or pinned template, Docker host and Docker snapshot, each
+with its supported replay fields. Unknown fields are rejected. Use
+`ttlSeconds` and `reasoningEffort` for REST launch requests. Provider-specific
+settings and server opt-ins still apply.
+
+Golden and Docker launches share an envelope. Read the placement and Armada ID
+at `sandbox.provider` and `sandbox.id`. The `golden` record is null for Docker.
+`promptId`, `conversationId`, `runtime` and `helper` are null when unavailable.
+CLI JSON includes `sandbox.id` and the top-level `id` alias on all three
+providers. The CLI's `golden` field remains a name or null.
+
+## Explicit runtime launch
+
+For explicit runtime launches from a golden, send the selectors to `POST /api/v1/sandbox/launch`.
+Use `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use `runtimeVersion: 1`,
+`provider: "modal"` and `runtimeTransport: "dialout"` for Modal. Runtime admission checks and server opt-ins apply. For a pinned Modal template, send the same Modal selectors
+with `org` (UUID), `id`, `revision`, `requestKey` and the template's `harness` to
+`sandbox/launch`. When admission records a request, it returns a durable template
+launch receipt, including the frozen manifest on success. Replay the same body
+and request key to recover that receipt, and use its top-level `id` for sandbox
+operations. A pre-admission refusal has no request ID or sandbox ID. Ordinary
+template launches continue to use `templates/launch`.
+
+For REST extensions, use `ttlSeconds` on `POST /api/v1/sandbox/extend`
+as well. The server accepts the older `ttl_seconds` spelling for existing
+clients. Send only one field.
