@@ -4219,6 +4219,7 @@ export type Database = {
           docker_issuer_fence: string | null;
           pricing_context: Json | null;
           correlation_id: string | null;
+          runtime_protocol_version: number;
         };
         Insert: {
           sandbox_id: string;
@@ -4231,6 +4232,7 @@ export type Database = {
           docker_issuer_fence?: string | null;
           pricing_context?: Json | null;
           correlation_id?: string | null;
+          runtime_protocol_version?: number;
         };
         Update: {
           sandbox_id?: string;
@@ -4243,6 +4245,7 @@ export type Database = {
           docker_issuer_fence?: string | null;
           pricing_context?: Json | null;
           correlation_id?: string | null;
+          runtime_protocol_version?: number;
         };
         Relationships: [
           {
