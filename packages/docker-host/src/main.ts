@@ -157,8 +157,7 @@ async function main(args: string[]) {
   if (command === "uninstall") {
     const state = await store.load();
     const api = httpApi();
-    await api.checkUninstallCompatibility(state);
-    await prepareUninstall(state, instance);
+    let drain = await prepareUninstall(state, api.supportsCleanupPoll, instance);
     const deadline = Date.now() + 10 * 60_000;
     // Keep the service alive to execute ordinary bound stop/delete jobs. The
     // server fences new allocations as soon as draining begins; retries retain
@@ -169,6 +168,7 @@ async function main(args: string[]) {
           "Host drain remains pending; service and private state preserved. Retry uninstall to reconcile.",
         );
       await Bun.sleep(Math.min(20_000, Math.max(1, deadline - Date.now())));
+      if (drain === "pending") drain = await prepareUninstall(state, api.supportsCleanupPoll, instance);
     }
     await uninstallPreflight(await store.load(), instance);
     await stopService(instance);

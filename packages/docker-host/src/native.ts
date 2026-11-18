@@ -169,7 +169,7 @@ export function httpApi(
   },
 ): Api & {
   retainedOutputs(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
-  checkUninstallCompatibility(state: State): Promise<void>;
+  supportsCleanupPoll(state: State): Promise<boolean | undefined>;
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
 } {
@@ -266,7 +266,7 @@ export function httpApi(
         throw new Error("Invalid existing host identity");
       return { hostId: state.hostId, name: result.name as string | null };
     },
-    async checkUninstallCompatibility(state) {
+    async supportsCleanupPoll(state) {
       try {
         await post(state.server, "poll", state.hostToken, {
           installationId: state.installationId,
@@ -274,13 +274,12 @@ export function httpApi(
           heartbeatOnly: true,
           cleanupOnly: true,
         });
+        return true;
       } catch (error) {
-        if (error instanceof HostRequestDenied && error.status === 400)
-          throw new Error(
-            "The server does not support cleanup-only Docker host polls. Restore a compatible server before uninstalling.",
-          );
-        // An offline or already revoked host still follows the normal durable
-        // uninstall and retry path. Only an explicit protocol refusal stops it.
+        if (error instanceof HostRequestDenied && error.status === 400) return false;
+        // An inconclusive probe leaves negotiation pending. Unregister can
+        // still revoke an empty host or start a server-side drain.
+        return undefined;
       }
     },
     async unregister(state) {

@@ -686,15 +686,6 @@ test("unregister distinguishes a pending drain from confirmed revocation and rej
   }
 });
 
-test("uninstall compatibility check rejects a legacy server without requesting work", async () => {
-  const f = fixture();
-  const api = httpApi((async (_url, options) => {
-    expect(JSON.parse(String(options?.body))).toMatchObject({ heartbeatOnly: true, cleanupOnly: true });
-    return new Response(null, { status: 400 });
-  }) as typeof fetch);
-  await expect(api.checkUninstallCompatibility(f.state())).rejects.toThrow("Restore a compatible server");
-});
-
 // The daemon's loop passes `dispatch`, but an older server never holds a poll, so
 // the build still runs inline and must keep the other work moving (#2561).
 for (const [caller, options] of [

@@ -145,6 +145,17 @@ async function ownedFile(path: string, home: string, executable = false): Promis
   }
 }
 
+// A legacy installation can poll with no updater state. Check for a marker
+// before applying the stricter ownership rules required for update artifacts.
+async function optionalOwnedMarker(path: string, home: string) {
+  try {
+    await lstat(path);
+    return await ownedFile(path, home);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
 /** Refuse all unknown files and preserve shared Docker images and linger settings. */
 export async function validateInstallation(
   state: State,
@@ -318,7 +329,7 @@ export async function removeInstallation(instance?: string) {
       join(directory, "managed.json"),
       ...(recovery ? [recovery.path] : []),
       ...(update ? [updateFile] : []),
-      ...((await uninstallPending(home, instance)) ? [intentFile] : []),
+      ...((await uninstallMode(home, instance)) ? [intentFile] : []),
     ].map(async (path) => ({ path, bytes: await readFile(path), mode: 0o600 })),
   );
   try {
@@ -425,27 +436,21 @@ function updateState(update: Update): UpdatePhase {
 type ManagedStore = Pick<Store, "load"> & { lock(): Promise<() => Promise<void>> };
 
 async function readUpdate(home: string, instance?: string): Promise<Update | undefined> {
-  try {
-    const update: Update = JSON.parse(
-      await ownedFile(join(stateDirectory(home, instance), "update.json"), home).then((bytes) =>
-        bytes.toString("utf8"),
-      ),
-    );
-    if (
-      !stableDockerHostVersion(update.version) ||
-      !["cancelled", "failed", "staged", "starting", "updated"].includes(update.phase) ||
-      (update.preparing !== undefined && (update.phase !== "cancelled" || update.preparing !== true)) ||
-      (update.attemptedVersion !== undefined && !stableDockerHostVersion(update.attemptedVersion)) ||
-      (update.retryAfter !== undefined && !Number.isSafeInteger(update.retryAfter)) ||
-      (update.previousDigest !== undefined && !digestPattern.test(update.previousDigest)) ||
-      (update.pendingPreviousDigest !== undefined && !digestPattern.test(update.pendingPreviousDigest)) ||
-      (update.candidateDigest !== undefined && !digestPattern.test(update.candidateDigest))
-    )
-      throw new Error("Invalid Docker host update record");
-    return update;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  const bytes = await optionalOwnedMarker(join(stateDirectory(home, instance), "update.json"), home);
+  if (!bytes) return;
+  const update: Update = JSON.parse(bytes.toString("utf8"));
+  if (
+    !stableDockerHostVersion(update.version) ||
+    !["cancelled", "failed", "staged", "starting", "updated"].includes(update.phase) ||
+    (update.preparing !== undefined && (update.phase !== "cancelled" || update.preparing !== true)) ||
+    (update.attemptedVersion !== undefined && !stableDockerHostVersion(update.attemptedVersion)) ||
+    (update.retryAfter !== undefined && !Number.isSafeInteger(update.retryAfter)) ||
+    (update.previousDigest !== undefined && !digestPattern.test(update.previousDigest)) ||
+    (update.pendingPreviousDigest !== undefined && !digestPattern.test(update.pendingPreviousDigest)) ||
+    (update.candidateDigest !== undefined && !digestPattern.test(update.candidateDigest))
+  )
+    throw new Error("Invalid Docker host update record");
+  return update;
 }
 
 function saveUpdate(home: string, instance: string | undefined, update: Update) {
@@ -479,37 +484,45 @@ function uninstallIntent(home: string, instance?: string) {
   return join(stateDirectory(home, instance), "uninstall-pending");
 }
 
-async function uninstallPending(home: string, instance?: string) {
-  try {
-    await ownedFile(uninstallIntent(home, instance), home);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return false;
-  }
+async function uninstallMode(home: string, instance?: string) {
+  const bytes = await optionalOwnedMarker(uninstallIntent(home, instance), home);
+  if (!bytes) return;
+  const marker = bytes.toString("utf8");
+  if (marker === "") return "cleanup";
+  if (marker === "legacy" || marker === "pending") return marker;
+  throw new Error("Invalid Docker host uninstall intent.");
 }
 
 /** Fence automatic updates before asking the server to drain and revoke. */
 export async function prepareUninstall(
   state: State,
+  probe: (state: State) => Promise<boolean | undefined>,
   instance?: string,
   io: Pick<UpgradeServiceIo, "home" | "service"> = { home: homedir(), service: command },
 ) {
   const { home } = io;
-  await withUpdateLock(home, instance, async () => {
+  return withUpdateLock(home, instance, async () => {
     const last = await readUpdate(home, instance);
     if (last?.phase === "starting" || (last && !(await supervisorAbsent(io.service, instance))))
       throw new Error("Automatic Docker host update in progress. Retry after the service has recovered.");
     await validateInstallation(state, home, instance);
-    // Keep this fence across reboot and unregister retries. A staged download
-    // can be discarded without contacting the server or touching the binary.
-    await atomicReplace(
-      uninstallIntent(home, instance),
-      Buffer.alloc(0),
-      0o600,
-      dirname(stateDirectory(home, instance)),
-    );
+    const existing = await uninstallMode(home, instance);
+    const record = (mode: "" | "legacy" | "pending") =>
+      atomicReplace(uninstallIntent(home, instance), Buffer.from(mode), 0o600, dirname(stateDirectory(home, instance)));
+    // Fence a new uninstall before any network I/O. If negotiation fails or
+    // the command dies, the daemon can reconcile without taking new jobs.
+    if (!existing) await record("pending");
     if (last?.phase === "staged") await saveUpdate(home, instance, transition(last, "defer"));
+    if (existing === "legacy") return "legacy";
+    const cleanupSupported = await probe(state);
+    if (existing === "cleanup") {
+      if (cleanupSupported === false)
+        throw new Error("Restore a server that supports cleanup-only Docker host polls before resuming uninstall.");
+      return "cleanup";
+    }
+    if (cleanupSupported === undefined) return "pending";
+    await record(cleanupSupported ? "" : "legacy");
+    return cleanupSupported ? "cleanup" : "legacy";
   });
 }
 
@@ -595,7 +608,7 @@ export function automaticUpdate(
         event.type === "offer" &&
         event.version === current.version &&
         process.env.ARMADA_DOCKER_HOST_AUTO_UPDATE !== "0" &&
-        !(await uninstallPending(home, instance))
+        !(await uninstallMode(home, instance))
       )
         return true;
       await saveUpdate(home, instance, transition(current, "defer", io.now()));
@@ -615,7 +628,8 @@ export function automaticUpdate(
     async pollMode() {
       const last = await readUpdate(home, instance);
       if (last?.phase === "starting") return "trial";
-      if (await uninstallPending(home, instance)) return "cleanup";
+      const uninstall = await uninstallMode(home, instance);
+      if (uninstall) return uninstall;
       if (last?.phase === "staged") return "staged";
       if (last?.phase === "updated" && durableCommit !== last.version) {
         // The rename is visible before the supervisor syncs the directory.
@@ -628,7 +642,8 @@ export function automaticUpdate(
       // Serialize the wire claim with the durable uninstall intent. Work
       // returned by a poll that already held the lock can finish normally.
       return withUpdateLock(home, instance, async () => {
-        if (await uninstallPending(home, instance)) throw new Error("Docker host uninstall pending");
+        const uninstall = await uninstallMode(home, instance);
+        if (uninstall && uninstall !== "legacy") throw new Error("Docker host uninstall pending");
         return poll();
       });
     },
@@ -649,7 +664,7 @@ export function automaticUpdate(
         return false;
       try {
         return await withUpdateLock(home, instance, async () => {
-          if (await uninstallPending(home, instance)) return false;
+          if (await uninstallMode(home, instance)) return false;
           // A restarting helper belongs to the previous journal. It must
           // finish before a newer stage can appear at its entry point.
           if (!(await supervisorAbsent(io.service, instance))) return false;
@@ -711,7 +726,7 @@ export function automaticUpdate(
     async restart() {
       return withUpdateLock(home, instance, async () => {
         const current = await readUpdate(home, instance);
-        if ((current?.phase !== "starting" && current?.phase !== "staged") || (await uninstallPending(home, instance)))
+        if ((current?.phase !== "starting" && current?.phase !== "staged") || (await uninstallMode(home, instance)))
           return false;
         try {
           // Type=exec confirms that systemd exec'd the old daemon's helper before
@@ -870,7 +885,7 @@ export async function superviseUpdate(
     if (update.phase !== "staged") throw new Error("Interrupted Docker host update");
     const trial = await withUpdateLock(home, instance, async () => {
       const staged = await readUpdate(home, instance);
-      if (staged?.phase !== "staged" || staged.version !== update?.version || (await uninstallPending(home, instance)))
+      if (staged?.phase !== "staged" || staged.version !== update?.version || (await uninstallMode(home, instance)))
         return;
       const marker = await validateInstallation(await store.load(), home, instance);
       if (marker.pendingBinarySha256) throw new Error("An earlier Docker host upgrade is incomplete");

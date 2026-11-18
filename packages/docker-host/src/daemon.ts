@@ -411,7 +411,7 @@ export async function runJobs(
     trialPoll?: TickOptions["trialPoll"];
     retryCompletion?(): boolean;
     update?: {
-      pollMode(): Promise<"normal" | "cleanup" | "trial" | "staged">;
+      pollMode(): Promise<"normal" | "cleanup" | "legacy" | "pending" | "trial" | "staged">;
       prepare(version: string): Promise<boolean>;
       confirm(event: { type: "offer"; version: unknown } | { type: "poll-failed" }): Promise<boolean>;
       checkRecovery(): Promise<boolean>;
@@ -534,7 +534,7 @@ export async function runJobs(
         let offer: string | undefined;
         if (loop.stopping()) break;
         outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
-          ...(mode === "trial" || (mode === "cleanup" && running.size > 0)
+          ...(mode === "trial" || mode === "pending" || (mode === "cleanup" && running.size > 0)
             ? { reconcileOnly: true }
             : mode === "cleanup"
               ? { cleanupOnly: true }

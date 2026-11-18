@@ -175,6 +175,46 @@ async function upgradeFixture(instance?: string) {
   };
 }
 
+test("managed uninstall reaches unregister after a legacy server rejects the cleanup probe", async () => {
+  const f = await upgradeFixture();
+  try {
+    const preload = join(f.home, "legacy-server.ts");
+    await writeFile(
+      preload,
+      `globalThis.fetch = async (url, options) => {
+        const path = new URL(url).pathname;
+        const body = JSON.parse(options.body);
+        console.log(JSON.stringify({ path, body }));
+        if (path.endsWith("/poll")) return new Response(null, { status: 400 });
+        // End at unregister before invoking Docker or systemd.
+        return new Response(null, { status: 503 });
+      };`,
+    );
+    const result = Bun.spawnSync(
+      [process.execPath, "--preload", preload, join(import.meta.dir, "../src/main.ts"), "uninstall"],
+      { env: { ...process.env, HOME: f.home } },
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("Host request denied");
+    expect(
+      result.stdout
+        .toString()
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual([
+      {
+        path: "/api/docker-host/poll",
+        body: expect.objectContaining({ heartbeatOnly: true, cleanupOnly: true }),
+      },
+      { path: "/api/docker-host/unregister", body: { installationId: f.state.installationId } },
+    ]);
+    expect(await readFile(join(f.directory, "uninstall-pending"), "utf8")).toBe("legacy");
+  } finally {
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
 test("verified native upgrade atomically swaps the binary and preserves credentials, unit and enabled service", async () => {
   const f = await upgradeFixture();
   try {
@@ -627,6 +667,7 @@ test.each([
 
 test.each([
   ["idle", "normal"],
+  ["idle with a group-writable state parent", "normal"],
   ["preparing", "normal"],
   ["cancelled", "normal"],
   ["failed", "normal"],
@@ -634,6 +675,9 @@ test.each([
   ["staged", "heartbeat"],
   ["starting", "heartbeat"],
   ["uninstall intent", "cleanup"],
+  ["legacy uninstall intent", "normal"],
+  ["uninstall negotiation interrupted", "heartbeat"],
+  ["cleanup-only intent after server rollback", "cleanup"],
 ] as const)("first poll after reboot in %s uses %s dispatch", async (phase, expected) => {
   const f = await upgradeFixture();
   try {
@@ -644,13 +688,25 @@ test.each([
       now: Date.now,
       request: fetch,
     };
-    if (phase === "uninstall intent") await prepareUninstall(f.state, undefined, { ...io, home: f.home });
-    else if (phase !== "idle")
+    const cleanup = { ...io, home: f.home };
+    if (phase === "cleanup-only intent after server rollback") {
+      await prepareUninstall(f.state, async () => true, undefined, cleanup);
+      await expect(prepareUninstall(f.state, async () => false, undefined, cleanup)).rejects.toThrow(
+        "Restore a server that supports cleanup-only Docker host polls",
+      );
+    } else if (phase === "uninstall negotiation interrupted") {
+      await prepareUninstall(f.state, async () => undefined, undefined, cleanup);
+    } else if (phase === "uninstall intent" || phase === "legacy uninstall intent") {
+      await prepareUninstall(f.state, async () => phase === "uninstall intent", undefined, cleanup);
+    } else if (phase === "idle with a group-writable state parent") {
+      await chmod(join(f.home, ".local/state"), 0o775);
+    } else if (phase !== "idle") {
       await writeUpdateFixture(f, phase === "preparing" ? "cancelled" : phase, phase === "preparing");
+    }
     const updater = automaticUpdate(f.state, { home: f.home }, io);
     const job: Job = {
       requestId: crypto.randomUUID(),
-      operation: expected === "cleanup" ? "stop" : "create",
+      operation: expected === "cleanup" || phase === "legacy uninstall intent" ? "stop" : "create",
       request: {
         sandboxId: crypto.randomUUID(),
         generation: crypto.randomUUID(),
@@ -690,15 +746,19 @@ test.each([
           await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
         },
       },
-      {
-        register: unexpected,
-        async poll(_state, options) {
-          const mode = options?.heartbeatOnly ? "heartbeat" : options?.cleanupOnly ? "cleanup" : "normal";
+      httpApi(
+        (async (url, init) => {
+          if (new URL(String(url)).pathname.endsWith("/results")) return new Response(null, { status: 204 });
+          const body = JSON.parse(String(init?.body));
+          const mode = body.heartbeatOnly ? "heartbeat" : body.cleanupOnly ? "cleanup" : "normal";
           modes.push(mode);
-          return { job: mode === "heartbeat" ? null : job, updateVersion: "9.0.0" };
-        },
-        async result() {},
-      },
+          return Response.json({ job: mode === "heartbeat" ? null : job, updateVersion: "9.0.0" });
+        }) as typeof fetch,
+        undefined,
+        undefined,
+        undefined,
+        updater,
+      ),
       { create: run, stop: run, delete: unexpected, stopIfExpired: unexpected },
       { stopping: () => modes.length > 0, sleep: async () => {}, update: updater },
     );
@@ -722,7 +782,8 @@ test("uninstall cancels a staged release even without a successful poll", async 
         return "";
       },
     };
-    await prepareUninstall(f.state, undefined, io);
+    await prepareUninstall(f.state, async () => undefined, undefined, io);
+    expect(await updater.pollMode()).toBe("pending");
     // An iteration that already selected ordinary dispatch must still recheck
     // the persisted intent at the wire boundary.
     const requests: unknown[] = [];
@@ -738,13 +799,14 @@ test("uninstall cancels a staged release even without a successful poll", async 
     );
     await expect(api.poll(f.state, { waitSeconds: 20 })).rejects.toThrow("uninstall pending");
     expect(requests).toEqual([]);
+    await prepareUninstall(f.state, async () => true, undefined, io);
     await api.poll(f.state, { cleanupOnly: true });
     expect(requests).toEqual([expect.objectContaining({ cleanupOnly: true })]);
     // A daemon that was already draining must not schedule the cancelled candidate.
     expect(await updater.restart()).toBe(false);
     expect(JSON.parse(await readFile(journal, "utf8")).phase).toBe("cancelled");
     // Retry after revocation and reboot, with the original durable state.
-    await prepareUninstall(f.state, undefined, io);
+    await prepareUninstall(f.state, async () => true, undefined, io);
     expect(await readFile(f.binary, "utf8")).toBe(f.oldBytes);
   } finally {
     await rm(f.home, { recursive: true, force: true });
