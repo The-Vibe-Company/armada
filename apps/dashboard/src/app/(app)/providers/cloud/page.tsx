@@ -331,10 +331,12 @@ function row(
   const seen = host.lastSeenAt ? relativeAge(host.lastSeenAt, now) : null;
   const upgrade =
     host.state !== "pending" && host.state !== "revoked"
-      ? dockerHostUpgradeMessage(host.version, targetVersion, minimumVersion)
+      ? dockerHostUpgradeMessage(host.version, targetVersion, minimumVersion, host.snapshotBuildSupported)
       : null;
-  const belowMinimum = host.version && minimumVersion && !dockerHostMeetsVersion(host.version, minimumVersion);
-  const upgradeLabel = belowMinimum
+  const updateRequired =
+    host.snapshotBuildSupported === false ||
+    (host.version && minimumVersion && !dockerHostMeetsVersion(host.version, minimumVersion));
+  const upgradeLabel = updateRequired
     ? "Daemon update required"
     : host.version
       ? "Daemon update available"

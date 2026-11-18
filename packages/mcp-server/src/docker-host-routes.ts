@@ -1,5 +1,9 @@
 import { readBoundedText } from "@armada/auth";
-import { DOCKER_HOST_MINIMUM_VERSION, DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
+import {
+  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
+  DOCKER_JOB_FAILURE_REASONS,
+  type DockerJobFailureReason,
+} from "@armada/core";
 import { isSnapshotBaselineTool } from "@armada/core/server";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
@@ -7,6 +11,7 @@ import { VERSION } from "../../core/src/version.ts";
 import type { CallerResult } from "./caller.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
+import { dockerHostVersions } from "./docker-host-version.ts";
 import { DockerSnapshotHostUpgradeRequired, type DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
 
@@ -16,7 +21,6 @@ const machinePaths = [
   "/api/docker-host/results",
   "/api/docker-host/unregister",
 ];
-const hostVersions = { targetVersion: VERSION, minimumVersion: DOCKER_HOST_MINIMUM_VERSION };
 const reusePath = "/api/docker-host/reuse-registration";
 const ownerPaths = [
   "/api/v1/docker/snapshots/list",
@@ -141,7 +145,7 @@ export function createDockerHostRoutes(
         if (listing)
           return Response.json(
             {
-              ...hostVersions,
+              ...dockerHostVersions,
               serverVersion: VERSION,
               placement: options.placement === true,
               hosts: await store.list(actor),
@@ -231,6 +235,12 @@ export function createDockerHostRoutes(
           }
         }
         if (body.resourcePolicyVersion !== undefined && body.resourcePolicyVersion !== 1) throw new InvalidInput();
+        const baselineHeader = request.headers.get(DOCKER_HOST_SNAPSHOT_BASELINE_HEADER);
+        if (
+          baselineHeader !== null &&
+          (!/^[1-9][0-9]{0,9}$/.test(baselineHeader) || Number(baselineHeader) > 2147483647)
+        )
+          throw new InvalidInput();
         const version = body.version === undefined ? undefined : string(body.version);
         if (version !== undefined && !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new InvalidInput();
         if (body.skipSnapshots !== undefined && body.skipSnapshots !== true) throw new InvalidInput();
@@ -306,6 +316,7 @@ export function createDockerHostRoutes(
             body.diskFreeBytes as number | null | undefined,
             body.stoppedSandboxBytes as number | null | undefined,
             runningIds,
+            baselineHeader === null ? undefined : Number(baselineHeader),
           );
           if (job || resumeClaims.length) break;
           // The probe is broader than the poll (admission refusals, job order). A
@@ -340,7 +351,7 @@ export function createDockerHostRoutes(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
             ...(wait === undefined ? {} : { held: true }),
-            ...hostVersions,
+            ...dockerHostVersions,
             resumeClaims,
             job,
             // Every generation with a queued resume/bootstrap, so the daemon

@@ -760,9 +760,15 @@ On the owner's Linux host after a versioned release:
    `baselineVersion: 1` and `baselineOutdated: false` in snapshot get.
    An existing snapshot created by an older daemon can still be used.
 
-The snapshot build floor is above the 2.54.0 release because baseline
-verification shipped after that tag. A source build still stamped
-2.54.0 reports that version and is subject to the same floor.
+Baseline verification landed after the 2.54.0 tag. To distinguish a
+current source build that still carries that version, the daemon's
+authenticated poll also advertises the baseline it can verify. The
+host list reports `snapshotBuildSupported`. Successful new snapshot
+builds must return a verification receipt matching the baseline
+required when the build was queued. If the daemon changes after
+admission and returns no receipt, the build fails with upgrade guidance.
+Already queued legacy builds can still finish and existing snapshots
+keep their launch behavior.
 
 ## Managed owner installation (#1453)
 

@@ -1,6 +1,5 @@
-// The baseline builder and receipt were added after the 2.54.0 tag (#2641).
-// The first possible published version containing them is 2.54.1.
-export const DOCKER_HOST_MINIMUM_VERSION = "2.54.1";
+/** A header lets upgraded daemons keep using existing poll request bodies on older servers. */
+export const DOCKER_HOST_SNAPSHOT_BASELINE_HEADER = "x-armada-snapshot-baseline";
 
 function numericVersion(value: string | null | undefined): number[] | null {
   const match = value && /^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.+-]+)?$/.exec(value);
@@ -21,14 +20,20 @@ export function dockerHostUpgradeMessage(
   version: string | null | undefined,
   serverVersion: string | undefined,
   minimumVersion?: string,
+  snapshotBuildSupported?: boolean,
 ): string | null {
   const belowMinimum = minimumVersion && !dockerHostMeetsVersion(version, minimumVersion);
   if (
+    snapshotBuildSupported !== false &&
     !belowMinimum &&
     (!serverVersion || !numericVersion(serverVersion) || dockerHostMeetsVersion(version, serverVersion))
   )
     return null;
   const host = numericVersion(version);
-  const requirement = belowMinimum ? `minimum ${minimumVersion}` : `server ${serverVersion}`;
+  const requirement = belowMinimum
+    ? `minimum ${minimumVersion}`
+    : snapshotBuildSupported === false
+      ? "snapshot baseline support required"
+      : `server ${serverVersion}`;
   return `Docker host daemon ${version ?? "unknown"} ${host ? "is outdated" : "needs a version check"} (${requirement}). From a signed-in client, run armada host add and run its generated install command on the same Docker machine for the same server. This preserves registration and restarts the user service. Daemons do not upgrade automatically.`;
 }

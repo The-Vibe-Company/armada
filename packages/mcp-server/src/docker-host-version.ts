@@ -1,3 +1,25 @@
+import { dockerHostMeetsVersion, VERSION } from "@armada/core";
+import { SNAPSHOT_BASELINE_VERSION } from "@armada/core/server";
+
+// The first possible release containing baseline verification after the 2.54.0 tag (#2641).
+const baselineRelease = "2.54.1";
+export const dockerHostVersions = {
+  targetVersion: VERSION,
+  // Unstamped source deployments advertise the version they actually ship.
+  minimumVersion: dockerHostMeetsVersion(VERSION, baselineRelease) ? baselineRelease : VERSION,
+};
+
+export function dockerHostSupportsSnapshotBaseline(
+  version: string | null | undefined,
+  reportedBaseline: number | null,
+): boolean {
+  // A source build can advertise support before the version is stamped.
+  // Published daemons between #2641 and this change did not send a header.
+  return reportedBaseline === null
+    ? SNAPSHOT_BASELINE_VERSION === 1 && dockerHostMeetsVersion(version, baselineRelease)
+    : reportedBaseline >= SNAPSHOT_BASELINE_VERSION;
+}
+
 /** Resume opcode first shipped in 2.28; initial bootstrap remains 2.27 compatible. */
 export function dockerHostSupportsResume(value: string | null | undefined): boolean {
   const version = value?.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+][A-Za-z0-9.-]+)?$/);

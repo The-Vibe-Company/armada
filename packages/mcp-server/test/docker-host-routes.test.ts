@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { DOCKER_HOST_MINIMUM_VERSION, type DockerHostListResponse, type Sql, VERSION } from "@armada/core";
+import { type DockerHostListResponse, dockerHostMeetsVersion, type Sql, VERSION } from "@armada/core";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -274,7 +274,8 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     return (await response.json()) as DockerHostListResponse;
   };
   const result = await list();
-  expect(result).toMatchObject({ targetVersion: VERSION, minimumVersion: DOCKER_HOST_MINIMUM_VERSION });
+  expect(result.targetVersion).toBe(VERSION);
+  expect(dockerHostMeetsVersion(result.targetVersion, result.minimumVersion ?? "")).toBe(true);
   expect(result.placement).toBe(false);
   expect(result.hosts).toHaveLength(6);
   const byId = new Map(result.hosts.map((host) => [host.id, host]));
@@ -566,7 +567,7 @@ test("a held host poll answers as soon as work appears and never beyond its hold
       pendingStarts: [],
       resumeClaims: [],
       targetVersion: VERSION,
-      minimumVersion: DOCKER_HOST_MINIMUM_VERSION,
+      minimumVersion: expect.any(String),
     },
   });
   expect([polls, time]).toEqual([1, 0]);

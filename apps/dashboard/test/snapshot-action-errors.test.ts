@@ -33,6 +33,13 @@ test("a draining host refusal keeps the uninstall reason instead of a generic co
   expect(result).not.toContain("This snapshot or build changed");
 });
 
+test("a snapshot build on an incompatible host directs the user to update the daemon", () => {
+  const result = snapshotActionFailure(new ControlError(diagnostic, 409, "host_update_required"), "build");
+  expect(result).toContain("Update the Docker host daemon");
+  expect(result).toContain("wait for it to check in");
+  expect(result).not.toContain(diagnostic);
+});
+
 test("reported capacity is actionable without inventing a provider limit or echoing its payload", () => {
   const result = snapshotActionFailure(
     new ControlError(`${diagnostic} golden capacity`, 409, "conflict"),

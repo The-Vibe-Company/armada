@@ -32,6 +32,8 @@ export interface DockerHostSummary {
   revokedAt: string | null;
   /** The daemon version the host last reported (#1453); absent or null until a host has reported one. */
   version?: string | null;
+  /** Whether the host can verify the baseline required for new snapshot builds. */
+  snapshotBuildSupported?: boolean;
   /** Physical reservations, including pending starts until confirmed stopped. */
   running?: number;
   /** Missing on older servers; null until upgraded host hardware has been observed. */
@@ -177,6 +179,7 @@ export const DOCKER_SNAPSHOT_FAILURE_MESSAGES = {
   build:
     "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.",
   retired: "Host retired before snapshot publication.",
+  baseline: "The Docker host did not verify the developer baseline. Update the host daemon and retry the build.",
   disk: DOCKER_DISK_FLOOR_MESSAGE,
   draining: DOCKER_HOST_DRAINING_MESSAGE,
 } as const;

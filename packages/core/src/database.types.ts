@@ -563,6 +563,7 @@ export type Database = {
           next_cleanup_at: string | null;
           disk_free_bytes: number | null;
           stopped_sandbox_bytes: number | null;
+          snapshot_baseline_version: number | null;
         };
         Insert: {
           id: string;
@@ -591,6 +592,7 @@ export type Database = {
           next_cleanup_at?: string | null;
           disk_free_bytes?: number | null;
           stopped_sandbox_bytes?: number | null;
+          snapshot_baseline_version?: number | null;
         };
         Update: {
           id?: string;
@@ -619,6 +621,7 @@ export type Database = {
           next_cleanup_at?: string | null;
           disk_free_bytes?: number | null;
           stopped_sandbox_bytes?: number | null;
+          snapshot_baseline_version?: number | null;
         };
         Relationships: [
           {
@@ -837,6 +840,7 @@ export type Database = {
           failure_reason: string | null;
           baseline_version: number | null;
           baseline_failure_tool: string | null;
+          required_baseline_version: number | null;
         };
         Insert: {
           id: string;
@@ -860,6 +864,7 @@ export type Database = {
           failure_reason?: string | null;
           baseline_version?: number | null;
           baseline_failure_tool?: string | null;
+          required_baseline_version?: number | null;
         };
         Update: {
           id?: string;
@@ -883,6 +888,7 @@ export type Database = {
           failure_reason?: string | null;
           baseline_version?: number | null;
           baseline_failure_tool?: string | null;
+          required_baseline_version?: number | null;
         };
         Relationships: [
           {

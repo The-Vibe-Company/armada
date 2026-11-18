@@ -120,7 +120,7 @@ export {
 export { DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
 export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export {
-  DOCKER_HOST_MINIMUM_VERSION,
+  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
   dockerHostMeetsVersion,
   dockerHostUpgradeMessage,
 } from "./docker-host-upgrade.ts";

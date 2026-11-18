@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
-  DOCKER_HOST_MINIMUM_VERSION,
+  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerLaunchResult,
@@ -2269,7 +2269,9 @@ test.each([false, true])(
           .rows[0],
       ).toEqual({ docker_snapshot_id: snapshotId, docker_image: `sha256:${"d".repeat(64)}` });
       expect(f.native).toContainEqual(expect.objectContaining({ op: "workspaceExec" }));
-      await db.query("update docker_snapshots set status='failed',image_id=null where id=$1", [snapshotId]);
+      await db.query("update docker_snapshots set status='failed',image_id=null,baseline_version=null where id=$1", [
+        snapshotId,
+      ]);
     }
     expect(await templates.command(f.caller, "launch", input, runtime)).toEqual(result);
     expect(dispatches).toBe(1);
@@ -2371,7 +2373,7 @@ test("a lost Docker template response retains one reconciling claim and never re
 async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}) {
   const db = database();
   const f = await fixture(options);
-  await hosts.poll(f.hostToken, f.installationId, DOCKER_HOST_MINIMUM_VERSION);
+  await hosts.poll(f.hostToken, f.installationId, "2.54.1");
   for (const [userId, githubId, access] of [
     [f.actor.userId, 123, "offline-snapshot-access"],
     [f.admin.userId, 124, "offline-admin-access"],
@@ -2429,6 +2431,7 @@ async function readyTemplateSnapshot(f: Awaited<ReturnType<typeof snapshotFixtur
     requestId: snapshotId,
     outcome: "completed",
     imageId: `sha256:${"d".repeat(64)}`,
+    baselineVersion: 1,
   });
   return snapshotId;
 }
@@ -2470,7 +2473,9 @@ test.each([
     await db.query("update docker_snapshots set host_id=$2 where id=$1", [snapshotId, other.hostId]);
   }
   if (scenario === "unready")
-    await db.query("update docker_snapshots set status='building',image_id=null where id=$1", [snapshotId]);
+    await db.query("update docker_snapshots set status='building',image_id=null,baseline_version=null where id=$1", [
+      snapshotId,
+    ]);
   if (scenario === "replaced")
     await db.query("update docker_snapshots set installation_id=$2 where id=$1", [snapshotId, randomUUID()]);
   if (scenario !== "removed_before_launch") {
@@ -2480,7 +2485,9 @@ test.each([
     return;
   }
   const created = await templates.command(f.caller, "create", request);
-  await db.query("update docker_snapshots set status='failed',image_id=null where id=$1", [snapshotId]);
+  await db.query("update docker_snapshots set status='failed',image_id=null,baseline_version=null where id=$1", [
+    snapshotId,
+  ]);
   const stores = createSqlData(sql)(f.caller);
   const launchDocker = () => {
     throw Error("unavailable snapshot must never dispatch");
@@ -2548,6 +2555,9 @@ test.each(["private", "org"] as const)(
       ).rejects.toMatchObject({ code: "invalid" });
     expect(build.build.token).toBe(visibility === "private" ? "offline-snapshot-access" : "offline-admin-access");
     const image = `sha256:${"d".repeat(64)}`;
+    // A build queued before the baseline requirement keeps its legacy receipt contract.
+    if (visibility === "org")
+      await db.query("update docker_snapshots set required_baseline_version=null where id=$1", [id]);
     const result = {
       requestId: id,
       outcome: "completed",
@@ -2653,6 +2663,7 @@ test("snapshot caller-access port refuses before Docker host admission with the 
     requestId: id,
     outcome: "completed",
     imageId: `sha256:${"f".repeat(64)}`,
+    baselineVersion: 1,
   });
   const { hostId: _, ...body } = f.body;
   const before = await counts(f);
@@ -2687,6 +2698,7 @@ test.each([false, true])(
       requestId: id,
       outcome: "completed",
       imageId: `sha256:${"a".repeat(64)}`,
+      baselineVersion: 1,
     });
     const { hostId: _, ...body } = f.body;
     const service = f.service(sql, true, 10000, officialImage, deferred);
@@ -2736,6 +2748,7 @@ test.each(["timeout", "stop"] as const)(
       requestId: id,
       outcome: "completed",
       imageId: `sha256:${"c".repeat(64)}`,
+      baselineVersion: 1,
     });
     const { hostId: _, ...body } = f.body;
     const startedAt = f.clock.now();
@@ -2770,6 +2783,7 @@ test.each(["auth", "auth-deferred", "network"] as const)(
       requestId: id,
       outcome: "completed",
       imageId: `sha256:${"e".repeat(64)}`,
+      baselineVersion: 1,
     });
     const { hostId: _, ...body } = f.body;
     const request = { ...body, snapshotId: id };
@@ -2902,6 +2916,7 @@ test.each([
       requestId: id,
       outcome: "completed",
       imageId: `sha256:${"e".repeat(64)}`,
+      baselineVersion: 1,
     });
   else expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
   expect((await db.query("select status,image_id from public.docker_snapshots where id=$1", [id])).rows[0]).toEqual({
@@ -2965,6 +2980,7 @@ test("launching a saved snapshot on a draining host names the uninstall, not an 
     requestId: id,
     outcome: "completed",
     imageId: `sha256:${"b".repeat(64)}`,
+    baselineVersion: 1,
   });
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
   const { hostId: _, ...body } = f.body;
@@ -2993,6 +3009,7 @@ test("a retry of an already-admitted launch from a saved snapshot replays it aft
     requestId: id,
     outcome: "completed",
     imageId: `sha256:${"e".repeat(64)}`,
+    baselineVersion: 1,
   });
   const { hostId: _, ...body } = f.body;
   const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
@@ -3019,6 +3036,7 @@ test("rebuilding a snapshot on a draining host names the uninstall, not a missin
     requestId: id,
     outcome: "completed",
     imageId: `sha256:${"c".repeat(64)}`,
+    baselineVersion: 1,
   });
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
   await expect(
@@ -3072,25 +3090,38 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
   }
 });
 
-test("snapshot admission explains baseline incompatibility before creating a build", async () => {
+test("snapshot admission distinguishes daemon builds that report the same release", async () => {
   const f = await snapshotFixture();
-  await hosts.poll(f.hostToken, f.installationId, "2.54.0");
   const route = createDockerHostRoutes(hosts, async () => ({ ok: true, caller: f.caller }), {
     snapshots: f.snapshots,
   });
-  const requestId = randomUUID();
-  const response = await route(
-    new Request("https://fixture.example/api/v1/docker/snapshots/create", {
-      method: "POST",
-      body: JSON.stringify({
-        org: f.actor.orgId,
-        hostId: f.hostId,
-        requestId,
-        name: "baseline-required",
-        config: f.config,
+  const poll = (capable: boolean) =>
+    route(
+      new Request("https://fixture.example/api/docker-host/poll", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${f.hostToken}`,
+          ...(capable ? { [DOCKER_HOST_SNAPSHOT_BASELINE_HEADER]: "1" } : {}),
+        },
+        body: JSON.stringify({ installationId: f.installationId, version: "2.54.0" }),
       }),
-    }),
-  );
+    );
+  const requestId = randomUUID();
+  const create = () =>
+    route(
+      new Request("https://fixture.example/api/v1/docker/snapshots/create", {
+        method: "POST",
+        body: JSON.stringify({
+          org: f.actor.orgId,
+          hostId: f.hostId,
+          requestId,
+          name: "baseline-required",
+          config: f.config,
+        }),
+      }),
+    );
+  expect(await (await poll(false))?.json()).toMatchObject({ job: null });
+  const response = await create();
   expect(response?.status).toBe(409);
   expect(await response?.json()).toMatchObject({
     error: {
@@ -3098,7 +3129,23 @@ test("snapshot admission explains baseline incompatibility before creating a bui
       message: expect.stringContaining("verify the developer baseline"),
     },
   });
-  expect(await hosts.poll(f.hostToken, f.installationId, DOCKER_HOST_MINIMUM_VERSION)).toBeNull();
+  expect(await (await poll(true))?.json()).toMatchObject({ job: null });
+  expect((await create())?.status).toBe(200);
+});
+
+test("a downgrade after snapshot admission cannot publish an unverified snapshot", async () => {
+  const f = await snapshotFixture();
+  const input = { org: f.actor.orgId, hostId: f.hostId, requestId: randomUUID(), name: "downgrade", config: f.config };
+  await f.snapshots.command(f.caller, "create", input);
+  expect((await hosts.poll(f.hostToken, f.installationId, "2.54.0"))?.requestId).toBe(input.requestId);
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: input.requestId,
+    outcome: "completed",
+    imageId: `sha256:${"d".repeat(64)}`,
+  });
+  expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id: input.requestId })).toMatchObject({
+    snapshot: { status: "failed", image: null, failureReason: expect.stringContaining("Update the host daemon") },
+  });
 });
 
 test.each(["private", "org"] as const)(
@@ -3117,12 +3164,13 @@ test.each(["private", "org"] as const)(
       visibility,
       config: f.config,
     });
-    const job = await hosts.poll(f.hostToken, f.installationId, DOCKER_HOST_MINIMUM_VERSION);
+    const job = await hosts.poll(f.hostToken, f.installationId, "2.54.1");
     if (job?.operation !== "buildSnapshot") throw Error("Missing source build");
     await hosts.complete(f.hostToken, f.installationId, {
       requestId: id,
       outcome: "completed",
       imageId: `sha256:${"d".repeat(64)}`,
+      baselineVersion: 1,
     });
     const source = await f.snapshots.command(creator, "get", { org: f.actor.orgId, id });
     const input = { org: f.actor.orgId, id, requestId };
@@ -3304,7 +3352,12 @@ test.each(["poll", "complete"] as const)(
         ),
     };
     const store = createDockerHostStore(failing, key);
-    const result = { requestId: id, outcome: "completed" as const, imageId: `sha256:${"a".repeat(64)}` };
+    const result = {
+      requestId: id,
+      outcome: "completed" as const,
+      imageId: `sha256:${"a".repeat(64)}`,
+      baselineVersion: 1,
+    };
     await expect(
       operation === "poll"
         ? store.poll(f.hostToken, f.installationId)

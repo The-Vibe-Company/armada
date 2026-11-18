@@ -40,6 +40,7 @@ export async function listHosts(client: ArmadaApiClient, org: string): Promise<D
         host.lastSeenAt === null ||
         (typeof host.lastSeenAt === "string" && Number.isFinite(Date.parse(host.lastSeenAt)))
       ) ||
+      (host.snapshotBuildSupported !== undefined && typeof host.snapshotBuildSupported !== "boolean") ||
       !(host.version === undefined || host.version === null || typeof host.version === "string") ||
       (host.running !== undefined && (!Number.isSafeInteger(host.running) || Number(host.running) < 0)) ||
       (host.resources !== undefined && host.resources !== null && !validDockerHostResources(host.resources)) ||
@@ -131,6 +132,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
           host.version,
           result.targetVersion ?? result.serverVersion,
           result.minimumVersion,
+          host.snapshotBuildSupported,
         );
         if (upgrade && host.state !== "pending" && host.state !== "revoked") auth.out(`${upgrade}\n`);
         if (operation === "show")

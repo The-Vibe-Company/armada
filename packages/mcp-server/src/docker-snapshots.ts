@@ -1,17 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  DOCKER_HOST_MINIMUM_VERSION,
-  dockerHostMeetsVersion,
-  normalizeGitHubGoldenConfig,
-  officialSandboxImage,
-  parseGoldenConfig,
-  VERSION,
-} from "@armada/core";
+import { normalizeGitHubGoldenConfig, officialSandboxImage, parseGoldenConfig, VERSION } from "@armada/core";
 import {
   type GitHubInstallationApp,
   type GitHubResolveDeps,
   goldenGitHubAdapter,
   resolveGitHubAccess,
+  SNAPSHOT_BASELINE_VERSION,
   type Sql,
   VaultError,
 } from "@armada/core/server";
@@ -19,6 +13,7 @@ import type { Caller } from "./caller.ts";
 import { DockerHostDraining } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
+import { dockerHostSupportsSnapshotBaseline } from "./docker-host-version.ts";
 import { SNAPSHOT_COLUMNS, type SnapshotRow, snapshotRecord } from "./docker-snapshot-data.ts";
 import { observeProviderCall } from "./request-observability.ts";
 import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
@@ -30,7 +25,7 @@ export class DockerSnapshotHostUpgradeRequired extends Error {
 
   constructor(version: string | null) {
     super(
-      `Snapshot builds require Docker host daemon ${DOCKER_HOST_MINIMUM_VERSION} or newer to verify the developer baseline. Installed version: ${version ?? "unknown"}. Update the host and wait for its next poll.`,
+      `Snapshot builds require a Docker host daemon that can verify the developer baseline. Installed version: ${version ?? "unknown"}. Update the host and wait for its next poll.`,
     );
   }
 }
@@ -199,8 +194,13 @@ export function createDockerSnapshots(
           )
             throw new VaultError("forbidden", "Snapshot admission denied.");
           const host = (
-            await tx.query<{ installation_id: string; draining: boolean; daemon_version: string | null }>(
-              `select installation_id,daemon_version,${hostDrainingSql("docker_hosts")} as draining from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and hash is not null and revoked_at is null for update`,
+            await tx.query<{
+              installation_id: string;
+              draining: boolean;
+              daemon_version: string | null;
+              snapshot_baseline_version: number | null;
+            }>(
+              `select installation_id,daemon_version,snapshot_baseline_version,${hostDrainingSql("docker_hosts")} as draining from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3 and hash is not null and revoked_at is null for update`,
               [hostId, org, hint.owner_id],
             )
           ).rows[0];
@@ -213,7 +213,7 @@ export function createDockerSnapshots(
               throw new VaultError("conflict", "Snapshot request changed.");
             return;
           }
-          if (!dockerHostMeetsVersion(host.daemon_version, DOCKER_HOST_MINIMUM_VERSION))
+          if (!dockerHostSupportsSnapshotBaseline(host.daemon_version, host.snapshot_baseline_version))
             throw new DockerSnapshotHostUpgradeRequired(host.daemon_version);
           if (
             (
@@ -237,8 +237,8 @@ export function createDockerSnapshots(
           const generation = randomUUID(),
             end = Date.now() + 3600000;
           await tx.query(
-            `insert into public.docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,request_hash,actor_epoch,issuer_epoch,generation,base_image,build_expires_at,built_on_version)
-        values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15)`,
+            `insert into public.docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,request_hash,actor_epoch,issuer_epoch,generation,base_image,build_expires_at,built_on_version,required_baseline_version)
+        values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16)`,
             [
               id,
               org,
@@ -255,6 +255,7 @@ export function createDockerSnapshots(
               baseImage,
               new Date(end),
               VERSION,
+              SNAPSHOT_BASELINE_VERSION,
             ],
           );
           await createDockerHostStore(scopedSql(tx), key).enqueueSnapshot(actor, hostId, {

@@ -404,7 +404,7 @@ test("HTTP registration is single-use and host credentials remain in authorizati
   });
   expect(calls.map((c) => c.init.headers)).toEqual([
     { authorization: `Bearer ${registrationToken}`, "content-type": "application/json" },
-    { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
+    { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-snapshot-baseline": "1" },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
   ]);

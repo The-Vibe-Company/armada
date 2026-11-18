@@ -2,8 +2,10 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { DOCKER_HOST_SNAPSHOT_BASELINE_HEADER } from "../../core/src/docker-host-upgrade.ts";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
+import { SNAPSHOT_BASELINE_VERSION } from "../../core/src/snapshot-baseline.ts";
 import { VERSION } from "../../core/src/version.ts";
 import { type Api, compactReceipts, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
@@ -171,7 +173,11 @@ export function httpApi(
       method: "POST",
       redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        ...(endpoint === "poll" ? { [DOCKER_HOST_SNAPSHOT_BASELINE_HEADER]: String(SNAPSHOT_BASELINE_VERSION) } : {}),
+      },
       body: JSON.stringify(body),
     });
     if (!response.ok) {
