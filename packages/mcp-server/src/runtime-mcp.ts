@@ -367,7 +367,7 @@ export function createRuntimeMcp(options: {
     ...launch,
     async validate(actor: Parameters<typeof launch.validate>[0], selection: string[], visibility: "private" | "org") {
       if (selection.length > MAX_MCP_CONNECTIONS)
-        throw new VaultError("invalid", `Select at most ${MAX_MCP_CONNECTIONS} remote MCP connections.`);
+        throw new VaultError("invalid", `Select at most ${MAX_MCP_CONNECTIONS} MCP connections.`);
       await launch.validate(actor, selection, visibility);
       await connections(sql, actor, actor.orgId, selection);
     },
