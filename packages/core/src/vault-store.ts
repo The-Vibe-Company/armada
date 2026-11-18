@@ -6,7 +6,8 @@ import { decryptSecret } from "./crypto.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore, GitHubUser, StoredGitHubConnection } from "./github.ts";
 import type { Sql } from "./golden-store.ts";
-import { HARNESS_CATALOG, harnessForCredential, MODEL_CREDENTIAL_KINDS } from "./harnesses.ts";
+import { harnessesForCredential, harnessForCredential, MODEL_CREDENTIAL_KINDS } from "./harnesses.ts";
+import { MODEL_CATALOG } from "./models.ts";
 import type { CredentialInfo, MemberInfo, OrgSummary, VaultStore } from "./vault.ts";
 import { VaultError } from "./vault-error.ts";
 
@@ -117,9 +118,9 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
           let models: readonly string[] =
             kind === "morph"
               ? COMPATIBLE_MODEL_PROVIDERS.morph.models.flatMap((model) => [model, `armada/${model}`])
-              : Object.values(HARNESS_CATALOG)
-                  .filter((h) => (h.credentialKinds as readonly string[]).includes(kind))
-                  .flatMap((h) => h.models.map((m) => m.id));
+              : harnessesForCredential(kind).flatMap((harness) =>
+                  MODEL_CATALOG[harness].models.map((model) => model.id),
+                );
           const encrypted = existing.rows[0]?.value_enc;
           if (encrypted && (kind === "openai" || kind === "anthropic" || kind === "opencode")) {
             const raw = await decryptSecret(new Uint8Array(encrypted), encryptionKey);
