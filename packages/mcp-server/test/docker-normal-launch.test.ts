@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
@@ -43,6 +43,7 @@ import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -2772,8 +2773,55 @@ test.each(["auth", "auth-deferred", "network"] as const)(
         ]);
       } else {
         if (mode === "auth-deferred") {
-          expect((await service.launch(f.caller, request)).sandbox.status).toBe("starting");
-          await service.drain();
+          // Admission is recorded as such; the worker's real outcome joins the admitting request's ID.
+          const records: Record<string, unknown>[] = [];
+          let admitted: Awaited<ReturnType<typeof service.launch>> | undefined;
+          const response = await observeRequest(
+            async () => {
+              admitted = await service.launch(f.caller, request);
+              return new Response(null, { status: 201 });
+            },
+            (line) => records.push(JSON.parse(line)),
+          );
+          expect(admitted?.sandbox.status).toBe("starting");
+          const requestId = response?.headers.get("x-request-id");
+          expect(records.filter((record) => record.event === "provider_call")).toEqual([
+            expect.objectContaining({ requestId, provider: "docker", operation: "launch.admit", outcome: "ok" }),
+          ]);
+          // A retry of the pending admission is answered from the database: no host job, no record.
+          const jobs = async () =>
+            (
+              await db.query("select request_id from docker_host_jobs where bound_sandbox_id=$1", [
+                admitted?.sandbox.id,
+              ])
+            ).rows.length;
+          const queuedJobs = await jobs();
+          records.length = 0;
+          await observeRequest(
+            async () => {
+              expect((await service.launch(f.caller, request)).sandbox.status).toBe("starting");
+              return new Response(null, { status: 201 });
+            },
+            (line) => records.push(JSON.parse(line)),
+          );
+          expect(records.map((record) => record.event)).toEqual(["http_request"]);
+          expect(await jobs()).toBe(queuedJobs);
+          const background = spyOn(console, "error").mockImplementation(() => {});
+          const warnings = spyOn(console, "warn").mockImplementation(() => {});
+          try {
+            await service.drain();
+            const worker = background.mock.calls
+              .map(([line]) => (typeof line === "string" && line.startsWith("{") ? JSON.parse(line) : undefined))
+              .filter((record) => record?.event === "provider_call" && record.operation === "launch");
+            expect(worker).toEqual([expect.objectContaining({ requestId, provider: "docker", outcome: "error" })]);
+            expect(warnings.mock.calls).toContainEqual([
+              "docker_launch_failed",
+              expect.objectContaining({ requestId }),
+            ]);
+          } finally {
+            background.mockRestore();
+            warnings.mockRestore();
+          }
           expect(
             (
               await db.query<{ status_reason: string }>("select status_reason from sandboxes where id=$1", [
@@ -3086,6 +3134,58 @@ test("failed snapshot machine facts persist a safe reason in get and list respon
   expect(await f.snapshots.command(f.caller, "list", { org: f.actor.orgId })).toMatchObject({
     snapshots: [expect.objectContaining({ id, status: "failed", failureReason })],
   });
+});
+
+test("a failed snapshot build retried with the same request records host work only once", async () => {
+  const f = await snapshotFixture(),
+    id = randomUUID();
+  const input = {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId: id,
+    name: "retried-build",
+    visibility: "private",
+    config: f.config,
+  };
+  const observed = async (work: () => Promise<unknown>) => {
+    const records: Record<string, unknown>[] = [];
+    let result: unknown;
+    const response = (await observeRequest(
+      async () => {
+        result = await work();
+        return Response.json({});
+      },
+      (line) => records.push(JSON.parse(line)),
+    )) as Response;
+    const requestId = response.headers.get("x-request-id");
+    return { result, providerCalls: records.filter((r) => r.event === "provider_call"), requestId };
+  };
+  const created = await observed(() => f.snapshots.command(f.caller, "create", input));
+  expect(created.providerCalls).toEqual([
+    {
+      event: "provider_call",
+      requestId: created.requestId,
+      provider: "docker",
+      operation: "snapshot.create",
+      outcome: "ok",
+      durationMs: expect.any(Number),
+    },
+  ]);
+  expect((await hosts.poll(f.hostToken, f.installationId))?.operation).toBe("buildSnapshot");
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: id,
+    outcome: "failed",
+    reason: "snapshot_build_failed",
+  });
+  const retried = await observed(() => f.snapshots.command(f.caller, "create", input));
+  expect(retried.result).toMatchObject({ snapshot: { id, status: "failed" } });
+  expect(retried.providerCalls).toEqual([]);
+  for (const read of [
+    () => f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id }),
+    () => f.snapshots.command(f.caller, "list", { org: f.actor.orgId }),
+  ])
+    expect((await observed(read)).providerCalls).toEqual([]);
+  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
 });
 
 test("a snapshot build that fails on the disk floor persists the disk reason the constraint admits", async () => {

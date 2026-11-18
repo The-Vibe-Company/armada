@@ -1,3 +1,5 @@
+import { observeRequest } from "./request-observability.ts";
+
 interface ServerRequestDrain {
   fetch(request: Request): Response | Promise<Response>;
   readonly requests: ReadonlySet<Promise<unknown>>;
@@ -5,12 +7,18 @@ interface ServerRequestDrain {
 }
 
 /** Track admitted handlers and POST streams without waiting on idle GET notification streams. */
-export function createServerRequestDrain(handler: (request: Request) => Promise<Response>): ServerRequestDrain {
+export function createServerRequestDrain(
+  handler: (request: Request) => Promise<Response>,
+  log?: (line: string) => void,
+): ServerRequestDrain {
   let draining = false;
   const requests = new Set<Promise<unknown>>();
   const fetch = (request: Request) => {
     if (draining)
-      return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
+      return observeRequest(
+        () => Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } }),
+        log,
+      );
     const pending = handler(request).then((response) => {
       // Gateway POST tools use SSE responses: the handler can return before the
       // admitted tool finishes. GET notification streams instead end at MCP close.

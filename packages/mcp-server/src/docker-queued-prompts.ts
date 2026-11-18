@@ -8,6 +8,7 @@ import {
 } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
+import { noteAdmission } from "./request-observability.ts";
 
 export function queuedFailure(reason: string | null): string {
   return reason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE ||
@@ -186,6 +187,8 @@ export function createDockerQueuedPrompts(sql: Sql, key: string) {
               ],
             )
           ).rows[0]!;
+          // A queued prompt is durable work bound for the host; a retry finds it above instead.
+          noteAdmission();
         }
         if (!queued.conversation_id) {
           const conversationId = await resolveConversation(tx, sandboxId, row.conversation_ids);

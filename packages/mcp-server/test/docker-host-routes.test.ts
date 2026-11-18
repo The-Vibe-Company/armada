@@ -5,6 +5,7 @@ import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 
 const connection = rowOnlyConnection();
@@ -73,6 +74,24 @@ test("a draining snapshot refusal is a typed conflict the dashboard can show, no
   expect(await response.json()).toMatchObject({
     error: { code: "host_draining", message: expect.stringContaining("draining for uninstall") },
   });
+});
+
+test("snapshot routes record no provider call themselves; the service records host-work admission", async () => {
+  const f = await fixture();
+  const route = createDockerHostRoutes(f.store, f.authenticate, {
+    publicUrl: "https://public.example",
+    snapshots: { command: async () => ({ snapshots: [], currentVersion: "test" }) },
+  });
+  for (const operation of ["list", "get", "create", "rebuild"]) {
+    const records: Record<string, unknown>[] = [];
+    const response = (await observeRequest(
+      () => f.post(`/api/v1/docker/snapshots/${operation}`, "fixture-user-token", { org: f.orgId }, {}, route),
+      (line) => records.push(JSON.parse(line)),
+    )) as Response;
+    expect(response.status).toBe(200);
+    const requestId = response.headers.get("x-request-id");
+    expect(records).toEqual([expect.objectContaining({ event: "http_request", requestId, status: 200 })]);
+  }
 });
 
 // HTTP owns bearer separation, bounded shape admission and cache/error policy.

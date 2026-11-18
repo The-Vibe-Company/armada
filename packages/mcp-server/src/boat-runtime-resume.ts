@@ -1,6 +1,6 @@
 import { PROVIDER_LIMITS, resolveBoatKey } from "@armada/core/server";
-import { createBoatProvider } from "@armada/provider-boat";
 import type { ModelAuthOwnership } from "./model-auth.ts";
+import { createObservedBoatProvider } from "./observed-boat.ts";
 import { type RuntimeResumeOptions, runtimeResumePlacement } from "./runtime-resume-placement.ts";
 
 /** Compute activation is isolated from legacy native harness/GitHub/MCP hooks. */
@@ -12,7 +12,7 @@ export function boatRuntimeResume(options: RuntimeResumeOptions & { modelAuth: M
         orgId: sandbox.orgId,
         visibility: sandbox.sourceGoldenVisibility ?? sandbox.visibility ?? "private",
       });
-      return createBoatProvider({ apiKey: management.key });
+      return createObservedBoatProvider({ apiKey: management.key });
     },
     retained(current) {
       if (current.state !== "stopped" || current.physicalExitConfirmed)

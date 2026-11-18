@@ -10,6 +10,7 @@ import {
   type InterruptRequest,
   isModelConnectionTestResult,
   type ModelChoice,
+  type ModelConnectionTestResult,
   type PromptReceipt,
   type PromptRequest,
   type PromptState,
@@ -126,13 +127,26 @@ export function createRuntimeAgent(
     signal?: AbortSignal,
     expectedEpoch?: string,
     timeoutMs?: number,
+    check?: (result: T) => void,
   ): Promise<T> {
+    // The command boundary records the request-correlated outcome. `check` is the caller's own
+    // semantic validation (it throws the caller's public error); the boundary reuses it so a
+    // well-formed reply that Armada then rejects is never recorded as `ok`.
+    const valid = (result: unknown) => {
+      try {
+        check?.(result as T);
+        return true;
+      } catch {
+        return false;
+      }
+    };
     let reply: Awaited<ReturnType<typeof commands.call>>;
     try {
       reply = await commands.call(ownerId, command, {
         ...(signal ? { signal } : {}),
         ...(command.op === "workspaceExec" ? { timeoutMs: 610_000 } : timeoutMs ? { timeoutMs } : {}),
         ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
+        accept: (candidate) => "result" in candidate.body && valid(candidate.body.result),
       });
     } catch (error) {
       if (error instanceof ProviderError) throw error;
@@ -151,6 +165,7 @@ export function createRuntimeAgent(
     }
     if (reply.status < 200 || reply.status >= 300 || !identified || !("result" in body))
       throw refusal("unavailable", command.requestId);
+    check?.(body.result as T);
     return body.result as T;
   }
   const identity = (requestId: string = randomUUID()) => ({ version: 1 as const, sandboxId, requestId });
@@ -164,7 +179,10 @@ export function createRuntimeAgent(
       // Retain epoch alongside the result for provenance validation.
       let reply: Awaited<ReturnType<typeof commands.call>>;
       try {
-        reply = await commands.call(ownerId, command, signal ? { signal } : {});
+        reply = await commands.call(ownerId, command, {
+          ...(signal ? { signal } : {}),
+          accept: (candidate) => runtimeHealthMatches(candidate.body.result, candidate.epoch, expectedRestore),
+        });
       } catch {
         throw refusal("sandbox_not_ready");
       }
@@ -186,23 +204,27 @@ export function createRuntimeAgent(
       if (request.harness !== binding.harness) throw refusal("invalid_request");
       resolveModelChoice(request.harness, { model: request.model });
       const { epoch } = await this.health(request.signal);
-      const result = await invoke<unknown>(
+      return invoke<ModelConnectionTestResult>(
         { ...identity(), op: "testModelConnection", harness: request.harness, model: request.model },
         request.signal,
         epoch,
         30000,
+        (candidate) => {
+          if (!isModelConnectionTestResult(candidate)) throw refusal("unavailable");
+        },
       );
-      if (!isModelConnectionTestResult(result)) throw refusal("unavailable");
-      return result;
     },
     async workspaceHealth(epoch: string, signal?: AbortSignal) {
-      const health = await invoke<{ ready?: unknown; generation?: unknown; workspaceVersion?: unknown }>(
+      await invoke<{ ready?: unknown; generation?: unknown; workspaceVersion?: unknown }>(
         { ...identity(), op: "health" },
         signal,
         epoch,
+        undefined,
+        (health) => {
+          if (health.ready !== true || health.generation !== epoch || health.workspaceVersion !== 1)
+            throw new Error("Runtime workspace setup requires updated runtime artifacts; no native fallback.");
+        },
       );
-      if (health.ready !== true || health.generation !== epoch || health.workspaceVersion !== 1)
-        throw new Error("Runtime workspace setup requires updated runtime artifacts; no native fallback.");
     },
     async workspaceExec(
       request: import("@armada/core").ExecRequest,
@@ -212,7 +234,7 @@ export function createRuntimeAgent(
     ) {
       target(request.sandboxId);
       if (request.detached) throw refusal("invalid_request");
-      const result = await invoke<import("@armada/core").ExecResult>(
+      const result = await invoke<Extract<ExecResult, { detached: false }>>(
         {
           ...identity(`workspace_${epoch}_${step.phase}_${step.index}_${step.attempt}`),
           op: "workspaceExec",
@@ -225,15 +247,18 @@ export function createRuntimeAgent(
         },
         signal,
         epoch,
+        undefined,
+        (result) => {
+          if (
+            !result ||
+            result.detached !== false ||
+            typeof result.stdout !== "string" ||
+            typeof result.stderr !== "string" ||
+            !(result.exitCode === null || Number.isInteger(result.exitCode))
+          )
+            throw refusal("unavailable");
+        },
       );
-      if (
-        !result ||
-        result.detached !== false ||
-        typeof result.stdout !== "string" ||
-        typeof result.stderr !== "string" ||
-        !(result.exitCode === null || Number.isInteger(result.exitCode))
-      )
-        throw refusal("unavailable");
       return result;
     },
     async installSkills(
@@ -242,14 +267,17 @@ export function createRuntimeAgent(
       epoch: string,
       signal?: AbortSignal,
     ): Promise<SkillReceipt[]> {
-      const health = await invoke<{ ready?: unknown; generation?: unknown; skillsVersion?: unknown }>(
+      await invoke<{ ready?: unknown; generation?: unknown; skillsVersion?: unknown }>(
         { ...identity(), op: "health" },
         signal,
         epoch,
+        undefined,
+        (health) => {
+          if (health.ready !== true || health.generation !== epoch || health.skillsVersion !== 1)
+            throw new PrivateSkillError("skillpack_transport_failed", "transport");
+        },
       );
-      if (health.ready !== true || health.generation !== epoch || health.skillsVersion !== 1)
-        throw new PrivateSkillError("skillpack_transport_failed", "transport");
-      const result = await invoke<{ receipts?: SkillReceipt[]; failure?: { reason?: unknown } }>(
+      const result = await invoke<{ receipts: SkillReceipt[]; failure?: { reason?: unknown } }>(
         {
           ...identity(`skills_${sandboxId}`),
           op: "installSkills",
@@ -257,41 +285,44 @@ export function createRuntimeAgent(
         },
         signal,
         epoch,
+        undefined,
+        (candidate) => {
+          if (candidate?.failure) {
+            const reason = candidate.failure.reason;
+            if (
+              typeof reason === "string" &&
+              [
+                ...PRIVATE_SKILL_FAILURES,
+                "skillpack_credential_missing",
+                "skillpack_credential_refused",
+                "skillpack_skill_unavailable",
+              ].includes(reason as never)
+            )
+              throw new PrivateSkillError(reason as ConstructorParameters<typeof PrivateSkillError>[0], "install");
+            throw new PrivateSkillError("skillpack_install_state_invalid", "install");
+          }
+          if (!Array.isArray(candidate?.receipts) || candidate.receipts.length !== references.length)
+            throw new PrivateSkillError("skillpack_receipt_invalid", "receipt");
+          for (const [i, receipt] of candidate.receipts.entries()) {
+            const reference = references[i],
+              version = reference?.split("@")[1];
+            if (
+              !receipt ||
+              receipt.reference !== reference ||
+              receipt.version !== version ||
+              typeof receipt.checksum !== "string" ||
+              !/^sha256:[a-f0-9]{64}$/.test(receipt.checksum) ||
+              typeof receipt.skillId !== "string" ||
+              !/^[a-f0-9-]{36}$/.test(receipt.skillId) ||
+              receipt.origin !== "https://skillpack.app/v1" ||
+              (!reference?.includes("/") &&
+                (typeof receipt.workspaceId !== "string" ||
+                  !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(receipt.workspaceId)))
+            )
+              throw new PrivateSkillError("skillpack_receipt_invalid", "receipt");
+          }
+        },
       );
-      if (result?.failure) {
-        const reason = result.failure.reason;
-        if (
-          typeof reason === "string" &&
-          [
-            ...PRIVATE_SKILL_FAILURES,
-            "skillpack_credential_missing",
-            "skillpack_credential_refused",
-            "skillpack_skill_unavailable",
-          ].includes(reason as never)
-        )
-          throw new PrivateSkillError(reason as ConstructorParameters<typeof PrivateSkillError>[0], "install");
-        throw new PrivateSkillError("skillpack_install_state_invalid", "install");
-      }
-      if (!Array.isArray(result?.receipts) || result.receipts.length !== references.length)
-        throw new PrivateSkillError("skillpack_receipt_invalid", "receipt");
-      for (const [i, receipt] of result.receipts.entries()) {
-        const reference = references[i],
-          version = reference?.split("@")[1];
-        if (
-          !receipt ||
-          receipt.reference !== reference ||
-          receipt.version !== version ||
-          typeof receipt.checksum !== "string" ||
-          !/^sha256:[a-f0-9]{64}$/.test(receipt.checksum) ||
-          typeof receipt.skillId !== "string" ||
-          !/^[a-f0-9-]{36}$/.test(receipt.skillId) ||
-          receipt.origin !== "https://skillpack.app/v1" ||
-          (!reference?.includes("/") &&
-            (typeof receipt.workspaceId !== "string" ||
-              !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(receipt.workspaceId)))
-        )
-          throw new PrivateSkillError("skillpack_receipt_invalid", "receipt");
-      }
       return result.receipts.map(({ reference, version, skillId, checksum, origin, workspaceId }) => ({
         reference,
         version,
@@ -302,18 +333,23 @@ export function createRuntimeAgent(
       }));
     },
     async configureGitHub(configuration: GitHubRuntimeConfiguration, requestId: string): Promise<void> {
-      const result = await invoke<{ acknowledged?: boolean }>({
-        ...identity(requestId),
-        op: "configureGitHub",
-        configuration,
-      });
-      if (result?.acknowledged !== true) throw refusal("unavailable", requestId);
+      await invoke<{ acknowledged?: boolean }>(
+        { ...identity(requestId), op: "configureGitHub", configuration },
+        undefined,
+        undefined,
+        undefined,
+        (result) => {
+          if (result?.acknowledged !== true) throw refusal("unavailable", requestId);
+        },
+      );
     },
-    /** Supply the same requestId to reconcile an uncertain prompt admission. */
+    /** Supply the same requestId to reconcile an uncertain prompt admission. `check` is the
+     * caller's receipt validation (it throws the caller's error); the runtime record reuses it. */
     async prompt(
       request: PromptRequest,
       requestId: string = randomUUID(),
       expectedEpoch?: string,
+      check?: (receipt: PromptReceipt) => void,
     ): Promise<PromptReceipt> {
       target(request.sandboxId);
       if (request.harness !== binding.harness || !request.text.trim()) throw refusal("invalid_request");
@@ -334,25 +370,29 @@ export function createRuntimeAgent(
         },
         request.signal,
         expectedEpoch,
+        undefined,
+        check,
       );
     },
     async steer(request: SteerRequest, requestId: string = randomUUID()): Promise<SteerReceipt> {
       target(request.sandboxId);
       if (!request.conversationId || !request.text.trim() || Buffer.byteLength(request.text) > 262144)
         throw refusal("invalid_request");
-      const receipt = await invoke<SteerReceipt>({
-        ...identity(requestId),
-        op: "steer",
-        conversationId: request.conversationId,
-        text: request.text,
-      });
-      if (
-        !receipt ||
-        receipt.conversationId !== request.conversationId ||
-        typeof receipt.promptId !== "string" ||
-        !receipt.promptId
-      )
-        throw refusal("unavailable", requestId);
+      const receipt = await invoke<SteerReceipt>(
+        { ...identity(requestId), op: "steer", conversationId: request.conversationId, text: request.text },
+        undefined,
+        undefined,
+        undefined,
+        (receipt) => {
+          if (
+            !receipt ||
+            receipt.conversationId !== request.conversationId ||
+            typeof receipt.promptId !== "string" ||
+            !receipt.promptId
+          )
+            throw refusal("unavailable", requestId);
+        },
+      );
       return {
         conversationId: receipt.conversationId,
         promptId: receipt.promptId,
@@ -378,7 +418,7 @@ export function createRuntimeAgent(
       )
         throw refusal("invalid_request");
       const { signal, ...input } = request;
-      const result = await invoke<ExecResult>(
+      const result = await invoke<Extract<ExecResult, { detached: false }>>(
         {
           ...identity(requestId),
           op: "exec",
@@ -393,16 +433,18 @@ export function createRuntimeAgent(
         signal,
         undefined,
         ((request.timeoutSeconds ?? 120) + 30) * 1000,
+        (result) => {
+          if (
+            result?.detached !== false ||
+            (result.exitCode !== null && !Number.isInteger(result.exitCode)) ||
+            typeof result.stdout !== "string" ||
+            typeof result.stderr !== "string" ||
+            typeof result.timedOut !== "boolean" ||
+            typeof result.truncated !== "boolean"
+          )
+            throw refusal("unavailable", requestId);
+        },
       );
-      if (
-        result?.detached !== false ||
-        (result.exitCode !== null && !Number.isInteger(result.exitCode)) ||
-        typeof result.stdout !== "string" ||
-        typeof result.stderr !== "string" ||
-        typeof result.timedOut !== "boolean" ||
-        typeof result.truncated !== "boolean"
-      )
-        throw refusal("unavailable", requestId);
       return {
         detached: false,
         exitCode: result.exitCode,

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { decryptSecret, type Sql } from "@armada/core/server";
 import { readOutputDirectory } from "../../agent-runtime/src/outputs.ts";
 import { captureDockerStopOutputs, createDockerOutputReader } from "../src/docker-outputs.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeSelfFinish, selfFinishToken } from "../src/sandbox-finish.ts";
@@ -54,6 +55,8 @@ async function fixture() {
   const ops: string[] = [];
   // When set, the runtime holds its queue until the gate opens (a slow in-flight read).
   const hold: { gate: Promise<void> | null } = { gate: null };
+  // When set, the runtime answers HTTP 200 with this result instead of its directory read.
+  const forced: { result?: unknown } = {};
   let loop = Promise.resolve();
   // The reader's poll wait stands in for the runtime's command loop: it takes the head command
   // over the real session fence and answers it with the runtime's own directory read.
@@ -71,7 +74,7 @@ async function fixture() {
     const { command } = await runtime.next(session.runtimeToken, session.epoch);
     if (!command) return;
     ops.push(command.op);
-    const result = { files: await readOutputDirectory(outputs) };
+    const result = "result" in forced ? forced.result : { files: await readOutputDirectory(outputs) };
     await runtime.complete(session.runtimeToken, session.epoch, {
       epoch: session.epoch,
       requestId: command.requestId,
@@ -96,7 +99,7 @@ async function fixture() {
     return route(new Request(`https://armada.example/api/v1/sandboxes/${id}/outputs/${name}`));
   };
   const cleanup = () => rmSync(home, { recursive: true, force: true });
-  return { db, people, id, sql, session, outputs, ops, runtime, reader, service, download, cleanup, hold };
+  return { db, people, id, sql, session, outputs, ops, runtime, reader, service, download, cleanup, hold, forced };
 }
 
 test("a Docker file produced while live is sampled through the runtime and stays downloadable after stop", async () => {
@@ -134,13 +137,72 @@ test("an Armada Docker stop captures the final bytes before admission, after whi
     expect(await f.service.reconcileOne(new AbortController().signal)).toBe(true);
     await f.service.drain();
     writeFileSync(join(f.outputs, "memo.txt"), "final");
-    await captureDockerStopOutputs(f.sql, ENCRYPTION_KEY, f.id, { reader: f.reader });
+    // Under an HTTP request, the final read is one provider record with the request's ID.
+    const lines: string[] = [];
+    const captured = await observeRequest(
+      async () => {
+        await captureDockerStopOutputs(f.sql, ENCRYPTION_KEY, f.id, { reader: f.reader });
+        return new Response(null, { status: 202 });
+      },
+      (line) => lines.push(line),
+    );
     expect(await (await f.download("memo.txt"))?.text()).toBe("final");
     // Once the stop is admitted the runtime fence refuses commands: a later read cannot happen,
     // which is why every Armada Docker stop captures before it enqueues the stop.
     await f.db.query(`update sandboxes set stop_requested_at=now() where id=$1`, [f.id]);
-    expect(await f.reader(f.id).readOutputs!({ sandboxId: f.id })).toBeNull();
+    const refused = await observeRequest(
+      async () => {
+        expect(await f.reader(f.id).readOutputs!({ sandboxId: f.id })).toBeNull();
+        return new Response(null, { status: 409 });
+      },
+      (line) => lines.push(line),
+    );
     expect(f.ops).toEqual(["readOutputs", "readOutputs"]);
+    // The refusal keeps its quiet public fallback, but the trace no longer reads as a success.
+    expect(lines.map((line) => JSON.parse(line)).filter((event) => event.event === "provider_call")).toEqual([
+      expect.objectContaining({
+        requestId: captured?.headers.get("x-request-id"),
+        provider: "docker",
+        operation: "runtime.readOutputs",
+        outcome: "ok",
+      }),
+      expect.objectContaining({
+        requestId: refused?.headers.get("x-request-id"),
+        operation: "runtime.readOutputs",
+        outcome: "error",
+      }),
+    ]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a well-formed Docker read reply that Armada rejects keeps the snapshot and is recorded as an error", async () => {
+  const f = await fixture();
+  try {
+    mkdirSync(f.outputs);
+    writeFileSync(join(f.outputs, "memo.txt"), "draft");
+    expect(await f.service.reconcileOne(new AbortController().signal)).toBe(true);
+    await f.service.drain();
+    f.forced.result = { files: "invalid" };
+    const lines: string[] = [];
+    const response = await observeRequest(
+      async () => {
+        expect(await f.reader(f.id).readOutputs!({ sandboxId: f.id })).toBeNull();
+        return new Response(null, { status: 202 });
+      },
+      (line) => lines.push(line),
+    );
+    expect(f.ops).toEqual(["readOutputs", "readOutputs"]);
+    expect(await (await f.download("memo.txt"))?.text()).toBe("draft");
+    expect(lines.map((line) => JSON.parse(line)).filter((event) => event.event === "provider_call")).toEqual([
+      expect.objectContaining({
+        requestId: response?.headers.get("x-request-id"),
+        provider: "docker",
+        operation: "runtime.readOutputs",
+        outcome: "error",
+      }),
+    ]);
   } finally {
     f.cleanup();
   }

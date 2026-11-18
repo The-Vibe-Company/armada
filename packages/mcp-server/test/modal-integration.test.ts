@@ -11,6 +11,7 @@ import {
 import { AppService } from "modal";
 import { createSqlData } from "../src/data.ts";
 import { createModalIntegration, MODAL_INGEST_PATH } from "../src/modal-integration.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
@@ -177,8 +178,18 @@ test("private image org-fallback provenance survives adding a personal key, rota
       sourceImage: { scopeKey: scopeKey(scope), name: "source", imageId: "im-source" },
     };
     await createSqlModalStore(db, scope).reserve("stored-private", machine);
-    const reader = await integration.storedProviderFor(target, caller);
-    expect(await reader.get(machine.info.id)).toMatchObject({ id: machine.info.id, state: "ready" });
+    // A stored read reaches only Armada's database: the request records itself, never a Modal call.
+    const records: { event: string }[] = [];
+    let reader!: Awaited<ReturnType<typeof integration.storedProviderFor>>;
+    await observeRequest(
+      async () => {
+        reader = await integration.storedProviderFor(target, caller);
+        expect(await reader.get(machine.info.id)).toMatchObject({ id: machine.info.id, state: "ready" });
+        return Response.json({});
+      },
+      (line) => records.push(JSON.parse(line)),
+    );
+    expect(records.map((record) => record.event)).toEqual(["http_request"]);
     expect(() => reader.stop({ sandboxId: machine.info.id })).toThrow(
       "Stored observations cannot perform live operations",
     );

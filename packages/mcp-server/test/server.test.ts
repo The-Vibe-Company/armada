@@ -180,7 +180,7 @@ describe("when the auth lookup fails", () => {
       params: { name: "list", arguments: {} },
     });
     expect(response.status).toBe(503);
-    expect(lines).toHaveLength(1);
+    expect(lines).toHaveLength(2);
     expect(lines[0]).toContain("The membership store is unavailable.");
     expect(lines[0]).toContain("membership query failed");
     for (const text of [lines[0] ?? "", await response.text()]) {
@@ -245,7 +245,7 @@ describe("on the database client production uses", () => {
   test("an internal tool error answers generically and logs its real cause, redacted", async () => {
     const lines: string[] = [];
     const bearer = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.signature-part";
-    const { client, token, people } = await start({
+    const { handler, token, people } = await start({
       log: (line) => lines.push(line),
       sql: (db) => ({
         async query<T>(text: string, params?: unknown[]) {
@@ -258,12 +258,23 @@ describe("on the database client production uses", () => {
         },
       }),
     });
-    const failed = await call(await client(await token(people.member)), "list");
-    expect(failed.isError).toBe(true);
-    expect(failed.text).toContain("Armada could not complete the call.");
-    expect(failed.text).toContain("error code: internal");
-    expect(failed.text).not.toContain("hunter2");
-    expect(lines).toHaveLength(1);
+    const response = await rpc(handler, await token(people.member)).post({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "list", arguments: {} },
+    });
+    const { result } = (await response.json()) as { result: { isError: boolean; _meta: { requestId: string } } };
+    const requestId = response.headers.get("x-request-id") ?? "";
+    expect(requestId).toBeTruthy();
+    expect(result.isError).toBe(true);
+    expect(result._meta.requestId).toBe(requestId);
+    const failure = JSON.stringify(result);
+    expect(failure).toContain("Armada could not complete the call.");
+    expect(failure).toContain("error code: internal");
+    expect(failure).not.toContain("hunter2");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain(`[request ${requestId}]`);
     expect(lines[0]).toContain("tool list failed (internal): Error: connection to postgres://***@db.example.com");
     expect(lines[0]).not.toContain("hunter2");
     expect(lines[0]).not.toContain(bearer);

@@ -4,6 +4,7 @@ import type { Provider } from "@armada/core/server";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
@@ -180,9 +181,30 @@ test.each(["generation", "prefix", "ack"] as const)(
     const f = await runtimeFixture(await database());
     try {
       f.tamper(mode);
-      await expect(
-        createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, args(f.row.id)),
-      ).rejects.toMatchObject({ code: "conflict" });
+      const lines: string[] = [];
+      const response = await observeRequest(
+        async () => {
+          await expect(
+            createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, args(f.row.id)),
+          ).rejects.toMatchObject({ code: "conflict" });
+          return new Response(null, { status: 409 });
+        },
+        (line) => lines.push(line),
+      );
+      // A malformed acknowledgement is never recorded as a successful runtime checkpoint. A
+      // well-formed one whose watermark disagrees with the stored journal (prefix) is a valid
+      // runtime reply that publication then refuses; the request record carries that 409.
+      const records = lines.map((line) => JSON.parse(line));
+      expect(records.filter((event) => event.event === "provider_call")).toEqual([
+        expect.objectContaining({
+          requestId: response?.headers.get("x-request-id"),
+          operation: "runtime.checkpoint",
+          outcome: mode === "prefix" ? "ok" : "error",
+        }),
+      ]);
+      expect(records.filter((event) => event.event === "http_request")).toEqual([
+        expect.objectContaining({ requestId: response?.headers.get("x-request-id"), status: 409 }),
+      ]);
       expect(
         (await f.db.query("select watermark from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows[0],
       ).toEqual({ watermark: null });
