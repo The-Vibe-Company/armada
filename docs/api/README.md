@@ -94,6 +94,9 @@ the UUID bound to the token.
 | `sandbox/send` | `id`, `prompt` | `request_id` (UUID, required by direct runtime follow-up), `conversation_id`, `model`, `reasoning_effort` | Includes `promptId`, `conversationId` and the send status, which can be `queued`. |
 | `sandbox/stop` | `id` | `request_id` (UUID), `only_if_idle` (boolean) | `id`, `status` and an optional `preservationNote`. |
 
+Model and reasoning effort overrides apply to native sends. Runtime sends
+keep the model and reasoning effort selected at launch.
+
 Supply a stable request UUID for sends, as `request_id` on backend requests
 and `requestId` on viewer requests. The account turn queue deduplicates by
 request ID for sends it admits, including native sends with a pinned model
