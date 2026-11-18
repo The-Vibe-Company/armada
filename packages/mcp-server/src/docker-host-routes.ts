@@ -44,6 +44,13 @@ function string(value: unknown): string {
   if (typeof value !== "string") throw new InvalidInput();
   return value;
 }
+function snapshotBaselineHeader(request: Request): number | undefined {
+  const header = request.headers.get(DOCKER_HOST_SNAPSHOT_BASELINE_HEADER);
+  if (header === null) return undefined;
+  const version = Number(header);
+  if (!/^[1-9][0-9]{0,9}$/.test(header) || version > 2147483647) throw new InvalidInput();
+  return version;
+}
 function deadlinesOf(value: unknown): { sandboxId: string; generation: string; deadline: string }[] {
   if (!Array.isArray(value) || value.length > 4096) throw new InvalidInput();
   return value.map((entry) => {
@@ -235,12 +242,7 @@ export function createDockerHostRoutes(
           }
         }
         if (body.resourcePolicyVersion !== undefined && body.resourcePolicyVersion !== 1) throw new InvalidInput();
-        const baselineHeader = request.headers.get(DOCKER_HOST_SNAPSHOT_BASELINE_HEADER);
-        if (
-          baselineHeader !== null &&
-          (!/^[1-9][0-9]{0,9}$/.test(baselineHeader) || Number(baselineHeader) > 2147483647)
-        )
-          throw new InvalidInput();
+        const baseline = snapshotBaselineHeader(request);
         const version = body.version === undefined ? undefined : string(body.version);
         if (version !== undefined && !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new InvalidInput();
         if (body.skipSnapshots !== undefined && body.skipSnapshots !== true) throw new InvalidInput();
@@ -316,7 +318,7 @@ export function createDockerHostRoutes(
             body.diskFreeBytes as number | null | undefined,
             body.stoppedSandboxBytes as number | null | undefined,
             runningIds,
-            baselineHeader === null ? undefined : Number(baselineHeader),
+            baseline,
           );
           if (job || resumeClaims.length) break;
           // The probe is broader than the poll (admission refusals, job order). A
@@ -402,14 +404,16 @@ export function createDockerHostRoutes(
       const baselineTool = body.baselineTool;
       if ("baselineTool" in body && (reason !== "snapshot_build_failed" || !isSnapshotBaselineTool(baselineTool)))
         throw new InvalidInput();
-      const baselineVersion = body.baselineVersion;
+      const baselineHeader = snapshotBaselineHeader(request);
+      const baselineVersion = "baselineVersion" in body ? body.baselineVersion : baselineHeader;
       if (
-        "baselineVersion" in body &&
+        baselineVersion !== undefined &&
         (outcome !== "completed" ||
           typeof baselineVersion !== "number" ||
           !Number.isSafeInteger(baselineVersion) ||
           baselineVersion < 1 ||
-          baselineVersion > 2147483647)
+          baselineVersion > 2147483647 ||
+          (baselineHeader !== undefined && baselineHeader !== baselineVersion))
       )
         throw new InvalidInput();
       await store.complete(token, installationId, {

@@ -31,6 +31,7 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
+import { httpApi } from "../../docker-host/src/native.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
@@ -3131,6 +3132,51 @@ test("snapshot admission distinguishes daemon builds that report the same releas
   });
   expect(await (await poll(true))?.json()).toMatchObject({ job: null });
   expect((await create())?.status).toBe(200);
+});
+
+test("a verified receipt survives retry from an older replica to the current route", async () => {
+  const f = await snapshotFixture();
+  const requestId = randomUUID();
+  await f.snapshots.command(f.caller, "create", {
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    requestId,
+    name: "mixed-replicas",
+    config: f.config,
+  });
+  const job = await hosts.poll(f.hostToken, f.installationId);
+  if (job?.operation !== "buildSnapshot") throw Error("Missing build job");
+  const route = createDockerHostRoutes(hosts, async () => ({ ok: false }));
+  let firstRequest = true;
+  const request = (async (url, init) => {
+    if (firstRequest) {
+      firstRequest = false;
+      expect(JSON.parse(String(init?.body)).baselineVersion).toBe(1);
+      return new Response(null, { status: 400 });
+    }
+    return (await route(new Request(String(url), init))) ?? new Response(null, { status: 404 });
+  }) as typeof fetch;
+  await httpApi(request).result(
+    {
+      server: "https://fixture.example",
+      hostId: f.hostId,
+      installationId: f.installationId,
+      hostToken: f.hostToken,
+      receipts: [],
+    },
+    {
+      requestId,
+      request: job.request,
+      operation: "buildSnapshot",
+      inputHash: "fixture",
+      outcome: "completed",
+      imageId: `sha256:${"a".repeat(64)}`,
+      baselineVersion: 1,
+    },
+  );
+  expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id: requestId })).toMatchObject({
+    snapshot: { status: "ready", baselineVersion: 1 },
+  });
 });
 
 test("a downgrade after snapshot admission cannot publish an unverified snapshot", async () => {

@@ -168,6 +168,7 @@ export function httpApi(
     token: string,
     body: unknown,
     timeoutMs = 8_000,
+    snapshotBaseline = endpoint === "poll" ? SNAPSHOT_BASELINE_VERSION : undefined,
   ): Promise<unknown> {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
@@ -176,7 +177,7 @@ export function httpApi(
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
-        ...(endpoint === "poll" ? { [DOCKER_HOST_SNAPSHOT_BASELINE_HEADER]: String(SNAPSHOT_BASELINE_VERSION) } : {}),
+        ...(snapshotBaseline === undefined ? {} : { [DOCKER_HOST_SNAPSHOT_BASELINE_HEADER]: String(snapshotBaseline) }),
       },
       body: JSON.stringify(body),
     });
@@ -417,10 +418,10 @@ export function httpApi(
           ...(baselineTool === undefined ? {} : { baselineTool }),
         });
       } catch (error) {
-        // An older server may refuse optional receipt metadata (400): the plain outcome is still the machine
-        // fact. Any other failure is retried with the reason on the next tick.
+        // Older replicas may reject optional body fields. Carry verified baseline metadata in a header
+        // so a retry routed to a newer replica still receives the complete receipt.
         if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
-        await post(state.server, "results", state.hostToken, body);
+        await post(state.server, "results", state.hostToken, body, undefined, baselineVersion);
       }
     },
   };
