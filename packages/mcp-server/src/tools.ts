@@ -47,7 +47,6 @@ import {
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
-import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import { apiFailureCode } from "./api-failure.ts";
 import type { Caller } from "./caller.ts";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
@@ -57,11 +56,8 @@ import { MAX_LOG_PAGES, readEventPages, validateLogPagination } from "./event-pa
 import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
-import { summarizeResourceHistory } from "./resource-advice.ts";
-import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
-import type { RuntimeResume } from "./runtime-resume.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
@@ -82,8 +78,6 @@ export interface ToolContext {
   sandboxBillingAccount?: (id: string) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeGitHub?: RuntimeGitHub;
-  runtimeResume?: RuntimeResume;
-  runtimeCheckpoint?: RuntimeCheckpoint;
   runtimeSend?: RuntimeFollowup;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
   storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
@@ -1007,47 +1001,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
   }
 
   tool(
-    "resource_advice",
-    {
-      title: "Resource sizing evidence",
-      description:
-        "Collects one bounded read-only VM observation and reports the last ten comparable repository sessions. Missing evidence causes abstention; never resizes or changes defaults.",
-      input: { id },
-      output: { advice: z.unknown() },
-    },
-    async (args) => {
-      const found = await visible(args.id);
-      const store = data.resourceObservations;
-      if (!store) throw new ToolError("dependency_unavailable", "Resource observation persistence is unavailable.");
-      const admission =
-        found.resourceProject && found.machineSize?.capacity && ["ready", "running"].includes(found.status)
-          ? await store.claim(found.id, context.now())
-          : null;
-      if (admission) {
-        let observation = null;
-        try {
-          observation = (await (await context.provider(found)).observeResources?.(found.providerSandboxId)) ?? null;
-        } catch {
-          /* Collection failure is unavailable; never ingest raw provider diagnostics. */
-        }
-        if (
-          observation &&
-          validateProviderResourceObservation(observation) &&
-          observation.reading.cpuLogicalCpus !== null &&
-          observation.reading.memoryTotalBytes !== null
-        ) {
-          try {
-            await store.append(found.id, observation, context.now(), admission);
-          } catch (error) {
-            if (!(error instanceof GoldenError && error.code === "conflict")) throw error;
-          }
-        }
-      }
-      return { advice: summarizeResourceHistory(await store.history(found.id, context.now()), context.now()) };
-    },
-  );
-
-  tool(
     "status",
     {
       title: "Sandbox status",
@@ -1199,66 +1152,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
     async (args) => {
       if (!context.runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
       return context.runtimeGitHub.status(caller, args.id);
-    },
-  );
-
-  tool(
-    "runtime_resume",
-    {
-      title: "Resume a checkpointed runtime",
-      description:
-        "Activates the retained sandbox under a fresh epoch and verifies its sealed checkpoint. Continues the saved native conversation, or starts the first only from a verified empty journal. Owner-only; stable request_id, no implicit retry of uncertain activation. Cached outcome is historical, not current machine state.",
-      input: {
-        id,
-        request_id: z.string().uuid(),
-        runtimeVersion: z.literal(1),
-        prompt: z.string().min(1),
-        conversation_id: conversationId,
-      },
-      output: {
-        id: z.string(),
-        requestId: z.string(),
-        promptId: z.string(),
-        conversationId: z.string(),
-        status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
-        resumed: z.literal(true),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }),
-        sourceCheckpoint: z.object({
-          epoch: z.string(),
-          watermark: z.number().int().nonnegative(),
-          empty: z.literal(true).optional(),
-        }),
-      },
-      destructive: true,
-    },
-    async (args) => {
-      if (!context.runtimeResume) throw new ToolError("unsupported", "Runtime resume is unavailable.");
-      return context.runtimeResume(caller, args);
-    },
-  );
-
-  tool(
-    "runtime_checkpoint",
-    {
-      title: "Checkpoint an opted-in runtime",
-      description:
-        "Quiesce and seal the current Boat runtime journal/harness state before compute stop. Does not stop the VM or promise disk retention/resume. Owner-only; reuse request_id on uncertainty. New sends remain fenced until fresh enrolment.",
-      input: { id, request_id: z.string().uuid(), runtimeVersion: z.literal(1) },
-      output: {
-        id: z.string(),
-        requestId: z.string(),
-        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }),
-        checkpoint: z.object({
-          state: z.literal("complete"),
-          watermark: z.number().int().nonnegative(),
-          acknowledgedSequence: z.number().int().nonnegative(),
-        }),
-      },
-      destructive: true,
-    },
-    async (args) => {
-      if (!context.runtimeCheckpoint) throw new ToolError("unsupported", "Runtime checkpoint is unavailable.");
-      return context.runtimeCheckpoint(caller, args);
     },
   );
 
@@ -1708,22 +1601,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
         },
         { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
       ).catch((error) => publicationFailure(error, acknowledged));
-    },
-  );
-
-  tool(
-    "work_recovery",
-    {
-      title: "Retrieve preserved work",
-      description: "Owner/admin only. Returns sensitive base64 recovery archive; never log it.",
-      input: { id, recovery_id: z.string().uuid().optional() },
-      output: { archive: z.string().nullable() },
-      readOnly: true,
-    },
-    async (args) => {
-      const found = await data.sandboxes.get(args.id);
-      if (!found) throw new ToolError("not_found", "No such sandbox.");
-      return { archive: (await data.sandboxes.readWorkRecovery?.(found.id, args.recovery_id)) ?? null };
     },
   );
 

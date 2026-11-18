@@ -114,6 +114,7 @@ import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import { dispatchSandboxRestControl, isSandboxRestControl } from "./sandbox-rest-controls.ts";
 import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
 import { describeToolFailure, sandboxListInput } from "./tools.ts";
@@ -578,6 +579,12 @@ export async function dispatchControlCommand(
     );
     return { id: found.id, test };
   }
+  if (isSandboxRestControl(route)) {
+    const { data, providers } = options;
+    if (!data || !providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
+    const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
+    return dispatchSandboxRestControl(route, scopedCaller, body, { ...options, data, providers });
+  }
   const toolName = CONTROL_TOOL_ROUTES[route];
   if (toolName) {
     if (route === "sandbox/extend") {
@@ -619,8 +626,6 @@ export async function dispatchControlCommand(
         ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
         ...(options.accountTurns ? { accountTurns: options.accountTurns } : {}),
-        ...(options.runtimeCheckpoint ? { runtimeCheckpoint: options.runtimeCheckpoint } : {}),
-        ...(options.runtimeResume ? { runtimeResume: options.runtimeResume } : {}),
         ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
         data: listRef !== undefined ? options.scopedSandboxData!(scopedCaller, listRef) : options.data(scopedCaller),

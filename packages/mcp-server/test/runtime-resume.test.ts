@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore } from "@armada/core/server";
 import { sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
+import { dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
@@ -90,7 +92,24 @@ describe.each([
     const request = { id: f.row.id, request_id: crypto.randomUUID(), prompt: "continue the previous conversation" };
     const before = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
     const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
-    const result = (await resume(f.caller, { ...request, runtimeVersion: 1 })) as Awaited<ReturnType<typeof resume>>;
+    const result = (await dispatchControlCommand(
+      "sandbox/resume-runtime-v1",
+      f.caller,
+      { ...request, runtimeVersion: 1 },
+      {
+        authStore: createMemoryAuthStore(),
+        supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        data: createSqlData(f.sql),
+        providers: {
+          async resolve() {
+            throw Error("Runtime resume uses its own placement");
+          },
+        },
+        runtimeResume: resume,
+      },
+    )) as Awaited<ReturnType<typeof resume>>;
     expect(result).toMatchObject({
       resumed: true,
       conversationId: f.first.conversationId,
