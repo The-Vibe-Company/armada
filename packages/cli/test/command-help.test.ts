@@ -31,7 +31,7 @@ for (const command of [
         { out: (text) => (stdout += text), err: fail },
         {
           env: {},
-          fetch: fail,
+          fetch: Object.assign(fail, { preconnect: fail }),
           readFile: fail,
           readStdin: fail,
         },

@@ -42,7 +42,6 @@ import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
 import { hostCommand } from "./host-commands.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
-import { mcpCommand } from "./mcp-commands.ts";
 import { onboardingHelp } from "./onboarding-help.ts";
 import { operation, parseTtl } from "./operations.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
@@ -294,9 +293,9 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "launch":
       return launch(rest, io, deps);
     case "bind-credential":
-      return operation(command, rest, authOf(io, deps));
     case "mcp":
-      return mcpCommand(
+      return operation(
+        command,
         rest,
         authOf(io, deps),
         (path) =>

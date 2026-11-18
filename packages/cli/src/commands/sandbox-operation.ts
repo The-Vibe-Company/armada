@@ -11,7 +11,7 @@ type CommandMetadata = {
   useSelectedOrg?: boolean;
 };
 
-type SandboxOperationName = Parameters<typeof operation>[0];
+type SandboxOperationName = Exclude<Parameters<typeof operation>[0], "mcp">;
 
 export type Command = CommandMetadata & {
   run: (argv: readonly string[], auth: AuthIo) => Promise<number>;
@@ -20,6 +20,6 @@ export type Command = CommandMetadata & {
 export function sandboxOperation(metadata: CommandMetadata & { name: SandboxOperationName }): Command {
   return {
     ...metadata,
-    run: (argv, auth) => operation(metadata.name, argv, auth),
+    run: (argv, auth) => operation(metadata.name, argv, auth, async () => ""),
   };
 }
