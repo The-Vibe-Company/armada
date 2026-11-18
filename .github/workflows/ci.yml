@@ -41,7 +41,7 @@ jobs:
         if: matrix.shard == 1
         run: bun scripts/ci/unit-shards.ts --check
 
-      - name: Check migrations and docs allowlist against the current base
+      - name: Check migrations and shrink-only allowlists against the base
         if: matrix.shard == 1
         env:
           BASE_BRANCH: ${{ github.base_ref || 'main' }}
@@ -54,7 +54,7 @@ jobs:
             # Fetch now, not the potentially stale base SHA in the PR event.
             git fetch --no-tags --depth=1 origin "refs/heads/$BASE_BRANCH"
             base=$(git rev-parse FETCH_HEAD)
-            # Docs exceptions must be compared with the base of this frozen PR checkout.
+            # Shrink-only allowlists use the base of this frozen PR checkout.
             if ! git cat-file -e "$PR_BASE_SHA^{commit}"; then
               git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
             fi
@@ -72,6 +72,7 @@ jobs:
           fi
           bun scripts/db/check-migrations.ts "$base"
           bun scripts/ci/docs-guard.ts "${PR_BASE_SHA:-$base}"
+          bun scripts/ci/process-tests.ts --check "${PR_BASE_SHA:-$base}"
           echo "TABLE_OWNERS_BASE=${PR_BASE_SHA:-$base}" >> "$GITHUB_ENV"
       - run: bun run lint
         if: matrix.shard == 1

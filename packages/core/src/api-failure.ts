@@ -62,8 +62,12 @@ export class GitHubHydrationError extends Error {
   }
 }
 
+export const LAUNCH_CREDENTIAL_BINDING_GUIDANCE =
+  "This launch requires a bound model account. In the dashboard, open Models → Add account, then select the account when launching. In the CLI, re-add it with armada creds set <kind> --name <name> --file <path>, find its ID with armada creds list, and retry armada launch with --credential-id <account-uuid>.";
+
 /** Closed launch guidance; never relay provider or guest diagnostics. Typed causes precede HTTP fallback. */
 const LAUNCH_FAILURE_HELP: Record<string, string> = {
+  credential_binding_required: LAUNCH_CREDENTIAL_BINDING_GUIDANCE,
   provider_not_configured:
     "The agent has no subscription or API key. Add a model account or choose another agent, then launch again.",
   no_credentials:

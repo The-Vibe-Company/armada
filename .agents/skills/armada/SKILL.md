@@ -25,8 +25,8 @@ access needs an authorized admin, not a retry loop.
 
 Read [setup and configuration](references/setup.md) when connecting GitHub,
 selecting model accounts, creating goldens/templates, or configuring variables.
-Manage templates and default skill pins through the dashboard or the authenticated
-REST API. MCP `template_launch` launches an existing template.
+Manage templates, default skill pins, variables and application secrets through
+the dashboard or the authenticated REST API. MCP `template_launch` launches an existing template.
 
 For MCP coordinator launches, call `launch` with optional `size`, a stable
 `idempotencyKey` and an `externalRef`. After an uncertain response, repeat the
@@ -37,6 +37,7 @@ any receipt UUID returned.
 ## 2. Choose before launching
 
 - Inspect `armada snapshot list --json` and `armada template list --json`.
+  To refresh a shared snapshot, update its build configuration with the owner authorization.
   A golden is a provider-specific saved environment; a template is an immutable
   revision specifying a golden, harness and configuration. Use IDs if names clash.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
@@ -44,6 +45,10 @@ any receipt UUID returned.
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
+- If a runtime launch returns `credential_binding_required`, add the model account
+  in Models → Add account or run `armada creds set KIND --name NAME --file PATH`.
+  Use `armada creds list` to find the account ID, then retry the launch with
+  `--credential-id ACCOUNT`.
 - Bound TTL, size and concurrency to the task. Start small unless evidence calls
   for more. `armada advice SANDBOX --json` provides bounded historical resource
   evidence; unknown evidence is not a recommendation to upscale.

@@ -1610,7 +1610,7 @@ test("MCP launch preserves the closed busy account code and safe action", async 
   expect(boat.forks).toHaveLength(0);
 });
 
-test("public MCP schemas protect secret boundaries and mutation contracts", async () => {
+test("public MCP inventory and schemas expose operation contracts", async () => {
   const { token, client, people } = await start();
   const mcp = await client(await token(people.member));
   const { tools } = await mcp.listTools();
@@ -1634,15 +1634,6 @@ test("public MCP schemas protect secret boundaries and mutation contracts", asyn
       "list",
       "logs",
       "template_launch",
-      "variable_list",
-      "variable_read",
-      "variable_set",
-      "variable_update",
-      "variable_delete",
-      "secret_list",
-      "secret_commit",
-      "secret_revoke",
-      "secret_delete",
       "report",
       "resource_advice",
       "resume",
@@ -1659,25 +1650,6 @@ test("public MCP schemas protect secret boundaries and mutation contracts", asyn
   for (const tool of tools) expect(tool.outputSchema).toBeDefined();
   const resume = tools.find((tool) => tool.name === "resume");
   expect(resume?.inputSchema.required).toEqual(["id", "request_id"]);
-  const secretCommit = tools.find((tool) => tool.name === "secret_commit");
-  expect(secretCommit?.inputSchema.required).toEqual(["org", "uploadReference"]);
-  expect(secretCommit?.inputSchema.properties?.uploadReference).toMatchObject({ type: "string" });
-  const variableSet = tools.find((tool) => tool.name === "variable_set");
-  expect(variableSet?.inputSchema.required).toEqual(["org", "scope", "name", "value"]);
-  expect(variableSet?.inputSchema.properties?.scope).toMatchObject({ enum: ["personal", "org"] });
-  expect(variableSet?.inputSchema.properties?.value).toMatchObject({ type: "string" });
-  for (const name of ["variable_update", "variable_delete", "secret_revoke", "secret_delete"]) {
-    const schema = tools.find((tool) => tool.name === name)?.inputSchema;
-    expect(schema?.required).toEqual(["org", "id", "expectedVersion"]);
-    expect(schema?.properties?.expectedVersion).toMatchObject({ type: "integer", minimum: 1 });
-  }
-  for (const tool of tools.filter((tool) => /^(secret|variable)_/.test(tool.name))) {
-    expect(tool.inputSchema.additionalProperties).toBe(false);
-    if (tool.name.startsWith("secret_")) {
-      expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value");
-      expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain("value_enc");
-    }
-  }
   const launch = tools.find((tool) => tool.name === "launch");
   expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string" });
   expect(launch?.inputSchema.required ?? []).not.toContain("repo");

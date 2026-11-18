@@ -50,14 +50,15 @@ snapshot UUID; it must not delete the snapshot's stopped children.
 
 Connect/snapshot fences now retain ownership when a physical or publication outcome
 is unknown. Before sending a CAS, the fence stores the exact proposed canonical
-sandbox/snapshot identity. An authorized retry of snapshot connect or snapshot snapshot
+sandbox/snapshot identity. An authorized retry of `POST /api/v1/golden/connect` or
+`POST /api/v1/golden/snapshot`
 performs live role verification and a canonical SQL readback. Only receipts whose
 entire proposed identity matches the persisted snapshot can be cleared automatically.
 A nonmatching read is NOT proof of rollback of an in-flight transaction. There is
 no fence age/lease override.
 
-For a lost connect COMMIT response and readback, retry snapshot connect once database
-availability returns. For a lost snapshot publication, retry snapshot connect first:
+For a lost connect COMMIT response and readback, retry the connect endpoint once
+database availability returns. For a lost snapshot publication, retry that endpoint first:
 it confirms the immutable snapshot pointer, resolves that publication fence, then
 restores the canonical source through the normal provider-scoped path.
 Retries never delete retained shared artifacts. Revoked/demoted callers cannot clear

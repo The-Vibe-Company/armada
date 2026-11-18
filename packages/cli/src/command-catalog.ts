@@ -70,10 +70,6 @@ Usage:
   armada snapshot build-status <job-id>      Read the authenticated durable build status
   armada snapshot build-status --idempotency-key <key> --org <org>
                                            Recover an uncertain admission using the saved key.
-  armada snapshot connect <name> [--provider boat|modal]
-                                           Open the canonical master for maintenance
-  armada snapshot snapshot <name> [--provider boat|modal]
-                                           Scan the master sandbox and save it as a snapshot
   armada snapshot capabilities [--provider boat|modal] [--org UUID] [--json]
                                            Server-authoritative snapshot capacity; null means unbounded/unknown
   armada snapshot size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
@@ -93,23 +89,16 @@ Usage:
                                            Build a new snapshot from saved repos/setup on its original host; keep the old one.
   armada launch <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
-                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
+                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
                 [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
                                            Fork a snapshot into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --credential-id UUID selects a model account;
-                                           otherwise use your personal or organization default. --repo owner/repo selects a recorded
-                                           snapshot repository as the native agent's real initial cwd (also when idle);
-                                           omit it to keep legacy launch behavior. Size resolves on the server:
-                                           --size > selected repository default > snapshot default > legacy.
-                                           --size or --repo requires the versioned sizing server; --sized requires
-                                           default-policy resolution without overriding size. No downgrade/retry
-                                           to legacy launch on unsupported servers. Bare legacy launches keep their route.
-                                           Size labels do not promise equal performance/billing across providers.
+                                           otherwise use your personal or organization default.
+                                           --repo selects the native agent's initial working directory, including when idle.
                                            Defaults:
                                            ${modelDefaults()}
-                                           --repo prepares native agent cwd in the selected repository, including when idle; not confinement.
   armada list [--status STATUS] [--agent|--harness ${HARNESSES.join("|")}] [--golden UUID] [--owner UUID|me]
               [--page N] [--limit 1..200] [--org UUID] [--json] [--page-info]
                                            Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals

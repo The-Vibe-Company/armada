@@ -50,6 +50,7 @@ Rules only. Procedures live in the documents listed under "Where truth lives".
 ## Tests
 - One test per behaviour, at the cheapest boundary that proves it. No network, no wall-clock wait, no sleep (inject clocks).
 - No child process when a function call proves the same thing. Real Git, gh and provider behaviour belongs in the staging smoke.
+- No new process-spawning test files. Run `bun scripts/ci/process-tests.ts --check` and remove stale entries from `scripts/ci/process-tests.txt`. The allowlist only shrinks.
 - A test over one second is rewritten or deleted. Never raise a timeout to make a test pass.
 - A flaky test is deleted the day it is seen, not retried or quarantined. A cheaper deterministic test replaces it if the behaviour matters.
 - Fixtures never contain literals that match real token patterns. Use short placeholders; build scanner-positive bytes at runtime.

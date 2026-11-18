@@ -259,19 +259,48 @@ describe("launch", () => {
             },
           },
         ),
-      ).rejects.toMatchObject({ code: failure === "startup" ? "start_failed" : "invalid_request" });
+      ).rejects.toMatchObject(
+        failure === "account"
+          ? { code: "credential_binding_required", message: expect.stringContaining("--credential-id") }
+          : { code: failure === "startup" ? "start_failed" : "invalid_request" },
+      );
       expect(nativeForks).toBe(0);
       expect(world.prompts).toEqual([]);
       expect(world.execs).toEqual([]);
       expect(world.forks).toHaveLength(failure === "startup" ? 1 : 0);
     },
   );
+  test("explicit runtime refuses an unbound account before allocation", async () => {
+    const world = setup({ golden: golden("org") });
+    await expect(
+      launchSandbox(
+        world.provider,
+        world.stores,
+        owner,
+        { golden: "web", harness: "codex" },
+        {
+          boatRuntime: {
+            async start() {
+              throw Error("Runtime started before account admission");
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "credential_binding_required",
+      message: expect.stringContaining("Models → Add account"),
+    });
+    expect(world.order).toEqual(["credentials"]);
+    expect(world.rows.size).toBe(0);
+  });
+
   test.each(["key", "auth", "opencode"] as const)(
     "experimental %s launch hands off after persisted selection, never native setup/prompt",
     async (kind) => {
       const world = setup({
         golden: golden("org"),
         github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
+        boundCredentials: true,
         ...(kind === "auth" ? { credentials: authCredentials() } : {}),
       });
       world.stores.credentials.hydrateNative = async () => {
@@ -292,6 +321,7 @@ describe("launch", () => {
           env: { OPENCODE_API_KEY: "opencode_key" },
           secrets: ["opencode_key"],
           codexAuthJson: false,
+          binding: { credentialId: OWNER, credentialVersion: 1 },
         });
         await expect(
           launchSandbox(world.provider, world.stores, owner, {
@@ -414,7 +444,7 @@ describe("launch", () => {
   test.each(["mcp", "mcp-prepare", "skills", "parent", "selection", "startup", "invalid-epoch", "prompt"] as const)(
     "experimental launch refuses %s without a native fallback",
     async (failure) => {
-      const world = setup({ golden: golden("org") });
+      const world = setup({ golden: golden("org"), boundCredentials: true });
       world.stores.sandboxes.recordSkills = async () => {};
       world.stores.connections = {
         async validate() {
@@ -1474,6 +1504,7 @@ function golden(visibility: "org" | "private"): GoldenRecord {
 interface Setup {
   golden: GoldenRecord;
   credentials?: HarnessCredentials;
+  boundCredentials?: boolean;
   credentialError?: Error;
   exec?: (command: string) => { exitCode: number; stderr?: string; stdout?: string };
   promptError?: Error;
@@ -1579,6 +1610,7 @@ function setup(options: Setup) {
             files: [],
             sources: [],
           })),
+        ...(options.boundCredentials ? { binding: { credentialId: OWNER, credentialVersion: 1 } } : {}),
         ...(options.github ? { github: options.github } : {}),
       };
     },
@@ -2031,6 +2063,7 @@ test("host_full fork refusal remains definite and does not publish or clean up a
 
 test("Modal launch attributes readiness intervals in order and excludes the prompt", async () => {
   const world = setup({
+    boundCredentials: true,
     golden: {
       ...golden("org"),
       provider: "modal",
@@ -2120,7 +2153,7 @@ test.each([
   ["runtime", "claude"],
   ["runtime", "codex"],
 ] as const)("%s %s launch records each stage once, harness ready before its prompt", async (path, harness) => {
-  const world = setup({ golden: golden("org") });
+  const world = setup({ golden: golden("org"), boundCredentials: path === "runtime" });
   const elapsed: Record<string, number> = {};
   const stored: Record<string, number> = {};
   // A deterministic monotonic clock: the fork returns at once and storing `accepted` is slow, the case where reading

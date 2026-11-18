@@ -19,7 +19,7 @@ Commands below start with `armada`. Select an organization with `org use NAME|UU
 | Snapshot capacity | Per-provider server-reported capacity | `snapshot capabilities [--provider boat\|modal] [--org UUID] [--json]`; null means unknown/unbounded, not zero |
 | Build / rebuild snapshots | Provider selection on create; rebuild keeps the stored provider, name and visibility | `snapshot create NAME --repo URL[@BRANCH]`; update with `--add-repo URL` or `--replace --config FILE` (see examples below) |
 | Durable build progress | Admission receipt, bounded status polling and recovery after reload | `snapshot build-status JOB_ID`, or `snapshot build-status --idempotency-key KEY --org ORG` |
-| Manual snapshot maintenance | Build/rebuild workflow | Additional CLI commands: `snapshot connect NAME`, `snapshot snapshot NAME`; select `--provider` for same-name snapshots |
+| Snapshot builds | Build/rebuild workflow | Use `snapshot update` for Boat/Modal or `snapshot rebuild` for Docker |
 | Snapshot visibility | Owner/admin visibility controls | `snapshot visibility UUID --visibility private\|org` |
 | Launch | Snapshot, agent, model, effort, TTL and MCP connections | `launch PRIVATE_SNAPSHOT --agent claude\|codex\|opencode [PROMPT] --model ID --reasoning-effort LEVEL --ttl 4h --connections UUID,UUID`. Ordinary cloud launches inherit snapshot visibility. |
 | Repository context | Select a configured repository directory | `launch ... --repo DIR` or `--repo owner/repo`; persisted native cwd, including idle launches |

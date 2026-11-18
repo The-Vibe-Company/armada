@@ -109,12 +109,6 @@ private jobs remain owner-only, even against admins. States are `queued`, `runni
 These are **not durable create/update jobs**. They perform the requested maintenance operation
 and return its result; they do not accept a build idempotency key or return a job receipt.
 
-```sh
-armada snapshot connect web --provider boat --org <org> --json
-# Maintain only non-secret repositories/dependencies/configuration in the canonical master.
-armada snapshot snapshot web --provider boat --org <org> --json
-```
-
 `POST /api/v1/golden/connect` takes `name`, optional `org` and `provider`, and returns
 `{golden, sandboxId, webUrl}` (`webUrl` is currently null). It opens/restores the canonical
 master through Armada; it is not a direct-provider CLI connection or a credential bypass.

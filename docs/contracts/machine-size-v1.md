@@ -9,9 +9,7 @@ Source of truth: browser-safe `@armada/core` exports from
   Omit policy to read. Supply a complete version-1 policy to replace atomically.
   Clear with `{version:1,golden:null,repositories:{}}`.
 - MCP `golden_size_policy` uses the same fields and result.
-- For HTTP launch, use `POST /api/v1/sandbox/launch` with
-  `sizePolicyVersion: 1` for an explicit size or when repository or golden sizing
-  defaults are required. `SizedLaunchRequestV1` describes those fields.
+- HTTP launch accepts optional `size` and `repo` on `POST /api/v1/sandbox/launch`.
 - For MCP, use `launch` with optional `size`. The launch response records
   the applied policy in `machineSize`.
 - The supported sizes are `small | medium | large | xlarge`. Boat's native

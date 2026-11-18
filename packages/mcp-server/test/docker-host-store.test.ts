@@ -1088,7 +1088,7 @@ test("retention belongs to the adding member and reports physical cleanup deadli
   const deadline = "2026-11-20T12:00:00.000Z";
   expect(
     await store.retentionForHost(a.hostToken, a.installationId, { retentionSeconds: 86400, nextCleanupAt: deadline }),
-  ).toBe(0);
+  ).toEqual({ hostId: a.hostId, retentionSeconds: 0 });
   let host = (await store.list(a.actor)).find((h) => h.id === a.hostId)!;
   expect(host.retentionSeconds).toBe(86400);
   expect(host.nextCleanupAt).toBeNull();
@@ -1136,7 +1136,7 @@ test("retired registrants retain only bound reconciliation and admin cleanup", a
     // The HTTP poll composes these policy endpoints around mailbox delivery.
     await expect(
       store.retentionForHost(a.hostToken, a.installationId, { retentionSeconds: 86400, nextCleanupAt: null }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ hostId: a.hostId, retentionSeconds: undefined });
     await expect(store.limitsForHost(a.hostToken, a.installationId)).resolves.toBeUndefined();
     await denied(store.expired(a.hostToken, randomUUID(), { requestId: a.startup.requestId }));
     await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
