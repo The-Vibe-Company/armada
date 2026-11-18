@@ -345,15 +345,17 @@ test("admin extension and deletion resolve private-source resources through thei
         [id],
       );
       if (transport === "api") {
-        const result = await handleControlRequest(
-          new Request(`${PUBLIC_URL}/api/v1/sandbox/extend`, {
-            method: "POST",
-            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify({ id, ttl_seconds: 600 }),
-          }),
-          options,
-        );
-        expect(result?.status).toBe(200);
+        for (const ttl of [{ ttl_seconds: 600 }, { ttlSeconds: 900 }]) {
+          const result = await handleControlRequest(
+            new Request(`${PUBLIC_URL}/api/v1/sandbox/extend`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+              body: JSON.stringify({ id, ...ttl }),
+            }),
+            options,
+          );
+          expect(result?.status).toBe(200);
+        }
       } else expect((await call(mcp, "extend", { id, ttl_seconds: 600 })).isError).toBe(false);
       await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
       await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
