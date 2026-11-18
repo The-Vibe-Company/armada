@@ -859,3 +859,49 @@ for (const loss of ["membership", "credential", "credential_stale_generation", "
     expect(await worker.reconcileOne()).toBe(false);
   });
 }
+
+test("API status writes journal their stable cause, and a status write without context journals nothing", async () => {
+  const { db, people } = await sharedDatabase();
+  const store = createSqlData(bunLikeSql(db))({
+    via: "service",
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+  }).sandboxes;
+  const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+  if (!golden) throw Error("missing golden");
+  const id = crypto.randomUUID();
+  await store.insert({
+    id,
+    provider: "boat",
+    providerSandboxId: "bx_34567890",
+    goldenId: golden.id,
+    orgId: people.org,
+    ownerId: people.owner,
+    harness: "claude",
+    status: "running",
+    model: "test",
+    reasoningEffort: "medium",
+    effectiveTtlSeconds: 3600,
+  });
+  await store.update(id, { status: "stopping", stopRequested: true });
+  await store.update(id, { status: "stopped", statusReason: "idle_paused", stoppedAt: new Date(0).toISOString() });
+  await store.update(id, { status: "failed", statusReason: "A free-text diagnostic." });
+  await store.update(id, { status: "deleted", deleteRequested: true, deletedAt: new Date(0).toISOString() });
+  await db.query("update sandboxes set status='failed' where id=$1", [id]);
+  expect(
+    (
+      await db.query(
+        "select from_status,to_status,actor,code from sandbox_transitions where sandbox_id=$1 order by id",
+        [id],
+      )
+    ).rows,
+  ).toEqual([
+    { from_status: "running", to_status: "stopping", actor: "api", code: "stop_requested" },
+    { from_status: "stopping", to_status: "stopped", actor: "api", code: "idle_paused" },
+    { from_status: "stopped", to_status: "failed", actor: "api", code: "sandbox_failed" },
+    { from_status: "failed", to_status: "deleted", actor: "api", code: "delete_requested" },
+  ]);
+  expect((await db.query("select transition_context from sandboxes where id=$1", [id])).rows).toEqual([
+    { transition_context: null },
+  ]);
+});
