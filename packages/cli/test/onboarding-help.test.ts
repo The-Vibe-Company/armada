@@ -4,7 +4,6 @@ import { run } from "../src/run.ts";
 
 test("nested onboarding help is focused and performs no authenticated or secret I/O", async () => {
   for (const command of [
-    "launch",
     "host",
     "template",
     "routine enable",

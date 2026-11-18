@@ -4,6 +4,7 @@ import { run } from "../src/run.ts";
 
 for (const command of [
   "--help",
+  "launch",
   "list",
   "advice",
   "rm",

@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { VERSION } from "@armada/core";
 import type { AuthIo } from "../src/auth-commands.ts";
-import { completion, doctor, prepareLaunch } from "../src/devx.ts";
+import { completion } from "../src/command-catalog.ts";
+import { doctor, prepareLaunch } from "../src/devx.ts";
 import { memorySessionStore } from "../src/session.ts";
 
 function fixture(responses: Record<string, unknown>) {

@@ -4,10 +4,11 @@ import { sandboxOperation } from "./sandbox-operation.ts";
 export default sandboxOperation({
   name: "list",
   summary: "List visible sandboxes",
-  usageGroup: "list",
-  usage: `  armada list [--status STATUS] [--agent|--harness ${HARNESSES.join("|")}] [--golden UUID] [--owner UUID|me]
+  usage: {
+    list: `  armada list [--status STATUS] [--agent|--harness ${HARNESSES.join("|")}] [--golden UUID] [--owner UUID|me]
               [--page N] [--limit 1..200] [--org UUID] [--json] [--page-info]
                                            Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals`,
+  },
   help: `Usage: armada list [--status <status>] [--agent <harness> | --harness <harness>]
   [--golden UUID] [--owner UUID|me] [--page <N>] [--limit <N>] [--org UUID] [--json] [--page-info]
 List visible sandboxes after Armada login and server authorization.
