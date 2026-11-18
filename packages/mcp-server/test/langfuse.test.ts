@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { AgentEvent, Provider } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { normalizeEvent } from "@armada/provider-boat";
@@ -165,10 +165,10 @@ test("the Langfuse connection test checks keys without exporting a trace or pers
     await encryptConfig(),
   ]);
   const attempts: { url: string; init: RequestInit | undefined }[] = [];
-  let upstream: number | null = 200;
+  let upstream = 200;
   const route = createLangfuse(db, key, noNativeProvider, (async (url, init) => {
     attempts.push({ url: String(url), init });
-    if (upstream === null) throw new DOMException("timeout", "TimeoutError");
+    init?.signal?.throwIfAborted();
     return new Response("upstream_body", { status: upstream });
   }) as typeof fetch).route(async () => ({
     ok: true,
@@ -185,18 +185,27 @@ test("the Langfuse connection test checks keys without exporting a trace or pers
   });
   expect(attempts[0]?.init?.body).toBeUndefined();
 
-  upstream = 401;
-  expect(await (await probe({ secretKey: "candidate_secret" }))?.json()).toEqual({ status: "rejected" });
+  expect(await (await probe({ secretKey: "candidate_secret" }))?.json()).toEqual({ status: "ok" });
   expect(new Headers(attempts[1]?.init?.headers).get("authorization")).toBe(
     `Basic ${Buffer.from("public_placeholder:candidate_secret").toString("base64")}`,
   );
-  upstream = null;
-  expect(await (await probe({}))?.json()).toEqual({ status: "unreachable" });
+  upstream = 401;
+  expect(await (await probe({}))?.json()).toEqual({ status: "rejected" });
   expect(attempts[2]?.init?.headers).toEqual(attempts[0]?.init?.headers);
+
+  const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(
+    AbortSignal.abort(new DOMException("timeout", "TimeoutError")),
+  );
+  try {
+    expect(await (await probe())?.json()).toEqual({ status: "unreachable" });
+    expect(timeout.mock.calls).toEqual([[5000]]);
+  } finally {
+    timeout.mockRestore();
+  }
 
   expect((await probe({ host: "http://langfuse.test" }))?.status).toBe(400);
   expect((await probe({ host: "https://different.test" }))?.status).toBe(400);
-  expect(attempts).toHaveLength(3);
+  expect(attempts).toHaveLength(4);
 });
 
 test("native settlement exports once and a new server reads only its organization's durable totals", async () => {
