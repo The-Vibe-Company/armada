@@ -504,7 +504,7 @@ migrations or extra workers. Model/registry latency stays inside the shared
 ### Scoped Armada access
 
 `--scoped-access` requires `--work-preservation` and reuses its two workers:
-the clean Codex parent uses `sandbox/launch-access-v1` with version1 and
+the clean Codex parent uses `sandbox/launch` with version1 and
 maxActiveChildren1; the dirty no-option control omits access entirely and opts
 out of skill defaults. Both staging entrypoints enable it. Current ordinary
 access supports Codex only: Claude emits explicit `codex_only` SKIP, not a false

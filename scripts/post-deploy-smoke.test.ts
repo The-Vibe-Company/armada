@@ -832,7 +832,7 @@ describe("preservation checks", () => {
               status: childStopped ? "stopped" : "ready",
               providerState: childStopped ? "stopped" : "active",
             });
-          if (call.path === "sandbox/launch" || call.path === "sandbox/launch-access-v1") {
+          if (call.path === "sandbox/launch") {
             launches++;
             stopping = false;
             sandboxId = crypto.randomUUID();
@@ -840,11 +840,9 @@ describe("preservation checks", () => {
             if (scopes) {
               if (launches === 1) {
                 positiveParent = sandboxId;
-                expect(call.path).toBe("sandbox/launch-access-v1");
                 expect(call.body.armadaAccessVersion).toBe(1);
                 expect(call.body.armadaAccess).toEqual({ maxActiveChildren: 1 });
               } else {
-                expect(call.path).toBe("sandbox/launch");
                 expect(call.body).not.toHaveProperty("armadaAccess");
                 expect(call.body).not.toHaveProperty("armadaAccessVersion");
                 expect(call.body.skipSkillDefaults).toBe(true);
@@ -993,12 +991,16 @@ describe("preservation checks", () => {
         }
         if (fault === "scoped_unsupported") {
           expect(fake.receipts()).toContainEqual({ case: 0, step: "scoped_access", skip: true, reason: "codex_only" });
-          expect(fake.calls.some((call) => call.path === "sandbox/launch-access-v1")).toBe(false);
+          expect(fake.calls.some((call) => call.path === "sandbox/launch" && call.body.armadaAccessVersion === 1)).toBe(
+            false,
+          );
         }
         if (scopes) {
           expect(fake.calls.filter((call) => call.path === "sandbox/stop" && call.body.id === childId)).toHaveLength(1);
           expect(fake.receipts().filter((line) => line.step === "scoped_cleanup_summary" && line.pass)).toHaveLength(2);
-          expect(fake.calls.filter((call) => call.path === "sandbox/launch-access-v1")).toHaveLength(1);
+          expect(
+            fake.calls.filter((call) => call.path === "sandbox/launch" && call.body.armadaAccessVersion === 1),
+          ).toHaveLength(1);
         }
         if (defaults) {
           expect(fake.calls.filter((call) => call.path === "skills/defaults/get")).toHaveLength(3);
@@ -1413,7 +1415,7 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
             fault === "wrong_steer_status" ? 400 : 409,
           );
     if (call.path === "sandbox/extend") {
-      expect(call.body.ttl_seconds).toBe(1860);
+      expect(call.body.ttlSeconds).toBe(1860);
       const next = new Date(Date.parse(life.expiry) + 60_000).toISOString();
       if (fault !== "bad_extension") life.expiry = next;
       return json({ id, expiresAt: life.expiry, ttlSeconds: 1860 });
@@ -1616,7 +1618,7 @@ test("the launch tracker records every launch handle, awaits launches in flight 
       throw new Error("invalid_response");
     })
     .catch(() => {});
-  await tracker.track("sandbox/launch-access-v1", async (record) => record({ sandbox: { id: "parent" } }));
+  await tracker.track("sandbox/launch", async (record) => record({ sandbox: { id: "parent" } }));
   // Only launches gate the snapshot diff; a pending read never does.
   tracker.track("sandbox/status", (record) => {
     record({ id: "not-a-launch" });
@@ -1677,10 +1679,10 @@ test("an unrelated launch in flight never holds scoped child cleanup or the next
       await held;
       return json({ sandbox: { id: crypto.randomUUID(), provider: "modal" } });
     }
-    if (call.path === "sandbox/launch-access-v1" || call.path === "sandbox/launch") {
+    if (call.path === "sandbox/launch") {
       const id = crypto.randomUUID();
       inventory.push(id);
-      if (call.path === "sandbox/launch-access-v1") {
+      if (call.body.armadaAccessVersion === 1) {
         children.set(id, crypto.randomUUID());
         inventory.push(children.get(id)!);
       }
@@ -1968,12 +1970,12 @@ test("scoped probes sharing an org and golden never see each other's child; dist
           hasMore: false,
           nextPage: null,
         });
-      if (call.path === "sandbox/launch-access-v1" || call.path === "sandbox/launch") {
+      if (call.path === "sandbox/launch") {
         const id = crypto.randomUUID();
         const added: string[] = [id];
         // The concurrent Claude lane's receipt fails validation after its handle arrived.
         const provider = call.body.harness === "claude" ? "boat" : "modal";
-        if (call.path === "sandbox/launch-access-v1") {
+        if (call.body.armadaAccessVersion === 1) {
           children.set(id, crypto.randomUUID());
           added.push(children.get(id)!);
         }

@@ -3,6 +3,7 @@ import {
   DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
   DOCKER_JOB_FAILURE_REASONS,
   type DockerJobFailureReason,
+  OUTPUT_ARCHIVE_LIMIT,
 } from "@armada/core";
 import { isSnapshotBaselineTool } from "@armada/core/server";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
@@ -14,11 +15,13 @@ import { type createDockerHostStore, DockerHostDenied } from "./docker-host-stor
 import { dockerHostVersions } from "./docker-host-version.ts";
 import { DockerSnapshotHostUpgradeRequired, type DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
+import { withRequestBodyCeiling } from "./request-body-ceiling.ts";
 
 const machinePaths = [
   "/api/docker-host/register",
   "/api/docker-host/poll",
   "/api/docker-host/results",
+  "/api/docker-host/retained-outputs",
   "/api/docker-host/unregister",
 ];
 const reusePath = "/api/docker-host/reuse-registration";
@@ -93,9 +96,16 @@ const pollClock: DockerHostPollClock = {
 export function createDockerHostRoutes(
   store: ReturnType<typeof createDockerHostStore>,
   authenticate: (request: Request) => Promise<CallerResult>,
-  options: { placement?: boolean; publicUrl?: string; snapshots?: DockerSnapshots; clock?: DockerHostPollClock } = {},
+  options: {
+    placement?: boolean;
+    publicUrl?: string;
+    snapshots?: DockerSnapshots;
+    clock?: DockerHostPollClock;
+    configureArchiveTimeout?: (request: Request) => void;
+  } = {},
 ): Route {
   const clock = options.clock ?? pollClock;
+  let uploadingOutputs = false;
   return async (request) => {
     const path = new URL(request.url).pathname;
     const owner = ownerPaths.includes(path);
@@ -172,6 +182,26 @@ export function createDockerHostRoutes(
       }
       const token = request.headers.get("authorization")?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
       if (!token) throw new DockerHostDenied();
+      if (path === "/api/docker-host/retained-outputs") {
+        const installationId = string(request.headers.get("x-armada-installation-id"));
+        const requestId = string(request.headers.get("x-armada-request-id"));
+        if (!uuid.test(installationId) || !uuid.test(requestId)) throw new InvalidInput();
+        if (request.body && request.headers.get("content-type") !== "application/x-tar") throw new InvalidInput();
+        if (request.body && uploadingOutputs) return new Response(null, { status: 503, headers });
+        if (request.body) {
+          options.configureArchiveTimeout?.(request);
+          uploadingOutputs = true;
+        }
+        try {
+          return await withRequestBodyCeiling(request, OUTPUT_ARCHIVE_LIMIT, async (bounded) => {
+            const signal = AbortSignal.any([bounded.signal, AbortSignal.timeout(40_000)]);
+            const status = await store.retainedOutputs(token, installationId, requestId, bounded.body, signal);
+            return new Response(null, { status, headers });
+          });
+        } finally {
+          if (request.body) uploadingOutputs = false;
+        }
+      }
       // The poll carries the host's per-generation retention deadlines, so its
       // body grows with the number of retained sandboxes; other machine calls
       // stay small. Bound it well above a full host's deadline list.

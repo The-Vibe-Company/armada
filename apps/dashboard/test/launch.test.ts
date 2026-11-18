@@ -1,5 +1,4 @@
 import { expect, jest, test } from "bun:test";
-import { SIZED_LAUNCH_ROUTE_V1 } from "@armada/core";
 import { CONTROL_TIMEOUT_MS, ControlError } from "../src/lib/control.ts";
 import {
   decodeLaunchAttempt,
@@ -40,15 +39,15 @@ const answeringAt = (routes: string[], body: unknown, status = 200) => ({
   }) as typeof fetch,
 });
 
-test("an explicit size or stored defaults use only the versioned sized route; neither uses the legacy one", async () => {
+test("an explicit size or stored defaults carry the sizing version on the canonical route", async () => {
   const routes: string[] = [];
   const ok = { sandbox: { id: "s1" } };
   expect(await launchSandbox(answeringAt(routes, ok), { ...args, size: "large" })).toEqual({ id: "s1" });
   await launchSandbox(answeringAt(routes, ok), { ...args, sizePolicy: true });
   await launchSandbox(answeringAt(routes, ok), args);
   expect(routes.map((route) => route.split(" ")[0])).toEqual([
-    SIZED_LAUNCH_ROUTE_V1,
-    SIZED_LAUNCH_ROUTE_V1,
+    "/api/v1/sandbox/launch",
+    "/api/v1/sandbox/launch",
     "/api/v1/sandbox/launch",
   ]);
   expect(JSON.parse(routes[0]?.slice(routes[0].indexOf(" ") + 1) ?? "")).toMatchObject({
@@ -59,7 +58,7 @@ test("an explicit size or stored defaults use only the versioned sized route; ne
   expect(JSON.parse(routes[2]?.slice(routes[2].indexOf(" ") + 1) ?? "")).not.toHaveProperty("sizePolicyVersion");
 });
 
-test("an older replica's 404 on the sized route fails the launch once, with no legacy retry", async () => {
+test("a 404 for a sized launch fails once", async () => {
   const routes: string[] = [];
   const unknown = { error: { code: "not_found", message: "Unknown route." } };
   const error = await launchSandbox(answeringAt(routes, unknown, 404), { ...args, size: "large" }).catch((e) => e);
@@ -89,7 +88,7 @@ test("a provider refusal keeps the server's code, whatever its status", async ()
   });
 });
 
-test("the chosen model account is pinned on every launch route, sized or not, alongside the size", async () => {
+test("the chosen model account is pinned on each launch alongside the optional size", async () => {
   const routes: string[] = [];
   const ok = { sandbox: { id: "s1" } };
   const credentialId = "00000000-0000-4000-8000-000000000041";
@@ -100,15 +99,18 @@ test("the chosen model account is pinned on every launch route, sized or not, al
   const sent = routes.map((route) => [route.split(" ")[0], JSON.parse(route.slice(route.indexOf(" ") + 1))]);
   expect(sent).toEqual([
     [
-      SIZED_LAUNCH_ROUTE_V1,
+      "/api/v1/sandbox/launch",
       expect.objectContaining({ ttlSeconds: 3600, credentialId, skills, size: "large", sizePolicyVersion: 1 }),
     ],
-    [SIZED_LAUNCH_ROUTE_V1, expect.objectContaining({ ttlSeconds: 3600, credentialId, skills, sizePolicyVersion: 1 })],
+    [
+      "/api/v1/sandbox/launch",
+      expect.objectContaining({ ttlSeconds: 3600, credentialId, skills, sizePolicyVersion: 1 }),
+    ],
     ["/api/v1/sandbox/launch", expect.objectContaining({ ttlSeconds: 3600, credentialId, skills })],
   ]);
 });
 
-test("Armada access uses only its versioned route and preserves all explicit launch choices", async () => {
+test("Armada access uses the canonical route and preserves all explicit launch choices", async () => {
   const routes: string[] = [];
   const chosen = {
     ...args,
@@ -123,7 +125,7 @@ test("Armada access uses only its versioned route and preserves all explicit lau
   };
   await launchSandbox(answeringAt(routes, { sandbox: { id: "s1" } }), chosen);
   const [path, ...body] = routes[0]!.split(" ");
-  expect(path).toBe("/api/v1/sandbox/launch-access-v1");
+  expect(path).toBe("/api/v1/sandbox/launch");
   expect(JSON.parse(body.join(" "))).toMatchObject({
     armadaAccessVersion: 1,
     armadaAccess: { maxActiveChildren: 3 },

@@ -5,8 +5,10 @@ import {
   isDockerImageReference,
   parseDockerSnapshotBinding,
 } from "./docker-image.ts";
+import { DOCKER_OUTPUT_ARCHIVE } from "./docker-output-archive.ts";
 import { type DockerSandboxLimits, dockerHostResources, dockerResourceArgs } from "./docker-resources.ts";
 import { buildDockerSnapshot } from "./docker-snapshot-build.ts";
+import { officialSandboxImage } from "./official-sandbox-image.ts";
 import { SHARED_ARTIFACT_CACHE_PATH } from "./shared-artifact-cache.ts";
 
 /** Direct argv execution only; adapters must never invoke a shell or log stdin/output. */
@@ -79,6 +81,7 @@ export function createDockerMachineExecutor(options: {
   hostId: string;
   cli: DockerMachineCli;
   now: () => number;
+  readArchive?: (argv: readonly string[]) => Promise<Uint8Array<ArrayBuffer>>;
   limits?: () => DockerSandboxLimits;
   /**
    * Host directory of verified digest-named public artifacts, bind-mounted read-only at
@@ -458,6 +461,52 @@ export function createDockerMachineExecutor(options: {
     stop,
     delete: remove,
     stopIfExpired,
+    async readExpiredOutputs(request: DockerMachineRequest) {
+      const state = await owned(request);
+      if (!state.container && !state.volume) return null;
+      if (state.expiresAt === undefined || state.expiresAt > now()) fail("expired");
+      if (!state.container || object(state.container.State).Running !== false || !options.readArchive)
+        fail("ownership_mismatch");
+      // Inherit the exact inspected allocation’s mounts read-only. If cleanup already
+      // removed it, Docker refuses; a missing named volume is never recreated.
+      const containerId = state.container.Id;
+      if (typeof containerId !== "string" || !/^[a-f0-9]{64}$/.test(containerId)) fail("ownership_mismatch");
+      const archive = await options.readArchive([
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--workdir",
+        "/",
+        "--memory",
+        "128m",
+        "--pids-limit",
+        "32",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--user",
+        "1000:1000",
+        "--volumes-from",
+        `${containerId}:ro`,
+        "--entrypoint",
+        "/usr/bin/timeout",
+        officialSandboxImage(),
+        "--kill-after=2s",
+        "12s",
+        "/usr/bin/python3",
+        "-I",
+        "-S",
+        "-c",
+        DOCKER_OUTPUT_ARCHIVE,
+      ]);
+      const current = await owned(request);
+      if (current.container?.Id !== containerId || object(current.container.State).Running !== false)
+        fail("ownership_mismatch");
+      return archive;
+    },
     async deleteStopped(request: DockerMachineRequest): Promise<void> {
       const state = await owned(request);
       if (state.container && object(state.container.State).Running !== false) fail("ownership_mismatch");

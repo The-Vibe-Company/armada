@@ -98,12 +98,23 @@ test("invalid agents list the catalog for list and Docker launch", async () => {
   ]) {
     const result = await invoke(argv);
     expect(result.code).toBe(2);
-    expect(result.err).toContain("claude, codex, opencode");
+    expect(result.err).toMatch(/claude.*codex.*opencode/);
+  }
+});
+
+test("explicit launches require an agent on both Docker and golden paths", async () => {
+  for (const argv of [
+    ["launch", "starter"],
+    ["launch", "--provider", "docker", "--host", "office"],
+  ]) {
+    const result = await invoke(argv);
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("Pass --agent claude or codex or opencode.");
   }
 });
 
 test("Docker placement distinguishes absent and malformed host selectors", async () => {
-  const args = ["launch", "--provider", "docker", "--org", "00000000-0000-0000-0000-000000000001"];
+  const args = ["launch", "--provider", "docker", "--agent", "codex", "--org", "00000000-0000-0000-0000-000000000001"];
   const missing = await invoke(args);
   expect(missing.code).toBe(2);
   expect(missing.err).toContain("requires --host UUID|NAME or --golden SNAPSHOT_UUID");

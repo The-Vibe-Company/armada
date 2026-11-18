@@ -365,12 +365,11 @@ public enum SandboxLaunchDraftProblem: Error, Sendable, Equatable {
     }
 }
 
-/// The body of `POST /api/v1/sandbox/launch-sized-v1`, the route `armada launch --sized` and the
+/// The body of `POST /api/v1/sandbox/launch`, the route `armada launch --sized` and the
 /// dashboard use. Omitted optionals leave the server's defaults (golden size policy, account
-/// resolution, default TTL). Always the sized route: a server that does not know it answers 404
-/// before allocating anything, and the launch is never retried on another route.
+/// resolution, default TTL). The request carries the sizing policy version and is sent once.
 public struct SandboxLaunchRequest: Encodable, Sendable, Equatable {
-    public static let route = "sandbox/launch-sized-v1"
+    public static let route = "sandbox/launch"
     /// Launching forks, initializes and starts the agent in one request; the CLI allows ten minutes.
     static let timeout: TimeInterval = 600
 

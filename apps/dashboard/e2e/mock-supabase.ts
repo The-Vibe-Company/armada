@@ -2937,9 +2937,11 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/auth/v1/")) return auth(request, url, body);
     if (url.pathname.startsWith("/__test/")) return control(url, body);
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
-    if (url.pathname === "/api/v1/sandbox/launch" && request.method === "POST")
-      return launchRoute(body, viewer(request));
-    if (url.pathname === "/api/v1/sandbox/launch-access-v1" && request.method === "POST") {
+    const canonicalLaunch = url.pathname === "/api/v1/sandbox/launch";
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/api/v1/sandbox/launch-access-v1" || (canonicalLaunch && body.armadaAccess))
+    ) {
       if (
         body.armadaAccessVersion !== 1 ||
         body.harness !== "codex" ||
@@ -2960,6 +2962,7 @@ const server = Bun.serve({
         return controlFail(400, "invalid", "The sized launch route requires sizePolicyVersion 1.");
       return launchRoute(body, viewer(request));
     }
+    if (canonicalLaunch && request.method === "POST") return launchRoute(body, viewer(request));
     if (url.pathname.startsWith("/api/v1/mcp/") && request.method === "POST") {
       return mcpControl(url.pathname.slice("/api/v1/mcp/".length), body, viewer(request));
     }
