@@ -92,6 +92,23 @@ test("private Docker reservations remain untouched while the generic lifecycle r
   expect(await worker.reconcileOne()).toBe(false);
   expect(await readDocker()).toEqual(before);
   await worker.drain();
+
+  const readHistory = (userId: string) =>
+    db.transaction(async (tx) => {
+      await tx.exec("set local role authenticated");
+      await tx.query("select set_config('request.jwt.claim.sub',$1,true)", [userId]);
+      return (await tx.query("select sandbox_id, from_status, to_status, actor, code from sandbox_transitions")).rows;
+    });
+  expect(await readHistory(people.owner)).toEqual([
+    {
+      sandbox_id: boatId,
+      from_status: "running",
+      to_status: "stopped",
+      actor: "reconciler",
+      code: "provider_stopped",
+    },
+  ]);
+  expect(await readHistory(people.admin)).toEqual([]);
 });
 
 test("an expired observation lease cannot publish a delayed terminal result", async () => {
@@ -532,6 +549,17 @@ test("replicas lease one observation and resume admission fences old writes whil
     expect(row?.effectiveTtlSeconds).toBe(90);
     expect(row?.requestedTtlSeconds).toBe(90);
     expect(Date.parse(row?.expiresAt ?? "")).toBe(Math.floor(renewed.expires_ms));
+    expect(
+      (
+        await db.query(
+          "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1 order by id",
+          [id],
+        )
+      ).rows,
+    ).toEqual([
+      { from_status: "running", to_status: "stopped", actor: "reconciler", code: "provider_stopped", generation: 1 },
+      { from_status: "stopped", to_status: "running", actor: "api", code: "sandbox_running", generation: 3 },
+    ]);
   } finally {
     gate.resolve();
     await Promise.allSettled([first]);
