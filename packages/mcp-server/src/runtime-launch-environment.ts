@@ -12,7 +12,6 @@ export interface RuntimeEnvironmentSource {
   bindings: ApplicationSecretBinding[];
 }
 
-/** Admit within the existing authority transaction; wait only after it commits. */
 export function createRuntimeEnvironmentDelivery(sql: Sql, key: string, clock?: RuntimeClock) {
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key, clock);
   return async (input: {
@@ -40,7 +39,6 @@ export function createRuntimeEnvironmentDelivery(sql: Sql, key: string, clock?: 
           const local = scopedRuntimeSql(tx);
           const locked = createRuntimeEnrolments(local, key);
           signal?.throwIfAborted();
-          // Source members -> secret references -> host/sandbox/runtime. No runtime I/O under these locks.
           await locked.lockSourceMembers(tx, id, ownerId);
           const source = await input.load(tx);
           const secrets = await resolveLaunchSecrets(
@@ -61,7 +59,6 @@ export function createRuntimeEnvironmentDelivery(sql: Sql, key: string, clock?: 
               op: "configureReadableVariables" as const,
               harness: source.harness,
               variables,
-              // The unchanged Docker sender can still use older runtimes and replay its existing IDs.
               ...(provider === "modal" ? { secretKeys: source.bindings.map(({ key }) => key).sort() } : {}),
             };
             await createRuntimeCommands(locked, key, clock).enqueue(ownerId, request, scope.epoch);

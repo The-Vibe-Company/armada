@@ -105,7 +105,6 @@ export function createRuntimeFollowup(
       const last = await agent.getPrompt({ sandboxId: found.providerSandboxId, promptId: found.taskPromptId });
       if (!last.done) throw new VaultError("conflict", "Wait for the current runtime prompt to finish.");
     }
-    // Definite refusals must not claim the activity lease. A saved prompt can reconcile after revocation.
     const configuredEpoch =
       previous.state === "missing" && found.provider === "modal"
         ? await modalEnvironment.deliver({ userId: caller.userId, orgId: found.orgId }, found.id)
