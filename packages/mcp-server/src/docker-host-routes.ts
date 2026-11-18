@@ -6,6 +6,7 @@ import {
   OUTPUT_ARCHIVE_LIMIT,
 } from "@armada/core";
 import { isSnapshotBaselineTool } from "@armada/core/server";
+import { DOCKER_HOST_UPDATE_FAILURE_HEADER, stableDockerHostVersion } from "../../core/src/docker-host-upgrade.ts";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
@@ -98,6 +99,7 @@ export function createDockerHostRoutes(
   authenticate: (request: Request) => Promise<CallerResult>,
   options: {
     placement?: boolean;
+    automaticUpdateHostIds?: readonly string[];
     publicUrl?: string;
     snapshots?: DockerSnapshots;
     clock?: DockerHostPollClock;
@@ -105,6 +107,7 @@ export function createDockerHostRoutes(
   } = {},
 ): Route {
   const clock = options.clock ?? pollClock;
+  const automaticUpdates = new Set(options.automaticUpdateHostIds);
   let uploadingOutputs = false;
   return async (request) => {
     const path = new URL(request.url).pathname;
@@ -246,6 +249,8 @@ export function createDockerHostRoutes(
                 ...("deadlines" in body ? ["deadlines"] : []),
                 ...("diskFreeBytes" in body ? ["diskFreeBytes"] : []),
                 ...("stoppedSandboxBytes" in body ? ["stoppedSandboxBytes"] : []),
+                ...("heartbeatOnly" in body ? ["heartbeatOnly"] : []),
+                ...("cleanupOnly" in body ? ["cleanupOnly"] : []),
                 ...("waitSeconds" in body ? ["waitSeconds"] : []),
                 ...("running" in body ? ["running"] : []),
               ]
@@ -309,6 +314,10 @@ export function createDockerHostRoutes(
         // daemon's idle period, and the host still needs no inbound port (#2561).
         // Validated before any write, as a daemon retries a refused poll without them.
         const wait = body.waitSeconds;
+        if (body.heartbeatOnly !== undefined && (body.heartbeatOnly !== true || wait !== undefined))
+          throw new InvalidInput();
+        if (body.cleanupOnly !== undefined && (body.cleanupOnly !== true || wait !== undefined))
+          throw new InvalidInput();
         if (wait !== undefined && (!Number.isSafeInteger(wait) || Number(wait) < 1)) throw new InvalidInput();
         const holdUntil = clock.now() + Math.min(Number(wait ?? 0), DOCKER_HOST_POLL_HOLD_SECONDS) * 1000;
         // Machine operations the daemon is still executing. Their sandboxes stay
@@ -321,6 +330,12 @@ export function createDockerHostRoutes(
             running.some((item) => typeof item !== "string" || !uuid.test(item)))
         )
           throw new InvalidInput();
+        if (body.heartbeatOnly && body.cleanupOnly) {
+          // Compatibility probe before uninstall intent. Authenticate without
+          // changing heartbeat, admission, or cleanup state.
+          await store.pendingStartsForHost(token, installationId);
+          return Response.json({ job: null }, { headers });
+        }
         const retentionSeconds = await store.retentionForHost(
           token,
           installationId,
@@ -338,7 +353,10 @@ export function createDockerHostRoutes(
         const runningIds = (running as string[] | undefined) ?? [];
         let probed = false;
         for (;;) {
-          resumeClaims = body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
+          resumeClaims =
+            body.resumeClaimProtocol === 1 && !body.heartbeatOnly && !body.cleanupOnly
+              ? await store.resumeClaimsForHost(token, installationId)
+              : [];
           job = await store.poll(
             token,
             installationId,
@@ -350,6 +368,8 @@ export function createDockerHostRoutes(
             body.stoppedSandboxBytes as number | null | undefined,
             runningIds,
             baseline,
+            body.heartbeatOnly === true,
+            body.cleanupOnly === true,
           );
           if (job || resumeClaims.length) break;
           // The probe is broader than the poll (admission refusals, job order). A
@@ -380,11 +400,22 @@ export function createDockerHostRoutes(
           if (!ready) break;
           probed = true;
         }
+        const failedUpdate = request.headers.get(DOCKER_HOST_UPDATE_FAILURE_HEADER);
+        if (stableDockerHostVersion(failedUpdate)) {
+          console.warn(
+            JSON.stringify({ event: "docker_host_update_failed", installationId, targetVersion: failedUpdate }),
+          );
+        }
+        const eligibleHostId = await store.updateEligibleHostId(token, installationId);
         return Response.json(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
             ...(wait === undefined ? {} : { held: true }),
-            ...dockerHostVersions,
+            minimumVersion: dockerHostVersions.minimumVersion,
+            ...(eligibleHostId ? { targetVersion: dockerHostVersions.targetVersion } : {}),
+            ...(eligibleHostId && !body.cleanupOnly && automaticUpdates.has(eligibleHostId)
+              ? { updateVersion: dockerHostVersions.targetVersion }
+              : {}),
             resumeClaims,
             job,
             // Every generation with a queued resume/bootstrap, so the daemon
@@ -392,7 +423,12 @@ export function createDockerHostRoutes(
             pendingStarts: await store.pendingStartsForHost(token, installationId),
             ...(body.resourcePolicyVersion === 1 ? { limits: await store.limitsForHost(token, installationId) } : {}),
           },
-          { headers },
+          {
+            headers: {
+              ...headers,
+              ...(stableDockerHostVersion(failedUpdate) ? { [DOCKER_HOST_UPDATE_FAILURE_HEADER]: failedUpdate } : {}),
+            },
+          },
         );
       }
       if ("claimed" in body) {

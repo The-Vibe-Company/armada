@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import { GoldenError } from "@armada/core";
 import { hostInstallClient } from "@armada/sdk/host-install";
+import { withDockerHostLifecycle } from "../../core/src/docker-host-lifecycle.ts";
 import { parseArgs, single } from "./args.ts";
 import type { Io } from "./run.ts";
 
@@ -21,8 +23,10 @@ export interface LocalHostIo {
   stat(path: string): Promise<FileInfo | null>;
   mkdir(path: string): Promise<void>;
   writeExclusive(path: string, bytes: Uint8Array): Promise<void>;
-  rename(from: string, to: string): Promise<void>;
   remove(path: string): Promise<void>;
+  rename(from: string, to: string): Promise<void>;
+  claim<T>(directory: string, work: () => Promise<T>): Promise<T>;
+  copyExecutable(from: string, to: string): Promise<void>;
   execute(
     program: string,
     args: string[],
@@ -84,6 +88,8 @@ export function productionLocalHostIo(
       await writeFile(path, bytes, { mode: 0o700, flag: "wx" });
     },
     rename,
+    claim: withDockerHostLifecycle,
+    copyExecutable: (from, to) => copyFile(from, to, constants.COPYFILE_EXCL),
     remove: async (path) => {
       await unlink(path);
     },
@@ -154,6 +160,7 @@ interface Status {
   hostId?: string;
   version: string;
   server?: string;
+  lifecycle?: true;
 }
 const instanceArgs = (binary: string): string[] => {
   const match = /armada-docker-host@([a-f0-9]{64})(?:\.|$)/.exec(binary);
@@ -188,6 +195,7 @@ async function status(native: LocalHostIo, binary: string, timeoutMs = 30_000): 
     version: s.version,
     ...(typeof s.server === "string" && /^https:\/\/[^\s/]+$/.test(s.server) ? { server: s.server } : {}),
     ...(s.registered ? { hostId: s.hostId as string } : {}),
+    ...(s.lifecycle === true ? { lifecycle: true } : {}),
   };
 }
 
@@ -229,14 +237,15 @@ async function connected(native: LocalHostIo, binary: string, io: Io): Promise<n
   return 1;
 }
 
-async function downloadHost(native: LocalHostIo, server: string): Promise<Uint8Array> {
+async function downloadHost(native: LocalHostIo, server: string) {
   const client = hostInstallClient(server, (input, init) => native.fetch(input, init));
   const download = async (request: ReturnType<typeof client.manifest>) => {
     const { response, valid } = await request;
     if (!valid) return failed("Host download failed or redirected; no downloaded binary was executed.");
     return response;
   };
-  const manifest: unknown = await (await download(client.manifest())).json();
+  const response = await download(client.manifest());
+  const manifest: unknown = await response.json();
   if (!manifest || typeof manifest !== "object") return failed("Invalid host install manifest.");
   const pins = manifest as Record<string, unknown>;
   const digest = pins[native.arch];
@@ -245,7 +254,68 @@ async function downloadHost(native: LocalHostIo, server: string): Promise<Uint8A
   const bytes = new Uint8Array(await (await download(client.artifact(digest))).arrayBuffer());
   if (createHash("sha256").update(bytes).digest("hex") !== digest)
     return failed("Docker host artifact digest mismatch; no downloaded binary was installed or executed.");
-  return bytes;
+  return { bytes, lifecycle: response.headers.get("x-armada-docker-host-lifecycle") === "1" };
+}
+
+async function claimLocalHost<T>(native: LocalHostIo, name: string, work: (directory: string) => Promise<T>) {
+  const directory = join(native.home, ".local/state", name);
+  await checkPath(native, directory, true);
+  return native.claim(directory, () => work(directory));
+}
+
+async function requireLegacyState(native: LocalHostIo, directory: string) {
+  // A release predating update journals cannot take over updater-owned state.
+  for (const marker of ["update.json", "uninstall-pending"]) {
+    if (await checkPath(native, join(directory, marker)))
+      return failed("This installer predates the host's lifecycle state. Use a compatible release before retrying.");
+  }
+}
+
+async function claimLegacyInstaller<T>(native: LocalHostIo, name: string, work: () => Promise<T>) {
+  return claimLocalHost(native, name, async (directory) => {
+    await requireLegacyState(native, directory);
+    return work();
+  });
+}
+
+async function uninstallLocalHost(native: LocalHostIo, name: string, binary: string, current: Status | null) {
+  const temporary = `${binary}.${randomUUID()}.tmp`;
+  const uninstall = (executable: string, args: string[] = []) =>
+    native.execute(executable, ["uninstall", ...instanceArgs(binary), ...args], undefined, 660_000);
+  const delegated = await claimLocalHost(native, name, async (directory) => {
+    const latest = await status(native, binary);
+    if (latest.hostId !== current?.hostId || latest.server !== current?.server)
+      return failed("Docker host registration changed. Inspect it before retrying.");
+    if (!latest.lifecycle) {
+      await requireLegacyState(native, directory);
+      return { result: await uninstall(binary) };
+    }
+    if (!latest.hostId) return failed("Docker host is not registered.");
+    // Keep the selected lifecycle-aware executable even if a manual upgrade
+    // publishes different bytes before the delegated command takes its claim.
+    await native.copyExecutable(binary, temporary);
+    return { hostId: latest.hostId };
+  });
+  if (delegated.result) return delegated.result;
+  try {
+    return await uninstall(temporary, ["--expect-host", delegated.hostId]);
+  } finally {
+    await native.remove(temporary);
+  }
+}
+
+async function checkUnregisteredInstallation(native: LocalHostIo, name: string) {
+  // Never replace an installation whose registration/ownership cannot be read.
+  for (const path of [
+    join(native.home, ".local/state", name, "state.json"),
+    join(native.home, ".local/state", name, "managed.json"),
+    join(native.home, ".config/systemd/user", `${name}.service`),
+  ]) {
+    if (await checkPath(native, path))
+      return failed(
+        "Existing Docker host installation files found without readable registration; state and new token preserved. Repair the existing installation before replacing its binary.",
+      );
+  }
 }
 
 export async function localHostCommand(argv: readonly string[], io: Io, native: LocalHostIo): Promise<number> {
@@ -342,7 +412,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
         io.out("Docker host is not installed.\n");
         return 0;
       }
-      if ((await native.execute(binary, ["uninstall", ...instanceArgs(binary)], undefined, 660_000)).code !== 0)
+      if ((await uninstallLocalHost(native, name, binary, current)).code !== 0)
         return failed(
           "Docker host uninstall did not complete; state preserved. Run armada-docker-host uninstall to diagnose or reconcile the drain.",
         );
@@ -350,20 +420,29 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       return 0;
     }
     if (current?.registered) {
-      const bytes = await downloadHost(native, server ?? "");
+      const { bytes, lifecycle } = await downloadHost(native, server ?? "");
       const temporary = `${binary}.${randomUUID()}.tmp`;
       await native.writeExclusive(temporary, bytes);
       try {
-        if (
-          (
-            await native.execute(
-              temporary,
-              ["upgrade", "--server", server ?? "", ...instanceArgs(binary)],
-              undefined,
-              180_000,
-            )
-          ).code !== 0
-        )
+        const upgrade = (restart: boolean) =>
+          native.execute(
+            temporary,
+            ["upgrade", "--server", server ?? "", ...instanceArgs(binary), ...(restart ? ["--restart"] : [])],
+            undefined,
+            180_000,
+          );
+        const upgraded = lifecycle
+          ? await upgrade(!current.connected)
+          : await claimLegacyInstaller(native, name, async () => {
+              const latest = await status(native, binary);
+              if (!latest.registered || latest.hostId !== current.hostId || (latest.server && latest.server !== server))
+                return failed("Docker host registration changed. Inspect it before retrying.");
+              const result = await upgrade(false);
+              if (result.code === 0 && !latest.connected)
+                return native.execute("systemctl", ["--user", "restart", `${name}.service`]);
+              return result;
+            });
+        if (upgraded.code !== 0)
           return failed(
             `Could not upgrade this Docker host; registration and token preserved. Run armada host status --server ${server} before retrying.`,
           );
@@ -403,54 +482,40 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       io.out(
         `This machine is already registered as ${displayName === null ? current.hostId : `${JSON.stringify(displayName)} (${current.hostId})`}.\nExisting Docker host: ${JSON.stringify(current)}\nKeeping its registration; the host binary was checked and upgraded safely.\n`,
       );
-      if (!current.connected) {
-        io.out("Restarting the existing user service and waiting up to 60 seconds for connection.\n");
-        if ((await native.execute("systemctl", ["--user", "restart", `${name}.service`])).code !== 0)
-          return failed("Could not restart the existing Docker host user service; registration and token preserved.");
-      }
       return connected(native, binary, io);
     }
-    // Never replace an installation whose registration/ownership cannot be read.
-    for (const path of [
-      join(native.home, ".local/state", name, "state.json"),
-      join(native.home, ".local/state", name, "managed.json"),
-      join(native.home, ".config/systemd/user", `${name}.service`),
-    ]) {
-      if (await checkPath(native, path))
-        return failed(
-          "Existing Docker host installation files found without readable registration; state and new token preserved. Repair the existing installation before replacing its binary.",
-        );
-    }
+    await checkUnregisteredInstallation(native, name);
     const token = (await native.readStdin()).trim();
     if (!/^[a-f0-9]{64}$/.test(token))
       return invalid("Pipe a valid one-use registration token on stdin; never pass it as an argument.");
-    const bytes = await downloadHost(native, server ?? "");
+    const { bytes, lifecycle } = await downloadHost(native, server ?? "");
     await checkPath(native, dirname(binary), true);
     const temporary = `${binary}.${randomUUID()}.tmp`;
     await native.writeExclusive(temporary, bytes);
     try {
-      await native.rename(temporary, binary);
-    } finally {
-      try {
-        await native.remove(temporary);
-      } catch {
-        /* Renamed or already removed. */
-      }
-    }
-    io.out(current ? "Replacing the unregistered Docker host binary.\n" : "Installing Docker host user service.\n");
-    if (
-      (
-        await native.execute(
-          binary,
+      io.out(current ? "Replacing the unregistered Docker host binary.\n" : "Installing Docker host user service.\n");
+      const install = (executable: string) =>
+        native.execute(
+          executable,
           ["install", "--server", server ?? "", ...instanceArgs(binary)],
           `${token}\n`,
           660_000,
-        )
-      ).code !== 0
-    )
-      return failed(
-        "Docker host installation did not complete. Run armada host status and inspect systemd/Docker access; do not blindly repeat registration.",
-      );
+        );
+      const installed = lifecycle
+        ? await install(temporary)
+        : await claimLegacyInstaller(native, name, async () => {
+            await checkUnregisteredInstallation(native, name);
+            await checkPath(native, binary);
+            await native.rename(temporary, binary);
+            return install(binary);
+          });
+      if (installed.code !== 0)
+        return failed(
+          "Docker host installation did not complete. Run armada host status and inspect systemd/Docker access; do not blindly repeat registration.",
+        );
+    } finally {
+      if (await native.stat(temporary)) await native.remove(temporary);
+    }
     io.out("Waiting up to 60 seconds for the Docker host to connect…\n");
     return connected(native, binary, io);
   } catch (error) {

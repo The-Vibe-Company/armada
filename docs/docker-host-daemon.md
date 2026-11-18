@@ -228,6 +228,107 @@ digest in the private marker so validation accepts either the old or new verifie
 bytes; retrying upgrades reconciles it. The existing user service is restarted and
 gets the same bounded reconnect wait.
 
+### Automatic daemon updates on Linux
+
+Automatic updates are off by default. To trial them on a managed Linux systemd
+user service, install an update-capable daemon with the normal installer and put
+its host ID from the Docker hosts list in the server's
+`ARMADA_DOCKER_HOST_AUTO_UPDATE_HOST_IDS` environment variable. Restart the server
+with the updated configuration. Use a comma-separated list to enable additional
+hosts, or remove a host ID to withdraw its update offer. All eligible hosts still
+report their installed version and receive minimum and target versions for skew
+reporting. Only an enabled host receives the separate update offer.
+
+An enabled daemon considers newer stable versions on its authenticated outbound
+poll. It fetches the standalone install manifest from
+`https://armada-mcp-production.up.railway.app/api/docker-host/install.json`,
+requires a matching version, and verifies the Linux x64 or arm64 daemon against
+the manifest's SHA-256 before staging it. The artifact uses the installer’s
+digest-addressed runtime route. If the official manifest is still on a different
+version, the host keeps working and checks again after a five-minute pause.
+The standalone manifest does not publish a
+signature. Requests to the release origin carry no machine credentials.
+
+Once a candidate is staged, the daemon stops admitting machine jobs and waits
+for every admitted job to finish and save its receipt. A build already running
+finishes on the original binary. An admitted launch job finishes there too.
+A later launch job stays queued until the service reconnects. Running containers
+and volumes survive the daemon restart and the next process reconciles them
+through the usual ledger. The update uses no sudo and opens no listening port.
+Before its first poll, the daemon reads the durable update journal and uninstall
+intent. A daemon resuming a staged update starts with admission fenced, so
+checking the current offer cannot record a launch claim. If an ordinary poll
+returns a job alongside a new offer, the daemon admits the job before staging. During the drain, authenticated polling
+continues to refresh the server and local status heartbeats. Any newly offered
+jobs stay queued without recording a provider claim. These short polls reuse the latest resource measurements
+so Docker inspection cannot delay them. In-flight jobs save their receipts and submit results on the original binary.
+Once admitted work finishes, the daemon checks the offer again while admission
+is still fenced. A changed or unavailable
+offer cancels the staged attempt and returns the daemon to ordinary polling.
+
+A separate systemd user unit runs the old verified executable, kept beside the
+managed binary with a `.previous` suffix. It stops the drained service, swaps the
+binary atomically, and starts the service. The candidate reconciles and polls
+before taking work. The supervisor requires an active service and a fresh
+successful poll within 90 seconds that still offers the candidate version.
+Cleanup-only polls from a draining or revoked host carry no update offer. If
+startup or health fails, the supervisor restores the previous binary atomically
+and starts it. An Armada-owned systemd drop-in runs
+the same recovery from the previous binary before daemon startup if the machine
+reboots during the trial. The daemon sends the failed target on its next authenticated poll for the server
+log. A trial sets a durable version cutoff at that release. A later download
+failure or deferred offer preserves the cutoff.
+
+| State | Event and allowed transition | Durable state and recovery |
+| --- | --- | --- |
+| Idle, preparing, cancelled, failed or updated | An eligible newer offer starts preparing after backoff. Eligibility also requires a managed service, no uninstall intent, and an absent or inactive supervisor from the preceding attempt. | The running executable stays in place. The preparing journal preserves the highest attempted version and the next retry time. It uses the existing cancelled phase with a preparation flag so older recovery binaries can read it. A manifest fetch that fails before the journal write backs off in memory. |
+| Preparing | Continue authenticated heartbeat polls while release verification and backup are in progress. Admitted operations can finish and report results. Verified download and backup finish → staged. Download, disk failure or reboot before the staged write → preparing or the preceding state. | The candidate is stored privately. Before rotating `.previous`, the journal accepts both the old and intended backup digests. A restart on either side of the backup rename keeps the old daemon serving and can prepare the same release again. |
+| Any durable state at startup | Load the journal and uninstall intent before choosing the first poll. | Staged and starting use no-dispatch polls, with orphaned trial recovery first. A cleanup-only uninstall intent allows only bound stop/delete jobs after admitted operations settle. Once server drain begins, the cleanup poll also retires queued startup and snapshot work. Idle, preparing, cancelled, failed and durably updated states allow ordinary polling. |
+| Idle with no updater or uninstall files | Start normal polling on an existing installation, including a private state directory under a group-writable parent. | An absent optional marker needs no upgrade ownership check. Existing updater and uninstall markers and all binary mutations still require secure ownership. |
+| Staged | Check the current offer, fence admission and drain admitted jobs. | Candidate and backup digests are durable. After a reboot the old binary runs and checks the offer again before a supervisor can start. |
+| Staged, jobs draining | Continue authenticated polls on the idle interval while long-running builds or launches finish. Ignore newly offered jobs and wait for admitted operations to save receipts and attempt to report results. Expiry and retention reconciliation continues independently of the short heartbeats. | In-flight work continues on the old binary. Poll failures during the drain leave admission fenced and the next poll retries the heartbeat. Unacknowledged results can be replayed from durable receipts. |
+| Staged, drain complete | Start a fresh authenticated poll with admission fenced. A matching offer dispatches the supervisor. | A poll started during the drain cannot authorize the restart. |
+| Staged | Offer recheck transport failure, denied or changed offer, disabled updates, or supervisor launch failure → cancelled. | The staged binary remains uninstalled. The old daemon resumes ordinary polling, subject to server authorization. The same release is eligible again after five minutes, provided it remains above the actual trial cutoff. An ambiguous manager reply leaves the transition with the supervisor if it owns the unit. |
+| Staged or starting | A verified manual upgrade claims the lifecycle after reading its download and rechecks the journal. | A refused upgrade sends no stop, start, or restart. If staging wins during preflight, the running daemon keeps draining. If the manual action wins, the daemon cannot stage or launch a supervisor during its service changes. |
+| Staged | The supervisor validates both binaries, persists and reloads the recovery drop-in, then claims the trial → starting. | Starting, a unique trial ID, and the attempted version are durable before stopping the old service. The original daemon keeps polling without admission until the supervisor stops it. |
+| Staged | Supervisor preflight cannot verify the backup, candidate, or recovery setup → cancelled. | The supervisor defers the attempt under the lifecycle claim without sending stop or restart. The original daemon resumes normal polling. |
+| Starting | Stop the drained service, authorize the candidate digest in the ownership marker, atomically replace the executable and start it. | The ownership marker accepts both verified digests across the executable rename. The candidate can reconcile and poll with admission fenced. A reboot or orphaned supervisor rolls back even if the server is unavailable. |
+| Starting | Failed start, no fresh matching health poll, revoked or withdrawn offer that prevents health, or interrupted trial → failed. | Rollback records both digests before the reverse rename, syncs the binary directory, then settles the ownership marker and journal. Recovery can repeat any unfinished step. The supervisor starts the old binary. A later offer above the attempted version can start another trial. |
+| Starting | Candidate exits immediately, exits after writing its first poll, or systemd restarts it → failed. | The supervisor rejects a stopped service or a changed invocation or nonzero restart count, even if an earlier process left a successful poll. |
+| Starting | The candidate records a successful authenticated poll offering its own version → updated only if the proof matches the trial ID and the active systemd invocation, with no restarts. | The candidate digest becomes the stable ownership marker before the journal is committed. Interruption between those writes still rolls back. Once the updated journal is visible, the candidate syncs the journal directory before admitting work. A supervisor interrupted after that rename finishes the sync without stopping the healthy service. |
+| Idle, preparing, staged, cancelled, failed or updated | A server supporting cleanup-only polls lets uninstall record cleanup-only intent before asking the server to drain. A staged candidate is cancelled. | The persistent intent blocks automatic staging and launches across reboot and unregister retries. An active supervisor or starting trial must settle first. Bound cleanup jobs remain available while the server allows them. |
+| No uninstall intent and no active trial | Uninstall records pending intent before probing. If the outcome is inconclusive, continue unregister and retry protocol negotiation as needed. | The daemon fences updates and uses no-dispatch polling after reboot until a protocol is known. An empty host can still be revoked. A host with work to drain keeps its state and retries negotiation. |
+| Pending uninstall intent | An older server rejects the no-dispatch capability probe → record legacy uninstall intent and use the existing unregister flow. | The intent cancels staging and blocks automatic updates across reboot and retries. The daemon keeps ordinary polls so the legacy server can finish its queued work and dispatch drain jobs. |
+| Cleanup-only uninstall intent | An older server rejects the capability probe after server rollback → retain the cleanup-only intent. | Preserve the local fence and installation. Restore a server that understands cleanup-only polls and retry uninstall. |
+
+The managed state directory provides one crash-released lifecycle claim per
+installation. Both installers delegate binary publication and service changes to
+the native command when the server advertises a lifecycle-aware artifact. When
+an older server supplies a legacy artifact, the CLI takes the same claim around
+the legacy install or offline restart. An updater journal or uninstall intent
+requires a compatible artifact. The current CLI also holds the claim while
+delegating uninstall to a legacy installed daemon. For a lifecycle-aware daemon,
+the CLI selects its executable under the claim and the native uninstall owns
+the intent and teardown claims. A manual upgrade holds the claim through service start,
+including a requested restart of an offline registration. The supervisor owns
+the same claim through the trial and any rollback. Reboot recovery acquires it
+before restoring the old binary and lets the start hook proceed for a live
+supervisor. Uninstall persists intent under the claim while the daemon is still
+available to drain, then reacquires it to disable the unit and remove the
+installation. Ordinary dispatch and daemon-side journal writers do not wait on
+the claim while a service-manager command could be waiting for daemon exit.
+
+Set `ARMADA_DOCKER_HOST_AUTO_UPDATE=0` in a systemd user override for the specific
+Armada host unit to disable automatic updates. Run `systemctl --user edit
+armada-docker-host.service` (or the matching instance unit), add
+`Environment=ARMADA_DOCKER_HOST_AUTO_UPDATE=0` under `[Service]`, and restart
+during a maintenance window. The manual installer remains available. Foreground
+daemons and macOS launchd installations use manual updates. Uninstalling the
+managed daemon negotiates its drain protocol without requesting work. An older
+server uses the original unregister and polling flow when uninstall begins there.
+If a server rollback interrupts an existing cleanup-only drain, keep the service
+and private state, restore a compatible server, and retry uninstall.
+
 A fresh registration token can cancel its own unused ticket and resolve an existing
 registered host's name through `POST /api/docker-host/reuse-registration`. It cannot
 read or alter another owner's or organization's machine. The response contains only
@@ -721,34 +822,9 @@ server functionality requires a newer daemon. Old daemons can still poll
 and run existing workloads. New snapshot builds require a daemon that
 verifies and reports the developer baseline.
 
-The self-update follow-up will use these states: idle, draining, staged,
-health check, and applied or rolled back. The daemon will stop claiming
-work, wait for active builds and launches to finish and report their
-results, then restart and reconcile. Running containers and their volumes
-stay in Docker. A daemon restart only replaces the daemon process.
-
-A Linux systemd user service will supervise the update independently of
-the candidate daemon so a binary that fails before its first poll can
-still be rolled back. The previous executable will be kept next to the
-managed binary, with the candidate version and outcome recorded in the
-instance's private state. The updater will verify a fresh authenticated
-poll from the candidate before discarding the previous binary, restore
-it atomically on failure, and persist the failed target so a restart
-cannot retry it in a loop. Each named instance owns its own files and
-lock. The design uses the existing unprivileged account and Docker
-access. Managed installation currently supports Linux systemd user
-services. macOS launchd is outside this rollout.
-
-The intended update channel is the same HTTPS release manifest and
-SHA-256-addressed Linux artifact used by the installer. The poll supplies
-version numbers. The updater will use fixed installer endpoints, require
-an exact manifest version and verify the artifact before execution.
-The updater can execute release code as the Docker service account.
-Detached signing and staged rollout are follow-ups.
-
-This change delivers version reporting and the snapshot compatibility
-check. Continue using the managed installer to update manually.
-Automatic updates, rollback, and per-host policy will ship separately.
+The managed updater follows the [automatic daemon update procedure](#automatic-daemon-updates-on-linux).
+Per-host policy, pinning, the dashboard update result, and an admin-triggered
+update are separate work. Detached signing and staged rollout are follow-ups.
 
 On the owner's Linux host after a versioned release:
 
@@ -814,6 +890,9 @@ refuse removal, preserving state for reconciliation. Shared images, other worklo
 and account-wide linger are preserved. Failure is not deletion.
 A drain has no deadline: the host stays draining until the uninstall completes, so
 an interrupted uninstall cannot re-admit work while its cleanup may still be queued.
+Before requesting server-side drain, uninstall records a local intent that
+survives reboot and cancels a staged update. If the update supervisor is active
+or a trial remains unsettled, retry uninstall after the service recovers.
 Retrying the uninstall continues the same drain. An abandoned drain has no cancel
 path; it is an open question for the owner, not a new command.
 
@@ -1342,7 +1421,7 @@ Source audit of tag `v2.46.0` against the incident report:
 
 Part 1 left deletion policy unchanged. Part 2 below builds on the durable
 resume fencing merged in #2534 and bounds default retention by expiry.
-A host upgrade is explicit operator work; there is no automatic daemon update.
+
 
 Stopped workspace usage is an approximate, read-only observation of writable
 container layers plus attached named volumes for this installation's

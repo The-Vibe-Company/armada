@@ -18,7 +18,13 @@ export function createDockerHostInstallRoute(directory: string | undefined, publ
       if (url.pathname === "/api/docker-host/install.json")
         return Response.json(
           { version: VERSION, x64: pins.x64, arm64: pins.arm64 },
-          { headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } },
+          {
+            headers: {
+              "cache-control": "no-store",
+              "x-content-type-options": "nosniff",
+              "x-armada-docker-host-lifecycle": "1",
+            },
+          },
         );
       // URL.origin is not shell text: encode its bytes before embedding in shell.
       const origin = Buffer.from(publicOrigin.origin).toString("base64");
@@ -32,7 +38,7 @@ case "$token" in *[!a-f0-9]*|'') echo 'Invalid one-time token.' >&2; exit 1 ;; e
 [ "\${#token}" -eq 64 ] || { echo 'Invalid one-time token.' >&2; exit 1; }
 umask 077
 [ "$(uname -s)" = Linux ] || { echo 'Linux with systemd user services is required.' >&2; exit 1; }
-for tool in curl sha256sum systemctl loginctl docker; do
+for tool in curl sha256sum systemctl docker; do
   command -v "$tool" >/dev/null 2>&1 || { echo "Missing $tool; install it before adding this Docker host." >&2; exit 1; }
 done
 systemctl --user show-environment >/dev/null 2>&1 || {
@@ -41,12 +47,6 @@ systemctl --user show-environment >/dev/null 2>&1 || {
 if ! docker info >/dev/null 2>&1; then
   echo 'Docker must be usable by this user. Ask the administrator to configure rootless Docker or grant Docker access (equivalent to root authority).' >&2; exit 1
 fi
-loginctl enable-linger || {
-  echo 'Ask the administrator to enable linger for this user.' >&2; exit 1;
-}
-[ "$(loginctl show-user "$(id -u)" -p Linger --value)" = yes ] || {
-  echo 'Enable reboot persistence with loginctl enable-linger; if denied, ask the administrator to enable linger for this user.' >&2; exit 1;
-}
 case "$(uname -m)" in
   x86_64) digest=${pins.x64} ;;
   aarch64|arm64) digest=${pins.arm64} ;;
@@ -104,7 +104,6 @@ chmod 700 "$tmp/host"
 
 # The verified current daemon can report the origin even for a legacy installation.
 instance=
-service=armada-docker-host.service
 host_cmd() {
   executable=$1
   shift
@@ -114,7 +113,6 @@ target_instance=$(printf '%s' "$server" | sha256sum | cut -d ' ' -f 1)
 if [ -e "$HOME/.local/bin/armada-docker-host@$target_instance" ]; then
   instance=$target_instance
   binary="$HOME/.local/bin/armada-docker-host@$instance"
-  service="armada-docker-host@$instance.service"
 elif [ -e "$binary" ]; then
 legacy_status=$("$tmp/host" status) || {
   echo "Cannot safely identify the existing Docker host; the new token was not exchanged. Run armada host status before retrying." >&2; exit 1;
@@ -128,7 +126,6 @@ case "$legacy_status" in
     if [ "$existing_server" != "$server" ]; then
       instance=$(printf '%s' "$server" | sha256sum | cut -d ' ' -f 1)
       binary="$HOME/.local/bin/armada-docker-host@$instance"
-      service="armada-docker-host@$instance.service"
       echo "This machine is already connected to $existing_server. Installing an independent instance for $server."
     fi
     ;;
@@ -143,15 +140,19 @@ if [ -e "$binary" ]; then
   printf 'Existing Docker host: %s\\n' "$status"
   case "$status" in
     *'"registered":true'*)
-      host_cmd "$tmp/host" upgrade --server "$server"
+      case "$status" in
+        *'"connected":true'*) host_cmd "$tmp/host" upgrade --server "$server" ;;
+        *)
+          echo 'Restarting the existing user service and waiting for it to reconnect.'
+          host_cmd "$tmp/host" upgrade --server "$server" --restart
+          ;;
+      esac
       if ! printf '%s\\n' "$token" | host_cmd "$tmp/host" reuse-registration --server "$server"; then
         echo 'This machine is already registered. Could not look up its name; use armada host list. The unused ticket expires automatically.'
       fi
       unset token
       echo 'Keeping the existing registration. Ctrl-C stops host add waiting if the unused ticket could not be canceled.'
       case "$status" in *'"connected":true'*) echo 'connected'; offer_cli; exit 0 ;; esac
-      echo 'Restarting the existing user service and waiting for it to reconnect.'
-      systemctl --user restart "$service"
       attempt=0
       while [ "$attempt" -lt 60 ]; do
         if host_cmd "$binary" status | grep -q '"connected":true'; then echo 'connected'; offer_cli; exit 0; fi
@@ -165,8 +166,7 @@ if [ -e "$binary" ]; then
     *) echo 'Unrecognized host status; registration and token preserved.' >&2; exit 1 ;;
   esac
 fi
-install -m 700 "$tmp/host" "$binary"
-printf '%s\\n' "$token" | host_cmd "$binary" install --server "$server"
+printf '%s\\n' "$token" | host_cmd "$tmp/host" install --server "$server"
 unset token
 attempt=0
 while [ "$attempt" -lt 60 ]; do

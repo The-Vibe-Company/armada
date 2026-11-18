@@ -509,6 +509,7 @@ test("a held host poll answers as soon as work appears and never beyond its hold
     },
     resumeClaimsForHost: async () => [],
     pendingStartsForHost: async () => [],
+    updateEligibleHostId: async () => "fixture-host",
     async poll(...args: unknown[]) {
       polls++;
       running.push(args[8] as readonly string[]);
@@ -584,15 +585,27 @@ test("a host poll skips work the daemon reports running and hands out another sa
   const ticket = await store.issueRegistration(actor);
   const installationId = randomUUID();
   const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
-  const poll = (running: string[]) =>
-    post("/api/docker-host/poll", host.hostToken, {
-      installationId,
-      version: "2.51.0",
-      resources: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
-      resourcePolicyVersion: 1,
-      running,
-    });
-  expect((await poll([])).status).toBe(200);
+  const enabled = createDockerHostRoutes(store, fixtureAuth, { automaticUpdateHostIds: [host.hostId] });
+  const poll = (running: string[], mode?: "heartbeatOnly" | "cleanupOnly", route?: typeof enabled) =>
+    post(
+      "/api/docker-host/poll",
+      host.hostToken,
+      {
+        installationId,
+        version: "2.51.0",
+        resources: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
+        resourcePolicyVersion: 1,
+        running,
+        ...(mode ? { [mode]: true } : {}),
+      },
+      {},
+      route,
+    );
+  const defaultPoll = await poll([]);
+  expect(defaultPoll.status).toBe(200);
+  const defaultBody = await defaultPoll.json();
+  expect(defaultBody).toMatchObject({ targetVersion: VERSION, minimumVersion: expect.any(String) });
+  expect(defaultBody).not.toHaveProperty("updateVersion");
   const sql: Sql = {
     query: (q, p) => db.query(q, p),
     transaction: (work) => db.transaction((tx) => work({ query: (q, p) => tx.query(q, p) })),
@@ -609,6 +622,23 @@ test("a host poll skips work the daemon reports running and hands out another sa
   const second = await sandboxes.reserve(actor, { ...input, requestId: randomUUID() });
   const job = async (running: string[]) =>
     ((await (await poll(running)).json()) as { job: { requestId: string } | null }).job;
+  const heartbeat = await poll([], "heartbeatOnly", enabled);
+  expect(heartbeat.status).toBe(200);
+  expect(await heartbeat.json()).toMatchObject({
+    job: null,
+    targetVersion: VERSION,
+    updateVersion: VERSION,
+  });
+  const cleanupOnly = await poll([], "cleanupOnly", enabled);
+  expect(cleanupOnly.status).toBe(200);
+  const cleanupOnlyBody = await cleanupOnly.json();
+  expect(cleanupOnlyBody).toMatchObject({ job: null, resumeClaims: [] });
+  expect(cleanupOnlyBody).not.toHaveProperty("updateVersion");
+  const claimed = await db.query(
+    "select 1 from public.sandbox_launch_stages where sandbox_id in ($1,$2) and stage='provider_claimed'",
+    [first.id, second.id],
+  );
+  expect(claimed.rows).toEqual([]);
   const head = await job([]);
   expect(head).toMatchObject({ operation: "create", request: { sandboxId: first.id } });
   const next = await job([head!.requestId]);
@@ -650,4 +680,14 @@ test("a host poll skips work the daemon reports running and hands out another sa
     job: { operation: "stop", request: { sandboxId: first.id } },
   });
   expect(time).toBe(2000);
+
+  // Revoked hosts retain authorization to reconcile bound cleanup, while the
+  // same successful cleanup poll no longer authorizes an executable swap.
+  await store.revoke(actor, host.hostId);
+  const cleanup = await poll([], "cleanupOnly", enabled);
+  expect(cleanup.status).toBe(200);
+  const body = await cleanup.json();
+  expect(body).toMatchObject({ job: { operation: "stop", request: { sandboxId: first.id } } });
+  expect(body).not.toHaveProperty("targetVersion");
+  expect(body).not.toHaveProperty("updateVersion");
 });

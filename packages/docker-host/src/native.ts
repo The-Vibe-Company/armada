@@ -2,7 +2,10 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { DOCKER_HOST_SNAPSHOT_BASELINE_HEADER } from "../../core/src/docker-host-upgrade.ts";
+import {
+  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
+  DOCKER_HOST_UPDATE_FAILURE_HEADER,
+} from "../../core/src/docker-host-upgrade.ts";
 import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
 import { DOCKER_OUTPUT_DIRECTORY_MISSING } from "../../core/src/docker-output-archive.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
@@ -160,19 +163,33 @@ export function httpApi(
   resources?: (state: State) => Promise<DockerHostResources>,
   diskFreeBytes?: () => Promise<number | null>,
   stoppedBytes?: (state: State) => Promise<number | null>,
+  update?: {
+    failure(): Promise<string | undefined>;
+    acknowledge(version: string): Promise<void>;
+    pollWhileInstalled?<T>(poll: () => Promise<T>): Promise<T>;
+  },
 ): Api & {
   retainedOutputs(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
+  supportsCleanupPoll(state: State): Promise<boolean | undefined>;
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
 } {
-  async function post(
+  async function sampleTelemetry(state: State) {
+    const disk = diskFreeBytes ? { diskFreeBytes: await diskFreeBytes() } : {};
+    const stopped = stoppedBytes ? { stoppedSandboxBytes: await stoppedBytes(state) } : {};
+    const sampledResources = resources ? await resources(state) : dockerHostResources();
+    return { disk, stopped, sampledResources };
+  }
+  let lastTelemetry: Awaited<ReturnType<typeof sampleTelemetry>> | undefined;
+  async function send(
     server: string,
     endpoint: string,
     token: string,
     body: unknown,
     timeoutMs = 8_000,
     snapshotBaseline = endpoint === "poll" ? SNAPSHOT_BASELINE_VERSION : undefined,
-  ): Promise<unknown> {
+  ) {
+    const failure = endpoint === "poll" ? await update?.failure() : undefined;
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
       redirect: "error",
@@ -180,6 +197,7 @@ export function httpApi(
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
+        ...(failure ? { [DOCKER_HOST_UPDATE_FAILURE_HEADER]: failure } : {}),
         ...(snapshotBaseline === undefined ? {} : { [DOCKER_HOST_SNAPSHOT_BASELINE_HEADER]: String(snapshotBaseline) }),
       },
       body: JSON.stringify(body),
@@ -190,7 +208,7 @@ export function httpApi(
     }
     if (endpoint === "results") {
       await response.body?.cancel();
-      return undefined;
+      return { result: undefined };
     }
     // Bound protocol output as well as Docker inspect output; neither is ever logged.
     if (!response.body) throw new Error("Invalid host response");
@@ -208,7 +226,26 @@ export function httpApi(
     } finally {
       await reader.cancel();
     }
-    return JSON.parse(Buffer.concat(parts).toString("utf8"));
+    return {
+      result: JSON.parse(Buffer.concat(parts).toString("utf8")) as unknown,
+      acknowledged:
+        failure && response.headers.get(DOCKER_HOST_UPDATE_FAILURE_HEADER) === failure ? failure : undefined,
+    };
+  }
+  async function post(...args: Parameters<typeof send>) {
+    const [, endpoint, , body] = args;
+    const response =
+      endpoint === "poll" &&
+      body &&
+      typeof body === "object" &&
+      !("heartbeatOnly" in body) &&
+      !("cleanupOnly" in body) &&
+      update?.pollWhileInstalled
+        ? await update.pollWhileInstalled(() => send(...args))
+        : await send(...args);
+    // Acknowledging mutates the journal and takes its own lifecycle claim.
+    if (response.acknowledged) await update?.acknowledge(response.acknowledged).catch(() => {});
+    return response.result;
   }
   return {
     async reuseRegistration(state, token) {
@@ -232,6 +269,22 @@ export function httpApi(
       )
         throw new Error("Invalid existing host identity");
       return { hostId: state.hostId, name: result.name as string | null };
+    },
+    async supportsCleanupPoll(state) {
+      try {
+        await post(state.server, "poll", state.hostToken, {
+          installationId: state.installationId,
+          version: VERSION,
+          heartbeatOnly: true,
+          cleanupOnly: true,
+        });
+        return true;
+      } catch (error) {
+        if (error instanceof HostRequestDenied && error.status === 400) return false;
+        // An inconclusive probe leaves negotiation pending. Unregister can
+        // still revoke an empty host or start a server-side drain.
+        return undefined;
+      }
     },
     async unregister(state) {
       const result = await post(state.server, "unregister", state.hostToken, { installationId: state.installationId });
@@ -277,10 +330,13 @@ export function httpApi(
         retentionSeconds: retention.retentionSeconds,
         nextCleanupAt: retention.nextCleanupAt,
       };
-      const disk = diskFreeBytes ? { diskFreeBytes: await diskFreeBytes() } : {};
-      const stopped = stoppedBytes ? { stoppedSandboxBytes: await stoppedBytes(state) } : {};
-      const sampledResources = resources ? await resources(state) : dockerHostResources();
-      if (options?.waitSeconds !== undefined) {
+      if (!options?.reuseTelemetry) lastTelemetry = await sampleTelemetry(state);
+      const { disk, stopped, sampledResources } = lastTelemetry ?? {
+        disk: {},
+        stopped: {},
+        sampledResources: dockerHostResources(),
+      };
+      if (options?.waitSeconds !== undefined && !options.heartbeatOnly && !options.cleanupOnly) {
         // Held poll (#2561): the server answers as soon as work exists. Servers
         // without it refuse the additive fields before claiming, and the
         // daemon then keeps its own idle period.
@@ -310,16 +366,23 @@ export function httpApi(
           if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
         }
       }
-      try {
+      const currentPoll = {
+        ...body,
+        resumeClaimProtocol: 1,
+        ...retention,
+        ...disk,
+        ...stopped,
+        resources: sampledResources,
+        resourcePolicyVersion: 1,
+      };
+      // Never retry a fenced heartbeat as a job-bearing poll.
+      if (options?.heartbeatOnly || options?.cleanupOnly)
         return (await post(state.server, "poll", state.hostToken, {
-          ...body,
-          resumeClaimProtocol: 1,
-          ...retention,
-          ...disk,
-          ...stopped,
-          resources: sampledResources,
-          resourcePolicyVersion: 1,
+          ...currentPoll,
+          ...(options.heartbeatOnly ? { heartbeatOnly: true } : { cleanupOnly: true }),
         })) as Awaited<ReturnType<Api["poll"]>>;
+      try {
+        return (await post(state.server, "poll", state.hostToken, currentPoll)) as Awaited<ReturnType<Api["poll"]>>;
       } catch (error) {
         // Older servers reject the additive resource field before claiming a job.
         if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
