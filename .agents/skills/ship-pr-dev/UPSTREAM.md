@@ -2,7 +2,8 @@
 
 ship-pr-dev is distributed under the MIT License (see LICENSE).
 Copyright (c) 2026 The Vibe Company.
-Imported package version: 1.6.0.
+Imported package version: 1.6.2.
+Skillpack source: [The-Vibe-Company/skillpack#91](https://github.com/The-Vibe-Company/skillpack/pull/91), commit `1de41e593ea1b539fb45125057d4c002241168a3`.
 The imported workflow, references, metadata and evals are unchanged.
 
 Armada adaptations after independent review:

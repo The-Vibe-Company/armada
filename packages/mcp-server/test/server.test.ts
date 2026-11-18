@@ -5,8 +5,6 @@ import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-aud
 import helperManifest from "../../core/helper/manifest.json";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { createHandler } from "../src/http.ts";
-import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
@@ -308,81 +306,6 @@ describe("tools", () => {
           usage: expect.objectContaining({ tokenTotals: expect.objectContaining({ incomplete: true }) }),
         }),
       ]),
-    });
-  });
-
-  test("golden_capabilities is read-only, scoped before resolution, and reports provider metadata only", async () => {
-    const { token, client, people, boat, db, auth, clock } = await start();
-    const bearer = await token(people.member);
-    const vault = createSqlVaultStore(db);
-    const supabase = { supabaseUrl: "https://unused.test", anonKey: "test" };
-    let secretReads = 0;
-    const metadata = createProviderMetadata({
-      sql: db,
-      vault: {
-        credentials: async (...args) => {
-          secretReads++;
-          return vault.credentials(...args);
-        },
-        orgBoatKey: async (...args) => {
-          secretReads++;
-          return vault.orgBoatKey(...args);
-        },
-      },
-      encryptionKey: ENCRYPTION_KEY,
-      providerFor: boat.providerFor,
-    });
-    const handler = createHandler({
-      publicUrl: PUBLIC_URL,
-      authStore: auth,
-      supabase,
-      oauth: {
-        ...supabase,
-        publicUrl: PUBLIC_URL,
-        store: auth,
-        authSecret: "metadata-fixture-auth-secret",
-        fetch: async () => {
-          throw new Error("Capability reads must not invoke OAuth.");
-        },
-        now: () => clock.now,
-      },
-      data: createSqlData(db),
-      vault,
-      encryptionKey: ENCRYPTION_KEY,
-      providerMetadata: metadata,
-      providerFor: () => {
-        throw new Error("Metadata must not resolve a resource provider.");
-      },
-      log: () => {},
-    });
-    const request = rpc(handler, bearer);
-    // This user also belongs to otherOrg, but this token must never widen to it.
-    const denied = await request.tool("golden_capabilities", { org: people.otherOrg, provider: "boat" });
-    expect(denied.result?.isError).toBe(true);
-    expect(secretReads).toBe(0);
-    expect(boat.keys).toEqual([]);
-    Object.assign(boat.provider, { maxGoldens: 7 });
-    const result = await request.tool("golden_capabilities", { org: people.org, provider: "boat" });
-    expect(result.result?.isError).not.toBe(true);
-    expect(result.result?.structuredContent).toEqual({
-      provider: "boat",
-      maxGoldens: 7,
-      bindings: [{ goldenId: expect.any(String), relation: "unbound" }],
-    });
-    Object.assign(boat.provider, { maxGoldens: undefined });
-    expect((await request.tool("golden_capabilities", {})).result?.structuredContent).toEqual({
-      provider: "boat",
-      maxGoldens: null,
-    });
-    expect(secretReads).toBeGreaterThan(0);
-    expect(boat.keys).toHaveLength(2);
-    expect(boat.forks).toEqual([]);
-    expect(boat.execs).toEqual([]);
-    expect(boat.stops).toEqual([]);
-    const listed = await (await client(bearer)).listTools();
-    expect(listed.tools.find((tool) => tool.name === "golden_capabilities")?.annotations).toMatchObject({
-      readOnlyHint: true,
-      destructiveHint: false,
     });
   });
 
@@ -1622,9 +1545,7 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
       "work_recovery",
       "github_refresh",
       "golden_build_status",
-      "golden_capabilities",
       "golden_create",
-      "golden_adopt",
       "golden_list",
       "golden_snapshot",
       "golden_size_policy",

@@ -129,3 +129,12 @@ checks that exception counts do not increase against the same frozen base used b
 Local lint uses the merge base with `origin/main` when available.
 Dynamic SQL identifiers, indirect client calls, raw HTTP requests and SQL files
 are outside the scanner's scope.
+
+## Landmines
+
+`bun run lint` runs Landmines through Oxlint with Node 22.18 or newer.
+For existing violations, lower the count in `landmines-baseline.json` or
+the native allowance in the root `.oxlintrc.json`. At zero, remove the entry
+and any matching override path. CI compares both sets of counts with the
+candidate's base and rejects additions and increases. The lint step logs
+Landmines wall time on shard 1.

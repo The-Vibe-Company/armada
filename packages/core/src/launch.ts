@@ -1,7 +1,6 @@
 import { LAUNCH_CREDENTIAL_BINDING_GUIDANCE } from "./api-failure.ts";
 import { CLAUDE_ENDPOINT_ENV } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV } from "./codex-endpoint.ts";
-import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 import { HARNESSES, type Harness } from "./contract.ts";
 import { type HarnessCredentials, redact } from "./credentials.ts";
 import { GITHUB_NOT_CONNECTED, type GitHubAccess, type GitHubStatus, githubEnv } from "./github.ts";
@@ -31,6 +30,7 @@ import { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
+import { MORPH_ENDPOINTS, MORPH_MODEL_IDS } from "./pricing/model-options.generated.ts";
 import { PrivateSkillError } from "./private-skill-error.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
@@ -428,13 +428,10 @@ async function resolveGoldenLaunch(
   if (
     [CLAUDE_ENDPOINT_ENV, CODEX_ENDPOINT_ENV].some((name) => {
       const raw = credentials.env[name];
-      return (
-        raw &&
-        JSON.parse(raw).baseUrl === COMPATIBLE_MODEL_PROVIDERS.morph[harness === "claude" ? "claude" : "codex"].baseUrl
-      );
+      return raw && JSON.parse(raw).baseUrl === MORPH_ENDPOINTS[harness === "claude" ? "claude" : "codex"].baseUrl;
     })
   ) {
-    const models: readonly string[] = COMPATIBLE_MODEL_PROVIDERS.morph.models;
+    const models: readonly string[] = MORPH_MODEL_IDS;
     choice.model = request.model ?? models[0]!;
     if (!models.includes(choice.model))
       throw new LaunchError("invalid_request", "Choose a Morph plan model for this account.");
