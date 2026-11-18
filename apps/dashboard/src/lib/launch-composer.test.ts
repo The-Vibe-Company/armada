@@ -6,6 +6,7 @@ import {
   launchSendLabel,
   launchStopLabel,
   launchToolsSummary,
+  templateStartAfterRemoval,
 } from "./launch-composer";
 
 test("shows only the settings the starting point accepts", () => {
@@ -51,4 +52,42 @@ test("tools summary distinguishes unavailable discovery, one named tool, and emp
   expect(launchToolsSummary({ unavailable: false, selected: 0 })).toBe("No tools");
   expect(launchToolsSummary({ unavailable: false, selected: 1, selectedName: "Docs" })).toBe("Docs connected");
   expect(launchToolsSummary({ unavailable: false, selected: 2 })).toBe("2 tools");
+});
+
+test("removing a template with a vanished snapshot holds its source until another is picked", () => {
+  const selected = templateStartAfterRemoval(
+    {
+      id: "template_one",
+      orgId: "org_one",
+      name: "Review",
+      goldenName: "Removed · Boat cloud",
+      definition: {
+        provider: "boat",
+        goldenId: "removed_one",
+        harness: "claude",
+        model: "opus",
+        reasoningEffort: "high",
+        connections: [],
+        skills: [],
+        variables: [],
+      },
+      revision: 1,
+      repositories: [],
+      tools: [],
+      blocker: null,
+      agent: "Claude Code",
+    },
+    [
+      {
+        id: "ready_one",
+        provider: "boat",
+        golden: "Ready",
+        label: "Ready",
+        group: "Boat cloud",
+        repositories: [],
+      },
+    ],
+  );
+  expect(selected.id).toBe("removed_one");
+  expect(selected.reason).toContain("no longer available");
 });

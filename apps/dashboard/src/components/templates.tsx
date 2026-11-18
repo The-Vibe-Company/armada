@@ -72,7 +72,7 @@ import { useMutationState } from "@/components/use-mutation-state";
 import type { ActionResult } from "@/lib/action";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
-import { composerChips, launchHoldIds } from "@/lib/launch-composer";
+import { composerChips, launchHoldIds, templateStartAfterRemoval } from "@/lib/launch-composer";
 import { accountProblem, accountsFor, HARNESS_PATH, launchDefault } from "@/lib/model-accounts";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import {
@@ -933,12 +933,6 @@ function DirectTemplateLaunchStart({
   const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState("");
-  const sourceId =
-    target.definition.provider === "docker"
-      ? (target.definition.snapshotId ?? target.definition.hostId)
-      : target.definition.goldenId;
-  const start = options?.targets.find((item) => item.id === sourceId);
-
   async function removeTemplate() {
     if (removing) return;
     setRemoving(true);
@@ -947,10 +941,6 @@ function DirectTemplateLaunchStart({
       const discovered = await readLaunchDialogOptions();
       if (discovered.orgId !== target.orgId) {
         setError("Switch to this organization before launching.");
-      } else if (!discovered.targets.some((item) => item.id === sourceId)) {
-        setError("This starting point is no longer available. Pick another snapshot or Docker host.");
-        const alternative = discovered.targets.find((item) => !item.reason);
-        if (alternative) setOptions(discovered);
       } else {
         setOptions(discovered);
       }
@@ -961,9 +951,17 @@ function DirectTemplateLaunchStart({
     }
   }
 
-  const next = start ?? options?.targets.find((item) => !item.reason);
-  if (options && next) {
-    return <DiscoveredLaunchStart target={next} options={options} initialTask={task} dockerLimits={dockerLimits} />;
+  if (options) {
+    const start = templateStartAfterRemoval(target, options.targets);
+    const starts = options.targets.includes(start) ? options.targets : [start, ...options.targets];
+    return (
+      <DiscoveredLaunchStart
+        target={start}
+        options={{ ...options, targets: starts }}
+        initialTask={task}
+        dockerLimits={dockerLimits}
+      />
+    );
   }
   return (
     <TemplateLaunchForm

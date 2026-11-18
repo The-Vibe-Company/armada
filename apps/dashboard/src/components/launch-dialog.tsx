@@ -29,7 +29,7 @@ import {
   unreadyDefaults,
 } from "@/lib/connections";
 import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
-import { composerChips, launchHoldIds, launchToolsSummary } from "@/lib/launch-composer";
+import { composerChips, launchHoldIds, launchToolsSummary, MISSING_LAUNCH_START } from "@/lib/launch-composer";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
@@ -242,7 +242,7 @@ export function LaunchStart(
   const freshSelection = options?.targets.find((item) => item.id === selected);
   const missing = {
     ...selectedTarget.current,
-    reason: "This starting point is no longer available. Pick another snapshot or Docker host.",
+    reason: MISSING_LAUNCH_START,
   };
   const starts = options ? (freshSelection ? options.targets : [missing, ...options.targets]) : [fallback];
   const target = starts.find((item) => item.id === selected) ?? (options ? missing : fallback);

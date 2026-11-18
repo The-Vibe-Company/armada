@@ -1,4 +1,6 @@
 import type { SandboxPlacementProviderId } from "@armada/core";
+import type { LaunchStartTarget } from "./launch-picker";
+import type { TemplateLaunchTarget } from "./template-launch";
 import { ttlOptions } from "./templates";
 
 export function composerChips(
@@ -45,4 +47,32 @@ export function launchToolsSummary(access: {
   if (access.unavailable) return "Tools unavailable";
   if (access.selected === 1 && access.selectedName) return `${access.selectedName} connected`;
   return access.selected === 0 ? "No tools" : `${access.selected} ${access.selected === 1 ? "tool" : "tools"}`;
+}
+
+export const MISSING_LAUNCH_START = "This starting point is no longer available. Pick another snapshot or Docker host.";
+
+export function templateStartAfterRemoval(
+  template: TemplateLaunchTarget,
+  starts: readonly LaunchStartTarget[],
+): LaunchStartTarget {
+  const { definition } = template;
+  const docker = definition.provider === "docker";
+  const id = (docker ? (definition.snapshotId ?? definition.hostId) : definition.goldenId) ?? template.id;
+  const current = starts.find((start) => start.id === id);
+  if (current) return current;
+
+  const group = docker ? "Docker hosts" : definition.provider === "boat" ? "Boat cloud" : "Modal cloud";
+  return {
+    id,
+    golden: template.goldenName?.replace(/ · (Boat|Modal) cloud$/, "") ?? "Unavailable snapshot",
+    label: template.goldenName ?? "Unavailable snapshot",
+    group,
+    provider: definition.provider,
+    reason: MISSING_LAUNCH_START,
+    repositories: template.repositories,
+    ...(template.sizing ? { sizing: template.sizing } : {}),
+    ...(template.hostName ? { hostName: template.hostName } : {}),
+    ...(docker && definition.snapshotId ? { snapshotId: definition.snapshotId } : {}),
+    ...(docker && !definition.snapshotId && definition.hostId ? { hostId: definition.hostId } : {}),
+  };
 }
