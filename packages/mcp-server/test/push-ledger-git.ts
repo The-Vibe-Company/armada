@@ -102,3 +102,23 @@ export function recreatedAtFetchedCommit() {
   expect(sh(work, "git push origin topic:refs/heads/topic 2>&1")).toContain("[new branch]");
   return { stdout: read(), first, second };
 }
+
+/**
+ * The remote accepted a push of `topic` at B, but the tracking ref was locked,
+ * so Git could not confirm it (and still exited 0). Returns the reader output
+ * once the attempt is older than the in-flight window, the earlier confirmed
+ * push A and B.
+ */
+export function lostConfirmation() {
+  const { work, push, read } = launch();
+  const first = push("topic");
+  sh(work, "touch .git/refs/remotes/origin/topic.lock");
+  const second = push("topic");
+  sh(work, "rm .git/refs/remotes/origin/topic.lock");
+  expect(sh(work, "git ls-remote origin refs/heads/topic")).toStartWith(second);
+  sh(
+    work,
+    `ledger="$(git rev-parse --git-common-dir)/armada-pushes" && sed -i 's/^[0-9]*\\t!push/1\\t!push/' "$ledger"`,
+  );
+  return { stdout: read(), first, second };
+}

@@ -2,7 +2,14 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { pushLedgerInstall } from "@armada/core";
 import { readPushEvidence } from "../src/sandbox-pull-requests.ts";
-import { launch, recreatedAtFetchedCommit, rejectedRecreation, sh, tempRoot } from "./push-ledger-git.ts";
+import {
+  launch,
+  lostConfirmation,
+  recreatedAtFetchedCommit,
+  rejectedRecreation,
+  sh,
+  tempRoot,
+} from "./push-ledger-git.ts";
 
 test("push evidence survives a pruned tracking ref and reports pushes that escaped the ledger", () => {
   const { root, push, read, prune } = launch();
@@ -133,4 +140,19 @@ test("a verified push is confirmed by its tracking update even without a reflog 
   const sha = push("topic", "-c core.logAllRefUpdates=false");
   prune("topic");
   expect(read()).toBe(`topic\t${sha}\n`);
+});
+
+test("an accepted push whose tracking update failed stays unresolved; a later confirmed push supersedes it", () => {
+  const { stdout, first, second } = lostConfirmation();
+  expect(stdout).toBe(`topic\t${first}\n?\ttopic\t${second}\n`);
+  // A rejected attempt followed by a confirmed push to the same branch.
+  const { root, work, push, read } = launch();
+  sh(
+    root,
+    "git clone -q remote.git other 2>/dev/null && git -C other commit -q --allow-empty -m x && git -C other push -q origin HEAD:refs/heads/topic",
+  );
+  const rejected = sh(work, "git commit -q --allow-empty -m a && git rev-parse HEAD").trim();
+  expect(() => sh(work, "git push -q origin HEAD:refs/heads/topic")).toThrow();
+  const accepted = push("topic", "", "-f origin");
+  expect(read()).toBe(`topic\t${accepted}\n~\ttopic\t${rejected}\n`);
 });

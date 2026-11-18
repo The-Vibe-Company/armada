@@ -75,8 +75,10 @@ const maxPushesPerBranch = 16;
 // written by a push. Output lists confirmed pushes newest first, in the
 // ledger's single chronological order (reflog pushes it lacks, which already
 // void coverage, follow). An attempt no tracking update confirmed (rejected,
-// or its result unknown) prints `?\t<branch>\t<sha>` and never counts as a push;
-// one younger than ten minutes may still be in flight and prints `!pending`. A ledger
+// or accepted but its tracking update failed) never counts as a push. It prints
+// `~\t<branch>\t<sha>` once a later confirmed push to the same branch
+// superseded it, `?\t<branch>\t<sha>` while unresolved, and `!pending` while one
+// is younger than ten minutes and may still be in flight. A ledger
 // gap (a push to a URL or another remote, or an origin update without a
 // reflog entry) or a reflog push the ledger lacks prints `!untracked`. A
 // missing hook (a tool such as husky can move core.hooksPath) prints
@@ -100,9 +102,10 @@ logs=$(git reflog show --all --date=unix --format='%gD%x09%gs%x09%H') || exit 1
 { if [ -n "$entries" ]; then printf '%s\\n' "$entries" | awk '{ print "L\\t" $0 }'; fi; printf '%s\\n' "$logs"; } |
 awk -v since="$1" -v now="$(date +%s)" -F '\\t' '$1 == "L" {
     if ($2+0 < since) next
-    if ($3 == "!gap" && $4 == "") gap=1
-    else if ($3 == "!push") { if ($5 != "" && $6 != "") { key=$5 "\\t" $6; if (!(key in listed)) { listed[key]=1; order[++a]=key }; attempt[key]=$2 } }
-    else if ($3 != "" && $4 != "") { key=$3 "\\t" $4; n++; lkey[n]=key; ledger[key]=1; delete attempt[key] }
+    s++
+    if (NF == 3 && $3 == "!gap") gap=1
+    else if (NF == 6 && $3 == "!push") { key=$5 "\\t" $6; if (!(key in listed)) { listed[key]=1; order[++a]=key; abranch[key]=$5 }; attempt[key]=$2; aseq[key]=s }
+    else if (NF == 4) { key=$3 "\\t" $4; n++; lkey[n]=key; ledger[key]=1; delete attempt[key]; cseq[$3]=s }
     next
   }
   $1 ~ /^refs\\/remotes\\/origin\\// && $2 == "update by push" {
@@ -116,11 +119,11 @@ awk -v since="$1" -v now="$(date +%s)" -F '\\t' '$1 == "L" {
   END {
     if (gap) print "!untracked"
     for (i=1; i<=m; i++) if (!ledger[rkey[i]]) print "!untracked"
-    for (i=1; i<=a; i++) if ((order[i] in attempt) && attempt[order[i]] + 600 > now) pending=1
+    for (i=1; i<=a; i++) if ((order[i] in attempt) && cseq[abranch[order[i]]] <= aseq[order[i]] && attempt[order[i]] + 600 > now) pending=1
     if (pending) print "!pending"
     for (i=n; i>=1; i--) if (!seen[lkey[i]]++) print lkey[i]
     for (i=1; i<=m; i++) if (!seen[rkey[i]]++) print rkey[i]
-    for (i=1; i<=a; i++) if (order[i] in attempt) print "?\\t" order[i]
+    for (i=1; i<=a; i++) if (order[i] in attempt) print (cseq[abranch[order[i]]] > aseq[order[i]] ? "~" : "?") "\\t" order[i]
   }'`;
 const readPushes = `remote=$(git remote get-url --push --all origin) || exit 1
 case "$remote" in
@@ -189,6 +192,10 @@ export function createSandboxPullRequests(
       // Unconfirmed push attempts: never evidence, but a pull request still
       // unmerged at one of them may be work of this sandbox.
       const attempted = new Map<string, Map<string, string[]>>();
+      // Attempts no later confirmed push to their branch superseded: a rejected
+      // push, or an accepted one whose tracking update failed (a held ref lock,
+      // a killed process). Only the commit's absence from GitHub tells them apart.
+      const unresolved = new Set<string>();
       let pending = false;
       // GitHub's head filter receives the owner as configured, not lowercased.
       const owners = new Map<string, string>();
@@ -241,7 +248,8 @@ export function createSandboxPullRequests(
             pending = true;
             continue;
           }
-          const attempt = line.startsWith("?\t");
+          // Neither `?` nor `~` can start a Git branch name.
+          const attempt = line.startsWith("?\t") || line.startsWith("~\t");
           const [ref, sha, extra] = (attempt ? line.slice(2) : line).split("\t");
           if (!ref || ref.length > 255 || /\s/.test(ref) || [...ref].some((char) => char.charCodeAt(0) < 32)) return;
           if (!sha || !/^[a-f0-9]{40}$/.test(sha) || extra !== undefined) return;
@@ -249,6 +257,7 @@ export function createSandboxPullRequests(
             const refs = attempted.get(repository) ?? new Map<string, string[]>();
             attempted.set(repository, refs);
             refs.set(ref, [...(refs.get(ref) ?? []), sha]);
+            if (line.startsWith("?")) unresolved.add(`${repository}\t${sha}`);
             continue;
           }
           pushed.set(ref, [...(pushed.get(ref) ?? []), sha]);
@@ -319,6 +328,7 @@ export function createSandboxPullRequests(
       if (
         branchCount > maxBranches ||
         numbers.size > maxKnownPulls ||
+        unresolved.size > maxPushesPerBranch ||
         [...lookups.values()].some((refs) =>
           [...refs.values()].some(
             ({ shas, attempts }) => shas.length > maxPushesPerBranch || attempts.length > maxPushesPerBranch,
@@ -350,12 +360,12 @@ export function createSandboxPullRequests(
           return;
         const token = access.token;
         let requests = 0;
-        async function get(repository: string, path: string) {
+        async function get(repository: string, path: string, missing = false) {
           if (!repoName.test(repository) || !branches.has(repository))
             throw Error("Repository is outside the sandbox grant.");
           // A large scan costs capacity from subsequent scans, even on failure.
           next = Math.max(next, Date.now() + ++requests * 1000);
-          const response = await request(`https://api.github.com/repos/${repository}/pulls${path}`, {
+          const response = await request(`https://api.github.com/repos/${repository}${path}`, {
             signal,
             redirect: "error",
             headers: {
@@ -363,6 +373,8 @@ export function createSandboxPullRequests(
               accept: "application/vnd.github+json",
             },
           });
+          // An unknown commit is an answer, not a failed observation.
+          if (missing && (response.status === 404 || response.status === 422)) return undefined;
           if (!response.ok || response.headers.get("link")?.includes('rel="next"'))
             throw Error("Incomplete pull request observation.");
           return response.json();
@@ -383,7 +395,7 @@ export function createSandboxPullRequests(
         for (let offset = 0; offset < known.length; offset += 8) {
           const batch = await Promise.allSettled(
             known.slice(offset, offset + 8).map(async ({ repository, number }) => {
-              const pull = githubPull.parse(await get(repository, `/${number}`));
+              const pull = githubPull.parse(await get(repository, `/pulls/${number}`));
               if (pull.number !== number) throw Error("Pull request number changed.");
               record(repository, pull);
             }),
@@ -405,7 +417,7 @@ export function createSandboxPullRequests(
                 pulls: z
                   .array(githubPull)
                   .max(100)
-                  .parse(await get(repository, `?${params}`)),
+                  .parse(await get(repository, `/pulls?${params}`)),
               })),
             );
             for (const result of batch) {
@@ -436,6 +448,13 @@ export function createSandboxPullRequests(
             // head) is unmerged work and blocks stopping.
             if (named && shas.length && !matched) complete = false;
           }
+        }
+        // GitHub never received a rejected push's commit. A commit it has may be
+        // a push whose confirmation was lost, so it withholds the stop.
+        for (const key of unresolved) {
+          if (!complete) break;
+          const [repository = "", sha] = key.split("\t");
+          if (await get(repository, `/commits/${sha}`, true)) complete = false;
         }
       }
       signal.throwIfAborted();

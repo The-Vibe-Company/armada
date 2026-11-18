@@ -7,7 +7,7 @@ import { nativeQuiescent } from "../src/native-idle.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { createSandboxPullRequests } from "../src/sandbox-pull-requests.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { recreatedAtFetchedCommit, rejectedRecreation } from "./push-ledger-git.ts";
+import { lostConfirmation, recreatedAtFetchedCommit, rejectedRecreation } from "./push-ledger-git.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
@@ -424,6 +424,10 @@ test.each([
   "out-of-grant report",
   "rejected recreation",
   "recreated at fetched commit",
+  "pending attempt",
+  "unmerged PR at attempt",
+  "lost confirmation",
+  "rejected attempt",
 ] as const)("GitHub observation and idle admission agree for %s work", async (state) => {
   const f = await fixture(state === "running-turn" ? state : "quiet");
   const owner = f.caller.userId;
@@ -434,7 +438,9 @@ test.each([
       ? rejectedRecreation()
       : state === "recreated at fetched commit"
         ? (({ stdout, first }) => ({ stdout, sha: first }))(recreatedAtFetchedCommit())
-        : undefined;
+        : state === "lost confirmation"
+          ? (({ stdout, first }) => ({ stdout, sha: first }))(lostConfirmation())
+          : undefined;
   const sha = git?.sha ?? "a".repeat(40);
   await f.db.query(
     `insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
@@ -482,6 +488,8 @@ test.each([
     merged_at: null,
     head: { ...pull.head, sha: "e".repeat(40) },
   };
+  // A closed-unmerged PR at an unconfirmed attempt.
+  const attemptPull = { ...closedPull, number: 14, head: { ...closedPull.head, ref: "other", sha: "f".repeat(40) } };
   const fetchGitHub = Object.assign(
     async (url: Parameters<typeof fetch>[0]) => {
       if (String(url) === "https://api.github.com/user")
@@ -490,9 +498,14 @@ test.each([
         expect(String(url)).toBe(`https://api.github.com/repos/${repository}/pulls/12`);
         return Response.json(pull);
       }
+      // Only the rejected attempt's commit is unknown to GitHub.
+      if (String(url).includes(`/repos/${repository}/commits/`))
+        return String(url).endsWith("9".repeat(40)) ? new Response("", { status: 404 }) : Response.json({});
       expect(String(url)).toContain(`/repos/${repository}/pulls?`);
       const head = new URL(String(url)).searchParams.get("head");
       if (head === "example:scratch") return Response.json(state === "merged with later push" ? [laterPull] : []);
+      if (head === "example:main") return Response.json([]);
+      if (head === "example:other") return Response.json(state === "unmerged PR at attempt" ? [attemptPull] : []);
       return Response.json(state === "merged after closed" ? [pull, closedPull] : [pull]);
     },
     { preconnect: fetch.preconnect },
@@ -526,13 +539,17 @@ test.each([
       ? git.stdout
       : state === "no push" || state === "corrected report"
         ? ""
-        : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : ""}topic\t${sha}\n${state === "merged after closed" ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}`,
+        : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : state === "pending attempt" ? "!pending\n" : ""}topic\t${sha}\n${state === "merged after closed" ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`,
   );
   if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
   await f.tick();
   const sandbox = await f.data.sandboxes.get(f.id);
-  const shouldStop = state === "merged" || state === "merged with scratch push" || state === "corrected report";
+  const shouldStop =
+    state === "merged" ||
+    state === "merged with scratch push" ||
+    state === "corrected report" ||
+    state === "rejected attempt";
   expect(f.stops()).toBe(shouldStop ? 1 : 0);
   if (shouldStop) expect(sandbox?.statusReason).toBe("work_merged");
   expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
