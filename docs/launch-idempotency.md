@@ -169,7 +169,9 @@ clients. Send only one field.
 
 The CLI, dashboard, iOS app and direct golden smoke probes now send these
 selectors to `sandbox/launch`. Pinned Modal runtime templates keep their
-versioned entry point. Keep golden launch aliases available for at least 90
+versioned entry point when explicitly selecting Modal dial-out, including
+the Modal readable-variable probe's explicit mode. Its ordinary mode uses
+`templates/launch`. Keep golden launch aliases available for at least 90
 days after the first release carrying the first-party golden launch migration.
 Review remaining released-client usage and migrate the pinned template
 entry point before retiring its alias.

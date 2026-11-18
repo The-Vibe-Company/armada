@@ -88,7 +88,6 @@ export async function runtimeFixture(
   let githubConfiguration:
     | ((value: import("@armada/core").GitHubRuntimeConfiguration | null) => Promise<void>)
     | undefined;
-  let nextInterrupt: (() => void) | undefined;
   const driver: Driver = {
     start(context) {
       starts.push(context.sessionId);
@@ -96,14 +95,10 @@ export async function runtimeFixture(
       context.session("native-thread");
       const done = nextDone ?? Promise.resolve("finished" as const);
       nextDone = undefined;
-      const interrupt = nextInterrupt;
-      nextInterrupt = undefined;
       return {
         done,
         async steer() {},
-        async interrupt() {
-          interrupt?.();
-        },
+        async interrupt() {},
       };
     },
     async resumeSession(context) {
@@ -341,9 +336,8 @@ export async function runtimeFixture(
     tamper(mode: "generation" | "prefix" | "ack") {
       checkpointFault = mode;
     },
-    hold(done: Promise<"finished" | "interrupted">, interrupt?: () => void) {
+    hold(done: Promise<"finished" | "interrupted">) {
       nextDone = done;
-      nextInterrupt = interrupt;
     },
     race(work: () => Promise<void>) {
       afterProbe = work;
