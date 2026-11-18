@@ -1790,15 +1790,16 @@ export function createArmadaServer(context: ToolContext, version: string, option
     }
     // One send shape across placements. Native providers do not implement a
     // durable request-key protocol; accepting this field promises no deduplication.
+    // A merge stop runs the same irreversible idle checkpoint as an idle pause.
     if (
-      selected.statusReason === "idle_paused" &&
+      (selected.statusReason === "idle_paused" || selected.statusReason === "work_merged") &&
       (selected.status === "stopping" ||
         !selected.expiresAt ||
         Date.parse(selected.expiresAt) <= context.now().getTime())
     )
       throw new ToolError(
         "conflict",
-        "Idle pause is still finishing or its original deadline has expired; inspect status before sending.",
+        "Idle pause or merge stop is still finishing or its original deadline has expired; inspect status before sending.",
       );
     const { sandbox: found, provider } = await live(args.id, false, selected);
     if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");

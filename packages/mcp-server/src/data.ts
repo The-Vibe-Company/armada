@@ -754,7 +754,7 @@ export function createSqlData(
           fence += " and s.stop_requested_at is null";
         if (patch.advanceGeneration && patch.activityToken && patch.stopRequested === false)
           fence +=
-            " and (s.status_reason is distinct from 'idle_paused' or (s.status<>'stopping' and s.expires_at>clock_timestamp()))";
+            " and (coalesce(s.status_reason,'') not in ('idle_paused','work_merged') or (s.status<>'stopping' and s.expires_at>clock_timestamp()))";
         if (patch.queueRequestId !== undefined) {
           params.push(patch.queueRequestId);
           fence += ` and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=s.id and q.request_id=$${params.length}::uuid and q.state<>'dispatching')`;

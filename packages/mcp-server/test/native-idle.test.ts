@@ -325,6 +325,40 @@ test("an expired native idle pause refuses wake before provider work", async () 
   ).rejects.toMatchObject({ code: "sandbox_terminal", status: 409 });
 });
 
+test.each(["idle_paused", "work_merged"])(
+  "a native %s stop still checkpointing refuses send before provider work",
+  async (reason) => {
+    const f = await fixture(`stopping-${reason}`);
+    await f.data.sandboxes.update(f.id, {
+      status: "stopping",
+      statusReason: reason,
+      expiresAt: new Date(f.at + 3_600_000).toISOString(),
+    });
+    await expect(
+      callSharedTool(
+        {
+          caller: f.caller,
+          data: f.data,
+          provider: async () => {
+            throw Error("Provider must not be resolved while the idle checkpoint is stopping");
+          },
+          launchCredentials: {
+            resolve: async () => {
+              throw Error("No credentials while stopping");
+            },
+          },
+          exposedSecrets: async () => [],
+          now: () => new Date(f.at),
+          sleep: async () => {},
+        },
+        "send",
+        { id: f.id, prompt: "wake" },
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect((await f.data.sandboxes.get(f.id))?.status).toBe("stopping");
+  },
+);
+
 test("native Modal retries its already-fenced stop phase without active-only observation", async () => {
   const f = await fixture("modal-retry");
   f.setClock(f.at + 600_000);
