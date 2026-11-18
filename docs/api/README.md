@@ -122,13 +122,20 @@ Send rules depend on the sandbox:
 | --- | --- | --- | --- |
 | Native Boat or Modal | Optional | Optional | Optional, for this turn only |
 | Runtime Boat or Modal, including OpenCode | Required without a pinned model account. Otherwise Armada generates one when omitted. | Optional. Omit it to continue the latest conversation. On an idle sandbox with no turn yet, omitting it opens the first conversation. A supplied ID must name an existing conversation of this sandbox. | Refused. Boat accepts values equal to the launch values. |
-| Docker | Armada generates one when omitted, because every Docker sandbox has a pinned model account | Optional UUID. Omit it to continue the latest conversation, or the launch conversation when none is recorded yet. While the launch or an earlier queued prompt is still pending, Armada queues the send on the first conversation and returns HTTP 409 `conflict` for any other ID. | Refused |
+| Docker | Armada generates one when omitted, because every Docker sandbox has a pinned model account | Optional. Omit it to continue the latest recorded conversation, or the launch conversation when none is recorded yet. A supplied ID must name a conversation already recorded for this sandbox. | Refused |
 
-On runtime sandboxes, a refused override returns HTTP 400 `invalid`, as do a
-`conversation_id` that names no existing conversation and a send that requires
-a UUID `request_id` and does not include one. On Docker sandboxes, a refused
-override or a `conversation_id` that is not a UUID returns HTTP 400
-`invalid_request`. Runtime and Docker
+Sends to a sandbox with a pinned model account, which includes every Docker
+sandbox, pass through the account turn queue first. For runtime and Docker
+sandboxes, the queue returns HTTP 400 `invalid` for a refused override or a
+`conversation_id` that names no recorded conversation. It returns HTTP 409
+`conflict` when the sandbox cannot accept a prompt now. A direct runtime send,
+without a pinned model account, returns HTTP 400 `invalid` for the same
+refusals and for a missing UUID `request_id`. An admitted send returns
+`queued` with its `requestId`, and Armada dispatches it later. Docker applies
+its own checks at dispatch. A prompt that waits for the launch or an earlier
+prompt stays queued, and a prompt that Docker rejects is marked failed. Call
+`sandbox/status` with the `requestId` as `prompt_id` to follow a queued send.
+Runtime and Docker
 sends keep the model and reasoning effort selected at launch. When Armada
 generates the request ID, it returns it as `requestId`. If that answer is lost,
 the send cannot be replayed, so send your own.
