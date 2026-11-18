@@ -25,6 +25,7 @@ when available. The provider's `sandbox` ownership label carries the receipt
 UUID. Confirm the first call is no longer active before retiring a machine
 through provider controls. Keep the original key through incident recovery.
 
+Resolve outstanding versioned launch retries before deploying the tool removal.
 Keys from the retired versioned sizing tool can conflict because their
 fingerprints include the sizing version field. Treat that conflict as a
 reference to the original receipt and follow the same recovery steps.

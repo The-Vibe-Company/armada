@@ -90,6 +90,11 @@ test("known terminal refusals replay typed failures without redispatch", async (
     await expect(receipts.run(actor, key, {}, dispatch, authority)).rejects.toBeInstanceOf(error.constructor);
     await expect(receipts.run(actor, key, {}, dispatch, authority)).rejects.toMatchObject({ code: error.code });
     expect(calls).toBe(1);
+    if (error instanceof ProviderError) {
+      const { rows } = await db.query("SELECT failure FROM ordinary_launch_receipts WHERE request_key=$1", [key]);
+      expect(rows).toHaveLength(1);
+      expect(JSON.stringify(rows[0])).not.toContain(error.message);
+    }
     await expect(receipts.run(actor, key, { changed: true }, dispatch, authority)).rejects.toThrow("conflicts");
   }
 });
