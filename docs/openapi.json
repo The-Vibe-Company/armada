@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Armada shared control API",
-    "version": "2.57.1",
+    "version": "2.57.2",
     "description": "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts golden, Docker and explicit pinned Modal template launches. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability."
   },
   "paths": {

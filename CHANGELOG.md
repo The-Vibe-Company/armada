@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.57.2](https://github.com/The-Vibe-Company/armada/compare/v2.57.1...v2.57.2) (2026-11-18)
+
+
+### Bug Fixes
+
+* **dev:** isolate dashboard journey fixture servers ([#2700](https://github.com/The-Vibe-Company/armada/issues/2700)) ([9e7629f](https://github.com/The-Vibe-Company/armada/commit/9e7629fbc9235d365fc2aa5ada5dd459bab7b3c2))
+* **mcp:** validate log pagination before provider routing ([#2701](https://github.com/The-Vibe-Company/armada/issues/2701)) ([b11c2b6](https://github.com/The-Vibe-Company/armada/commit/b11c2b62820a255f320b971384349e33d1f745b1))
+* **outputs:** stop retrying unavailable retained captures ([#2704](https://github.com/The-Vibe-Company/armada/issues/2704)) ([5bfcac5](https://github.com/The-Vibe-Company/armada/commit/5bfcac5ed4497f278a9e394ff212e2182bf9dadc))
+
 ## [2.57.1](https://github.com/The-Vibe-Company/armada/compare/v2.57.0...v2.57.1) (2026-11-18)
 
 
