@@ -376,18 +376,16 @@ export class Armada {
     options: RequestOptions = {},
     defaultTimeoutMs = 300000,
   ): Promise<T> {
-    let serialized: string | undefined;
-    try {
-      serialized = JSON.stringify(body);
-    } catch {
-      throw new ArmadaError("transport_error", 0, undefined, !readOnly);
-    }
     const result = await requestApi(
       apiUrl(this.origin, `/api/v1/${route}`),
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        ...(serialized !== undefined ? { body: serialized } : {}),
+      () => {
+        // Serialize each attempt within the shared deadline, as with the original SDK transport.
+        const bodyText = JSON.stringify(body);
+        return {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          ...(bodyText !== undefined ? { body: bodyText } : {}),
+        };
       },
       {
         fetch: (url, init) => this.fetcher(String(url), init),

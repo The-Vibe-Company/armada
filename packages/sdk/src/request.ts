@@ -98,7 +98,11 @@ export function apiUrl(origin: string, path: string): URL {
 }
 
 /** Shared JSON transport. Callers validate their own success receipts and choose how to present errors. */
-export async function requestApi(url: URL, init: RequestInit, policy: RequestPolicy): Promise<RequestResult> {
+export async function requestApi(
+  url: URL,
+  requestInit: RequestInit | (() => RequestInit),
+  policy: RequestPolicy,
+): Promise<RequestResult> {
   const { fetch, signal: callerSignal, combineSignal, timeoutMs, renewToken, readOnly, readRetries = 0 } = policy;
   const deadline = combineSignal ? AbortSignal.timeout(timeoutMs) : undefined;
   const signal = deadline
@@ -111,6 +115,7 @@ export async function requestApi(url: URL, init: RequestInit, policy: RequestPol
   for (let attempt = 0; ; attempt++) {
     let response: Response;
     try {
+      const init = typeof requestInit === "function" ? requestInit() : requestInit;
       const headers = Object.fromEntries(new Headers(init.headers).entries());
       headers.accept = "application/json";
       if (token !== undefined) headers.authorization = `Bearer ${token}`;
