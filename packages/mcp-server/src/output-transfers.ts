@@ -128,7 +128,7 @@ export async function collectOutputTransfers(
       const bytes = await provider.readOutputChunk({ ...request, chunk: { entry, offset, length: readBytes } });
       const length = Math.min(readBytes, size - offset);
       if (!bytes || bytes.length !== length) throw new OutputCollectionError("output_unavailable");
-      const parts = [];
+      const parts: { byte_offset: number; content: string }[] = [];
       for (let start = 0; start < length; start += OUTPUT_CHUNK_BYTES) {
         signal?.throwIfAborted();
         const content = await encryptSecret(

@@ -328,7 +328,7 @@ export function outputEntryCollector(chunk: OutputChunkRequest | null): string {
       : {
           entry: { name: chunk.entry.name, size: chunk.entry.size, revision: chunk.entry.revision },
           offset: chunk.offset,
-          length: chunk.length,
+          ...(chunk.length !== undefined ? { length: chunk.length } : {}),
         },
   );
 }
