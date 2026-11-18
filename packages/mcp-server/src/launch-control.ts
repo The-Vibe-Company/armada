@@ -211,6 +211,16 @@ export async function launchRoute(
   };
   if (idempotencyKey === undefined) return dispatch();
   const target = armadaAccess ? { ...golden, visibility: "private" as const } : golden;
+  const { provider } = await prepareOnce();
+  const management = await provider.managementIdentity?.();
+  const backendId = (await provider.backendIdentity?.())?.id;
+  if (!management || !backendId)
+    throw new VaultError("unavailable", "This launch path cannot pin allocation authority; idempotencyKey is refused.");
+  const authority = {
+    target: { provider: target.provider, orgId: target.orgId, visibility: target.visibility, modal: target.modal },
+    management,
+    backendId,
+  };
   const { idempotencyKey: _key, ...request } = body;
   // Same key and same request replays the recorded answer; a different request under the key is refused.
   return options.ordinaryLaunchReceipts!.run(
@@ -223,21 +233,7 @@ export async function launchRoute(
       goldenId: golden.id,
     },
     dispatch,
-    async () => {
-      const { provider } = await prepareOnce();
-      const management = await provider.managementIdentity?.();
-      const backendId = (await provider.backendIdentity?.())?.id;
-      if (!management || !backendId)
-        throw new VaultError(
-          "unavailable",
-          "This launch path cannot pin allocation authority; idempotencyKey is refused.",
-        );
-      return {
-        target: { provider: target.provider, orgId: target.orgId, visibility: target.visibility, modal: target.modal },
-        management,
-        backendId,
-      };
-    },
+    authority,
   );
 }
 

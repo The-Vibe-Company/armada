@@ -9,6 +9,10 @@ import {
   launchFailureHelp,
   VaultError,
 } from "@armada/core";
+import type { launchCredentials } from "./launch-credentials.ts";
+
+export type GoldenLaunchCredentials = LaunchCredentialResolver &
+  Partial<Pick<ReturnType<typeof launchCredentials>, "resolveModel">>;
 
 export function requireLaunchAccountBinding(
   binding: Awaited<ReturnType<LaunchCredentialResolver["resolve"]>>["binding"],
@@ -22,7 +26,7 @@ export async function prepareGoldenLaunchAccount(
   actor: GoldenActor,
   golden: GoldenRecord,
   request: { harness: Harness; credentialId?: string | undefined },
-  credentials: LaunchCredentialResolver,
+  credentials: GoldenLaunchCredentials,
   options: LaunchOptions,
 ) {
   const { harness, credentialId } = request;
@@ -35,25 +39,39 @@ export async function prepareGoldenLaunchAccount(
       : (options.boatRuntimeDefault ?? (harness === "opencode" ? endpoint : undefined));
   if (!explicit && !runtimeDefault && !endpoint) return { credentials, options };
 
-  const prepare = async (resolver: LaunchCredentialResolver, requestedId = credentialId) => {
-    const preference = await resolver.defaults?.(actor, harness);
-    const selectedId = requestedId ?? preference?.credentialId ?? undefined;
-    const resolved = await resolver.resolve(actor, harness, selectedId, options.credentialVersion);
+  // A failure to resolve is still handled at the existing launch boundary. In
+  // particular, a revoked account must not mask replay of a completed receipt.
+  const probe = async (resolver: GoldenLaunchCredentials, requestedId = credentialId) => {
+    try {
+      const preference = await resolver.defaults?.(actor, harness);
+      const selectedId = requestedId ?? preference?.credentialId ?? undefined;
+      const resolved = resolver.resolveModel
+        ? await resolver.resolveModel(actor, harness, selectedId, options.credentialVersion)
+        : await resolver.resolve(actor, harness, selectedId, options.credentialVersion);
+      return { preference, selectedId, resolved };
+    } catch (error) {
+      if (error instanceof VaultError && error.code === "credential_binding_required") throw error;
+      return undefined;
+    }
+  };
+  const pin = (
+    resolver: LaunchCredentialResolver,
+    account: NonNullable<Awaited<ReturnType<typeof probe>>>,
+  ): LaunchCredentialResolver => {
+    const binding = requireLaunchAccountBinding(account.resolved.binding);
     return {
-      selectedId,
-      resolved,
-      resolver: {
-        ...resolver,
-        defaults: async () => preference,
-        resolve: async (...args: Parameters<LaunchCredentialResolver["resolve"]>) =>
-          args[2] === selectedId && args[3] === options.credentialVersion ? resolved : resolver.resolve(...args),
-      },
+      ...resolver,
+      defaults: async () => account.preference,
+      // Provider setup may take time. Reauthorize the exact selection rather
+      // than carrying decrypted credentials across the provider await.
+      resolve: (launchActor, launchHarness) =>
+        resolver.resolve(launchActor, launchHarness, binding.credentialId, binding.credentialVersion),
     };
   };
   if (runtimeDefault) {
-    const prepared = await prepare(runtimeDefault.credentials);
-    requireLaunchAccountBinding(prepared.resolved.binding);
-    const selected = { ...runtimeDefault, credentials: prepared.resolver };
+    const account = await probe(runtimeDefault.credentials);
+    if (!account) return { credentials, options };
+    const selected = { ...runtimeDefault, credentials: pin(runtimeDefault.credentials, account) };
     return {
       credentials,
       options:
@@ -63,12 +81,19 @@ export async function prepareGoldenLaunchAccount(
     };
   }
 
-  const prepared = await prepare(credentials);
-  if (explicit) requireLaunchAccountBinding(prepared.resolved.binding);
-  else if (endpoint && (prepared.resolved.env[CLAUDE_ENDPOINT_ENV] || prepared.resolved.env[CODEX_ENDPOINT_ENV])) {
-    const enrolled = await prepare(endpoint.credentials, prepared.selectedId);
-    requireLaunchAccountBinding(enrolled.resolved.binding);
-    options = { ...options, boatEndpointRuntime: { ...endpoint, credentials: enrolled.resolver } };
+  const account = await probe(credentials);
+  if (!account) return { credentials, options };
+  if (explicit) return { credentials: pin(credentials, account), options };
+  if (endpoint && (account.resolved.env[CLAUDE_ENDPOINT_ENV] || account.resolved.env[CODEX_ENDPOINT_ENV])) {
+    const enrolled = await probe(endpoint.credentials, account.selectedId);
+    if (!enrolled) return { credentials, options };
+    const selected = { ...endpoint, credentials: pin(endpoint.credentials, enrolled) };
+    return {
+      credentials,
+      // Use the preflighted route. Re-checking its native inputs after provider
+      // setup could pick a different endpoint or a changed account default.
+      options: { ...options, boatRuntimeDefault: selected },
+    };
   }
-  return { credentials: prepared.resolver, options };
+  return { credentials, options };
 }

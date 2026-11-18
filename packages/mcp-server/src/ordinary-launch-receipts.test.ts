@@ -36,24 +36,16 @@ test("ordinary receipts fence uncertain dispatch and replay a lost successful re
     handle = id;
     throw new Error("allocation succeeded; response lost");
   };
-  await expect(receipts.run(actor, key, { golden: "g" }, dispatch, async () => authority)).rejects.toThrow(
-    "outcome unknown",
-  );
-  await expect(receipts.run(actor, key, { golden: "g" }, dispatch, async () => authority)).rejects.toThrow(handle);
+  await expect(receipts.run(actor, key, { golden: "g" }, dispatch, authority)).rejects.toThrow("outcome unknown");
+  await expect(receipts.run(actor, key, { golden: "g" }, dispatch, authority)).rejects.toThrow(handle);
   expect(allocations).toBe(1);
-  await expect(receipts.run(actor, key, { golden: "different" }, dispatch, async () => authority)).rejects.toThrow(
-    "conflicts",
-  );
+  await expect(receipts.run(actor, key, { golden: "different" }, dispatch, authority)).rejects.toThrow("conflicts");
   const complete = async (id: string) => {
     allocations++;
     return { id, status: "running" };
   };
-  const first = await receipts.run(actor, "successful-launch-key", { golden: "g" }, complete, async () => authority);
-  expect(
-    await receipts.run(actor, "successful-launch-key", { golden: "g" }, complete, async () => {
-      throw Error("Replay must not open the provider or resolve the current account");
-    }),
-  ).toEqual(first);
+  const first = await receipts.run(actor, "successful-launch-key", { golden: "g" }, complete, authority);
+  expect(await receipts.run(actor, "successful-launch-key", { golden: "g" }, complete, authority)).toEqual(first);
   expect(allocations).toBe(2);
   await expect(
     receipts.run(
@@ -63,7 +55,7 @@ test("ordinary receipts fence uncertain dispatch and replay a lost successful re
       async () => {
         throw new LaunchError("unsupported", "Rebuild the golden.");
       },
-      async () => authority,
+      authority,
     ),
   ).rejects.toMatchObject({ code: "unsupported", message: "Rebuild the golden." });
 });
@@ -94,22 +86,16 @@ test("known terminal refusals replay typed failures without redispatch", async (
       throw error;
     };
     const key = `terminal-refusal-key-${index}`;
-    await expect(receipts.run(actor, key, {}, dispatch, async () => authority)).rejects.toBe(error);
-    await expect(receipts.run(actor, key, {}, dispatch, async () => authority)).rejects.toBeInstanceOf(
-      error.constructor,
-    );
-    await expect(receipts.run(actor, key, {}, dispatch, async () => authority)).rejects.toMatchObject({
-      code: error.code,
-    });
+    await expect(receipts.run(actor, key, {}, dispatch, authority)).rejects.toBe(error);
+    await expect(receipts.run(actor, key, {}, dispatch, authority)).rejects.toBeInstanceOf(error.constructor);
+    await expect(receipts.run(actor, key, {}, dispatch, authority)).rejects.toMatchObject({ code: error.code });
     expect(calls).toBe(1);
     if (error instanceof ProviderError) {
       const { rows } = await db.query("SELECT failure FROM ordinary_launch_receipts WHERE request_key=$1", [key]);
       expect(rows).toHaveLength(1);
       expect(JSON.stringify(rows[0])).not.toContain(error.message);
     }
-    await expect(receipts.run(actor, key, { changed: true }, dispatch, async () => authority)).rejects.toThrow(
-      "conflicts",
-    );
+    await expect(receipts.run(actor, key, { changed: true }, dispatch, authority)).rejects.toThrow("conflicts");
   }
 });
 
@@ -127,10 +113,8 @@ test("post-allocation launch failures remain uncertain", async () => {
     throw new LaunchError("prompt_failed", "Lost acknowledgement", { sandboxId: "allocated" });
   };
   for (let attempt = 0; attempt < 2; attempt++)
-    await expect(receipts.run(actor, "post-allocation-key", {}, dispatch, async () => authority)).rejects.toMatchObject(
-      {
-        code: "outcome_unknown",
-      },
-    );
+    await expect(receipts.run(actor, "post-allocation-key", {}, dispatch, authority)).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
   expect(calls).toBe(1);
 });
