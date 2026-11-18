@@ -111,6 +111,15 @@ interface SmokeIo {
   out: (line: string) => void;
   recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
 }
+const WAIT_SANDBOX_STATUSES: readonly string[] = [
+  "starting",
+  "ready",
+  "running",
+  "stopping",
+  "stopped",
+  "failed",
+  "deleted",
+];
 const POLLS = 120;
 /** A template launch answers only once the whole launch finished, but its sandbox is listed before. */
 const TEMPLATE_LAUNCH_TIMEOUT_MS = 600_000;
@@ -970,6 +979,8 @@ async function runPostDeploySmoke(
             () =>
               sandbox<{
                 prompt?: { promptId?: unknown; state?: unknown } | null;
+                status?: unknown;
+                providerState?: unknown;
                 settled?: unknown;
                 timedOut?: unknown;
               } | null>("wait", {
@@ -980,12 +991,16 @@ async function runPostDeploySmoke(
             (result) => {
               const prompt = result?.prompt;
               const state = prompt?.state;
+              const status = result?.status;
               const matches = prompt?.promptId === turn.promptId;
               if (matches && (state === "failed" || state === "interrupted")) fail("turn_failed");
               if (matches && (state === "running" || state === "finished")) return state === "finished";
               // Use fixed field names and closed values. A malformed body may contain arbitrary secrets.
               throw new SmokeFailure("invalid_response", undefined, {
                 body: jsonShape(result),
+                status:
+                  typeof status === "string" && WAIT_SANDBOX_STATUSES.includes(status) ? status : jsonShape(status),
+                providerState: jsonShape(result?.providerState),
                 prompt: jsonShape(prompt),
                 promptId: jsonShape(prompt?.promptId),
                 promptIdMatches: matches,
