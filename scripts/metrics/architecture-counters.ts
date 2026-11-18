@@ -13,9 +13,10 @@ const sqlSources = /\.(?:sql|tsx?)$/;
 const statusInsert = /\binsert\s+into\s+(?:public\.)?sandboxes\s*\([^)]*\bstatus\b[^)]*\)/i;
 const statusUpsert = /\.from\(["']sandboxes["']\)\s*\.(?:insert|update|upsert)\s*\(\s*\{[^}]*\bstatus\s*:/s;
 const updateSet =
-  /\bupdate\s+(?:public\.)?([a-z_][a-z_0-9]*)(?:\s+(?:as\s+)?[a-z_][a-z_0-9]*)?\s+set\s+([\s\S]*?)(?=\bwhere\b|\breturning\b|[;`]|$)/gi;
+  /(?:\bupdate\s+(?:public\.)?([a-z_][a-z_0-9]*)(?:\s+(?:as\s+)?[a-z_][a-z_0-9]*)?|\binsert\s+into\s+(?:public\.)?([a-z_][a-z_0-9]*)\b[^;`]*?\bon\s+conflict\b[^;`]*?\bdo\s+update)\s+set\s+([\s\S]*?)(?=\bwhere\b|\breturning\b|[;`]|$)/gi;
 const statusAssignment = /(?:^|,)\s*status\s*=/i;
-const leaseAssignment = /(?:^|,)\s*(?:[a-z_]*lease_until|lease_expires_at)\s*=\s*(?!null\b)\S/i;
+const leaseAssignment =
+  /(?:^|,)\s*(?:[a-z_]*lease_until|lease_expires_at|worker_expires_at|claim_until)\s*=\s*(?!null\b)\S/i;
 
 export function countArchitecture(files: ReadonlyMap<string, string>) {
   let nativeReferences = 0;
@@ -45,10 +46,11 @@ export function countArchitecture(files: ReadonlyMap<string, string>) {
 
     if (!sqlSources.test(path)) continue;
     let writesStatus = statusInsert.test(content) || statusUpsert.test(content);
-    for (const [, table, assignments] of content.matchAll(updateSet)) {
+    for (const [, updatedTable, insertedTable, assignments] of content.matchAll(updateSet)) {
+      const table = (updatedTable ?? insertedTable)?.toLowerCase();
       if (!table || !assignments) continue;
-      if (leaseAssignment.test(assignments)) leaseTables.add(table.toLowerCase());
-      if (table.toLowerCase() === "sandboxes") {
+      if (leaseAssignment.test(assignments)) leaseTables.add(table);
+      if (table === "sandboxes") {
         writesStatus ||= statusAssignment.test(assignments);
         // The server data layer builds its SET list with a parameterizing setter.
         writesStatus ||= assignments.startsWith("${sets.join(") && /\bset\(["']status["'],/.test(content);

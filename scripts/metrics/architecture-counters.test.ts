@@ -17,9 +17,11 @@ test("counts architecture signals across a fixture tree with production and migr
     ["packages/docker-host/src/run.ts", "if (provider === 'docker') launch();\n"],
     ["packages/core/src/runtime.test.ts", 'const path = "native";\n'],
     ["packages/core/src/database.types.ts", 'type Path = "native";\n'],
+    ["apps/dashboard/e2e/mock.ts", 'const path = "native";\n'],
     ["apps/dashboard/src/read.ts", 'sql("update sandboxes set note=$1 where status=$2");\n'],
     ["supabase/migrations/001.sql", "update sandboxes set note='done', status='ready', lease_until=now();\n"],
-    ["supabase/migrations/002.sql", "update task_jobs set lease_until=$1 where id=$2;\n"],
+    ["supabase/migrations/002.sql", "update task_jobs set worker_expires_at=$1 where id=$2;\n"],
+    ["supabase/migrations/004.sql", "insert into jobs (id) values ($1) on conflict (id) do update set lease_until=$2;"],
     ["supabase/migrations/003.sql", "update archived_jobs set lease_until=null where id=$1;\n"],
   ]);
 
@@ -29,8 +31,8 @@ test("counts architecture signals across a fixture tree with production and migr
     nonTestSourceLines: 8,
     providerIdBranchesOutsideAdapters: 2,
     sandboxStatusWriterFiles: 2,
-    bespokeLeaseClaimImplementations: 2,
-    leaseClaimTables: ["sandboxes", "task_jobs"],
+    bespokeLeaseClaimImplementations: 3,
+    leaseClaimTables: ["jobs", "sandboxes", "task_jobs"],
     netSourceLines: 8,
   });
 });
