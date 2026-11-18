@@ -562,12 +562,14 @@ export async function startServer(
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
-  const langfuse = createLangfuse(sql, config.encryptionKey);
+  const nativeHistoryFor = createHistoricalSandboxProviderResolver({
+    resolve: (target, caller) => logProviders[target.provider](target, caller),
+  });
+  const langfuse = createLangfuse(sql, config.encryptionKey, (id) => nativeHistoryFor(sql, id));
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
     config.encryptionKey,
     createRuntimeNativeAuth(sql, config.encryptionKey),
-    langfuse.enqueue,
   );
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const commitSha = sourceIdentity.commit ?? env.RAILWAY_GIT_COMMIT_SHA;
@@ -782,6 +784,7 @@ export async function startServer(
           : {}),
       }),
     ],
+    [langfuse],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

@@ -6,6 +6,10 @@ import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
 const database = rowOnlyDatabase();
+// These receipt tests leave no steer cursor, so the steer pass never reads history.
+const unusedEvents: Provider["events"] = async () => {
+  throw Error("unexpected history read");
+};
 async function fixture() {
   const { db, people } = await database();
   const sql: Sql = { query: (q, p) => db.query(q, p) };
@@ -104,6 +108,7 @@ test("running native turns retain receipt eligibility while provider failures st
   let calls = 0;
   const worker = createNativeWebhookPrompts(sql, async () => ({
     id: "boat",
+    events: unusedEvents,
     async getPrompt() {
       calls++;
       cancelled?.abort();
@@ -139,6 +144,7 @@ test("native receipt admission rejects removed membership and changed physical a
   let calls = 0;
   const worker = createNativeWebhookPrompts(sql, async () => ({
     id: "boat",
+    events: unusedEvents,
     async getPrompt() {
       calls++;
       await db.query("update sandboxes set provider_sandbox_id='replacement_machine' where id=$1", [id]);
@@ -197,6 +203,7 @@ test("accepted native receipts survive cancelled task publication and alias only
   const observed: string[] = [];
   const worker = createNativeWebhookPrompts(sql, async () => ({
     id: "boat",
+    events: unusedEvents,
     async getPrompt(request) {
       observed.push(request.promptId);
       return { promptId: request.promptId, status: "finished", done: true };

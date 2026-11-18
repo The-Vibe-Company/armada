@@ -135,34 +135,45 @@ export function createSandboxAccessServices(input: {
       }).sandboxes;
       // Explicit new work cancels the pending stop epoch under the same activity
       // fences used by ordinary send, so an older receipt cannot cover this turn.
-      await sandboxActivity(scoped, saved, { status: "running", stopRequested: false }, async (signal) => {
-        const receipt = await provider.prompt({
-          sandboxId: saved.providerSandboxId,
-          harness: saved.harness,
-          text,
-          signal,
-          ...(saved.model ? { model: saved.model } : {}),
-          ...(saved.reasoningEffort ? { reasoningEffort: saved.reasoningEffort } : {}),
-          ...(saved.conversationIds.at(-1) ? { conversationId: saved.conversationIds.at(-1)! } : {}),
-        });
-        try {
-          await stores.sandboxes.recordTurnModel?.(saved.id, receipt.promptId, saved.model);
-        } catch {
+      // Clear the previous report under the same fence as ordinary send, so publishing
+      // the new prompt identity cannot re-announce the earlier turn's outcome.
+      await sandboxActivity(
+        scoped,
+        saved,
+        { status: "running", stopRequested: false, clearTaskOutcome: true },
+        async (signal) => {
+          const receipt = await provider.prompt({
+            sandboxId: saved.providerSandboxId,
+            harness: saved.harness,
+            text,
+            signal,
+            ...(saved.model ? { model: saved.model } : {}),
+            ...(saved.reasoningEffort ? { reasoningEffort: saved.reasoningEffort } : {}),
+            ...(saved.conversationIds.at(-1) ? { conversationId: saved.conversationIds.at(-1)! } : {}),
+          });
+          // Register the accepted identity exactly like ordinary send, so the native
+          // receipt worker and lifecycle reconciliation settle (and export) this turn.
+          await scoped.recordNativePrompt?.(saved.id, saved.providerSandboxId, receipt.promptId);
           try {
-            console.error("armada: turn model request record unavailable; accepted prompt continues.");
+            await stores.sandboxes.recordTurnModel?.(saved.id, receipt.promptId, saved.model);
           } catch {
-            /* Logging must not change accepted work. */
+            try {
+              console.error("armada: turn model request record unavailable; accepted prompt continues.");
+            } catch {
+              /* Logging must not change accepted work. */
+            }
           }
-        }
-        return {
-          result: undefined,
-          patch: {
-            status: "running",
-            rearmDeadline: true,
-            conversationIds: [...new Set([...saved.conversationIds, receipt.conversationId])],
-          },
-        };
-      });
+          return {
+            result: undefined,
+            patch: {
+              status: "running",
+              taskPromptId: receipt.promptId,
+              rearmDeadline: true,
+              conversationIds: [...new Set([...saved.conversationIds, receipt.conversationId])],
+            },
+          };
+        },
+      );
     },
     async extend(operation, ttlSeconds) {
       const { saved, provider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);

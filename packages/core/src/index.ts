@@ -318,6 +318,7 @@ export {
 } from "./opencode-endpoint.ts";
 export {
   dedupeEvents,
+  observedPromptOutcome,
   type PromptOutcome,
   promptOutcome,
   readPromptEvents,

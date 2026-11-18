@@ -382,6 +382,7 @@ export async function latestPrompt(
   provider: Provider,
   sandboxId: string,
   complete = false,
+  signal?: AbortSignal,
 ): Promise<{ promptId: string; conversationId: string | null } | null> {
   let latest: AgentEvent | undefined;
   let cursor: string | undefined;
@@ -391,6 +392,7 @@ export async function latestPrompt(
       direction: "backward",
       limit: EVENT_PAGE_LIMIT,
       ...(cursor ? { cursor } : {}),
+      ...(signal ? { signal } : {}),
     });
     latest = latestPromptEvent(read.events);
     if (latest || !read.hasMore) break;
@@ -401,6 +403,42 @@ export async function latestPrompt(
     cursor = read.olderCursor;
   }
   return latest?.promptId ? { promptId: latest.promptId, conversationId: latest.conversationId ?? null } : null;
+}
+
+/** Runs that started after `afterPromptId`, oldest first, from a bounded backward
+ * read. When the cursor run is unknown or outside the window, only the newest
+ * run is returned, unproven: the same resolution `report` gives a steer marker. */
+export async function promptsAfter(
+  provider: Pick<Provider, "events">,
+  sandboxId: string,
+  afterPromptId: string | null,
+  signal?: AbortSignal,
+  maxPages = 5,
+): Promise<{ prompts: string[]; proven: boolean }> {
+  // Order runs by provider event order, not timestamps: two prompt events can
+  // share a timestamp. Pages arrive newest first, each chronological.
+  const pages: AgentEvent[][] = [];
+  let cursor: string | undefined;
+  let reachedCursor = false;
+  for (let page = 0; page < maxPages; page++) {
+    const read = await provider.events({
+      sandboxId,
+      direction: "backward",
+      limit: EVENT_PAGE_LIMIT,
+      ...(cursor ? { cursor } : {}),
+      ...(signal ? { signal } : {}),
+    });
+    pages.unshift(read.events);
+    if (read.events.some((event) => event.kind === "prompt" && event.promptId === afterPromptId)) reachedCursor = true;
+    if (reachedCursor || !read.hasMore || !read.olderCursor || read.olderCursor === cursor) break;
+    cursor = read.olderCursor;
+  }
+  // Distinct runs in the order their first prompt event appears.
+  const ordered = [
+    ...new Set(pages.flat().flatMap((event) => (event.kind === "prompt" && event.promptId ? [event.promptId] : []))),
+  ];
+  if (!reachedCursor) return { prompts: ordered.length ? [ordered.at(-1)!] : [], proven: false };
+  return { prompts: ordered.slice(ordered.indexOf(afterPromptId!) + 1).slice(-20), proven: true };
 }
 
 async function allEvents(
