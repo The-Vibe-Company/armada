@@ -26,7 +26,6 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
         text: action === "steer" || action === "interrupt" ? "hold" : action === "finish" ? "DOCKER_OK" : action,
         model: "test/model",
       },
-      sessionId: "session-1",
       ...(checkPinnedMcp
         ? {
             mcp: {
@@ -50,9 +49,9 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
       session: (id: string) => expect(id).toBe("session-1"),
     };
     try {
-      await driver.resumeSession({ ...context });
+      await driver.resumeSession({ ...context, sessionId: "session-1" });
       expect(events).toEqual([]);
-      const turn = driver.start(checkPinnedMcp ? { ...context, sessionId: undefined } : context);
+      const turn = driver.start(checkPinnedMcp ? context : { ...context, sessionId: "session-1" });
       await emitted;
       if (action === "steer") await turn.steer("next");
       if (action === "interrupt") await turn.interrupt();
