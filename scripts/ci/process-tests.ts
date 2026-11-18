@@ -10,13 +10,60 @@ function isChildProcessModule(node: ts.Node | undefined): boolean {
   return !!node && ts.isStringLiteralLike(node) && /^(node:)?child_process$/.test(node.text);
 }
 
+function onlyTypeSpecifiers(list: ts.NamedImports | ts.NamedExports): boolean {
+  return list.elements.length > 0 && list.elements.every((element) => element.isTypeOnly);
+}
+
+function isTypeOnlyModuleReference(node: ts.ImportDeclaration | ts.ExportDeclaration): boolean {
+  if (ts.isExportDeclaration(node)) {
+    const clause = node.exportClause;
+    return node.isTypeOnly || (!!clause && ts.isNamedExports(clause) && onlyTypeSpecifiers(clause));
+  }
+  const clause = node.importClause;
+  if (!clause) return false;
+  const bindings = clause.namedBindings;
+  return (
+    clause.isTypeOnly || (!clause.name && !!bindings && ts.isNamedImports(bindings) && onlyTypeSpecifiers(bindings))
+  );
+}
+
 // Scan direct syntax only. Fixtures, comments and type-only imports do not start processes.
 export function processRules(path: string, source: string): string[] {
   const rules = new Set<string>();
+  function recordBunMember(member: string | undefined): void {
+    if (member === "spawn" || member === "spawnSync") rules.add(`Bun.${member}`);
+  }
   function visit(node: ts.Node): void {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-      const typeOnly = ts.isImportDeclaration(node) ? node.importClause?.isTypeOnly : node.isTypeOnly;
-      if (!typeOnly && isChildProcessModule(node.moduleSpecifier)) rules.add("child_process");
+      if (!isTypeOnlyModuleReference(node) && isChildProcessModule(node.moduleSpecifier)) rules.add("child_process");
+    }
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === "bun"
+    ) {
+      const clause = node.importClause;
+      const bindings = clause?.namedBindings;
+      if (!clause?.isTypeOnly && bindings && ts.isNamedImports(bindings)) {
+        for (const binding of bindings.elements) {
+          if (!binding.isTypeOnly) recordBunMember((binding.propertyName ?? binding.name).text);
+        }
+      }
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.initializer &&
+      ts.isIdentifier(node.initializer) &&
+      node.initializer.text === "Bun" &&
+      ts.isObjectBindingPattern(node.name)
+    ) {
+      for (const binding of node.name.elements) {
+        const member = binding.propertyName ?? binding.name;
+        if (ts.isIdentifier(member) || ts.isStringLiteralLike(member)) recordBunMember(member.text);
+      }
+    }
+    if (ts.isImportEqualsDeclaration(node) && !node.isTypeOnly && ts.isExternalModuleReference(node.moduleReference)) {
+      if (isChildProcessModule(node.moduleReference.expression)) rules.add("child_process");
     }
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
@@ -29,13 +76,11 @@ export function processRules(path: string, source: string): string[] {
       }
     }
     if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-      const member = ts.isPropertyAccessExpression(node)
-        ? node.name.text
-        : ts.isStringLiteralLike(node.argumentExpression)
-          ? node.argumentExpression.text
-          : undefined;
+      let member: string | undefined;
+      if (ts.isPropertyAccessExpression(node)) member = node.name.text;
+      else if (ts.isStringLiteralLike(node.argumentExpression)) member = node.argumentExpression.text;
       if (ts.isIdentifier(node.expression) && node.expression.text === "Bun") {
-        if (member === "spawn" || member === "spawnSync") rules.add(`Bun.${member}`);
+        recordBunMember(member);
       }
     }
     if (ts.isTaggedTemplateExpression(node) && ts.isIdentifier(node.tag) && node.tag.text === "$") {

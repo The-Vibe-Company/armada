@@ -4,10 +4,13 @@ import { checkProcessTests, processRules } from "./process-tests.ts";
 test.each([
   ["Bun . spawn(['git']);", "Bun.spawn"],
   ["Bun['spawnSync'](['git']);", "Bun.spawnSync"],
+  ["import { spawn as run } from 'bun'; run(['git']);", "Bun.spawn"],
+  ["const { spawnSync: run } = Bun; run(['git']);", "Bun.spawnSync"],
   ["spawnSync('git');", "spawnSync"],
   ["import { spawn as run } from 'node:child_process';", "child_process"],
   ["await import('child_process');", "child_process"],
   ["require('node:child_process');", "child_process"],
+  ["import cp = require('node:child_process');", "child_process"],
   ["$\x60git status\x60;", "Bun shell template"],
   ["new Worker('./worker.ts');", "new Worker"],
 ])("reports the rule for %s", (source, rule) => {
@@ -19,6 +22,8 @@ test("ignores inert mentions of process APIs", () => {
     // Bun.spawn(['git'])
     const fixture = "new Worker('./worker.ts')";
     import type { ChildProcess } from 'node:child_process';
+    import { type ChildProcess as Process } from 'node:child_process';
+    export { type ChildProcess } from 'node:child_process';
   `;
   expect(processRules("suite.test.ts", source)).toEqual([]);
 });
