@@ -441,6 +441,11 @@ export function createLangfuse(
     return row?.config_enc ? (JSON.parse(await decryptSecret(row.config_enc, key)) as Config) : null;
   }
 
+  async function resolveSettingsConfig(input: Record<string, unknown>, row?: SettingsRow): Promise<Config> {
+    const complete = input.host !== undefined && input.publicKey !== undefined && input.secretKey !== undefined;
+    return resolveConfig(input, complete ? null : await storedConfig(row));
+  }
+
   async function testConnection(
     config: Config,
     requestSignal: AbortSignal,
@@ -480,7 +485,7 @@ export function createLangfuse(
           const row = (
             await sql.query<SettingsRow>("select config_enc from public.org_langfuse where org_id=$1", [orgId])
           ).rows[0];
-          const config = resolveConfig(input, await storedConfig(row));
+          const config = await resolveSettingsConfig(input, row);
           return Response.json({ status: await testConnection(config, request.signal) }, { headers });
         }
 
@@ -553,7 +558,7 @@ export function createLangfuse(
           const contentMode = input.contentMode === undefined ? (row?.content_mode ?? "metadata") : input.contentMode;
           if (typeof enabled !== "boolean" || (contentMode !== "metadata" && contentMode !== "full"))
             throw Error("invalid Langfuse settings");
-          const config = resolveConfig(input, await storedConfig(row));
+          const config = await resolveSettingsConfig(input, row);
           const encrypted = await encryptSecret(JSON.stringify(config), key);
           await tx.query(
             `insert into public.org_langfuse(org_id,enabled,content_mode,config_enc) values($1,$2,$3,decode($4,'hex'))

@@ -131,6 +131,31 @@ test("partial Langfuse settings updates preserve encrypted keys and disconnect c
   expect(await read()).toMatchObject({ enabled: false, contentMode: "metadata", configured: false, publicKey: null });
 });
 
+test("a complete Langfuse replacement can recover unreadable stored credentials", async () => {
+  const { db, people } = await database();
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+    people.org,
+    new Uint8Array([1]),
+  ]);
+  const route = createLangfuse(db, key, noNativeProvider).route(async () => ({
+    ok: true,
+    caller: { userId: people.admin, via: "service", orgs: [{ orgId: people.org, role: "admin" }] },
+  }));
+  const replaced = await route(
+    settingsRequest(people.org, "PUT", {
+      host: "https://replacement.test",
+      publicKey: "replacement_public",
+      secretKey: "replacement_secret",
+    }),
+  );
+  expect(await replaced?.json()).toEqual({ enabled: true, contentMode: "full" });
+  expect(await (await route(settingsRequest(people.org, "GET")))?.json()).toMatchObject({
+    configured: true,
+    host: "https://replacement.test",
+    publicKey: "replacement_public",
+  });
+});
+
 test("only the organization's admins can change or test settings and members can read status alone", async () => {
   const { db, people } = await database();
   await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
