@@ -8,6 +8,7 @@ import {
   connectionPreset,
   type Harness,
   MODEL_CATALOG,
+  MORPH_MODEL_IDS,
   shellQuote,
 } from "@armada/core";
 import {
@@ -642,7 +643,12 @@ export function AccountRow({
                     </DropdownMenuItem>
                     {!state.needsAction && (
                       <DropdownMenuItem onSelect={() => setDialog("replace")}>
-                        <KeyRoundIcon /> {info.billing === "subscription" ? "Reconnect" : `Replace ${secretWord}`}
+                        <KeyRoundIcon />{" "}
+                        {info.billing === "subscription"
+                          ? "Reconnect"
+                          : account.kind === "morph"
+                            ? "Replace key or edit model list"
+                            : `Replace ${secretWord}`}
                       </DropdownMenuItem>
                     )}
                     <DropdownMenuSeparator />
@@ -1096,8 +1102,18 @@ function ReplaceDialog({
           ) : (
             <SecretField idPrefix={id} kind={account.kind} />
           )}
+          {account.kind === "morph" &&
+            (account.models?.length ? (
+              <MorphModelField idPrefix={id} models={account.models.map(({ model }) => model)} />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                The model list could not be loaded. Reload Models to edit it. Saving here replaces only the key.
+              </p>
+            ))}
           {state && !state.ok && <ResultLine result={state} />}
-          <SubmitButton>Save {info.valueLabel}</SubmitButton>
+          <SubmitButton>
+            {account.kind === "morph" && account.models?.length ? "Save account" : `Save ${info.valueLabel}`}
+          </SubmitButton>
         </form>
       </DialogContent>
     </Dialog>
@@ -1149,6 +1165,28 @@ function RemoveDialog({
 }
 
 /** The pasted value: a password field for a token or key, a text area for a Codex auth.json. Never prefilled. */
+function MorphModelField({ idPrefix, models }: { idPrefix: string; models: readonly string[] }) {
+  const id = `${idPrefix}-morph-models`;
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>Morph model IDs</Label>
+      <Textarea
+        id={id}
+        name="morphModels"
+        defaultValue={models.join("\n")}
+        aria-describedby={`${id}-hint`}
+        rows={4}
+        spellCheck={false}
+        autoComplete="off"
+        required
+      />
+      <p id={`${id}-hint`} className="text-xs text-muted-foreground">
+        Enter 1–32 model IDs, one per line. The first is used when no model is selected.
+      </p>
+    </div>
+  );
+}
+
 function SecretField({ idPrefix, kind }: { idPrefix: string; kind: AccountKind }) {
   const info = KIND_INFO[kind];
   return (
@@ -1622,6 +1660,7 @@ export function AddAccountDialog({
   const saveFields = (
     <>
       {secretFields}
+      {kind === "morph" && <MorphModelField idPrefix={id} models={MORPH_MODEL_IDS} />}
       <Label htmlFor={`${id}-default-account`} className="flex items-center gap-2 text-sm font-normal">
         <Checkbox id={`${id}-default-account`} name="default" value="on" />
         Make it the default for {info.harnessLabel}
