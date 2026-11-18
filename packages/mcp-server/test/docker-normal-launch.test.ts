@@ -2742,7 +2742,7 @@ test.each(["private", "org"] as const)(
     if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
     expect(build.build.config).toEqual({
       ...f.config,
-      repos: [{ ...f.config.repos[0], branch: "trunk" }],
+      repos: [{ ...f.config.repos[0]!, branch: "trunk" }],
     });
     expect(build.request.image).toBe(officialSandboxImage());
     expect(build.build).toMatchObject({ armadaVersion: VERSION });
