@@ -2864,12 +2864,18 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       generation: 1,
     });
     await f.provider.stop({ sandboxId: row.id });
+    const stages: string[] = [];
     await f.provider.prompt({
       sandboxId: row.id,
       harness: "claude",
       text: "restored task",
       conversationId: "existing-claude",
+      onResumeStage: async (stage) => {
+        expect(sent).toHaveLength(2);
+        stages.push(stage);
+      },
     });
+    expect(stages).toEqual(["provider_claimed", "machine_started", "harness_ready"]);
     expect(sent[2]).toMatchObject({
       op: "prompt",
       input: { input: { cwd: claudeCwd, conversationId: "existing-claude" } },

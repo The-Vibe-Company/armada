@@ -130,7 +130,7 @@ export interface SandboxStore {
   recordTurnModelEvidence?(id: string, promptId: string, evidence: unknown): Promise<void>;
   recordSkills?(id: string, skills: SkillReceipt[]): Promise<void>;
   /** #2560: server-only launch stage of the current activation, `elapsedMs` before now; earliest time wins. */
-  recordLaunchStage?(id: string, stage: LaunchStage, elapsedMs?: number): Promise<void>;
+  recordLaunchStage?(id: string, stage: LaunchStage, elapsedMs?: number, generation?: number): Promise<void>;
   /** Server store can atomically reserve activity ownership; caller-role stores keep their existing restricted grants. */
   activityOwnership?: true;
   insert(input: {

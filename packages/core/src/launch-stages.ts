@@ -167,13 +167,17 @@ export async function recordLaunchStageSql(
   sandboxId: string,
   stage: LaunchStage,
   elapsedMs = 0,
+  generation?: number,
 ): Promise<void> {
   await sql.query(
     `insert into public.sandbox_launch_stages(sandbox_id,activation,stage,at)
      select $1::uuid,max(l.activation),$2,clock_timestamp()-make_interval(secs=>$3::double precision/1000)
-       from public.sandbox_launch_stages l where l.sandbox_id=$1::uuid having max(l.activation) is not null
+       from public.sandbox_launch_stages l
+       join public.sandboxes s on s.id=l.sandbox_id
+       where l.sandbox_id=$1::uuid and ($4::bigint is null or (s.lifecycle_generation=$4 and s.status='starting'))
+       having max(l.activation) is not null
      on conflict(sandbox_id,activation,stage) do update set at=least(sandbox_launch_stages.at,excluded.at)`,
-    [sandboxId, stage, Math.max(0, Math.round(elapsedMs))],
+    [sandboxId, stage, Math.max(0, Math.round(elapsedMs)), generation ?? null],
   );
 }
 

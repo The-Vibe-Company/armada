@@ -652,7 +652,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
         id(requestId);
         const host = await reconcileHost(tx, hostToken, installationId);
         const result = await tx.query(
-          `update public.docker_resume_claims set accepted=$4 where request_id=$3 and host_id=$1 and installation_id=$2
+          `update public.docker_resume_claims set accepted=$4,
+             claimed_at=case when $4 then coalesce(claimed_at,clock_timestamp()) else claimed_at end
+           where request_id=$3 and host_id=$1 and installation_id=$2
            and (accepted is null or accepted=$4) returning request_id`,
           [host.id, installationId, requestId, accepted],
         );

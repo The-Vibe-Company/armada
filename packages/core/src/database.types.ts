@@ -776,6 +776,8 @@ export type Database = {
           actor_id: string;
           lifecycle_generation: number;
           accepted: boolean | null;
+          created_at: string | null;
+          claimed_at: string | null;
         };
         Insert: {
           request_id: string;
@@ -786,6 +788,8 @@ export type Database = {
           actor_id: string;
           lifecycle_generation: number;
           accepted?: boolean | null;
+          created_at?: string | null;
+          claimed_at?: string | null;
         };
         Update: {
           request_id?: string;
@@ -796,6 +800,8 @@ export type Database = {
           actor_id?: string;
           lifecycle_generation?: number;
           accepted?: boolean | null;
+          created_at?: string | null;
+          claimed_at?: string | null;
         };
         Relationships: [
           {

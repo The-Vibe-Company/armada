@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { Provider, SandboxInfo, Sql } from "@armada/core";
+import type { PromptRequest, Provider, SandboxInfo, Sql } from "@armada/core";
 import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
@@ -157,7 +157,9 @@ async function fixture(mode = "quiet") {
       stopped = true;
       phase = "stopped";
     },
-    prompt: async () => {
+    prompt: async ({ onResumeStage }: PromptRequest) => {
+      await onResumeStage?.("provider_claimed");
+      await onResumeStage?.("machine_started");
       promptCalls++;
       stopped = false;
       return { promptId: "next", conversationId: "conversation", status: "queued", resumed: true };
@@ -216,6 +218,14 @@ test("native idle uses the quiet deadline, preserves work without interrupt and 
   const woke = (await f.data.sandboxes.get(f.id))!;
   expect(woke.status).toBe("running");
   expect(woke.expiresAt).toBe(paused.expiresAt);
+  const timing = await f.data.sandboxes.launchTiming?.(f.id);
+  expect(timing?.activation).toBe("2");
+  expect(timing?.stages.map(({ stage }) => stage)).toEqual([
+    "accepted",
+    "provider_claimed",
+    "machine_started",
+    "harness_ready",
+  ]);
   await f.worker.drain();
 });
 

@@ -1859,6 +1859,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         machine.state === "stopped",
       ),
     );
+    const resumeGeneration = machine.state === "stopped" ? found.lifecycleGeneration : undefined;
     let acknowledged = false;
     return sandboxActivity(
       data.sandboxes,
@@ -1880,6 +1881,17 @@ export function createArmadaServer(context: ToolContext, version: string, option
               signal,
               ...(conversation ? { conversationId: conversation } : {}),
               ...(choice ?? {}),
+              ...(resumeGeneration !== undefined
+                ? {
+                    onResumeStage: async (stage) => {
+                      try {
+                        await data.sandboxes.recordLaunchStage?.(found.id, stage, 0, resumeGeneration + 1);
+                      } catch {
+                        // Timing is optional and must not affect native prompt admission.
+                      }
+                    },
+                  }
+                : {}),
             })
             .catch(unknownMutationOutcome),
         );

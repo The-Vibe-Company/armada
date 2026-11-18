@@ -765,6 +765,17 @@ test.each(["cleanup", "claim"] as const)(
       const lateId = randomUUID();
       expect((await service.resume(f.actor, f.sandbox.id, lateId)).state).toBe("claiming");
       expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+      const { rows } = await database().query(
+        `select l.stage,l.at = case l.stage when 'accepted' then c.created_at else c.claimed_at end as matched
+           from public.sandbox_launch_stages l
+           join public.docker_resume_claims c on c.sandbox_id=l.sandbox_id and c.request_id=$2
+          where l.sandbox_id=$1 and l.activation=2 order by l.stage`,
+        [f.sandbox.id, requestId],
+      );
+      expect(rows).toEqual([
+        { stage: "accepted", matched: true },
+        { stage: "provider_claimed", matched: true },
+      ]);
       expect(await hosts.resumeClaimsForHost(f.hostToken, f.installationId)).toEqual([]);
       const job = await hosts.poll(f.hostToken, f.installationId);
       if (job?.operation !== "resume") throw Error("missing resume");
