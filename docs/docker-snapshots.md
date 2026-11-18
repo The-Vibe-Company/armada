@@ -176,6 +176,9 @@ checkout behavior is unchanged.
 
 ### Clone cost evaluation (#2563)
 
+This evaluation describes the launch and build defaults at the tested revision.
+Direct launches now use [bounded review history](docker-host-daemon.md#repository-history-for-direct-launches).
+
 Decision (2026-11-17): retain depth-one, single-branch checkouts for Docker
 launches with `--repo` and for snapshot builds. At main `932a1e5`, both
 `packages/mcp-server/src/docker-normal-launch.ts` and
@@ -241,7 +244,7 @@ obtain the final prompt receipt, or inspect sandbox status for a plain failure
 reason. `scripts/smoke-docker-lifecycle.py` handles both accepted and older
 synchronous responses. A starting receipt is not proof that checkout succeeded.
 
-Repository checkout uses a shallow branch clone with a bounded runtime command;
+Repository checkout uses a bounded runtime command;
 a slow clone no longer holds the launch HTTP response open. The server stores
 only fixed phase diagnostics, never Git output, credentials or exception text.
 Missing GitHub access becomes an authorization failure on the admitted sandbox.
