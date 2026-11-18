@@ -1,4 +1,5 @@
 import type { LaunchStage } from "@armada/core";
+import { isRuntimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
 import {
   isRuntimeHarnessFailureStage,
   isRuntimeStartupFailure,
@@ -58,15 +59,19 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
         !body ||
         typeof body !== "object" ||
         Array.isArray(body) ||
-        Object.keys(body).some((key) => !["stage", "reason", "errorClass"].includes(key))
+        Object.keys(body).some((key) => !["stage", "reason", "diagnostic"].includes(key))
       )
         throw Error();
       const stage = (body as { stage: unknown }).stage;
       const harnessFailure = isRuntimeHarnessFailureStage(stage);
       if (typeof stage !== "string" || (!bootstrap.has(stage) && !runtime.has(stage) && !harnessFailure)) throw Error();
-      const errorClass = (body as { errorClass?: unknown }).errorClass;
-      if (harnessFailure ? errorClass !== "Error" && errorClass !== "HarnessError" : errorClass !== undefined)
+      const diagnostic = (body as { diagnostic?: unknown }).diagnostic;
+      if (
+        diagnostic !== undefined &&
+        ((!harnessFailure && stage !== "runtime_failed") || !isRuntimeOperatorDiagnostic(diagnostic))
+      )
         throw Error();
+      if (harnessFailure && diagnostic === undefined) throw Error();
       const reason = (body as { reason?: unknown }).reason;
       if (reason !== undefined && (stage !== "runtime_failed" || !isRuntimeStartupFailure(reason))) throw Error();
       const message = isRuntimeStartupFailure(reason)
@@ -92,16 +97,18 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
               ]);
             return scope;
           }));
-      if (stage === "runtime_failed" || stage === "bootstrap_failed" || harnessFailure)
+      if (stage === "runtime_failed" || stage === "bootstrap_failed" || harnessFailure) {
+        const safe = isRuntimeOperatorDiagnostic(diagnostic) ? diagnostic : undefined;
         recordOperatorDiagnostic(
           stage === "runtime_failed" ? "runtime.boot" : `runtime.${stage}`,
           {
-            errorClass: errorClass === "HarnessError" ? errorClass : "Error",
-            message: stage === "runtime_failed" && isRuntimeStartupFailure(reason) ? reason : stage,
-            stack: [],
+            errorClass: safe?.errorClass ?? "Error",
+            message: stage === "runtime_failed" && isRuntimeStartupFailure(reason) ? reason : (safe?.reason ?? stage),
+            stack: safe?.stack ?? [],
           },
           { sandboxId: scope.sandboxId },
         );
+      }
       logRuntimeStage(scope, stage, typeof reason === "string" ? reason : undefined);
       return Response.json({ accepted: true, epoch: scope.epoch }, { headers });
     } catch (error) {

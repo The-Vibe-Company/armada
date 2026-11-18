@@ -712,7 +712,12 @@ export class Runner {
             await this.publishNativeAuth?.();
             // A deliberate shutdown may make any native driver reject its pending RPC.
             // Preserve spontaneous child failures when the runner is still serving.
-            if (!stopped) this.execution.reportHarnessFailure?.("harness_turn_failed", error instanceof HarnessError);
+            if (!stopped)
+              this.execution.reportHarnessFailure?.(
+                "harness_turn_failed",
+                error,
+                error instanceof HarnessError ? error.reason : undefined,
+              );
             this.journal.transition(
               p,
               stopped ? "interrupted" : "failed",
@@ -728,7 +733,11 @@ export class Runner {
       active.done = done;
       this.active.set(p.conversationId, active);
     } catch (error) {
-      this.execution.reportHarnessFailure?.("harness_start_failed", error instanceof HarnessError);
+      this.execution.reportHarnessFailure?.(
+        "harness_start_failed",
+        error,
+        error instanceof HarnessError ? error.reason : undefined,
+      );
       // Keep a definite start refusal's own code instead of flattening it into a generic failure.
       this.journal.transition(
         p,

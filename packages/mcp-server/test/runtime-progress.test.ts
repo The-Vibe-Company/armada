@@ -25,8 +25,8 @@ test("malformed progress refuses extra fields, unknown stages and oversized bodi
       { stage: "private_config_canary" },
       { stage: 1 },
       { stage: "runtime_failed", reason: "private_config_canary" },
-      { stage: "harness_turn_failed", errorClass: "private_config_canary" },
-      { stage: "harness_start_failed", errorClass: "HarnessError", stack: "private_config_canary" },
+      { stage: "harness_turn_failed", diagnostic: { errorClass: "private_config_canary", stack: [] } },
+      { stage: "harness_start_failed", diagnostic: { errorClass: "HarnessError", stack: ["private_config_canary"] } },
       { stage: "enrolled", reason: "artifact_preparation" },
     ].map((value) => JSON.stringify(value));
     bodies.push(`${" ".repeat(1024)}{"stage":"bootstrap_started"}`);
@@ -72,7 +72,7 @@ test("authenticated startup sub-reason is persisted and logged without exception
   try {
     const route = createRuntimeProgress(authority);
     const records: unknown[] = [];
-    const report = (body: Record<string, string>) =>
+    const report = (body: Record<string, unknown>) =>
       observeRequest(
         async () =>
           (await route(
@@ -84,7 +84,10 @@ test("authenticated startup sub-reason is persisted and logged without exception
         (line) => records.push(JSON.parse(line)),
       );
     const response = await report({ stage: "runtime_failed", reason: "artifact_preparation" });
-    const harness = await report({ stage: "harness_turn_failed", errorClass: "HarnessError" });
+    const harness = await report({
+      stage: "harness_turn_failed",
+      diagnostic: { errorClass: "HarnessError", stack: ["codex.ts:701:12"], reason: "session_start_failed" },
+    });
     expect(harness?.status).toBe(200);
     expect(records).toEqual(
       expect.arrayContaining([
@@ -99,6 +102,8 @@ test("authenticated startup sub-reason is persisted and logged without exception
           event: "operator_failure",
           phase: "runtime.harness_turn_failed",
           errorClass: "HarnessError",
+          message: "session_start_failed",
+          stack: ["codex.ts:701:12"],
           requestId: harness?.headers.get("x-request-id"),
           sandboxId: scope.sandboxId,
         }),

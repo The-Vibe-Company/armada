@@ -61,7 +61,8 @@ export interface RunnerExecutionOptions {
   prepareWorkspace?: () => Promise<void>;
   reportHarnessFailure?: (
     stage: import("../../core/src/runtime-startup-failure.ts").RuntimeHarnessFailureStage,
-    knownHarnessError: boolean,
+    error: unknown,
+    reason?: string,
   ) => void;
   /** Set by enrolled main after checkpoint/native verification. Null conversation means a verified empty journal. */
   restoredFrom?: { epoch: string; watermark: number; conversationId: string | null };

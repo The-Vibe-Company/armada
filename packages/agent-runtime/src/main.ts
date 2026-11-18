@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { CODEX_ENDPOINT_ENV, OPENCODE_ENDPOINT_ENV, parseCodexEndpoint, parseOpenCodeEndpoint } from "@armada/core";
+import { runtimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
 import { runtimeStartupFailure } from "../../core/src/runtime-startup-failure.ts";
 import { runArtifactInstallMode } from "./artifact-cache.ts";
 import { configureClaudeEndpoint } from "./claude-endpoint.ts";
@@ -27,14 +28,18 @@ import type { ExecEnvironment } from "./protocol.ts";
 import { createRedactor, HarnessState } from "./state.ts";
 
 let startupReason: import("../../core/src/runtime-startup-failure.ts").RuntimeStartupFailure = "runtime_configuration";
-let reportRuntimeFailure: (() => Promise<void>) | undefined;
+let reportRuntimeFailure: ((error: unknown) => Promise<void>) | undefined;
 async function main(dialout = false) {
   // Bootstrap is delivered through a private stdin pipe, never argv or a golden file.
   const input = JSON.parse(await Bun.stdin.text());
   const enrolled = dialout ? await enrolRuntime(input) : undefined;
   const channel = enrolled ? new RuntimeDialout(input.serverUrl, enrolled) : undefined;
   if (channel) {
-    reportRuntimeFailure = () => channel.progress("runtime_failed", startupReason);
+    reportRuntimeFailure = (error) =>
+      channel.progress("runtime_failed", startupReason, runtimeOperatorDiagnostic(error)).catch(() =>
+        // Older servers accept the closed startup reason without the diagnostic extension.
+        channel.progress("runtime_failed", startupReason),
+      );
     await channel.progress("enrolled").catch(() => {});
   }
   const config = (enrolled ? enrolled.configuration : input) as {
@@ -464,8 +469,8 @@ async function main(dialout = false) {
       configureGitHub,
       ...(channel
         ? {
-            reportHarnessFailure: (stage, knownHarnessError) => {
-              void channel.reportHarnessFailure(stage, knownHarnessError).catch(() => {});
+            reportHarnessFailure: (stage, error, reason) => {
+              void channel.progress(stage, undefined, runtimeOperatorDiagnostic(error, reason)).catch(() => {});
             },
           }
         : {}),
@@ -612,7 +617,7 @@ void (
         : main(process.argv[2] === "dialout")
 ).catch(async (error: unknown) => {
   startupReason = runtimeStartupFailure(error, startupReason);
-  await reportRuntimeFailure?.().catch(() => {});
+  await reportRuntimeFailure?.(error).catch(() => {});
   process.stderr.write("runner_boot_failed\n");
   process.exitCode = 1;
 });

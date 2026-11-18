@@ -1,3 +1,4 @@
+import type { RuntimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
 import type { RuntimeHarnessFailureStage, RuntimeStartupFailure } from "../../core/src/runtime-startup-failure.ts";
 import type { IngestClient, RunnerRequest } from "./protocol.ts";
 
@@ -147,17 +148,18 @@ export class RuntimeDialout implements IngestClient {
     if (batch.sandboxId !== this.session.sandboxId || batch.generation !== this.session.epoch) this.revoke();
     return (await this.post("events", batch)) as Awaited<ReturnType<IngestClient["append"]>>;
   }
-  async progress(stage: "enrolled" | "harness_started" | "runtime_failed", reason?: RuntimeStartupFailure) {
-    // Best effort and bounded independently of command delivery. No raw diagnostics.
+  async progress(
+    stage: "enrolled" | "harness_started" | "runtime_failed" | RuntimeHarnessFailureStage,
+    reason?: RuntimeStartupFailure,
+    diagnostic?: RuntimeOperatorDiagnostic,
+  ) {
+    // Best effort and bounded independently of command delivery.
     await this.post(
       "progress",
-      { stage, ...(stage === "runtime_failed" && reason ? { reason } : {}) },
+      { stage, ...(reason ? { reason } : {}), ...(diagnostic ? { diagnostic } : {}) },
       undefined,
       3000,
     );
-  }
-  async reportHarnessFailure(stage: RuntimeHarnessFailureStage, knownHarnessError: boolean): Promise<void> {
-    await this.post("progress", { stage, errorClass: knownHarnessError ? "HarnessError" : "Error" }, undefined, 3000);
   }
   async publishNativeAuth(nativeAuth: { authJson: string; expectedRevision: number }) {
     return (await this.post("events", {

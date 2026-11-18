@@ -70,11 +70,13 @@ export function failureDiagnostic(error: unknown): FailureDiagnostic {
 }
 
 function projectError(error: Error): FailureDiagnostic {
-  const errorClass = errorClasses.has(error.name)
-    ? error.name
-    : errorClasses.has(error.constructor.name)
-      ? error.constructor.name
-      : "Error";
+  const constructorName = error.constructor.name;
+  const errorClass =
+    constructorName !== "Error" && errorClasses.has(constructorName)
+      ? constructorName
+      : errorClasses.has(error.name)
+        ? error.name
+        : "Error";
   const code = "code" in error && typeof error.code === "string" ? error.code : "";
   // Pattern redaction cannot identify arbitrary values (for example a password
   // echoed by an SDK). Only exact, server-owned messages and system codes survive.
