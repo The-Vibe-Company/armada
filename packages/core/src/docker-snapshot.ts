@@ -14,6 +14,9 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
       (typeof r.builtOnVersion === "string" &&
         /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?(?:\+[a-zA-Z0-9.-]+)?$/.test(r.builtOnVersion))
     ) ||
+    (r.baselineVersion != null &&
+      (typeof r.baselineVersion !== "number" || !Number.isSafeInteger(r.baselineVersion) || r.baselineVersion < 1)) ||
+    (r.baselineOutdated !== undefined && typeof r.baselineOutdated !== "boolean") ||
     (r.failureReason !== undefined &&
       r.failureReason !== null &&
       (typeof r.failureReason !== "string" || r.failureReason.length > 512)) ||
@@ -32,6 +35,8 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
     throw Error("Invalid snapshot response.");
   return {
     builtOnVersion: r.builtOnVersion as string | null,
+    baselineVersion: (r.baselineVersion as number | null | undefined) ?? null,
+    ...(typeof r.baselineOutdated === "boolean" ? { baselineOutdated: r.baselineOutdated } : {}),
     id: r.id as string,
     orgId: r.orgId as string,
     ownerId: r.ownerId as string,

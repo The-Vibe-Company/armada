@@ -2545,10 +2545,23 @@ test.each(["private", "org"] as const)(
       ).rejects.toMatchObject({ code: "invalid" });
     expect(build.build.token).toBe(visibility === "private" ? "offline-snapshot-access" : "offline-admin-access");
     const image = `sha256:${"d".repeat(64)}`;
-    await hosts.complete(f.hostToken, f.installationId, { requestId: id, outcome: "completed", imageId: image });
-    await hosts.complete(f.hostToken, f.installationId, { requestId: id, outcome: "completed", imageId: image });
+    const result = {
+      requestId: id,
+      outcome: "completed",
+      imageId: image,
+      ...(visibility === "private" ? { baselineVersion: 1 } : {}),
+    } as const;
+    await hosts.complete(f.hostToken, f.installationId, result);
+    await hosts.complete(f.hostToken, f.installationId, result);
     expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id })).toMatchObject({
-      snapshot: { id, status: "ready", image, hostAvailable: true },
+      snapshot: {
+        id,
+        status: "ready",
+        image,
+        hostAvailable: true,
+        baselineVersion: visibility === "private" ? 1 : null,
+        baselineOutdated: visibility === "org",
+      },
     });
     if (visibility === "private") {
       await expect(f.snapshots.command(f.adminCaller, "get", { org: f.actor.orgId, id })).rejects.toMatchObject({
@@ -3125,9 +3138,9 @@ test("failed snapshot machine facts persist a safe reason in get and list respon
     requestId: id,
     outcome: "failed",
     reason: "snapshot_build_failed",
+    baselineTool: "jq",
   });
-  const failureReason =
-    "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.";
+  const failureReason = "Snapshot baseline 1 requires a working jq at the declared version.";
   expect(await f.snapshots.command(f.caller, "get", { org: f.actor.orgId, id })).toMatchObject({
     snapshot: { id, status: "failed", image: null, failureReason },
   });

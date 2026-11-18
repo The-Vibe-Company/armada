@@ -180,7 +180,10 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
     for (const failure of ["secret_scan", "pointer", "persist", "lease"]) {
       logs.mockClear();
       const phase = failure === "secret_scan" ? "secret_scan" : "persist";
-      s.boat.setExecOutput({ exitCode: phase === "secret_scan" ? 97 : 0 });
+      // Target only the secret scan: baseline install/verification also exec on the builder first.
+      s.boat.setExecOutput({ exitCode: phase === "secret_scan" ? 97 : 0 }, (request) =>
+        request.command.includes("ARMADA_SCAN_MATCH"),
+      );
       if (failure === "pointer")
         await s.db.exec(`create function fail_snapshot_pointer() returns trigger language plpgsql as $$
         begin raise exception 'private-error-detail-not-for-logs' using errcode='23514'; end $$;

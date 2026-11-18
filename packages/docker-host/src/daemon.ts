@@ -9,6 +9,9 @@ import {
 } from "../../core/src/docker-host-job.ts";
 import { DockerMachineError, type DockerMachineRequest } from "../../core/src/docker-machine.ts";
 import type { DockerSandboxLimits } from "../../core/src/docker-resource-policy.ts";
+import { DockerSnapshotBaselineError, type DockerSnapshotBuildReceipt } from "../../core/src/docker-snapshot-build.ts";
+
+import type { SnapshotBaselineTool } from "../../core/src/snapshot-baseline.ts";
 
 export type Job = DockerHostJob;
 export type Receipt = {
@@ -24,7 +27,13 @@ export type Receipt = {
 } & (
   | { operation: "create" | "stop" | "delete" }
   | { operation: "bootstrap" | "resume"; inputHash: string }
-  | { operation: "buildSnapshot"; inputHash: string; imageId?: string }
+  | {
+      operation: "buildSnapshot";
+      inputHash: string;
+      imageId?: string;
+      baselineVersion?: number;
+      baselineTool?: SnapshotBaselineTool;
+    }
 );
 export type State = {
   server: string;
@@ -42,6 +51,8 @@ export type State = {
     outcome: "completed" | "failed",
     reason: DockerJobFailureReason | null,
     imageId: string | null,
+    baselineVersion?: number | null,
+    baselineTool?: SnapshotBaselineTool | null,
   ][];
   cleanupLimit?: number;
   /** Local durable retention obligations survive receipt compaction and offline polls. */
@@ -100,7 +111,10 @@ export interface Executor {
   diskFreeBytes?(): Promise<number | null>;
   cleanupImages?(): Promise<void>;
   configureLimits?(limits: DockerSandboxLimits | undefined): void;
-  buildSnapshot?(job: Extract<Job, { operation: "buildSnapshot" }>, recoverOnly?: boolean): Promise<string>;
+  buildSnapshot?(
+    job: Extract<Job, { operation: "buildSnapshot" }>,
+    recoverOnly?: boolean,
+  ): Promise<DockerSnapshotBuildReceipt>;
   startRuntime?(request: DockerMachineRequest, bootstrap: BootstrapDescriptor): Promise<unknown>;
   resume?(request: DockerMachineRequest): Promise<unknown>;
   create(request: DockerMachineRequest): Promise<unknown>;
@@ -810,7 +824,9 @@ async function admitLocked(
               sweeping = undefined;
             }, 10000);
         try {
-          receipt.imageId = await executor.buildSnapshot(job, !admitted);
+          const built = await executor.buildSnapshot(job, !admitted);
+          receipt.imageId = built.imageId;
+          if (built.baselineVersion !== null) receipt.baselineVersion = built.baselineVersion;
         } finally {
           clearInterval(timer);
           await sweeping;
@@ -833,9 +849,14 @@ async function admitLocked(
       if (error instanceof DockerDiskFloorError) receipt.reason = "disk_full";
       else if (receipt.operation === "buildSnapshot") {
         receipt.reason = "snapshot_build_failed";
+        if (error instanceof DockerSnapshotBaselineError) receipt.baselineTool = error.tool;
         // Do not log exception text: build output and init commands can contain credentials.
         console.error(
-          `Snapshot ${receipt.request.sandboxId}: Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets.`,
+          `Snapshot ${receipt.request.sandboxId}: ${
+            error instanceof DockerSnapshotBaselineError
+              ? error.message
+              : "Snapshot image build failed. Check registry access, repository access, init commands and the secret scan; build output is suppressed to protect secrets."
+          }`,
         );
       } else if (error instanceof DockerMachineError && error.code === "image_unavailable") receipt.reason = error.code;
     } // Uncertain native failure is terminal for this request identity.
@@ -918,6 +939,8 @@ async function admitLocked(
         outcome: old[5],
         ...(old[6] ? { reason: old[6] } : {}),
         ...(old[7] ? { imageId: old[7] } : {}),
+        ...(old[8] ? { baselineVersion: old[8] } : {}),
+        ...(old[9] ? { baselineTool: old[9] } : {}),
       } as Receipt;
       await api.result(state, replay);
       return "worked";
@@ -1028,6 +1051,8 @@ export function compactReceipts(state: State): void {
       receipt.outcome,
       receipt.reason ?? null,
       receipt.operation === "buildSnapshot" ? (receipt.imageId ?? null) : null,
+      receipt.operation === "buildSnapshot" ? (receipt.baselineVersion ?? null) : null,
+      receipt.operation === "buildSnapshot" ? (receipt.baselineTool ?? null) : null,
     ]);
     return false;
   });

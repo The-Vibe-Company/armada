@@ -18,6 +18,14 @@ import {
 import { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, PROVIDER_LIMITS } from "./sandbox-provider.ts";
+import { shellQuote } from "./shell-quote.ts";
+import {
+  SNAPSHOT_BASELINE_VERSION,
+  snapshotBaselineFailure,
+  snapshotBaselineFailureMessage,
+  snapshotBaselineInstall,
+  snapshotBaselineVerify,
+} from "./snapshot-baseline.ts";
 import { sshStdinCheckout } from "./ssh-executor.ts";
 
 export interface GoldenBackendSlot {
@@ -113,6 +121,34 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       ((provider, input) =>
         sshStdinCheckout(provider, input, { ...(input.onWarning ? { onWarning: input.onWarning } : {}) })),
     verifyHelper: verifyGoldenHelper,
+    async installBaseline(provider, sandboxId) {
+      const script = snapshotBaselineInstall();
+      const result = await provider.exec({
+        sandboxId,
+        timeoutSeconds: 600,
+        command: `if [ "$(id -u)" = 0 ]; then bash -c ${shellQuote(script)}; else sudo -n bash -c ${shellQuote(script)}; fi`,
+      });
+      if (result.detached || result.exitCode !== 0 || result.timedOut) {
+        const message =
+          "Boat snapshot baseline installation failed. The builder needs root or passwordless sudo, apt, and download access.";
+        throw new GoldenError("setup_failed", message, { safeMessage: message });
+      }
+    },
+    async verifyBaseline(provider, sandboxId) {
+      const command = `export PATH=/usr/local/bin:/usr/bin:/bin; ${snapshotBaselineVerify}`;
+      const result = await provider.exec({
+        sandboxId,
+        timeoutSeconds: 30,
+        command: provider.id === "modal" ? `/usr/sbin/runuser -u user -- /bin/sh -c ${shellQuote(command)}` : command,
+      });
+      if (result.detached || result.exitCode !== 0 || result.timedOut || result.truncated) {
+        const tool = result.detached ? undefined : snapshotBaselineFailure(result.stderr);
+        const message = tool
+          ? snapshotBaselineFailureMessage(tool)
+          : "Snapshot baseline verification did not complete.";
+        throw new GoldenError("setup_failed", message, { safeMessage: message });
+      }
+    },
     scan: (provider, sandboxId, context) => scanGoldenSandbox(provider, sandboxId, context),
     async reserve(provider, actor, existingGolden) {
       buildProvider = provider;
@@ -335,6 +371,10 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         }
         step = "snapshot_pointer";
         await transactionalStore.setSnapshot(inserted.id, snapshot);
+        await sql.query("update public.goldens set baseline_version=$2 where id=$1", [
+          inserted.id,
+          SNAPSHOT_BASELINE_VERSION,
+        ]);
         if (publication) {
           publication.golden_id = inserted.id;
           const duplicate = await sql.query<{ source_id: string | null; proven: boolean; golden_id: string }>(
