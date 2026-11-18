@@ -46,3 +46,22 @@ export async function admitLaunchPlan(
   await admitAccount();
   await beforeAllocation();
 }
+
+/** Placement owns the admission fence and the allocation performed under it. */
+export interface LaunchPlacement<Resolved, Context, Allocation> {
+  admit(plan: Resolved, context: Context): Promise<Allocation>;
+}
+
+/** Prepare without allocating. Callers can acquire their launch fence before admitting the resolved plan. */
+export async function prepareLaunchPlan<Validated, Resolved, Context, Allocation>(
+  validate: () => Validated | Promise<Validated>,
+  resolve: (request: Validated) => Promise<Resolved>,
+  selectPlacement: (plan: Resolved) => LaunchPlacement<Resolved, Context, Allocation>,
+) {
+  const resolved = await resolve(await validate());
+  const placement = selectPlacement(resolved);
+  return {
+    resolved,
+    admit: (context: Context) => placement.admit(resolved, context),
+  };
+}
