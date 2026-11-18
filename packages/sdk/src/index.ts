@@ -91,6 +91,7 @@ interface DockerLaunchFields {
   credentialVersion?: number;
   /** Caller-chosen UUID; replaying it returns the same launch. */
   requestId: string;
+  /** First prompt: omit it or send a non-blank one; a blank prompt is refused before launch. */
   prompt?: string;
   model?: string;
   reasoningEffort?: string;

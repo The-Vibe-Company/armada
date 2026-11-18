@@ -255,6 +255,8 @@ export async function generateOpenApi() {
         const { $schema: _golden, ...golden } = input as Record<string, unknown>;
         const docker = [DOCKER_HOST_LAUNCH_REQUEST, DOCKER_SNAPSHOT_LAUNCH_REQUEST].map((variant) => {
           const { $schema: _docker, ...schema } = requestJsonSchema(variant);
+          // Docker admits a 256 KiB first prompt, but the REST body limit applies first.
+          boundByBody(schema, "prompt", maxBodyBytes);
           return schema;
         });
         request = { oneOf: [golden, ...docker] };

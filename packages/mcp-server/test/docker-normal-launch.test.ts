@@ -630,6 +630,30 @@ test("normal admission rejects unsupported input before resolution, scopes owner
   expect((await counts(f))?.claims).toBe(0);
 });
 
+test("the published Docker launch schema admits a first prompt exactly when launch admission does", async () => {
+  const f = await fixture();
+  const published = publishedRequest("sandbox/launch");
+  const { prompt: _prompt, ...base } = f.body;
+  const snapshot = { ...base, hostId: undefined, snapshotId: randomUUID() };
+  const cases: [string | undefined, boolean][] = [
+    [undefined, true],
+    ["Fix the failing test.", true],
+    ["  padded  ", true],
+    ["", false],
+    ["   ", false],
+    ["\t\n", false],
+    ["  ﻿", false],
+  ];
+  for (const [prompt, admitted] of cases) {
+    const body = prompt === undefined ? base : { ...base, prompt };
+    expect(published.safeParse(body).success).toBe(admitted);
+    expect(published.safeParse(prompt === undefined ? snapshot : { ...snapshot, prompt }).success).toBe(admitted);
+    // Normalization runs before the placement switch: a disabled service answers an admitted body with unavailable.
+    await rejected(f.service(sql, false).launch(f.caller, body), admitted ? "unavailable" : "invalid_request");
+  }
+  expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+});
+
 test("admission and bound create roll back together when claim persistence fails; revoked host cannot allocate", async () => {
   const f = await fixture();
   const failClaim: Sql = {

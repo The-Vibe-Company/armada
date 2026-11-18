@@ -6186,9 +6186,10 @@
                         "description": "Caller-chosen UUID; replaying it returns the same launch."
                       },
                       "prompt": {
-                        "description": "First prompt. The whole request body is limited to 128 KiB.",
+                        "description": "First prompt: not blank. The whole request body is limited to 128 KiB.",
                         "type": "string",
-                        "minLength": 1
+                        "maxLength": 131072,
+                        "pattern": "\\S"
                       },
                       "model": {
                         "type": "string"
@@ -6353,9 +6354,10 @@
                         "description": "Caller-chosen UUID; replaying it returns the same launch."
                       },
                       "prompt": {
-                        "description": "First prompt. The whole request body is limited to 128 KiB.",
+                        "description": "First prompt: not blank. The whole request body is limited to 128 KiB.",
                         "type": "string",
-                        "minLength": 1
+                        "maxLength": 131072,
+                        "pattern": "\\S"
                       },
                       "model": {
                         "type": "string"

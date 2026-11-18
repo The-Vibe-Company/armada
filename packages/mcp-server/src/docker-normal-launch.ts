@@ -50,6 +50,7 @@ import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
 import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservation-sql.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
@@ -190,8 +191,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
       (!Number.isSafeInteger(body.credentialVersion) || (body.credentialVersion as number) < 1)) ||
     (body.model !== undefined && typeof body.model !== "string") ||
     (body.reasoningEffort !== undefined && typeof body.reasoningEffort !== "string") ||
-    (body.prompt !== undefined &&
-      (typeof body.prompt !== "string" || !body.prompt.trim() || Buffer.byteLength(body.prompt) > 262144))
+    (body.prompt !== undefined && !DOCKER_PROMPT.safeParse(body.prompt).success)
   )
     throw failure("invalid_request");
   const ttlSeconds = body.ttlSeconds === undefined ? DEFAULT_LAUNCH_TTL_SECONDS : body.ttlSeconds;

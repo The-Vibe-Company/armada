@@ -1,5 +1,6 @@
 import { type DockerLaunchRequest, HARNESSES, MAX_MCP_CONNECTIONS, SKILL_PIN_PATTERN } from "@armada/core";
 import { z } from "zod";
+import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 
 const uuid = z.string().regex(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i);
 const binding = (idField: "variableId" | "secretId") =>
@@ -9,7 +10,8 @@ const binding = (idField: "variableId" | "secretId") =>
  * The normal Docker `sandbox/launch` body (`provider: "docker"`). The normalizer in
  * `docker-normal-launch.ts` refuses any field outside these keys, and the OpenAPI
  * description publishes both source variants. Value rules the normalizer applies
- * beyond shape (model catalog, key names, repository URLs) stay server-side.
+ * beyond shape (model catalog, key names, repository URLs) stay server-side; the
+ * first prompt uses the same `DOCKER_PROMPT` value as admission.
  */
 const dockerLaunchFields = {
   org: uuid.describe("Organization UUID."),
@@ -18,7 +20,7 @@ const dockerLaunchFields = {
   credentialId: uuid.optional().describe("Omit to use the caller's compatible personal default, frozen at admission."),
   credentialVersion: z.number().int().min(1).optional(),
   requestId: uuid.describe("Caller-chosen UUID; replaying it returns the same launch."),
-  prompt: z.string().min(1).optional().describe("First prompt. The whole request body is limited to 128 KiB."),
+  prompt: DOCKER_PROMPT.optional().describe("First prompt: not blank. The whole request body is limited to 128 KiB."),
   model: z.string().optional(),
   reasoningEffort: z.string().optional(),
   ttlSeconds: z.number().int().min(1).max(86400).optional(),
