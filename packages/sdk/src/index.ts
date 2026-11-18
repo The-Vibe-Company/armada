@@ -86,17 +86,13 @@ export interface GoldenLaunchInput {
   skipSkillDefaults?: boolean;
   connections?: string[];
 }
-interface DockerLaunchFields {
+type DockerLaunchFields = {
   org?: string;
   provider: "docker";
   harness: "claude" | "codex" | "opencode";
   /** Omit to use the caller's compatible personal default, frozen at admission. */
   credentialId?: string;
   credentialVersion?: number;
-  /** Caller-chosen UUID; replaying it returns the same launch. */
-  requestId?: string;
-  /** Supply exactly one of requestId and idempotencyKey. */
-  idempotencyKey?: string;
   externalRef?: string;
   /** First prompt: omit it or send a non-blank one; a blank prompt is refused before launch. */
   prompt?: string;
@@ -112,21 +108,21 @@ interface DockerLaunchFields {
   connections?: string[];
   variables?: { key: string; variableId: string; version: number }[];
   secrets?: { key: string; secretId: string; version: number }[];
-}
+} & ({ requestId: string; idempotencyKey?: never } | { idempotencyKey: string; requestId?: never });
 /** Launch on a registered Docker host from the official Armada environment. There is no golden. */
-export interface DockerHostLaunchInput extends DockerLaunchFields {
+export type DockerHostLaunchInput = DockerLaunchFields & {
   hostId: string;
   snapshotId?: never;
   /** Checkouts with bounded history: enough to find a merge base with the default branch. */
   repos?: { url: string; branch?: string; dir?: string }[];
-}
+};
 /** Launch from a Docker snapshot, which selects its host and workspace; repos are refused. */
-export interface DockerSnapshotLaunchInput extends DockerLaunchFields {
+export type DockerSnapshotLaunchInput = DockerLaunchFields & {
   snapshotId: string;
   /** Optional; when present it must be the snapshot's host. */
   hostId?: string;
   repos?: never;
-}
+};
 export type DockerLaunchInput = DockerHostLaunchInput | DockerSnapshotLaunchInput;
 export type LaunchInput = GoldenLaunchInput | DockerLaunchInput;
 export interface GoldenLaunchResult {
@@ -140,7 +136,14 @@ export interface GoldenLaunchResult {
 }
 /** A Docker launch has no golden; the prompt and conversation IDs are null until a first prompt is recorded. */
 export interface DockerLaunchResult {
-  sandbox: { id: string; provider: "docker"; status: string; hostId: string; [key: string]: unknown };
+  sandbox: {
+    id: string;
+    provider: "docker";
+    status: string;
+    hostId: string;
+    externalRef?: string;
+    [key: string]: unknown;
+  };
   golden: null;
   promptId?: string | null;
   conversationId?: string | null;

@@ -7398,6 +7398,10 @@
                         },
                         "status": {
                           "type": "string"
+                        },
+                        "externalRef": {
+                          "description": "Opaque caller reference, when provided.",
+                          "type": "string"
                         }
                       },
                       "required": [

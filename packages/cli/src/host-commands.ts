@@ -5,6 +5,7 @@ import {
   dockerHostResourceDisplay,
   dockerHostUpgradeMessage,
   GoldenError,
+  type OrgSummary,
   parseDockerMemory,
   isRecord as record,
   validDockerHostResources,
@@ -54,6 +55,18 @@ export async function listHosts(client: ArmadaApiClient, org: string): Promise<D
     ids.add(host.id);
   }
   return value as unknown as DockerHostListResponse;
+}
+
+/** Host names are resolved through the existing host API, which takes an organization UUID. */
+export async function resolveHostOrganization(client: ArmadaApiClient, ref: string | undefined): Promise<string> {
+  const wanted = ref?.trim().toLowerCase();
+  if (wanted && UUID.test(wanted)) return wanted;
+  const { orgs } = await client.control<{ orgs: OrgSummary[] }>("org/list", {});
+  if (!wanted && orgs.length === 1) return orgs[0]!.id;
+  if (!wanted) throw new GoldenError("invalid_config", "Select an organization with --org.");
+  const org = orgs.find((item) => item.name.trim().toLowerCase() === wanted);
+  if (!org) throw new GoldenError("invalid_config", "You are not a member of that org.");
+  return org.id;
 }
 
 export async function resolveHost(client: ArmadaApiClient, org: string, selector: string): Promise<string> {

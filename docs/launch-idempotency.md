@@ -50,6 +50,9 @@ Send exactly one of these fields with `"provider":"docker"`:
 - `requestId` is a caller-chosen UUID used by existing clients. It is also the
   sandbox ID.
 
+Docker has a separate key namespace from Boat and Modal. Retain the selected
+provider when retrying a launch.
+
 For either field, replay the same launch inputs. After admission, a changed
 normalized request, including a changed `externalRef`, is refused. For example,
 spelling out the default TTL is equivalent to omitting it. A refusal before

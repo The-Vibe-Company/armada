@@ -5,7 +5,6 @@ import {
   type DockerLaunchResult,
   GoldenError,
   MAX_MCP_CONNECTIONS,
-  type OrgSummary,
   parseApplicationSecretBindings,
   parseReadableVariableBindings,
   resolveModelChoice,
@@ -13,9 +12,9 @@ import {
 } from "@armada/core";
 import { requireLaunchAgent } from "./agent-validation.ts";
 import { type Args, flag, single, values } from "./args.ts";
-import { type ArmadaApiClient, ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
+import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
-import { resolveHost } from "./host-commands.ts";
+import { resolveHost, resolveHostOrganization } from "./host-commands.ts";
 import { parseTtl } from "./operations.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -120,7 +119,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   const hostId = selector
     ? uuid.test(selector)
       ? selector.toLowerCase()
-      : await resolveHost(client, await hostLookupOrg(client, org), selector)
+      : await resolveHost(client, await resolveHostOrganization(client, org), selector)
     : undefined;
   const body: DockerLaunchRequest = {
     ...(secretBindings.length ? { secrets: secretBindings } : {}),
@@ -199,16 +198,4 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       );
     throw error;
   }
-}
-
-/** Host names are resolved through the existing host API, which takes an organization UUID. */
-async function hostLookupOrg(client: ArmadaApiClient, ref: string | undefined): Promise<string> {
-  const wanted = ref?.trim().toLowerCase();
-  if (wanted && uuid.test(wanted)) return wanted;
-  const { orgs } = await client.control<{ orgs: OrgSummary[] }>("org/list", {});
-  if (!wanted && orgs.length === 1) return orgs[0]!.id;
-  if (!wanted) throw new GoldenError("invalid_config", "Select an organization with --org.");
-  const org = orgs.find((item) => item.name.trim().toLowerCase() === wanted);
-  if (!org) throw new GoldenError("invalid_config", "You are not a member of that org.");
-  return org.id;
 }

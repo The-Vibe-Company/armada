@@ -859,7 +859,7 @@ export async function dispatchControlCommand(
       if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
       const data = options.data(caller);
       const name = required(body, "golden");
-      const actor = await launchActor(data, caller, name, optional(body, "org"));
+      const actor = await launchActor(data, caller, name, optional(body, "org"), store);
       const golden = await goldenForSettings(
         data.goldens,
         actor,

@@ -189,7 +189,7 @@ export const DOCKER_DEFAULT_IMAGE =
   "buildpack-deps@sha256:58021c2a0204361b62a23d2e0244d144d74c29af2d678e2a1f7e6611885d6949";
 
 /** Normal API/CLI contract. Discover capabilities.launch before offering this source. */
-export interface DockerLaunchRequest {
+export type DockerLaunchRequest = {
   secrets?: import("./application-secret-bindings.ts").ApplicationSecretBinding[];
   variables?: import("./readable-variables.ts").ReadableVariableBinding[];
   /** GitHub checkouts, using the same single-segment directory rules as goldens. */
@@ -202,9 +202,6 @@ export interface DockerLaunchRequest {
   /** Omit to resolve the caller's compatible personal default, then freeze its ID/version at admission. */
   credentialId?: string;
   credentialVersion?: number;
-  requestId?: string;
-  /** Supply exactly one of requestId and idempotencyKey. */
-  idempotencyKey?: string;
   externalRef?: string;
   prompt?: string;
   model?: string;
@@ -215,7 +212,7 @@ export interface DockerLaunchRequest {
   connections?: string[];
   skipSkillDefaults?: boolean;
   stopWhenWorkMerged?: boolean;
-}
+} & ({ requestId: string; idempotencyKey?: never } | { idempotencyKey: string; requestId?: never });
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";
   goldenId: null;
