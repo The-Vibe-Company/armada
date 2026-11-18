@@ -1298,7 +1298,17 @@ test.each([true, false])(
     ).bytes();
     const completedAt = "2026-11-18T10:00:00Z";
     const boat = fakeBoat(
-      { body: { sandbox: sandbox({ state: "archived", snapshotAvailable: true, snapshotCompletedAt: completedAt }) } },
+      {
+        body: {
+          sandbox: sandbox({
+            state: "archived",
+            snapshotAvailable: true,
+            snapshotCompletedAt: completedAt,
+            stoppedAt: "2026-11-18T10:01:00Z",
+            snapshotVerifiedAt: "2026-11-18T10:01:01Z",
+          }),
+        },
+      },
       { body: { snapshot: { id: "retained", sandboxId: ID, status: "completed", completedAt } } },
       new Response(archive, {
         headers: {
@@ -1328,3 +1338,20 @@ test.each([true, false])(
     expect(boat.requests[2]?.query.get("path")).toBe("home/user/outputs");
   },
 );
+
+test("Boat does not publish an older snapshot without verification for the current stop", async () => {
+  const boat = fakeBoat({
+    body: {
+      sandbox: sandbox({
+        state: "archived",
+        stoppedAt: "2026-11-18T10:01:00Z",
+        snapshotAvailable: true,
+        snapshotCompletedAt: "2026-11-18T10:00:00Z",
+        lastSnapshotStatus: "completed",
+      }),
+    },
+  });
+  const snapshot = await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
+  expect(snapshot).toBeNull();
+  expect(boat.requests).toHaveLength(1);
+});

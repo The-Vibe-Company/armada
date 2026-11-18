@@ -461,6 +461,12 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         (current.lastSnapshotStatus && current.lastSnapshotStatus !== "completed")
       )
         return null;
+      // A forced or provider-initiated stop can leave an older completed snapshot.
+      // Require a verification at the stop boundary, allowing no-change saves to
+      // verify an older snapshot without creating a new one.
+      const stoppedAt = current.stoppedAt?.getTime();
+      const verifiedAt = (current.snapshotVerifiedAt ?? current.snapshotCompletedAt)?.getTime();
+      if (stoppedAt === undefined || verifiedAt === undefined || !(verifiedAt >= stoppedAt)) return null;
       const { snapshot } = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal }));
       // The latest endpoint can race the stop observation. Bind it to the completed
       // snapshot reported by the archived sandbox, including no-change archives.
@@ -477,7 +483,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       ).catch((error: unknown) => {
         if (
           error instanceof ProviderError &&
-          ["legacy_snapshot", "snapshot_not_indexed", "snapshot_data_expired"].includes(error.providerCode ?? "")
+          ["legacy_snapshot", "snapshot_data_expired"].includes(error.providerCode ?? "")
         )
           return null;
         throw error;
