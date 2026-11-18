@@ -31,7 +31,8 @@ const githubPull = z.object({
 type Report = { prNumber?: number; prUrl?: string };
 type Identity = { repository: string; number: number };
 type Scan = {
-  pushes: Record<string, [string, string][]>;
+  // Per repository and branch, every pushed SHA, newest first.
+  pushes: Record<string, [string, string[]][]>;
   discovered: Identity[];
 };
 type Target = {
@@ -57,9 +58,11 @@ type Target = {
 
 const maxBranches = 32;
 const maxKnownPulls = 64;
+const maxPushesPerBranch = 16;
 
 // A local branch name or matching SHA alone also describes a checkout made by
 // another sandbox. Only reflog records written by a push qualify for discovery.
+// The reflog lists each branch's pushes newest first; every distinct SHA is kept.
 const readPushes = `remote=$(git remote get-url --push --all origin) || exit 1
 case "$remote" in
   "https://github.com/$2"|"https://github.com/$2.git"|"git@github.com:$2"|"git@github.com:$2.git"|"ssh://git@github.com/$2"|"ssh://git@github.com/$2.git") ;;
@@ -73,7 +76,7 @@ awk -v since="$1" -F '\\t' '$1 ~ /^refs\\/remotes\\/origin\\// && $2 == "update 
     if (timestamp+0 < since) next
     sub(/@\\{[^@]*\\}$/, "", $1)
     sub(/^refs\\/remotes\\/origin\\//, "", $1)
-    if (!seen[$1]++) print $1 "\\t" $3
+    if (!seen[$1 "\\t" $3]++) print $1 "\\t" $3
 }'`;
 
 export function createSandboxPullRequests(
@@ -132,7 +135,7 @@ export function createSandboxPullRequests(
     try {
       const configured = repos.parse(row.repositories);
       const scan = row.pull_request_scan ?? { pushes: {}, discovered: [] };
-      const branches = new Map<string, Map<string, string>>();
+      const branches = new Map<string, Map<string, string[]>>();
       for (const repo of configured) {
         signal.throwIfAborted();
         const remote = repoUrl.exec(repo.url)?.[1];
@@ -160,12 +163,15 @@ export function createSandboxPullRequests(
         });
         if (result.detached || result.exitCode !== 0 || result.truncated || result.timedOut) return;
         const lines = result.stdout.trimEnd() ? result.stdout.trimEnd().split("\n") : [];
+        const pushed = new Map<string, string[]>();
         for (const line of lines) {
           const [ref, sha] = line.split("\t");
           if (!ref || ref.length > 255 || /\s/.test(ref) || [...ref].some((char) => char.charCodeAt(0) < 32)) return;
           if (!sha || !/^[a-f0-9]{40}$/.test(sha)) return;
-          names.set(ref, sha);
+          pushed.set(ref, [...(pushed.get(ref) ?? []), sha]);
         }
+        // The reflog is newer than the retained evidence; a re-pushed SHA moves first.
+        for (const [ref, shas] of pushed) names.set(ref, [...new Set([...shas, ...(names.get(ref) ?? [])])]);
       }
       // Retain push evidence when Git prunes a tracking ref or expires its reflog.
       scan.pushes = Object.fromEntries([...branches].map(([repo, names]) => [repo, [...names]]));
@@ -204,7 +210,13 @@ export function createSandboxPullRequests(
         numbers.set(urlFor(identity), identity);
       }
       const branchCount = [...branches.values()].reduce((sum, refs) => sum + refs.size, 0);
-      if (branchCount > maxBranches || numbers.size > maxKnownPulls) return;
+      // Dropping an older push could hide its closed PR, so too many is incomplete.
+      if (
+        branchCount > maxBranches ||
+        numbers.size > maxKnownPulls ||
+        [...branches.values()].some((refs) => [...refs.values()].some((shas) => shas.length > maxPushesPerBranch))
+      )
+        return;
       const found = new Map<string, SandboxPullRequest>();
       let complete = true;
       const checkedAt = new Date().toISOString();
@@ -271,7 +283,7 @@ export function createSandboxPullRequests(
           for (const result of batch) if (result.status === "rejected") throw result.reason;
         }
         for (const [headRepository, refs] of branches) {
-          for (const [ref, sha] of refs) {
+          for (const [ref, shas] of refs) {
             const params = new URLSearchParams({
               state: "all",
               head: `${headRepository.split("/")[0]}:${ref}`,
@@ -294,11 +306,13 @@ export function createSandboxPullRequests(
               for (const pull of pulls) {
                 if (pull.head.repo?.full_name.toLowerCase() !== headRepository || pull.head.ref !== ref) continue;
                 named = true;
-                if (pull.head.sha === sha) {
+                if (shas.includes(pull.head.sha)) {
+                  // A PR at any pushed commit is this sandbox's work, so an
+                  // earlier closed-unmerged PR still vetoes the stop.
                   const identity = { repository, number: pull.number };
                   discovered.set(urlFor(identity), identity);
                   record(repository, pull);
-                  matched = true;
+                  if (pull.head.sha === shas[0]) matched = true;
                 } else if (pull.state === "open") {
                   // A moved open head blocks stopping without becoming work of this sandbox.
                   complete = false;
@@ -307,8 +321,8 @@ export function createSandboxPullRequests(
             }
             // A complete lookup with no pull request is a scratch push, not
             // unfinished work; the merge proof still needs one merged PR. A
-            // push after the branch's pull requests (none at the pushed head)
-            // is unmerged work and blocks stopping.
+            // push after the branch's pull requests (none at the latest pushed
+            // head) is unmerged work and blocks stopping.
             if (named && !matched) complete = false;
           }
         }

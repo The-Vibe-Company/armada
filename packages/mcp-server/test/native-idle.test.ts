@@ -408,6 +408,7 @@ test.each([
   "merged",
   "merged with scratch push",
   "merged with later push",
+  "merged after closed",
   "open",
   "closed",
   "no push",
@@ -450,6 +451,14 @@ test.each([
   };
   // A merged PR at an older head: the later push to its branch has no PR yet.
   const laterPull = { ...pull, number: 13, head: { ...pull.head, ref: "scratch", sha: "d".repeat(40) } };
+  // An earlier push to the same branch whose PR closed without merging.
+  const closedPull = {
+    ...pull,
+    number: 11,
+    state: "closed",
+    merged_at: null,
+    head: { ...pull.head, sha: "e".repeat(40) },
+  };
   const fetchGitHub = Object.assign(
     async (url: Parameters<typeof fetch>[0]) => {
       if (String(url) === "https://api.github.com/user")
@@ -461,7 +470,7 @@ test.each([
       expect(String(url)).toContain(`/repos/${repository}/pulls?`);
       const head = new URL(String(url)).searchParams.get("head");
       if (head === "example:scratch") return Response.json(state === "merged with later push" ? [laterPull] : []);
-      return Response.json([pull]);
+      return Response.json(state === "merged after closed" ? [pull, closedPull] : [pull]);
     },
     { preconnect: fetch.preconnect },
   );
@@ -479,7 +488,7 @@ test.each([
       stdout:
         state === "no push" || state === "corrected report"
           ? ""
-          : `topic\t${sha}\n${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}`,
+          : `topic\t${sha}\n${state === "merged after closed" ? `topic\t${"e".repeat(40)}\n` : ""}${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}`,
       stderr: "",
       timedOut: false,
       truncated: false,
@@ -495,7 +504,11 @@ test.each([
   expect(f.stops()).toBe(shouldStop ? 1 : 0);
   if (shouldStop) expect(sandbox?.statusReason).toBe("work_merged");
   expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
-    state === "no push" || state === "other commit" ? [] : [state === "open" || state === "closed" ? state : "merged"],
+    state === "no push" || state === "other commit"
+      ? []
+      : state === "merged after closed"
+        ? ["merged", "closed"]
+        : [state === "open" || state === "closed" ? state : "merged"],
   );
   await f.worker.drain();
 });
