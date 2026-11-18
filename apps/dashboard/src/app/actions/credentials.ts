@@ -15,18 +15,19 @@ import {
 import { listCredentials } from "@/lib/data/credentials";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
+import { CLOUD_PROVIDERS_LABEL } from "@/lib/labels";
 import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 /**
  * An organization's Boat and Modal credentials are its sandbox providers: connected, replaced and disconnected in
- * Settings through the Armada server, which checks them with the provider first. They are not written here.
+ * Machines → Cloud providers through the Armada server, which checks them with the provider first. They are not written here.
  */
-const ORG_HOSTING_IN_PROVIDERS = "Organization sandbox providers are managed on the Providers page.";
+const ORG_HOSTING_IN_PROVIDERS = `Organization cloud providers are managed in Machines → ${CLOUD_PROVIDERS_LABEL}.`;
 
 /**
  * Stores one of the viewer's own hosting keys (Boat, Modal) as ciphertext. It is never read back: setting it again
- * replaces it. An organization's hosting is managed on Providers (`ORG_HOSTING_IN_PROVIDERS`), and model
+ * replaces it. An organization's hosting is managed in Machines → Cloud providers (`ORG_HOSTING_IN_PROVIDERS`), and model
  * credentials are named accounts on the server, so neither is written here.
  */
 export async function saveCredential(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {

@@ -4,6 +4,9 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 
 ## Use
 
+- [Embed Armada](api/README.md): launch, stream events, send prompts and receive signed webhooks.
+- [Glossary](glossary.md): terms used in the dashboard, CLI and API.
+
 - [Onboarding](dave-onboarding.md): connect an organization, provider, model credentials and GitHub, then launch through the CLI or MCP.
 - [Snapshots](golden-create.md) and [build jobs](golden-build-jobs.md): create a workspace and track durable build outcomes.
 - [Templates CLI](templates-cli.md): use published launch presets; consult its stated limits rather than assuming all proposed template features are available.
@@ -12,6 +15,8 @@ Choose a starting point below; these are selected guides, not an inventory of ev
 - [Organization invitations](cli-invitations.md): distinguish direct membership from invitations and explicit acceptance.
 
 ## Develop
+
+- [Sandbox viewers](api/sandbox-viewer.md), [outbound webhooks](outbound-webhooks.md) and [sandbox outputs](sandbox-outputs.md): contracts for embedded sessions and file delivery.
 
 - [Contribution quickstart](self-hosting.md#contribute-quickstart): clone, install pinned Bun, develop the UI without credentials and validate only affected workspaces.
 - [Self-hosting](self-hosting.md#operator-setup): configure and run the real server and dashboard.

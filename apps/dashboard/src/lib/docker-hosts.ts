@@ -180,15 +180,15 @@ export function shortHostId(id: string): string {
 }
 
 export function hostName(host: Pick<DockerHost, "id" | "name">): string {
-  return host.name ?? "Unnamed server";
+  return host.name ?? "Unnamed host";
 }
 
 /** Why a host cannot take a snapshot build now, in the dialog's words; null when it can. */
 export function hostBuildBlocker(host: Pick<DockerHost, "state">): string | null {
   if (host.state === "online") return null;
   if (host.state === "draining")
-    return "This server is draining for uninstall. Finish or retry the uninstall on the machine before building.";
-  return "Bring this server online to build.";
+    return "This Docker host is draining for uninstall. Finish or retry the uninstall on the machine before building.";
+  return "Bring this Docker host online to build.";
 }
 
 /** A host's state in the page's words and where it sorts: an offline host needs a look first. */
@@ -215,7 +215,7 @@ export function hostState(host: DockerHost, now: number): ResourceState & { deta
         tone: "warning",
         label: "Draining",
         detail:
-          "An uninstall is in progress, so this server takes no new work. Finish or retry the uninstall on the machine; it takes new work again only after the uninstall completes.",
+          "An uninstall is in progress, so this Docker host takes no new work. Finish or retry the uninstall on the machine; it takes new work again only after the uninstall completes.",
       };
     case "pending":
       if (now - Date.parse(host.createdAt) > REGISTRATION_TTL_MS)
@@ -224,7 +224,7 @@ export function hostState(host: DockerHost, now: number): ResourceState & { deta
           tone: "warning",
           label: "Registration expired",
           detail:
-            "Its registration command expired before the server checked in. Unlink this entry and add the server again.",
+            "Its registration command expired before the Docker host checked in. Unlink this entry and add the Docker host again.",
         };
       return {
         bucket: "action",
@@ -237,7 +237,7 @@ export function hostState(host: DockerHost, now: number): ResourceState & { deta
         bucket: "rest",
         tone: "neutral",
         label: "Unlinked",
-        detail: "Unlinked: this server can take no new work.",
+        detail: "Unlinked: this Docker host can take no new work.",
       };
   }
 }
@@ -256,14 +256,15 @@ export function connectedHostName(list: DockerHostList, hostId: string): string 
 
 /** A row's fact: what runs there and which daemon runs it. */
 export function hostFact(host: Pick<DockerHost, "sandboxes" | "version" | "resources" | "running">): string {
-  if (!host.resources || host.running === undefined) return "Update the server to report running sandboxes and limits.";
+  if (!host.resources || host.running === undefined)
+    return "Update the Docker host to report running sandboxes and limits.";
   return `${host.running} ${host.running === 1 ? "sandbox" : "sandboxes"} running · up to ${host.resources.capacity}${host.resources.heldBack ? ` (${host.resources.heldBack} held back: machine busy)` : ""}`;
 }
 
 /** What revoking a host does, said before it happens. */
 export function revokeWarning(sandboxes: number): string {
   const base =
-    "Only admins can unlink a server. This cannot be undone. Nothing is removed from the machine; to add it again later, run the uninstall command there first.";
+    "Only admins can unlink a Docker host. This cannot be undone. Nothing is removed from the machine; to add it again later, run the uninstall command there first.";
   if (sandboxes === 0) return `${base} Queued launches fail at once and stop holding a capacity slot.`;
   const count = sandboxCount(sandboxes).toLowerCase();
   return `${base} Its ${count} ${sandboxes === 1 ? "stays" : "stay"} on the machine: launches and resumes that have not started fail at once, and an organization admin can still request stop or delete so the host cleans them up.`;

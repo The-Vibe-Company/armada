@@ -1,6 +1,6 @@
 # @the-vibe-company/armada
 
-The `armada` command line: launch coding agents (Claude Code, Codex) on [boat.dev](https://boat.dev) sandboxes from a golden snapshot, and drive them through Armada's remote MCP server.
+The `armada` command line: launch Claude Code, Codex and OpenCode agents into Boat, Modal or Docker sandboxes from a snapshot, and drive them through Armada's remote MCP server. Provider and agent availability depend on server configuration.
 
 ```sh
 npx @the-vibe-company/armada --help

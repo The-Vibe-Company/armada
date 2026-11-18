@@ -81,7 +81,7 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
               {options
                 ? options.targets.length > 0
                   ? "Your starting points need attention before launching."
-                  : "No starting points yet. Build a snapshot or connect your server before launching."
+                  : "No starting points yet. Build a snapshot or register a Docker host before launching."
                 : "Starting points could not be loaded. Reload Sandboxes to try again."}
             </DialogDescription>
             {options && options.targets.length > 0 && (
@@ -91,7 +91,7 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
                     <p className="font-medium">{item.label}</p>
                     <p className="text-muted-foreground">{item.reason}</p>
                     <Link className="underline underline-offset-4" href={item.hostId ? "/hosts" : "/snapshots"}>
-                      {item.hostId ? "Open Hosts" : "Open Snapshots"}
+                      {item.hostId ? "Open Docker hosts" : "Open Snapshots"}
                     </Link>
                   </li>
                 ))}

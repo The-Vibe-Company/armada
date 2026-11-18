@@ -21,8 +21,9 @@ Events are `turn.finished`, `turn.failed`, `sandbox.stopped`, `sandbox.expired`,
 `sandbox.output.available` (see [sandbox outputs](sandbox-outputs.md); carries the
 agent-chosen output filename, size and SHA-256, never file bytes),
 `sandbox.reclaimed`, `agent.report.ready`, and `agent.report.blocked`. Payloads
-contain delivery/event identity, organization/sandbox/prompt IDs, state, occurrence
-time, a public reason code, links, and **always** `externalRef` (null when absent).
+contain `id` (delivery ID), `type`, `orgId`, `sandboxId`, `state`, `occurredAt`,
+`links.sandbox`, and `externalRef` (null when absent). Turn, lifecycle and report events include
+`promptId` and `reason`; either can be null where it does not apply.
 Apart from output filenames, there is no message, prompt, agent report text, or provider diagnostic by default.
 Repeated terminal observations of one prompt are deduplicated durably per endpoint
 and event type. Runtime archive ingestion enqueues terminal prompts atomically;
@@ -57,7 +58,7 @@ but the sender cannot record its response. A replayed ID must return success
 without repeating side effects. Respond with 2xx after durable acceptance.
 
 The sender makes at most five attempts with exponential backoff starting at
-30 seconds and capped at one hour. A request has a bounded timeout; redirects
+30 seconds. Each delivery request has a 10-second timeout; redirects
 are not followed. The log records attempt count, last HTTP status and whether
 successful. Response bodies are not retained. Disabling an endpoint stops further
 delivery. A worker lease allows restart recovery without holding a database

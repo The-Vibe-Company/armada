@@ -73,7 +73,7 @@ Usage:
   armada snapshot connect <name> [--provider boat|modal]
                                            Open the canonical master for maintenance
   armada snapshot snapshot <name> [--provider boat|modal]
-                                           Scan and freeze the master sandbox
+                                           Scan the master sandbox and save it as a snapshot
   armada snapshot capabilities [--provider boat|modal] [--org UUID] [--json]
                                            Server-authoritative snapshot capacity; null means unbounded/unknown
   armada snapshot size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
@@ -187,7 +187,7 @@ Usage:
                                            Azure models are resource deployment names; official Azure addresses are tested
                                            with a tiny billable request per deployment. A failed check saves nothing.
   armada creds set <kind> [--org <name>] [--file <path>]
-                                           Store a credential, encrypted; hidden input in a terminal, or stdin/file
+                                           Store an encrypted credential; use hidden terminal input, stdin or a file
                                            Model accounts: --max-agents N or --unlimited (Morph defaults to 2; others unlimited)
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
                                            Codex: --base-url URL --models deployment,model [--api-version VERSION]
@@ -199,7 +199,7 @@ Usage:
                                            [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
                                            Replacing a connection replaces its prices too; re-enter all rates to keep them
   armada routine --help                    Create, inspect, enable, pause and manage scheduled template launches
-  armada template --help                   Create, publish, list, get, delete and launch immutable templates
+  armada template --help                   Manage templates and launch published versions
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
                                            Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.

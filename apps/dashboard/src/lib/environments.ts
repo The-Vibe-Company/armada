@@ -1,5 +1,6 @@
 import type { SandboxProviderId } from "@armada/core";
 import { type CapacityState, type LaunchReadiness, PROVIDER_LABELS } from "./golden-form.ts";
+import { CLOUD_PROVIDERS_LABEL } from "./labels.ts";
 import { CLOUD_PROVIDERS_PATH } from "./provider-setup.ts";
 import type { Blocker, ResourceState } from "./resource-list.ts";
 
@@ -39,7 +40,7 @@ export function environmentState({
       bucket: "action",
       tone: "warning",
       label: `${label} not connected`,
-      detail: `An org admin connects ${label} in Machines → Overview to build and launch it.`,
+      detail: `An org admin connects ${label} in Machines → ${CLOUD_PROVIDERS_LABEL} to build and launch it.`,
       action: "connect",
     };
   if (readiness.kind === "no-snapshot")

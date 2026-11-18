@@ -261,7 +261,7 @@ export async function updateDockerHostRetention(_previous: ActionResult | null, 
     if (!(error instanceof ControlError)) throw error;
     return fail(
       error.status === 403
-        ? "Only the member who added this server can change retention."
+        ? "Only the member who added this Docker host can change retention."
         : "Could not update retention.",
     );
   }

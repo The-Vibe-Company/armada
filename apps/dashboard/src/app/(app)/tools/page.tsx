@@ -138,7 +138,7 @@ export default async function ToolsPage({ searchParams }: Props) {
           <>
             <p className="text-xs text-muted-foreground">
               A switched-on tool is pre-selected in the launch dialog; you can still remove it for one launch, including
-              on your own server (Docker hosts).
+              on a Docker host.
             </p>
             <section aria-labelledby="services-title" className="space-y-3 pt-5">
               <div className="space-y-0.5">

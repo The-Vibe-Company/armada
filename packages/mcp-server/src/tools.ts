@@ -521,7 +521,8 @@ export function createArmadaServer(context: ToolContext, version: string, option
     { ...serverInfo, version },
     {
       instructions:
-        "Armada launches Claude Code or Codex agents in boat.dev sandboxes forked from a golden. " +
+        "Armada launches Claude Code, Codex and OpenCode agents in sandboxes. " +
+        "Provider and agent availability depend on server configuration. In these tools, a golden is a snapshot. " +
         "Typical flow: golden_list, launch (with a prompt to start at once), then wait or status, logs to read " +
         "what the agent did, send for the next instruction, and stop when done. Ids are Armada sandbox ids.",
     },

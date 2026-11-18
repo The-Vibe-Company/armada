@@ -22,7 +22,7 @@ The sidebar groups match the task:
 - **What agents have**: **Models**, **Tools**, **Skills** and **Variables**.
 - **Setup**: **Machines**, **Organization** and **Your connections**.
 
-Connect organization compute in **Machines** (cloud accounts or **Your own servers**);
+Connect organization compute in **Machines** (cloud accounts or **Docker hosts**);
 connect your personal GitHub account in **Your connections**. **Tools** is where you
 connect MCP servers; CLI commands still use `armada mcp` and connection IDs.
 
@@ -30,7 +30,7 @@ In **Snapshots**, choose **New** to open **New snapshot**, then **Build snapshot
 to prepare a workspace. **Sandboxes → Launch a sandbox** and a snapshot’s **Launch**
 open the launch dialog. A template’s **Launch** opens **Launch <template name>**
 with its version’s choices fixed; enter the task there. Templates save reusable launch
-settings: the dashboard calls their immutable revisions **versions** (CLI flags
+settings: each published configuration is an immutable **template version** (CLI flags
 still use `--revision` and `--expected-revision`).
 
 In **Routines**, choose **New routine** to schedule a task from a template.

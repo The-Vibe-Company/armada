@@ -52,7 +52,7 @@ Docker children are private to the launcher. Definitions support readable-variab
 and secret references; repository and size launch overrides remain unsupported.
 The dashboard also creates, changes, removes and launches Docker templates. In
 **Launch from → Templates → New template**, the **Snapshot** selector lists ready
-host-local snapshots under **Your server <name>** alongside cloud snapshots. Save
+host-local snapshots under **Docker host <name>** alongside cloud snapshots. Save
 with **Save template**. In an editable template’s details, **Change** opens the
 form; **Save as version N** creates a new version rather than replacing history.
 **Remove → Remove template** confirms deletion. These controls have the same

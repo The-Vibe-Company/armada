@@ -88,7 +88,7 @@ test("the expiry counts down as m:ss and reads expired once it passes", () => {
 
 test("old servers ask for an update instead of inventing running counts", () => {
   expect(hostFact({ sandboxes: 2, version: "1.4.0" })).toBe(
-    "Update the server to report running sandboxes and limits.",
+    "Update the Docker host to report running sandboxes and limits.",
   );
 });
 
@@ -133,8 +133,8 @@ test("a host's state reads in plain words and an offline or unregistered host so
   expect(hostState(host({ state: "draining" }), NOW).detail).toContain("uninstall");
   expect(hostBuildBlocker({ state: "online" })).toBeNull();
   expect(hostBuildBlocker({ state: "draining" })).toContain("draining for uninstall");
-  expect(hostBuildBlocker({ state: "offline" })).toBe("Bring this server online to build.");
-  expect(hostName(host())).toBe("Unnamed server");
+  expect(hostBuildBlocker({ state: "offline" })).toBe("Bring this Docker host online to build.");
+  expect(hostName(host())).toBe("Unnamed host");
   expect(hostName(host({ name: "Workstation" }))).toBe("Workstation");
 });
 

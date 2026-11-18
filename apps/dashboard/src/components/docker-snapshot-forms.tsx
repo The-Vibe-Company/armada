@@ -80,7 +80,7 @@ export function SnapshotCreateChoice({
       const reason = hostBuildBlocker(host);
       return {
         value: host.id,
-        label: `your server ${host.name ?? host.id}`,
+        label: `Docker host ${host.name ?? host.id}`,
         ...(reason === null ? {} : { reason }),
       };
     }),
@@ -235,7 +235,7 @@ function DockerSnapshotForm({
                   const reason = hostBuildBlocker(host);
                   return {
                     value: host.id,
-                    label: `your server ${host.name ?? host.id}`,
+                    label: `Docker host ${host.name ?? host.id}`,
                     ...(reason === null ? {} : { reason }),
                   };
                 })}
@@ -425,7 +425,7 @@ function DockerSnapshotForm({
               ? `${built.name} is ready`
               : built?.status === "failed"
                 ? `The build did not finish. ${built.failureReason ?? "Check the host before trying again."}`
-                : "Building on your server… You can close this window meanwhile."}
+                : "Building on the Docker host… You can close this window meanwhile."}
           </p>
           {built?.status === "ready" && launch && (
             <LaunchDialog
@@ -454,7 +454,7 @@ export function SnapshotBuildRefresh({ building }: { building: boolean }) {
   }, [building, router]);
   return building ? (
     <p role="status" className="text-sm text-muted-foreground">
-      Building on your server. It continues if you close this window.
+      Building on the Docker host. It continues if you close this window.
     </p>
   ) : null;
 }

@@ -96,8 +96,9 @@ export function stageNpm(options: StageOptions): StagedPackage[] {
   writeJson(join(dir, "package.json"), {
     name: NPM_PACKAGE,
     version,
-    description: "Launch coding agents (Claude Code, Codex) on boat.dev sandboxes: the armada command line.",
-    keywords: ["armada", "agents", "coding-agents", "claude-code", "codex", "mcp", "cli"],
+    description:
+      "Launch Claude Code, Codex and OpenCode agents into Boat, Modal or Docker sandboxes: the armada command line.",
+    keywords: ["armada", "agents", "coding-agents", "claude-code", "codex", "opencode", "mcp", "cli"],
     ...COMMON,
     bin: { armada: "bin/armada.cjs" },
     files: ["bin/armada.cjs"],
