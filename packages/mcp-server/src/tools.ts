@@ -1640,12 +1640,15 @@ export function createArmadaServer(context: ToolContext, version: string, option
         since_cursor: z.string().min(1).optional().describe("The cursor of the previous page."),
         conversation_id: conversationId,
         limit: z.number().int().min(1).max(500).optional(),
-        all: z.boolean().optional().describe("Read all available pages, bounded at 100 pages."),
+        all: z.boolean().optional().describe("Read up to 100 pages. Use forward direction only."),
         direction: z.enum(["forward", "backward"]).optional(),
         maxBytes: z.number().int().min(256).max(1048576).optional(),
         coalesce: z.boolean().optional(),
       },
-      output: LOGS_OUTPUT,
+      output: {
+        ...LOGS_OUTPUT,
+        settled: LOGS_OUTPUT.settled.describe("Docker only. Use status or wait to check whether a turn has settled."),
+      },
       readOnly: true,
     },
     async (args) => {
@@ -2503,7 +2506,8 @@ async function readLogs(
     coalesce?: boolean;
   },
 ) {
-  if (args.direction === "backward" && args.all) throw new Error("Backward reads cannot drain all pages.");
+  if (args.direction === "backward" && args.all)
+    throw new VaultError("invalid", "Backward reads cannot drain all pages.");
   const { events, cursor, hasMore, olderCursor, source, runtimeFailure } = await readEventPages(
     (cursor) =>
       provider.events({
