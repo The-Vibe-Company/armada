@@ -51,6 +51,9 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxStore extends SandboxStore {
   /** Persist an accepted native receipt even if stop fences later task publication. */
   recordNativePrompt?(id: string, providerSandboxId: string, promptId: string, requestId?: string): Promise<void>;
+  /** Persist an accepted native steer whose run is not yet provable, so native
+   * lifecycle reconciliation registers the run once it appears. */
+  recordPendingSteer?(id: string, providerSandboxId: string, priorPromptId: string | null): Promise<void>;
   controlState?(
     id: string,
   ): Promise<Pick<
@@ -654,6 +657,30 @@ export function createSqlData(
           ) insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id)
             select id,$5,provider,provider_sandbox_id,owner_id,org_id from accepted on conflict do nothing`,
           [...scope, id, providerSandboxId, promptId, requestId ?? null],
+        );
+      },
+      async recordPendingSteer(id, providerSandboxId, priorPromptId) {
+        // A still-pending cursor is older than any later concrete run, so keep it:
+        // reconciliation registers everything after it and duplicates are no-ops.
+        // Each accepted steer adds one unresolved replacement; the cursor stays
+        // pending until every one of them has its own registered run. A cursor
+        // older than reconciliation's one-hour window is expired, not pending:
+        // the new steer restarts it from its own prior run.
+        await sql.query(
+          `insert into public.native_steer_cursors(sandbox_id,after_prompt_id,steer_id,pending_since,pending_steers)
+          select s.id,$5,gen_random_uuid(),clock_timestamp(),1 from public.sandboxes s
+            join public.goldens g on g.id=s.golden_id
+            where s.id=$3 and ${SANDBOX_VISIBLE} and s.provider_sandbox_id=$4
+              and s.provider in ('boat','modal') and not s.boat_runtime
+              and s.runtime_transport is distinct from 'dialout'
+          on conflict(sandbox_id) do update set
+            after_prompt_id=case when native_steer_cursors.pending_since>clock_timestamp()-interval '1 hour'
+              then coalesce(native_steer_cursors.after_prompt_id,excluded.after_prompt_id)
+              else coalesce(excluded.after_prompt_id,native_steer_cursors.after_prompt_id) end,
+            pending_steers=case when native_steer_cursors.pending_since>clock_timestamp()-interval '1 hour'
+              then native_steer_cursors.pending_steers+1 else 1 end,
+            steer_id=excluded.steer_id,pending_since=excluded.pending_since`,
+          [...scope, id, providerSandboxId, priorPromptId || null],
         );
       },
       async update(id, patch) {
