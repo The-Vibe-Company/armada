@@ -90,7 +90,7 @@ export function single(args: Args, name: string): string | undefined {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export function uuid(value: string | undefined, flag: string): void {
+export function uuid(value: string | undefined, flag: string): asserts value is string {
   if (!value || !UUID.test(value)) throw new GoldenError("invalid_config", `${flag} must be a UUID.`);
 }
 

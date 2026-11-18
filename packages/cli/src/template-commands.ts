@@ -7,7 +7,7 @@ import {
   VaultError,
 } from "@armada/core";
 import { flag, parseArgs, single, values } from "./args.ts";
-import { resolveArmadaOrigin } from "./armada-api.ts";
+import { createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import { control } from "./control.ts";
 import { parseTtl } from "./operations.ts";
 import type { VaultIo } from "./vault-commands.ts";
@@ -271,12 +271,14 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
         );
     }
   }
-  const result = await control<Record<string, unknown>>(
-    io.auth,
-    `templates/${action}`,
-    body,
-    action === "launch" ? AbortSignal.timeout(10 * 60_000) : undefined,
-  );
+  let result: Record<string, unknown>;
+  if (action === "launch") {
+    const signal = AbortSignal.timeout(10 * 60_000);
+    const client = await createArmadaApiClient(io.auth);
+    result = await client.launchFromTemplate(body, signal);
+  } else {
+    result = await control(io.auth, `templates/${action}`, body);
+  }
   if (flag(args, "--json") || action === "launch") io.auth.out(`${JSON.stringify(result)}\n`);
   else if (action === "get") {
     const revision = result.revision as { revision: number };

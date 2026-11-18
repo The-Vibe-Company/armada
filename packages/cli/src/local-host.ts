@@ -3,6 +3,7 @@ import { lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from "node
 import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import { GoldenError } from "@armada/core";
+import { hostInstallClient } from "@armada/sdk/host-install";
 import { parseArgs, single } from "./args.ts";
 import type { Io } from "./run.ts";
 
@@ -229,22 +230,19 @@ async function connected(native: LocalHostIo, binary: string, io: Io): Promise<n
 }
 
 async function downloadHost(native: LocalHostIo, server: string): Promise<Uint8Array> {
-  const download = async (path: string) => {
-    const response = await native.fetch(`${server}${path}`, {
-      redirect: "error",
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!response.ok || response.redirected || (response.url && response.url !== `${server}${path}`))
-      return failed("Host download failed or redirected; no downloaded binary was executed.");
+  const client = hostInstallClient(server, (input, init) => native.fetch(input, init));
+  const download = async (request: ReturnType<typeof client.manifest>) => {
+    const { response, valid } = await request;
+    if (!valid) return failed("Host download failed or redirected; no downloaded binary was executed.");
     return response;
   };
-  const manifest: unknown = await (await download("/api/docker-host/install.json")).json();
+  const manifest: unknown = await (await download(client.manifest())).json();
   if (!manifest || typeof manifest !== "object") return failed("Invalid host install manifest.");
   const pins = manifest as Record<string, unknown>;
   const digest = pins[native.arch];
   if (typeof pins.version !== "string" || !pins.version || typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest))
     return failed("Invalid host install manifest.");
-  const bytes = new Uint8Array(await (await download(`/api/runtime/artifacts/${digest}`)).arrayBuffer());
+  const bytes = new Uint8Array(await (await download(client.artifact(digest))).arrayBuffer());
   if (createHash("sha256").update(bytes).digest("hex") !== digest)
     return failed("Docker host artifact digest mismatch; no downloaded binary was installed or executed.");
   return bytes;
@@ -377,19 +375,10 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
         return invalid("Pipe a valid one-use registration token on stdin; never pass it as an argument.");
       let displayName: string | null = null;
       try {
-        const response = await native.fetch(`${server}/api/docker-host/reuse-registration`, {
-          method: "POST",
-          redirect: "error",
-          signal: AbortSignal.timeout(30_000),
-          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-          body: JSON.stringify({ hostId: current.hostId }),
-        });
-        if (
-          !response.ok ||
-          response.redirected ||
-          (response.url && response.url !== `${server}/api/docker-host/reuse-registration`)
-        )
-          throw new Error("Cannot reconcile registration");
+        const { response, valid } = await hostInstallClient(server ?? "", (input, init) =>
+          native.fetch(input, init),
+        ).reuseRegistration(token, current.hostId!);
+        if (!valid) throw new Error("Cannot reconcile registration");
         const value: unknown = await response.json();
         if (!value || typeof value !== "object") throw new Error("Invalid identity");
         const identity = value as Record<string, unknown>;

@@ -28,15 +28,11 @@ export async function sizePolicyCommand(
       throw new GoldenError("invalid_config", "Supply a versioned size policy object.");
   }
   const client = await createArmadaApiClient(auth);
-  const result = await client.request<MachineSizePolicyResult>("/api/v1/golden/size-policy", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      golden,
-      ...(provider === undefined ? {} : { provider }),
-      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-      ...(file === undefined ? {} : { policy }),
-    }),
+  const result = await client.golden<MachineSizePolicyResult>("size-policy", {
+    golden,
+    ...(provider === undefined ? {} : { provider }),
+    ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+    ...(file === undefined ? {} : { policy }),
   });
   // Preserve the actual server response, including version and configured repository selectors.
   auth.out(`${JSON.stringify(result, null, 2)}\n`);
