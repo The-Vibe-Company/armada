@@ -843,10 +843,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     assertMachineSource(row);
   }
   async function retainBuilder(row: Machine): Promise<boolean> {
-    // A deleted machine has no compute, and its deletion removed its recovery images. Only images
-    // still recorded with it as source (published, saving or tombstoned) need it retained; its
-    // snapshot history alone must not strand a job whose rolled-back artifact was collected.
-    if (row.phase === "deleted") return (await store.images(row.info.id)).length > 0;
+    // A deleting or deleted machine's deletion is already committed: its compute is going or gone
+    // and the delete itself removes its recovery images. Only images still recorded with it as
+    // source (published, saving or tombstoned) need it retained; its snapshot history alone must
+    // not strand a job whose rolled-back artifact was collected, nor an interrupted delete.
+    if (row.phase === "deleting" || row.phase === "deleted") return (await store.images(row.info.id)).length > 0;
     return (
       row.generation !== 1 ||
       !!row.goldenRestore ||
@@ -1784,11 +1785,19 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       if (!found || found.info.id !== request.sandboxId)
         throw refusal("conflict", "Builder reservation changed; source retained.");
       await bound();
+      let resume = false;
       await store.lease(request.sandboxId, async (row, save) => {
         assertRecoveryBuilder(row, request.ownerId);
         if (await retainBuilder(row))
           throw refusal("conflict", "Builder has retained snapshot or recovery proof; source retained.");
         if (row.phase === "deleted") return;
+        // An interrupted deletion (the builder's own cleanup or an earlier disposal) is resumed
+        // through the same delete path, which also removes any recovery images. Every resume
+        // path refuses a deleting record, so its retention cannot change after this lease.
+        if (row.phase === "deleting") {
+          resume = true;
+          return;
+        }
         if (row.physicalId || row.phase !== "reserved") {
           const reconciled = await namedOwned(row);
           if (row.physicalId && row.physicalId !== reconciled.sandboxId)
@@ -1811,6 +1820,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         row.phase = "deleted";
         await save(row);
       });
+      if (resume) return provider.delete({ sandboxId: request.sandboxId });
       return { status: "deleted" };
     },
     async delete({ sandboxId }) {

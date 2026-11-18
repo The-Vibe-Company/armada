@@ -694,7 +694,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
 });
 
 // The job owns a rolled-back artifact's collection: the real provider's builder history must not retain it forever.
-test("a rolled-back Modal build artifact is collected by the job reconciler before its deleted builder is released", async () => {
+test("a rolled-back Modal build artifact is collected by the job reconciler before its interrupted builder delete is resumed", async () => {
   const f = fixture();
   const key = Buffer.alloc(32, 62).toString("base64");
   await db.query(
@@ -743,7 +743,14 @@ test("a rolled-back Modal build artifact is collected by the job reconciler befo
   });
   await f.provider.deleteSnapshot(artifact);
   await expect(f.provider.collectRetiredSnapshot(artifact)).rejects.toMatchObject({ code: "unavailable" });
-  await f.provider.delete({ sandboxId: builder.id });
+  // A transient termination failure leaves the builder's own delete interrupted in `deleting`.
+  let terminations = 0;
+  f.onTerminate(async () => {
+    if (++terminations === 1)
+      throw new ProviderError({ provider: "modal", code: "unavailable", message: "terminate failed", retryable: true });
+  });
+  await expect(f.provider.delete({ sandboxId: builder.id })).rejects.toBeDefined();
+  expect((await f.store.get(builder.id)).phase).toBe("deleting");
   await db.query(
     "update golden_build_jobs set state='recovery_required',phase='persist',error_code='build_failed',fence=$2,builder_id=$3,snapshot=$4 where id=$1",
     [job.jobId, crypto.randomUUID(), builder.id, artifact],
@@ -752,10 +759,13 @@ test("a rolled-back Modal build artifact is collected by the job reconciler befo
     (await db.query<{ state: string }>("select state from golden_build_jobs where id=$1", [job.jobId])).rows[0]?.state;
   await jobs.reconcileOne();
   expect(await state()).toBe("recovery_required");
+  expect((await f.store.get(builder.id)).phase).toBe("deleting");
   f.onImageDelete(undefined);
   await jobs.reconcileOne();
   expect(await state()).toBe("failed");
   expect(await f.provider.collectRetiredSnapshot(artifact)).toBe("collected");
+  expect((await f.store.get(builder.id)).phase).toBe("deleted");
+  expect(terminations).toBe(2);
 });
 
 // Authoring gate: SDK-bound resource requests, no-allocation rejection and restoration

@@ -343,18 +343,24 @@ test("a persist failure deletes only a confirmed unreferenced ready snapshot and
 });
 
 test.each([
-  ["committed", undefined, "golden-bx"],
-  ["refused", new Error("source busy"), undefined],
+  ["pending", undefined, ["discard:golden-bx", "delete:golden-bx", "collect:golden-bx", "stop"]],
+  ["refused", "delete", ["discard:golden-bx", "delete:golden-bx", "stop"]],
+  // Without the durable record the reconciler could not resume it: the artifact is never touched.
+  ["unrecorded", "discard", ["discard:golden-bx", "stop"]],
 ] as const)(
-  "an unpublished artifact whose deletion is %s and collection pending never reports cleanup safe",
-  async (_, refusal, collecting) => {
+  "an unpublished artifact is recorded before its retirement and a %s cleanup never reports safe",
+  async (_, refused, expected) => {
     const log: string[] = [];
-    const safety: [boolean, string | undefined][] = [];
+    const safety: boolean[] = [];
     const s = new GoldenCreateService({
       canDiscardSnapshot: async () => true,
       execution: {
         id: "job",
-        cleaned: (safe, pending) => void safety.push([safe, pending]),
+        cleaned: (safe) => void safety.push(safe),
+        discarding: async (name) => {
+          log.push(`discard:${name}`);
+          if (refused === "discard") throw new Error("lease lost");
+        },
         phase: async () => {},
         builder: async () => {},
       },
@@ -369,11 +375,9 @@ test.each([
       id: "boat",
       createGolden: async () => ({ id: "bx" }),
       snapshot: async ({ name }: any) => ({ name, status: "ready" }),
-      // A committed tombstone leaves the physical artifact to the image service: durable cleanup
-      // work for the job. A refused deletion never committed one, so there is nothing to collect.
       deleteSnapshot: async (name: string) => {
         log.push(`delete:${name}`);
-        if (refusal) throw refusal;
+        if (refused === "delete") throw new Error("source busy");
       },
       collectRetiredSnapshot: async (name: string) => {
         log.push(`collect:${name}`);
@@ -384,8 +388,8 @@ test.each([
     await expect(s.create(p, actor, { name: "x", visibility: "org", repos: ["acme/web"] })).rejects.toMatchObject({
       code: "build_failed",
     });
-    expect(log).toEqual(refusal ? ["delete:golden-bx", "stop"] : ["delete:golden-bx", "collect:golden-bx", "stop"]);
-    expect(safety).toEqual([[false, collecting]]);
+    expect(log).toEqual([...expected]);
+    expect(safety).toEqual([false]);
   },
 );
 

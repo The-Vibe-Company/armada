@@ -45,9 +45,11 @@ export interface GoldenCreateDeps {
   /** Durable queue phase/fence hooks, never client-controlled. */
   execution?: {
     id: string;
-    /** `collecting` names a confirmed-unpublished artifact whose deletion committed but whose
-     * deferred collection (Modal) is still pending: durable cleanup work for the job's reconciler. */
-    cleaned(safe: boolean, collecting?: string): void;
+    cleaned(safe: boolean): void;
+    /** Durably records a confirmed-unpublished artifact under the job fence BEFORE its remote
+     * cleanup, so the job's reconciler can resume its retirement and deferred collection even if
+     * this attempt's lease expires mid-cleanup. A failure leaves the artifact untouched. */
+    discarding?(snapshot: string): Promise<void>;
     phase(phase: string): Promise<void>;
     builder(id: string): Promise<void>;
   };
@@ -409,7 +411,6 @@ export class GoldenCreateService {
       );
     } finally {
       let cleanupSafe = !uncertainSnapshot && !uncertainPublication;
-      let collecting: string | undefined;
       if (!uncertainSnapshot && !persisted && requestedSnapshot && builder && snapshotAttempted) {
         // A timed-out request may have created an artifact. Only reclaim a settled artifact
         // with matching source provenance; an in-flight/unknown save is left for reconciliation.
@@ -433,20 +434,20 @@ export class GoldenCreateService {
         if (ownedSnapshot && artifactSettled && (!persistAttempted || knownUnpublished)) {
           // An unpublished artifact has no retirement row to retry its collection, so cleanup is
           // safe only once a deferred-collection provider confirms the artifact itself is gone.
-          // Once its deletion has committed, a pending collection is reported as durable cleanup
-          // work: the job's reconciler retries it under the original authority.
+          // The job records the artifact under its fence first: its reconciler then owns the
+          // retirement, collection and builder disposal, whatever happens to this attempt.
           const owned = ownedSnapshot;
-          let deleted = false;
-          await provider
-            .deleteSnapshot(owned)
+          const deferred = provider.collectRetiredSnapshot?.bind(provider);
+          await (deferred && this.deps.execution?.discarding
+            ? this.deps.execution.discarding(owned)
+            : Promise.resolve()
+          )
+            .then(() => provider.deleteSnapshot(owned))
             .then(async () => {
-              deleted = true;
-              if (provider.collectRetiredSnapshot && (await provider.collectRetiredSnapshot(owned)) !== "collected")
-                throw new Error("collection pending");
+              if (deferred && (await deferred(owned)) !== "collected") throw new Error("collection pending");
             })
             .catch(() => {
               cleanupSafe = false;
-              if (deleted && provider.collectRetiredSnapshot) collecting = owned;
             });
         }
       }
@@ -477,7 +478,6 @@ export class GoldenCreateService {
       }
       this.deps.execution?.cleaned(
         cleanupSafe && (stopped || (!builder && (phase === "authorization" || refusedBuilder))),
-        collecting,
       );
     }
   }
