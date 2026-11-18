@@ -250,23 +250,40 @@ export interface LaunchOptions extends GoldenLimits {
   newId?: () => string;
 }
 
-/**
- * Forks a golden into a sandbox, brings its repos up to date, runs its init commands and, with a
- * prompt, starts the agent.
- *
- * The caller's own database role does the reads and writes: a private golden of someone else is
- * `not_found`. The fork starts from the stored snapshot name, gets `noEnv` and an environment with
- * only the credentials of this harness (user over org), and never writes them to the golden. A fork
- * inherits neither TTL nor labels, so both are set here. When anything fails after the fork the
- * sandbox is recorded as `failed` and its machine is stopped.
- */
-export async function launchSandbox(
+interface LaunchPlan {
+  acceptedAt: number;
+  provider: Provider;
+  stores: LaunchStores;
+  request: LaunchRequest;
+  options: LaunchOptions;
+  golden: GoldenRecord;
+  runtime: LaunchOptions["runtime"];
+  harness: Harness;
+  prompt: string | undefined;
+  choice: ModelChoice;
+  ttlSeconds: number;
+  extensionHeadroom: number;
+  repositoryDir: string | null;
+  resourceProject: GoldenRepo | undefined;
+  machineSize: ReturnType<typeof resolveMachineSize>;
+  prepareNativeCwd: Provider["prepareNativeHarnessCwd"];
+  visibility: "private" | "org";
+  connectionIds: string[];
+  snapshot: string;
+  credentials: HarnessCredentials;
+  github: GitHubAccess;
+  connected: Extract<GitHubAccess, { status: "connected" }> | null;
+  env: HarnessCredentials["env"];
+  secrets: HarnessCredentials["secrets"];
+}
+
+async function resolveLaunchPlan(
   provider: Provider,
   stores: LaunchStores,
   actor: GoldenActor,
   request: LaunchRequest,
-  options: LaunchOptions = {},
-): Promise<LaunchResult> {
+  options: LaunchOptions,
+): Promise<LaunchPlan> {
   // #2560: the request is accepted here; the sandbox row (and so the stage table) exists only after the fork.
   const acceptedAt = performance.now();
   validateLaunchSkillPins(request.skills ?? []);
@@ -418,7 +435,7 @@ export async function launchSandbox(
   ) {
     // Re-enter through the shared runtime selection before allocating compute.
     // Its resolver excludes native GitHub/model environment delivery.
-    return launchSandbox(provider, stores, actor, request, {
+    return resolveLaunchPlan(provider, stores, actor, request, {
       ...options,
       boatRuntimeDefault: options.boatEndpointRuntime,
     });
@@ -463,6 +480,84 @@ export async function launchSandbox(
   const secrets = connected ? [...credentials.secrets, connected.token] : credentials.secrets;
 
   await stores.credentials.authorizeRepositories?.(actor, credentials, golden.config.repos);
+  return {
+    acceptedAt,
+    provider,
+    stores,
+    request,
+    options,
+    golden,
+    runtime,
+    harness,
+    prompt,
+    choice,
+    ttlSeconds,
+    extensionHeadroom,
+    repositoryDir,
+    resourceProject,
+    machineSize,
+    prepareNativeCwd,
+    visibility,
+    connectionIds,
+    snapshot,
+    credentials,
+    github,
+    connected,
+    env,
+    secrets,
+  };
+}
+
+/** Admit under the golden operation fence before handing off to the provider. */
+async function admitLaunchPlan(plan: LaunchPlan, actor: GoldenActor, id: string): Promise<void> {
+  await plan.stores.credentials.admit?.(actor, plan.credentials, id, plan.choice.model);
+  await plan.options.beforeFork?.(id);
+}
+
+/**
+ * Forks a golden into a sandbox, brings its repos up to date, runs its init commands and, with a
+ * prompt, starts the agent.
+ *
+ * The caller's own database role does the reads and writes: a private golden of someone else is
+ * `not_found`. The fork starts from the stored snapshot name, gets `noEnv` and an environment with
+ * only the credentials of this harness (user over org), and never writes them to the golden. A fork
+ * inherits neither TTL nor labels, so both are set here. When anything fails after the fork the
+ * sandbox is recorded as `failed` and its machine is stopped.
+ */
+export async function launchSandbox(
+  initialProvider: Provider,
+  initialStores: LaunchStores,
+  actor: GoldenActor,
+  initialRequest: LaunchRequest,
+  initialOptions: LaunchOptions = {},
+): Promise<LaunchResult> {
+  const plan = await resolveLaunchPlan(initialProvider, initialStores, actor, initialRequest, initialOptions);
+  const {
+    acceptedAt,
+    provider,
+    stores,
+    request,
+    options,
+    golden,
+    runtime,
+    harness,
+    prompt,
+    choice,
+    ttlSeconds,
+    extensionHeadroom,
+    repositoryDir,
+    resourceProject,
+    machineSize,
+    prepareNativeCwd,
+    visibility,
+    connectionIds,
+    snapshot,
+    credentials,
+    github,
+    connected,
+    env,
+    secrets,
+  } = plan;
   const id = (options.newId ?? (() => crypto.randomUUID()))();
   const releaseOperation = await stores.goldens.beginOperation?.(golden.id, {
     kind: "launch",
@@ -472,8 +567,7 @@ export async function launchSandbox(
   let childRecorded = false;
   let noAllocation = true;
   try {
-    await stores.credentials.admit?.(actor, credentials, id, choice.model);
-    await options.beforeFork?.(id);
+    await admitLaunchPlan(plan, actor, id);
     noAllocation = false;
     const forked = await provider
       .fork({
