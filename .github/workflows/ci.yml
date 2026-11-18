@@ -30,8 +30,6 @@ jobs:
           fetch-depth: 1
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      - run: bun run lint
-        if: matrix.shard == 1
       - run: bun scripts/generate-ios-harness.ts --check
         if: matrix.shard == 1
       - run: bun run typecheck
@@ -65,6 +63,9 @@ jobs:
             base=$(git rev-parse HEAD^)
           fi
           bun scripts/db/check-migrations.ts "$base"
+          echo "TABLE_OWNERS_BASE=$base" >> "$GITHUB_ENV"
+      - run: bun run lint
+        if: matrix.shard == 1
       - name: Test migration guard
         if: matrix.shard == 1
         run: bun test scripts/db/check-migrations.test.ts

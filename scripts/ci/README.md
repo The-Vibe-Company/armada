@@ -58,3 +58,15 @@ Before measurements and source: completed merge-queue run 43482535658. Jobs
 waited 11–71 seconds; eight unit job runtimes ranged 60–90 seconds. Actual
 post-change queue wait and runtime must be measured on the PR/after merge; local
 worker timings or old isolated-file sums are not an observed six-shard result.
+
+## Table ownership
+
+`bun run lint` checks literal SQL insert/update/delete statements and Supabase
+mutation chains in non-test TypeScript against the owner globs in
+[`tables.ts`](tables.ts). New writes to those tables belong in the owning module.
+Each allowlist line covers one existing write by file, table and verb. Delete the
+matching line when a write moves into its owning module or is removed. Shard 1
+checks that exception counts do not increase relative to its fetched base.
+Local lint uses the merge base with `origin/main` when available.
+Dynamic SQL identifiers, indirect client calls, raw HTTP requests and SQL files
+are outside the scanner's scope.
