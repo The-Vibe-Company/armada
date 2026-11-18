@@ -16,7 +16,7 @@ await armada.send({ id: sandbox.id, prompt: "Review the change", request_id: cry
 await armada.stop({ id: sandbox.id });
 ```
 
-The client sends its service token on every request, so `url` must be an `https:` origin. Plain `http:` is accepted only for loopback hosts (`localhost`, `*.localhost`, `127.0.0.0/8` and `[::1]`), for local servers and test fixtures; any other `http:` origin throws a `TypeError` before a request is made.
+The client sends its service token on every request, so `url` must be an `https:` origin. Plain `http:` is accepted only for loopback hosts (`localhost`, `127.0.0.0/8` and `[::1]`), for local servers and test fixtures; any other `http:` origin throws a `TypeError` before a request is made.
 
 `launch` also accepts a Docker launch (`DockerLaunchInput`): `org`, `provider: "docker"`, `harness`, a caller-chosen `requestId` UUID that makes replays return the same launch, and a source: either `hostId` (`DockerHostLaunchInput`, optionally with `repos`) or `snapshotId` (`DockerSnapshotLaunchInput`, which selects its own host and refuses `repos`). Discover Docker support with `launch/options` first. Its result (`DockerLaunchResult`) has `golden: null`, and `promptId` and `conversationId` are present only when a first prompt was sent.
 

@@ -360,7 +360,13 @@ test("remote origins must use HTTPS so the service token never crosses the netwo
     calls.push(`${String(url)} ${new Headers(init?.headers).get("authorization")}`);
     return Response.json({ id: "sandbox_placeholder" });
   }) as typeof globalThis.fetch;
-  for (const url of ["http://armada.example", "http://10.0.0.5:8080", "http://localhost.example.com", "http://[::2]"])
+  for (const url of [
+    "http://armada.example",
+    "http://10.0.0.5:8080",
+    "http://localhost.example.com",
+    "http://[::2]",
+    "http://app.localhost",
+  ])
     expect(() => new Armada({ token: "service_canary", url, fetch })).toThrow(
       "Use an HTTPS Armada origin; plain HTTP is only accepted for loopback hosts.",
     );
@@ -369,9 +375,9 @@ test("remote origins must use HTTPS so the service token never crosses the netwo
     "https://armada.example",
     "http://localhost:3000",
     "http://LOCALHOST",
-    "http://app.localhost",
     "http://127.0.0.1:4000",
     "http://127.1",
+    "http://2130706433",
     "http://[::1]:8080",
   ];
   for (const url of allowed)
@@ -380,8 +386,8 @@ test("remote origins must use HTTPS so the service token never crosses the netwo
     "https://armada.example",
     "http://localhost:3000",
     "http://localhost",
-    "http://app.localhost",
     "http://127.0.0.1:4000",
+    "http://127.0.0.1",
     "http://127.0.0.1",
     "http://[::1]:8080",
   ]);

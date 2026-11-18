@@ -311,15 +311,10 @@ const commonCodes = {
   Partial<Record<ApiFailureCode, boolean>>;
 const retryStatuses = new Set([429, 502, 503, 504]);
 
-/** Loopback hosts never leave this machine: localhost names, 127.0.0.0/8 and ::1. */
+/** Loopback hosts never leave this machine: localhost, 127.0.0.0/8 and ::1. Other names depend on the resolver. */
 function loopbackHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
-  return (
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host === "[::1]" ||
-    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
-  );
+  return host === "localhost" || host === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
 
 /** Service-token client. No provider credentials, filesystem access, or server imports. */
