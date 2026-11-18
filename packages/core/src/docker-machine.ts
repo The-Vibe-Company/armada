@@ -16,7 +16,7 @@ export interface DockerMachineCli {
     argv: readonly string[],
     stdin?: string | Uint8Array,
     options?: { timeoutMs?: number; githubBuildToken?: string },
-  ): Promise<{ exitCode: number; stdout: string }>;
+  ): Promise<{ exitCode: number; stdout: string; stderr?: string }>;
 }
 
 /**

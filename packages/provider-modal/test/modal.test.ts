@@ -1027,7 +1027,6 @@ function compositionOptions(
     artifact: {
       base: `node@sha256:${"a".repeat(64)}`,
       apt: {
-        git: "1",
         gh: "1",
         opensshServer: "1",
         sudo: "1",

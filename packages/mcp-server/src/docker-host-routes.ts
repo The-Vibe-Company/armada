@@ -1,5 +1,6 @@
 import { readBoundedText } from "@armada/auth";
 import { DOCKER_JOB_FAILURE_REASONS, type DockerJobFailureReason } from "@armada/core";
+import { isSnapshotBaselineTool } from "@armada/core/server";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
@@ -182,6 +183,8 @@ export function createDockerHostRoutes(
                       ? ["outcome", "reason"]
                       : ["outcome"]),
               ...("imageId" in body ? ["imageId"] : []),
+              ...("baselineVersion" in body ? ["baselineVersion"] : []),
+              ...("baselineTool" in body ? ["baselineTool"] : []),
             ]
           : path.endsWith("/poll") && "version" in body
             ? [
@@ -378,11 +381,26 @@ export function createDockerHostRoutes(
         (outcome !== "failed" || !DOCKER_JOB_FAILURE_REASONS.includes(reason as DockerJobFailureReason))
       )
         throw new InvalidInput();
+      const baselineTool = body.baselineTool;
+      if ("baselineTool" in body && (reason !== "snapshot_build_failed" || !isSnapshotBaselineTool(baselineTool)))
+        throw new InvalidInput();
+      const baselineVersion = body.baselineVersion;
+      if (
+        "baselineVersion" in body &&
+        (outcome !== "completed" ||
+          typeof baselineVersion !== "number" ||
+          !Number.isSafeInteger(baselineVersion) ||
+          baselineVersion < 1 ||
+          baselineVersion > 2147483647)
+      )
+        throw new InvalidInput();
       await store.complete(token, installationId, {
         requestId,
         outcome,
         ...(reason === undefined ? {} : { reason: reason as DockerJobFailureReason }),
         ...("imageId" in body ? { imageId: string(body.imageId) } : {}),
+        ...(typeof baselineVersion === "number" ? { baselineVersion } : {}),
+        ...(isSnapshotBaselineTool(baselineTool) ? { baselineTool } : {}),
       });
       return Response.json({ requestId }, { headers });
     } catch (error) {

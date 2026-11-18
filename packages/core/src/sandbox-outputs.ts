@@ -1,3 +1,4 @@
+import { SNAPSHOT_BASELINE_BUN } from "./snapshot-baseline.ts";
 /** Declared sandbox outputs (#2570): one fixed directory, bounded snapshot, no caller-supplied path. */
 
 import {
@@ -111,7 +112,7 @@ export const OUTPUT_COLLECTOR_PROBE_MARKER = "armada-output-collector-ready";
 
 /** Armada's managed runtime Bun. Golden builds provision it at the protected path independently of
  * any repository Bun pin. */
-export const OUTPUT_COLLECTOR_BUN_VERSION = "1.4.2";
+export const OUTPUT_COLLECTOR_BUN_VERSION = SNAPSHOT_BASELINE_BUN;
 
 const probeProgram =
   collectorSetup +

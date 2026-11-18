@@ -33,6 +33,7 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
   };
   const images = new Map<string, { Id: string; Config: { Labels: Record<string, string> } }>();
   let proofFailure: unknown;
+  let missingBaselineTool = false;
   const commands: (readonly string[])[] = [];
   let builds = 0,
     directory = "";
@@ -52,6 +53,8 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
           return { exitCode: 0, stdout: "" };
         if (argv[0] !== "build") throw Error("Unexpected Docker operation");
         builds++;
+        if (missingBaselineTool)
+          return { exitCode: 1, stdout: "", stderr: "#22 0.05 ARMADA_BASELINE_1_FAILED jq\nproject output" };
         try {
           directory = argv.at(-1)!;
           expect(stdin).toBeUndefined();
@@ -75,6 +78,14 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
           const dockerfile = await readFile(join(directory, "Dockerfile"), "utf8");
           expect(dockerfile).toContain(`FROM ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repeat(64)}\n`);
           expect(dockerfile).toContain("uid=0,gid=0,mode=0400");
+          const lines = dockerfile.trimEnd().split("\n");
+          expect(lines.find((line) => line.startsWith("RUN set -eu"))).toContain("python3-pip");
+          expect(lines.at(-2)).toBe("USER 1000:1000");
+          const verification = lines.at(-1)!;
+          expect(verification).toStartWith("RUN ");
+          const result = Bun.spawnSync(["/bin/sh", "-c", verification.slice(4)], { env: { PATH: "" } });
+          expect(result.exitCode).toBe(1);
+          expect(result.stderr.toString().trim()).toBe("ARMADA_BASELINE_1_FAILED python3");
           // A snapshot materializes only the selected head; the unchanged scan still checks every fetched object.
           expect(await readFile(join(directory, "public/checkout.sh"), "utf8")).toContain(
             "git clone --depth=1 --branch 'main' --single-branch https://github.com/example/project.git /home/user/project",
@@ -116,9 +127,9 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
   });
   const built = await executor.buildSnapshot(job);
   if (proofFailure) throw proofFailure;
-  expect(built).toBe(`sha256:${"b".repeat(64)}`);
+  expect(built).toEqual({ imageId: `sha256:${"b".repeat(64)}`, baselineVersion: 1 });
   await expect(lstat(directory)).rejects.toMatchObject({ code: "ENOENT" });
-  expect(await executor.buildSnapshot(job, true)).toBe(`sha256:${"b".repeat(64)}`);
+  expect(await executor.buildSnapshot(job, true)).toEqual(built);
   expect(builds).toBe(1);
   const setup = commands.find((args) => args[0] === "buildx" && args[1] === "create")!;
   expect(setup).toContain("docker-container");
@@ -139,10 +150,15 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
   expect(processLimit).toBeLessThan(commands.findIndex((args) => args[0] === "build"));
   expect(commands).toContainEqual(["buildx", "rm", "--force", `armada-builder-${id}`]);
   const image = [...images.values()][0]!;
+  delete image.Config.Labels["dev.armada.environment.baseline-version"];
+  expect(await executor.buildSnapshot(job, true)).toEqual({ imageId: built.imageId, baselineVersion: null });
   image.Config.Labels["dev.armada.environment.armada-version"] = "2.27.0";
   await expect(executor.buildSnapshot(job, true)).rejects.toThrow("Docker snapshot build failed or outcome unknown.");
   image.Config.Labels["dev.armada.environment.armada-version"] = "2.28.0";
   image.Config.Labels["dev.armada.environment.owner"] = "44444444-4444-4444-8444-444444444444";
   await expect(executor.buildSnapshot(job, true)).rejects.toThrow("Docker snapshot build failed or outcome unknown.");
   expect(builds).toBe(1);
+  images.clear();
+  missingBaselineTool = true;
+  await expect(executor.buildSnapshot(job)).rejects.toThrow("Snapshot baseline 1 requires a working jq");
 });

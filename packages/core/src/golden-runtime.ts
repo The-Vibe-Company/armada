@@ -155,7 +155,10 @@ export async function snapshotGolden(
           "conflict",
           `Golden changed while saving '${actual}'. Source ${master} and immutable Image retained for reconciliation.`,
         );
-      return { golden: { ...golden, providerSnapshotId: actual, providerSandboxId: null }, snapshotName: actual };
+      return {
+        golden: { ...golden, providerSnapshotId: actual, providerSandboxId: null, baselineVersion: null },
+        snapshotName: actual,
+      };
     }
     if (store.recordSnapshot) {
       const published = await store.recordSnapshot(golden.id, master, actual);
@@ -163,7 +166,7 @@ export async function snapshotGolden(
       if (!published) throw new GoldenError("conflict", "The golden changed while snapshotting; retry snapshot.");
     } else await store.setSnapshot(golden.id, actual);
     uncertain = false;
-    return { golden: { ...golden, providerSnapshotId: actual }, snapshotName: actual };
+    return { golden: { ...golden, providerSnapshotId: actual, baselineVersion: null }, snapshotName: actual };
   } catch (error) {
     failed = true;
     throw error;
