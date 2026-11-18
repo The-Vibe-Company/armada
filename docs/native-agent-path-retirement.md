@@ -145,7 +145,7 @@ Also retire the owning tests and fixtures when their last caller goes away. Boat
 | [`provider-modal/provider.ts:390–424`](../packages/provider-modal/src/provider.ts#L390-L424) | 35 | Runner boot, health and native environment restore. Retain physical preparation |
 | [`provider-modal/provider.ts:1382–1680`](../packages/provider-modal/src/provider.ts#L1382-L1680) | 299 | Native cwd, GitHub/model/MCP setup, legacy epoch operations, agent turns and history. Keep host exec |
 | [`provider-modal/provider.ts:1829–1867`](../packages/provider-modal/src/provider.ts#L1829-L1867) | 39 | Native quiescence/retention during stop. Keep host lifecycle |
-| [`provider-modal/process-scope.ts:1–317`](../packages/provider-modal/src/process-scope.ts#L1-L317) | 317 | Native runner baseline capture and sealing. Keep process inspection and quiescence used by SSH and host lifecycle until their callers are removed or migrated |
+| [`provider-modal/process-scope.ts:1–317`](../packages/provider-modal/src/process-scope.ts#L1-L317) | 317 | Native runner PID-based sealing. Keep shared baseline capture, process inspection and quiescence used by SSH and host lifecycle |
 | [`provider-modal/distribution.ts:38–115`](../packages/provider-modal/src/distribution.ts#L38-L115) | 78 | Native artifact install, runner start and environment restore. Keep shared image and snapshot preparation |
 | [`provider-modal/composed.ts:114–176`](../packages/provider-modal/src/composed.ts#L114-L176) | 63 | Runner transport, signing, distribution and ingest assembly. Keep scoped binding |
 | [`provider-modal/store.ts:218–273`](../packages/provider-modal/src/store.ts#L218-L273) | 56 | Native stored event reads and ingest writes. Keep machine/image storage |
