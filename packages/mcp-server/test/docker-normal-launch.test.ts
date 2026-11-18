@@ -520,8 +520,9 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
         `select request_id from public.runtime_commands where sandbox_id=$1 order by sequence`,
         [f.body.requestId],
       )
-    ).rows.map((row) => row.request_id.startsWith("outputs_"));
-  expect(await commands()).toEqual([false, false, false, false, true]);
+    ).rows.map((row) => row.request_id);
+  const afterStop = await commands();
+  expect(afterStop.map((id) => id.startsWith("outputs_"))).toEqual([false, false, false, false, true]);
   await db.query(`update public.credentials set status='revoked' where id=$1`, [f.body.credentialId]);
   const replay = await f.service(sql, false).launch(f.caller, f.body);
   expect(replay.sandbox.status).toBe("deleted");
@@ -529,7 +530,7 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   expect(replay.runtime).toEqual(result.runtime);
   expect(f.resolutions()).toBe(1);
   // The replay issues no runtime command.
-  expect(await commands()).toEqual([false, false, false, false, true]);
+  expect(await commands()).toEqual(afterStop);
 });
 
 test("unknown timeout and response loss survive restart and concurrent exact retries without rotating phase IDs", async () => {
