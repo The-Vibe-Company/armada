@@ -60,7 +60,7 @@ const commonCodes = {
   Partial<Record<ApiFailureCode, boolean>>;
 const retryStatuses = new Set([429, 502, 503, 504]);
 
-interface RequestPolicy {
+export interface RequestPolicy {
   fetch: Fetch;
   timeoutMs: number;
   signal?: AbortSignal | null | undefined;
@@ -79,7 +79,7 @@ interface Failure {
   retryAfterSeconds?: number | undefined;
 }
 
-type RequestResult =
+export type RequestResult =
   | { kind: "transport"; failure: Failure; timedOut: boolean }
   | {
       kind: "response";

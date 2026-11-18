@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./commands": "./src/commands.ts",
     "./auth": "./src/auth.ts",
     "./host-install": "./src/host-install.ts",
     "./request": "./src/request.ts",

@@ -192,17 +192,10 @@ export async function tokenCreate(
   json = false,
 ): Promise<void> {
   const client = await createArmadaApiClient(io);
-  const created = await client.request<{ id: string; label: string; orgName: string; token: string }>(
-    "/api/v1/token/create",
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        ...(orgName !== undefined ? { orgName } : {}),
-        ...(label !== undefined ? { label } : {}),
-      }),
-    },
-  );
+  const created = await client.token<{ id: string; label: string; orgName: string; token: string }>("create", {
+    ...(orgName !== undefined ? { orgName } : {}),
+    ...(label !== undefined ? { label } : {}),
+  });
   if (json) {
     io.out(`${JSON.stringify(created)}\n`);
     return;
@@ -214,9 +207,9 @@ export async function tokenCreate(
 
 export async function tokenList(io: AuthIo, json = false): Promise<void> {
   const client = await createArmadaApiClient(io);
-  const { tokens } = await client.request<{
+  const { tokens } = await client.token<{
     tokens: { id: string; label: string; orgName: string; createdAt: string; revokedAt: string | null }[];
-  }>("/api/v1/token/list", { method: "POST" });
+  }>("list");
   if (json) {
     io.out(`${JSON.stringify({ tokens })}\n`);
     return;
@@ -233,11 +226,7 @@ export async function tokenList(io: AuthIo, json = false): Promise<void> {
 
 export async function tokenRevoke(io: AuthIo, id: string, json = false): Promise<void> {
   const client = await createArmadaApiClient(io);
-  await client.request("/api/v1/token/revoke", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id }),
-  });
+  await client.token("revoke", { id });
   io.out(json ? `${JSON.stringify({ ok: true })}\n` : `Revoked ${id}.\n`);
 }
 

@@ -55,7 +55,7 @@ export async function browserLogin(options: {
   });
   try {
     const callback = `http://127.0.0.1:${server.port}/callback`;
-    const client = authClient(origin, options.fetch);
+    const client = authClient(origin, (input, init) => options.fetch(input, init));
     options.open(
       client.authorize({
         provider: options.provider,

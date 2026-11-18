@@ -21,10 +21,7 @@ const invalid = (message: string): never => {
 };
 
 export async function listHosts(client: ArmadaApiClient, org: string): Promise<DockerHostListResponse> {
-  const value = await client.request<unknown>("/api/v1/docker/hosts/list", {
-    method: "POST",
-    body: JSON.stringify({ org }),
-  });
+  const value = await client.dockerHost<unknown>("list", { org });
   if (!record(value) || typeof value.placement !== "boolean" || !Array.isArray(value.hosts))
     return invalid("The server returned an invalid host list.");
   const ids = new Set<string>();
@@ -153,10 +150,7 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
     if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > 31536000)
       return invalid("--retention requires 0 or a duration such as 24h (maximum 365d).");
     const resolved = await resolveHost(client, org, hostId!);
-    await client.request("/api/v1/docker/hosts/retention", {
-      method: "POST",
-      body: JSON.stringify({ org, hostId: resolved, retentionSeconds: seconds }),
-    });
+    await client.dockerHost("retention", { org, hostId: resolved, retentionSeconds: seconds });
     auth.out(
       flag(args, "--json")
         ? `${JSON.stringify({ hostId: resolved, retentionSeconds: seconds })}\n`
@@ -193,10 +187,7 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
       if (!Object.keys(patch).length) return invalid("Provide --cpus, --memory, --max-sandboxes or --auto.");
     }
     const resolved = await resolveHost(client, org, hostId!);
-    await client.request("/api/v1/docker/hosts/limits", {
-      method: "POST",
-      body: JSON.stringify({ org, hostId: resolved, ...patch }),
-    });
+    await client.dockerHost("limits", { org, hostId: resolved, ...patch });
     auth.out(
       flag(args, "--json")
         ? `${JSON.stringify({ hostId: resolved, ...patch })}\n`
@@ -205,19 +196,16 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
     return 0;
   }
   if (operation === "revoke") {
-    const result = await client.request<{ revoked: boolean }>("/api/v1/docker/hosts/revoke", {
-      method: "POST",
-      body: JSON.stringify({ org, hostId }),
-    });
+    const result = await client.dockerHost<{ revoked: boolean }>("revoke", { org, hostId });
     if (result?.revoked !== true) return invalid("The server did not confirm host revocation.");
     auth.out(
       flag(args, "--json") ? `${JSON.stringify({ hostId, revoked: true })}\n` : `Revoked Docker host ${hostId}.\n`,
     );
     return 0;
   }
-  const ticket = await client.request<DockerHostRegistrationResponse & { command: string; expiresAt: string }>(
-    "/api/v1/docker/hosts/register-token",
-    { method: "POST", body: JSON.stringify({ org, ...(name === undefined ? {} : { name }) }) },
+  const ticket = await client.dockerHost<DockerHostRegistrationResponse & { command: string; expiresAt: string }>(
+    "register-token",
+    { org, ...(name === undefined ? {} : { name }) },
   );
   if (
     !ticket ||

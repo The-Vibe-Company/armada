@@ -375,9 +375,9 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
         return invalid("Pipe a valid one-use registration token on stdin; never pass it as an argument.");
       let displayName: string | null = null;
       try {
-        const { response, valid } = await hostInstallClient(server, (input, init) =>
+        const { response, valid } = await hostInstallClient(server ?? "", (input, init) =>
           native.fetch(input, init),
-        ).reuseRegistration(token, current.hostId);
+        ).reuseRegistration(token, current.hostId!);
         if (!valid) throw new Error("Cannot reconcile registration");
         const value: unknown = await response.json();
         if (!value || typeof value !== "object") throw new Error("Invalid identity");
