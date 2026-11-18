@@ -29,21 +29,21 @@ async function fixture() {
   let waiting: (() => Promise<void>) | undefined;
   const clock = {
     now: () => now,
-    async wait() {
+    async wait(_ms: number, _signal: AbortSignal) {
       const callback = waiting;
       waiting = undefined;
       await callback?.();
       now += 20000;
     },
   };
-  const bridge = () => createRuntimeCommands(authority, ENCRYPTION_KEY, clock);
+  const bridge = (time = clock) => createRuntimeCommands(authority, ENCRYPTION_KEY, time);
   const enrol = async () =>
     authority.enrol(
       (await authority.issue({ ownerId: people.owner, sandboxId: id, configuration: {} })).enrolmentToken,
     );
   const command = (requestId: string): RunnerRequest => ({ version: 1, sandboxId: id, requestId, op: "health" });
-  const request = async (path: string, token: string, epoch: string, body: unknown) => {
-    const response = await bridge().route(
+  const request = async (path: string, token: string, epoch: string, body: unknown, commands = bridge()) => {
+    const response = await commands.route(
       new Request(`https://armada.example/api/runtime/${path}`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "x-armada-runtime-epoch": epoch },
@@ -224,17 +224,53 @@ test("a checkpoint fences new exec work but an admitted exec replay stays unknow
   expect((await f.db.query("select 1 from runtime_commands where request_id='exec-new'")).rows).toHaveLength(0);
 });
 
+test("a held runtime poll returns a locally enqueued command with the clock frozen", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const command = f.command("arrived-during-idle");
+  const waiting = Promise.withResolvers<AbortSignal>();
+  const delay = Promise.withResolvers<void>();
+  const commands = f.bridge({
+    now: () => 0,
+    wait(_ms, signal) {
+      signal.addEventListener("abort", () => delay.resolve(), { once: true });
+      waiting.resolve(signal);
+      return delay.promise;
+    },
+  });
+  const poll = f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch }, commands);
+  const signal = await Promise.race([
+    waiting.promise,
+    poll.then(() => {
+      throw new Error("Runtime poll returned before waiting");
+    }),
+  ]);
+  try {
+    await f.bridge().enqueue(f.people.owner, command);
+    expect(signal.aborted).toBe(true);
+  } finally {
+    if (!signal.aborted) delay.reject(new Error("Runtime poll received no enqueue wake"));
+  }
+  const response = await poll;
+  expect(await response.json()).toEqual({ epoch: active.epoch, command });
+});
+
 test("empty polls release the transaction while waiting and private routes/grants reject malformed authority", async () => {
   const f = await fixture();
 
   const active = await f.enrol();
-  const response = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch });
-  expect(await response.json()).toEqual({ epoch: active.epoch, command: null });
-  f.onWait(async () => {
-    await f.bridge().enqueue(f.people.owner, f.command("arrived-during-idle"));
+  let time = 0;
+  const waits: number[] = [];
+  const commands = f.bridge({
+    now: () => time,
+    async wait(ms) {
+      waits.push(ms);
+      time += ms;
+    },
   });
-  const awakened = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch });
-  expect(await awakened.json()).toEqual({ epoch: active.epoch, command: f.command("arrived-during-idle") });
+  const response = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch }, commands);
+  expect(await response.json()).toEqual({ epoch: active.epoch, command: null });
+  expect(waits).toEqual(Array(20).fill(1000));
   expect((await f.request("poll", "invalid", active.epoch, { epoch: active.epoch })).status).toBe(401);
   expect((await f.request("poll", active.runtimeToken, active.epoch, { epoch: "wrong" })).status).toBe(409);
   for (const role of ["anon", "authenticated"]) {
