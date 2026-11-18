@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.57.1](https://github.com/The-Vibe-Company/armada/compare/v2.57.0...v2.57.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **release:** check SDK launch receipts before npm publish ([#2698](https://github.com/The-Vibe-Company/armada/issues/2698)) ([95ea5a5](https://github.com/The-Vibe-Company/armada/commit/95ea5a5558f236f66d2ed146c973526eee9262b7))
+* **smoke:** correlate failed sandbox launch responses ([#2696](https://github.com/The-Vibe-Company/armada/issues/2696)) ([b43df04](https://github.com/The-Vibe-Company/armada/commit/b43df042cf0fd55f09c5753b4ea43aa03cfbf31c))
+
 ## [2.57.0](https://github.com/The-Vibe-Company/armada/compare/v2.56.0...v2.57.0) (2026-11-18)
 
 

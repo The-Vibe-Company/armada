@@ -3,6 +3,7 @@
     "target": "ES2023",
     "module": "Preserve",
     "moduleResolution": "bundler",
+    "paths": { "@the-vibe-company/armada-sdk": ["./packages/sdk/src/index.ts"] },
     "lib": ["ES2023"],
     "types": ["bun"],
     "strict": true,

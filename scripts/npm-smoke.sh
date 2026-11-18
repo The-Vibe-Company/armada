@@ -104,17 +104,7 @@ node smoke.mjs
 echo "SDK install: node import passed."
 tsc="$root/node_modules/.bin/tsc"
 test -x "$tsc" || { echo "::error::missing $tsc: run bun install --frozen-lockfile first"; exit 1; }
-cat > smoke.ts <<'EOF'
-import { Armada, type FailureCode } from "@the-vibe-company/armada-sdk";
-const code: FailureCode = "outcome_unknown";
-export const launched = new Armada({ token: code }).launch({ golden: "worker", harness: "codex" });
-export async function docker(): Promise<{ golden: null; host: string; prompt: string | undefined }> {
-  const receipt = await new Armada({ token: code }).launch({
-    org: "o", provider: "docker", hostId: "h", harness: "codex", requestId: "r",
-  });
-  return { golden: receipt.golden, host: receipt.sandbox.hostId, prompt: receipt.promptId };
-}
-EOF
+cp "$root/packages/sdk/test/npm-smoke.types.ts" smoke.ts
 # No ambient types: the declarations must resolve on their own, with the standard DOM fetch types.
 cat > tsconfig.json <<'EOF'
 { "compilerOptions": { "noEmit": true, "strict": true, "exactOptionalPropertyTypes": true, "target": "es2022",

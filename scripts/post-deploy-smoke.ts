@@ -77,6 +77,7 @@ class SmokeFailure extends Error {
     readonly code: Code,
     readonly status?: number,
     readonly waitResponse?: Record<string, string | boolean | number>,
+    readonly launchResponse?: { httpStatus: number; timeoutMs: number; requestId?: string },
   ) {
     super(code);
   }
@@ -322,6 +323,9 @@ async function runPostDeploySmoke(
                   ? error.code
                   : "invalid_response",
               ...(error instanceof TemplateSkillSmokeFailure ? error.details : {}),
+              ...(error instanceof SmokeFailure && error.launchResponse
+                ? { launchResponse: error.launchResponse }
+                : {}),
               ...(error instanceof SmokeFailure && error.waitResponse ? { waitResponse: error.waitResponse } : {}),
             }),
       }),
@@ -503,6 +507,8 @@ async function runPostDeploySmoke(
   ): Promise<T> {
     const remaining = (cleaning ? cleanupDeadline : deadline) - io.now();
     if (remaining <= 0) fail("poll_limit_exceeded");
+    const requestTimeoutMs = Math.min(timeoutMs, remaining);
+    const sandboxLaunch = /^sandbox\/launch(?:-access-v1)?$/.test(path);
     try {
       const response = await io.fetch(`${origin}/api/v1/${path}`, {
         method: body === undefined ? "GET" : "POST",
@@ -514,16 +520,25 @@ async function runPostDeploySmoke(
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         redirect: "error",
-        signal: AbortSignal.timeout(Math.min(timeoutMs, remaining)),
+        signal: AbortSignal.timeout(requestTimeoutMs),
       });
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as { error?: { code?: unknown } } | null;
         if ([...protectedCanaries].some((value) => JSON.stringify(payload).includes(value)))
           throw new VaultSmokeFailure("secret_exposed");
         const code = payload?.error?.code;
+        const requestId = sandboxLaunch ? response.headers.get("x-request-id") : null;
         throw new SmokeFailure(
           typeof code === "string" && API_CODES.has(code as Code) ? (code as Code) : "api_failed",
           response.status,
+          undefined,
+          sandboxLaunch
+            ? {
+                httpStatus: response.status,
+                timeoutMs: requestTimeoutMs,
+                ...(requestId && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId) ? { requestId } : {}),
+              }
+            : undefined,
         );
       }
       try {
@@ -535,8 +550,7 @@ async function runPostDeploySmoke(
         } | null;
         // Keep the handle before validating the receipt, as the cleanup journal does.
         record(result);
-        if (/^sandbox\/launch(?:-access-v1)?$/.test(path) && smokeReceiptProvider(result) !== "modal")
-          fail("invalid_response");
+        if (sandboxLaunch && smokeReceiptProvider(result) !== "modal") fail("invalid_response");
         if (
           path === "templates/launch" &&
           (result?.state === "succeeded" || (typeof result?.id === "string" && result.id)) &&
