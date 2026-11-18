@@ -1,0 +1,76 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 45feff3a60e898b466cc1488a1f1361ef7c62725..c5482f98c0b0a368fbbe4317b177f7607251b3ae 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -79269,6 +79269,7 @@ var ModalClient = class {
+       this.profile.serverUrl
+     );
+     this.customMiddleware = params?.grpcMiddleware ?? [];
++    this.grpcDispatchMiddleware = params?.grpcDispatchMiddleware ?? [];
+     this.ipClients = /* @__PURE__ */ new Map();
+     this.cpClient = params?.cpClient ?? this.createClient(this.profile);
+     this.logger.debug("Modal client initialized successfully");
+@@ -79356,7 +79357,11 @@ var ModalClient = class {
+       "grpc.keepalive_timeout_ms": 1e4,
+       "grpc.keepalive_permit_without_calls": 1
+     });
+-    let factory = (0, import_nice_grpc15.createClientFactory)().use(this.authMiddleware(profile)).use(this.retryMiddleware()).use(serverWarningMiddleware(this.logger)).use(timeoutMiddleware);
++    let factory = (0, import_nice_grpc15.createClientFactory)();
++    for (const middleware of this.grpcDispatchMiddleware) {
++      factory = factory.use(middleware);
++    }
++    factory = factory.use(this.authMiddleware(profile)).use(this.retryMiddleware()).use(serverWarningMiddleware(this.logger)).use(timeoutMiddleware);
+     for (const middleware of this.customMiddleware) {
+       factory = factory.use(middleware);
+     }
+diff --git a/dist/index.d.cts b/dist/index.d.cts
+index 9cdf5fdacab16581f93bea27300f396c1b301a69..2aca685a7c66ce9034d10fdae82b6cac4b7f6a39 100644
+--- a/dist/index.d.cts
++++ b/dist/index.d.cts
+@@ -10770,6 +10770,8 @@ interface ModalClientParams {
+      * can change without warning.
+      */
+     grpcMiddleware?: ClientMiddleware[];
++    /** Armada patch: middleware at the transport boundary, inside authentication and retries. */
++    grpcDispatchMiddleware?: ClientMiddleware[];
+     /** @ignore */
+     cpClient?: ModalGrpcClient;
+ }
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 9cdf5fdacab16581f93bea27300f396c1b301a69..2aca685a7c66ce9034d10fdae82b6cac4b7f6a39 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -10770,6 +10770,8 @@ interface ModalClientParams {
+      * can change without warning.
+      */
+     grpcMiddleware?: ClientMiddleware[];
++    /** Armada patch: middleware at the transport boundary, inside authentication and retries. */
++    grpcDispatchMiddleware?: ClientMiddleware[];
+     /** @ignore */
+     cpClient?: ModalGrpcClient;
+ }
+diff --git a/dist/index.js b/dist/index.js
+index c34cd15e0afd8e42f984ab790fa65db8e7e134d9..8b80ce3709f6ded3a56cdcabc297486951405a65 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -79187,6 +79187,7 @@ var ModalClient = class {
+       this.profile.serverUrl
+     );
+     this.customMiddleware = params?.grpcMiddleware ?? [];
++    this.grpcDispatchMiddleware = params?.grpcDispatchMiddleware ?? [];
+     this.ipClients = /* @__PURE__ */ new Map();
+     this.cpClient = params?.cpClient ?? this.createClient(this.profile);
+     this.logger.debug("Modal client initialized successfully");
+@@ -79274,7 +79275,11 @@ var ModalClient = class {
+       "grpc.keepalive_timeout_ms": 1e4,
+       "grpc.keepalive_permit_without_calls": 1
+     });
+-    let factory = createClientFactory2().use(this.authMiddleware(profile)).use(this.retryMiddleware()).use(serverWarningMiddleware(this.logger)).use(timeoutMiddleware);
++    let factory = createClientFactory2();
++    for (const middleware of this.grpcDispatchMiddleware) {
++      factory = factory.use(middleware);
++    }
++    factory = factory.use(this.authMiddleware(profile)).use(this.retryMiddleware()).use(serverWarningMiddleware(this.logger)).use(timeoutMiddleware);
+     for (const middleware of this.customMiddleware) {
+       factory = factory.use(middleware);
+     }

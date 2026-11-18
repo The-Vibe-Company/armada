@@ -8,7 +8,7 @@ import {
   isNonMutatingProviderRefusal,
   OUTPUT_COLLECTOR,
 } from "@armada/core/server";
-import type { Image, ModalClient, Sandbox } from "modal";
+import { type Image, ModalClient, type Sandbox } from "modal";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
@@ -17,7 +17,7 @@ import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/
 import { createSqlData } from "../../mcp-server/src/data.ts";
 import { createModalBootWorker } from "../../mcp-server/src/modal-boot-worker.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
-import { fenceModalMutation, withModalDispatch } from "../src/client.ts";
+import { checkModalDispatch, fenceModalMutation, withModalDispatch } from "../src/client.ts";
 import {
   appendModalEvents,
   type ComposedModalOptions,
@@ -947,6 +947,8 @@ test.each([
   ["create intent committed", "unknown"],
   ["modal_sandbox_create", "resume"],
   ["modal_sandbox_create", "expire"],
+  ["authentication suspended", "revoke"],
+  ["create accepted during revocation", "revoke"],
   ["legacy create accepted", "resume"],
   ["physical name resolved", "resume"],
   ["physical ownership read", "resume"],
@@ -985,6 +987,12 @@ test.each([
   const goldenId = crypto.randomUUID();
   let watching = false;
   let crashed = false;
+  let revoked = false;
+  const revoke = async () => {
+    await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [scope.orgId, teammateId]);
+    await db.query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
+    revoked = true;
+  };
   let appLookups = 0;
   let legacyLookups = 0;
   const renewed = deferred();
@@ -1056,6 +1064,9 @@ test.each([
   };
   const f = fixture(scope, sql, undefined, undefined, undefined, undefined, async (phase, work) => {
     const result = await work();
+    if (watching && phase === "modal_sandbox_create" && boundary === "create accepted during revocation") {
+      await revoke();
+    }
     if (watching && phase === "modal_app_lookup") {
       after(["worker authority resolved", "fork App resolved", "child App resolved"][appLookups++] ?? phase);
     } else {
@@ -1067,6 +1078,32 @@ test.each([
   const name = crypto.randomUUID();
   await f.provider.snapshot({ sandboxId: builder.id, name });
   const createdBeforeBoot = f.creates;
+  let wireCreates = 0;
+  if (boundary === "authentication suspended") {
+    const sdk = new ModalClient({
+      tokenId: "fixture_token_id",
+      tokenSecret: "fixture_token_secret",
+      logLevel: "error",
+      grpcMiddleware: [fenceModalMutation],
+      grpcDispatchMiddleware: [
+        // Stand in for the wire below the SDK's real auth and dispatch middleware.
+        // biome-ignore lint/correctness/useYield: This transport must never be called.
+        async function* () {
+          wireCreates++;
+          throw new Error("Unexpected create reached transport");
+        },
+        checkModalDispatch,
+      ],
+    });
+    spyOn(sdk.cpClient, "authTokenGet").mockImplementation(async () => {
+      await revoke();
+      return { token: "fixture_auth_token" };
+    });
+    f.client.sandboxes.create = async () => {
+      await sdk.cpClient.sandboxCreate({} as Parameters<typeof sdk.cpClient.sandboxCreate>[0]);
+      throw new Error("Unexpected create completion");
+    };
+  }
   const fromName = f.client.sandboxes.fromName.bind(f.client.sandboxes);
   f.client.sandboxes.fromName = async (...args) => {
     if (boundary === "legacy create accepted") {
@@ -1222,7 +1259,9 @@ test.each([
       if (crashDuringRenewal) jest.useRealTimers();
     }
   }
-  expect(crashed).toBe(true);
+  if (boundary === "authentication suspended" || boundary === "create accepted during revocation")
+    expect(revoked).toBe(true);
+  else expect(crashed).toBe(true);
   watching = false;
   crashed = false;
   f.failBoot(false);
@@ -1252,8 +1291,7 @@ test.each([
   const successor = worker();
   try {
     if (revokeOwner) {
-      await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [scope.orgId, teammateId]);
-      await db.query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
+      if (!revoked) await revoke();
     }
     for (let claim = 0; claim < 2; claim++) {
       if (!(await successor.reconcileOne(signal))) break;
@@ -1268,6 +1306,7 @@ test.each([
       await db.query("update members set role='member' where org_id=$1 and user_id=$2", [scope.orgId, teammateId]);
     }
   }
+  expect(wireCreates).toBe(0);
   const persisted = (
     await db.query(
       `select r.phase,s.status,s.activity_lease_id,s.stopped_at,r.fence_id,r.lease_owner,
@@ -1311,7 +1350,14 @@ test.each([
       expect(persisted).toMatchObject({ stopped_at: expect.any(Date), activity_lease_id: null });
     }
   }
-  const created = recovery === "resume" || cleanupCase || boundary === "modal_sandbox_create" ? 1 : 0;
+  const created =
+    recovery === "resume" ||
+    cleanupCase ||
+    boundary === "modal_sandbox_create" ||
+    boundary === "create accepted during revocation"
+      ? 1
+      : 0;
+  if (boundary === "create accepted during revocation") expect(f.log).toContain("terminate");
   expect(f.creates - createdBeforeBoot).toBe(created);
   if (boundary === "legacy create accepted") expect(legacyLookups).toBe(1);
   await db.transaction(async (tx) => {
@@ -1463,9 +1509,20 @@ test.each(["SandboxCreate", "SandboxCreateV2", "SandboxTerminate", "SandboxTermi
           responseStream: false,
           request: {},
           // biome-ignore lint/correctness/useYield: A unary handler returns its only response.
-          async *next(_request, options) {
-            attempts.push(options);
-            return {};
+          async *next(request, options) {
+            const result = await checkModalDispatch(
+              {
+                ...this,
+                request,
+                // biome-ignore lint/correctness/useYield: A unary handler returns its only response.
+                async *next(_request, options) {
+                  attempts.push(options);
+                  return {};
+                },
+              },
+              options,
+            ).next();
+            return result.value;
           },
         },
         {},

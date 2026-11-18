@@ -189,10 +189,14 @@ when lookup returns no result. Preserve the reservation and keep cleanup
 delete-only in this case. Durable initialization and initial-prompt checkpoints,
 versioned async clients, and Boat admission remain separate rollout steps.
 
-The boot worker guards create, terminate and image-delete at Modal's SDK RPC
-middleware, disables SDK retries for those guarded operations, and passes its
-deadline signal. The pinned SDK can still await its internal authentication
-after entering middleware. The command-router path that sends bootstrap stdin
-also has its own retry loop with no caller-supplied cancellation signal. These
-boundaries require provider transport support to enforce live authority through
-the final send and retry.
+The Modal SDK patch puts the final create, terminate and image-delete authority
+check after authentication, immediately before the control-plane transport.
+The outer middleware passes the deadline signal and disables SDK retries.
+A create already sent remains reconcilable by exact name and ownership even
+if the launcher loses membership. Cleanup still needs the original bound
+management credentials to reach Modal.
+
+The command router that sends bootstrap stdin has its own retry loop and
+needs a separate transport fence. Successful boot still hands off to
+request-scoped initialization. Durable initialization must cover revocation
+after boot settles and before the caller takes over.

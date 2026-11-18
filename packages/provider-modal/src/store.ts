@@ -4,6 +4,7 @@ import {
   buildEventPage,
   type EventPage,
   eventPageOptions,
+  type ProviderDispatchGuard,
   ProviderError,
   type Sql,
 } from "@armada/core";
@@ -50,19 +51,21 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     if (!row) throw refusal("not_found", "Modal sandbox not found.");
     return revive(row.record);
   }
+  async function findByRequestKey(requestKey: string, cleanupGuard?: ProviderDispatchGuard) {
+    if (cleanupGuard) await cleanupGuard();
+    else await authorize();
+    const result = await sql.query<{ id: string; record: Machine }>(
+      "select id,record from public.modal_machines where scope=$1 and request_key=$2 and org_id=$3 and owner_id=$4 and visibility=$5::public.visibility",
+      [key, requestKey, scope.orgId, scope.userId, scope.visibility],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    if (row.record.info.id !== row.id)
+      throw refusal("forbidden", "Stored builder identity does not match its reservation.");
+    return revive(row.record);
+  }
   return {
-    async findByRequestKey(requestKey) {
-      await authorize();
-      const result = await sql.query<{ id: string; record: Machine }>(
-        "select id,record from public.modal_machines where scope=$1 and request_key=$2 and org_id=$3 and owner_id=$4 and visibility=$5::public.visibility",
-        [key, requestKey, scope.orgId, scope.userId, scope.visibility],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-      if (row.record.info.id !== row.id)
-        throw refusal("forbidden", "Stored builder identity does not match its reservation.");
-      return revive(row.record);
-    },
+    findByRequestKey,
     async reserve(requestKey, machine, tx = sql) {
       await authorize(tx);
       await tx.query(
@@ -119,7 +122,15 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       );
       return result.rows.map((x) => revive(x.record));
     },
-    async lease(id, work, guard) {
+    async lease(id, work, guard, cleanupRequestKey) {
+      if (cleanupRequestKey !== undefined && !guard)
+        throw refusal("forbidden", "Exact-key Modal cleanup requires a worker claim.");
+      const leasedRow = async () => {
+        if (cleanupRequestKey === undefined) return get(id);
+        const row = await findByRequestKey(cleanupRequestKey, guard);
+        if (row?.info.id !== id) throw refusal("not_found", "Modal cleanup reservation not found.");
+        return row;
+      };
       const signal = guard?.signal;
       async function withAuthority<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
         if (!guard) return work(sql);
@@ -134,7 +145,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
           return result;
         });
       }
-      await get(id);
+      await leasedRow();
       signal?.throwIfAborted();
       const token = randomUUID();
       // Durable boot retries need to outlive a crashed adapter lease. Renew
@@ -173,7 +184,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       const stopHeartbeat = () => clearInterval(heartbeat);
       signal?.addEventListener("abort", stopHeartbeat, { once: true });
       try {
-        const row = await get(id);
+        const row = await leasedRow();
         signal?.throwIfAborted();
         return await work(row, async (row, mode) => {
           const rollback = mode === "undispatched_create";
@@ -181,7 +192,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
             // Proof of a refused create may be recorded under the original lease
             // after revocation. This transition neither dispatches nor extends it.
             if (!rollback) {
-              await authorize(tx);
+              if (cleanupRequestKey === undefined) await authorize(tx);
               signal?.throwIfAborted();
             }
             const result = await tx.query(

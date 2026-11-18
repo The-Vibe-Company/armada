@@ -149,7 +149,7 @@ export type SaveMachine = (row: Machine, mode?: "undispatched_create") => Promis
 export interface ModalStore {
   reserve(key: string, machine: Machine, tx?: Sql): Promise<Machine>;
   withForkSource<T>(id: string, pin: (source: Machine, tx: Sql) => Promise<T>): Promise<T>;
-  findByRequestKey(key: string): Promise<Machine | null>;
+  findByRequestKey(key: string, cleanupGuard?: ProviderDispatchGuard): Promise<Machine | null>;
   get(id: string): Promise<Machine>;
   watermark(id: string, generation: number): Promise<number>;
   list(): Promise<Machine[]>;
@@ -158,6 +158,7 @@ export interface ModalStore {
     id: string,
     work: (row: Machine, save: SaveMachine) => Promise<T>,
     launchGuard?: ProviderDispatchGuard,
+    cleanupRequestKey?: string,
   ): Promise<T>;
   image(name: string, tx?: Sql): Promise<SavedImage>;
   saveImage(image: SavedImage): Promise<void>;

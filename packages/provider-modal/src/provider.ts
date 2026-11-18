@@ -420,6 +420,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     } else {
       sb = await physical(row);
     }
+    // Once create may have reached Modal, retain the exact-name intent on
+    // refusal. The durable delete-only worker reconciles it under a new claim.
+    await beforeDispatch?.();
     if (row.phase === "creating") await onResumeStage?.("provider_claimed");
     row.physicalId = sb.sandboxId;
     if (row.runtimePolicy === "explicit-vm-v1")
@@ -2009,7 +2012,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         await beforeDispatch();
         // Dispatch requires a reservation committed under the live boot claim.
         // After cleanup claims the request, a missing exact-key row proves pre-create absence.
-        const reservation = await store.findByRequestKey(modalLaunchId);
+        const reservation = await store.findByRequestKey(modalLaunchId, beforeDispatch);
         if (!reservation) return { status: "deleted" };
         if (
           reservation.info.id !== sandboxId ||
@@ -2074,6 +2077,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           await save(row);
         },
         beforeDispatch,
+        modalLaunchId,
       );
       // The target's compute and recovery images are gone and durably recorded, so the receipt
       // is published now. Retired images of other sources are collected detached, once. Each is

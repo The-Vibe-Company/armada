@@ -18,22 +18,30 @@ export class ModalRpcDispatchRefused extends Error {
   }
 }
 
+const guardedMutation = /\/(SandboxCreate(?:V2)?|SandboxTerminate(?:V2)?|ImageDelete)$/;
+
 export const fenceModalMutation: ModalMiddleware = async function* (call, options) {
   const guard = dispatch.getStore();
-  if (!guard || !/\/(SandboxCreate(?:V2)?|SandboxTerminate(?:V2)?|ImageDelete)$/.test(call.method.path))
-    return yield* call.next(call.request, options);
-  // The public SDK can await preparation before reaching this RPC. Its custom
-  // middleware wraps auth and retries, so disable retries for this mutation
-  // and pass the attempt signal through the remaining middleware.
-  try {
-    await guard();
-    guard.signal?.throwIfAborted();
-  } catch (error) {
-    throw new ModalRpcDispatchRefused(error);
-  }
+  if (!guard || !guardedMutation.test(call.method.path)) return yield* call.next(call.request, options);
+  // The outer middleware passes cancellation through auth and disables retries.
   const signal = guard.signal && options.signal ? AbortSignal.any([guard.signal, options.signal]) : guard.signal;
   const fenced = { ...options, retries: 0, ...(signal ? { signal } : {}) };
   return yield* call.next(call.request, fenced);
+};
+
+export const checkModalDispatch: ModalMiddleware = async function* (call, options) {
+  const guard = dispatch.getStore();
+  if (guard && guardedMutation.test(call.method.path)) {
+    try {
+      // Run after the SDK's awaited auth refresh, immediately before transport.
+      await guard();
+      guard.signal?.throwIfAborted();
+      options.signal?.throwIfAborted();
+    } catch (error) {
+      throw new ModalRpcDispatchRefused(error);
+    }
+  }
+  return yield* call.next(call.request, options);
 };
 
 export interface ModalConnection {
@@ -54,5 +62,10 @@ export function modalConnection(options: ModalConnection): ModalClient {
   if (options.client) return options.client;
   const { tokenId, tokenSecret } = options;
   if (!tokenId || !tokenSecret) throw refusal("provider_routing_unavailable", "Explicit Modal credentials required.");
-  return new ModalClient({ tokenId, tokenSecret, grpcMiddleware: [fenceModalMutation] });
+  return new ModalClient({
+    tokenId,
+    tokenSecret,
+    grpcMiddleware: [fenceModalMutation],
+    grpcDispatchMiddleware: [checkModalDispatch],
+  });
 }

@@ -146,6 +146,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "modal@0.11.1": "patches/modal@0.11.1.patch",
+  },
   "packages": {
     "@ai-sdk/provider": ["@ai-sdk/provider@4.0.37", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-4uPgZ3qiX/JaQFr0dQoibUzHImZit9u05ro2BxGUnJwU4fV28BOAbKUa2OjQvqtM1tMac3bTKkaXdyzGovQXqg=="],
 

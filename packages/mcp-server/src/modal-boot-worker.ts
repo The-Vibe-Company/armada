@@ -354,9 +354,8 @@ export function createModalBootWorker(
         await settle(claim, { reason: "cancelled_boot_outcome_unknown" }, true);
         return;
       }
-      if (!live?.role || (!recovery && (!live.same_actor || (!cleanup && !live.allowed)))) {
-        if (recovery) await reschedule();
-        else await settle(claim, { reason: "admission_expired_or_revoked" }, claim.phase === "booting");
+      if (!recovery && (!live?.role || !live.same_actor || (!cleanup && !live.allowed))) {
+        await settle(claim, { reason: "admission_expired_or_revoked" }, claim.phase === "booting");
         return;
       }
       const pinned = JSON.parse(await decryptSecret(claim.request_enc, encryptionKey)) as PinnedFork;
@@ -364,7 +363,11 @@ export function createModalBootWorker(
       try {
         provider = await resolve(
           pinned.target,
-          { userId: claim.owner_id, orgs: [{ orgId: claim.org_id, role: live.role }], via: "service" },
+          {
+            userId: claim.owner_id,
+            orgs: live?.role ? [{ orgId: claim.org_id, role: live.role }] : [],
+            via: "service",
+          },
           pinned.runtime,
         );
         if (signal.aborted) return;
@@ -396,8 +399,12 @@ export function createModalBootWorker(
           await (tx ?? sql).query<{ expired: boolean }>(
             `select r.dispatch_deadline<=clock_timestamp() as expired
              from public.provider_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
-             join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
-             join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
+             ${
+               recovery
+                 ? ""
+                 : `join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+             join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id`
+             }
              where r.sandbox_id=$1 and r.lease_owner=$2 and r.lease_epoch=$3
                and r.lease_expires_at>clock_timestamp()
                and ${
@@ -441,7 +448,7 @@ export function createModalBootWorker(
           if (removed.status === "deleted") {
             await settle(
               claim,
-              live.cancelled
+              live?.cancelled
                 ? { reason: "cancelled_during_boot", cancelled: true }
                 : { reason: "failed_boot_allocation_removed" },
               false,
