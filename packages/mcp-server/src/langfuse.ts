@@ -45,7 +45,9 @@ export function langfuseSpans(
 ) {
   const spans = [];
   for (const end of events) {
-    if (end.kind !== "prompt" || end.status === "running" || end.status === "queued" || !end.promptId) continue;
+    // Only a known final status ends a turn: Modal native history does not
+    // validate guest statuses, and an unknown one must never become a span.
+    if (end.kind !== "prompt" || !isFinalPromptStatus(end.status) || !end.promptId) continue;
     const history = events.filter((e) => e.promptId === end.promptId);
     const start = history.find((e): e is PromptEvent => e.kind === "prompt" && e.status === "running");
     const startAt = start?.at || end.at;

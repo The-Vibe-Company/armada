@@ -63,6 +63,13 @@ test("completed turns use stable OTLP identities, durations and opt-in content",
   for (const text of ["customer_prompt", "customer_reply", "customer_argument", "customer_result", "customer_failure"])
     expect(JSON.stringify(full)).toContain(text);
 });
+test("a prompt event with an unknown status never becomes an exported span", () => {
+  // Modal native history keeps guest-supplied statuses unvalidated.
+  const forged = { ...events[0]!, id: "forged", status: "customer_status" } as unknown as AgentEvent;
+  const spans = langfuseSpans("sandbox", [...events, forged], [], false, { contentWithheld: "secret" });
+  expect(spans).toHaveLength(2);
+  expect(JSON.stringify(spans)).not.toContain("customer_");
+});
 test("tool results retain the invoked tool identity and input", () => {
   const result: AgentEvent = {
     id: "result",
@@ -342,6 +349,13 @@ for (const mode of ["metadata", "full"] as const)
       await db.exec("set session_replication_role=replica");
       try {
         await bind(db);
+        // A persisted usage row carrying the canary as its model name.
+        await db.query("update sandboxes set usage_turns=$1::jsonb where boat_id='boat_export'", [
+          JSON.stringify({
+            turnCount: 1,
+            turns: [{ promptId: "turn", model: `usage-${canary}`, inputTokens: 4, outputTokens: 2 }],
+          }),
+        ]);
       } finally {
         await db.exec("set session_replication_role=origin");
       }
@@ -380,6 +394,8 @@ for (const mode of ["metadata", "full"] as const)
       expect(payload).toContain("application_secret_bindings");
       expect(payload).toContain('"name":"tool"');
       expect(payload).not.toContain("exec");
+      // Token counts from the usage row still export; its model name does not.
+      expect(payload).toContain(String.raw`{\"input\":4,\"output\":2}`);
       expect(payload).not.toContain(canary);
       expect(payload).not.toContain("print APP");
       expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
