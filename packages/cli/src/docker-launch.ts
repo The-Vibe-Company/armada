@@ -41,6 +41,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     "--skill",
     "--connections",
     "--no-connections",
+    "--keep-after-merge",
   ]);
   if ([...args.options.keys()].some((key) => !allowed.has(key)) || args.positionals.length > 1)
     throw new GoldenError("invalid_config", "Docker launch takes at most one prompt and no snapshot or size.");

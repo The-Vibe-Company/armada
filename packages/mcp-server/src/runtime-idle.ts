@@ -38,10 +38,16 @@ export function createRuntimeIdle(
   let next = 0;
   let cursor: string | null = null;
   const pending = new Set<Promise<unknown>>();
-  async function guard(tx: Sql, id: string) {
+  async function guard(tx: Sql, id: string, existing: { request_id: string | null; merge_stop: boolean | null }) {
     const target = (
-      await tx.query<{ task_prompt_id: string | null }>("select task_prompt_id from public.sandboxes where id=$1", [id])
+      await tx.query<{ task_prompt_id: string | null; merge_proof: boolean }>(
+        `select task_prompt_id, ${mergedWorkProof("s")} as merge_proof from public.sandboxes s where id=$1`,
+        [id],
+      )
     ).rows[0];
+    // A durable merge stop owns its checkpoint. A manual/idle checkpoint
+    // retains its original admission policy on retry.
+    const mergeStop = existing.request_id === null ? target?.merge_proof === true : existing.merge_stop === true;
     if (!target?.task_prompt_id) throw Error("No settled task identity.");
     const busy = await tx.query(
       `select 1 from public.runtime_commands c join public.runtime_enrolments r
@@ -61,8 +67,9 @@ export function createRuntimeIdle(
         [id, target.task_prompt_id],
       )
     ).rows[0];
-    if (!evidence?.eligible || evidence.last_activity <= 0 || now() - evidence.last_activity < delay)
+    if (!evidence?.eligible || evidence.last_activity <= 0 || (!mergeStop && now() - evidence.last_activity < delay))
       throw Error("Runtime is not idle.");
+    return mergeStop;
   }
   return {
     async drain() {
@@ -80,8 +87,9 @@ export function createRuntimeIdle(
             provider: string;
             daemon_version: string | null;
             request_id: string | null;
+            merge_stop: boolean | null;
           }>(
-            `select s.id,s.owner_id,s.org_id,s.provider::text,h.daemon_version,p.request_id::text from public.sandboxes s
+            `select s.id,s.owner_id,s.org_id,s.provider::text,h.daemon_version,p.request_id::text,p.merge_stop from public.sandboxes s
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.runtime_enrolments r on r.sandbox_id=s.id
            left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
@@ -118,17 +126,14 @@ export function createRuntimeIdle(
               if (Number(legacy?.sequence) > 0)
                 await projectRuntimeIdle(tx, row.id, key, Number(legacy!.sequence), [], Number(legacy!.sequence));
             });
-            // A runtime checkpoint freezes the worker irreversibly. Require
-            // ordinary idle eligibility before checkpoint admission so loss of
-            // GitHub proof still has the safe idle-pause completion path.
-            await guard(sql, row.id);
+            // A legacy/manual checkpoint has no merge-stop intent. It still
+            // must pass the ordinary idle timer before this worker can stop it.
+            await guard(sql, row.id, row);
             const requestId = row.request_id ?? crypto.randomUUID();
             await checkpoint(
               { userId: row.owner_id, orgs: [{ orgId: row.org_id, role: "member" }], via: "service" },
               { id: row.id, request_id: requestId, runtimeVersion: 1 },
-              async (tx) => {
-                await guard(tx, row.id);
-              },
+              (tx) => guard(tx, row.id, row),
             );
             signal.throwIfAborted();
             if (row.provider === "docker") {
@@ -139,7 +144,9 @@ export function createRuntimeIdle(
             }
             // Leave expiry unchanged. Existing lifecycle owns fenced provider shutdown.
             await sql.query(
-              `update public.sandboxes set status='stopping',status_reason=case when ${mergedWorkProof("sandboxes")} then 'work_merged' else 'idle_paused' end,stop_requested_at=coalesce(stop_requested_at,now()),
+              `update public.sandboxes set status='stopping',status_reason=case when exists(
+                 select 1 from public.runtime_checkpoints p where p.sandbox_id=$1 and p.request_id=$2::uuid and p.merge_stop
+               ) then 'work_merged' else 'idle_paused' end,stop_requested_at=coalesce(stop_requested_at,now()),
                stop_generation=stop_generation+1,reconcile_after=now()
                where id=$1 and status in ('ready','running') and stop_requested_at is null
                and exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r

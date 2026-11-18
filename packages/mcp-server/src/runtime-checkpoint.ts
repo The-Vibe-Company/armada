@@ -92,7 +92,7 @@ export function createRuntimeCheckpoint(
       acknowledgedSequence: Number(p.watermark),
     },
   });
-  return async (caller: Caller, input: RuntimeCheckpointInput, beforeIntent?: (tx: Sql) => Promise<void>) => {
+  return async (caller: Caller, input: RuntimeCheckpointInput, beforeIntent?: (tx: Sql) => Promise<void | boolean>) => {
     const requestId = input.request_id.toLowerCase();
     if (input.runtimeVersion !== 1 || !uuid.test(input.id) || !uuid.test(requestId))
       throw new VaultError("invalid", "Runtime checkpoint v1 requires sandbox and request UUIDs.");
@@ -217,7 +217,7 @@ export function createRuntimeCheckpoint(
           "conflict",
           "Runtime admission is busy; wait or reconcile its original request before checkpointing.",
         );
-      await beforeIntent?.(tx);
+      const mergeStop = (await beforeIntent?.(tx)) === true;
       const current = (
         await tx.query<{ request_id: string }>(
           "select request_id::text from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2 for update",
@@ -227,11 +227,10 @@ export function createRuntimeCheckpoint(
       if (current && current.request_id !== requestId)
         throw new VaultError("conflict", "Reuse the original checkpoint request_id for this epoch.");
       if (!current)
-        await tx.query("insert into public.runtime_checkpoints(sandbox_id,epoch,request_id) values($1,$2,$3)", [
-          sandbox.id,
-          scope.epoch,
-          requestId,
-        ]);
+        await tx.query(
+          "insert into public.runtime_checkpoints(sandbox_id,epoch,request_id,merge_stop) values($1,$2,$3,$4)",
+          [sandbox.id, scope.epoch, requestId, mergeStop],
+        );
       return { epoch: scope.epoch, current_epoch: scope.epoch, request_id: requestId, watermark: null };
     });
     try {

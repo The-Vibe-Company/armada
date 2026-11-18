@@ -3908,6 +3908,7 @@ export type Database = {
           watermark: number | null;
           created_at: string;
           completed_at: string | null;
+          merge_stop: boolean;
         };
         Insert: {
           sandbox_id: string;
@@ -3916,6 +3917,7 @@ export type Database = {
           watermark?: number | null;
           created_at?: string;
           completed_at?: string | null;
+          merge_stop?: boolean;
         };
         Update: {
           sandbox_id?: string;
@@ -3924,6 +3926,7 @@ export type Database = {
           watermark?: number | null;
           created_at?: string;
           completed_at?: string | null;
+          merge_stop?: boolean;
         };
         Relationships: [
           {

@@ -713,6 +713,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         repo: z.string().optional(),
         skills: z.array(z.string()).max(20).optional(),
         skipSkillDefaults: z.boolean().optional(),
+        stopWhenWorkMerged: z.boolean().optional(),
       })
       .strict(),
   };

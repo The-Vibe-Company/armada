@@ -41,6 +41,8 @@ type Target = {
   provider_sandbox_id: string;
   harness: "codex" | "claude" | "opencode";
   runtime: boolean;
+  active: boolean;
+  launch_authorized: boolean;
   created_at: string;
   lifecycle_generation: string;
   task_prompt_id: string | null;
@@ -87,13 +89,13 @@ export function createSandboxPullRequests(
     const row = (
       await sql.query<Target>(
         `with due as (
-          select s.id,c.connection_epoch,c.github_id,e.epoch as membership_epoch,grant_row.repositories
+          select s.id,c.connection_epoch,c.github_id,e.epoch as membership_epoch,grant_row.repositories,grant_row.priority>0 as launch_authorized
           from public.sandboxes s
           join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
           join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
           join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null
           join lateral (
-            select repositories from (
+            select repositories,priority from (
               select s.pull_request_source->'repositories' as repositories, 3 as priority, 0::bigint as revision
               where s.pull_request_source->>'connectionEpoch'=c.connection_epoch::text
               union all
@@ -106,9 +108,13 @@ export function createSandboxPullRequests(
               select binding->'identity'->'repositories', 1, revision from public.github_runtime_capabilities
               where sandbox_id=s.id and binding->'identity'->>'connectionEpoch'=c.connection_epoch::text
                 and binding->'identity'->>'membershipEpoch'=e.epoch::text
+              union all
+              select jsonb_build_array(s.resource_project), 0, 0::bigint
+              where s.provider<>'docker' and s.pull_request_source is null and s.resource_project is not null
             ) grants order by priority desc, revision desc limit 1
           ) grant_row on true
-          where s.status in ('ready','running') and s.stop_requested_at is null
+          where ((s.status in ('ready','running') and s.stop_requested_at is null)
+              or (s.status='stopped' and (s.pull_request_scan is not null or s.pull_request_reports<>'{}'::jsonb)))
             and s.activity_lease_id is null and not s.application_secret_tainted
             and s.expires_at>now() and s.pull_request_check_after<=now()
           order by s.pull_request_check_after,s.id limit 1 for update of s skip locked
@@ -116,9 +122,10 @@ export function createSandboxPullRequests(
         update public.sandboxes s set pull_request_check_after=now()+interval '15 minutes',
           pull_request_merge_proof=null from due where s.id=due.id
         returning s.id,s.owner_id,s.provider::text,s.provider_sandbox_id,s.harness::text,
+          s.status in ('ready','running') as active,
           (s.boat_runtime or s.runtime_transport is not distinct from 'dialout' or s.provider='docker') as runtime,
           s.created_at::text,s.lifecycle_generation::text,s.task_prompt_id,due.connection_epoch::text,
-          due.github_id::text,due.membership_epoch::text,due.repositories,s.repository_dir,s.pull_request_scan,s.pull_request_reports`,
+          due.github_id::text,due.membership_epoch::text,due.repositories,due.launch_authorized,s.repository_dir,s.pull_request_scan,s.pull_request_reports`,
       )
     ).rows[0];
     if (!row) return;
@@ -140,6 +147,9 @@ export function createSandboxPullRequests(
         // The timestamp comes from PostgreSQL, but pass it as data even here.
         const since = Math.ceil(new Date(row.created_at).getTime() / 1000);
         if (!Number.isSafeInteger(since)) return;
+        const names = branches.get(repository) ?? new Map(scan.pushes[repository] ?? []);
+        branches.set(repository, names);
+        if (!row.active) continue;
         const result = await exec(row, {
           sandboxId: row.provider_sandbox_id,
           command: `set -- '${since}' '${remote}'; ${readPushes}`,
@@ -150,20 +160,19 @@ export function createSandboxPullRequests(
         });
         if (result.detached || result.exitCode !== 0 || result.truncated || result.timedOut) return;
         const lines = result.stdout.trimEnd() ? result.stdout.trimEnd().split("\n") : [];
-        const names = branches.get(repository) ?? new Map(scan.pushes[repository] ?? []);
         for (const line of lines) {
           const [ref, sha] = line.split("\t");
           if (!ref || ref.length > 255 || /\s/.test(ref) || [...ref].some((char) => char.charCodeAt(0) < 32)) return;
           if (!sha || !/^[a-f0-9]{40}$/.test(sha)) return;
           names.set(ref, sha);
         }
-        branches.set(repository, names);
       }
       // Retain push evidence when Git prunes a tracking ref or expires its reflog.
       scan.pushes = Object.fromEntries([...branches].map(([repo, names]) => [repo, [...names]]));
       const claim = await sql.query(
         `update public.sandboxes set pull_request_scan=$2::text::jsonb
-         where id=$1 and lifecycle_generation=$3 and stop_requested_at is null and activity_lease_id is null returning id`,
+         where id=$1 and lifecycle_generation=$3 and (status='stopped' or stop_requested_at is null)
+           and activity_lease_id is null returning id`,
         [row.id, JSON.stringify(scan), row.lifecycle_generation],
       );
       if (!claim.rows.length) return;
@@ -263,11 +272,18 @@ export function createSandboxPullRequests(
               per_page: "100",
             });
             let matched = false;
-            for (const repository of branches.keys()) {
-              const pulls = z
-                .array(githubPull)
-                .max(30)
-                .parse(await get(repository, `?${params}`));
+            const batch = await Promise.allSettled(
+              [...branches.keys()].map(async (repository) => ({
+                repository,
+                pulls: z
+                  .array(githubPull)
+                  .max(100)
+                  .parse(await get(repository, `?${params}`)),
+              })),
+            );
+            for (const result of batch) {
+              if (result.status === "rejected") throw result.reason;
+              const { repository, pulls } = result.value;
               for (const pull of pulls) {
                 if (pull.head.repo?.full_name.toLowerCase() !== headRepository || pull.head.ref !== ref) continue;
                 if (pull.head.sha === sha) {
@@ -288,7 +304,7 @@ export function createSandboxPullRequests(
       signal.throwIfAborted();
       const list = [...found.values()];
       const proof =
-        complete && list.length > 0 && list.every((pr) => pr.state === "merged")
+        row.active && row.launch_authorized && complete && list.length > 0 && list.every((pr) => pr.state === "merged")
           ? {
               checkedAt,
               connectionEpoch: row.connection_epoch,
@@ -299,10 +315,11 @@ export function createSandboxPullRequests(
           : null;
       await sql.query(
         `update public.sandboxes s set pull_requests=$2::text::jsonb,pull_request_merge_proof=$3::text::jsonb,
-          pull_request_check_after=now()+interval '5 minutes',pull_request_scan=$9::text::jsonb
+          pull_request_check_after=now()+case when s.status='stopped' then interval '30 minutes' else interval '5 minutes' end,
+          pull_request_scan=$9::text::jsonb
           where s.id=$1 and s.lifecycle_generation=$4 and s.task_prompt_id is not distinct from $5
             and s.pull_request_reports=$6::text::jsonb and s.activity_lease_id is null
-            and s.stop_requested_at is null
+            and (s.status='stopped' or (s.status in ('ready','running') and s.stop_requested_at is null))
             and exists(select 1 from public.github_connections c where c.user_id=s.owner_id
               and c.revoked_at is null and c.connection_epoch=$7)
             and exists(select 1 from public.mcp_actor_epochs e join public.members m

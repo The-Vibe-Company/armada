@@ -87,6 +87,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
       "effectiveTtlSeconds",
       "machineSize",
       "displayLabel",
+      "pullRequests",
       "canOpen",
       "canManage",
     ].sort();
@@ -113,6 +114,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         expect(row.boatId).toBe(row.provider === "boat" ? row.providerSandboxId : null);
         expect(row.taskOutcome).toEqual(mayOpen ? { state: "blocked", reason: "interior-only" } : null);
         expect(row.idlePaused).toBe(row.id === ids[0]);
+        expect(row.pullRequests).toEqual(mayOpen ? [] : null);
         expect(row.canOpen).toBe(mayOpen);
         expect(row.canManage).toBe(mayOpen);
         expect(JSON.stringify(row)).not.toMatch(/sensitive-source|conversation-private|failure-private|app-private/);
@@ -134,7 +136,9 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         const rpc = await db.query<SandboxListMetadata>("select * from sandbox_list_metadata()");
         expect(rpc.rows.length).toBe(mayList ? 2 : 0);
         for (const row of rpc.rows) {
-          expect(Object.keys(row).sort()).toEqual(expectedKeys.filter((key) => key !== "usage"));
+          expect(Object.keys(row).sort()).toEqual(
+            expectedKeys.filter((key) => key !== "usage" && key !== "pullRequests"),
+          );
           expect(row.taskOutcome).toEqual(mayOpen ? { state: "blocked", reason: "interior-only" } : null);
           expect(row.idlePaused).toBe(row.id === ids[0]);
           expect(row.canOpen).toBe(mayOpen);
