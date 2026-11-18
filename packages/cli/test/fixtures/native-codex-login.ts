@@ -3,8 +3,6 @@
 import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-// A wrapper child may own other native handles; EOF alone must not be our cleanup.
-if (process.argv.includes("--keep-alive")) setInterval(() => {}, 60_000);
 const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
@@ -16,7 +14,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       refresh_token: "synthetic-refresh",
       account_id: "fixture-account",
     };
-    writeFileSync("auth.json", JSON.stringify({ tokens, fixtureHome: process.cwd(), fixturePid: process.pid }), {
+    writeFileSync("auth.json", JSON.stringify({ tokens, fixtureHome: process.cwd() }), {
       mode: 0o600,
     });
     send({ id: 999, error: { code: -32000, message: "unrelated native response must not cancel login" } });
