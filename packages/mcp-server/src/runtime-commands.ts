@@ -246,10 +246,11 @@ export function createRuntimeCommands(
    * The caller retains requestId and can reconcile with result (or call again
    * with the exact same request). No transaction is held across the wait.
    *
-   * Every server-side runtime command passes here, so this is the one request-correlated
-   * observation point: one `runtime.<op>` record per call, attributed to the provider of the
-   * locked sandbox, `ok` only for a validated reply (`accept` lets a caller add its own
-   * acceptance check). Callers keep their own public fallbacks.
+   * This is the shared request-correlated observation point for awaited runtime commands: one
+   * `runtime.<op>` record per call, attributed to the provider of the locked sandbox, `ok` only
+   * for a validated reply (`accept` adds a caller check). Callers keep their public fallbacks.
+   * Docker launch, send, resume and preview runtime routes admit some commands in their own
+   * transaction (enqueue + result); those are recorded by the enclosing Docker provider record.
    */
   async function call(
     ownerId: string,

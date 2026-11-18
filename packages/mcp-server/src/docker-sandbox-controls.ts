@@ -77,6 +77,8 @@ function failure(code: "not_found" | "invalid_request" | "conflict" | "unavailab
 const denied = () => failure("not_found", "Sandbox not found.");
 const invalid = () => failure("invalid_request", "Invalid Docker sandbox request.");
 const terminal = (row: Row) => ["stopped", "deleted", "failed"].includes(row.status);
+/** Controls that reach the Docker host (jobs, launch-time runtime admission) beyond the runtime command boundary. */
+const DOCKER_HOST_CONTROLS = new Set(["send", "resume", "stop", "delete"]);
 function reason(row: Row) {
   if (row.status === "deleted" && dockerWorkspaceReclaimedMessage(row.status_reason)) return row.status_reason;
   if (row.status_reason === "expired") return "expired";
@@ -844,7 +846,7 @@ export function createDockerSandboxControls(
           throw invalid();
         const row = await visible(caller, args.id);
         if (row.provider !== "docker") return { handled: false };
-        return await observeProviderCall("docker", name, async () => {
+        const dispatch = async () => {
           if (name === "github_refresh") {
             if (!options.github) throw failure("unavailable", "Docker GitHub refresh is unavailable.");
             return { handled: true as const, result: await options.github.prepare(caller, row.id) };
@@ -876,7 +878,10 @@ export function createDockerSandboxControls(
                     args.only_if_idle === true,
                   );
           return { handled: true as const, result };
-        });
+        };
+        // Runtime commands record themselves at the shared command boundary (runtime.<op>) and
+        // status/logs only read Armada's database: only host-side controls get a Docker record.
+        return DOCKER_HOST_CONTROLS.has(name) ? await observeProviderCall("docker", name, dispatch) : await dispatch();
       } catch (error) {
         if (error instanceof ProviderError) throw error;
         if (error instanceof DockerRetentionEnded)

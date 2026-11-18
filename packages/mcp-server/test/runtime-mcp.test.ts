@@ -21,14 +21,9 @@ import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
-type RuntimeBridge = Awaited<ReturnType<typeof runtimeFixture>>["bridge"];
 
-async function fixture(
-  provider: "boat" | "modal" = "boat",
-  wrap: (bridge: RuntimeBridge) => RuntimeBridge = (bridge) => bridge,
-) {
+async function fixture(provider: "boat" | "modal" = "boat") {
   const f = await runtimeFixture(await sharedDatabase(), provider),
-    commands = wrap(f.bridge),
     registry = createSqlMcpRegistry(f.sql, ENCRYPTION_KEY);
   const secret = `upstream-private-${crypto.randomUUID()}`;
   const c = await registry.save(f.people.owner, f.people.org, {
@@ -45,13 +40,13 @@ async function fixture(
     sql: f.sql,
     key: ENCRYPTION_KEY,
     origin: "https://armada.test",
-    commands,
+    commands: f.bridge,
     probe: async () => ({ status: "connected", toolNames: ["read_counter"] }),
   });
   const input = { id: f.row.id, connections: [c.id] };
   await service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [c.id], "org");
   await service.connections.bind(f.row.id, [c.id]);
-  const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, commands, service.prepare);
+  const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare);
   const authStore = createMemoryAuthStore();
   authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Fixture", role: "member" });
   const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;

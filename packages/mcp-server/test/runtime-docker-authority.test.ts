@@ -79,6 +79,7 @@ test("Docker issuance is trusted opt-in; default validators exchange once, journ
   expect(await f.validator.withOwner(f.id, f.people.owner, async (_tx, scope) => scope)).toEqual({
     sandboxId: f.id,
     epoch: active.epoch,
+    provider: "docker",
   });
   const event = { id: "docker-event", at: 1, kind: "other", type: "fixture", data: { marker: "private-journal" } };
   const response = await createRuntimeEvents(f.validator, ENCRYPTION_KEY).route(
