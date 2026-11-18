@@ -20,7 +20,6 @@ import {
   connectGolden,
   DEFAULT_LAUNCH_TTL_SECONDS,
   EncryptionKeyError,
-  type GoldenAdoption,
   type GoldenBuildJobs,
   GoldenError,
   type GoldenRecord,
@@ -66,7 +65,6 @@ import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { MAX_LOG_PAGES, readEventPages, validateLogPagination } from "./event-pagination.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
-import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
@@ -111,7 +109,6 @@ export interface ToolContext {
   provider(target: ProviderTarget): Promise<Provider>;
   /** Authorized lifecycle management: resolve the sandbox owner's immutable source management authority after authorization. */
   deletionProvider?(sandbox: SandboxView): Promise<Provider>;
-  providerMetadata?: (selection: { orgId: string; provider: SandboxProviderId }) => Promise<GoldenProviderMetadata>;
   goldenTarget?: (target: Omit<ProviderTarget, "modal">) => Promise<ProviderTarget>;
   now(): Date;
   sleep(ms: number): Promise<void>;
@@ -120,7 +117,6 @@ export interface ToolContext {
   connections?: LaunchStores["connections"];
   /** Secure, server-orchestrated multi-repo golden creation. Absent: `golden_create` refuses. */
   goldenBuilds?: GoldenBuildJobs;
-  goldenAdoption?: GoldenAdoption;
   /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */
   logError?: (line: string) => void;
 }
@@ -863,59 +859,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
       const goldens: GoldenRecord[] = [];
       for (const orgId of orgIds) goldens.push(...(await data.goldens.list(orgId)));
       return { goldens: goldens.map(goldenResponse) };
-    },
-  );
-
-  tool(
-    "golden_capabilities",
-    {
-      title: "Golden provider capabilities",
-      description:
-        "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown/unbounded, not a workspace quota.",
-      input: { org: z.string().optional(), provider: z.enum(SANDBOX_PROVIDERS).optional() },
-      output: {
-        provider: z.enum(SANDBOX_PROVIDERS),
-        maxGoldens: z.number().int().positive().nullable(),
-        bindings: z
-          .array(
-            z.object({
-              goldenId: z.string().uuid(),
-              relation: z.enum(["current_backend", "other_backend", "unbound"]),
-            }),
-          )
-          .optional(),
-      },
-      readOnly: true,
-    },
-    async (args) => {
-      const member = resolveCreateOrg(caller.orgs, args.org);
-      if (!context.providerMetadata)
-        throw new ToolError("unsupported", "Read-only provider metadata is not configured.");
-      return context.providerMetadata({ orgId: member.orgId, provider: args.provider ?? "boat" });
-    },
-  );
-
-  tool(
-    "golden_adopt",
-    {
-      title: "Adopt canonical Boat golden",
-      description:
-        "Dry-run first: select an existing visible golden by id. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
-      input: { id: z.string().uuid(), confirmation: z.string().uuid().optional() },
-      output: { goldenId: z.string(), dryRun: z.boolean(), confirmation: z.string() },
-    },
-    async (args) => {
-      if (!context.goldenAdoption) throw new ToolError("unsupported", "Canonical adoption is not configured.");
-      let golden: GoldenRecord | undefined;
-      for (const { orgId } of caller.orgs) {
-        golden = (await data.goldens.list(orgId)).find((row) => row.id === args.id);
-        if (golden) break;
-      }
-      if (!golden) throw new ToolError("not_found", "Canonical adoption unavailable.");
-      const member = caller.orgs.find((org) => org.orgId === golden.orgId)!;
-      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-      assertGoldenMutation(actor, golden);
-      return context.goldenAdoption(await context.provider(golden), actor, golden, args.confirmation);
     },
   );
 

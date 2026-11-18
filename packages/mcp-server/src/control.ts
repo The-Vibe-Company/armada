@@ -12,6 +12,7 @@ import {
 import {
   type ApplicationVault,
   addMember,
+  assertGoldenMutation,
   createOrg,
   createSkillCatalog,
   type GitHubApp,
@@ -48,6 +49,7 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core/server";
+import { z } from "zod";
 import { validateAzureModelAccount } from "./azure-model-account.ts";
 import type { Caller, SupabaseProject } from "./caller.ts";
 import { readBody, readVaultBody } from "./control-body.ts";
@@ -468,6 +470,27 @@ export async function dispatchControlCommand(
       throw new VaultError("unavailable", "Read-only provider metadata is not configured.");
     return options.providerMetadata({ orgId: member.orgId, provider: backend }, caller);
   }
+  if (route === "golden/adopt") {
+    if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
+    const scoped = await selectedCaller(options, caller, optional(body, "org"));
+    const input = goldenAdoptionInput.safeParse(body);
+    if (!input.success) {
+      const details = input.error.issues.map((issue) => `${issue.message} at ${issue.path.join(".")}`).join("\n");
+      throw new ToolApiError("internal", `Input validation error: Invalid arguments for tool golden_adopt: ${details}`);
+    }
+    if (!options.goldenAdoption) throw new ToolApiError("unsupported", "Canonical adoption is not configured.");
+    const data = options.data(scoped);
+    for (const { orgId, role } of scoped.orgs) {
+      const golden = (await data.goldens.list(orgId)).find((row) => row.id === input.data.id);
+      if (!golden) continue;
+      const actor = { userId: scoped.userId, orgId, role };
+      assertGoldenMutation(actor, golden);
+      const providers = options.providers;
+      const provider = await measureRequestPhase(options.timing, "provider", () => providers.resolve(golden, scoped));
+      return options.goldenAdoption(provider, actor, golden, input.data.confirmation);
+    }
+    throw new GoldenError("not_found", "Canonical adoption unavailable.");
+  }
   if (route === "sandbox/test-model-connection") {
     if (Object.keys(body).some((key) => !["id", "model", "org"].includes(key)))
       throw new VaultError("invalid", "Connection checks accept only id, model and org.");
@@ -556,19 +579,7 @@ export async function dispatchControlCommand(
         );
       body = { ...fields, ttl_seconds: ttl };
     }
-    if (
-      route === "golden/capabilities" &&
-      optional(body, "provider") !== undefined &&
-      !isSandboxProvider(required(body, "provider"))
-    )
-      throw new VaultError("invalid", "Provider is boat or modal.");
     if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
-    if (
-      route === "golden/capabilities" &&
-      optional(body, "org") !== undefined &&
-      !caller.orgs.some((member) => member.orgId === scopedOrg(caller, optional(body, "org")))
-    )
-      throw new VaultError("forbidden", "You are not a member of this org.");
     const ref = optional(body, "org");
     const listRef =
       route === "sandbox/list" &&
@@ -586,7 +597,6 @@ export async function dispatchControlCommand(
         : await selectedCaller(options, caller, ref);
     const result = await callSharedTool(
       {
-        ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
         ...(options.sandboxBillingAccount
           ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(scopedCaller, id) }
@@ -618,11 +628,6 @@ export async function dispatchControlCommand(
           options.providers
             ? options.providers.resolve(sandbox, { userId: sandbox.ownerId })
             : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
-        ...(options.providerMetadata
-          ? {
-              providerMetadata: (selection) => options.providerMetadata!(selection, scopedCaller),
-            }
-          : {}),
         launchCredentials: launchCredentials(
           options.store,
           options.encryptionKey,
@@ -1051,6 +1056,8 @@ function scope(body: Record<string, unknown>): "user" | "org" {
   if (value === "user" || value === "org") return value;
   throw new VaultError("invalid", "scope is user or org.");
 }
+
+const goldenAdoptionInput = z.object({ id: z.string().uuid(), confirmation: z.string().uuid().optional() });
 
 async function selectedCaller(options: ControlOptions, caller: Caller, ref: string | undefined): Promise<Caller> {
   if (ref === undefined) return caller;
