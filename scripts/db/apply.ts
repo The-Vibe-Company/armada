@@ -16,14 +16,14 @@ export async function openDatabase(): Promise<PGlite> {
 }
 
 /** Applies the Supabase prerequisites and every migration, in filename order. */
-export async function applyMigrations(db: PGlite): Promise<string[]> {
-  const files = readdirSync(migrationsDir)
+export async function applyMigrations(db: PGlite, directory = migrationsDir): Promise<string[]> {
+  const files = readdirSync(directory)
     .filter((name) => name.endsWith(".sql"))
     .sort();
   if (files.length === 0) throw new Error("no migrations in supabase/migrations");
   await execFile(db, prereqPath, "supabase prerequisites");
   for (const file of files) {
-    await execFile(db, join(migrationsDir, file), file);
+    await execFile(db, join(directory, file), file);
   }
   await db.exec("create schema if not exists supabase_migrations");
   await db.exec("create table if not exists supabase_migrations.schema_migrations (version text primary key)");

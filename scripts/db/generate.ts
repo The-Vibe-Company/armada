@@ -139,10 +139,10 @@ const ENUM_ALIASES: Record<string, string> = {
 };
 
 /** Renders `packages/core/src/database.types.ts` from the migrations on a fresh database. */
-export async function generateDatabaseTypes(): Promise<string> {
+export async function generateDatabaseTypes(directory?: string): Promise<string> {
   const db = await openDatabase();
   try {
-    await applyMigrations(db);
+    await applyMigrations(db, directory);
     return render(await introspect(db));
   } finally {
     await db.close();

@@ -62,9 +62,9 @@ At most one migration per PR. Never hand-merge `packages/core/src/database.types
 If that file conflicts while merging current main, take main's generated file,
 complete the merge, and regenerate from the combined SQL. Before queueing a
 migration PR, fetch and merge current `origin/main`, confirm the branch-only
-migration is unapplied with an authorized operator, and work from a clean
-checkout. Run `bun scripts/db/renumber-pending.ts origin/main` to assign a fresh
-version, update tracked filename references, and regenerate database types.
+migration is unapplied with an authorized operator, and work from a clean,
+full checkout. Run `bun scripts/db/renumber-pending.ts origin/main` to assign a fresh
+version, update tracked text references to the filename, and regenerate database types.
 Append `--dry-run` to preview the plan. Review and commit the result, then run
 `bun scripts/db/check-migrations.ts origin/main` against the new commit.
 
