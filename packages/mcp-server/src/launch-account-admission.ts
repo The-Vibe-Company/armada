@@ -67,7 +67,7 @@ export async function prepareGoldenLaunchAccount(
       defaults: async () => account.preference,
       resolve: (launchActor, launchHarness) =>
         resolver.resolve(launchActor, launchHarness, binding.credentialId, binding.credentialVersion),
-    };
+    } satisfies LaunchCredentialResolver;
   };
   if (runtimeDefault) {
     const account = await probe(runtimeDefault.credentials);
