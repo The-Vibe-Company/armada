@@ -380,6 +380,12 @@ export const DOCKER_HOST_POLL_WAIT_SECONDS = 20;
 /** Pause after a failed tick, or between polls when the server cannot hold one. */
 export const DOCKER_HOST_IDLE_MS = 20_000;
 
+function recordPoll(state: State, targetVersion: string | undefined, now = Date.now) {
+  state.lastPollAt = new Date(now()).toISOString();
+  if (targetVersion === VERSION) state.lastUpdatePollAt = state.lastPollAt;
+  else delete state.lastUpdatePollAt;
+}
+
 /**
  * The daemon's mailbox loop (#2561). It polls again as soon as a job was taken or
  * a held poll ended, so ready jobs drain without an idle period, and it runs up to
@@ -415,6 +421,35 @@ export async function runJobs(
   // as busy (it is then no longer in `settled()`), the loop polls again at once.
   let finished = 0;
   const settled = () => Promise.race(running.values());
+  // Short authenticated polls keep the heartbeat current without taking jobs
+  // or holding the ledger needed by an admitted operation's completion.
+  async function pollWithoutAdmission(skipSnapshots: boolean) {
+    try {
+      const { targetVersion } = await api.poll(await store.load(), { skipSnapshots });
+      await exclusive(store, async () => {
+        const latest = await store.load();
+        recordPoll(latest, targetVersion, loop.now);
+        await store.save(latest);
+      });
+      return { type: "offer" as const, version: targetVersion };
+    } catch {
+      loop.failed?.("tick");
+      return { type: "poll-failed" as const };
+    }
+  }
+  const prepareUpdate = loop.beforeAdmission;
+  async function beforeAdmission(target: string | undefined) {
+    if (!prepareUpdate) return false;
+    let pending = true;
+    const preparation = prepareUpdate(target).finally(() => {
+      pending = false;
+    });
+    while (pending && !loop.stopping()) {
+      await Promise.race([preparation, loop.sleep(DOCKER_HOST_IDLE_MS)]);
+      if (pending && !loop.stopping()) await pollWithoutAdmission(true);
+    }
+    return preparation;
+  }
   async function persistCompletion(save: () => Promise<void>) {
     for (;;) {
       try {
@@ -433,20 +468,15 @@ export async function runJobs(
         // Keep the host online while admitted operations finish. A short poll
         // updates the heartbeat without holding the ledger or accepting jobs.
         // Pace these polls even when the server has queued work to return.
-        if (running.size) await Promise.race([settled(), loop.sleep(DOCKER_HOST_IDLE_MS)]);
-        if (loop.stopping()) break;
         const draining = running.size > 0;
-        let event: Parameters<NonNullable<typeof loop.update>["confirm"]>[0];
-        try {
-          const { targetVersion } = await api.poll(await store.load(), { skipSnapshots: draining });
-          event = { type: "offer", version: targetVersion };
-        } catch {
-          loop.failed?.("tick");
-          event = { type: "poll-failed" };
-        }
+        const event = await pollWithoutAdmission(draining);
         // A poll that started during the drain cannot authorize the restart,
         // even if all operations finished before the response arrived.
-        if (draining || loop.stopping()) continue;
+        if (loop.stopping()) break;
+        if (draining) {
+          if (running.size) await Promise.race([settled(), loop.sleep(DOCKER_HOST_IDLE_MS)]);
+          continue;
+        }
         if ((await loop.update.confirm(event)) && !loop.stopping() && (await loop.update.restart())) break;
         continue;
       }
@@ -464,7 +494,7 @@ export async function runJobs(
         outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
           waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
           ...live,
-          ...(loop.beforeAdmission ? { beforeAdmission: loop.beforeAdmission } : {}),
+          ...(prepareUpdate ? { beforeAdmission } : {}),
           ...(loop.retryCompletion ? { persistCompletion } : {}),
           dispatch(job, work) {
             const done = work
@@ -487,6 +517,7 @@ export async function runJobs(
         outcome = "idle";
       }
       if (loop.stopping()) break;
+      if (loop.update?.staged()) continue;
       if (outcome === "busy" && finished !== finishedBefore) continue;
       if (outcome === "busy" && running.size) await Promise.race([settled(), loop.sleep(DOCKER_HOST_IDLE_MS)]);
       else if (outcome === "busy" || outcome === "idle") await loop.sleep(DOCKER_HOST_IDLE_MS);
@@ -701,9 +732,7 @@ async function admitLocked(
         if (!entry.deleted) entry.deadline = deadline(entry.request, entry.observedStoppedAt!);
       await store.save(state);
     }
-    state.lastPollAt = new Date().toISOString();
-    if (polled.targetVersion === VERSION) state.lastUpdatePollAt = state.lastPollAt;
-    else delete state.lastUpdatePollAt;
+    recordPoll(state, polled.targetVersion);
   }
   // Pressure cleanup shares the same durable authorization as retention. Discovery
   // stays restricted to known completed operations; physical ownership is checked

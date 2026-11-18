@@ -2124,6 +2124,7 @@ test.each([
   { operation: "launch", outcome: "withdrawn" },
   { operation: "launch", outcome: "poll failed" },
   { operation: "long snapshot build", outcome: "matching" },
+  { operation: "long snapshot build", outcome: "matching after slow preparation" },
 ] as const)("update drain with $operation and a $outcome post-drain offer", async ({ operation, outcome }) => {
   const first = fixture();
   const next = fixture();
@@ -2146,7 +2147,13 @@ test.each([
           },
         };
   let now = 0;
+  const slowPreparation = outcome === "matching after slow preparation";
+  const matching = outcome.startsWith("matching");
   const drainHeartbeats: number[] = [];
+  const preparationHeartbeats: number[] = [];
+  const preparing = Promise.withResolvers<void>();
+  const finishPreparation = Promise.withResolvers<void>();
+  let isPreparing = false;
   const offered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const acknowledged: string[] = [];
@@ -2172,6 +2179,10 @@ test.each([
     {
       ...first.api,
       async poll(_state, options) {
+        if (isPreparing) {
+          preparationHeartbeats.push(now);
+          return { job: next.job, targetVersion: "9.0.0" };
+        }
         if (staged && !released) {
           drainHeartbeats.push(now);
           return { job: next.job, targetVersion: "9.0.0" };
@@ -2180,7 +2191,7 @@ test.each([
           if (!options?.waitSeconds) {
             postDrainReceipt = [...acknowledged];
             if (outcome === "poll failed") throw new Error("Lost poll response");
-            return { job: next.job, ...(outcome === "matching" ? { targetVersion: "9.0.0" } : {}) };
+            return { job: next.job, ...(matching ? { targetVersion: "9.0.0" } : {}) };
           }
           return { job: null };
         }
@@ -2218,11 +2229,11 @@ test.each([
           expect(target).toEqual(
             outcome === "poll failed"
               ? { type: "poll-failed" }
-              : { type: "offer", version: outcome === "matching" ? "9.0.0" : undefined },
+              : { type: "offer", version: matching ? "9.0.0" : undefined },
           );
-          confirmed = outcome !== "matching";
+          confirmed = !matching;
           rechecked = true;
-          return outcome === "matching";
+          return matching;
         },
         async restart() {
           restarted = true;
@@ -2233,6 +2244,12 @@ test.each([
       async beforeAdmission(target) {
         if (released) confirmed = true;
         if (!target) return false;
+        if (slowPreparation) {
+          isPreparing = true;
+          preparing.resolve();
+          await finishPreparation.promise;
+          isPreparing = false;
+        }
         staged = true;
         offered.resolve();
         return true;
@@ -2240,7 +2257,8 @@ test.each([
       now: () => now,
       async sleep(ms) {
         if (released) return;
-        if (now >= 100_000) await release.promise;
+        if (isPreparing && now >= 100_000) await finishPreparation.promise;
+        else if (!isPreparing && now >= (slowPreparation ? 200_000 : 100_000)) await release.promise;
         else now += ms;
       },
     },
@@ -2249,21 +2267,29 @@ test.each([
   const complete = loop.then(() => {
     drained = true;
   });
+  if (slowPreparation) {
+    await preparing.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    finishPreparation.resolve();
+  }
   await offered.promise;
   expect(drained).toBe(false);
   expect(acknowledged).toEqual([]);
   if (operation === "long snapshot build") {
     // Flush the simulated sleeps and polls before releasing the admitted job.
     await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drainHeartbeats.at(-1)).toBeGreaterThan(slowPreparation ? 191_000 : 91_000);
+    expect(Date.parse(first.state().lastPollAt ?? "")).toBe(drainHeartbeats.at(-1)!);
   }
   released = true;
   release.resolve();
   await complete;
   expect(rechecked).toBe(true);
-  expect(restarted).toBe(outcome === "matching");
+  expect(restarted).toBe(matching);
+  if (slowPreparation) expect(preparationHeartbeats.at(-1)).toBeGreaterThan(91_000);
   if (operation === "long snapshot build") {
-    expect(drainHeartbeats.at(-1)).toBeGreaterThan(91_000);
-    const gaps = drainHeartbeats.map((at, i) => at - (drainHeartbeats[i - 1] ?? 0));
+    const heartbeats = [...preparationHeartbeats, ...drainHeartbeats];
+    const gaps = heartbeats.map((at, i) => at - (heartbeats[i - 1] ?? 0));
     expect(Math.max(...gaps)).toBeLessThan(60_000);
   }
   expect(postDrainReceipt).toEqual([first.job.requestId]);
