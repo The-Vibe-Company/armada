@@ -11,6 +11,8 @@ export class RuntimeCommandConflict extends Error {
     super("runtime_command_conflict");
   }
 }
+/** Refused before admission: no command row was written, so nothing can execute. */
+export class RuntimeCommandRefused extends RuntimeCommandConflict {}
 export class RuntimeCommandPending extends Error {
   constructor() {
     super("runtime_command_pending");
@@ -79,19 +81,19 @@ export function createRuntimeCommands(
 ) {
   async function enqueue(ownerId: string, request: RunnerRequest, expectedEpoch?: string) {
     if (request.version !== 1 || !requestId(request.requestId) || typeof request.op !== "string")
-      throw new RuntimeCommandConflict();
+      throw new RuntimeCommandRefused();
     const serialized = JSON.stringify(request);
-    if (Buffer.byteLength(serialized) > MAX_COMMAND) throw new RuntimeCommandConflict();
+    if (Buffer.byteLength(serialized) > MAX_COMMAND) throw new RuntimeCommandRefused();
     const sealed = await encryptSecret(serialized, key);
     return authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
-      if (expectedEpoch !== undefined && scope.epoch !== expectedEpoch) throw new RuntimeCommandConflict();
+      if (expectedEpoch !== undefined && scope.epoch !== expectedEpoch) throw new RuntimeCommandRefused();
       // Application-secret taint forbids file egress: never admit an output read (row locked here).
       if (
         request.op === "readOutputs" &&
         (await tx.query("select 1 from public.sandboxes where id=$1 and application_secret_tainted", [scope.sandboxId]))
           .rows.length
       )
-        throw new RuntimeCommandConflict();
+        throw new RuntimeCommandRefused();
       // Checkpoint intent fences every mutation entry point, including Docker.
       if (
         !["checkpoint", "events", "health", "getPrompt", "getExec", "observeOrchestrator", "readOutputs"].includes(
@@ -104,7 +106,7 @@ export function createRuntimeCommands(
           ])
         ).rows.length
       )
-        throw new RuntimeCommandConflict();
+        throw new RuntimeCommandRefused();
       // Include BOTH published wire envelopes, not merely the inner RunnerRequest.
       // A head-of-line command must always fit the client's 1 MiB JSON/frame cap.
       const overhead =
@@ -112,7 +114,7 @@ export function createRuntimeCommands(
           Buffer.byteLength(JSON.stringify({ epoch: scope.epoch, command: null })),
           Buffer.byteLength(JSON.stringify({ type: "command", epoch: scope.epoch, request: null })),
         ) - 4; // Replace the JSON null with the already serialized command.
-      if (Buffer.byteLength(serialized) + overhead > MAX_COMMAND) throw new RuntimeCommandConflict();
+      if (Buffer.byteLength(serialized) + overhead > MAX_COMMAND) throw new RuntimeCommandRefused();
       const previous = (
         await tx.query<{ epoch: string; request_enc: Uint8Array<ArrayBuffer> }>(
           "select epoch::text,request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
@@ -121,7 +123,7 @@ export function createRuntimeCommands(
       ).rows[0];
       if (previous) {
         if (previous.epoch !== scope.epoch || (await decryptSecret(previous.request_enc, key)) !== serialized)
-          throw new RuntimeCommandConflict();
+          throw new RuntimeCommandRefused();
       } else {
         await tx.query(
           "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,$3,$4)",
@@ -256,7 +258,7 @@ export function createRuntimeCommands(
       timeout < 1 ||
       timeout > (request.op === "workspaceExec" ? 610_000 : request.op === "exec" ? 630_000 : 120_000)
     )
-      throw new RuntimeCommandConflict();
+      throw new RuntimeCommandRefused();
     const signal = options.signal ?? new AbortController().signal;
     signal.throwIfAborted();
     const deadline = time.now() + timeout;

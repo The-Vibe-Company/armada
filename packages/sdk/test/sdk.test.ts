@@ -6,6 +6,8 @@ import { controlFailureResponse } from "../../mcp-server/src/control-errors.ts";
 import { DOCKER_LAUNCH_REQUEST } from "../../mcp-server/src/docker-launch-request-schema.ts";
 import { REST_LAUNCH_RESPONSE } from "../../mcp-server/src/launch-response-schemas.ts";
 import { webhookSignature } from "../../mcp-server/src/outbound-webhooks.ts";
+import { createRuntimeAgent } from "../../mcp-server/src/runtime-agent.ts";
+import { RuntimeCommandPending, RuntimeCommandRefused } from "../../mcp-server/src/runtime-commands.ts";
 import { createServerRequestDrain } from "../../mcp-server/src/server-request-drain.ts";
 import {
   Armada,
@@ -554,4 +556,46 @@ test("a failure status whose body breaks keeps its HTTP status and Retry-After",
   const error = await client.stop({ id: "sandbox_placeholder" }).catch((caught: unknown) => caught);
   expect(error).toBeInstanceOf(ArmadaError);
   expect(error).toMatchObject({ code: "unknown_response", status: 503, outcomeUnknown: true, retryAfterSeconds: 7 });
+});
+
+test("an exec admitted but still pending reaches files.write as outcome unknown; a pre-admission refusal stays definite", async () => {
+  const write = async (lost: Error) => {
+    const agent = createRuntimeAgent(
+      {
+        call: async () => {
+          throw lost;
+        },
+      },
+      {
+        provider: "docker",
+        harness: "codex",
+        ownerId: "owner",
+        sandboxId: "logical",
+        providerSandboxId: "physical",
+        cwd: "/home/user",
+        defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+      },
+    );
+    const client = new Armada({
+      token: "service_placeholder",
+      fetch: (async (_url, init) => {
+        const { command } = JSON.parse(String(init?.body)) as { command: string };
+        return agent
+          .exec({ sandboxId: "physical", command })
+          .then((result) => Response.json(result))
+          .catch(controlFailureResponse);
+      }) as typeof fetch,
+    });
+    return client.files.write({ id: "logical", path: "app.txt", content: "x" }).catch((error: unknown) => error);
+  };
+  expect(await write(new RuntimeCommandPending())).toMatchObject({
+    code: "outcome_unknown",
+    status: 503,
+    outcomeUnknown: true,
+  });
+  expect(await write(new RuntimeCommandRefused())).toMatchObject({
+    code: "conflict",
+    status: 409,
+    outcomeUnknown: false,
+  });
 });
