@@ -48,6 +48,7 @@ export type SandboxDetail = Omit<
   | "external_ref"
   | "outputs_checked_at"
   | "outputs_published_scan"
+  | "outputs_retained_generation"
   | "outputs_failure_reasons"
   | "outputs_probe_at"
   | "outputs_collector_supported"

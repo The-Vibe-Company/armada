@@ -581,7 +581,7 @@ export async function startServer(
   const outputs = createSandboxOutputs(
     sql,
     config.encryptionKey,
-    createMcpSandboxProviderResolver(sql, providers),
+    createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true }),
     ...(config.encryptionKey ? [createDockerOutputReader(sql, config.encryptionKey)] : []),
   );
   const handler = createHandler({
