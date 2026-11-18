@@ -37,6 +37,7 @@ any receipt UUID returned.
 ## 2. Choose before launching
 
 - Inspect `armada snapshot list --json` and `armada template list --json`.
+  To refresh a shared snapshot, update its build configuration with the owner authorization.
   A golden is a provider-specific saved environment; a template is an immutable
   revision specifying a golden, harness and configuration. Use IDs if names clash.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
@@ -130,7 +131,8 @@ armada logs SANDBOX --tail 50 --json
 armada status SANDBOX --json
 ```
 
-Send starts a new turn; steer redirects an active turn:
+Send starts a new turn in the sandbox's conversation. Launch another sandbox
+for a separate conversation. Steer redirects an active turn:
 `armada steer SANDBOX "Keep the public API unchanged"`. Use
 `armada interrupt SANDBOX` to request interruption, then inspect status before
 sending replacement work. Do not treat steer as a guaranteed new turn or send

@@ -66,6 +66,7 @@ export interface ServerSandboxStore extends SandboxStore {
     | "runtimeTransport"
     | "preservationNote"
     | "credentialId"
+    | "conversationIds"
   > | null>;
   recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
   /** #2560: latest activation's recorded launch stages, for a visible sandbox; null before any. */
@@ -886,9 +887,10 @@ export function createSqlData(
             | "runtimeTransport"
             | "preservationNote"
             | "credentialId"
+            | "conversationIds"
           >
         >(
-          `select s.credential_id as "credentialId",s.provider,s.status,s.preservation_note as "preservationNote",s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport"
+          `select s.credential_id as "credentialId",s.provider,s.status,s.preservation_note as "preservationNote",s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport",s.conversation_ids as "conversationIds"
            from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3`,
           [...scope, id],
         );

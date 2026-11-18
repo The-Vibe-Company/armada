@@ -141,6 +141,14 @@ export class ToolError extends Error {
   }
 }
 
+export function assertSendConversation(requested: unknown, current: string | undefined): void {
+  if (requested !== undefined && requested !== current)
+    throw new ToolError(
+      "conflict",
+      "A sandbox has one conversation. Launch another sandbox for a separate conversation.",
+    );
+}
+
 export const serverInfo = { name: "armada" } as const;
 
 const buildOutput = {
@@ -537,6 +545,8 @@ export function createArmadaServer(context: ToolContext, version: string, option
               throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
             const refusal = sandboxControlRefusal(found, context.now(), name);
             if (refusal) throw new ToolError("sandbox_terminal", refusal);
+            if (name === "send" && !context.accountTurns && input.conversation_id !== undefined)
+              assertSendConversation(input.conversation_id, found.conversationIds.at(-1));
           }
           if (
             name === "stop" &&
@@ -1741,8 +1751,8 @@ export function createArmadaServer(context: ToolContext, version: string, option
     {
       title: "Send a prompt",
       description:
-        "Gives the agent its next instruction as a new turn. Without conversation_id the first send of an idle " +
-        "sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is " +
+        "Gives the agent its next instruction as a new turn. The first send of an idle sandbox opens its " +
+        "conversation and later sends continue it. Launch another sandbox for a separate conversation. To redirect a turn that is " +
         "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
         "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
         "an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch.",
@@ -1756,7 +1766,11 @@ export function createArmadaServer(context: ToolContext, version: string, option
             "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
           ),
         prompt: z.string().min(1).describe("The instruction."),
-        conversation_id: conversationId,
+        conversation_id: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("The sandbox's current conversation ID. Omit to target it automatically."),
         model: modelInput,
         reasoning_effort: effortInput,
       },

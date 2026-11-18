@@ -80,7 +80,7 @@ export class Runner {
     if (execution.credentialFreeBuilder !== undefined && typeof execution.credentialFreeBuilder !== "boolean")
       throw Error("invalid_exec_environment");
     this.credentialFreeBuilder = execution.credentialFreeBuilder ?? false;
-    this.readableConfigurations = new ReadableConfigurations(drivers);
+    this.readableConfigurations = new ReadableConfigurations(drivers, journal);
     this.configureGitHub = execution.configureGitHub;
     this.refreshNativeSecrets = execution.refreshNativeSecrets;
     this.publishNativeAuth = execution.publishNativeAuth;
@@ -280,10 +280,12 @@ export class Runner {
           this.barrier ||
           this.journal.checkpointPending(this.grant) ||
           !(HARNESSES as readonly string[]).includes(r.harness) ||
-          Object.keys(r).some((k) => !["version", "requestId", "sandboxId", "op", "harness", "variables"].includes(k))
+          Object.keys(r).some(
+            (k) => !["version", "requestId", "sandboxId", "op", "harness", "variables", "secretKeys"].includes(k),
+          )
         )
           throw Error("invalid_request");
-        this.readableConfigurations.configure(r.harness, r.variables);
+        this.readableConfigurations.configure(r.harness, r.variables, r.secretKeys);
         return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
       }
       if (r.op === "configureGitHub") {
