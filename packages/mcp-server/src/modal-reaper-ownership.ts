@@ -10,18 +10,11 @@ interface OwnershipEvidence {
   same_owner: boolean | null;
 }
 
-/** Ownership port for a Modal inventory already scoped to one verified binding.
- * The supplied SQL connection must bound statement time for the isolated lane.
- * This observation does not fence launch/resume and cannot authorize a delete.
- */
-export function createModalReaperOwnership(sql: Sql, binding: ModalBinding): ProviderReaperSource["lookupOwnership"] {
+export function createModalReaperOwnership(sql: Sql, binding: ModalBinding) {
   const { workspace, environment, appId } = binding;
-  return async (machine, signal) => {
+  const lookupOwnership: ProviderReaperSource["lookupOwnership"] = async (machine, signal) => {
     signal.throwIfAborted();
     if (!machine.sandboxId?.trim()) return { kind: "unresolved" };
-    // The provider's logical ID is in the tag. Check the reverse mapping too,
-    // in case the tag disagrees with the persisted owner of this physical ID.
-    // One statement observes both stores at the same snapshot.
     const { rows } = await sql.query<OwnershipEvidence>(
       `select s.status,
               m.id as logical_id,
@@ -62,4 +55,5 @@ export function createModalReaperOwnership(sql: Sql, binding: ModalBinding): Pro
       ...(exactGeneration ? { generation } : {}),
     };
   };
+  return lookupOwnership;
 }

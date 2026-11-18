@@ -29,7 +29,7 @@ test.each([
   ["different owner", [{ ...matching, same_owner: false }], { kind: "unresolved" }],
   ["reverse mapping conflicts with the tag", [{ ...matching, logical_id: "modal_other" }], { kind: "unresolved" }],
   ["ambiguous provider records", [matching, matching], { kind: "unresolved" }],
-])("Modal reaper ownership for %s", async (_name, rows, expected) => {
+] as const)("Modal reaper ownership for %s", async (_name, rows, expected) => {
   const sql: Sql = {
     async query<T>(_statement: string, params?: unknown[]) {
       expect(params).toEqual([
@@ -39,7 +39,7 @@ test.each([
         binding.environment,
         binding.appId,
       ]);
-      return { rows: rows as T[] };
+      return { rows: [...rows] as T[] };
     },
   };
   const lookup = createModalReaperOwnership(sql, binding);
