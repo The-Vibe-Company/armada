@@ -277,7 +277,6 @@ export function createSandboxPullRequests(
               head: `${headRepository.split("/")[0]}:${ref}`,
               per_page: "100",
             });
-            let matched = false;
             const batch = await Promise.allSettled(
               [...branches.keys()].map(async (repository) => ({
                 repository,
@@ -296,14 +295,14 @@ export function createSandboxPullRequests(
                   const identity = { repository, number: pull.number };
                   discovered.set(urlFor(identity), identity);
                   record(repository, pull);
-                  matched = true;
                 } else if (pull.state === "open") {
                   // A moved open head blocks stopping without becoming work of this sandbox.
                   complete = false;
                 }
               }
             }
-            complete &&= matched;
+            // A complete lookup with no pull request is a scratch push, not
+            // unfinished work; the merge proof still needs one merged PR.
           }
         }
       }

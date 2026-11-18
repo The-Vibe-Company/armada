@@ -406,6 +406,7 @@ test.each(["boat", "modal"])("%s owner stop refuses old receipts but a fresh own
 
 test.each([
   "merged",
+  "merged with scratch push",
   "open",
   "closed",
   "no push",
@@ -455,6 +456,7 @@ test.each([
         return Response.json(pull);
       }
       expect(String(url)).toContain(`/repos/${repository}/pulls?`);
+      if (new URL(String(url)).searchParams.get("head") === "example:scratch") return Response.json([]);
       return Response.json([pull]);
     },
     { preconnect: fetch.preconnect },
@@ -470,7 +472,10 @@ test.each([
     async () => ({
       detached: false,
       exitCode: 0,
-      stdout: state === "no push" || state === "corrected report" ? "" : `topic\t${sha}\n`,
+      stdout:
+        state === "no push" || state === "corrected report"
+          ? ""
+          : `topic\t${sha}\n${state === "merged with scratch push" ? `scratch\t${"c".repeat(40)}\n` : ""}`,
       stderr: "",
       timedOut: false,
       truncated: false,
@@ -482,7 +487,7 @@ test.each([
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
   await f.tick();
   const sandbox = await f.data.sandboxes.get(f.id);
-  const shouldStop = state === "merged" || state === "corrected report";
+  const shouldStop = state === "merged" || state === "merged with scratch push" || state === "corrected report";
   expect(f.stops()).toBe(shouldStop ? 1 : 0);
   if (shouldStop) expect(sandbox?.statusReason).toBe("work_merged");
   expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
