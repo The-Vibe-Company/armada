@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { PROTOCOL_VERSION } from "@armada/agent-runtime";
 import { sha256Hex } from "@armada/auth";
 import { createSqlSandboxStore, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import type { Route } from "./http.ts";
@@ -6,15 +7,22 @@ import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
 const ENROL_PATH = "/api/runtime/enrol";
 const SESSION_PATH = "/api/runtime/session";
+const UNSUPPORTED_PROTOCOL = "runtime_protocol_unsupported";
 const SOURCE_TRANSACTION = Symbol("runtime_source_transaction");
 
-import { currentRequestId } from "./request-observability.ts";
+import { currentRequestId, recordOperatorFailure } from "./request-observability.ts";
 
 export class RuntimeEnrolmentDenied extends Error {
   constructor() {
     super("runtime_enrolment_denied");
   }
 }
+class RuntimeProtocolUnsupported extends Error {
+  constructor(readonly sandboxId: string) {
+    super(UNSUPPORTED_PROTOCOL);
+  }
+}
+
 export interface RuntimeSessionScope {
   sandboxId: string;
   epoch: string;
@@ -155,7 +163,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     });
     return { enrolmentToken, ...receipt };
   }
-  async function enrol(enrolmentToken: string) {
+  async function enrol(enrolmentToken: string, wireProtocol: string | null = String(PROTOCOL_VERSION)) {
     if (!valid(enrolmentToken, "enrol")) throw new RuntimeEnrolmentDenied();
     const hash = await sha256Hex(enrolmentToken);
     const runtimeToken = token("runtime");
@@ -178,6 +186,10 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
+      // The original v1 wire request had no protocol header. This encoding ages out with v1.
+      const version = wireProtocol ?? "1";
+      const previous = PROTOCOL_VERSION > 1 && version === String(PROTOCOL_VERSION - 1);
+      if (version !== String(PROTOCOL_VERSION) && !previous) throw new RuntimeProtocolUnsupported(sandbox.id);
       const configuration: unknown = JSON.parse(await decryptSecret(row.configuration_enc, encryptionKey));
       const updated = (
         await tx.query<{ epoch: string }>(
@@ -281,10 +293,14 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     try {
       const result =
         path === ENROL_PATH
-          ? await enrol(bearer)
+          ? await enrol(bearer, request.headers.get("x-armada-runtime-protocol"))
           : await withSession(bearer, request.headers.get("x-armada-runtime-epoch") ?? "", async (_tx, scope) => scope);
       return Response.json(result, { headers });
     } catch (error) {
+      if (error instanceof RuntimeProtocolUnsupported) {
+        recordOperatorFailure("runtime.enrol.protocol", error, { sandboxId: error.sandboxId });
+        return runtimeHttpFailure(409, UNSUPPORTED_PROTOCOL);
+      }
       return runtimeHttpFailure(error instanceof RuntimeEnrolmentDenied ? 401 : 503);
     }
   };
