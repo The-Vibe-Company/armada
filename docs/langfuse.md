@@ -62,8 +62,9 @@ string: tool observations are named `tool`, and the model name and per-turn
 usage metadata are omitted, leaving token counts and cost. Subscription quotes remain
 estimates, not invoices; unavailable costs are omitted.
 
-Each sandbox has a stable trace ID, each completed turn a stable observation
-ID and each tool a child observation. Terminal failures are exported too.
+Each sandbox has one Langfuse session, identified by the sandbox ID. Each
+completed turn has its own stable trace ID and root observation, with tools as
+child observations. Terminal failures are exported too.
 Coverage and available content vary by placement and harness.
 
 | Placement and path | Harnesses | Available evidence |
@@ -114,7 +115,7 @@ as `dropped`. A native receipt that the provider fails to answer five times in
 a row is abandoned before settlement, so its turn also counts as `dropped`. Transport, decryption and export-processing failures count as
 `failed`. Requests time out after five seconds, reject redirects, and failed
 requests are counted without an automatic retry. A restart during delivery
-can replay the same stable observation ID. Disabling may leave an in-flight
+can replay the same stable trace and observation IDs. Disabling may leave an in-flight
 request running. Settings are resolved when the job is claimed.
 
 Deployment requires the Langfuse export migration, the normal encryption key,

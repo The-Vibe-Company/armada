@@ -59,9 +59,28 @@ test("completed turns use stable OTLP identities, durations and opt-in content",
   expect(metadata[1]?.parentSpanId).toBe(metadata[0]?.spanId);
   expect(JSON.stringify(metadata)).not.toContain("customer_");
   const full = langfuseSpans("sandbox", events, [], true);
-  expect(full[0]?.traceId).toBe(metadata[0]?.traceId);
+  expect(full.map(({ traceId, spanId }) => ({ traceId, spanId }))).toEqual(
+    metadata.map(({ traceId, spanId }) => ({ traceId, spanId })),
+  );
   for (const text of ["customer_prompt", "customer_reply", "customer_argument", "customer_result", "customer_failure"])
     expect(JSON.stringify(full)).toContain(text);
+});
+test("each turn has its own trace and timing within the sandbox session", () => {
+  const secondTurn = events.map((event) => ({ ...event, promptId: "second-turn", at: event.at + 10_000 }));
+  const spans = langfuseSpans("sandbox", [...events, ...secondTurn], [], false);
+  const roots = spans.filter((span) => !span.parentSpanId);
+  expect(roots.map(({ startTimeUnixNano, endTimeUnixNano }) => [startTimeUnixNano, endTimeUnixNano])).toEqual([
+    ["1000000000", "1200000000"],
+    ["11000000000", "11200000000"],
+  ]);
+  expect(new Set(roots.map((root) => root.traceId)).size).toBe(2);
+  for (const root of roots) {
+    const trace = spans.filter((span) => span.traceId === root.traceId);
+    expect(trace).toHaveLength(2);
+    expect(trace[1]?.parentSpanId).toBe(root.spanId);
+    for (const span of trace)
+      expect(span.attributes).toContainEqual({ key: "langfuse.session.id", value: { stringValue: "sandbox" } });
+  }
 });
 test("a prompt event with an unknown status never becomes an exported span", () => {
   // Modal native history keeps guest-supplied statuses unvalidated.
