@@ -9,9 +9,9 @@ import { z } from "zod";
 import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 
 // Explicit case classes: JSON Schema patterns drop regex flags, so an `/i` flag would not be published.
-const uuid = z.string().regex(/^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$/);
+export const launchUuid = z.string().regex(/^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$/);
 const binding = (idField: "variableId" | "secretId") =>
-  z.strictObject({ key: z.string(), [idField]: uuid, version: z.number().int().min(1) });
+  z.strictObject({ key: z.string(), [idField]: launchUuid, version: z.number().int().min(1) });
 
 /**
  * The normal Docker `sandbox/launch` body (`provider: "docker"`). The normalizer in
@@ -21,12 +21,14 @@ const binding = (idField: "variableId" | "secretId") =>
  * first prompt uses the same `DOCKER_PROMPT` value as admission.
  */
 const dockerLaunchFields = {
-  org: uuid.describe("Organization UUID."),
+  org: launchUuid.describe("Organization UUID."),
   provider: z.literal("docker"),
   harness: z.enum(HARNESSES),
-  credentialId: uuid.optional().describe("Omit to use the caller's compatible personal default, frozen at admission."),
+  credentialId: launchUuid
+    .optional()
+    .describe("Omit to use the caller's compatible personal default, frozen at admission."),
   credentialVersion: z.number().int().min(1).optional(),
-  requestId: uuid.describe("Caller-chosen UUID; replaying it returns the same launch."),
+  requestId: launchUuid.describe("Caller-chosen UUID; replaying it returns the same launch."),
   prompt: DOCKER_PROMPT.optional().describe("First prompt: not blank. The whole request body is limited to 128 KiB."),
   model: z.string().optional(),
   reasoningEffort: z.string().optional(),
@@ -38,7 +40,7 @@ const dockerLaunchFields = {
     .boolean()
     .optional()
     .describe("Default true: stop the sandbox once every pull request it opened is merged and the agent is idle."),
-  connections: z.array(uuid).max(MAX_MCP_CONNECTIONS).optional().describe("MCP connection UUIDs."),
+  connections: z.array(launchUuid).max(MAX_MCP_CONNECTIONS).optional().describe("MCP connection UUIDs."),
   variables: z.array(binding("variableId")).max(64).optional(),
   secrets: z.array(binding("secretId")).max(64).optional(),
 };
@@ -47,7 +49,7 @@ const dockerLaunchFields = {
 export const DOCKER_HOST_LAUNCH_REQUEST = z
   .strictObject({
     ...dockerLaunchFields,
-    hostId: uuid.describe("Docker host UUID."),
+    hostId: launchUuid.describe("Docker host UUID."),
     repos: z
       .array(z.strictObject({ url: z.string(), branch: z.string().optional(), dir: z.string().optional() }))
       .optional()
@@ -61,8 +63,8 @@ export const DOCKER_HOST_LAUNCH_REQUEST = z
 export const DOCKER_SNAPSHOT_LAUNCH_REQUEST = z
   .strictObject({
     ...dockerLaunchFields,
-    snapshotId: uuid.describe("Docker snapshot UUID. It selects the host and workspace."),
-    hostId: uuid.optional().describe("Optional; when present it must be the snapshot's host."),
+    snapshotId: launchUuid.describe("Docker snapshot UUID. It selects the host and workspace."),
+    hostId: launchUuid.optional().describe("Optional; when present it must be the snapshot's host."),
   })
   .describe("Launch from a Docker snapshot on the host that holds it. There is no golden and no repos.");
 

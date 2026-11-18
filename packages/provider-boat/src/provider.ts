@@ -32,6 +32,7 @@ import {
   HARNESSES,
   MACHINE_SIZE_CATALOG,
   mapHarnesses,
+  OUTPUT_MAX_BYTES,
   ProviderError,
   parseMachineSize,
   providerRateLimitDetails,
@@ -71,6 +72,7 @@ import { readEventCursor, writeEventCursor } from "./event-cursor.ts";
 import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
 import { installNativeCwdWrapper, type NATIVE_HARNESS_PATHS } from "./native-cwd.ts";
 import { admitNativeUsage, bindNativeUsage, collectNativeUsage } from "./native-usage.ts";
+import { RETAINED_OUTPUT_PATH, readRetainedOutputArchive } from "./retained-outputs.ts";
 
 const DEFAULT_BASE_URL = "https://boat.dev/api/v1";
 /** boat's own default, sent explicitly so a launch never depends on it. */
@@ -449,6 +451,57 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
 
     // Match the bounded concurrency of Boat work preservation's chunk reads.
     outputReadConcurrency: 8,
+    async openRetainedOutputs({ sandboxId, signal }) {
+      const observed = await call(() => api.get({ sandboxId }, { signal })).catch((error: unknown) => {
+        if (error instanceof ProviderError && error.status === 404 && error.code === "not_found") return null;
+        throw error;
+      });
+      if (!observed) return "gone";
+      const current = observed.sandbox;
+      if (current?.id !== sandboxId || current.state !== "archived") return null;
+      if (current.dataExpiredAt || current.snapshots === false) return "gone";
+      if (
+        !current.snapshotAvailable ||
+        current.stop ||
+        (current.lastSnapshotStatus && current.lastSnapshotStatus !== "completed")
+      )
+        return null;
+      // A forced or provider-initiated stop can leave an older completed snapshot.
+      // Require a verification at the stop boundary, allowing no-change saves to
+      // verify an older snapshot without creating a new one.
+      const stoppedAt = current.stoppedAt?.getTime();
+      const verifiedAt = (current.snapshotVerifiedAt ?? current.snapshotCompletedAt)?.getTime();
+      if (stoppedAt === undefined || verifiedAt === undefined || !(verifiedAt >= stoppedAt)) return null;
+      const { snapshot } = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal }));
+      // The latest endpoint can race the stop observation. Bind it to the completed
+      // snapshot reported by the archived sandbox, including no-change archives.
+      if (
+        snapshot?.sandboxId !== sandboxId ||
+        snapshot.status !== "completed" ||
+        !snapshot.completedAt ||
+        !current.snapshotCompletedAt ||
+        snapshot.completedAt.getTime() !== current.snapshotCompletedAt.getTime()
+      )
+        return null;
+      const response = await call(() =>
+        api.getSnapshotFileRaw({ snapshotId: snapshot.id, path: RETAINED_OUTPUT_PATH }, { signal }),
+      ).catch((error: unknown) => {
+        if (
+          error instanceof ProviderError &&
+          ["legacy_snapshot", "snapshot_data_expired"].includes(error.providerCode ?? "")
+        )
+          return null;
+        throw error;
+      });
+      if (!response) return "gone";
+      const { entries, files } = await readRetainedOutputArchive(response.raw, signal);
+      return {
+        entries,
+        readChunk({ entry, offset, length }) {
+          return files.get(entry.name)?.subarray(offset, offset + (length ?? OUTPUT_MAX_BYTES)) ?? null;
+        },
+      };
+    },
     listOutputEntries(request) {
       return collectOutputs(request, outputEntryCollector(null), readCollectorEntries);
     },

@@ -3727,6 +3727,76 @@ export type Database = {
           },
         ];
       };
+      provider_launch_requests: {
+        Row: {
+          sandbox_id: string;
+          actor_epoch: number;
+          request_enc: string | null;
+          fence_id: string | null;
+          phase: string;
+          dispatch_deadline: string;
+          next_attempt_at: string;
+          lease_owner: string | null;
+          lease_epoch: number;
+          lease_expires_at: string | null;
+          correlation_id: string;
+          outcome: Json | null;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          actor_epoch: number;
+          request_enc?: string | null;
+          fence_id?: string | null;
+          phase?: string;
+          dispatch_deadline: string;
+          next_attempt_at?: string;
+          lease_owner?: string | null;
+          lease_epoch?: number;
+          lease_expires_at?: string | null;
+          correlation_id: string;
+          outcome?: Json | null;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          actor_epoch?: number;
+          request_enc?: string | null;
+          fence_id?: string | null;
+          phase?: string;
+          dispatch_deadline?: string;
+          next_attempt_at?: string;
+          lease_owner?: string | null;
+          lease_epoch?: number;
+          lease_expires_at?: string | null;
+          correlation_id?: string;
+          outcome?: Json | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "provider_launch_requests_fence_id_fkey";
+            columns: ["fence_id"];
+            isOneToOne: true;
+            referencedRelation: "golden_operation_fences";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "provider_launch_requests_receipt_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "ordinary_launch_receipts";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "provider_launch_requests_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       readable_variables: {
         Row: {
           id: string;
@@ -4755,6 +4825,7 @@ export type Database = {
           pull_request_merge_proof: Json | null;
           stop_when_work_merged: boolean;
           transition_context: Json | null;
+          outputs_retained_generation: number | null;
         };
         Insert: {
           id?: string;
@@ -4830,6 +4901,7 @@ export type Database = {
           pull_request_merge_proof?: Json | null;
           stop_when_work_merged?: boolean;
           transition_context?: Json | null;
+          outputs_retained_generation?: number | null;
         };
         Update: {
           id?: string;
@@ -4905,6 +4977,7 @@ export type Database = {
           pull_request_merge_proof?: Json | null;
           stop_when_work_merged?: boolean;
           transition_context?: Json | null;
+          outputs_retained_generation?: number | null;
         };
         Relationships: [
           {
@@ -5187,6 +5260,7 @@ export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type OutboundWebhookDeliveryRow = Database["public"]["Tables"]["outbound_webhook_deliveries"]["Row"];
 export type OutboundWebhookEndpointRow = Database["public"]["Tables"]["outbound_webhook_endpoints"]["Row"];
 export type PersonalSkillDefaultsRow = Database["public"]["Tables"]["personal_skill_defaults"]["Row"];
+export type ProviderLaunchRequestRow = Database["public"]["Tables"]["provider_launch_requests"]["Row"];
 export type ReadableVariableRow = Database["public"]["Tables"]["readable_variables"]["Row"];
 export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];
 export type RoutineRunInputRow = Database["public"]["Tables"]["routine_run_inputs"]["Row"];

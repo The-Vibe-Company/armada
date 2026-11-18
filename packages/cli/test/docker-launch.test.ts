@@ -69,7 +69,7 @@ test.each(["codex", "claude", "opencode"] as const)(
       },
     );
     expect(result.code).toBe(0);
-    expect(JSON.parse(result.out)).toEqual(receipt);
+    expect(JSON.parse(result.out)).toMatchObject({ ...receipt, id: requestId, provider: "docker", status: "running" });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/sandbox/launch");
     expect(calls[0]?.headers.get("authorization")).toStartWith("Bearer armada_sk_");

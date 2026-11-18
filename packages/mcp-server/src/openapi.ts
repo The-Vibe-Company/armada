@@ -14,8 +14,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { z } from "zod";
 import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
-import { DOCKER_HOST_LAUNCH_REQUEST, DOCKER_SNAPSHOT_LAUNCH_REQUEST } from "./docker-launch-request-schema.ts";
 import { DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
+import { LAUNCH_REQUEST_VARIANTS } from "./launch-request-schema.ts";
 import {
   GOLDEN_LIST_RESPONSE,
   LAUNCH_OPTIONS_RESPONSE,
@@ -295,15 +295,13 @@ export async function generateOpenApi() {
       // The server's own refusal of a body over maxBodyBytes: the vault reader's opaque 400, or 413.
       const oversizedStatus = vaultControlRoute(route) ? 400 : 413;
       if (route === "sandbox/launch") {
-        // One public path, two handlers: provider "docker" is dispatched to the normal Docker launch.
-        const { $schema: _golden, ...golden } = input as Record<string, unknown>;
-        const docker = [DOCKER_HOST_LAUNCH_REQUEST, DOCKER_SNAPSHOT_LAUNCH_REQUEST].map((variant) => {
-          const { $schema: _docker, ...schema } = requestJsonSchema(variant);
-          // Docker admits a 256 KiB first prompt, but the REST body limit applies first.
-          boundByBody(schema, "prompt", maxBodyBytes);
-          return schema;
-        });
-        request = { oneOf: [golden, ...docker] };
+        request = {
+          oneOf: LAUNCH_REQUEST_VARIANTS.map((variant) => {
+            const { $schema: _dialect, ...schema } = requestJsonSchema(variant);
+            boundByBody(schema, "prompt", maxBodyBytes);
+            return schema;
+          }),
+        };
         description +=
           ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources.';
       }
