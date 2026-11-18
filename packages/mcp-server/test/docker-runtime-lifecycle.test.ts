@@ -331,6 +331,36 @@ test("one durable conversation survives lost responses and admits only exact ret
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
 });
 
+test("a reported outcome clears with its turn at the next prompt and keeps the report history", async () => {
+  const db = database();
+  const f = await fixture(),
+    session = await ready(f),
+    input = { requestId: randomUUID(), text: "Open a pull request" };
+  await service.prompt(f.actor, f.sandbox.id, input);
+  const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" as const };
+  await complete(session, receipt);
+  await service.prompt(f.actor, f.sandbox.id, input);
+  const outcome = { state: "ready", prNumber: 42 };
+  const reportKey = `${session.epoch}:${receipt.promptId}`;
+  // The persisted shape of a Docker report for the finished turn.
+  await db.query(
+    `update public.sandboxes set status='ready',task_outcome=$2::text::jsonb,
+     pull_request_reports=jsonb_build_object($3::text,$2::text::jsonb) where id=$1`,
+    [f.sandbox.id, JSON.stringify(outcome), reportKey],
+  );
+  const next = { requestId: randomUUID(), text: "Address review", conversationId: receipt.conversationId };
+  expect(await service.prompt(f.actor, f.sandbox.id, next)).toEqual({ state: "pending" });
+  const row = await db.query<{ task_outcome: unknown; task_prompt_id: string | null; pull_request_reports: unknown }>(
+    "select task_outcome,task_prompt_id,pull_request_reports from public.sandboxes where id=$1",
+    [f.sandbox.id],
+  );
+  expect(row.rows[0]).toEqual({
+    task_outcome: null,
+    task_prompt_id: null,
+    pull_request_reports: { [reportKey]: outcome },
+  });
+});
+
 test("prompt receipts cannot replace the allocation conversation and invalid replies remain redacted", async () => {
   const db = database();
   const f = await fixture(),

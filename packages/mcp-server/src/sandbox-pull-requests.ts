@@ -507,11 +507,13 @@ export function createSandboxPullRequests(
               const { repository, pulls } = result.value;
               for (const pull of pulls) {
                 if (pull.head.repo?.full_name.toLowerCase() !== headRepository || pull.head.ref !== ref) continue;
-                named = true;
                 // A pull request closed before launch froze its head before any
                 // push from here, even when a recreated branch reaches that same
                 // commit again: it is never this sandbox's work.
                 const closedBeforeLaunch = pull.state !== "open" && Date.parse(pull.closed_at ?? "") < launchedAt;
+                // Only an open or post-launch PR makes the branch PR-bearing; a
+                // branch with only pre-launch history stays a scratch push.
+                if (!closedBeforeLaunch) named = true;
                 if (!closedBeforeLaunch && shas.includes(pull.head.sha)) {
                   // A PR at any pushed commit is this sandbox's work, so an
                   // earlier closed-unmerged PR still vetoes the stop.

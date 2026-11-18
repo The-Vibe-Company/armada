@@ -414,6 +414,7 @@ test.each([
   "merged",
   "merged with scratch push",
   "merged with later push",
+  "merged with scratch PR closed before launch",
   "merged after closed",
   "merged after closed at moved head",
   "merged after closed before launch",
@@ -524,6 +525,14 @@ test.each([
   };
   // A merged PR at an older head: the later push to its branch has no PR yet.
   const laterPull = { ...pull, number: 13, head: { ...pull.head, ref: "scratch", sha: "d".repeat(40) } };
+  // A PR on the scratch branch that closed a day before launch: history, not this sandbox's work.
+  const stalePull = {
+    ...laterPull,
+    number: 10,
+    merged_at: null,
+    closed_at: new Date(f.at - 86_400_000).toISOString(),
+    head: { ...laterPull.head, sha: "7".repeat(40) },
+  };
   // An earlier push to the same branch whose PR closed without merging. In the
   // moved-head cases another checkout advanced the branch before the close, so
   // its head is none of this sandbox's pushes.
@@ -563,7 +572,14 @@ test.each([
         return String(url).endsWith("9".repeat(40)) ? new Response("", { status: 404 }) : Response.json({});
       expect(String(url)).toContain(`/repos/${repository}/pulls?`);
       const head = new URL(String(url)).searchParams.get("head");
-      if (head === "example:scratch") return Response.json(state === "merged with later push" ? [laterPull] : []);
+      if (head === "example:scratch")
+        return Response.json(
+          state === "merged with later push"
+            ? [laterPull]
+            : state === "merged with scratch PR closed before launch"
+              ? [stalePull]
+              : [],
+        );
       if (head === "example:main") return Response.json([]);
       if (head === "example:other") return Response.json(state === "unmerged PR at attempt" ? [attemptPull] : []);
       return Response.json(state.startsWith("merged after closed") ? [pull, closedPull] : [pull]);
@@ -642,6 +658,7 @@ test.each([
   const shouldStop =
     state === "merged" ||
     state === "merged with scratch push" ||
+    state === "merged with scratch PR closed before launch" ||
     state === "merged after head advanced" ||
     state === "merged after closed before launch" ||
     state === "corrected report" ||
