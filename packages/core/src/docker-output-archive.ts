@@ -9,12 +9,8 @@ flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 fd = os.open("/", flags)
 try:
     for component in ${JSON.stringify(OUTPUT_DIRECTORY.split("/").filter(Boolean))}:
-        try:
-            child = os.open(component, flags, dir_fd=fd)
-        except FileNotFoundError:
-            os.close(fd)
-            fd = None
-            break
+        # A missing directory is unavailable. An existing empty directory is a valid capture.
+        child = os.open(component, flags, dir_fd=fd)
         os.close(fd)
         fd = child
     root = ${JSON.stringify(OUTPUT_DIRECTORY.split("/").at(-1))}
@@ -22,35 +18,33 @@ try:
         header = tarfile.TarInfo(root + "/")
         header.type = tarfile.DIRTYPE
         archive.addfile(header)
-        if fd is not None:
-            total = 0
-            with os.scandir(fd) as entries:
-                for index, entry in enumerate(entries):
-                    if index >= ${OUTPUT_MAX_ENTRIES}:
+        total = 0
+        with os.scandir(fd) as entries:
+            for index, entry in enumerate(entries):
+                if index >= ${OUTPUT_MAX_ENTRIES}:
+                    sys.exit(3)
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                name = entry.name
+                try:
+                    name.encode("utf-8")
+                except UnicodeEncodeError:
+                    continue
+                if len(name.encode("utf-16-le")) // 2 > 255 or "\\\\" in name or any(ord(c) < 32 or ord(c) == 127 for c in name):
+                    continue
+                file = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+                with os.fdopen(file, "rb") as data:
+                    info = os.fstat(data.fileno())
+                    if not stat.S_ISREG(info.st_mode):
                         sys.exit(3)
-                    if not entry.is_file(follow_symlinks=False):
+                    if info.st_nlink != 1:
                         continue
-                    name = entry.name
-                    try:
-                        name.encode("utf-8")
-                    except UnicodeEncodeError:
-                        continue
-                    if len(name.encode("utf-16-le")) // 2 > 255 or "\\\\" in name or any(ord(c) < 32 or ord(c) == 127 for c in name):
-                        continue
-                    file = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-                    with os.fdopen(file, "rb") as data:
-                        info = os.fstat(data.fileno())
-                        if not stat.S_ISREG(info.st_mode):
-                            sys.exit(3)
-                        if info.st_nlink != 1:
-                            continue
-                        total += info.st_size
-                        if total > ${OUTPUT_ARCHIVE_LIMIT}:
-                            sys.exit(3)
-                        header = tarfile.TarInfo(root + "/" + name)
-                        header.size = info.st_size
-                        archive.addfile(header, data)
+                    total += info.st_size
+                    if total > ${OUTPUT_ARCHIVE_LIMIT}:
+                        sys.exit(3)
+                    header = tarfile.TarInfo(root + "/" + name)
+                    header.size = info.st_size
+                    archive.addfile(header, data)
 finally:
-    if fd is not None:
-        os.close(fd)
+    os.close(fd)
 `;
