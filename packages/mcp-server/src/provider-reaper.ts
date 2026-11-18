@@ -1,5 +1,4 @@
-import type { Provider, ProviderInventoryMachine, SandboxStatus } from "@armada/core";
-import type { SandboxPlacementProviderId } from "@armada/core/sandbox-provider";
+import type { Provider, ProviderInventoryMachine, SandboxPlacementProviderId, SandboxStatus } from "@armada/core";
 import type { ServerLifecycleLane } from "./server-workers.ts";
 
 const UNKNOWN_GRACE_MS = 15 * 60_000;
