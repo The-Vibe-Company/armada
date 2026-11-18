@@ -106,7 +106,7 @@ test("Modal inventory surfaces a later page failure as a retryable provider erro
     throw Object.assign(new Error("private SDK diagnostic"), { name: "TimeoutError" });
   };
   const provider = fixture({}, { cpClient: { sandboxListV2 } as ModalClient["cpClient"] });
-  const pages = provider.listInventory();
+  const pages = provider.listInventory()[Symbol.asyncIterator]();
   expect((await pages.next()).value).toMatchObject({ machineId: "sb_first" });
   try {
     await pages.next();
@@ -134,7 +134,7 @@ test("Modal attaches deployment ownership to the allocation request for a runtim
     },
     lease: async (id: string, work: (row: Machine, save: () => Promise<void>) => Promise<unknown>) =>
       work(id === snapshot.sourceId ? ({ golden: true } as Machine) : machine, async () => {}),
-  } as ModalStore;
+  } as unknown as ModalStore;
   let creationTags: Record<string, string> | undefined;
   const provider = fixture(
     { store, commonRuntime: true },
