@@ -334,49 +334,56 @@ const bindApplicationSecret = {
   tainted: async (db: Awaited<ReturnType<typeof settledBoatTurn>>["db"]) =>
     db.query("update sandboxes set application_secret_tainted=true where boat_id='boat_export'"),
 };
-for (const [source, bind] of Object.entries(bindApplicationSecret))
-  test(`a sandbox with ${source} application-secret bindings exports metadata only in full mode`, async () => {
-    const { db, counters } = await settledBoatTurn("turn");
-    const canary = ["opaque", "application", "canary"].join("-");
-    await db.exec("set session_replication_role=replica");
-    try {
-      await bind(db);
-    } finally {
-      await db.exec("set session_replication_role=origin");
-    }
-    const raw = [
-      { id: "p", timestamp: 1000, taskId: "turn", type: "prompt", data: { prompt: "print APP", status: "running" } },
-      {
-        id: "r",
-        timestamp: 1100,
-        taskId: "turn",
-        type: "response",
-        data: {
-          content: canary,
-          tools: [{ use: { id: "t", name: "exec", input: canary }, result: { content: canary } }],
+for (const mode of ["metadata", "full"] as const)
+  for (const [source, bind] of Object.entries(bindApplicationSecret))
+    test(`a sandbox with ${source} application-secret bindings exports no provider strings in ${mode} mode`, async () => {
+      const { db, counters } = await settledBoatTurn("turn", mode);
+      const canary = ["opaque", "application", "canary"].join("-");
+      await db.exec("set session_replication_role=replica");
+      try {
+        await bind(db);
+      } finally {
+        await db.exec("set session_replication_role=origin");
+      }
+      const raw = [
+        { id: "p", timestamp: 1000, taskId: "turn", type: "prompt", data: { prompt: "print APP", status: "running" } },
+        {
+          id: "r",
+          timestamp: 1100,
+          taskId: "turn",
+          type: "response",
+          data: {
+            content: canary,
+            model: `model-${canary}`,
+            // Provider-controlled names, through the real Boat normalizer.
+            tools: [
+              { use: { id: "t", name: "exec", input: canary }, result: { content: canary } },
+              { use: { id: "u", name: `tool-${canary}` } },
+            ],
+          },
         },
-      },
-      { id: "f", timestamp: 1200, taskId: "turn", type: "prompt", data: { status: "failed", error: canary } },
-    ];
-    const provider = {
-      id: "boat",
-      events: async () => ({ events: raw.map((e) => normalizeEvent(e as never)), cursor: "native", hasMore: false }),
-    } satisfies Pick<Provider, "id" | "events">;
-    let payload = "";
-    const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "boat_export" }), (async (
-      _url,
-      init,
-    ) => {
-      payload = String(init?.body);
-      return new Response(null, { status: 200 });
-    }) as typeof fetch);
-    expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
-    expect(payload).toContain("application_secret_bindings");
-    expect(payload).toContain('"exec"');
-    expect(payload).not.toContain(canary);
-    expect(payload).not.toContain("print APP");
-    expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
-  });
+        { id: "f", timestamp: 1200, taskId: "turn", type: "prompt", data: { status: "failed", error: canary } },
+      ];
+      const provider = {
+        id: "boat",
+        events: async () => ({ events: raw.map((e) => normalizeEvent(e as never)), cursor: "native", hasMore: false }),
+      } satisfies Pick<Provider, "id" | "events">;
+      let payload = "";
+      const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "boat_export" }), (async (
+        _url,
+        init,
+      ) => {
+        payload = String(init?.body);
+        return new Response(null, { status: 200 });
+      }) as typeof fetch);
+      expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+      expect(payload).toContain("application_secret_bindings");
+      expect(payload).toContain('"name":"tool"');
+      expect(payload).not.toContain("exec");
+      expect(payload).not.toContain(canary);
+      expect(payload).not.toContain("print APP");
+      expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
+    });
 
 for (const [settled, delivered, content] of [
   ["metadata", "full", false],

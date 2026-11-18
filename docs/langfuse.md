@@ -41,7 +41,9 @@ carries the irreversible `application_secret_tainted` marker, has received raw v
 no pattern matches and which the export cannot recover to mask exactly. Its
 turns are therefore always exported in metadata mode, marked
 `content_withheld: application_secret_bindings`, even when the organization
-chose full mode. Subscription quotes remain
+chose full mode. In either mode such a turn also carries no provider-controlled
+string: tool observations are named `tool`, and the model name and per-turn
+usage metadata are omitted, leaving token counts and cost. Subscription quotes remain
 estimates, not invoices; unavailable costs are omitted.
 
 Each sandbox has a stable trace ID, each completed turn a stable observation

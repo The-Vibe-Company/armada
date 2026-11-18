@@ -31,7 +31,11 @@ const scrub = (value: unknown): unknown =>
         : value;
 const nano = (at: number) => (BigInt(Math.max(0, Math.trunc(at))) * 1000000n).toString();
 
-/** Complete OTLP observations; content is opt-in and unknown event payloads never leave the server. */
+/**
+ * Complete OTLP observations; content is opt-in and unknown event payloads never leave the server.
+ * `contentWithheld` marks a sandbox holding raw application secrets: then no provider-controlled
+ * string (tool names, model names, run IDs) is exported either, only fixed names and numbers.
+ */
 export function langfuseSpans(
   sandboxId: string,
   events: AgentEvent[],
@@ -65,6 +69,7 @@ export function langfuseSpans(
         messages.set(id, e.textMode === "delta" ? (messages.get(id) ?? "") + e.text : e.text);
       }
     const usage = turns.filter((t) => t.promptId === end.promptId);
+    const trusted = !marks.contentWithheld;
     const cost = usage.map((t) => t.pricing?.usd);
     spans.push({
       traceId,
@@ -76,11 +81,12 @@ export function langfuseSpans(
       status: { code: end.status === "finished" ? 1 : 2 },
       attributes: attributes({
         "langfuse.observation.type": "generation",
-        "langfuse.observation.model.name":
-          usage
-            .map((t) => t.model)
-            .filter(Boolean)
-            .join(",") || history.flatMap((e) => (e.kind === "message" && e.model ? [e.model] : []))[0],
+        "langfuse.observation.model.name": !trusted
+          ? undefined
+          : usage
+              .map((t) => t.model)
+              .filter(Boolean)
+              .join(",") || history.flatMap((e) => (e.kind === "message" && e.model ? [e.model] : []))[0],
         "langfuse.observation.usage_details": usage.length
           ? Object.fromEntries(
               (["inputTokens", "outputTokens"] as const).flatMap((dimension, index) =>
@@ -101,7 +107,7 @@ export function langfuseSpans(
           : end.status === "failed"
             ? "turn_failed"
             : undefined,
-        "langfuse.observation.metadata.usage": usage,
+        "langfuse.observation.metadata.usage": trusted ? usage : undefined,
         "langfuse.observation.input": full ? start?.text || end.text || undefined : undefined,
         "langfuse.observation.output": full && messages.size ? [...messages.values()].join("\n") : undefined,
       }),
@@ -126,7 +132,7 @@ export function langfuseSpans(
         traceId,
         spanId: hash(`${sandboxId}/${end.promptId}/${id}`, 16),
         parentSpanId: spanId,
-        name: redactCredentials(t.tool.name),
+        name: trusted ? redactCredentials(t.tool.name) : "tool",
         kind: 1,
         startTimeUnixNano: nano(t.first),
         endTimeUnixNano: nano(Math.max(t.first, t.last)),
@@ -302,7 +308,9 @@ export function createLangfuse(
     // marker, reach the sandbox as raw values that no pattern matches, and the export
     // cannot recover them to mask exactly, so such a sandbox exports metadata
     // only, whatever the organization mode.
-    const withheld = job.content_mode === "full" && (await bindsApplicationSecrets(job));
+    // The same raw values can surface in provider-controlled metadata (a tool
+    // or model name), so the check applies in metadata mode too.
+    const withheld = await bindsApplicationSecrets(job);
     const spans = langfuseSpans(job.sandbox_id, turnEvents, usage, job.content_mode === "full" && !withheld, {
       historyUnavailable,
       ...(withheld ? { contentWithheld: "application_secret_bindings" } : {}),
