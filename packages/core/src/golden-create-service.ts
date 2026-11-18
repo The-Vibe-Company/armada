@@ -391,7 +391,18 @@ export class GoldenCreateService {
       ) {
         snapshotAttempted = false;
       }
-      refusedBuilder = !builder && phase === "builder" && isNonMutatingProviderRefusal(error);
+      const imageFailure =
+        !builder &&
+        phase === "builder" &&
+        error instanceof ProviderError &&
+        error.provider === "modal" &&
+        error.providerCode === "modal_builder_image_failed" &&
+        !error.details?.resourceReceipt &&
+        !error.details?.keepSource
+          ? error.message
+          : undefined;
+      refusedBuilder =
+        !builder && phase === "builder" && (imageFailure !== undefined || isNonMutatingProviderRefusal(error));
       console.error(
         JSON.stringify({
           event: "golden_build_failed",
@@ -402,7 +413,9 @@ export class GoldenCreateService {
             ? {
                 provider: error.provider,
                 status: error.status,
-                detail: error.code === "invalid_request" ? snapshotRejectionClass(error.message) : "provider_failure",
+                detail:
+                  imageFailure ??
+                  (error.code === "invalid_request" ? snapshotRejectionClass(error.message) : "provider_failure"),
               }
             : {}),
           elapsedMs: Date.now() - startedAt,
@@ -435,6 +448,8 @@ export class GoldenCreateService {
             sourceSandboxId: builder.id,
           },
         });
+      if (imageFailure !== undefined)
+        throw new GoldenError("build_failed", imageFailure, { safeMessage: imageFailure });
       if (error instanceof GoldenError || error instanceof ProviderError) throw error;
       throw new GoldenError(
         "build_failed",

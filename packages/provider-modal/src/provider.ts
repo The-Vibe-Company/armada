@@ -28,7 +28,7 @@ import {
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
-import { lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
+import { lifecycleStep, ModalOperationError, modalBuilderImageError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
 import type {
   Machine,
@@ -344,6 +344,17 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       const image = await measure("modal_image", () =>
         row.imageId ? client.images.fromId(row.imageId) : distribution.image(client),
       );
+      if (row.golden && !image.imageId) {
+        try {
+          // The SDK otherwise builds inside sandboxes.create, hiding whether allocation started.
+          await measure("modal_image", () => image.build(app));
+        } catch (error) {
+          // Close the reservation under its lease before reporting a non-allocating failure.
+          row.phase = "deleted";
+          await save(row);
+          throw modalBuilderImageError(error);
+        }
+      }
       row.phase = "creating";
       row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
       await save(row);
@@ -509,6 +520,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return create(current, save, "env" in request ? (request.env ?? {}) : {});
       });
     } catch (error) {
+      if (
+        observed.phase === "deleted" &&
+        !observed.physicalId &&
+        error instanceof ProviderError &&
+        error.providerCode === "modal_builder_image_failed"
+      )
+        throw error;
       throw new ModalOperationError(error, await resourceReceipt(observed));
     }
   }
