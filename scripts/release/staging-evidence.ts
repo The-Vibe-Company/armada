@@ -80,14 +80,16 @@ if (import.meta.main) {
     const release = (await Bun.file(process.env.GITHUB_EVENT_PATH as string).json()).workflow_run;
     // A failed or cancelled Release can leave staging partially deployed.
     const deployedAfter = release?.conclusion === "success" ? undefined : String(release?.updated_at ?? "");
-    const runs = await api<{ workflow_runs: (Record<string, unknown> & { id: number; run_attempt: number })[] }>(
-      `actions/workflows/staging-gated-production.yml/runs?branch=main&status=success&per_page=20`,
-    );
     const response = await fetch(`${process.env.ARMADA_SERVER_URL?.replace(/\/$/, "")}/healthz`, {
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) throw new Error("Staging source identity unavailable");
     const health: unknown = await response.json();
+    const version = process.env.RELEASE_VERSION ?? "";
+    if (!matchesDeploymentHealth(health, version, sha)) throw new Error("Staging is on another source");
+    const runs = await api<{ workflow_runs: (Record<string, unknown> & { id: number; run_attempt: number })[] }>(
+      `actions/workflows/staging-gated-production.yml/runs?branch=main&status=success&per_page=20`,
+    );
     for (const run of runs.workflow_runs ?? []) {
       // Fetch only jobs for the current attempt, never mix successful old steps
       // with a later failed/skipped attempt.
@@ -95,17 +97,7 @@ if (import.meta.main) {
         `actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`,
       );
       if (result.total_count > 100) continue;
-      if (
-        authenticWakeupEvidence(
-          run,
-          result.jobs,
-          repository,
-          sha,
-          health,
-          process.env.RELEASE_VERSION ?? "",
-          deployedAfter,
-        )
-      ) {
+      if (authenticWakeupEvidence(run, result.jobs, repository, sha, health, version, deployedAfter)) {
         console.log(`Reusing authenticated staging run ${run.id} for ${sha}`);
         reused = true;
         break;
