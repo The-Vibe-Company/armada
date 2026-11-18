@@ -65,6 +65,7 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
             timeoutMs: READ_TIMEOUT_MS,
             ...(request.signal ? { signal: request.signal } : {}),
             ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
+            accept: (candidate) => !!candidate.body.result,
           },
         );
         const result = reply.body.result as { files?: unknown } | undefined;

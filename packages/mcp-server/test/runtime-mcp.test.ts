@@ -292,15 +292,11 @@ test.each(["boat", "modal"] as const)(
 test.each(["boat", "modal"] as const)(
   "a refused MCP configuration on send records runtime outcomes under the HTTP request ID (%s)",
   async (provider) => {
-    const x = await fixture(provider, (bridge) => ({
-        ...bridge,
-        async call(owner, command, options) {
-          const reply = await bridge.call(owner, command, options);
-          return command.op === "configureMcp" ? { ...reply, status: 503 } : reply;
-        },
-      })),
+    const x = await fixture(provider),
       { f } = x,
       lines: string[] = [];
+    // The guest's own reply is the refusal: the shared command boundary must classify it.
+    f.refuse("configureMcp");
     try {
       const response = await observeRequest(
         () => x.api("sandbox/send", f.input("use configured MCP")),

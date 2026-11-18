@@ -1,9 +1,8 @@
-import { decryptSecret, type SandboxPlacementProviderId, type Sql, VaultError } from "@armada/core/server";
+import { decryptSecret, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
-import { observeProviderCall } from "./request-observability.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 
@@ -34,7 +33,7 @@ export function createRuntimeCheckpoint(
     id: string;
     ownerId: string;
     orgId: string;
-    provider: SandboxPlacementProviderId;
+    provider: string;
     harness: string;
     status: string;
     deletedAt: string | null;
@@ -235,24 +234,22 @@ export function createRuntimeCheckpoint(
         ]);
       return { epoch: scope.epoch, current_epoch: scope.epoch, request_id: requestId, watermark: null };
     });
-    return observeProviderCall(sandbox.provider, "runtime.checkpoint", async () => {
-      try {
-        await commands.call(caller.userId, {
-          version: 1,
-          sandboxId: sandbox.id,
-          requestId: `checkpoint_${requestId}`,
-          op: "checkpoint",
-        });
-      } catch {
-        throw new VaultError(
-          "conflict",
-          "Runtime checkpoint outcome is uncertain; reuse the original request_id or stop without claiming resume.",
-        );
-      }
-      const completed = await finish(intent);
-      if (!completed)
-        throw new VaultError("conflict", "Runtime checkpoint is not yet acknowledged; reuse the original request_id.");
-      return completed;
-    });
+    try {
+      await commands.call(caller.userId, {
+        version: 1,
+        sandboxId: sandbox.id,
+        requestId: `checkpoint_${requestId}`,
+        op: "checkpoint",
+      });
+    } catch {
+      throw new VaultError(
+        "conflict",
+        "Runtime checkpoint outcome is uncertain; reuse the original request_id or stop without claiming resume.",
+      );
+    }
+    const completed = await finish(intent);
+    if (!completed)
+      throw new VaultError("conflict", "Runtime checkpoint is not yet acknowledged; reuse the original request_id.");
+    return completed;
   };
 }

@@ -45,10 +45,18 @@ function errorClassOf(error: unknown): string {
   return /^[A-Za-z_$][\w$]{0,63}$/.test(name) ? name : "Error";
 }
 
+type Provider = "boat" | "modal" | "docker";
+
+/**
+ * One `provider_call` record per call made inside an HTTP request. `provider` may be resolved
+ * late (the enrolled-runtime boundary learns it under its lock); `accepted` classifies a
+ * returned value, so a refusal reply that does not throw still records `outcome: "error"`.
+ */
 export async function observeProviderCall<T>(
-  provider: "boat" | "modal" | "docker",
+  provider: Provider | (() => Provider | undefined),
   operation: string,
   work: () => Promise<T>,
+  accepted: (result: T) => boolean = () => true,
 ): Promise<T> {
   const request = current.getStore();
   if (!request) return work();
@@ -56,14 +64,15 @@ export async function observeProviderCall<T>(
   let outcome = "error";
   try {
     const result = await work();
-    outcome = "ok";
+    if (accepted(result)) outcome = "ok";
     return result;
   } finally {
+    const name = typeof provider === "function" ? provider() : provider;
     request.log(
       JSON.stringify({
         event: "provider_call",
         requestId: request.id,
-        provider,
+        ...(name ? { provider: name } : {}),
         operation: redactForLog(operation),
         outcome,
         durationMs: Math.round(performance.now() - started),
@@ -73,7 +82,7 @@ export async function observeProviderCall<T>(
 }
 
 /** Provider methods are async. Preserve the original receiver and resolve context at invocation. */
-export function observeProvider<T extends object>(provider: "boat" | "modal" | "docker", adapter: T): T {
+export function observeProvider<T extends object>(provider: Provider, adapter: T): T {
   return new Proxy(adapter, {
     get(instance, property) {
       const value = Reflect.get(instance, property, instance);

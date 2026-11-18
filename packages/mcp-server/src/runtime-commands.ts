@@ -1,7 +1,8 @@
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { Route } from "./http.ts";
-import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
+import { observeProviderCall } from "./request-observability.ts";
+import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
 const MAX_COMMAND = 1048576;
@@ -128,7 +129,7 @@ export function createRuntimeCommands(
           [scope.sandboxId, request.requestId, scope.epoch, sealed],
         );
       }
-      return { epoch: scope.epoch, requestId: request.requestId };
+      return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider };
     });
   }
   /** Keep admission fenced through synchronous socket enqueue; never await network I/O here. */
@@ -244,33 +245,57 @@ export function createRuntimeCommands(
   /** Await one durable identity; timeout/abort never cancel or replay admitted work.
    * The caller retains requestId and can reconcile with result (or call again
    * with the exact same request). No transaction is held across the wait.
+   *
+   * Every server-side runtime command passes here, so this is the one request-correlated
+   * observation point: one `runtime.<op>` record per call, attributed to the provider of the
+   * locked sandbox, `ok` only for a validated reply (`accept` lets a caller add its own
+   * acceptance check). Callers keep their own public fallbacks.
    */
   async function call(
     ownerId: string,
     request: RunnerRequest,
-    options: { signal?: AbortSignal; timeoutMs?: number; expectedEpoch?: string } = {},
+    options: {
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      expectedEpoch?: string;
+      accept?: (reply: RuntimeCommandReply) => boolean;
+    } = {},
   ): Promise<RuntimeCommandReply> {
-    const timeout = options.timeoutMs ?? 120_000;
-    if (
-      !Number.isSafeInteger(timeout) ||
-      timeout < 1 ||
-      timeout > (request.op === "workspaceExec" ? 610_000 : request.op === "exec" ? 630_000 : 120_000)
-    )
-      throw new RuntimeCommandConflict();
-    const signal = options.signal ?? new AbortController().signal;
-    signal.throwIfAborted();
-    const deadline = time.now() + timeout;
-    const admitted = await enqueue(ownerId, request, options.expectedEpoch);
-    while (true) {
-      signal.throwIfAborted();
-      const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch);
-      signal.throwIfAborted();
-      if (response.state === "finished") return response.reply;
-      if (response.state !== "pending") throw new RuntimeCommandConflict();
-      const remaining = deadline - time.now();
-      if (remaining <= 0) throw new RuntimeCommandPending();
-      await time.wait(Math.min(250, remaining), signal);
-    }
+    let provider: RuntimeOwnerScope["provider"];
+    return observeProviderCall(
+      () => provider,
+      `runtime.${request.op}`,
+      async () => {
+        const timeout = options.timeoutMs ?? 120_000;
+        if (
+          !Number.isSafeInteger(timeout) ||
+          timeout < 1 ||
+          timeout > (request.op === "workspaceExec" ? 610_000 : request.op === "exec" ? 630_000 : 120_000)
+        )
+          throw new RuntimeCommandConflict();
+        const signal = options.signal ?? new AbortController().signal;
+        signal.throwIfAborted();
+        const deadline = time.now() + timeout;
+        const admitted = await enqueue(ownerId, request, options.expectedEpoch);
+        provider = admitted.provider;
+        while (true) {
+          signal.throwIfAborted();
+          const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch);
+          signal.throwIfAborted();
+          if (response.state === "finished") return response.reply;
+          if (response.state !== "pending") throw new RuntimeCommandConflict();
+          const remaining = deadline - time.now();
+          if (remaining <= 0) throw new RuntimeCommandPending();
+          await time.wait(Math.min(250, remaining), signal);
+        }
+      },
+      (reply) =>
+        reply.status === 200 &&
+        reply.body.version === 1 &&
+        reply.body.requestId === request.requestId &&
+        reply.body.error === undefined &&
+        (options.accept?.(reply) ?? true),
+    );
   }
   const route: Route = async (request) => {
     const path = new URL(request.url).pathname;
