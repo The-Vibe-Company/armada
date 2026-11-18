@@ -14,15 +14,21 @@ test("reports new oversized docs by path and permits text at the limit", () => {
 });
 
 test("rejects media extensions and binary content even for small files", () => {
+  const netpbm = Buffer.from("P1\n1 1\n0\n");
   expect(
     checkDocsFiles(
       [
+        { path: "docs/pixel.pbm", size: netpbm.length, read: () => netpbm },
         { path: "docs/nested/diagram.SVG", size: 6, read: () => Buffer.from("<svg/>") },
         { path: "docs/sample.md", size: 3, read: () => Buffer.from([0xff, 0xd8, 0xff]) },
       ],
       new Map(),
     ),
-  ).toEqual(["docs/nested/diagram.SVG: images and videos are forbidden", "docs/sample.md: expected UTF-8 text"]);
+  ).toEqual([
+    "docs/nested/diagram.SVG: images and videos are forbidden",
+    "docs/pixel.pbm: images and videos are forbidden",
+    "docs/sample.md: expected UTF-8 text",
+  ]);
 });
 
 test("grandfathers only the original content at an allowlisted path", () => {

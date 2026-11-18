@@ -8,7 +8,8 @@ import legacyFiles from "./docs-guard-allowlist.json";
 const root = join(import.meta.dir, "../..");
 const allowlistPath = "scripts/ci/docs-guard-allowlist.json";
 const maxBytes = 200_000;
-const mediaExtension = /\.(?:apng|avif|bmp|gif|heic|heif|ico|jpe?g|mkv|mov|mp4|png|svgz?|tiff?|webm|webp)$/i;
+const mediaExtension =
+  /\.(?:apng|avif|bmp|eps|gif|heic|heif|ico|jpe?g|mkv|mov|mp4|pam|pbm|pgm|png|pnm|ppm|svgz?|tiff?|webm|webp|xbm|xpm)$/i;
 
 type DocsFile = {
   path: string;
