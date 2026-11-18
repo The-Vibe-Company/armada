@@ -1859,7 +1859,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         machine.state === "stopped",
       ),
     );
-    const resumeGeneration = machine.state === "stopped" ? found.lifecycleGeneration : undefined;
+    const generation = found.lifecycleGeneration;
     let acknowledged = false;
     return sandboxActivity(
       data.sandboxes,
@@ -1871,7 +1871,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
         stopRequested: false,
         ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
       },
-      async (signal) => {
+      async (signal, activityToken) => {
         const receipt = await measure("send_submit", () =>
           provider
             .prompt({
@@ -1881,11 +1881,24 @@ export function createArmadaServer(context: ToolContext, version: string, option
               signal,
               ...(conversation ? { conversationId: conversation } : {}),
               ...(choice ?? {}),
-              ...(resumeGeneration !== undefined
+              ...(generation !== undefined
                 ? {
                     onResumeStage: async (stage) => {
                       try {
-                        await data.sandboxes.recordLaunchStage?.(found.id, stage, 0, resumeGeneration + 1);
+                        if (stage === "accepted") {
+                          // The provider can discover a stop after the initial state read.
+                          // Open that activation while this send still owns the same lease.
+                          if (machine.state !== "stopped")
+                            await data.sandboxes.update(found.id, {
+                              status: "starting",
+                              stoppedAt: null,
+                              renewActivity: true,
+                              activityToken,
+                              expectedGeneration: generation + 1,
+                            });
+                        } else {
+                          await data.sandboxes.recordLaunchStage?.(found.id, stage, 0, generation + 1);
+                        }
                       } catch {
                         // Timing is optional and must not affect native prompt admission.
                       }

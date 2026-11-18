@@ -6,7 +6,7 @@ export async function sandboxActivity<T>(
   store: SandboxStore,
   sandbox: SandboxRecord,
   admission: SandboxPatch,
-  work: (signal: AbortSignal) => Promise<{ result: T; patch: SandboxPatch }>,
+  work: (signal: AbortSignal, activityToken: string) => Promise<{ result: T; patch: SandboxPatch }>,
   options: { initialLeaseId?: string; failurePatch?: (error: unknown) => SandboxPatch; deadlineMs?: number } = {},
 ): Promise<T> {
   const token = options.initialLeaseId ?? crypto.randomUUID();
@@ -43,7 +43,7 @@ export async function sandboxActivity<T>(
   }, 30_000);
   heartbeat.unref();
   try {
-    const { result, patch } = await work(controller.signal);
+    const { result, patch } = await work(controller.signal, token);
     controller.signal.throwIfAborted();
     await renewal;
     controller.signal.throwIfAborted();

@@ -429,6 +429,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
     }
     if (!row.commonRuntime) {
+      // The in-guest baseline is available, before starting or probing the native runner.
+      await onResumeStage?.("machine_started");
       await bootStage("start", () => distribution.start(sb, row, env));
       let managedRunnerPid: unknown;
       await bootStage("health", async () => {
@@ -550,6 +552,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     if (row.phase === "stopped") {
       if (row.commonRuntime) throw refusal("invalid_request", "Enrolled Modal resume is not enabled.");
       if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
+      await onResumeStage?.("accepted");
       await options.beforeResume?.(provider, row.info.id);
       row.generation++;
       row.quiesced = false;
@@ -569,10 +572,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         throw error;
       }
     }
-    if (row.generation > 1 && ["reserved", "creating", "booting"].includes(row.phase)) {
+    if (row.generation > 1 && ["reserved", "creating", "booting"].includes(row.phase))
       await create(row, save, await distribution.restoreEnv(row), onResumeStage);
-      await onResumeStage?.("machine_started");
-    }
     if (row.phase !== "active") throw refusal("sandbox_not_ready", "Sandbox lifecycle is not active.");
     if ((await (await physical(row)).poll()) !== null)
       throw refusal(

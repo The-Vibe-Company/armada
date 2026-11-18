@@ -696,6 +696,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (options.beforePrompt || options.beforeResume) {
         let info = await provider.get(request.sandboxId, { signal });
         if (info.state === "stopped") {
+          await request.onResumeStage?.("accepted");
           const shouldResume = await options.beforeResume?.(provider, request.sandboxId);
           if (shouldResume !== false) {
             try {

@@ -271,7 +271,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
             await tx.query(
               `with claim as (
                  select c.created_at,c.claimed_at from public.docker_resume_claims c
-                  where c.request_id=$2 and c.sandbox_id=$1 and c.accepted
+                  where c.request_id=$2 and c.sandbox_id=$1 and c.accepted and c.created_at is not null
                ), activation as (
                  select max(l.activation) as number from public.sandbox_launch_stages l where l.sandbox_id=$1
                )

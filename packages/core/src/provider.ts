@@ -330,7 +330,9 @@ export interface ListRequest {
 }
 
 /** Trusted in-process observation of provider resume boundaries. */
-export type ResumeStageObserver = (stage: "provider_claimed" | "machine_started" | "harness_ready") => Promise<void>;
+export type ResumeStageObserver = (
+  stage: "accepted" | "provider_claimed" | "machine_started" | "harness_ready",
+) => Promise<void>;
 
 export interface PromptRequest {
   onResumeStage?: ResumeStageObserver;

@@ -2865,6 +2865,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
     await f.provider.stop({ sandboxId: row.id });
     const stages: string[] = [];
+    const restoreLogStart = f.log.length;
     await f.provider.prompt({
       sandboxId: row.id,
       harness: "claude",
@@ -2872,10 +2873,11 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       conversationId: "existing-claude",
       onResumeStage: async (stage) => {
         expect(sent).toHaveLength(2);
+        if (stage === "machine_started") expect(f.log.slice(restoreLogStart)).not.toContain("start-2");
         stages.push(stage);
       },
     });
-    expect(stages).toEqual(["provider_claimed", "machine_started", "harness_ready"]);
+    expect(stages).toEqual(["accepted", "provider_claimed", "machine_started", "harness_ready"]);
     expect(sent[2]).toMatchObject({
       op: "prompt",
       input: { input: { cwd: claudeCwd, conversationId: "existing-claude" } },

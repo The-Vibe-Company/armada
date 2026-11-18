@@ -751,6 +751,19 @@ test.each(["cleanup", "claim"] as const)(
       const replacementId = randomUUID();
       expect((await service.resume(f.actor, f.sandbox.id, replacementId)).state).toBe("claiming");
       await tick(store, api, executor, false, () => 999);
+      // An acknowledged claim from before timestamp storage must stay undated on replay.
+      await database().query(
+        "update public.docker_resume_claims set created_at=null,claimed_at=null where request_id=$1",
+        [replacementId],
+      );
+      await hosts.claimResume(f.hostToken, f.installationId, replacementId, true);
+      expect(
+        (
+          await database().query("select claimed_at from public.docker_resume_claims where request_id=$1", [
+            replacementId,
+          ])
+        ).rows,
+      ).toEqual([{ claimed_at: null }]);
     }
     offline = true;
     await expect(tick(store, api, executor, false, () => 1001)).rejects.toThrow("network unavailable");

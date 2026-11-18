@@ -158,8 +158,11 @@ async function fixture(mode = "quiet") {
       phase = "stopped";
     },
     prompt: async ({ onResumeStage }: PromptRequest) => {
-      await onResumeStage?.("provider_claimed");
-      await onResumeStage?.("machine_started");
+      if (stopped) {
+        await onResumeStage?.("accepted");
+        await onResumeStage?.("provider_claimed");
+        await onResumeStage?.("machine_started");
+      }
       promptCalls++;
       stopped = false;
       return { promptId: "next", conversationId: "conversation", status: "queued", resumed: true };
@@ -189,45 +192,51 @@ async function fixture(mode = "quiet") {
   };
 }
 
-test("native idle uses the quiet deadline, preserves work without interrupt and wakes with unchanged expiry", async () => {
-  const f = await fixture();
-  await f.tick();
-  expect(f.stops()).toBe(0);
-  f.setClock(f.at + 600_000);
-  await f.tick();
-  expect(f.stops()).toBe(1);
-  const paused = (await f.data.sandboxes.get(f.id))!;
-  expect(paused.status).toBe("stopped");
-  expect(paused.statusReason).toBe("idle_paused");
-  const receipt = await callSharedTool(
-    {
-      caller: f.caller,
-      data: f.data,
-      provider: async () => f.provider,
-      launchCredentials: {
-        resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }),
+test.each([false, true])(
+  "native idle wake preserves work and expiry with a stale initial provider observation (%s)",
+  async (staleObservation) => {
+    const f = await fixture();
+    await f.tick();
+    expect(f.stops()).toBe(0);
+    f.setClock(f.at + 600_000);
+    await f.tick();
+    expect(f.stops()).toBe(1);
+    const paused = (await f.data.sandboxes.get(f.id))!;
+    expect(paused.status).toBe("stopped");
+    expect(paused.statusReason).toBe("idle_paused");
+    const receipt = await callSharedTool(
+      {
+        caller: f.caller,
+        data: f.data,
+        provider: async () =>
+          staleObservation
+            ? { ...f.provider, get: async (id) => ({ ...(await f.provider.get(id)), state: "running" }) }
+            : f.provider,
+        launchCredentials: {
+          resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }),
+        },
+        exposedSecrets: async () => [],
+        now: () => new Date(f.at + 600_000),
+        sleep: async () => {},
       },
-      exposedSecrets: async () => [],
-      now: () => new Date(f.at + 600_000),
-      sleep: async () => {},
-    },
-    "send",
-    { id: f.id, prompt: "continue", request_id: crypto.randomUUID() },
-  );
-  expect(receipt).toMatchObject({ promptId: "next", conversationId: "conversation" });
-  const woke = (await f.data.sandboxes.get(f.id))!;
-  expect(woke.status).toBe("running");
-  expect(woke.expiresAt).toBe(paused.expiresAt);
-  const timing = await f.data.sandboxes.launchTiming?.(f.id);
-  expect(timing?.activation).toBe("2");
-  expect(timing?.stages.map(({ stage }) => stage)).toEqual([
-    "accepted",
-    "provider_claimed",
-    "machine_started",
-    "harness_ready",
-  ]);
-  await f.worker.drain();
-});
+      "send",
+      { id: f.id, prompt: "continue", request_id: crypto.randomUUID() },
+    );
+    expect(receipt).toMatchObject({ promptId: "next", conversationId: "conversation" });
+    const woke = (await f.data.sandboxes.get(f.id))!;
+    expect(woke.status).toBe("running");
+    expect(woke.expiresAt).toBe(paused.expiresAt);
+    const timing = await f.data.sandboxes.launchTiming?.(f.id);
+    expect(timing?.activation).toBe("2");
+    expect(timing?.stages.map(({ stage }) => stage)).toEqual([
+      "accepted",
+      "provider_claimed",
+      "machine_started",
+      "harness_ready",
+    ]);
+    await f.worker.drain();
+  },
+);
 
 test.each([
   "active",

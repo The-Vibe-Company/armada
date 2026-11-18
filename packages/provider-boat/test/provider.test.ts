@@ -745,6 +745,7 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
     else await turn;
     expect(events).toEqual([
       "archived",
+      "accepted",
       "fence",
       "resume",
       "provider_claimed",
