@@ -58,12 +58,12 @@ test("a push while the hooks were displaced is reported before the reader restor
   const { work, push, read, prune } = launch();
   const merged = push("merged");
   sh(work, "mkdir .husky && git config --local core.hooksPath .husky");
-  push("closed");
+  const closed = push("closed");
   prune("closed");
   // The first read reports the loss and reinstalls the hooks in the new path.
   // A later read (say the first scan was abandoned) still reports it.
-  expect(read()).toBe(`!unproven\n!untracked\n!uncovered\nmerged\t${merged}\n`);
-  expect(read()).toBe(`!untracked\n!uncovered\nmerged\t${merged}\n`);
+  expect(read()).toBe(`!unproven\n!untracked\n^\t${closed}\nmerged\t${merged}\n`);
+  expect(read()).toBe(`!untracked\n^\t${closed}\nmerged\t${merged}\n`);
   // Fetches and maintenance after the reinstall add no false gap of their own.
   const fresh = launch();
   fresh.push("merged");
@@ -100,11 +100,12 @@ test("the repository's own hooks keep running, with their input and exit status,
   const read = () => sh(work, `set -- 0; ${readPushEvidence}`);
   expect(read()).toBe(`topic\t${sha}\n`);
   // A refusing hook still refuses the push, and the refused push is not recorded.
-  sh(work, "git commit -q --allow-empty -m refused && echo 1 >.git/fail");
+  // The refused commit stays local: uncovered work.
+  const refused = sh(work, "git commit -q --allow-empty -m refused && echo 1 >.git/fail && git rev-parse HEAD").trim();
   expect(() => sh(work, "git push -q origin HEAD:refs/heads/refused")).toThrow();
   expect(() => sh(work, "git commit -q --allow-empty -m blocked")).toThrow();
   sh(work, "rm .git/fail");
-  expect(read()).toBe(`!uncovered\ntopic\t${sha}\n`);
+  expect(read()).toBe(`^\t${refused}\ntopic\t${sha}\n`);
 });
 
 test("recreating a deleted branch at the SHA its tracking ref still holds is recorded", () => {
@@ -126,8 +127,8 @@ test("recreating a deleted branch at the SHA its tracking ref still holds is rec
 test("a push the remote rejects is an unconfirmed attempt, never push evidence", () => {
   const { fresh, stdout, sha } = rejectedRecreation();
   // In flight until proven otherwise, then reported apart from confirmed pushes.
-  expect(fresh).toBe(`!pending\n!uncovered\n?\ttopic\t${sha}\n`);
-  expect(stdout).toBe(`!uncovered\n?\ttopic\t${sha}\n`);
+  expect(fresh).toBe(`!pending\n^\t${sha}\n?\ttopic\t${sha}\n`);
+  expect(stdout).toBe(`^\t${sha}\n?\ttopic\t${sha}\n`);
 });
 
 test("confirmed pushes keep their chronological order across both evidence sources", () => {
@@ -145,7 +146,7 @@ test("a verified push is confirmed by its tracking update even without a reflog 
 
 test("an accepted push whose tracking update failed stays unresolved; a later confirmed push supersedes it", () => {
   const { stdout, first, second } = lostConfirmation();
-  expect(stdout).toBe(`!uncovered\ntopic\t${first}\n?\ttopic\t${second}\n`);
+  expect(stdout).toBe(`^\t${second}\ntopic\t${first}\n?\ttopic\t${second}\n`);
   // A rejected attempt followed by a confirmed push to the same branch.
   const { root, work, push, read } = launch();
   sh(
@@ -161,8 +162,8 @@ test("an accepted push whose tracking update failed stays unresolved; a later co
 test("local work no confirmed push carries withholds coverage, even after a push that skipped every hook", () => {
   const { stdout, first, second } = unrecordedUrlPush();
   // Discovery cannot see the escaped push, but its commit is still on a local branch.
-  expect(stdout).toBe(`!uncovered\ntopic\t${first}\n`);
-  expect(stdout).not.toContain(second);
+  expect(stdout).toBe(`^\t${second}\ntopic\t${first}\n`);
+  expect(stdout).not.toContain("escaped");
   // Ordinary work is covered: a branch pushed through origin, and the launch
   // branch as fetched, even when it moved past the launch.
   const { root, work, push } = launch();
@@ -173,7 +174,23 @@ test("local work no confirmed push carries withholds coverage, even after a push
   sh(join(root, "other"), "git commit -q --allow-empty -m later && git push -q origin HEAD:refs/heads/main");
   sh(work, "git checkout -q main && git pull -q origin main");
   expect(sh(work, `set -- 0 x main; ${readPushEvidence}`)).toBe(`topic\t${topic}\n`);
-  // An unpushed commit on any local branch is uncovered work.
-  sh(work, "git checkout -q topic && git commit -q --allow-empty -m local && git checkout -q main");
-  expect(sh(work, `set -- 0 x main; ${readPushEvidence}`)).toBe(`!uncovered\ntopic\t${topic}\n`);
+  const read = () => sh(work, `set -- 0 x main; ${readPushEvidence}`);
+  // So is a reviewer commit pulled into the pushed branch (fail-safe: the
+  // stop waits, as for a PR whose head someone else moved).
+  const reviewed = sh(
+    root,
+    "git -C other fetch -q origin topic && git -C other checkout -q FETCH_HEAD && git -C other commit -q --allow-empty -m review && git -C other push -q origin HEAD:refs/heads/topic && git -C other rev-parse HEAD",
+  ).trim();
+  sh(work, "git checkout -q topic && git pull -q origin topic && git checkout -q main");
+  expect(read()).toBe(`^\t${reviewed}\ntopic\t${topic}\n`);
+  // A detached commit pushed by URL past the hooks and then left behind, and
+  // one in another worktree, are both still local work.
+  sh(work, "git branch -q -f topic " + topic);
+  const left = sh(work, "git checkout -q --detach && git commit -q --allow-empty -m left && git rev-parse HEAD").trim();
+  sh(work, `git push -q --no-verify ${join(root, "remote.git")} HEAD:refs/heads/left && git checkout -q main`);
+  const away = sh(
+    work,
+    "git worktree add -q --detach ../wt && git -C ../wt commit -q --allow-empty -m away && git -C ../wt rev-parse HEAD",
+  ).trim();
+  expect(read()).toBe(`^\t${away}\n^\t${left}\ntopic\t${topic}\n`);
 });

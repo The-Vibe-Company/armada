@@ -102,19 +102,28 @@ if [ -n "$missing" ]; then
 fi
 entries=$(if [ -f "$ledger" ]; then cat "$ledger"; fi) || exit 1
 logs=$(git reflog show --all --date=unix --format='%gD%x09%gs%x09%H') || exit 1
-# Coverage is affirmative: every local branch tip and HEAD must be contained
-# in a confirmed push or in the launch branch ($3, else origin/HEAD) as
-# fetched. A commit that left by an unrecorded push (a URL with --no-verify)
-# is still on a local branch, so it prints \`!uncovered\` and withholds the stop.
+# Coverage is affirmative: every local line of work (each branch tip, each
+# worktree's HEAD, and each detached HEAD left behind since launch) must be
+# contained in a confirmed push or in the launch branch as fetched ($3, else
+# origin/HEAD). A commit that left by an unrecorded push (a URL with
+# --no-verify) is still on one of them. Up to eight uncovered tips print as
+# ^<tab><sha>, more as !uncovered; either withholds the stop.
+if [ -n "$3" ]; then base="refs/remotes/origin/$3"; else base=refs/remotes/origin/HEAD; fi
 covered=$({ if [ -n "$entries" ]; then printf '%s\\n' "$entries" | awk -F '\\t' -v since="$1" 'NF == 3 && $2 !~ /^!/ && $1 + 0 >= since { print "^" $3 }'; fi
-  for base in \${3:+"refs/remotes/origin/$3"} refs/remotes/origin/HEAD; do
-    if sha=$(git rev-parse -q --verify "$base^{commit}"); then echo "^$sha"; fi
-  done; }) || exit 1
+  if sha=$(git rev-parse -q --verify "$base^{commit}"); then echo "^$sha"; fi; }) || exit 1
 tips=$(git for-each-ref --format='%(objectname)' refs/heads) || exit 1
-tips="$tips $(git rev-parse -q --verify 'HEAD^{commit}' || :)"
+worktrees=$(git worktree list --porcelain) || exit 1
+tips="$tips $(printf '%s\\n' "$worktrees" | sed -n 's/^HEAD \\([0-9a-f]*[1-9a-f][0-9a-f]*\\)$/\\1/p')"
+if git rev-parse -q --verify HEAD >/dev/null; then
+  left=$(git reflog show HEAD --date=unix --format='%gd%x09%gs') || exit 1
+  tips="$tips $(printf '%s\\n' "$left" | awk -F '\\t' -v since="$1" '{ t = $1; sub(/^.*@\\{/, "", t) }
+    t + 0 >= since && $2 ~ /^checkout: moving from [0-9a-f]+ to / { split($2, w, " "); if (length(w[4]) == 40) print w[4] }')"
+fi
 for tip in $tips; do
+  case " $checked " in *" $tip "*) continue ;; esac
+  checked="$checked $tip"
   ahead=$(printf '%s\\n' "$covered" | grep . | git rev-list --ignore-missing -n 1 --stdin "$tip") || exit 1
-  if [ -n "$ahead" ]; then uncovered=1; break; fi
+  if [ -n "$ahead" ]; then uncovered="$uncovered $tip"; fi
 done
 { if [ -n "$entries" ]; then printf '%s\\n' "$entries" | awk '{ print "L\\t" $0 }'; fi; printf '%s\\n' "$logs"; } |
 awk -v since="$1" -v now="$(date +%s)" -v uncovered="$uncovered" -F '\\t' '$1 == "L" {
@@ -138,7 +147,9 @@ awk -v since="$1" -v now="$(date +%s)" -v uncovered="$uncovered" -F '\\t' '$1 ==
     for (i=1; i<=m; i++) if (!ledger[rkey[i]]) print "!untracked"
     for (i=1; i<=a; i++) if ((order[i] in attempt) && cseq[abranch[order[i]]] <= aseq[order[i]] && attempt[order[i]] + 600 > now) pending=1
     if (pending) print "!pending"
-    if (uncovered) print "!uncovered"
+    k = split(uncovered, tip, " ")
+    if (k > 8) print "!uncovered"
+    else for (i=1; i<=k; i++) print "^\\t" tip[i]
     for (i=n; i>=1; i--) if (!seen[lkey[i]]++) print lkey[i]
     for (i=1; i<=m; i++) if (!seen[rkey[i]]++) print rkey[i]
     for (i=1; i<=a; i++) if (order[i] in attempt) print (cseq[abranch[order[i]]] > aseq[order[i]] ? "~" : "?") "\\t" order[i]
@@ -270,8 +281,8 @@ export function createSandboxPullRequests(
             continue;
           }
           // Local work no confirmed push carries: unmerged work, or a push
-          // that escaped the ledger. It vetoes this scan's stop only.
-          if (line === "!uncovered") {
+          // that escaped the ledger. It vetoes this scan's stop.
+          if (line === "!uncovered" || /^\^\t[a-f0-9]{40}$/.test(line)) {
             uncovered = true;
             continue;
           }
