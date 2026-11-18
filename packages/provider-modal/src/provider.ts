@@ -14,6 +14,7 @@ import {
   isModelConnectionTestResult,
   machineCapacity,
   mapHarnesses,
+  OUTPUT_MAX_READ_BYTES,
   ProviderError,
   parseMachineSize,
   resolveModelChoice,
@@ -21,6 +22,9 @@ import {
 import {
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
+  outputEntryCollector,
+  readCollectorChunk,
+  readCollectorEntries,
   readCollectorProbeResult,
   readCollectorResult,
   runtimeBootstrapScript,
@@ -1164,6 +1168,15 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
         throw error;
       }
+    },
+    outputReadBytes: OUTPUT_MAX_READ_BYTES,
+    listOutputEntries(request) {
+      return collectOutputs(request, outputEntryCollector(null), readCollectorEntries);
+    },
+    readOutputChunk(request) {
+      return collectOutputs(request, outputEntryCollector(request.chunk), (status, stdout) =>
+        readCollectorChunk(status, stdout, request.chunk),
+      );
     },
     readOutputs(request) {
       return collectOutputs(request, OUTPUT_COLLECTOR, readCollectorResult);

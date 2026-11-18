@@ -3,8 +3,10 @@ import {
   CONTROL_BODY_MAX_BYTES,
   controlBodyMaxBytes,
   OUTPUT_DIRECTORY,
-  OUTPUT_MAX_BYTES,
+  OUTPUT_MAX_FILE_BYTES,
   OUTPUT_MAX_FILES,
+  OUTPUT_MAX_ORG_BYTES,
+  OUTPUT_MAX_SANDBOX_BYTES,
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
@@ -146,10 +148,22 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
             "application/json": {
               schema: {
                 type: "object",
-                required: ["directory", "files"],
+                required: ["directory", "files", "limits"],
                 additionalProperties: false,
                 properties: {
                   directory: { type: "string", description: "The declared outputs directory in the sandbox." },
+                  limits: {
+                    type: "object",
+                    required: ["maxFiles", "maxFileBytes", "maxSandboxBytes", "maxOrgBytes"],
+                    additionalProperties: false,
+                    properties: {
+                      maxFiles: { type: "integer", const: OUTPUT_MAX_FILES },
+                      maxFileBytes: { type: "integer", const: OUTPUT_MAX_FILE_BYTES },
+                      maxSandboxBytes: { type: "integer", const: OUTPUT_MAX_SANDBOX_BYTES },
+                      maxOrgBytes: { type: "integer", const: OUTPUT_MAX_ORG_BYTES },
+                    },
+                  },
+                  unavailable: { type: "string", const: "collector_unsupported" },
                   files: {
                     type: "array",
                     maxItems: OUTPUT_MAX_FILES,
@@ -159,8 +173,12 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
                       additionalProperties: false,
                       properties: {
                         name: { type: "string", minLength: 1, maxLength: 255 },
-                        size: { type: "integer", minimum: 0, maximum: OUTPUT_MAX_BYTES },
-                        sha256: { type: "string", description: "Hex SHA-256 digest of the file bytes." },
+                        size: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+                        sha256: {
+                          type: ["string", "null"],
+                          description: "Hex SHA-256 digest of the file bytes. Null for skipped files.",
+                        },
+                        skipped: { type: "string", enum: ["too_large", "sandbox_limit", "org_limit"] },
                         updatedAt: { type: "string", format: "date-time" },
                       },
                     },
@@ -182,6 +200,18 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
       parameters: [
         SANDBOX_ID_PARAMETER,
         {
+          name: "Range",
+          in: "header",
+          description: "One byte range, for example bytes=0-1023.",
+          schema: { type: "string" },
+        },
+        {
+          name: "If-Range",
+          in: "header",
+          description: "Apply the Range only when the file's ETag matches.",
+          schema: { type: "string" },
+        },
+        {
           name: "name",
           in: "path",
           required: true,
@@ -193,6 +223,8 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
         "200": {
           description: "The file bytes. Content-Type is inferred from the file name, else application/octet-stream.",
           headers: {
+            ETag: { schema: { type: "string" } },
+            "Accept-Ranges": { schema: { type: "string", const: "bytes" } },
             "Content-Disposition": {
               description: "attachment, with the UTF-8 file name (filename*).",
               schema: { type: "string" },
@@ -203,7 +235,19 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
           },
           content: { "*/*": { schema: { type: "string", contentMediaType: "application/octet-stream" } } },
         },
-        "400": { description: "The name is not valid percent-encoding.", content: OUTPUT_FAILURE },
+        "206": {
+          description: "The requested byte range.",
+          headers: {
+            "Content-Range": { schema: { type: "string" } },
+            "Content-Length": { schema: { type: "integer", minimum: 1 } },
+          },
+          content: { "*/*": { schema: { type: "string", contentMediaType: "application/octet-stream" } } },
+        },
+        "416": {
+          description: "The byte range is invalid or unsatisfiable.",
+          headers: { "Content-Range": { schema: { type: "string" } } },
+        },
+        "400": { description: "The file name is invalid.", content: OUTPUT_FAILURE },
         "503": {
           description: "Stored outputs cannot be decrypted on this server, or the API is temporarily unavailable.",
           content: OUTPUT_FAILURE,

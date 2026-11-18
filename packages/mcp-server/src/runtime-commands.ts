@@ -194,23 +194,27 @@ export function createRuntimeCommands(
     if (Buffer.byteLength(serialized) > MAX_REPLY) throw new RuntimeCommandConflict();
     let sealed = await encryptSecret(serialized, key);
     return authority.withSession(token, epoch, async (tx, scope) => {
-      // An output read issued before application-secret taint committed: the session holds the
-      // sandbox row lock, so this sees committed taint. Acknowledge it (the runtime's ordered queue
-      // advances) but never retain its file bytes.
-      if (
-        String(value.requestId).startsWith("outputs_") &&
-        (await tx.query("select 1 from public.sandboxes where id=$1 and application_secret_tainted", [scope.sandboxId]))
-          .rows.length
-      )
-        sealed = await encryptSecret(
-          JSON.stringify({
-            epoch: value.epoch,
-            requestId: value.requestId,
-            status: 410,
-            body: { requestId: value.requestId, error: "application_secret_tainted" },
-          }),
-          key,
-        );
+      // Keep the ordered acknowledgement even if the caller's deadline or the taint fence
+      // invalidated the read. No reader can use these bytes now.
+      const outputDeadline = /^outputs_(\d{1,16})_/.exec(String(value.requestId))?.[1];
+      if (String(value.requestId).startsWith("outputs_")) {
+        const tainted =
+          (
+            await tx.query("select 1 from public.sandboxes where id=$1 and application_secret_tainted", [
+              scope.sandboxId,
+            ])
+          ).rows.length > 0;
+        if (tainted || (outputDeadline !== undefined && Number(outputDeadline) <= time.now()))
+          sealed = await encryptSecret(
+            JSON.stringify({
+              epoch: value.epoch,
+              requestId: value.requestId,
+              status: 410,
+              body: { requestId: value.requestId, error: tainted ? "application_secret_tainted" : "output_timeout" },
+            }),
+            key,
+          );
+      }
       const row = (
         await tx.query<{ request_id: string; result_enc: Uint8Array<ArrayBuffer> }>(
           `update public.runtime_commands set result_enc=coalesce(result_enc,$4)
@@ -309,7 +313,9 @@ export function createRuntimeCommands(
           noteAdmission();
           const remaining = deadline - time.now();
           if (remaining <= 0) throw new RuntimeCommandPending();
-          await time.wait(Math.min(250, remaining), signal);
+          // A final large output needs many sequential reads within the stop budget.
+          const interval = request.op === "readOutputs" && request.part ? 100 : 250;
+          await time.wait(Math.min(interval, remaining), signal);
         }
       },
       (reply) =>

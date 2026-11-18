@@ -40,6 +40,18 @@ export interface Provider {
     sandboxId: string;
     signal?: AbortSignal;
   }): Promise<import("./sandbox-outputs.ts").OutputFile[] | null>;
+  listOutputEntries?(request: {
+    sandboxId: string;
+    signal?: AbortSignal;
+  }): Promise<import("./sandbox-output-limits.ts").OutputEntry[] | null>;
+  /** Plaintext bytes allowed by this transport in one read. */
+  readonly outputReadBytes?: number;
+  readonly outputReadConcurrency?: number;
+  readOutputChunk?(request: {
+    sandboxId: string;
+    signal?: AbortSignal;
+    chunk: import("./sandbox-output-limits.ts").OutputChunkRequest;
+  }): Promise<Uint8Array | null>;
   /** Read-only fixed sampler. Null means isolation/runtime is unsupported or not attested. */
   observeResources?(sandboxId: string): Promise<import("./resource-observation.ts").ProviderResourceObservation | null>;
   readonly id: string;

@@ -96,8 +96,13 @@ export {
   OutputCollectionError,
   type OutputFailureReason,
   type OutputFile,
+  outputEntryCollector,
   parseCollectorOutput,
+  parseOutputChunk,
+  parseOutputEntries,
   parseOutputFiles,
+  readCollectorChunk,
+  readCollectorEntries,
   readCollectorProbeResult,
   readCollectorResult,
 } from "./sandbox-outputs.ts";
