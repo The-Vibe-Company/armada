@@ -247,6 +247,7 @@ export function createDockerHostRoutes(
                 ...("deadlines" in body ? ["deadlines"] : []),
                 ...("diskFreeBytes" in body ? ["diskFreeBytes"] : []),
                 ...("stoppedSandboxBytes" in body ? ["stoppedSandboxBytes"] : []),
+                ...("heartbeatOnly" in body ? ["heartbeatOnly"] : []),
                 ...("waitSeconds" in body ? ["waitSeconds"] : []),
                 ...("running" in body ? ["running"] : []),
               ]
@@ -310,6 +311,8 @@ export function createDockerHostRoutes(
         // daemon's idle period, and the host still needs no inbound port (#2561).
         // Validated before any write, as a daemon retries a refused poll without them.
         const wait = body.waitSeconds;
+        if (body.heartbeatOnly !== undefined && (body.heartbeatOnly !== true || wait !== undefined))
+          throw new InvalidInput();
         if (wait !== undefined && (!Number.isSafeInteger(wait) || Number(wait) < 1)) throw new InvalidInput();
         const holdUntil = clock.now() + Math.min(Number(wait ?? 0), DOCKER_HOST_POLL_HOLD_SECONDS) * 1000;
         // Machine operations the daemon is still executing. Their sandboxes stay
@@ -351,6 +354,7 @@ export function createDockerHostRoutes(
             body.stoppedSandboxBytes as number | null | undefined,
             runningIds,
             baseline,
+            body.heartbeatOnly === true,
           );
           if (job || resumeClaims.length) break;
           // The probe is broader than the poll (admission refusals, job order). A

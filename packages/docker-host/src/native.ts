@@ -298,7 +298,7 @@ export function httpApi(
         stopped: {},
         sampledResources: dockerHostResources(),
       };
-      if (options?.waitSeconds !== undefined) {
+      if (options?.waitSeconds !== undefined && !options.heartbeatOnly) {
         // Held poll (#2561): the server answers as soon as work exists. Servers
         // without it refuse the additive fields before claiming, and the
         // daemon then keeps its own idle period.
@@ -328,16 +328,23 @@ export function httpApi(
           if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
         }
       }
-      try {
+      const currentPoll = {
+        ...body,
+        resumeClaimProtocol: 1,
+        ...retention,
+        ...disk,
+        ...stopped,
+        resources: sampledResources,
+        resourcePolicyVersion: 1,
+      };
+      // Never retry a fenced heartbeat as a job-bearing poll.
+      if (options?.heartbeatOnly)
         return (await post(state.server, "poll", state.hostToken, {
-          ...body,
-          resumeClaimProtocol: 1,
-          ...retention,
-          ...disk,
-          ...stopped,
-          resources: sampledResources,
-          resourcePolicyVersion: 1,
+          ...currentPoll,
+          heartbeatOnly: true,
         })) as Awaited<ReturnType<Api["poll"]>>;
+      try {
+        return (await post(state.server, "poll", state.hostToken, currentPoll)) as Awaited<ReturnType<Api["poll"]>>;
       } catch (error) {
         // Older servers reject the additive resource field before claiming a job.
         if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;

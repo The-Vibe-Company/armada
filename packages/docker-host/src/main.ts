@@ -294,11 +294,13 @@ async function main(args: string[]) {
         ...(update
           ? {
               beforeAdmission: update.beforeAdmission,
+              trialPoll: update.trialPoll,
               retryCompletion: () => !stopping,
               update: {
                 staged: () => update.staged,
                 confirm: update.confirm,
                 checkRecovery: update.checkRecovery,
+                trialActive: update.trialActive,
                 restart: update.restart,
               },
             }

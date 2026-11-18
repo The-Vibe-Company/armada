@@ -368,6 +368,7 @@ type Update = {
   previousDigest?: string;
   pendingPreviousDigest?: string;
   candidateDigest?: string;
+  trialId?: string;
   reported?: true;
 };
 // Only entering a trial advances the durable version fence. A later deferred
@@ -604,15 +605,22 @@ export function automaticUpdate(
       return false;
     });
   }
+  const invocationId = process.env.INVOCATION_ID;
+  const trialActive = async () => (await readUpdate(home, instance))?.phase === "starting";
   return {
+    async trialPoll(target: string | undefined): Promise<State["trialPoll"]> {
+      if (target !== VERSION || !invocationId) return;
+      const trial = await readUpdate(home, instance);
+      if (trial?.phase === "starting" && trial.trialId && trial.version === VERSION)
+        return { version: VERSION, trialId: trial.trialId, invocationId };
+    },
     confirm,
     get staged() {
       return staged;
     },
+    trialActive,
     async checkRecovery() {
-      if ((await readUpdate(home, instance))?.phase !== "starting") return false;
-      const absent = await supervisorAbsent(io.service, instance);
-      return absent && (await readUpdate(home, instance))?.phase === "starting";
+      return (await trialActive()) && (await supervisorAbsent(io.service, instance)) && (await trialActive());
     },
     async beforeAdmission(target: unknown) {
       const last = await readUpdate(home, instance);
@@ -858,7 +866,6 @@ export async function superviseUpdate(
     return;
   }
   if (update?.phase !== "staged" && update?.phase !== "starting") return;
-  let previousHealth: string | undefined;
   let trialMarker: ManagedInstallation | undefined;
   try {
     if (update.phase !== "staged") throw new Error("Interrupted Docker host update");
@@ -874,7 +881,7 @@ export async function superviseUpdate(
       await verifyBackup(home, instance, staged.previousDigest);
       await armRecovery(home, instance);
       await io.service(["systemctl", "--user", "daemon-reload"]);
-      update = transition(staged, "trial");
+      update = { ...transition(staged, "trial"), trialId: randomUUID() };
       await saveUpdate(home, instance, update);
       return { marker, candidate };
     });
@@ -882,11 +889,12 @@ export async function superviseUpdate(
       await service("start");
       return;
     }
+    // Reset before stop if the old unit is still loaded. If systemd has
+    // already collected it, the new start has a clean restart counter.
+    await service("reset-failed").catch(() => {});
     await service("stop");
     const unlock = await store.lock();
     try {
-      // Capture the final old heartbeat after systemd stops the daemon.
-      previousHealth = (await store.load()).lastUpdatePollAt;
       trialMarker = { ...trial.marker, pendingBinarySha256: sha256(trial.candidate) };
       await writeMarker(trialMarker);
       await atomicReplace(p.binary, trial.candidate, 0o700);
@@ -895,13 +903,51 @@ export async function superviseUpdate(
     }
     await service("start");
     const timeout = Date.now() + 90_000;
+    let invocationId: string | undefined;
+    async function checkInvocation() {
+      const status = await io.service([
+        "systemctl",
+        "--user",
+        "show",
+        "-p",
+        "ActiveState",
+        "-p",
+        "MainPID",
+        "-p",
+        "InvocationID",
+        "-p",
+        "NRestarts",
+        serviceName(instance),
+      ]);
+      const fields = new Map(
+        (typeof status === "string" ? status : "").split("\n").map((line) => {
+          const separator = line.indexOf("=");
+          return [line.slice(0, separator), line.slice(separator + 1)] as const;
+        }),
+      );
+      const active = fields.get("InvocationID");
+      if (
+        fields.get("ActiveState") !== "active" ||
+        fields.get("NRestarts") !== "0" ||
+        !/^[1-9]\d*$/.test(fields.get("MainPID") ?? "") ||
+        !active ||
+        !/^[a-f0-9]{32}$/.test(active) ||
+        (invocationId && active !== invocationId)
+      )
+        throw new Error("Docker host candidate stopped or restarted");
+      invocationId = active;
+      return active;
+    }
     for (;;) {
-      // Only a fresh poll that still offers the candidate may confirm health.
-      const polled = (await store.load()).lastUpdatePollAt;
-      if (polled !== undefined && polled !== previousHealth) {
-        await service("is-active");
+      const { trialPoll } = await store.load();
+      const active = await checkInvocation();
+      if (
+        trialPoll &&
+        trialPoll.version === update.version &&
+        trialPoll.trialId === update.trialId &&
+        trialPoll.invocationId === active
+      )
         break;
-      }
       if (Date.now() >= timeout) throw new Error("Docker host update did not reconnect");
       await Bun.sleep(1000);
     }
@@ -911,6 +957,7 @@ export async function superviseUpdate(
       unit: trialMarker.unit,
       binarySha256: trialMarker.pendingBinarySha256,
     });
+    await checkInvocation();
     await saveUpdate(home, instance, transition(update, "commit"));
   } catch {
     const current = await readUpdate(home, instance);

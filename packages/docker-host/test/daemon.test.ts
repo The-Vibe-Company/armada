@@ -2053,7 +2053,7 @@ test("native held polls report running work and fall back to the previous protoc
       async (_url: string | URL | Request, init?: RequestInit) => {
         const body = JSON.parse(String(init?.body));
         bodies.push(body);
-        if ("waitSeconds" in body) return new Response(null, { status: 400 });
+        if ("waitSeconds" in body || "heartbeatOnly" in body) return new Response(null, { status: 400 });
         return Response.json({ job: null });
       },
       { preconnect: fetch.preconnect },
@@ -2071,6 +2071,11 @@ test("native held polls report running work and fall back to the previous protoc
   expect(bodies[1]).not.toHaveProperty("waitSeconds");
   expect(bodies[1]).not.toHaveProperty("running");
   expect(bodies).toHaveLength(2);
+  bodies.length = 0;
+  await expect(api.poll(await f.store.load(), { heartbeatOnly: true, reuseTelemetry: true })).rejects.toThrow(
+    "Host request denied",
+  );
+  expect(bodies).toEqual([expect.objectContaining({ heartbeatOnly: true })]);
 });
 
 test("a ledger that cannot be saved before a held poll never overwrites a completion saved during it", async () => {
@@ -2175,6 +2180,17 @@ test.each([
             },
           },
         };
+  const expiring = fixture();
+  const expiryReports: string[] = [];
+  if (operation === "long snapshot build") {
+    await tick(expiring.store, expiring.api, expiring.executor);
+    const ledger = first.state();
+    const receipt = expiring.state().receipts[0]!;
+    receipt.request.expiresAt = 40_000;
+    ledger.receipts.push(receipt);
+    ledger.activeTtl = [receipt.requestId];
+    await first.store.save(ledger);
+  }
   let now = 0;
   const slowPreparation = outcome === "matching after slow preparation";
   const matching = outcome.startsWith("matching");
@@ -2198,7 +2214,10 @@ test.each([
     {
       ...first.store,
       async save(state) {
-        if (!failedSave && state.receipts.some((receipt) => receipt.outcome === "completed")) {
+        if (
+          !failedSave &&
+          state.receipts.some((receipt) => receipt.requestId === job.requestId && receipt.outcome === "completed")
+        ) {
           failedSave = true;
           throw new Error("Temporary receipt write failure");
         }
@@ -2209,15 +2228,17 @@ test.each([
       ...first.api,
       async poll(_state, options) {
         if (isPreparing) {
+          expect(options?.heartbeatOnly).toBe(true);
           preparationHeartbeats.push(now);
           return { job: next.job, targetVersion: "9.0.0" };
         }
         if (staged && !released) {
-          drainHeartbeats.push(now);
+          expect(options?.heartbeatOnly).toBe(true);
+          if (options?.reuseTelemetry) drainHeartbeats.push(now);
           return { job: next.job, targetVersion: "9.0.0" };
         }
         if (released) {
-          if (!options?.waitSeconds) {
+          if (options?.reuseTelemetry) {
             postDrainReceipt = [...acknowledged];
             if (outcome === "poll failed") throw new Error("Lost poll response");
             return { job: next.job, ...(matching ? { targetVersion: "9.0.0" } : {}) };
@@ -2228,7 +2249,12 @@ test.each([
           return { job: next.job, held: true, targetVersion: "9.0.0" };
         return { job, held: true };
       },
-      async result(_state, receipt) {
+      async result(_state, receipt, expired) {
+        if (expired) {
+          expect(first.state().receipts.find(({ requestId }) => requestId === receipt.requestId)?.expired).toBe(true);
+          expiryReports.push(receipt.requestId);
+          return;
+        }
         expect(first.state().receipts.find(({ requestId }) => requestId === receipt.requestId)?.outcome).toBe(
           "completed",
         );
@@ -2237,6 +2263,9 @@ test.each([
     },
     {
       ...first.executor,
+      async stopIfExpired(request) {
+        return request.expiresAt !== undefined && request.expiresAt <= now;
+      },
       async buildSnapshot() {
         started.push(job.request.sandboxId);
         await release.promise;
@@ -2309,6 +2338,7 @@ test.each([
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(drainHeartbeats.at(-1)).toBeGreaterThan(slowPreparation ? 191_000 : 91_000);
     expect(Date.parse(first.state().lastPollAt ?? "")).toBe(drainHeartbeats.at(-1)!);
+    expect(expiryReports).toEqual([expiring.job.requestId]);
   }
   released = true;
   release.resolve();
@@ -2325,9 +2355,12 @@ test.each([
   expect(failedSave).toBe(true);
   expect(started).toEqual([first.job.request.sandboxId]);
   expect(acknowledged).toEqual([first.job.requestId]);
-  expect(first.state().receipts.map(({ requestId, outcome }) => [requestId, outcome])).toEqual([
-    [first.job.requestId, "completed"],
-  ]);
+  expect(
+    first
+      .state()
+      .receipts.filter(({ requestId }) => requestId !== expiring.job.requestId)
+      .map(({ requestId, outcome }) => [requestId, outcome]),
+  ).toEqual([[first.job.requestId, "completed"]]);
 });
 
 test("a failed update preparation discards a job from before an intervening poll denial", async () => {

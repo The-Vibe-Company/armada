@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { VERSION } from "../../core/src/version.ts";
 import { type Job, type State, tick } from "../src/daemon.ts";
 import {
   automaticUpdate,
@@ -333,7 +334,7 @@ test("namespaced upgrade changes only its own binary and service, preserving leg
   }
 });
 
-test.each(["healthy", "failed start", "failed health"])(
+test.each(["healthy", "failed start", "crashes immediately", "crashes after first write", "crash-loops under systemd"])(
   "automatic update commits or restores the managed binary after %s",
   async (outcome) => {
     const f = await upgradeFixture();
@@ -344,7 +345,7 @@ test.each(["healthy", "failed start", "failed health"])(
       await writeFile(
         journal,
         JSON.stringify({
-          version: "9.0.0",
+          version: VERSION,
           phase: "staged",
           previousDigest: f.hash(f.oldBytes),
           candidateDigest: f.hash(f.newBytes),
@@ -352,6 +353,8 @@ test.each(["healthy", "failed start", "failed health"])(
         { mode: 0o600 },
       );
       const starts: string[] = [];
+      const firstInvocation = "1".repeat(32);
+      const replacement = "2".repeat(32);
       await superviseUpdate(f.store, undefined, {
         home: f.home,
         async service(args) {
@@ -360,10 +363,53 @@ test.each(["healthy", "failed start", "failed health"])(
             starts.push(binary);
             if (binary === f.oldBytes) return;
             if (outcome === "failed start") throw new Error("exec failed");
-            const state = { ...f.state, lastUpdatePollAt: "2026-11-13T00:01:00.000Z" };
-            await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+            if (outcome !== "crashes immediately") {
+              const invocation = process.env.INVOCATION_ID;
+              const unexpected = async () => {
+                throw new Error("Trial must not admit work");
+              };
+              try {
+                process.env.INVOCATION_ID = firstInvocation;
+                const updater = automaticUpdate(f.state, { home: f.home });
+                await tick(
+                  {
+                    load: f.store.load,
+                    async save(state) {
+                      await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+                    },
+                  },
+                  {
+                    poll: async () => ({ job: null, targetVersion: VERSION }),
+                    register: unexpected,
+                    result: unexpected,
+                  },
+                  { create: unexpected, stop: unexpected, delete: unexpected, stopIfExpired: unexpected },
+                  false,
+                  Date.now,
+                  { trialPoll: updater.trialPoll, beforeAdmission: updater.beforeAdmission },
+                );
+              } finally {
+                if (invocation === undefined) delete process.env.INVOCATION_ID;
+                else process.env.INVOCATION_ID = invocation;
+              }
+              const { trialId } = JSON.parse(await readFile(journal, "utf8"));
+              expect((await f.store.load()).trialPoll).toEqual({
+                version: VERSION,
+                trialId,
+                invocationId: firstInvocation,
+              });
+            }
           }
-          if (args.includes("is-active") && outcome === "failed health") throw new Error("daemon exited");
+          if (args.includes("InvocationID")) {
+            const active = outcome !== "crashes immediately";
+            const restarted = outcome === "crashes after first write" || outcome === "crash-loops under systemd";
+            return [
+              `ActiveState=${active ? "active" : "activating"}`,
+              `MainPID=${active ? (restarted ? "1002" : "1001") : "0"}`,
+              `InvocationID=${restarted ? replacement : firstInvocation}`,
+              `NRestarts=${outcome === "crash-loops under systemd" ? "3" : restarted ? "1" : "0"}`,
+            ].join("\n");
+          }
         },
       });
       const expected = outcome === "healthy" ? f.newBytes : f.oldBytes;

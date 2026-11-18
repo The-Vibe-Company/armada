@@ -16,7 +16,6 @@ import {
   DockerSnapshotMissingRefError,
 } from "../../core/src/docker-snapshot-build.ts";
 import type { SnapshotBaselineTool } from "../../core/src/snapshot-baseline.ts";
-import { VERSION } from "../../core/src/version.ts";
 
 export type Job = DockerHostJob;
 export type Receipt = {
@@ -81,7 +80,7 @@ export type State = {
   retentionDeleteAfter?: string;
   retentionReportAfter?: string;
   lastPollAt?: string;
-  lastUpdatePollAt?: string;
+  trialPoll?: { version: string; trialId: string; invocationId: string };
   /** Receipt identities for unique active generations, in fair sweep order. */
   activeTtl?: string[];
   /** Fair bounded retries across retained confirmations and process restarts. */
@@ -99,6 +98,8 @@ export interface Api {
       skipSnapshots?: boolean;
       /** Keep update heartbeats independent of potentially slow Docker inspections. */
       reuseTelemetry?: boolean;
+      /** Refresh authenticated status and reconciliation without dispatching a job. */
+      heartbeatOnly?: boolean;
       /** Ask the server to hold the poll until work exists, at most this long (#2561). */
       waitSeconds?: number;
       /** Request IDs still executing here; the server hands out other sandboxes' jobs. */
@@ -308,6 +309,8 @@ export type TickOptions = {
    * again, so work that completed during the hold no longer blocks anything.
    */
   running?: ReadonlySet<string>;
+  trialPoll?(target: string | undefined): Promise<State["trialPoll"]>;
+  reconcileOnly?: boolean;
   beforeAdmission?(target: string | undefined): Promise<boolean | "repoll">;
   persistCompletion?(save: () => Promise<void>): Promise<void>;
   /** Sandboxes whose machine operation is still executing in this process. */
@@ -382,10 +385,8 @@ export const DOCKER_HOST_POLL_WAIT_SECONDS = 20;
 /** Pause after a failed tick, or between polls when the server cannot hold one. */
 export const DOCKER_HOST_IDLE_MS = 20_000;
 
-function recordPoll(state: State, targetVersion: string | undefined, now = Date.now) {
-  state.lastPollAt = new Date(now()).toISOString();
-  if (targetVersion === VERSION) state.lastUpdatePollAt = state.lastPollAt;
-  else delete state.lastUpdatePollAt;
+function recordPoll(state: State, at: string) {
+  if (!state.lastPollAt || at > state.lastPollAt) state.lastPollAt = at;
 }
 
 /**
@@ -404,11 +405,13 @@ export async function runJobs(
     sleep(ms: number): Promise<unknown>;
     beforeTick?(): Promise<void>;
     beforeAdmission?: TickOptions["beforeAdmission"];
+    trialPoll?: TickOptions["trialPoll"];
     retryCompletion?(): boolean;
     update?: {
       staged(): boolean;
       confirm(event: { type: "offer"; version: unknown } | { type: "poll-failed" }): Promise<boolean>;
       checkRecovery(): Promise<boolean>;
+      trialActive?(): Promise<boolean>;
       restart(): Promise<boolean>;
     };
     failed?(what: "tick" | "job"): void;
@@ -425,14 +428,27 @@ export async function runJobs(
   const settled = () => Promise.race(running.values());
   // Short authenticated polls keep the heartbeat current without taking jobs
   // or holding the ledger needed by an admitted operation's completion.
-  async function pollWithoutAdmission(skipSnapshots: boolean) {
+  let heartbeatSave: Promise<void> | undefined;
+  let heartbeatAt: string;
+  let reconciliation: Promise<void> | undefined;
+  async function pollWithoutAdmission(skipSnapshots: boolean, deferSave = false) {
     try {
-      const { targetVersion } = await api.poll(await store.load(), { skipSnapshots, reuseTelemetry: true });
-      await exclusive(store, async () => {
-        const latest = await store.load();
-        recordPoll(latest, targetVersion, loop.now);
-        await store.save(latest);
+      const { targetVersion } = await api.poll(await store.load(), {
+        skipSnapshots,
+        reuseTelemetry: true,
+        heartbeatOnly: true,
       });
+      heartbeatAt = new Date((loop.now ?? Date.now)()).toISOString();
+      heartbeatSave ??= exclusive(store, async () => {
+        const latest = await store.load();
+        recordPoll(latest, heartbeatAt);
+        await store.save(latest);
+      })
+        .catch(() => loop.failed?.("tick"))
+        .finally(() => {
+          heartbeatSave = undefined;
+        });
+      if (!deferSave) await heartbeatSave;
       return { type: "offer" as const, version: targetVersion };
     } catch {
       loop.failed?.("tick");
@@ -477,13 +493,27 @@ export async function runJobs(
         // Keep the host online while admitted operations finish. A short poll
         // updates the heartbeat without holding the ledger or accepting jobs.
         // Pace these polls even when the server has queued work to return.
-        const draining = running.size > 0;
-        const event = await pollWithoutAdmission(draining);
+        const draining = running.size > 0 || reconciliation !== undefined;
+        const event = await pollWithoutAdmission(draining, reconciliation !== undefined);
+        if (running.size && !reconciliation && !loop.stopping()) {
+          // Continue the ordinary retained-generation lifecycle on its own
+          // task. A slow Docker inspection cannot delay the next wire heartbeat.
+          reconciliation = tick(store, api, executor, true, loop.now ?? Date.now, { ...live, reconcileOnly: true })
+            .then(
+              () => {},
+              () => loop.failed?.("tick"),
+            )
+            .finally(() => {
+              reconciliation = undefined;
+            });
+        }
         // A poll that started during the drain cannot authorize the restart,
         // even if all operations finished before the response arrived.
         if (loop.stopping()) break;
         if (draining) {
-          if (running.size) await Promise.race([settled(), loop.sleep(DOCKER_HOST_IDLE_MS)]);
+          const pending = [settled(), loop.sleep(DOCKER_HOST_IDLE_MS)];
+          if (!running.size && reconciliation) pending.push(reconciliation);
+          await Promise.race(pending);
           continue;
         }
         if ((await loop.update.confirm(event)) && !loop.stopping() && (await loop.update.restart())) break;
@@ -500,10 +530,13 @@ export async function runJobs(
       const finishedBefore = finished;
       let outcome: TickOutcome;
       try {
+        const trial = loop.update?.trialActive && (await loop.update.trialActive());
+        if (loop.stopping()) break;
         outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
-          waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
+          ...(trial ? { reconcileOnly: true } : { waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS }),
           ...live,
           ...(prepareUpdate ? { beforeAdmission } : {}),
+          ...(loop.trialPoll ? { trialPoll: loop.trialPoll } : {}),
           ...(loop.retryCompletion ? { persistCompletion } : {}),
           dispatch(job, work) {
             const done = work
@@ -532,7 +565,7 @@ export async function runJobs(
       else if (outcome === "busy" || outcome === "idle") await loop.sleep(DOCKER_HOST_IDLE_MS);
     }
   } finally {
-    await Promise.all(running.values());
+    await Promise.all([...running.values(), reconciliation, heartbeatSave]);
   }
 }
 
@@ -648,15 +681,17 @@ async function admitLocked(
   // A save error therefore
   // ends this tick before polling: everything computed above is derived again
   // from the durable ledger on the next tick, and physical expiry runs on its own.
-  const reload = Boolean(options.running?.size || api.retainedOutputs);
+  const reload = Boolean(options.reconcileOnly || options.running?.size || api.retainedOutputs);
   if (reload) await store.save(state);
   lock.release();
   let polled: Awaited<ReturnType<Api["poll"]>> | undefined;
   let pollError: unknown;
-  let upgradeFenced = false;
+  let upgradeFenced = options.reconcileOnly ?? false;
+  let trialPoll: State["trialPoll"];
   try {
     polled = await api.poll(state, {
       skipSnapshots,
+      ...(options.reconcileOnly ? { heartbeatOnly: true } : {}),
       ...(options.waitSeconds === undefined
         ? {}
         : { waitSeconds: options.waitSeconds, running: [...(options.running ?? [])] }),
@@ -664,7 +699,8 @@ async function admitLocked(
     // Release downloads must not hold up durable completion of admitted jobs.
     const admission = await options.beforeAdmission?.(polled.targetVersion);
     if (admission === "repoll") return "held";
-    upgradeFenced = admission ?? false;
+    upgradeFenced ||= admission ?? false;
+    trialPoll = await options.trialPoll?.(polled.targetVersion);
   } catch (error) {
     pollError = error;
   } finally {
@@ -674,6 +710,11 @@ async function admitLocked(
     state = await store.load();
     state.retention ??= [];
     expiredGenerations = expired(state);
+  }
+  if (options.trialPoll && polled && !pollError && (trialPoll || state.trialPoll)) {
+    if (trialPoll) state.trialPoll = trialPoll;
+    else delete state.trialPoll;
+    await store.save(state);
   }
   // A claim and cleanup authorization are serialized by this single durable
   // host ledger. Merely requesting a resume on the server never admits it.
@@ -743,7 +784,7 @@ async function admitLocked(
         if (!entry.deleted) entry.deadline = deadline(entry.request, entry.observedStoppedAt!);
       await store.save(state);
     }
-    recordPoll(state, polled.targetVersion);
+    recordPoll(state, new Date(now()).toISOString());
   }
   // Pressure cleanup shares the same durable authorization as retention. Discovery
   // stays restricted to known completed operations; physical ownership is checked
