@@ -962,7 +962,7 @@ test("durable Modal fork recovers an accepted create while its source lease surv
   expect(f.creates).toBe(2); // Builder and original child only.
 });
 
-test("durable Modal dispatch checks authority after the reservation and lookup", async () => {
+test("durable Modal dispatch checks authority at reservation, create, and deletion", async () => {
   const f = fixture();
   const builder = await f.provider.createGolden({});
   const name = crypto.randomUUID();
@@ -970,9 +970,19 @@ test("durable Modal dispatch checks authority after the reservation and lookup",
   const launchId = crypto.randomUUID();
   const key = modalLaunchSandboxId(launchId);
   const request = { from: name, modalLaunchId: launchId, idempotencyKey: launchId, labels: { sandbox: launchId } };
+  // A stale worker cannot reserve after the cleanup claim fences the launch.
   await expect(
-    f.provider.fork(request, async () => {
-      if ((await f.store.get(key)).phase === "creating") throw Error("Dispatch expired");
+    f.provider.fork(request, async (transaction) => {
+      if (transaction) throw Error("Dispatch expired");
+    }),
+  ).rejects.toThrow();
+  const noReservation = { sandboxId: key, modalLaunchId: launchId };
+  expect(await f.provider.delete(noReservation, async () => {})).toEqual({ status: "deleted" });
+  expect(await f.store.findByRequestKey(launchId)).toBeNull();
+  expect(f.creates).toBe(1);
+  await expect(
+    f.provider.fork(request, async (transaction) => {
+      if (!transaction && (await f.store.get(key)).phase === "creating") throw Error("Dispatch expired");
     }),
   ).rejects.toThrow();
   expect(f.creates).toBe(1);
@@ -988,6 +998,13 @@ test("durable Modal dispatch checks authority after the reservation and lookup",
   ).rejects.toThrow();
   expect(phaseAtDeleteDispatch).toBe("deleting");
   expect(f.log.filter((op) => op === "terminate")).toHaveLength(terminations);
+
+  const timedOut = new AbortController();
+  f.onTerminate(async () => timedOut.abort());
+  const expiredAttempt = Object.assign(async () => {}, { signal: timedOut.signal });
+  await expect(f.provider.delete({ sandboxId: child.id }, expiredAttempt)).rejects.toThrow();
+  expect(await f.store.get(child.id)).toMatchObject({ phase: "deleting" });
+  expect(await f.provider.delete({ sandboxId: child.id }, async () => {})).toEqual({ status: "deleted" });
 });
 
 test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {

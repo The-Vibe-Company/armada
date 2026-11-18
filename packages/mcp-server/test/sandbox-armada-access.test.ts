@@ -81,6 +81,11 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
         effects.push("quiesce");
         return { acknowledged: true };
       },
+      delete: async (request, guard) => {
+        await guard?.();
+        effects.push("delete");
+        return fake.provider.delete(request);
+      },
       stop: async (request) => {
         effects.push("stop");
         await fake.provider.stop(request);
@@ -162,6 +167,13 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
     await expect(children.launch(token, "foreign", { ...selection, goldenId: crypto.randomUUID() })).rejects.toThrow(
       "denied",
     );
+    let guardCalls = 0;
+    await expect(
+      wrapped.delete({ sandboxId: info.id }, async () => {
+        if (++guardCalls === 2) throw Error("Cleanup claim expired");
+      }),
+    ).rejects.toThrow("Cleanup claim expired");
+    expect(effects.splice(0)).toEqual(["quiesce", "scrub"]);
     scrubFails = true;
     await expect(wrapped.stop({ sandboxId: info.id })).rejects.toThrow("denied");
     expect(effects).toEqual(["quiesce", "scrub"]);

@@ -153,7 +153,7 @@ export interface ModalStore {
   lease<T>(
     id: string,
     work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>,
-    mode?: "launch",
+    launch?: { signal?: AbortSignal | undefined },
   ): Promise<T>;
   image(name: string, tx?: Sql): Promise<SavedImage>;
   saveImage(image: SavedImage): Promise<void>;

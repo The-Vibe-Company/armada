@@ -1,4 +1,5 @@
 import type { Harness } from "./contract.ts";
+import type { Sql } from "./golden-store.ts";
 import type { MachineSize } from "./machine-size.ts";
 import type { ModelConnectionTestResult } from "./model-connection-test.ts";
 import type { PlanLimit } from "./plan-limit.ts";
@@ -216,7 +217,10 @@ export interface Provider {
    * retained workspace/conversation state and must refuse a compute-only fallback. */
   stop(request: { sandboxId: string; requireRetention?: boolean }): Promise<void>;
   /** Removes the sandbox and its disk for good. */
-  delete(request: { sandboxId: string }, beforeDispatch?: ProviderDispatchGuard): Promise<DeleteReceipt>;
+  delete(
+    request: { sandboxId: string; modalLaunchId?: string },
+    beforeDispatch?: ProviderDispatchGuard,
+  ): Promise<DeleteReceipt>;
 }
 
 export interface HarnessCapabilities {
@@ -304,7 +308,10 @@ export interface SnapshotRequest {
 }
 
 /** Server-side guard checked immediately before a provider dispatches a durable launch mutation. */
-export type ProviderDispatchGuard = () => Promise<void>;
+export interface ProviderDispatchGuard {
+  (transaction?: Sql): Promise<void>;
+  readonly signal?: AbortSignal;
+}
 
 export interface ForkRequest {
   /** Server-owned Armada UUID for a row-first Modal allocation. */

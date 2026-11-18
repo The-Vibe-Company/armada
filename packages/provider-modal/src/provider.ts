@@ -6,6 +6,7 @@ import type {
   ForkRequest,
   Harness,
   Provider,
+  ProviderDispatchGuard,
   SandboxInfo,
   SnapshotInfo,
   Sql,
@@ -339,7 +340,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     row: Machine,
     save: (row: Machine) => Promise<void>,
     env: Readonly<Record<string, string>>,
-    beforeDispatch?: () => Promise<void>,
+    beforeDispatch?: ProviderDispatchGuard,
   ): Promise<SandboxInfo> {
     const app = await bound();
     let sb: Sandbox;
@@ -480,7 +481,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   async function launch(
     request: CreateGoldenRequest | ForkRequest,
     golden: boolean,
-    beforeDispatch?: () => Promise<void>,
+    beforeDispatch?: ProviderDispatchGuard,
   ): Promise<SandboxInfo> {
     let size: Machine["size"];
     if ("size" in request && request.size !== undefined) {
@@ -550,6 +551,9 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         )
           throw refusal("sandbox_not_ready", "Snapshot revision is no longer ready.");
         sourceImage = { scopeKey: sourceScope, name: request.from, imageId: current.imageId };
+        // Serialize reservation with the worker claim. After cleanup takes over,
+        // a late fork cannot pin an image behind a proven-absent reservation.
+        await beforeDispatch?.(tx);
         return reserve(sourceImage, tx);
       });
     }
@@ -587,7 +591,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             ? create(current, save, "env" in request ? (request.env ?? {}) : {}, beforeDispatch)
             : Promise.resolve(sandboxInfo(current));
         },
-        launchId === undefined ? undefined : "launch",
+        launchId === undefined ? undefined : { signal: beforeDispatch?.signal },
       );
     } catch (error) {
       if (
@@ -1956,8 +1960,23 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       if (resume) return provider.delete({ sandboxId: request.sandboxId });
       return { status: "deleted" };
     },
-    async delete({ sandboxId }, beforeDispatch) {
+    async delete({ sandboxId, modalLaunchId }, beforeDispatch) {
       await boundNotAbsence();
+      if (modalLaunchId !== undefined) {
+        if (!beforeDispatch || sandboxId !== modalLaunchSandboxId(modalLaunchId))
+          throw refusal("invalid_request", "Invalid Modal launch cleanup identity.");
+        await beforeDispatch();
+        const reservation = await store.findByRequestKey(modalLaunchId);
+        // Every create requires a committed reservation. The worker's cleanup
+        // claim prevents any future reservation or create for this launch.
+        if (!reservation) return { status: "deleted" };
+        if (
+          reservation.info.id !== sandboxId ||
+          reservation.launchUserId !== options.scope.userId ||
+          reservation.golden
+        )
+          throw refusal("conflict", "Modal launch reservation does not match cleanup identity.");
+      }
       await store.lease(
         sandboxId,
         async (row, save) => {
@@ -1986,7 +2005,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             try {
               const sb = await client.sandboxes.fromId(row.physicalId);
               await beforeDispatch?.();
-              await sb.terminate({ wait: true });
+              if (beforeDispatch) await sb.terminate();
+              else await sb.terminate({ wait: true });
               if ((await sb.poll()) === null)
                 throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
             } catch (error) {
@@ -2011,7 +2031,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           row.phase = "deleted";
           await save(row);
         },
-        beforeDispatch ? "launch" : undefined,
+        beforeDispatch ? { signal: beforeDispatch.signal } : undefined,
       );
       // The target's compute and recovery images are gone and durably recorded, so the receipt
       // is published now. Retired images of other sources are collected detached, once. Each is

@@ -174,6 +174,7 @@ once the renewable child lease expires. The worker checks its persisted lease,
 deadline and cancellation immediately before adapter allocation. Once dispatch
 expires, unresolved allocations enter leased, delete-only cleanup under the
 original Modal authority. The worker clears the recovery request and golden
-fence in one transaction after the adapter confirms removal. Ambiguous name
-lookups or unavailable authority leave cleanup pending.
-The next stages cover durable initialization and initial-prompt checkpoints, versioned async clients, and Boat admission after recovery is proven.
+fence in one transaction after the adapter confirms removal or proves the exact
+reservation was never committed. Ambiguous name lookups or unavailable authority
+leave cleanup pending. The next stages cover durable initialization and initial-prompt
+checkpoints, versioned async clients, and Boat admission after recovery is proven.

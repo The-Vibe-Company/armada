@@ -161,10 +161,17 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
     wrap(provider: Provider): Provider {
       return new Proxy(provider, {
         get(target, key) {
-          if (key === "stop" || key === "delete")
-            return async (request: { sandboxId: string }) => {
+          if (key === "stop")
+            return async (request: Parameters<Provider["stop"]>[0]) => {
               await scrub(target, request.sandboxId);
-              return key === "stop" ? target.stop(request) : target.delete(request);
+              return target.stop(request);
+            };
+          if (key === "delete")
+            return async (...args: Parameters<Provider["delete"]>) => {
+              const [request, beforeDispatch] = args;
+              await beforeDispatch?.();
+              await scrub(target, request.sandboxId);
+              return target.delete(...args);
             };
           const value = Reflect.get(target, key, target);
           return typeof value === "function" ? value.bind(target) : value;

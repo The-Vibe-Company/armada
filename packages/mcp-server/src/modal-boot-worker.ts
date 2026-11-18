@@ -11,6 +11,7 @@ import {
 import { insertGoldenOperationFence } from "../../core/src/golden-store.ts";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
+import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 
 type Boot = NonNullable<LaunchOptions["modalBoot"]>;
 type Machine = Awaited<ReturnType<Provider["fork"]>>;
@@ -166,6 +167,7 @@ export function createModalBootWorker(
     const bootExpiry = "expiresAt" in outcome ? outcome.expiresAt : undefined;
     const succeeded = bootExpiry !== undefined;
     const cancelled = "reason" in outcome && outcome.cancelled === true;
+    const cleanupConfirmed = claim.phase === "cleanup_pending" && !keepFence;
     let recoveryInput: Uint8Array<ArrayBuffer> | null = null;
     if (keepFence) {
       const pinned = JSON.parse(await decryptSecret(claim.request_enc, encryptionKey)) as PinnedFork;
@@ -188,14 +190,23 @@ export function createModalBootWorker(
              coalesce($3::timestamptz-$4::integer*interval '1 second','infinity'::timestamptz)) else expires_at end,
            activity_until=case when $2 then now()+interval '2 minutes' else null end,
            activity_lease_id=case when $2 then activity_lease_id else null end,
-           stopped_at=case when $5 then clock_timestamp() else stopped_at end,
+           stopped_at=case when $5 or $6 then clock_timestamp() else stopped_at end,
            stop_requested_at=case when $5 then null else stop_requested_at end,
            status=case when $5 then 'stopped'::public.sandbox_status when $2 then status else 'failed'::public.sandbox_status end,
-           status_reason=case when $5 then null when $2 then status_reason else 'Modal allocation did not complete.' end,
+           status_reason=case when $5 then null when $2 then status_reason else $7 end,
            reconcile_after=now()
          where id=$1 and ((status='starting' and stop_requested_at is null)
-           or ($5 and status='stopping' and stop_requested_at is not null)) returning id`,
-        [id, succeeded, bootExpiry ?? null, SANDBOX_STOP_MARGIN_SECONDS, cancelled],
+           or ($5 and status='stopping' and stop_requested_at is not null)
+           or ($6 and status='failed' and stopped_at is null)) returning id`,
+        [
+          id,
+          succeeded,
+          bootExpiry ?? null,
+          SANDBOX_STOP_MARGIN_SECONDS,
+          cancelled,
+          cleanupConfirmed,
+          keepFence ? INTERRUPTED_LAUNCH_REASON : "Modal allocation did not complete.",
+        ],
       );
       // Cancellation won after the dispatch intent. Keep the pinned request
       // so the worker can delete the now-observed allocation under its original authority.
@@ -284,7 +295,7 @@ export function createModalBootWorker(
         await settle(claim, { reason: "cancelled_boot_outcome_unknown" }, true);
         return;
       }
-      if (!live?.role || !live.same_actor || (!cleanup && !live.allowed)) {
+      if (!live?.role || (!recovery && (!live.same_actor || (!cleanup && !live.allowed)))) {
         if (recovery) await reschedule();
         else await settle(claim, { reason: "admission_expired_or_revoked" }, claim.phase === "booting");
         return;
@@ -319,28 +330,31 @@ export function createModalBootWorker(
         await reschedule();
         return;
       }
-      const liveDispatch = async () =>
+      const liveDispatch = async (transaction?: Sql) =>
         (
-          await sql.query<{ expired: boolean }>(
+          await (transaction ?? sql).query<{ expired: boolean }>(
             `select r.dispatch_deadline<=clock_timestamp() as expired
              from public.provider_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
              join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
              join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
              where r.sandbox_id=$1 and r.lease_owner=$2 and r.lease_epoch=$3
-               and r.lease_expires_at>clock_timestamp() and e.epoch=r.actor_epoch
+               and r.lease_expires_at>clock_timestamp()
                and ${
                  recovery
                    ? "r.phase='cleanup_pending' and r.fence_id is not null"
-                   : `r.phase='booting' and ${cleanup ? "s.status='stopping' and s.stop_requested_at is not null" : BOOT_ALLOWED}`
-               }`,
+                   : `r.phase='booting' and e.epoch=r.actor_epoch and ${cleanup ? "s.status='stopping' and s.stop_requested_at is not null" : BOOT_ALLOWED}`
+               } ${transaction ? "for update of r" : ""}`,
             token,
           )
         ).rows[0];
-      const guardDispatch = async () => {
-        const dispatch = await liveDispatch();
-        if (!accepting || signal.aborted || !dispatch || (!recovery && dispatch.expired))
-          throw new LaunchError("outcome_unknown", "Modal dispatch authority expired or changed.", { sandboxId: id });
-      };
+      const guardDispatch = Object.assign(
+        async (transaction?: Sql) => {
+          const dispatch = await liveDispatch(transaction);
+          if (!accepting || signal.aborted || !dispatch || (!recovery && dispatch.expired))
+            throw new LaunchError("outcome_unknown", "Modal dispatch authority expired or changed.", { sandboxId: id });
+        },
+        { signal },
+      );
       if (cleanup) {
         const dispatch = await liveDispatch();
         if (signal.aborted) return;
@@ -353,10 +367,12 @@ export function createModalBootWorker(
           return;
         }
         try {
-          // The Modal adapter verifies the pinned scope and logical ID, then
-          // resumes any deletion by durable machine record. Missing record is
-          // still ambiguous because an earlier dispatch might not have reserved it yet.
-          const removed = await provider.delete({ sandboxId: claim.provider_sandbox_id }, guardDispatch);
+          // Only recovery can prove reservation absence. Before that phase,
+          // the ordinary cancellation path still needs a durable machine record.
+          const removed = await provider.delete(
+            { sandboxId: claim.provider_sandbox_id, ...(recovery ? { modalLaunchId: id } : {}) },
+            guardDispatch,
+          );
           if (signal.aborted) return;
           if (removed.status === "deleted") {
             await settle(

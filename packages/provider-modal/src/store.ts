@@ -119,12 +119,14 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       );
       return result.rows.map((x) => revive(x.record));
     },
-    async lease(id, work, mode) {
+    async lease(id, work, launch) {
+      const signal = launch?.signal;
       await get(id);
+      signal?.throwIfAborted();
       const token = randomUUID();
       // Durable boot retries need to outlive a crashed adapter lease. Renew
       // while the process is alive, including during slow Modal calls.
-      const duration = mode === "launch" ? 45 : 900;
+      const duration = launch ? 45 : 900;
       const claim = await sql.query(
         `update public.modal_machines set lease_id=$3,lease_until=clock_timestamp()+$4::integer*interval '1 second' where scope=$1 and id=$2 and (lease_until is null or lease_until<=clock_timestamp()) returning id`,
         [key, id, token, duration],
@@ -137,22 +139,23 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
           message: "Sandbox lifecycle is leased by another controller.",
           retryable: true,
         });
-      const heartbeat =
-        mode === "launch"
-          ? setInterval(() => {
-              void sql
-                .query(
-                  `update public.modal_machines set lease_until=clock_timestamp()+$4::integer*interval '1 second'
+      const heartbeat = launch
+        ? setInterval(() => {
+            if (signal?.aborted) return;
+            void sql
+              .query(
+                `update public.modal_machines set lease_until=clock_timestamp()+$4::integer*interval '1 second'
            where scope=$1 and id=$2 and lease_id=$3 and lease_until>clock_timestamp()`,
-                  [key, id, token, duration],
-                )
-                .catch(() => {});
-            }, 10_000)
-          : undefined;
+                [key, id, token, duration],
+              )
+              .catch(() => {});
+          }, 10_000)
+        : undefined;
       heartbeat?.unref();
       try {
         return await work(await get(id), async (row) => {
           await authorize(sql);
+          signal?.throwIfAborted();
           const result = await sql.query(
             `update public.modal_machines set record=$4::jsonb,lease_until=clock_timestamp()+$5::integer*interval '1 second' where scope=$1 and id=$2 and lease_id=$3 and lease_until>clock_timestamp() returning id`,
             [key, id, token, JSON.stringify(row), duration],
