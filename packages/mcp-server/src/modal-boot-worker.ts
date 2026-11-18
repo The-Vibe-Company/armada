@@ -162,20 +162,24 @@ export function createModalBootWorker(
     );
   }
 
-  async function settle(claim: Claim, outcome: Outcome, needsCleanup: boolean) {
+  async function settle(claim: Claim, outcome: Outcome, needsCleanup: boolean, requireNoReservation = false) {
     const { sandbox_id: id, lease_epoch: epoch } = claim;
     const bootExpiry = "expiresAt" in outcome ? outcome.expiresAt : undefined;
     const succeeded = bootExpiry !== undefined;
-    const cancelled = "reason" in outcome && outcome.cancelled === true;
-    const cleanupConfirmed = claim.phase === "cleanup_pending" && !needsCleanup;
+    const allocationGone = !needsCleanup && !succeeded;
     let recoveryInput: Uint8Array<ArrayBuffer> | null = null;
     if (needsCleanup) {
       const pinned = JSON.parse(await decryptSecret(claim.request_enc, encryptionKey)) as PinnedFork;
       delete pinned.request.env;
       recoveryInput = await encryptSecret(JSON.stringify(pinned), encryptionKey);
     }
-    const published = await sql.transaction!(async (tx) => {
-      await tx.query("select id from public.sandboxes where id=$1 for update", [id]);
+    const settlement = await sql.transaction!(async (tx) => {
+      const sandbox = (
+        await tx.query<{ cancelled: boolean }>(
+          "select stop_requested_at is not null as cancelled from public.sandboxes where id=$1 for update",
+          [id],
+        )
+      ).rows[0];
       const row = (
         await tx.query<{ fence_id: string | null; actor_epoch: string; dispatch_deadline: Date }>(
           `select fence_id,actor_epoch::text,dispatch_deadline
@@ -185,6 +189,21 @@ export function createModalBootWorker(
         )
       ).rows[0];
       if (!row) return false;
+      if (requireNoReservation) {
+        // The launch row lock serializes this proof with the fork's reservation
+        // guard. No stale claim can register another child behind settlement.
+        const reservation = await tx.query(
+          `select 1 from public.modal_machines where org_id=$1 and owner_id=$2
+           and (id=$3 or request_key=$4) limit 1`,
+          [claim.org_id, claim.owner_id, claim.provider_sandbox_id, id],
+        );
+        if (reservation.rows.length) return false;
+      }
+      const resolvedOutcome: Outcome =
+        allocationGone && sandbox?.cancelled && !("reason" in outcome && outcome.cancelled)
+          ? { reason: requireNoReservation ? "cancelled_before_reservation" : "cancelled_during_boot", cancelled: true }
+          : outcome;
+      const cancelled = "reason" in resolvedOutcome && resolvedOutcome.cancelled === true;
       const updated = await tx.query(
         `update public.sandboxes s set
            expires_at=case when $2 then least(clock_timestamp()+effective_ttl_seconds*interval '1 second',
@@ -209,7 +228,7 @@ export function createModalBootWorker(
           bootExpiry ?? null,
           SANDBOX_STOP_MARGIN_SECONDS,
           cancelled,
-          cleanupConfirmed,
+          allocationGone,
           needsCleanup ? INTERRUPTED_LAUNCH_REASON : "Modal allocation did not complete.",
           row.dispatch_deadline,
           row.actor_epoch,
@@ -249,19 +268,20 @@ export function createModalBootWorker(
         [
           id,
           needsCleanup ? "cleanup_pending" : succeeded ? "succeeded" : cancelled ? "cancelled" : "failed",
-          JSON.stringify(outcome),
+          JSON.stringify(resolvedOutcome),
           retainFence,
           recoveryInput,
         ],
       );
       if (!retainFence && row.fence_id)
         await tx.query("delete from public.golden_operation_fences where id=$1", [row.fence_id]);
-      return "expiresAt" in outcome;
+      return succeeded ? "published" : "settled";
     });
-    if (published) {
+    if (settlement === "published") {
       await recordLaunchStageSql(sql, id, "provider_claimed").catch(() => {});
       await recordLaunchStageSql(sql, id, "machine_started").catch(() => {});
     }
+    return Boolean(settlement);
   }
 
   async function runClaim(claim: Claim, signal: AbortSignal) {
@@ -314,6 +334,8 @@ export function createModalBootWorker(
         return;
       }
       const recovery = claim.phase === "cleanup_pending";
+      if (recovery && (await settle(claim, { reason: "boot_reservation_absent" }, false, true))) return;
+      if (signal.aborted) return;
       const cleanup = recovery || (live?.cancelled === true && claim.phase === "booting");
       if (!recovery && cleanup && live?.expired) {
         await settle(claim, { reason: "cancelled_boot_outcome_unknown" }, true);

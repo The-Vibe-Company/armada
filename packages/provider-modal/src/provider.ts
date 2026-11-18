@@ -34,7 +34,7 @@ import {
 } from "@armada/core/server";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
-import { type ModalConnection, modalConnection } from "./client.ts";
+import { type ModalConnection, ModalRpcDispatchRefused, modalConnection, withModalDispatch } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalBuilderImageError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
 import type {
@@ -260,17 +260,25 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       armada_generation: String(row.generation),
     };
   }
-  async function namedOwned(row: Machine): Promise<Sandbox> {
+  async function namedOwned(row: Machine, allowLegacyLookup = false): Promise<Sandbox> {
     assertMachineSource(row);
     // Name reconciliation exists because the create outcome is unknown: a missing App must
     // preserve the reservation, never read as the machine's absence.
     await boundNotAbsence();
+    const environment = options.scope.binding.environment;
     let sb: Sandbox;
     try {
-      sb = await client.sandboxes.fromName(options.appName, row.physicalName, {
-        environment: options.scope.binding.environment,
-        includeTerminated: true,
-      });
+      try {
+        sb = await client.sandboxes.fromName(options.appName, row.physicalName, {
+          environment,
+          includeTerminated: true,
+        });
+      } catch (error) {
+        if (!allowLegacyLookup || modalError(error).code !== "not_found") throw error;
+        // The SDK sends includeTerminated lookups to V2 only. An explicit
+        // V1 profile can still have a live allocation under this exact name.
+        sb = await client.sandboxes.fromName(options.appName, row.physicalName, { environment });
+      }
     } catch (error) {
       if (modalError(error).code === "not_found")
         throw refusal(
@@ -346,7 +354,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     let sb: Sandbox;
     if (row.phase === "creating") {
       // Unknown create outcome: lookup only. A not-found does NOT prove a delayed create cannot land.
-      sb = await namedOwned(row);
+      sb = await namedOwned(row, beforeDispatch !== undefined);
       if ((await sb.poll()) !== null)
         throw refusal("conflict", "Reconciled creation already terminated; manual recovery required.");
     } else if (row.phase === "reserved") {
@@ -369,37 +377,42 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
       await save(row);
       const capacity = row.size === undefined ? null : machineCapacity("modal", row.size);
+      let sdkStarted = false;
       try {
         await beforeDispatch?.();
+        sdkStarted = true;
+        sb = await withModalDispatch(beforeDispatch, () =>
+          measure("modal_sandbox_create", () =>
+            client.sandboxes.create(app, image, {
+              ...(row.runtimePolicy === "explicit-vm-v1" ? { runtime: "vm" as const } : {}),
+              ...(capacity
+                ? {
+                    cpu: capacity.vcpus / 2,
+                    cpuLimit: capacity.vcpus / 2,
+                    memoryMiB: capacity.memoryMiB,
+                    memoryLimitMiB: capacity.memoryMiB,
+                  }
+                : {}),
+              name: row.physicalName,
+              tags: ownershipTags(row),
+              timeoutMs: row.ttlSeconds * 1000,
+              workdir: "/home/user",
+              unencryptedPorts: [SSH_PORT],
+              secrets: [],
+              env: {},
+              includeOidcIdentityToken: false,
+            }),
+          ),
+        );
       } catch (error) {
-        // The SDK call has not happened. A successor can safely retry or
-        // delete a reservation once the still-owned lease publishes that fact.
+        if (sdkStarted && !(error instanceof ModalRpcDispatchRefused)) throw error;
+        // The SDK transport was never invoked. Return the reservation to its
+        // pre-create state if this attempt still owns the child lease.
         row.phase = "reserved";
         delete row.grantExpiresAt;
         await save(row, true);
         throw error;
       }
-      sb = await measure("modal_sandbox_create", () =>
-        client.sandboxes.create(app, image, {
-          ...(row.runtimePolicy === "explicit-vm-v1" ? { runtime: "vm" as const } : {}),
-          ...(capacity
-            ? {
-                cpu: capacity.vcpus / 2,
-                cpuLimit: capacity.vcpus / 2,
-                memoryMiB: capacity.memoryMiB,
-                memoryLimitMiB: capacity.memoryMiB,
-              }
-            : {}),
-          name: row.physicalName,
-          tags: ownershipTags(row),
-          timeoutMs: row.ttlSeconds * 1000,
-          workdir: "/home/user",
-          unencryptedPorts: [SSH_PORT],
-          secrets: [],
-          env: {},
-          includeOidcIdentityToken: false,
-        }),
-      );
     } else {
       sb = await physical(row);
     }
@@ -1994,7 +2007,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           const exitConfirmed = row.deletePhysicalExitGeneration === row.generation;
           // Creating/booting/deleting without ID is NOT proof of absence, even if name lookup says 404.
           if (!exitConfirmed && !row.physicalId) {
-            const reconciled = await namedOwned(row);
+            const reconciled = await namedOwned(row, modalLaunchId !== undefined);
             row.physicalId = reconciled.sandboxId;
             await save(row);
           }
@@ -2008,7 +2021,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             try {
               const sb = await client.sandboxes.fromId(row.physicalId);
               await beforeDispatch?.();
-              if (beforeDispatch) await sb.terminate();
+              if (beforeDispatch) await withModalDispatch(beforeDispatch, () => sb.terminate());
               else await sb.terminate({ wait: true });
               if ((await sb.poll()) === null)
                 throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
@@ -2025,7 +2038,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             await cleanupStep(sandboxId, async () => {
               try {
                 await beforeDispatch?.();
-                await client.images.delete(imageId);
+                await withModalDispatch(beforeDispatch, () => client.images.delete(imageId));
               } catch (error) {
                 if (modalError(error).code !== "not_found") throw error;
               }

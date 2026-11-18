@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, jest, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { type AgentEvent, type GoldenRecord, modalLaunchSandboxId, ProviderError, type Sql } from "@armada/core";
 import {
@@ -17,6 +17,7 @@ import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/
 import { createSqlData } from "../../mcp-server/src/data.ts";
 import { createModalBootWorker } from "../../mcp-server/src/modal-boot-worker.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
+import { fenceModalMutation, withModalDispatch } from "../src/client.ts";
 import {
   appendModalEvents,
   type ComposedModalOptions,
@@ -190,7 +191,10 @@ function fixture(
       fromId: async (id: string) => machines.get(id)?.sb,
       fromName: async (_app: string, name: string, params: object) => {
         expect(_app).toBe("pinned");
-        expect(params).toEqual({ environment: accessScope.binding.environment, includeTerminated: true });
+        expect(params).toEqual({
+          environment: accessScope.binding.environment,
+          ...("includeTerminated" in params ? { includeTerminated: true } : {}),
+        });
         await onLookup?.();
         if (lookupError) throw lookupError;
         const sb = names.get(name);
@@ -929,17 +933,22 @@ test("overlapping forks from a snapshot can boot concurrently", async () => {
 test.each([
   ["admission committed", "resume"],
   ["worker claim committed", "resume"],
+  ["worker claim committed", "revoke"],
   ["worker authority resolved", "resume"],
   ["boot intent committed", "expire"],
+  ["boot intent committed", "revoke"],
   ["boot intent committed", "stop"],
   ["fork App resolved", "resume"],
   ["image reservation committed", "expire"],
   ["child lease committed", "resume"],
+  ["worker lease renewed", "resume"],
+  ["child lease renewed", "resume"],
   ["child App resolved", "resume"],
   ["modal_image", "resume"],
   ["create intent committed", "unknown"],
   ["modal_sandbox_create", "resume"],
   ["modal_sandbox_create", "expire"],
+  ["legacy create accepted", "resume"],
   ["physical name resolved", "resume"],
   ["physical ownership read", "resume"],
   ["physical binding committed", "resume"],
@@ -975,11 +984,15 @@ test.each([
   let watching = false;
   let crashed = false;
   let appLookups = 0;
+  let legacyLookups = 0;
+  const renewed = deferred();
+  const crashDuringRenewal = boundary === "worker lease renewed" || boundary === "child lease renewed";
   const interruptedLookup =
     recovery === "resume" && (boundary === "physical name resolved" || boundary === "physical ownership read");
   const after = (step: string) => {
     if (watching && !crashed && step === boundary) {
       crashed = true;
+      renewed.resolve();
       throw new Error("Synthetic worker process loss");
     }
   };
@@ -990,6 +1003,8 @@ test.each([
     if (statement.includes("set phase='booting'")) return "boot intent committed";
     if (statement.includes("insert into public.modal_machines")) return "image reservation committed";
     if (statement.includes("set lease_id=$3") && args?.[1] === child) return "child lease committed";
+    if (statement.includes("set lease_until=clock_timestamp()") && args?.[1] === child) return "child lease renewed";
+    if (statement.includes("set lease_expires_at=now()+interval")) return "worker lease renewed";
     if (statement.includes("set lease_id=null") && args?.[1] === child) return "child lease released";
     if (statement.includes("set phase=$2,outcome="))
       return recovery === "cleanup" ? "worker cleanup committed" : "worker settlement committed";
@@ -1042,7 +1057,7 @@ test.each([
     if (watching && phase === "modal_app_lookup") {
       after(["worker authority resolved", "fork App resolved", "child App resolved"][appLookups++] ?? phase);
     } else {
-      after(phase);
+      after(boundary === "legacy create accepted" && phase === "modal_sandbox_create" ? boundary : phase);
     }
     return result;
   });
@@ -1052,6 +1067,11 @@ test.each([
   const createdBeforeBoot = f.creates;
   const fromName = f.client.sandboxes.fromName.bind(f.client.sandboxes);
   f.client.sandboxes.fromName = async (...args) => {
+    if (boundary === "legacy create accepted") {
+      if (args[2]?.includeTerminated)
+        throw Object.assign(new Error("The sandbox is only visible to V1 lookup"), { name: "NotFoundError" });
+      legacyLookups++;
+    }
     const machine = await fromName(...args);
     after("physical name resolved");
     return {
@@ -1082,6 +1102,16 @@ test.each([
   };
   f.distribution.prepareRuntime = async () => {};
   f.distribution.prepareFreshMachine = async () => after("fresh preparation returned");
+  if (crashDuringRenewal) {
+    const start = f.distribution.start;
+    f.distribution.start = async (...args) => {
+      if (watching) {
+        jest.advanceTimersByTime(10_000);
+        await renewed.promise;
+      }
+      return start(...args);
+    };
+  }
   f.distribution.captureProcessBaseline = async (_sb, row) => {
     after("baseline captured");
     return {
@@ -1181,8 +1211,13 @@ test.each([
       }
     }
     watching = true;
-    await first.reconcileOne(signal).catch(() => {});
-    await first.drain();
+    if (crashDuringRenewal) jest.useFakeTimers();
+    try {
+      await first.reconcileOne(signal).catch(() => {});
+      await first.drain();
+    } finally {
+      if (crashDuringRenewal) jest.useRealTimers();
+    }
   }
   expect(crashed).toBe(true);
   watching = false;
@@ -1212,13 +1247,29 @@ test.each([
   }
 
   const successor = worker();
-  for (let claim = 0; claim < 2; claim++) {
-    if (!(await successor.reconcileOne(signal))) break;
-    await successor.drain();
+  const teammate = "00000000-0000-0000-0000-000000000004";
+  try {
+    if (recovery === "revoke") {
+      await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [scope.orgId, teammate]);
+      await db.query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
+    }
+    for (let claim = 0; claim < 2; claim++) {
+      if (!(await successor.reconcileOne(signal))) break;
+      await successor.drain();
+    }
+  } finally {
+    if (recovery === "revoke") {
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin') on conflict do nothing", [
+        scope.orgId,
+        scope.userId,
+      ]);
+      await db.query("update members set role='member' where org_id=$1 and user_id=$2", [scope.orgId, teammate]);
+    }
   }
   const persisted = (
     await db.query(
-      `select r.phase,s.status,r.fence_id,r.lease_owner,r.request_enc,m.record->>'phase' as child_phase,
+      `select r.phase,s.status,s.activity_lease_id,s.stopped_at,r.fence_id,r.lease_owner,
+        r.request_enc is not null as sealed,m.record->>'phase' as child_phase,
         m.lease_id as child_lease from provider_launch_requests r join sandboxes s on s.id=r.sandbox_id
         left join modal_machines m on m.id=s.provider_sandbox_id where r.sandbox_id=$1`,
       [id],
@@ -1241,17 +1292,26 @@ test.each([
   if (recovery === "unknown") {
     // Modal does not guarantee that 404 rules out a delayed create. Keep
     // delete-only recovery and the image pin even though the golden can retire.
-    expect(persisted).toMatchObject({ child_phase: "creating", request_enc: expect.anything() });
+    expect(persisted).toMatchObject({ child_phase: "creating", sealed: true });
     // Other rows in this shared database exercise independent launches.
     await db.query("update provider_launch_requests set next_attempt_at='infinity' where sandbox_id=$1", [id]);
   } else {
     expect(persisted).toMatchObject({
-      child_phase: recovery === "resume" ? "active" : boundary === "boot intent committed" ? null : "deleted",
-      request_enc: null,
+      child_phase:
+        recovery === "resume"
+          ? "active"
+          : boundary === "boot intent committed" || boundary === "worker claim committed"
+            ? null
+            : "deleted",
+      sealed: false,
     });
+    if (recovery !== "resume") {
+      expect(persisted).toMatchObject({ stopped_at: expect.any(Date), activity_lease_id: null });
+    }
   }
   const created = recovery === "resume" || recovery === "cleanup" || boundary === "modal_sandbox_create" ? 1 : 0;
   expect(f.creates - createdBeforeBoot).toBe(created);
+  if (boundary === "legacy create accepted") expect(legacyLookups).toBe(1);
   await db.transaction(async (tx) => {
     await tx.query("select set_config('request.jwt.claim.sub',$1,true)", [scope.userId]);
     expect((await tx.query("select remove_golden($1) as removed_at", [goldenId])).rows[0]).toMatchObject({
@@ -1308,6 +1368,50 @@ test("durable Modal dispatch checks authority at reservation, create, and deleti
   expect(await f.store.get(child.id)).toMatchObject({ phase: "deleting" });
   expect(await f.provider.delete({ sandboxId: child.id }, async () => {})).toEqual({ status: "deleted" });
 });
+
+test.each(["SandboxCreate", "SandboxCreateV2", "SandboxTerminate", "SandboxTerminateV2", "ImageDelete"])(
+  "Modal %s RPC rechecks authority, carries the worker signal and disables SDK retries",
+  async (method) => {
+    const controller = new AbortController();
+    let allowed = true;
+    const guard = Object.assign(
+      async () => {
+        if (!allowed) throw new Error("Persisted authority expired");
+      },
+      { signal: controller.signal },
+    );
+    const attempts: unknown[] = [];
+    const call = () =>
+      fenceModalMutation(
+        {
+          method: {
+            path: `/modal.client.ModalClient/${method}`,
+            requestStream: false,
+            responseStream: false,
+            options: {},
+          },
+          requestStream: false,
+          responseStream: false,
+          request: {},
+          // biome-ignore lint/correctness/useYield: A unary handler returns its only response.
+          async *next(_request, options) {
+            attempts.push(options);
+            return {};
+          },
+        },
+        {},
+      ).next();
+    await withModalDispatch(guard, call);
+    expect(attempts).toEqual([{ retries: 0, signal: controller.signal }]);
+    allowed = false;
+    await expect(withModalDispatch(guard, call)).rejects.toThrow(
+      "Modal mutation dispatch authority expired or changed.",
+    );
+    expect(attempts).toHaveLength(1);
+    await call();
+    expect(attempts.at(-1)).toEqual({});
+  },
+);
 
 test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
   const f = fixture(scope, db, undefined, undefined, true);

@@ -76,8 +76,16 @@ test.each([
         fenced: true,
         sealed: true,
       });
-      if (++attempts === 1)
+      if (++attempts === 1) {
+        // The real adapter commits an exact-key row before it can lose a
+        // create reply. Keep that evidence while this worker fixture stubs Modal.
+        await db.query(
+          `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+           values('fixture',$1,$2,'private',$3,$4,'{}')`,
+          [people.org, people.owner, providerSandboxId, id],
+        );
         throw new ProviderError({ provider: "modal", code: "unknown", message: "Lost reply.", retryable: true });
+      }
       return { id: providerSandboxId, name: "fixture", labels: {}, state: "ready", providerState: "active" };
     },
   } satisfies Pick<Provider, "id" | "backendIdentity" | "managementIdentity" | "fork"> as Provider;
