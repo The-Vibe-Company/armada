@@ -209,9 +209,7 @@ test("a stop before the first sample reads even when a capability probe would fa
   expect(probes).toBe(0);
   expect(reads).toBe(1);
   const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/memo.txt`;
-  expect(await (await routeFor(service, people.owner, people.org)(new Request(url)))?.text()).toBe(
-    "last deliverable",
-  );
+  expect(await (await routeFor(service, people.owner, people.org)(new Request(url)))?.text()).toBe("last deliverable");
 });
 
 test("a final read that finds the collector unsupported records it without retrying", async () => {

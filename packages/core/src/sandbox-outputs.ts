@@ -22,34 +22,61 @@ export interface OutputFile {
   bytes: Uint8Array;
 }
 
-// The managed Modal image ships Bun under /opt. Boat's golden baseline also installs Bun.
-// Use only fixed paths and clear the environment before starting the collector. In a privileged
-// exec context, do not fall back to the agent's home executable.
-const collectorShell = (program: string) => `cd / || exit 5
+// Readers in order, each with the same bounds and exclusions:
+// 1. Armada's managed Bun at the root-owned /opt/armada/runtime-bun/bun (the Modal image, and every
+//    Boat golden built since #2634). This is the guaranteed path; the golden build verifies it.
+// 2. Unprivileged only: a guest Bun at a fixed path that actually evaluates code. Old Bun releases
+//    print their help and exit 0 without running the program, so they are skipped, never trusted.
+// 3. The pre-#2634 Python reader. Boat sandboxes launched from older goldens have no managed Bun;
+//    whatever collected there before this change keeps collecting after an upgrade.
+// A reader that exits 86 (no FFI, no descriptor filesystem) hands over to the next one; it printed
+// nothing. Only fixed paths, a fixed working directory and a cleared environment are used. In a
+// privileged exec context, never fall back to an executable the agent can replace.
+const READERS = `cd / || exit 5
 uid=$(/usr/bin/id -u) || exit 86
-protected_bun() {
-  for component in /opt /opt/armada /opt/armada/runtime-bun /opt/armada/runtime-bun/bun; do
-    [ ! -L "$component" ] || return 1
-    metadata=$(/usr/bin/stat -c '%u %a' -- "$component") || return 1
+protected_path() {
+  armada_path=$1
+  while [ -n "$armada_path" ]; do
+    [ ! -L "$armada_path" ] || return 1
+    metadata=$(/usr/bin/stat -c '%u %a' -- "$armada_path") || return 1
     set -- $metadata
     [ "$1" = 0 ] && [ "$((0$2 & 022))" = 0 ] || return 1
+    armada_path=\${armada_path%/*}
   done
-  [ -f /opt/armada/runtime-bun/bun ] && [ -x /opt/armada/runtime-bun/bun ]
 }
-if protected_bun 2>/dev/null; then
-  bun=/opt/armada/runtime-bun/bun
-elif [ "$uid" = 0 ]; then
-  exit 86
-elif [ -x /usr/local/bin/bun ]; then
-  bun=/usr/local/bin/bun
-elif [ -x /usr/bin/bun ]; then
-  bun=/usr/bin/bun
-elif [ -x /home/user/.bun/bin/bun ]; then
-  bun=/home/user/.bun/bin/bun
-else
-  exit 86
+isolated() { /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin "$@"; }
+attempt() {
+  isolated "$@"
+  armada_status=$?
+  [ "$armada_status" = 86 ] || exit "$armada_status"
+}
+`;
+
+const managedBun = (
+  program: string,
+) => `if [ -f /opt/armada/runtime-bun/bun ] && [ -x /opt/armada/runtime-bun/bun ] && protected_path /opt/armada/runtime-bun/bun 2>/dev/null; then
+  attempt /opt/armada/runtime-bun/bun --no-env-file --no-install -e ${shellQuote(program)}
 fi
-exec /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin "$bun" --no-env-file --no-install -e ${shellQuote(program)}`;
+`;
+
+const collectorShell = (program: string, python: string) => `${READERS}${managedBun(program)}if [ "$uid" != 0 ]; then
+  for armada_bun in /usr/local/bin/bun /usr/bin/bun /home/user/.bun/bin/bun; do
+    [ -f "$armada_bun" ] && [ -x "$armada_bun" ] || continue
+    [ "$(isolated "$armada_bun" --no-env-file --no-install -e 'console.log("armada-bun-evaluates")' 2>/dev/null)" = armada-bun-evaluates ] || continue
+    attempt "$armada_bun" --no-env-file --no-install -e ${shellQuote(program)}
+  done
+fi
+for armada_python in /usr/local/bin/python3 /usr/bin/python3; do
+  [ -x "$armada_python" ] || continue
+  if [ "$uid" = 0 ]; then
+    armada_python=$(/usr/bin/readlink -f -- "$armada_python") && protected_path "$armada_python" 2>/dev/null || continue
+  fi
+  attempt "$armada_python" -I -c ${shellQuote(python)}
+done
+exit 86`;
+
+/** The managed Bun alone: what the golden build must prove before a snapshot is taken. */
+const managedShell = (program: string) => `${READERS}${managedBun(program)}exit 86`;
 
 // Linux glibc and /proc/self/fd are part of the managed VM/container baseline. Read each
 // directory entry incrementally and anchor each path component to an open directory descriptor,
@@ -86,9 +113,9 @@ export const OUTPUT_COLLECTOR_PROBE_MARKER = "armada-output-collector-ready";
  * any repository Bun pin. */
 export const OUTPUT_COLLECTOR_BUN_VERSION = "1.4.2";
 
-export const OUTPUT_COLLECTOR_PROBE = collectorShell(
+const probeProgram =
   collectorSetup +
-    String.raw`
+  String.raw`
 try {
   const root = fs.openSync("/", parentFlags);
   try {
@@ -102,8 +129,70 @@ try {
   process.exit(86);
 }
 console.log(${JSON.stringify(OUTPUT_COLLECTOR_PROBE_MARKER)});
-`,
-);
+`;
+
+/** Proves the managed Bun reader alone (the golden build's check before a snapshot is taken). */
+export const OUTPUT_COLLECTOR_MANAGED_PROBE = managedShell(probeProgram);
+
+// The pre-#2634 reader, kept for sandboxes from goldens built before the managed Bun existed.
+// Same bounds, exclusions, exit codes and name rules as the Bun program (UTF-16 length like JS).
+const pythonSetup = `import os,stat,json,base64,sys
+flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
+`;
+const pythonProbe = `${pythonSetup}os.close(os.open('/',flags))
+print(${JSON.stringify(OUTPUT_COLLECTOR_PROBE_MARKER)})
+`;
+const pythonCollector =
+  pythonSetup +
+  String.raw`def valid(name):
+ if name in ('.','..') or '/' in name or '\\' in name: return False
+ if any(ord(c)<32 or ord(c)==127 for c in name): return False
+ return 0<len(name.encode('utf-16-le','surrogatepass'))//2<=255
+files=[]
+try:
+ directory=os.open('/',flags)
+ for part in ${JSON.stringify(OUTPUT_DIRECTORY)}.strip('/').split('/'):
+  parent=directory
+  try: directory=os.open(part,flags,dir_fd=parent)
+  finally: os.close(parent)
+except FileNotFoundError: sys.exit(4)
+except OSError: sys.exit(5)
+try:
+ names=[]
+ count=0
+ with os.scandir(directory) as entries:
+  for entry in entries:
+   count+=1
+   if count>${OUTPUT_MAX_ENTRIES}: sys.exit(3)
+   try: entry.name.encode('utf-8')
+   except UnicodeEncodeError: continue
+   if valid(entry.name): names.append(entry.name)
+ names.sort(key=lambda name: name.encode('utf-8'))
+ total=0
+ budget=2
+ for name in names:
+  if len(files)==${OUTPUT_MAX_FILES}: break
+  try: fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
+  except OSError: continue
+  try:
+   info=os.fstat(fd)
+   if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>${OUTPUT_MAX_BYTES}-total: continue
+   data=os.read(fd,${OUTPUT_MAX_BYTES + 1})
+   if len(data)>${OUTPUT_MAX_BYTES}-total: continue
+   item={'name':name,'base64':base64.b64encode(data).decode()}
+   size=len(json.dumps(item,separators=(',',':')))+2
+   if budget+size>59000: continue
+   total+=len(data)
+   budget+=size
+   files.append(item)
+  except OSError: continue
+  finally: os.close(fd)
+except OSError: sys.exit(5)
+finally: os.close(directory)
+print(json.dumps(files,separators=(',',':')))
+`;
+
+export const OUTPUT_COLLECTOR_PROBE = collectorShell(probeProgram, pythonProbe);
 export const OUTPUT_COLLECTOR = collectorShell(
   collectorSetup +
     String.raw`
@@ -177,6 +266,7 @@ try {
 }
 console.log(JSON.stringify(files));
 `,
+  pythonCollector,
 );
 
 export type OutputFailureReason =

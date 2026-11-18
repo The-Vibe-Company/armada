@@ -18,7 +18,7 @@ import type { HelperReceipt } from "./helper.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import {
   OUTPUT_COLLECTOR_BUN_VERSION,
-  OUTPUT_COLLECTOR_PROBE,
+  OUTPUT_COLLECTOR_MANAGED_PROBE,
   OUTPUT_COLLECTOR_PROBE_MARKER,
 } from "./sandbox-outputs.ts";
 import {
@@ -742,7 +742,7 @@ export function goldenScript(
     `if [ "$(/opt/armada/runtime-bun/bun --version 2>/dev/null || true)" != ${OUTPUT_COLLECTOR_BUN_VERSION} ]; then armada_bun_prefix=$(mktemp -d); npm install --global --prefix "$armada_bun_prefix" bun@${OUTPUT_COLLECTOR_BUN_VERSION}; sudo -n install -d -m 755 /opt/armada /opt/armada/runtime-bun; sudo -n install -m 555 "$armada_bun_prefix/bin/bun" /opt/armada/runtime-bun/bun; rm -rf "$armada_bun_prefix"; fi`,
     `[ "$(/opt/armada/runtime-bun/bun --version)" = ${OUTPUT_COLLECTOR_BUN_VERSION} ] || { printf "%s\\n" "The output collector Bun does not match the managed pin." >&2; exit 96; }`,
     // Exit 0 alone is not proof: an incompatible Bun can print help and succeed.
-    `armada_probe=$(if [ "$(id -u)" -eq 0 ]; then /bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_PROBE)}; else sudo -n /bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_PROBE)}; fi)`,
+    `armada_probe=$(if [ "$(id -u)" -eq 0 ]; then /bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE)}; else sudo -n /bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE)}; fi)`,
     `[ "$armada_probe" = ${OUTPUT_COLLECTOR_PROBE_MARKER} ] || { printf "%s\\n" "The output collector probe did not answer." >&2; exit 96; }`,
     "armada_phase=credential_cleanup",
     `if [ "$(id -u)" -eq 0 ]; then bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; else sudo -n bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; fi 2>/dev/null`,

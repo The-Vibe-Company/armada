@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GITHUB_TOKEN_PATTERN, goldenScript, OUTPUT_COLLECTOR_PROBE, withGoldenDirs } from "../src/server.ts";
+import { GITHUB_TOKEN_PATTERN, goldenScript, OUTPUT_COLLECTOR_MANAGED_PROBE, withGoldenDirs } from "../src/server.ts";
 import { shellQuote } from "../src/shell-quote.ts";
 
 /** Pulls one named line-range out of the generated script, by its start and end markers (both included). */
@@ -481,7 +481,7 @@ chmod +x "$4/bin/bun"
     const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2 }]);
     const probe = mode !== "help" ? `${opt}/runtime-bun/bun probe` : `${bin}/bun probe`;
     const block = extract(goldenScript(prepared), "armada_phase=output_collector", "probe did not answer")
-      .replaceAll(shellQuote(OUTPUT_COLLECTOR_PROBE), shellQuote(probe))
+      .replaceAll(shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE), shellQuote(probe))
       .replaceAll("/opt/armada", opt);
     const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
       env: { PATH: `${bin}:/usr/bin:/bin`, HOME: base },

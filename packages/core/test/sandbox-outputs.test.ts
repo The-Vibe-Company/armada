@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   admitOutputs,
   OUTPUT_COLLECTOR,
+  OUTPUT_COLLECTOR_MANAGED_PROBE,
   OUTPUT_COLLECTOR_PROBE,
   OUTPUT_MAX_ENTRIES,
   parseCollectorOutput,
@@ -37,22 +38,35 @@ test("server admission bounds any provider's read by count, size and unique name
     expect(() => admitOutputs(files)).toThrow();
 });
 
-/** Runs the real collector against a fixture directory standing in for `/home/user/outputs`. */
-function collectorFor(outputs: string) {
-  const executable = shellQuote(process.execPath);
-  // Pin the test Bun as the unprivileged guest's system executable. Disable the managed
-  // path so the test cannot pick a different Bun on a developer's machine.
-  return OUTPUT_COLLECTOR.replaceAll("/opt/armada/runtime-bun/bun", "/armada-test-missing-bun")
-    .replaceAll("/usr/local/bin/bun", executable)
-    .replace("/usr/bin/id -u", "printf 1001")
-    .replace('"/home/user/outputs"', JSON.stringify(outputs));
+/** Pins the guest's readers: the managed Bun, guest Buns and Python 3 are absent unless supplied,
+ * so a developer machine or CI runner cannot select a different reader. */
+function guest(
+  script: string,
+  readers: { bun?: string; python?: string; uid?: number; outputs?: string } = { bun: process.execPath },
+) {
+  const missing = (name: string) => `/armada-test-missing-${name}`;
+  let pinned = script
+    .replaceAll("/opt/armada/runtime-bun/bun", missing("managed-bun"))
+    .replaceAll("/usr/bin/bun", missing("bun"))
+    .replaceAll("/usr/local/bin/bun", readers.bun ? shellQuote(readers.bun) : missing("bun"))
+    .replaceAll("/home/user/.bun/bin/bun", missing("bun"))
+    .replaceAll("/usr/bin/python3", missing("python"))
+    .replaceAll("/usr/local/bin/python3", readers.python ? shellQuote(readers.python) : missing("python"))
+    .replace("/usr/bin/id -u", `printf ${readers.uid ?? 1001}`);
+  if (readers.outputs) pinned = pinned.replaceAll('"/home/user/outputs"', JSON.stringify(readers.outputs));
+  return pinned;
 }
 
-function runCollector(root: string) {
+/** Runs the real collector against a fixture directory standing in for `/home/user/outputs`. */
+function collectorFor(outputs: string, readers: { bun?: string; python?: string } = { bun: process.execPath }) {
+  return guest(OUTPUT_COLLECTOR, { ...readers, outputs });
+}
+
+function runCollector(root: string, readers?: { bun?: string; python?: string }) {
   // Exercise the provider command in a guest PATH with no Python or other interpreters.
   const bin = join(root, "bin");
   mkdirSync(bin, { recursive: true });
-  const script = collectorFor(join(root, "outputs")).replaceAll("/usr/local/bin:/usr/bin:/bin", bin);
+  const script = collectorFor(join(root, "outputs"), readers).replaceAll("/usr/local/bin:/usr/bin:/bin", bin);
   return Bun.spawnSync(["/bin/sh", "-c", script], { env: { PATH: bin } });
 }
 
@@ -136,14 +150,101 @@ test.skipIf(process.platform !== "linux")(
       const incompatible = join(root, "bun");
       writeFileSync(incompatible, "#!/bin/sh\necho 'Bun is a fast JavaScript runtime'\nexit 0\n", { mode: 0o755 });
       const probe = (bun: string) => {
-        const script = OUTPUT_COLLECTOR_PROBE.replaceAll("/opt/armada/runtime-bun/bun", "/armada-test-missing-bun")
-          .replaceAll("/usr/local/bin/bun", shellQuote(bun))
-          .replace("/usr/bin/id -u", "printf 1001");
+        const script = guest(OUTPUT_COLLECTOR_PROBE, { bun });
         const run = Bun.spawnSync(["/bin/sh", "-c", script], { env: { PATH: "/usr/bin:/bin" } });
         return () => readCollectorProbeResult(run.exitCode, run.stdout.toString());
       };
       expect(probe(incompatible)).toThrow("collector_unsupported");
       expect(probe(process.execPath)()).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+const python = Bun.which("python3", { PATH: "/usr/local/bin:/usr/bin:/bin" });
+/** A repository-pinned Bun from before `--no-env-file`: prints its CLI help and exits 0. */
+function helpPrintingBun(root: string) {
+  const bun = join(root, "old-bun");
+  writeFileSync(bun, "#!/bin/sh\necho 'Bun is a fast JavaScript runtime'\nexit 0\n", { mode: 0o755 });
+  return bun;
+}
+
+test.skipIf(process.platform !== "linux" || !python)(
+  "a sandbox from a pre-upgrade golden (no managed Bun, an old pinned Bun, Python 3) still collects",
+  () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
+    try {
+      const readers = { bun: helpPrintingBun(root), python: python! };
+      const outputs = join(root, "outputs");
+      mkdirSync(outputs);
+      writeFileSync(join(outputs, "memo.txt"), "document");
+      const probe = Bun.spawnSync(["/bin/sh", "-c", guest(OUTPUT_COLLECTOR_PROBE, readers)], {
+        env: { PATH: "/usr/bin:/bin" },
+      });
+      expect(readCollectorProbeResult(probe.exitCode, probe.stdout.toString())).toBe(true);
+      const run = runCollector(root, readers);
+      expect(run.exitCode).toBe(0);
+      expect(
+        parseCollectorOutput(run.stdout.toString()).map((file) => [file.name, Buffer.from(file.bytes).toString()]),
+      ).toEqual([["memo.txt", "document"]]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.skipIf(process.platform !== "linux" || !python)(
+  "the Python fallback keeps the Bun reader's bounds, exclusions and exit codes",
+  () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
+    try {
+      const readers = { python: python! };
+      expect(runCollector(root, readers).exitCode).toBe(4);
+      const outputs = join(root, "outputs");
+      mkdirSync(outputs);
+      expect(parseCollectorOutput(runCollector(root, readers).stdout.toString())).toEqual([]);
+      for (let i = 0; i < 8; i++) mkdirSync(join(outputs, `dir${i}`));
+      symlinkSync("/etc/hostname", join(outputs, "a-link"));
+      writeFileSync(join(outputs, "b-huge.bin"), "x".repeat(40000));
+      writeFileSync(join(outputs, "back\\slash"), "refused name");
+      for (let i = 0; i < 40; i++) writeFileSync(join(outputs, `f${String(i).padStart(2, "0")}.txt`), String(i));
+      writeFileSync(join(outputs, "memo.pdf"), "document");
+      const both = (r: { bun?: string; python?: string }) =>
+        parseCollectorOutput(runCollector(root, r).stdout.toString()).map((file) => [
+          file.name,
+          Buffer.from(file.bytes).toString(),
+        ]);
+      const read = both(readers);
+      expect(read).toEqual(both({ bun: process.execPath }));
+      expect(read.map(([name]) => name)).toEqual(
+        Array.from({ length: 32 }, (_, i) => `f${String(i).padStart(2, "0")}.txt`),
+      );
+      for (let i = 0; i < OUTPUT_MAX_ENTRIES; i++) writeFileSync(join(outputs, `z${i}`), "");
+      expect(runCollector(root, readers).exitCode).toBe(3);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.skipIf(process.platform !== "linux")(
+  "privileged exec without the managed Bun refuses agent-replaceable readers",
+  () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
+    try {
+      // A reader the agent owns: a privileged exec must never run it, even when it would answer.
+      const agentPython = join(root, "python3");
+      writeFileSync(agentPython, "#!/bin/sh\necho armada-output-collector-ready\n", { mode: 0o755 });
+      const probe = Bun.spawnSync(
+        ["/bin/sh", "-c", guest(OUTPUT_COLLECTOR_PROBE, { bun: process.execPath, python: agentPython, uid: 0 })],
+        { env: { PATH: "/usr/bin:/bin" } },
+      );
+      expect(probe.exitCode).toBe(86);
+      expect(() => readCollectorProbeResult(probe.exitCode, probe.stdout.toString())).toThrow("collector_unsupported");
+      // The golden build proves the managed Bun alone; a fallback reader never satisfies it.
+      expect(OUTPUT_COLLECTOR_MANAGED_PROBE).not.toContain("python3");
+      expect(OUTPUT_COLLECTOR_MANAGED_PROBE).not.toContain("/usr/local/bin/bun");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
