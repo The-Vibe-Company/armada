@@ -18,19 +18,25 @@ of the request fingerprint, so a golden recreated under the same name returns
 returns `outcome_unknown` and the stable UUID.
 It does not claim that the machine is stopped or safe to recreate.
 
-Use `launch_receipt` with the receipt UUID and source golden/org/provider to
-inspect. This performs an owner/org-authorized label lookup through the
-provider adapter and returns physical IDs, even if sandbox registration never
-happened. Empty results do not establish non-allocation (provider visibility
+Use `launch_receipt` with `id` (the receipt UUID) and, when the caller belongs
+to several organizations, `org`. Only the launching owner can read the receipt.
+The lookup uses the provider binding stored on the receipt at admission
+(provider target, backend identity and management identity), not the source
+golden, and returns physical IDs even if sandbox registration never happened.
+If the current provider configuration no longer matches that binding, the
+outcome is `authority_blocked`. Empty results do not establish non-allocation (provider visibility
 can lag). A server crash before receipt completion remains unknown even when
 an Armada row exists: no agent effects are replayed automatically.
 
 For an unregistered orphan, an authorized operator can retire the returned
 physical ID using provider controls, after confirming the original call is no
 longer active. Do not issue another launch with a new key to recover unknown
-work. Registered machines retain the normal status/stop lifecycle. Recovery
-requires access to the original golden/provider binding; deleting that golden
-before recovery requires operator intervention.
+work. Registered machines retain the normal status/stop lifecycle. Deleting the
+source golden does not block `launch_receipt`, but it makes a replay fail
+preflight before the receipt is read, so a caller whose first reply was lost
+never learns the receipt UUID. Without that UUID there is no self-service
+lookup: keep the original key and escalate to an operator with the
+organization, the key and the external reference.
 
 The new migration must be deployed by the normal validated release path before
 the server version. No provider calls are made by unit CI. Deployed fault

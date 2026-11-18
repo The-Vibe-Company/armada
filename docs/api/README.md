@@ -57,12 +57,21 @@ inherit snapshot visibility. A private snapshot is visible to its owner.
   consulting the receipt. If it was recreated under the same name, the new
   snapshot ID changes the request and the replay returns 409 `conflict`.
   Neither error means the original launch failed.
-- When a replay returns one of these errors, never launch with a new key. Look up recorded
-  sandboxes with `POST /api/v1/sandbox/list` and
-  `{"externalRef":"application-1042"}`. An empty list can occur while the
-  allocation outcome is still unknown. Then inspect the receipt with the MCP
-  `launch_receipt` tool, using the receipt ID from an earlier
-  `outcome_unknown` answer or the sandbox ID you expected.
+- When a replay returns one of these errors, never launch with a new key. Look
+  up recorded sandboxes with `POST /api/v1/sandbox/list` and
+  `{"externalRef":"application-1042"}`. An empty list is expected when the
+  allocation succeeded but the sandbox was never registered.
+- If an earlier answer was `outcome_unknown`, it named the receipt UUID, which
+  is also the sandbox ID the launch would have. As the launching user, call the
+  MCP `launch_receipt` tool with `{"id":"<receipt UUID>"}` (add `"org"` when you
+  belong to several organizations). It looks up provider allocations through
+  the provider binding recorded on the receipt, so it works after the snapshot
+  is removed. An empty `allocations` list does not prove that nothing was
+  allocated.
+- If you never received a receipt UUID (for example the first response was
+  lost and the replay returns `not_found`), there is no self-service lookup.
+  Keep the original key, do not relaunch, and escalate to an Armada operator
+  with the organization, the idempotency key and the `externalRef`.
 
 See [idempotency and recovery](../launch-idempotency.md) for receipt lookup,
 template launch keys and Docker's separate `requestId` contract.

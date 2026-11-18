@@ -52,9 +52,17 @@ or may not exist. Never retry with a new key: that is how duplicates happen.
 2. Look the sandbox up by reference: `sandbox/list` with `externalRef` returns
    every sandbox you own or administer carrying it, including a launch whose
    answer was lost after the sandbox was recorded.
-3. If neither shows it, inspect the receipt with MCP `launch_receipt`: it lists
-   provider allocations labelled with that id. An empty lookup is not proof of
-   no allocation; keep the key and ask an operator rather than relaunching.
+3. If neither shows it and you have a receipt id from an `outcome_unknown`
+   answer, inspect it as the launching user with MCP `launch_receipt`
+   (`{"id":"<receipt UUID>"}`, plus `org` when you belong to several). It lists
+   provider allocations labelled with that id, using the provider binding
+   recorded on the receipt, so a removed snapshot does not prevent the lookup.
+   An empty lookup is not proof of no allocation; keep the key and ask an
+   operator rather than relaunching.
+4. If you never received a receipt id (the first answer was lost and the replay
+   fails preflight, for example with `not_found`), there is no self-service
+   lookup. Keep the original key, do not relaunch, and escalate to an operator
+   with the organization, the key and the `externalRef`.
 
 Template launches follow the same rule with `requestKey`: a replay answers the
 recorded state (`succeeded`, `failed`, `reconciling`), and `reconciling` is
