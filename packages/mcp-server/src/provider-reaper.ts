@@ -14,8 +14,12 @@ type Decision = "keep" | "unknown_young" | DeleteReason;
 
 export interface ProviderReaperSource {
   provider: SandboxProviderId;
+  /** Stable, nonsecret identity unique to the provider account/binding or host within this deployment. */
+  sourceId: string;
   /** Stable environment + server identity used when tagging machines. */
   deploymentId: string;
+  /** The source bounds each listing page, ownership lookup and delete call. The full sweep
+   * may take longer than the ordinary worker tick and is cancelled on shutdown. */
   inventory: Required<Pick<Provider, "listInventory">>;
   /** Check authoritative ownership by tagged sandbox and physical identity in this source.
    * Ambiguous ownership is unresolved. Errors must never be translated to absence. */
@@ -59,6 +63,7 @@ export function createProviderReaper(
   log: (line: string) => void = console.log,
   now: () => number = Date.now,
 ): ServerLifecycleLane {
+  const labels = { provider: source.provider, source: source.sourceId };
   let active: Promise<void> | undefined;
   let nextSweepAt = Number.NEGATIVE_INFINITY;
 
@@ -100,22 +105,23 @@ export function createProviderReaper(
       log(
         JSON.stringify({
           metric: "reaper_unknown_machines",
-          provider: source.provider,
+          ...labels,
           count: unknown,
           overdue,
           complete,
         }),
       );
       for (const reason of ["unknown", "terminal"] as const) {
-        log(JSON.stringify({ metric: "reaper_deleted", provider: source.provider, reason, count: deleted[reason] }));
+        log(JSON.stringify({ metric: "reaper_deleted", ...labels, reason, count: deleted[reason] }));
       }
       if (errors > 0) {
-        log(JSON.stringify({ event: "provider_reaper_retry", provider: source.provider, errors }));
+        log(JSON.stringify({ event: "provider_reaper_retry", ...labels, errors }));
       }
     }
   }
 
   return {
+    isolatedSweep: true,
     async reconcileOne(signal) {
       if (active || signal.aborted || now() < nextSweepAt) return false;
       active = sweep(signal);

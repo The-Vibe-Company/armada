@@ -39,6 +39,7 @@ test("retries provider errors on the next sweep and counts confirmed deletes onc
   const records: unknown[] = [];
   const source: ProviderReaperSource = {
     provider: "modal",
+    sourceId: "account_a",
     deploymentId,
     inventory: {
       async *listInventory() {
@@ -79,6 +80,7 @@ test("retries provider errors on the next sweep and counts confirmed deletes onc
   expect(records).toContainEqual({
     metric: "reaper_unknown_machines",
     provider: "modal",
+    source: "account_a",
     count: 1,
     overdue: 1,
     complete: true,
@@ -89,7 +91,7 @@ test("retries provider errors on the next sweep and counts confirmed deletes onc
         (record as { count?: number; metric?: string }).metric === "reaper_deleted" &&
         (record as { count?: number }).count === 1,
     ),
-  ).toEqual([{ metric: "reaper_deleted", provider: "modal", reason: "unknown", count: 1 }]);
+  ).toEqual([{ metric: "reaper_deleted", provider: "modal", source: "account_a", reason: "unknown", count: 1 }]);
 });
 
 test("cancellation during ownership lookup prevents deletion", async () => {
@@ -98,6 +100,7 @@ test("cancellation during ownership lookup prevents deletion", async () => {
   const lane = createProviderReaper(
     {
       provider: "modal",
+      sourceId: "account_a",
       deploymentId,
       inventory: {
         async *listInventory() {
@@ -120,4 +123,44 @@ test("cancellation during ownership lookup prevents deletion", async () => {
   await lane.reconcileOne(controller.signal);
 
   expect(deletes).toBe(0);
+});
+
+test("report-only sources emit distinguishable inventory counts", async () => {
+  const records: unknown[] = [];
+  for (const sourceId of ["account_a", "account_b"]) {
+    const lane = createProviderReaper(
+      {
+        provider: "modal",
+        sourceId,
+        deploymentId,
+        inventory: {
+          async *listInventory() {
+            if (sourceId === "account_a") yield oldMachine;
+          },
+        },
+        async lookupOwnership() {
+          return { kind: "absent" };
+        },
+      },
+      (line) => records.push(JSON.parse(line)),
+      () => now,
+    );
+    await lane.reconcileOne(new AbortController().signal);
+  }
+  expect(records).toContainEqual({
+    metric: "reaper_unknown_machines",
+    provider: "modal",
+    source: "account_a",
+    count: 1,
+    overdue: 1,
+    complete: true,
+  });
+  expect(records).toContainEqual({
+    metric: "reaper_unknown_machines",
+    provider: "modal",
+    source: "account_b",
+    count: 0,
+    overdue: 0,
+    complete: true,
+  });
 });
