@@ -349,6 +349,8 @@ export type ResumeStageObserver = (
 
 export interface PromptRequest {
   onResumeStage?: ResumeStageObserver;
+  /** Trusted initialization fence for the native Modal runner, never serialized. */
+  beforeDispatch?: () => Promise<void>;
   /** Trusted server cancellation, never persisted or sent as model input. */
   signal?: AbortSignal;
   sandboxId: string;

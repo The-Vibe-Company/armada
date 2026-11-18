@@ -2,9 +2,11 @@ import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Image, ModalClient } from "modal";
+import { type Image, ModalClient } from "modal";
+import { checkModalDispatch } from "../src/client.ts";
 import { createRunnerDistribution, MODAL_IMAGE_LOCK, type RunnerDistribution } from "../src/index.ts";
 
 (process.platform === "linux" ? test : test.skip)(
@@ -210,6 +212,63 @@ test.each(["bootstrap", "exec"] as const)(
     ).rejects.toThrow("Dispatch authority expired");
     expect(writes).toBe(0);
     expect(executions).toBe(stage === "exec" ? 1 : 0);
-    expect(closes).toBe(executions);
+    expect(closes).toBe(0);
   },
 );
+
+test("Modal bootstrap stdin rechecks authority after command-router authentication refresh", async () => {
+  // Use the same ClientError class the SDK tests when deciding to retry.
+  const { ClientError, Status } = createRequire(import.meta.resolve("modal"))("nice-grpc");
+  const controller = new AbortController();
+  const writeSignals: (AbortSignal | undefined)[] = [];
+  let authentications = 0;
+  const client = new ModalClient({
+    tokenId: "fixture_token_id",
+    tokenSecret: "fixture_token_secret",
+    logLevel: "error",
+    grpcDispatchMiddleware: [
+      // biome-ignore lint/correctness/useYield: Unary fake transport returns a single response.
+      async function* (call, options) {
+        if (call.method.path.endsWith("/AuthTokenGet")) return { token: "fixture_auth_token" } as never;
+        if (/\/SandboxGetTaskId(?:V2)?$/.test(call.method.path)) return { taskId: "ta-fixture" } as never;
+        if (/\/(?:Task|Sandbox)GetCommandRouterAccess$/.test(call.method.path)) {
+          if (++authentications === 2) controller.abort();
+          return { url: "https://router.invalid", jwt: "fixture_router_token" } as never;
+        }
+        if (call.method.path.endsWith("/TaskExecStart")) return {} as never;
+        expect(call.method.path).toEndWith("/TaskExecStdinWrite");
+        if ((call.request as { data: Uint8Array }).data.length > 0) {
+          writeSignals.push(options.signal);
+          if (writeSignals.length === 1)
+            throw new ClientError(call.method.path, Status.UNAUTHENTICATED, "Refresh required");
+        }
+        return {} as never;
+      },
+      checkModalDispatch,
+    ],
+  });
+  const sandbox = await client.sandboxes.fromId("sb-fixture");
+  const bundle = Buffer.from("// fixture");
+  const distribution = createRunnerDistribution({
+    ...MODAL_IMAGE_LOCK,
+    bundle,
+    sha256: createHash("sha256").update(bundle).digest("hex"),
+    capabilities: {},
+    bootstrap: async () => ({ fixture: "private_input" }),
+    restoreEnv: async () => ({}),
+    prepareSnapshot: async () => {},
+  });
+  const guard = Object.assign(async () => controller.signal.throwIfAborted(), { signal: controller.signal });
+  try {
+    const result = await distribution.start(sandbox, {} as import("../src/index.ts").Machine, {}, guard).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(authentications).toBe(2);
+    expect(writeSignals).toHaveLength(1);
+    expect(writeSignals[0]).toBe(controller.signal);
+    expect(result).toMatchObject({ message: "Modal mutation dispatch authority expired or changed." });
+  } finally {
+    sandbox.detach();
+  }
+});

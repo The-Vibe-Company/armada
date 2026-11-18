@@ -46,6 +46,7 @@ export interface SandboxView extends SandboxRecord {
   visibility: Visibility;
   /** The golden's pinned Modal App, on a Modal sandbox. Routing reaches the sandbox through it. */
   modal: ModalBinding | null;
+  pendingModalLaunch?: boolean;
 }
 
 export interface ServerSandboxStore extends SandboxStore {
@@ -67,6 +68,7 @@ export interface ServerSandboxStore extends SandboxStore {
     | "runtimeTransport"
     | "preservationNote"
     | "credentialId"
+    | "pendingModalLaunch"
   > | null>;
   recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
   /** #2560: latest activation's recorded launch stages, for a visible sandbox; null before any. */
@@ -194,6 +196,20 @@ export class DataError extends Error {
     super(message);
   }
 }
+
+export const MODAL_BOOT_ALLOWED = `s.status='starting' and s.stop_requested_at is null
+  and (s.credential_id is null or exists(select 1 from public.credentials c
+    where c.id=s.credential_id and c.version=s.credential_version and c.status='active'
+    and (c.expires_at is null or c.expires_at>now())
+    and ((c.scope='user' and c.owner_id=s.owner_id) or (c.scope='org' and c.owner_id=s.org_id))))`;
+
+export const MODAL_INITIALIZATION_LIVE = `${MODAL_BOOT_ALLOWED} and s.activity_until>clock_timestamp()
+  and exists(select 1 from public.members m join public.mcp_actor_epochs e using(org_id,user_id)
+    where m.org_id=s.org_id and m.user_id=s.owner_id and e.epoch=r.actor_epoch)`;
+
+export const MODAL_LAUNCH_PENDING = "r.phase in ('queued','booting','preparing_harness','cleanup_pending')";
+
+export const MODAL_INITIALIZATION_OWNED = `(${MODAL_INITIALIZATION_LIVE} and r.outcome->>'handedOff'='true')`;
 
 export function createSqlData(
   sql: Sql,
@@ -450,7 +466,7 @@ export function createSqlData(
             `update public.sandboxes s set stop_requested_at=coalesce(s.stop_requested_at,now()),
                status='stopping', transition_context=jsonb_build_object('actor','api','code','sandbox_stopping')
              where s.id=$1 and exists(select 1 from public.provider_launch_requests r
-               where r.sandbox_id=s.id and (r.phase in ('queued','booting','cleanup_pending') or (r.phase='failed' and r.fence_id is not null))) returning s.id`,
+               where r.sandbox_id=s.id and (${MODAL_LAUNCH_PENDING} or (r.phase='failed' and r.fence_id is not null))) returning s.id`,
             [id],
           );
           return result.rows.length === 1;
@@ -807,7 +823,10 @@ export function createSqlData(
         const ownsActivity = !!patch.activityToken && (patch.finishActivity || patch.renewActivity);
         if (ownsActivity) {
           params.push(patch.activityToken);
-          fence += ` and s.activity_lease_id = $${params.length}::uuid`;
+          fence += ` and s.activity_lease_id = $${params.length}::uuid
+            and not exists(select 1 from public.provider_launch_requests r
+              where r.sandbox_id=s.id and r.phase='preparing_harness'
+                and ${MODAL_INITIALIZATION_OWNED} is not true)`;
         }
         // Once a prompt identity is durable, its turn evidence owns capacity rather
         // than the pre-dispatch reservation. Transfer ownership in the same SQL
@@ -817,11 +836,15 @@ export function createSqlData(
           (patch.stoppedAt !== undefined && patch.stoppedAt !== null) ||
           patch.status === "deleted";
         const cancelTurns = patch.stopRequested === true;
-        const wrapped = releaseReservation || cancelTurns;
+        // Publish initialization and discard its delete-only authority together.
+        // A stop that follows publication can now use the ordinary lifecycle.
+        const finishModalInitialization =
+          ownsActivity && patch.finishActivity && (patch.status === "ready" || patch.status === "running");
+        const wrapped = releaseReservation || cancelTurns || finishModalInitialization;
         const admission = !!patch.advanceGeneration && !!patch.activityToken;
         if (admission)
           fence += ` and not exists(select 1 from public.provider_launch_requests r
-            where r.sandbox_id=s.id and (r.phase in ('queued','booting','cleanup_pending') or (r.phase='failed' and r.fence_id is not null)))`;
+            where r.sandbox_id=s.id and (${MODAL_LAUNCH_PENDING} or (r.phase='failed' and r.fence_id is not null)))`;
         // A refused delete admission names its predicates from the CAS statement's own snapshot,
         // not a later read that a concurrent lease release could already have cleared. A row
         // changed while this statement waited on its lock is rechecked at its newest version,
@@ -830,6 +853,11 @@ export function createSqlData(
         const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
              and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id`;
+        const finishModal = finishModalInitialization
+          ? `, initialized as (update public.provider_launch_requests r
+              set phase='succeeded',request_enc=null,lease_owner=null,lease_expires_at=null
+              from updated u where r.sandbox_id=u.id and r.phase='preparing_harness')`
+          : "";
         const result = await sql.query<{ id: string | null; observed?: Record<string, unknown> | null }>(
           observeRefusal
             ? `with observed as (select s.status::text as status,
@@ -842,7 +870,7 @@ export function createSqlData(
                 from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}),
               updated as (${update})
               select (select id from updated) as id, (select row_to_json(o) from observed o) as observed`
-            : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
+            : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""}${finishModal} select id from updated` : ""}`,
           params,
         );
         if (!result.rows[0]?.id) {
@@ -910,9 +938,12 @@ export function createSqlData(
             | "runtimeTransport"
             | "preservationNote"
             | "credentialId"
+            | "pendingModalLaunch"
           >
         >(
-          `select s.credential_id as "credentialId",s.provider,s.status,s.preservation_note as "preservationNote",s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport"
+          `select s.credential_id as "credentialId",s.provider,s.status,s.preservation_note as "preservationNote",s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport",
+           exists(select 1 from public.provider_launch_requests r where r.sandbox_id=s.id
+             and ${MODAL_LAUNCH_PENDING}) as "pendingModalLaunch"
            from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3`,
           [...scope, id],
         );

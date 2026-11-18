@@ -231,7 +231,7 @@ export interface LaunchOptions extends GoldenLimits {
     runtime: boolean;
     request: ForkRequest;
     sandbox: Parameters<SandboxStore["insert"]>[0];
-  }) => Promise<{ sandbox: SandboxRecord; id: string; expiresAt?: Date }>;
+  }) => Promise<{ sandbox: SandboxRecord; id: string; expiresAt?: Date; assertInitializing?: () => Promise<void> }>;
   /** Trusted pre-dispatch fence; failure is provably before provider allocation. */
   beforeFork?: (sandboxId: string) => Promise<void>;
   /** Confirmed registration handoff; errors use the recorded initialization cleanup. */
@@ -650,10 +650,11 @@ export async function launchSandbox(
       }
     };
     const start = async (signal: AbortSignal) => {
+      await forked.assertInitializing?.();
       if ((record.boatRuntime === true || record.runtimeTransport === "dialout") !== (strategy.kind === "enrolled"))
         throw new LaunchError("start_failed", "The sandbox runtime selection was not persisted; no agent was started.");
       if ((record.visibility ?? golden.visibility) !== visibility) {
-        await provider.delete({ sandboxId: forked.id });
+        if (!modalBoot) await provider.delete({ sandboxId: forked.id });
         throw new LaunchError(
           "start_failed",
           "The sandbox store did not persist the requested independent visibility; no agent was started.",
@@ -726,8 +727,11 @@ export async function launchSandbox(
         harness,
         text: `${prompt}\n\nSave any deliverable files directly in ${OUTPUT_DIRECTORY}. Create that directory if needed.`,
         signal,
+        ...(forked.assertInitializing ? { beforeDispatch: forked.assertInitializing } : {}),
         ...choice,
       };
+      await forked.assertInitializing?.();
+      signal.throwIfAborted();
       const receipt = await dispatchPrompt(promptRequest).catch((error: unknown) => {
         throw new LaunchError("prompt_failed", `The agent could not be started: ${redact(messageOf(error), secrets)}`, {
           cause: error,
@@ -793,7 +797,7 @@ export async function launchSandbox(
       const failure = withSandbox(error, record.id, secrets);
       if (!activityLeaseId)
         await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
-      await quietly(() => provider.stop({ sandboxId: forked.id }));
+      if (!modalBoot) await quietly(() => provider.stop({ sandboxId: forked.id }));
       throw failure;
     }
   } finally {

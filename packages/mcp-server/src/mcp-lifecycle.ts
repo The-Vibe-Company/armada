@@ -14,6 +14,7 @@ import {
   type Sql,
   type TemplateService,
 } from "@armada/core/server";
+import { MODAL_INITIALIZATION_OWNED } from "./data.ts";
 import { configureNativeMcp, type McpBootstrap, normalizeNativeMcpBootstrap } from "./mcp-native.ts";
 import { resolveMcpStdioExecutable } from "./mcp-stdio-bootstrap.ts";
 import { providerPhysicalGeneration } from "./provider-physical-generation.ts";
@@ -117,13 +118,25 @@ export function createMcpLifecycle(options: {
         );
     });
     const prepared = await sql.transaction(async (tx) => {
-      const locked = await tx.query<{ mcp_generation: number; status: string }>(
-        `select mcp_generation,status from public.sandboxes where id=$1::uuid and org_id=$2::uuid and owner_id=$3::uuid and status not in ('deleted','failed') and provider=$4 and provider_sandbox_id=$5 for update`,
+      const locked = await tx.query<{
+        mcp_generation: number;
+        status: string;
+        modal_initialization: boolean | null;
+      }>(
+        `select s.mcp_generation,s.status,
+           (select (r.phase='preparing_harness' and ${MODAL_INITIALIZATION_OWNED}) is true
+            from public.provider_launch_requests r where r.sandbox_id=s.id and r.phase<>'succeeded')
+            as modal_initialization
+         from public.sandboxes s where s.id=$1::uuid and s.org_id=$2::uuid and s.owner_id=$3::uuid
+           and s.status not in ('deleted','failed') and s.provider=$4 and s.provider_sandbox_id=$5 for update of s`,
         [sandbox.id, sandbox.orgId, sandbox.ownerId, provider.id, sandbox.providerSandboxId],
       );
       const row = locked.rows[0];
-      if (!row) throw Error("Sandbox is no longer authorized for MCP configuration.");
-      if (row.status === "stopped" || row.status === "starting") {
+      if (!row || row.modal_initialization === false)
+        throw Error("Sandbox is no longer authorized for MCP configuration.");
+      // An ordinary durable launch publishes readiness when initialization
+      // completes. Keep the existing provisional readiness for restores.
+      if (row.status === "stopped" || (row.status === "starting" && row.modal_initialization === null)) {
         const restored = await tx.query(
           `update public.sandboxes s set status='ready',stopped_at=null,
           transition_context=jsonb_build_object('actor','mcp_bootstrap','code','provider_ready')
@@ -188,6 +201,7 @@ export function createMcpLifecycle(options: {
         config,
         bindingRevision,
         generation: row.mcp_generation,
+        modalInitialization: row.modal_initialization === true,
         hashes: await Promise.all(
           Object.values(config.servers)
             .filter((server) => server.type === "http")
@@ -213,6 +227,16 @@ export function createMcpLifecycle(options: {
           if (!(await createSqlMcpLeasePort(tx).validate(tokenHash, "tools")))
             throw Error("MCP lease is no longer active.");
         return;
+      }
+      if (prepared.modalInitialization) {
+        // The install lock can outlast the launch claim. Recheck immediately
+        // before native credential delivery, without holding the sandbox lock over I/O.
+        const active = await tx.query(
+          `select 1 from public.sandboxes s join public.provider_launch_requests r on r.sandbox_id=s.id
+           where s.id=$1 and r.phase='preparing_harness' and ${MODAL_INITIALIZATION_OWNED}`,
+          [sandbox.id],
+        );
+        if (!active.rows.length) throw Error("Modal initialization changed before MCP configuration.");
       }
       await configureNativeMcp(provider, sandbox.providerSandboxId, nativeConfig);
       for (const tokenHash of prepared.hashes)

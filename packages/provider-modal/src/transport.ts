@@ -55,7 +55,12 @@ export function createRunnerTransport(
   fetcher: typeof fetch = fetch,
 ): RunnerTransport {
   return {
-    async call<T>(row: Machine, op: string, input: object): Promise<T> {
+    async call<T>(
+      row: Machine,
+      op: string,
+      input: object,
+      dispatch?: Parameters<RunnerTransport["call"]>[3],
+    ): Promise<T> {
       const connection = await access(row);
       if (connection.expiresAt <= Date.now()) throw refusal("unauthorized", "Runner grant expired.");
       const requestId = randomUUID();
@@ -66,6 +71,12 @@ export function createRunnerTransport(
           : op === "health" || op === "resourceObservation"
             ? 5000
             : 120_000;
+      if (dispatch) {
+        dispatch.signal?.throwIfAborted();
+        await dispatch.beforeDispatch();
+        dispatch.signal?.throwIfAborted();
+      }
+      const timeout = AbortSignal.timeout(Math.min(budget, Math.max(1, connection.expiresAt - Date.now())));
       const response = await fetcher(connection.url, {
         method: "POST",
         headers: {
@@ -74,7 +85,7 @@ export function createRunnerTransport(
           "x-armada-runner-grant": connection.grant,
         },
         body: JSON.stringify({ ...input, version: 1, requestId, sandboxId: row.info.id, op }),
-        signal: AbortSignal.timeout(Math.min(budget, Math.max(1, connection.expiresAt - Date.now()))),
+        signal: dispatch?.signal ? AbortSignal.any([dispatch.signal, timeout]) : timeout,
       });
       if (response.status !== 409 && !response.ok)
         throw refusal(response.status === 401 ? "unauthorized" : "unavailable", "Runner transport refused request.");

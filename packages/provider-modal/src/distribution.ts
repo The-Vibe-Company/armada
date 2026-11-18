@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { snapshotBaselineInstall } from "@armada/core/server";
 import type { ModalClient } from "modal";
+import { withModalDispatch } from "./client.ts";
 import { refusal } from "./errors.ts";
 import type { Machine, RunnerDistribution } from "./ports.ts";
 import { prepareRuntimeArtifact } from "./runtime-overlay.ts";
@@ -108,12 +109,17 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
         ],
         { env: {}, secrets: [], stdout: "ignore", stderr: "ignore" },
       );
-      try {
-        await beforeDispatch?.();
-        await process.stdin.writeText(JSON.stringify(bootstrap));
-      } finally {
-        await process.stdin.close();
-      }
+      await withModalDispatch(beforeDispatch, async () => {
+        let written = false;
+        try {
+          await beforeDispatch?.();
+          await process.stdin.writeText(JSON.stringify(bootstrap));
+          written = true;
+        } finally {
+          // Guarded boot owns cleanup of the child if write authority is lost.
+          if (written || !beforeDispatch) await process.stdin.close();
+        }
+      });
       // Health/readiness is verified by the injected transport before serving user operations.
     },
     restoreEnv: options.restoreEnv,

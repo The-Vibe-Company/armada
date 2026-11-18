@@ -10,7 +10,7 @@ import {
 } from "@armada/core/server";
 import { insertGoldenOperationFence } from "../../core/src/golden-store.ts";
 import type { Caller } from "./caller.ts";
-import { createSqlData } from "./data.ts";
+import { createSqlData, MODAL_BOOT_ALLOWED, MODAL_INITIALIZATION_LIVE, MODAL_INITIALIZATION_OWNED } from "./data.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 
 type Boot = NonNullable<LaunchOptions["modalBoot"]>;
@@ -33,7 +33,7 @@ type Claim = {
   sandbox_id: string;
   lease_epoch: string;
   request_enc: Uint8Array<ArrayBuffer>;
-  phase: "queued" | "booting" | "cleanup_pending";
+  phase: "queued" | "booting" | "preparing_harness" | "cleanup_pending";
   org_id: string;
   owner_id: string;
   provider_sandbox_id: string;
@@ -42,12 +42,6 @@ type Claim = {
 const DEADLINE_MS = 15 * 60_000;
 const MAX_CONCURRENT_BOOTS = 4;
 const CLEANUP_ATTEMPT_MS = 30_000;
-const BOOT_ALLOWED = `s.status='starting' and s.stop_requested_at is null
-  and (s.credential_id is null or exists(select 1 from public.credentials c
-    where c.id=s.credential_id and c.version=s.credential_version and c.status='active'
-    and (c.expires_at is null or c.expires_at>now())
-    and ((c.scope='user' and c.owner_id=s.owner_id) or (c.scope='org' and c.owner_id=s.org_id))))`;
-
 export function createModalBootWorker(
   sql: Sql,
   encryptionKey: string | undefined,
@@ -60,7 +54,8 @@ export function createModalBootWorker(
     if (!accepting) throw new LaunchError("invalid_request", "This server is draining. Retry on another instance.");
     const backendId = (await provider.backendIdentity?.())?.id;
     const management = await provider.managementIdentity?.();
-    if (!backendId || !management || !sandbox.activityLeaseId)
+    const activityLeaseId = sandbox.activityLeaseId;
+    if (!backendId || !management || !activityLeaseId)
       throw new LaunchError("invalid_request", "Modal boot cannot pin allocation authority.");
     const target: ProviderTarget = {
       provider: "modal",
@@ -116,33 +111,56 @@ export function createModalBootWorker(
          from public.provider_launch_requests r where s.id=$1 and r.sandbox_id=s.id`,
         [sandbox.id],
       );
-      return saved;
+      return { record: saved, activityLeaseId };
     });
   }
 
-  async function waitForBoot(record: Awaited<ReturnType<typeof admit>>): ReturnType<Boot> {
+  async function waitForBoot({ record, activityLeaseId }: Awaited<ReturnType<typeof admit>>): ReturnType<Boot> {
     // Public launch remains synchronous. A process lost here leaves only the
     // caller's initialization interrupted; a successor still owns the boot row.
     const deadline = performance.now() + DEADLINE_MS + 5_000;
     while (accepting && performance.now() < deadline) {
       const result = (
-        await sql.query<{ outcome: Outcome | null; expires_at: string | Date; handoff: boolean }>(
-          `select r.outcome,s.expires_at,(${BOOT_ALLOWED} and s.activity_until>clock_timestamp()
-           and s.lifecycle_generation=$2 and exists(
-             select 1 from public.members m join public.mcp_actor_epochs e using(org_id,user_id)
-             where m.org_id=s.org_id and m.user_id=s.owner_id and e.epoch=r.actor_epoch
-           )) as handoff from public.provider_launch_requests r
-         join public.sandboxes s on s.id=r.sandbox_id where r.sandbox_id=$1`,
-          [record.id, record.lifecycleGeneration ?? 1],
+        await sql.query<{ phase: Claim["phase"]; outcome: Outcome | null }>(
+          "select phase,outcome from public.provider_launch_requests where sandbox_id=$1",
+          [record.id],
         )
       ).rows[0];
       const outcome = result?.outcome;
-      if (result?.handoff && outcome && "expiresAt" in outcome) {
-        return {
-          id: record.providerSandboxId,
-          ...(outcome.expiresAt ? { expiresAt: new Date(outcome.expiresAt) } : {}),
-          sandbox: { ...record, expiresAt: new Date(result.expires_at).toISOString() },
-        };
+      if (result?.phase === "preparing_harness" && outcome && "expiresAt" in outcome) {
+        const claimed = await sql.transaction!(async (tx) => {
+          await tx.query("select id from public.sandboxes where id=$1 for update", [record.id]);
+          return (
+            await tx.query<{ expires_at: string | Date }>(
+              `update public.provider_launch_requests r
+               set outcome=r.outcome || '{"handedOff":true}'::jsonb
+               from public.sandboxes s
+               where r.sandbox_id=$1 and s.id=r.sandbox_id and r.phase='preparing_harness'
+                 and r.outcome->>'handedOff' is null and s.lifecycle_generation=$2
+                 and s.activity_lease_id=$3 and ${MODAL_INITIALIZATION_LIVE}
+               returning s.expires_at`,
+              [record.id, record.lifecycleGeneration ?? 1, activityLeaseId],
+            )
+          ).rows[0];
+        });
+        if (claimed)
+          return {
+            id: record.providerSandboxId,
+            ...(outcome.expiresAt ? { expiresAt: new Date(outcome.expiresAt) } : {}),
+            sandbox: { ...record, expiresAt: new Date(claimed.expires_at).toISOString() },
+            async assertInitializing() {
+              const allowed = await sql.query(
+                `select 1 from public.sandboxes s join public.provider_launch_requests r on r.sandbox_id=s.id
+                 where s.id=$1 and s.lifecycle_generation=$2 and s.activity_lease_id=$3
+                   and r.phase='preparing_harness' and ${MODAL_INITIALIZATION_OWNED}`,
+                [record.id, record.lifecycleGeneration ?? 1, activityLeaseId],
+              );
+              if (!allowed.rows.length)
+                throw new LaunchError("start_failed", "Modal initialization authority expired or changed.", {
+                  sandboxId: record.id,
+                });
+            },
+          };
       }
       if (outcome && "refusal" in outcome)
         throw new ProviderError({
@@ -155,7 +173,7 @@ export function createModalBootWorker(
     }
     throw new LaunchError(
       "outcome_unknown",
-      "Modal boot outcome is unknown. Inspect the launch receipt before retrying.",
+      `Modal boot outcome is unknown for sandbox ${record.id}. Check its status before retrying.`,
       {
         sandboxId: record.id,
       },
@@ -168,7 +186,7 @@ export function createModalBootWorker(
     const succeeded = bootExpiry !== undefined;
     const allocationGone = !needsCleanup && !succeeded;
     let recoveryInput: Uint8Array<ArrayBuffer> | null = null;
-    if (needsCleanup) {
+    if (needsCleanup || succeeded) {
       const pinned = JSON.parse(await decryptSecret(claim.request_enc, encryptionKey)) as PinnedFork;
       delete pinned.request.env;
       recoveryInput = await encryptSecret(JSON.stringify(pinned), encryptionKey);
@@ -189,6 +207,24 @@ export function createModalBootWorker(
         )
       ).rows[0];
       if (!row) return false;
+      if (claim.phase === "preparing_harness") {
+        // Re-read under the sandbox lock: initialization may have renewed
+        // or published while the reconciler was acquiring its claim.
+        const initialization = (
+          await tx.query<{ live: boolean }>(
+            `select (${MODAL_INITIALIZATION_LIVE}) is true as live
+             from public.sandboxes s join public.provider_launch_requests r on r.sandbox_id=s.id where s.id=$1`,
+            [id],
+          )
+        ).rows[0]!;
+        if (initialization.live) {
+          await tx.query(
+            `update public.provider_launch_requests set lease_owner=null,lease_expires_at=null where sandbox_id=$1`,
+            [id],
+          );
+          return true;
+        }
+      }
       if (requireLocalAbsence) {
         const identity = [claim.org_id, claim.owner_id, claim.provider_sandbox_id, id];
         // The launch row lock serializes absence with the reservation guard.
@@ -229,7 +265,7 @@ export function createModalBootWorker(
            status_reason=case when $5 then null when $2 then status_reason else $7 end,
            reconcile_after=now()
          where id=$1 and ((status='starting' and stop_requested_at is null and
-           (not $2 or ($8::timestamptz>clock_timestamp() and ${BOOT_ALLOWED} and exists(
+           (not $2 or ($8::timestamptz>clock_timestamp() and ${MODAL_BOOT_ALLOWED} and exists(
              select 1 from public.members m join public.mcp_actor_epochs e using(org_id,user_id)
              where m.org_id=s.org_id and m.user_id=s.owner_id and e.epoch=$9
            ))))
@@ -280,7 +316,7 @@ export function createModalBootWorker(
          where sandbox_id=$1`,
         [
           id,
-          needsCleanup ? "cleanup_pending" : succeeded ? "succeeded" : cancelled ? "cancelled" : "failed",
+          needsCleanup ? "cleanup_pending" : succeeded ? "preparing_harness" : cancelled ? "cancelled" : "failed",
           JSON.stringify(resolvedOutcome),
           retainFence,
           recoveryInput,
@@ -299,6 +335,10 @@ export function createModalBootWorker(
 
   async function runClaim(claim: Claim, signal: AbortSignal) {
     const { sandbox_id: id, lease_epoch: epoch } = claim;
+    if (claim.phase === "preparing_harness") {
+      if (!signal.aborted) await settle(claim, { reason: "initialization_interrupted" }, true);
+      return;
+    }
     const token = [id, owner, epoch];
     const reschedule = async () => {
       if (signal.aborted) return;
@@ -332,7 +372,7 @@ export function createModalBootWorker(
         }>(
           `select m.role, s.stop_requested_at is not null as cancelled,
            r.dispatch_deadline<=clock_timestamp() as expired, e.epoch=r.actor_epoch as same_actor,(
-           e.epoch=r.actor_epoch and r.dispatch_deadline>clock_timestamp() and ${BOOT_ALLOWED}
+           e.epoch=r.actor_epoch and r.dispatch_deadline>clock_timestamp() and ${MODAL_BOOT_ALLOWED}
          ) is true as allowed
          from public.provider_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
          left join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
@@ -410,7 +450,7 @@ export function createModalBootWorker(
                and ${
                  recovery
                    ? "r.phase='cleanup_pending'"
-                   : `r.phase='booting' and e.epoch=r.actor_epoch and ${cleanup ? "s.status='stopping' and s.stop_requested_at is not null" : BOOT_ALLOWED}`
+                   : `r.phase='booting' and e.epoch=r.actor_epoch and ${cleanup ? "s.status='stopping' and s.stop_requested_at is not null" : MODAL_BOOT_ALLOWED}`
                }
              ${tx ? "for update of r" : ""}`,
             token,
@@ -466,7 +506,7 @@ export function createModalBootWorker(
         // Hold the sandbox row while recording the intent so a stop cannot race
         // the status check. The Modal request key fences physical replay.
         const allowed = await tx.query(
-          `select s.id from public.sandboxes s where s.id=$1 and ${BOOT_ALLOWED} for update of s`,
+          `select s.id from public.sandboxes s where s.id=$1 and ${MODAL_BOOT_ALLOWED} for update of s`,
           [id],
         );
         if (!allowed.rows.length) return false;
@@ -549,6 +589,7 @@ export function createModalBootWorker(
            from public.provider_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
            where s.provider='modal'
            and (r.phase in ('queued','booting','cleanup_pending')
+             or (r.phase='preparing_harness' and (${MODAL_INITIALIZATION_LIVE}) is not true)
              or (r.phase='failed' and r.fence_id is not null and r.request_enc is not null))
            and r.next_attempt_at<=now()
            and (r.lease_expires_at is null or r.lease_expires_at<=now())
@@ -565,7 +606,10 @@ export function createModalBootWorker(
       if (!claim) return false;
       const controller = new AbortController();
       // Already expired rows still need a local terminal transition.
-      const attemptMs = claim.phase === "cleanup_pending" ? CLEANUP_ATTEMPT_MS : claim.remaining_ms;
+      const attemptMs =
+        claim.phase === "cleanup_pending" || claim.phase === "preparing_harness"
+          ? CLEANUP_ATTEMPT_MS
+          : claim.remaining_ms;
       const deadline = attemptMs > 0 ? setTimeout(() => controller.abort(), attemptMs) : undefined;
       deadline?.unref();
       const elapsed = new Promise<void>((resolve) =>

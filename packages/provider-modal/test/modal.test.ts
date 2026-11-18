@@ -17,7 +17,7 @@ import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/
 import { createSqlData } from "../../mcp-server/src/data.ts";
 import { createModalBootWorker } from "../../mcp-server/src/modal-boot-worker.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
-import { checkModalDispatch, fenceModalMutation, withModalDispatch } from "../src/client.ts";
+import { checkModalDispatch, fenceModalMutation, ModalRpcDispatchRefused, withModalDispatch } from "../src/client.ts";
 import {
   appendModalEvents,
   type ComposedModalOptions,
@@ -1319,7 +1319,7 @@ test.each([
   expect(persisted).toMatchObject({
     phase:
       recovery === "resume"
-        ? "succeeded"
+        ? "preparing_harness"
         : recovery === "stop"
           ? "cancelled"
           : recovery === "unknown"
@@ -1334,8 +1334,6 @@ test.each([
     // Modal does not guarantee that 404 rules out a delayed create. Keep
     // delete-only recovery and the image pin even though the golden can retire.
     expect(persisted).toMatchObject({ child_phase: "creating", sealed: true });
-    // Other rows in this shared database exercise independent launches.
-    await db.query("update provider_launch_requests set next_attempt_at='infinity' where sandbox_id=$1", [id]);
   } else {
     expect(persisted).toMatchObject({
       child_phase:
@@ -1344,12 +1342,16 @@ test.each([
           : boundary === "boot intent committed" || boundary === "worker claim committed"
             ? null
             : "deleted",
-      sealed: false,
+      sealed: recovery === "resume",
     });
     if (recovery !== "resume") {
       expect(persisted).toMatchObject({ stopped_at: expect.any(Date), activity_lease_id: null });
     }
   }
+  // The next matrix case can revoke the same fixture actor. Leave this
+  // case's retained recovery work out of the next case's claim inventory.
+  if (recovery === "unknown" || recovery === "resume")
+    await db.query("update provider_launch_requests set next_attempt_at='infinity' where sandbox_id=$1", [id]);
   const created =
     recovery === "resume" ||
     cleanupCase ||
@@ -1483,6 +1485,82 @@ test("durable Modal dispatch checks authority after the reservation and lookup",
   expect(await f.store.get(child.id)).toMatchObject({ phase: "deleting" });
   expect(await f.provider.delete({ sandboxId: child.id }, async () => {})).toEqual({ status: "deleted" });
 });
+
+test("native Modal prompt transport refuses a launch stopped during runner access lookup", async () => {
+  let stopped = false;
+  let dispatched = false;
+  const transport = createRunnerTransport(
+    async () => {
+      stopped = true;
+      return {
+        url: "https://runner.invalid",
+        connectToken: "fixture_connection",
+        grant: "fixture_grant",
+        expiresAt: Date.now() + 60_000,
+      };
+    },
+    Object.assign(
+      async () => {
+        dispatched = true;
+        return new Response(null, { status: 500 });
+      },
+      { preconnect: () => {} },
+    ),
+  );
+  await expect(
+    transport.call(
+      { info: { id: "modal-fixture" } } as Machine,
+      "prompt",
+      {},
+      {
+        beforeDispatch: async () => {
+          if (stopped) throw new Error("Launch stopped during runner access lookup");
+        },
+        signal: undefined,
+      },
+    ),
+  ).rejects.toThrow("Launch stopped during runner access lookup");
+  expect(dispatched).toBe(false);
+});
+
+test.each(["authentication", "transport"] as const)(
+  "Modal create cancellation at %s preserves whether allocation was dispatched",
+  async (boundary) => {
+    const controller = new AbortController();
+    let dispatches = 0;
+    const uncertain = new Error("Create reply lost");
+    const sdk = new ModalClient({
+      tokenId: "fixture_token_id",
+      tokenSecret: "fixture_token_secret",
+      logLevel: "error",
+      grpcMiddleware: [fenceModalMutation],
+      grpcDispatchMiddleware: [
+        // biome-ignore lint/correctness/useYield: This fake transport models a failed unary request.
+        async function* () {
+          dispatches++;
+          controller.abort();
+          throw uncertain;
+        },
+        checkModalDispatch,
+      ],
+    });
+    spyOn(sdk.cpClient, "authTokenGet").mockImplementation(async () => {
+      if (boundary === "authentication") controller.abort();
+      return { token: "fixture_auth_token" };
+    });
+    const guard = Object.assign(async () => controller.signal.throwIfAborted(), { signal: controller.signal });
+    const result = await withModalDispatch(guard, () =>
+      sdk.cpClient.sandboxCreate({} as Parameters<typeof sdk.cpClient.sandboxCreate>[0]),
+    ).catch((error: unknown) => error);
+    if (boundary === "authentication") {
+      expect(dispatches).toBe(0);
+      expect(result).toBeInstanceOf(ModalRpcDispatchRefused);
+    } else {
+      expect(dispatches).toBe(1);
+      expect(result).toBe(uncertain);
+    }
+  },
+);
 
 test.each(["SandboxCreate", "SandboxCreateV2", "SandboxTerminate", "SandboxTerminateV2", "ImageDelete"])(
   "Modal %s RPC rechecks authority, carries the worker signal and disables SDK retries",

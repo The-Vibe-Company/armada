@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
 import { type GoldenRecord, modalLaunchSandboxId, type Provider, ProviderError, type Sql } from "@armada/core";
+import { createSqlMcpRegistry } from "@armada/core/server";
 import { createModalProvider, createSqlModalStore, type RunnerDistribution } from "@armada/provider-modal";
 import type { ModalClient } from "modal";
+import { controlFailureResponse } from "../src/control-errors.ts";
 import { createSqlData } from "../src/data.ts";
+import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { createModalBootWorker } from "../src/modal-boot-worker.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { readStatus } from "../src/turns.ts";
@@ -13,6 +16,9 @@ const database = rowOnlyDatabase();
 
 test.each([
   "restart after an uncertain fork",
+  "clean up after membership is revoked before handoff",
+  "clean up after the initialization activity lease expires",
+  "cancel after stop during initialization",
   "stop before dispatch",
   "publish a terminal failure when admission expires before dispatch",
   "keep an expired boot failed during cleanup",
@@ -317,16 +323,105 @@ test.each([
   const successor = createWorker();
   expect(await successor.reconcileOne(signal)).toBe(true);
   await successor.drain();
-  expect(await successor.waitForBoot(admitted)).toMatchObject({
-    id: providerSandboxId,
-    sandbox: { id, status: "starting" },
-  });
+  const caller = {
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" as const }],
+    via: "service" as const,
+  };
+  let assertInitializing: (() => Promise<void>) | undefined;
+  if (scenario === "clean up after membership is revoked before handoff") {
+    await db.query("delete from public.members where org_id=$1 and user_id=$2", [people.org, people.owner]);
+    const response = await successor.waitForBoot(admitted).catch((error: unknown) => controlFailureResponse(error));
+    expect(response).toBeInstanceOf(Response);
+    expect(await (response as Response).json()).toMatchObject({
+      error: { code: "outcome_unknown", message: expect.stringContaining(id) },
+    });
+  } else {
+    const booted = await successor.waitForBoot(admitted);
+    expect(booted).toMatchObject({ id: providerSandboxId, sandbox: { id, status: "starting" } });
+    assertInitializing = booted.assertInitializing;
+    await assertInitializing!();
+  }
   expect(attempts).toBe(2);
-  expect(await persisted()).toMatchObject({
-    status: "starting",
-    phase: "succeeded",
-    lease_epoch: "2",
-    fenced: false,
-    sealed: false,
-  });
+  expect(await persisted()).toMatchObject({ status: "starting", phase: "preparing_harness", sealed: true });
+  const store = createSqlData(sql)(caller).sandboxes;
+  const activity = {
+    activityToken: admitted.activityLeaseId,
+    expectedGeneration: admitted.record.lifecycleGeneration!,
+  };
+  if (scenario === "restart after an uncertain fork") {
+    expect(await successor.reconcileOne(signal)).toBe(false);
+    await db.query(
+      `with connection as (
+        insert into mcp_connections(org_id,owner_id,scope,name,transport,url,auth_type)
+        values($1,$2,'personal','fixture','http','https://upstream.invalid','none') returning id
+      ), active_grant as (
+        insert into mcp_grants(connection_id,status)
+        select id,'connected' from connection returning id,connection_id
+      )
+      insert into mcp_bindings(sandbox_id,connection_id,grant_id) select $3,connection_id,id from active_grant`,
+      [people.org, people.owner, id],
+    );
+    let installations = 0;
+    const mcp = createMcpLifecycle({
+      sql,
+      registry: createSqlMcpRegistry(sql, ENCRYPTION_KEY),
+      encryptionKey: ENCRYPTION_KEY,
+      origin: "https://gateway.invalid",
+    });
+    await mcp.connections.prepare!(
+      {
+        ...provider,
+        async get() {
+          return {
+            id: providerSandboxId,
+            name: "fixture",
+            labels: {},
+            providerState: "active",
+            state: "ready",
+            physicalGeneration: "1",
+            expiresAt: new Date(Date.now() + 60_000),
+          };
+        },
+        async configureMcp() {
+          installations++;
+        },
+      },
+      admitted.record,
+      { userId: people.owner, orgId: people.org, role: "member" },
+    );
+    expect(installations).toBe(1);
+    expect(await store.controlState!(id)).toMatchObject({ status: "starting", pendingModalLaunch: true });
+    expect(await persisted()).toMatchObject({ phase: "preparing_harness" });
+    await store.update(id, { ...activity, finishActivity: true, status: "ready" });
+    expect(await successor.reconcileOne(signal)).toBe(false);
+    expect(await persisted()).toMatchObject({ status: "ready", phase: "succeeded", fenced: false, sealed: false });
+    return;
+  }
+  const stopped = scenario === "cancel after stop during initialization";
+  if (stopped) expect(await store.requestPendingModalStop!(id)).toBe(true);
+  if (scenario === "clean up after the initialization activity lease expires")
+    await db.query("update public.sandboxes set activity_until=now()-interval '1 second' where id=$1", [id]);
+  if (stopped || scenario === "clean up after the initialization activity lease expires") {
+    await expect(assertInitializing!()).rejects.toMatchObject({ code: "start_failed" });
+    await expect(store.update(id, { ...activity, finishActivity: true, status: "ready" })).rejects.toThrow();
+  }
+  let deletes = 0;
+  const recovery = createModalBootWorker(sql, ENCRYPTION_KEY, async (_target, recoveryCaller) => ({
+    ...provider,
+    async delete(request, guard) {
+      await guard?.();
+      expect(request).toEqual({ sandboxId: providerSandboxId, modalLaunchId: id });
+      if (scenario === "clean up after membership is revoked before handoff") expect(recoveryCaller.orgs).toEqual([]);
+      deletes++;
+      return { status: "deleted" };
+    },
+  }));
+  for (const phase of ["cleanup_pending", stopped ? "cancelled" : "failed"]) {
+    expect(await recovery.reconcileOne(signal)).toBe(true);
+    await recovery.drain();
+    expect(await persisted()).toMatchObject({ phase });
+  }
+  expect(deletes).toBe(1);
+  expect(await persisted()).toMatchObject({ status: stopped ? "stopped" : "failed", fenced: false, sealed: false });
 });

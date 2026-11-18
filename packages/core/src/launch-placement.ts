@@ -9,7 +9,12 @@ import type { SandboxRecord } from "./sandbox.ts";
 import { SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 
-type ForkedSandbox = { id: string; expiresAt?: Date; sandbox?: SandboxRecord };
+type ForkedSandbox = {
+  id: string;
+  expiresAt?: Date;
+  sandbox?: SandboxRecord;
+  assertInitializing?: () => Promise<void>;
+};
 
 type GoldenAdmission = {
   actor: GoldenActor;

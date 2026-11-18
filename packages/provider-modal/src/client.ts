@@ -3,10 +3,10 @@ import type { ProviderDispatchGuard } from "@armada/core";
 import { ModalClient } from "modal";
 import { refusal } from "./errors.ts";
 
-const dispatch = new AsyncLocalStorage<ProviderDispatchGuard>();
+const dispatch = new AsyncLocalStorage<{ guard: ProviderDispatchGuard; reachedTransport: boolean }>();
 
 export function withModalDispatch<T>(guard: ProviderDispatchGuard | undefined, work: () => Promise<T>): Promise<T> {
-  return guard ? dispatch.run(guard, work) : work();
+  return guard ? dispatch.run({ guard, reachedTransport: false }, work) : work();
 }
 
 type ModalMiddleware = NonNullable<NonNullable<ConstructorParameters<typeof ModalClient>[0]>["grpcMiddleware"]>[number];
@@ -18,28 +18,44 @@ export class ModalRpcDispatchRefused extends Error {
   }
 }
 
-const guardedMutation = /\/(SandboxCreate(?:V2)?|SandboxTerminate(?:V2)?|ImageDelete)$/;
+const guardedMutation = /\/(SandboxCreate(?:V2)?|SandboxTerminate(?:V2)?|ImageDelete|TaskExecStdinWrite)$/;
+
+function dispatchSignal(guard: ProviderDispatchGuard, signal?: AbortSignal) {
+  return guard.signal && signal ? AbortSignal.any([guard.signal, signal]) : (guard.signal ?? signal);
+}
 
 export const fenceModalMutation: ModalMiddleware = async function* (call, options) {
-  const guard = dispatch.getStore();
-  if (!guard || !guardedMutation.test(call.method.path)) return yield* call.next(call.request, options);
+  const context = dispatch.getStore();
+  if (!context || !guardedMutation.test(call.method.path)) return yield* call.next(call.request, options);
+  const { guard } = context;
   // The outer middleware passes cancellation through auth and disables retries.
-  const signal = guard.signal && options.signal ? AbortSignal.any([guard.signal, options.signal]) : guard.signal;
+  const signal = dispatchSignal(guard, options.signal);
   const fenced = { ...options, retries: 0, ...(signal ? { signal } : {}) };
-  return yield* call.next(call.request, fenced);
+  try {
+    return yield* call.next(call.request, fenced);
+  } catch (error) {
+    // Authentication can abort before invoking the innermost middleware.
+    if (!context.reachedTransport) throw new ModalRpcDispatchRefused(error);
+    throw error;
+  }
 };
 
 export const checkModalDispatch: ModalMiddleware = async function* (call, options) {
-  const guard = dispatch.getStore();
-  if (guard && guardedMutation.test(call.method.path)) {
+  const context = dispatch.getStore();
+  if (context && guardedMutation.test(call.method.path)) {
+    const { guard } = context;
     try {
       // Run after the SDK's awaited auth refresh, immediately before transport.
       await guard();
       guard.signal?.throwIfAborted();
       options.signal?.throwIfAborted();
     } catch (error) {
+      if (context.reachedTransport && !call.method.path.endsWith("/TaskExecStdinWrite")) throw error;
       throw new ModalRpcDispatchRefused(error);
     }
+    context.reachedTransport = true;
+    const signal = dispatchSignal(guard, options.signal);
+    return yield* call.next(call.request, signal ? { ...options, signal } : options);
   }
   return yield* call.next(call.request, options);
 };

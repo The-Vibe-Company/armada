@@ -74,3 +74,111 @@ index c34cd15e0afd8e42f984ab790fa65db8e7e134d9..8b80ce3709f6ded3a56cdcabc2974869
      for (const middleware of this.customMiddleware) {
        factory = factory.use(middleware);
      }
+diff --git a/dist/index.cjs b/dist/index.cjs
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -74366,7 +74366,7 @@
+    * freshly created sandbox connect without a round-trip. Pass undefined to look
+    * it up — a re-attached sandbox, or the server could not mint a token.
+    */
+-  static async tryInit(serverClient, taskId, sandboxId, isV2, access, logger2, profile) {
++  static async tryInit(serverClient, taskId, sandboxId, isV2, access, logger2, profile, dispatchMiddleware) {
+     let resp;
+     if (access !== void 0) {
+       resp = access;
+@@ -74432,7 +74432,8 @@
+       resp.jwt,
+       dial,
+       logger2,
+-      profile.sandboxChannelIdleTimeoutMs
++      profile.sandboxChannelIdleTimeoutMs,
++      dispatchMiddleware
+     );
+     logger2.debug(
+       "Successfully initialized command router client",
+@@ -74446,7 +74447,7 @@
+    * construct one without the control-plane round trip `tryInit` makes; the
+    * class is not exported from the package, so this is not API surface.
+    */
+-  constructor(serverClient, taskId, sandboxId, isV2, serverUrl, jwt, dial, logger2, idleTimeoutMs) {
++  constructor(serverClient, taskId, sandboxId, isV2, serverUrl, jwt, dial, logger2, idleTimeoutMs, dispatchMiddleware) {
+     this.dial = dial;
+     this.idleTimeoutMs = idleTimeoutMs;
+     this.serverClient = serverClient;
+@@ -74459,7 +74460,11 @@
+     this.logger = logger2;
+     this.channel = dial();
+     const self = this;
+-    const factory = (0, import_nice_grpc8.createClientFactory)().use(timeoutMiddleware).use(async function* authMiddleware(call, options) {
++    let factory = (0, import_nice_grpc8.createClientFactory)();
++    for (const middleware of dispatchMiddleware) {
++      factory = factory.use(middleware);
++    }
++    factory = factory.use(timeoutMiddleware).use(async function* authMiddleware(call, options) {
+       options.metadata ??= new import_nice_grpc8.Metadata();
+       options.metadata.set("authorization", `Bearer ${self.jwt}`);
+       return yield* call.next(call.request, options);
+@@ -78168,7 +78173,8 @@
+         this.#isV2,
+         access,
+         this.#client.logger,
+-        this.#client.profile
++        this.#client.profile,
++        this.#client.grpcDispatchMiddleware
+       );
+       if (!client) {
+         throw new Error(
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -74279,7 +74279,7 @@
+    * freshly created sandbox connect without a round-trip. Pass undefined to look
+    * it up — a re-attached sandbox, or the server could not mint a token.
+    */
+-  static async tryInit(serverClient, taskId, sandboxId, isV2, access, logger2, profile) {
++  static async tryInit(serverClient, taskId, sandboxId, isV2, access, logger2, profile, dispatchMiddleware) {
+     let resp;
+     if (access !== void 0) {
+       resp = access;
+@@ -74345,7 +74345,8 @@
+       resp.jwt,
+       dial,
+       logger2,
+-      profile.sandboxChannelIdleTimeoutMs
++      profile.sandboxChannelIdleTimeoutMs,
++      dispatchMiddleware
+     );
+     logger2.debug(
+       "Successfully initialized command router client",
+@@ -74359,7 +74360,7 @@
+    * construct one without the control-plane round trip `tryInit` makes; the
+    * class is not exported from the package, so this is not API surface.
+    */
+-  constructor(serverClient, taskId, sandboxId, isV2, serverUrl, jwt, dial, logger2, idleTimeoutMs) {
++  constructor(serverClient, taskId, sandboxId, isV2, serverUrl, jwt, dial, logger2, idleTimeoutMs, dispatchMiddleware) {
+     this.dial = dial;
+     this.idleTimeoutMs = idleTimeoutMs;
+     this.serverClient = serverClient;
+@@ -74372,7 +74373,11 @@
+     this.logger = logger2;
+     this.channel = dial();
+     const self = this;
+-    const factory = createClientFactory().use(timeoutMiddleware).use(async function* authMiddleware(call, options) {
++    let factory = createClientFactory();
++    for (const middleware of dispatchMiddleware) {
++      factory = factory.use(middleware);
++    }
++    factory = factory.use(timeoutMiddleware).use(async function* authMiddleware(call, options) {
+       options.metadata ??= new Metadata();
+       options.metadata.set("authorization", `Bearer ${self.jwt}`);
+       return yield* call.next(call.request, options);
+@@ -78081,7 +78086,8 @@
+         this.#isV2,
+         access,
+         this.#client.logger,
+-        this.#client.profile
++        this.#client.profile,
++        this.#client.grpcDispatchMiddleware
+       );
+       if (!client) {
+         throw new Error(

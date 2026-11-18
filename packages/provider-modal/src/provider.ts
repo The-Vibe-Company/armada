@@ -1663,17 +1663,22 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           const cwd = active.harnessCwds?.[r.harness];
           if (restored) await r.onResumeStage?.("harness_ready");
           return measure("modal_rpc", () =>
-            runner.call(active, "prompt", {
-              input: {
-                sandboxId: r.sandboxId,
-                harness: r.harness,
-                text: r.text,
-                ...choice,
-                ...(r.conversationId !== undefined ? { conversationId: r.conversationId } : {}),
-                ...(r.fast !== undefined ? { fast: r.fast } : {}),
-                ...(cwd !== undefined ? { cwd } : {}),
+            runner.call(
+              active,
+              "prompt",
+              {
+                input: {
+                  sandboxId: r.sandboxId,
+                  harness: r.harness,
+                  text: r.text,
+                  ...choice,
+                  ...(r.conversationId !== undefined ? { conversationId: r.conversationId } : {}),
+                  ...(r.fast !== undefined ? { fast: r.fast } : {}),
+                  ...(cwd !== undefined ? { cwd } : {}),
+                },
               },
-            }),
+              r.beforeDispatch ? { beforeDispatch: r.beforeDispatch, signal: r.signal } : undefined,
+            ),
           );
         }),
       );

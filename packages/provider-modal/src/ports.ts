@@ -183,7 +183,12 @@ export interface ModalStore {
 }
 export interface RunnerTransport {
   /** Must validate version/requestId and translate structured runtime errors to ProviderError. */
-  call<T>(machine: Machine, op: string, input: object): Promise<T>;
+  call<T>(
+    machine: Machine,
+    op: string,
+    input: object,
+    dispatch?: { beforeDispatch: () => Promise<void>; signal: AbortSignal | undefined },
+  ): Promise<T>;
 }
 export interface RunnerDistribution {
   /** Credential-free, reproducibly built tools + dist/main.js. Must not include auth, sessions or SSH host keys. */

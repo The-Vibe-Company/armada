@@ -161,8 +161,11 @@ non-null while physical compute is pending. The worker rechecks authority and
 retries the exact Modal reservation by the same UUID. Requests continue to
 wait for boot and then run the existing initialization and initial-prompt path.
 If the caller disappears after admission, the worker can still finish boot.
-The ordinary sandbox lifecycle retires a sandbox whose initialization was
-interrupted after that handoff. An owner can stop a pending boot before
+Boot retains a sanitized encrypted cleanup request during `preparing_harness`.
+The request-scoped initializer claims the handoff using its activity lease.
+It clears the cleanup request atomically with ready or running publication.
+If authority is revoked, stop is requested, or the activity lease expires,
+the boot worker retires the allocation by exact key under the pinned identity. An owner can stop a pending boot before
 allocation. If dispatch already started, the worker uses the pinned Modal
 identity to retire the allocation. Receipt inspection reports the persisted boot
 phase.
@@ -196,7 +199,7 @@ A create already sent remains reconcilable by exact name and ownership even
 if the launcher loses membership. Cleanup still needs the original bound
 management credentials to reach Modal.
 
-The command router that sends bootstrap stdin has its own retry loop and
-needs a separate transport fence. Successful boot still hands off to
-request-scoped initialization. Durable initialization must cover revocation
-after boot settles and before the caller takes over.
+The SDK patch also applies the transport guard to command-router bootstrap
+stdin. Each write attempt, including retries after router authentication, checks
+the current boot claim and carries its cancellation signal. Initialization
+still runs in the caller process and is retired on interruption.
