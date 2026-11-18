@@ -8,6 +8,7 @@ import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
 import { CreatedAt } from "@/components/created-at";
 import { InstalledSkills } from "@/components/installed-skills";
 import { LinkPendingIcon } from "@/components/link-pending";
+import { PullRequestSection } from "@/components/pull-requests";
 import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions, StopButton } from "@/components/sandbox-actions";
 import { SandboxAttention } from "@/components/sandbox-attention";
@@ -334,6 +335,7 @@ export default async function SandboxPage({ params }: Props) {
           {configured && (sandbox.status === "ready" || sandbox.status === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
+          <PullRequestSection value={sandbox.pull_requests} />
           <details className="text-sm">
             <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
             <div className="pt-4">
@@ -552,6 +554,7 @@ function DockerSandbox({
             />
             <p className="text-muted-foreground">Sandboxes on your own server do not get tools yet.</p>
           </section>
+          <PullRequestSection value={sandbox.pull_requests} />
           <details className="text-sm">
             <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
             <div className="pt-4">

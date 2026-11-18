@@ -136,10 +136,9 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         const rpc = await db.query<SandboxListMetadata>("select * from sandbox_list_metadata()");
         expect(rpc.rows.length).toBe(mayList ? 2 : 0);
         for (const row of rpc.rows) {
-          expect(Object.keys(row).sort()).toEqual(
-            expectedKeys.filter((key) => key !== "usage" && key !== "pullRequests"),
-          );
+          expect(Object.keys(row).sort()).toEqual(expectedKeys.filter((key) => key !== "usage"));
           expect(row.taskOutcome).toEqual(mayOpen ? { state: "blocked", reason: "interior-only" } : null);
+          expect(row.pullRequests).toEqual(mayOpen ? [] : null);
           expect(row.idlePaused).toBe(row.id === ids[0]);
           expect(row.canOpen).toBe(mayOpen);
         }
@@ -160,6 +159,7 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
         expect(row.canOpen).toBe(false);
         expect(row.canManage).toBe(false);
         expect(row.taskOutcome).toBeNull();
+        expect(row.pullRequests).toBeNull();
       }
     });
     await db.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);

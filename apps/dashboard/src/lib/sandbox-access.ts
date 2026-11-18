@@ -7,6 +7,7 @@ import {
 } from "@armada/core";
 import { MACHINE_SIZE_LABELS } from "./machine-size.ts";
 import { parseTaskOutcome } from "./outcome.ts";
+import { parsePullRequests } from "./pull-requests.ts";
 import { SANDBOX_STATUSES } from "./sandbox-filters.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -96,6 +97,7 @@ function parseRow(value: unknown): SandboxListMetadata | string {
     machineSize,
     // Null for a viewer who may not open the sandbox; a value the contract does not allow is shown as no outcome.
     taskOutcome: parseTaskOutcome(row.taskOutcome),
+    ...(row.pullRequests === undefined ? {} : { pullRequests: parsePullRequests(row.pullRequests) }),
     preservationNote: preservationNote ?? null,
     displayLabel,
     canOpen,

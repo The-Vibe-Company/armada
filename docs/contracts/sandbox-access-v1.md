@@ -10,6 +10,8 @@ Fields: providerSandboxId, boatId, id, orgId, ownerId, provider, harness, model,
 createdAt, stoppedAt, expiresAt, effectiveTtlSeconds, machineSize (effective size
 only, no repository evidence), displayLabel (`Sandbox ` plus logical UUID),
 canOpen, canManage. Dates are ISO strings; nullable fields are explicit nulls.
+Interior-only fields (taskOutcome, pullRequests: the confirmed GitHub pull requests,
+#2612) are null unless the caller is the owner or a current admin.
 Canonical providerSandboxId is nullable display metadata (including Boat bx_ IDs),
 not a credential. boatId is a deprecated display compatibility alias equal to
 providerSandboxId for Boat, always null for Modal; unavailable/empty ids become
