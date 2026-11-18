@@ -1,23 +1,15 @@
-import {
-  HARNESSES,
-  MACHINE_SIZES,
-  MAX_EXTERNAL_REF_LENGTH,
-  MAX_LAUNCH_TTL_SECONDS,
-  MAX_MCP_CONNECTIONS,
-  SANDBOX_PROVIDERS,
-  SKILL_PIN_PATTERN,
-} from "@armada/core";
+import { MACHINE_SIZES, MAX_EXTERNAL_REF_LENGTH, MAX_LAUNCH_TTL_SECONDS, SANDBOX_PROVIDERS } from "@armada/core";
 import { z } from "zod";
 import {
   DOCKER_HOST_LAUNCH_REQUEST,
   DOCKER_SNAPSHOT_LAUNCH_REQUEST,
-  launchUuid,
+  sharedRestLaunchFields,
 } from "./docker-launch-request-schema.ts";
 
 const goldenFields = {
   golden: z.string().min(1).describe("The name returned by golden/list."),
   org: z.string().nullish().describe("Organization name or ID. Required for ambiguous golden names."),
-  harness: z.enum(HARNESSES),
+  harness: sharedRestLaunchFields.harness,
   model: z.string().nullish(),
   reasoningEffort: z.string().nullish(),
   ttlSeconds: z.number().int().min(1).max(MAX_LAUNCH_TTL_SECONDS).optional(),
@@ -25,12 +17,12 @@ const goldenFields = {
   size: z.enum(MACHINE_SIZES).optional(),
   sizePolicyVersion: z.literal(1).optional(),
   repo: z.string().min(1).optional().describe("Configured directory or owner/repo from the golden."),
-  credentialId: launchUuid.optional(),
+  credentialId: sharedRestLaunchFields.credentialId,
   visibility: z.enum(["private", "org"]).optional(),
-  skills: z.array(z.string().regex(SKILL_PIN_PATTERN)).max(20).optional(),
-  skipSkillDefaults: z.boolean().optional(),
-  connections: z.array(launchUuid).max(MAX_MCP_CONNECTIONS).optional(),
-  stopWhenWorkMerged: z.boolean().optional(),
+  skills: sharedRestLaunchFields.skills,
+  skipSkillDefaults: sharedRestLaunchFields.skipSkillDefaults,
+  connections: sharedRestLaunchFields.connections,
+  stopWhenWorkMerged: sharedRestLaunchFields.stopWhenWorkMerged,
   idempotencyKey: z.string().min(16).max(128).optional(),
   externalRef: z
     .string()
