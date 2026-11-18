@@ -125,6 +125,7 @@ export async function launchRoute(
               ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
               : golden,
         );
+  const { modalBoot, ...launchOptions } = options.launch ?? {};
   const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
   // The receipt id becomes the sandbox id, so a retried key answers with the same sandbox.
   const dispatch = async (receiptId?: string) => {
@@ -170,7 +171,8 @@ export async function launchRoute(
         ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef as string }),
       },
       {
-        ...options.launch,
+        ...launchOptions,
+        ...(!runtime && !armadaAccess && modalBoot ? { modalBoot } : {}),
         ...(receiptId ? { newId: () => receiptId } : {}),
         ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
         ...(armadaAccess

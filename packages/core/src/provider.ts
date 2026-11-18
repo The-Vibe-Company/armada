@@ -304,6 +304,8 @@ export interface SnapshotRequest {
 }
 
 export interface ForkRequest {
+  /** Server-owned Armada UUID for a row-first Modal allocation. */
+  modalLaunchId?: string;
   size?: MachineSize;
   /** The snapshot to start from. */
   from: string;

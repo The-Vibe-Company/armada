@@ -4,20 +4,23 @@ import type { GoldenActor } from "./golden.ts";
 import type { LaunchOptions, LaunchPlan } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
 import { admitLaunchPlan, type LaunchPlacement } from "./launch-plan.ts";
-import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
+import { type ForkRequest, isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
+import type { SandboxRecord } from "./sandbox.ts";
 import { SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
+
+type ForkedSandbox = { id: string; expiresAt?: Date; sandbox?: SandboxRecord };
 
 type GoldenAdmission = {
   actor: GoldenActor;
   id: string;
   forkEnv(): HarnessCredentials["env"];
+  boot?(request: ForkRequest): Promise<ForkedSandbox>;
   allocationRisk(risk: boolean): void;
 };
 
 /** Golden-specific placement policy. The launch strategy owns agent initialization after the fork. */
-interface GoldenLaunchPlacement
-  extends LaunchPlacement<LaunchPlan, GoldenAdmission, Awaited<ReturnType<Provider["fork"]>>> {
+interface GoldenLaunchPlacement extends LaunchPlacement<LaunchPlan, GoldenAdmission, ForkedSandbox> {
   runtimeDefault(options: LaunchOptions, harness: Harness): LaunchOptions["boatRuntimeDefault"];
   endpointRuntime?(options: LaunchOptions): LaunchOptions["boatEndpointRuntime"];
   allocationTtlSeconds(ttlSeconds: number, extensionHeadroom: number, privateParent: boolean): number;
@@ -58,7 +61,7 @@ export const goldenLaunchPlacements: Readonly<Record<SandboxProviderId, GoldenLa
   },
 };
 
-async function admitGoldenLaunch(plan: LaunchPlan, { actor, id, forkEnv, allocationRisk }: GoldenAdmission) {
+async function admitGoldenLaunch(plan: LaunchPlan, { actor, id, forkEnv, allocationRisk, boot }: GoldenAdmission) {
   const {
     provider,
     stores,
@@ -77,38 +80,38 @@ async function admitGoldenLaunch(plan: LaunchPlan, { actor, id, forkEnv, allocat
     () => options.beforeFork?.(id),
   );
   allocationRisk(true);
-  return provider
-    .fork({
-      from: snapshot,
-      ...(machineSize.effective ? { size: machineSize.effective } : {}),
-      noEnv: true,
-      env: forkEnv(),
-      ttlSeconds: allocationTtlSeconds,
-      labels: {
-        armada: "sandbox",
-        sandbox: id,
-        org: actor.orgId,
-        owner: actor.userId,
-        golden: golden.name,
-        visibility,
-        harness,
-        ...(credentials.binding
-          ? {
-              credentialId: credentials.binding.credentialId,
-              credentialVersion: String(credentials.binding.credentialVersion),
-            }
-          : {}),
-      },
-    })
-    .catch((error) => {
-      const refused = isNonMutatingProviderRefusal(error);
-      allocationRisk(!refused);
-      if (!refused)
-        throw new LaunchError(
-          "outcome_unknown",
-          "The provider fork outcome is unknown. Check sandbox status before retrying.",
-          { cause: error },
-        );
-      throw error;
-    });
+  const request: ForkRequest = {
+    from: snapshot,
+    ...(machineSize.effective ? { size: machineSize.effective } : {}),
+    noEnv: true,
+    env: forkEnv(),
+    ttlSeconds: allocationTtlSeconds,
+    labels: {
+      armada: "sandbox",
+      sandbox: id,
+      org: actor.orgId,
+      owner: actor.userId,
+      golden: golden.name,
+      visibility,
+      harness,
+      ...(credentials.binding
+        ? {
+            credentialId: credentials.binding.credentialId,
+            credentialVersion: String(credentials.binding.credentialVersion),
+          }
+        : {}),
+    },
+  };
+  return (boot ? boot(request) : provider.fork(request)).catch((error) => {
+    if (boot) throw error;
+    const refused = isNonMutatingProviderRefusal(error);
+    allocationRisk(!refused);
+    if (!refused)
+      throw new LaunchError(
+        "outcome_unknown",
+        "The provider fork outcome is unknown. Check sandbox status before retrying.",
+        { cause: error },
+      );
+    throw error;
+  });
 }

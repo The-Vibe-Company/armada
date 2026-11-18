@@ -31,7 +31,7 @@ import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
 import { PrivateSkillError } from "./private-skill-error.ts";
-import { type Provider, ProviderError } from "./provider.ts";
+import { type ForkRequest, type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import { isExternalRef, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
@@ -223,6 +223,15 @@ export interface LaunchOptions extends GoldenLimits {
   extensionHeadroomSeconds?: number;
   /** Trusted server telemetry only; never request input or a raw-error sink. */
   onInitialization?: (stage: LaunchInitializationStage) => void;
+  /** Ordinary Modal only: persist allocation and wait for the boot worker. */
+  modalBoot?: (input: {
+    actor: GoldenActor;
+    golden: GoldenRecord;
+    provider: Provider;
+    runtime: boolean;
+    request: ForkRequest;
+    sandbox: Parameters<SandboxStore["insert"]>[0];
+  }) => Promise<{ sandbox: SandboxRecord; id: string; expiresAt?: Date }>;
   /** Trusted pre-dispatch fence; failure is provably before provider allocation. */
   beforeFork?: (sandboxId: string) => Promise<void>;
   /** Confirmed registration handoff; errors use the recorded initialization cleanup. */
@@ -532,14 +541,57 @@ export async function launchSandbox(
   } = plan;
   const strategy = plan.runtime ? runtimeLaunch(plan.runtime) : nativeLaunch;
   const id = (options.newId ?? (() => crypto.randomUUID()))();
-  const releaseOperation = await stores.goldens.beginOperation?.(golden.id, {
-    kind: "launch",
-    snapshotId: golden.providerSnapshotId,
-    sandboxId: golden.providerSandboxId,
-  });
+  const modalBoot = provider.id === "modal" ? options.modalBoot : undefined;
+  const releaseOperation = modalBoot
+    ? undefined
+    : await stores.goldens.beginOperation?.(golden.id, {
+        kind: "launch",
+        snapshotId: golden.providerSnapshotId,
+        sandboxId: golden.providerSandboxId,
+      });
   let childRecorded = false;
   let noAllocation = true;
   try {
+    const activityLeaseId = stores.sandboxes.activityOwnership ? crypto.randomUUID() : undefined;
+    const sandboxInput = (providerSandboxId: string, expiresAt?: Date): Parameters<SandboxStore["insert"]>[0] => ({
+      ...credentials.binding,
+      ...strategy.recordFields(plan),
+      id,
+      provider: golden.provider,
+      providerSandboxId,
+      goldenId: golden.id,
+      orgId: golden.orgId,
+      ownerId: actor.userId,
+      harness,
+      status: "starting",
+      ...(activityLeaseId ? { activityLeaseId } : {}),
+      repositoryDir,
+      machineSize,
+      ...(resourceProject
+        ? {
+            resourceProject: {
+              version: 1 as const,
+              url: resourceProject.url,
+              branch: resourceProject.branch,
+              dir: resourceProject.dir,
+            },
+          }
+        : {}),
+      ...(request.ttlSeconds === undefined ? {} : { requestedTtlSeconds: request.ttlSeconds }),
+      effectiveTtlSeconds: ttlSeconds,
+      ...(!options.privateParent && expiresAt
+        ? {
+            expiresAt: new Date(
+              Math.min(Date.now() + ttlSeconds * 1000, expiresAt.getTime() - SANDBOX_STOP_MARGIN_SECONDS * 1000),
+            ).toISOString(),
+          }
+        : {}),
+      model: choice.model,
+      reasoningEffort: choice.reasoningEffort,
+      visibility,
+      ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
+      ...(request.externalRef === undefined ? {} : { externalRef: request.externalRef }),
+    });
     const forked = await launch.admit({
       actor,
       id,
@@ -547,61 +599,35 @@ export async function launchSandbox(
       allocationRisk: (risk) => {
         noAllocation = !risk;
       },
+      ...(modalBoot
+        ? {
+            boot: (request: ForkRequest) =>
+              modalBoot({
+                actor,
+                golden,
+                provider,
+                runtime: Boolean(plan.runtime),
+                request,
+                sandbox: sandboxInput(placement.modalLaunchSandboxId(id)),
+              }),
+          }
+        : {}),
     });
-
     const claimedAt = performance.now();
-    const activityLeaseId = stores.sandboxes.activityOwnership ? crypto.randomUUID() : undefined;
     let record: SandboxRecord;
-    try {
-      record = await stores.sandboxes.insert({
-        ...credentials.binding,
-        ...strategy.recordFields(plan),
-        id,
-        provider: golden.provider,
-        providerSandboxId: forked.id,
-        goldenId: golden.id,
-        orgId: golden.orgId,
-        ownerId: actor.userId,
-        harness,
-        status: "starting",
-        ...(activityLeaseId ? { activityLeaseId } : {}),
-        repositoryDir,
-        machineSize,
-        ...(resourceProject
-          ? {
-              resourceProject: {
-                version: 1 as const,
-                url: resourceProject.url,
-                branch: resourceProject.branch,
-                dir: resourceProject.dir,
-              },
-            }
-          : {}),
-        ...(request.ttlSeconds === undefined ? {} : { requestedTtlSeconds: request.ttlSeconds }),
-        effectiveTtlSeconds: ttlSeconds,
-        ...(!options.privateParent && forked.expiresAt
-          ? {
-              expiresAt: new Date(
-                Math.min(
-                  Date.now() + ttlSeconds * 1000,
-                  forked.expiresAt.getTime() - SANDBOX_STOP_MARGIN_SECONDS * 1000,
-                ),
-              ).toISOString(),
-            }
-          : {}),
-        model: choice.model,
-        reasoningEffort: choice.reasoningEffort,
-        visibility,
-        ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
-        ...(request.externalRef === undefined ? {} : { externalRef: request.externalRef }),
-      });
-      childRecorded = true;
-    } catch (error) {
-      await quietly(async () => {
-        if (await deleteNeverStartedSandbox(provider, forked.id)) noAllocation = true;
-      });
-      throw error;
+    if (forked.sandbox) {
+      record = forked.sandbox;
+    } else {
+      try {
+        record = await stores.sandboxes.insert(sandboxInput(forked.id, forked.expiresAt));
+      } catch (error) {
+        await quietly(async () => {
+          if (await deleteNeverStartedSandbox(provider, forked.id)) noAllocation = true;
+        });
+        throw error;
+      }
     }
+    childRecorded = true;
 
     // Launch-time measurement (#2560) must never change the launch it measures.
     const mark = async (stage: LaunchStage, elapsedMs = 0) => {

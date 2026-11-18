@@ -2483,11 +2483,16 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const name = crypto.randomUUID();
     await f.provider.snapshot({ sandboxId: builder.id, name });
     const key = crypto.randomUUID();
+    const request = { from: name, idempotencyKey: key, modalLaunchId: key, labels: { sandbox: key } };
     f.failBoot(true);
-    await expect(f.provider.fork({ from: name, idempotencyKey: key })).rejects.toMatchObject({ code: "unknown" });
+    await expect(f.provider.fork(request)).rejects.toMatchObject({ code: "unknown" });
+    expect((await f.store.get(`modal_${key}`)).phase).toBe("booting");
+    const creates = f.creates;
     const before = f.log.filter((x) => x.startsWith("fresh-")).length;
     f.failBoot(false);
-    const fork = await f.provider.fork({ from: name, idempotencyKey: key });
+    const fork = await f.provider.fork(request);
+    expect(fork.id).toBe(`modal_${key}`);
+    expect(f.creates).toBe(creates);
     expect(f.log.filter((x) => x.startsWith("fresh-"))).toHaveLength(before);
     expect((await f.store.get(fork.id)).freshStatePreparedGeneration).toBe(1);
     await f.provider.stop({ sandboxId: fork.id });

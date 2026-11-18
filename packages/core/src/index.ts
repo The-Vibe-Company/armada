@@ -440,6 +440,7 @@ export {
   isSandboxPlacementProvider,
   isSandboxProvider,
   type ModalBinding,
+  modalLaunchSandboxId,
   PROVIDER_LIMITS,
   type ProviderFactory,
   type ProviderLimits,

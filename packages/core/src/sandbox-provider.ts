@@ -235,3 +235,8 @@ function assertProviderTarget(target: ProviderTarget): void {
     );
   }
 }
+
+/** Stable logical identity of an ordinary Modal allocation admitted by Armada. */
+export function modalLaunchSandboxId(launchId: string): string {
+  return `modal_${launchId}`;
+}

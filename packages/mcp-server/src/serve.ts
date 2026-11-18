@@ -53,6 +53,7 @@ import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
+import { createModalBootWorker } from "./modal-boot-worker.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { modalRuntimeLaunch } from "./modal-runtime-launch.ts";
 import { modalRuntimeResume } from "./modal-runtime-resume.ts";
@@ -467,6 +468,15 @@ export async function startServer(
       : undefined;
   const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
   const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
+  const modalBootWorker = createModalBootWorker(sql, config.encryptionKey, (target, caller, runtime) =>
+    runtime
+      ? modalRuntimeHostFor({ ...target, runtimeTransport: "dialout" }, caller)
+      : providers.resolve(target, caller),
+  );
+  const ordinaryLaunch: LaunchOptions = {
+    ...launch,
+    modalBoot: async (input) => modalBootWorker.waitForBoot(await modalBootWorker.admit(input)),
+  };
   const control: ConfiguredControlOptions = {
     ordinaryLaunchReceipts,
     ...(dockerControls ? { dockerControls } : {}),
@@ -494,7 +504,7 @@ export async function startServer(
     ...(runtimeLaunch
       ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor: (apiKey: string) => createObservedBoatProvider({ apiKey }) }
       : {}),
-    launch,
+    launch: ordinaryLaunch,
     publicUrl: config.publicUrl,
     modelAuth,
     sandboxBillingAccount: createSandboxBillingAccount(sql),
@@ -598,7 +608,7 @@ export async function startServer(
     ...(commitSha ? { commitSha } : {}),
     runtimeProviderFor,
     ordinaryLaunchReceipts,
-    launch,
+    launch: ordinaryLaunch,
     modelAuth,
     publicUrl: config.publicUrl,
     loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")
@@ -803,7 +813,7 @@ export async function startServer(
           : {}),
       }),
     ],
-    [langfuse, nativePrompts.steerRecovery],
+    [langfuse, nativePrompts.steerRecovery, modalBootWorker],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

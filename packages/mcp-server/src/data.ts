@@ -794,6 +794,9 @@ export function createSqlData(
         const cancelTurns = patch.stopRequested === true;
         const wrapped = releaseReservation || cancelTurns;
         const admission = !!patch.advanceGeneration && !!patch.activityToken;
+        if (admission)
+          fence += ` and not exists(select 1 from public.provider_launch_requests r
+            where r.sandbox_id=s.id and r.phase in ('queued','booting'))`;
         // A refused delete admission names its predicates from the CAS statement's own snapshot,
         // not a later read that a concurrent lease release could already have cleared. A row
         // changed while this statement waited on its lock is rechecked at its newest version,

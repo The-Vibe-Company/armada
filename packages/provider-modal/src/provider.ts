@@ -14,6 +14,7 @@ import {
   isModelConnectionTestResult,
   machineCapacity,
   mapHarnesses,
+  modalLaunchSandboxId,
   OUTPUT_MAX_READ_BYTES,
   ProviderError,
   parseMachineSize,
@@ -481,7 +482,15 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       sourceImage = { scopeKey: scopeKey(source.scope), name: request.from, imageId };
     }
     const key = request.idempotencyKey ?? randomUUID();
-    const id = `modal_${randomUUID()}`;
+    const launchId = "from" in request ? request.modalLaunchId : undefined;
+    if (
+      launchId !== undefined &&
+      (key !== launchId ||
+        request.labels?.sandbox !== launchId ||
+        !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(launchId))
+    )
+      throw refusal("invalid_request", "Invalid row-first Modal launch identity.");
+    const id = modalLaunchSandboxId(launchId ?? randomUUID());
     const row = await store.reserve(key, {
       info: {
         id,
@@ -508,6 +517,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     let observed = row;
     try {
       if (
+        (launchId !== undefined && row.info.id !== id) ||
         row.golden !== golden ||
         Boolean(row.commonRuntime) !== Boolean(!golden && options.commonRuntime) ||
         row.size !== size ||
