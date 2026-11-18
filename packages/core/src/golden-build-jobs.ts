@@ -617,6 +617,9 @@ export class GoldenBuildJobs {
     if (!job) return false;
     if (job.state !== "running") return true;
     let safeToRelease = true;
+    // The confirmed-unpublished artifact this attempt is discarding, kept even when its durable
+    // record failed: an unsafe outcome retries that record under the fence in the final write.
+    let unpublished: string | null = null;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, job));
@@ -650,6 +653,7 @@ export class GoldenBuildJobs {
           // Under the attempt's fence even after a lease-expiry sweep moved it to recovery: the
           // sweep keeps the fence, so this proof reaches the reconciler that now owns the row.
           discarding: async (snapshot) => {
+            unpublished = snapshot;
             const saved = await this.options.sql.query(
               "update public.golden_build_jobs set snapshot=$3,updated_at=now() where id=$1 and fence=$2 and state in ('running','recovery_required') and (snapshot is null or snapshot=$3) returning id",
               [job.id, job.fence, snapshot],
@@ -686,12 +690,24 @@ export class GoldenBuildJobs {
         const current = (
           await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [job.id])
         ).rows[0];
-        if (current?.state !== "running" || current.fence !== job.fence) return;
+        if (!current || current.fence !== job.fence) return;
+        if (current.state === "recovery_required") {
+          // A lease-expiry sweep kept this fence and moved the attempt to recovery. If its earlier
+          // record failed, hand the confirmed-unpublished artifact to the reconciler now.
+          if (unpublished && current.snapshot === null)
+            await sql.query("update public.golden_build_jobs set snapshot=$2,updated_at=now() where id=$1", [
+              job.id,
+              unpublished,
+            ]);
+          return;
+        }
+        if (current.state !== "running") return;
         if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(
-          // A recorded unpublished artifact (discarding) stays as durable cleanup work unless its
-          // cleanup was confirmed: reconcileOne then finishes collection, builder and capacity.
-          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,snapshot=case when $5::boolean then null else snapshot end,lease_until=null,updated_at=now() where id=$1",
+          // An unpublished artifact (discarding) stays as durable cleanup work unless its cleanup
+          // was confirmed, and is written here if its earlier record failed: reconcileOne then
+          // finishes collection, builder and capacity.
+          "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,snapshot=case when $5::boolean then null else coalesce(snapshot,$6) end,lease_until=null,updated_at=now() where id=$1",
           [
             job.id,
             safeToRelease ? "failed" : "recovery_required",
@@ -708,6 +724,7 @@ export class GoldenBuildJobs {
                   : null,
             error instanceof GoldenError ? (error.safePhase ?? current.phase) : current.phase,
             safeToRelease,
+            unpublished,
           ],
         );
       });

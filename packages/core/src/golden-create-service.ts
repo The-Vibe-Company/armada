@@ -48,7 +48,8 @@ export interface GoldenCreateDeps {
     cleaned(safe: boolean): void;
     /** Durably records a confirmed-unpublished artifact under the job fence BEFORE its remote
      * cleanup, so the job's reconciler can resume its retirement and deferred collection even if
-     * this attempt's lease expires mid-cleanup. A failure leaves the artifact untouched. */
+     * this attempt's lease expires mid-cleanup. A failure leaves the artifact untouched; the job
+     * retries the record with its unsafe-cleanup outcome, under the same fence. */
     discarding?(snapshot: string): Promise<void>;
     phase(phase: string): Promise<void>;
     builder(id: string): Promise<void>;
@@ -436,13 +437,12 @@ export class GoldenCreateService {
           // safe only once a deferred-collection provider confirms the artifact itself is gone.
           // The job records the artifact under its fence first: its reconciler then owns the
           // retirement, collection and builder disposal, whatever happens to this attempt. If the
-          // record cannot be written, the known-unpublished artifact is still retired here.
+          // record cannot be written, the known-unpublished artifact is still retired here, and the
+          // job carries it into its final recovery write: the record's outcome alone never makes
+          // confirmed cleanup unsafe.
           const owned = ownedSnapshot;
           const deferred = provider.collectRetiredSnapshot?.bind(provider);
-          if (deferred && this.deps.execution?.discarding)
-            await this.deps.execution.discarding(owned).catch(() => {
-              cleanupSafe = false;
-            });
+          if (deferred && this.deps.execution?.discarding) await this.deps.execution.discarding(owned).catch(() => {});
           await provider
             .deleteSnapshot(owned)
             .then(async () => {
