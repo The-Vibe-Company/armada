@@ -155,9 +155,14 @@ test("overlapping requests correlate provider outcomes, response headers and saf
   expect(lines.join("\n")).not.toContain(privateValue);
 });
 
-test.each(["declared", "chunked"] as const)(
-  "a %s body above the ingress ceiling answers 413 with the request ID and one record",
-  async (framing) => {
+test.each([
+  ["declared", "reads"],
+  ["chunked", "reads"],
+  ["declared", "ignores"],
+  ["chunked", "ignores"],
+] as const)(
+  "a %s body above the ingress ceiling answers 413 with the request ID and one record when the route %s it",
+  async (framing, route) => {
     const lines: string[] = [];
     const reads: number[] = [];
     const server = Bun.serve({
@@ -169,7 +174,8 @@ test.each(["declared", "chunked"] as const)(
         maxRequestBodyBytes: 1024,
         routes: [
           async (request) => {
-            reads.push((await request.text()).length);
+            // A route like a health check never reads its body; the ceiling must hold anyway.
+            if (route === "reads") reads.push((await request.text()).length);
             return Response.json({ ok: true });
           },
         ],
@@ -201,7 +207,7 @@ test.each(["declared", "chunked"] as const)(
       ]);
       const accepted = await post(1);
       expect(accepted.status).toBe(200);
-      expect(reads.at(-1)).toBe(600);
+      expect(reads).toEqual(route === "reads" ? [600] : []);
     } finally {
       server.stop(true);
     }

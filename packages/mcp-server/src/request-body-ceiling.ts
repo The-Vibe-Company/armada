@@ -25,7 +25,8 @@ function tooLarge(): Response {
 
 /**
  * Refuse a declared length above `limit` without reading it, and bound an undeclared (chunked)
- * body while the handler reads it. Either way the caller gets the same public 413.
+ * body while the handler reads it; a body the handler leaves unread is drained through the same
+ * count before its response is released. Either way the caller gets the same public 413.
  */
 export async function withRequestBodyCeiling(
   request: Request,
@@ -57,6 +58,8 @@ export async function withRequestBodyCeiling(
     if (exceeded) return tooLarge();
     throw error;
   }
+  // The ceiling must not depend on the route reading its body: count whatever it left unread.
+  if (!exceeded && !bounded.bodyUsed) await bounded.body?.pipeTo(new WritableStream()).catch(() => {});
   if (!exceeded) return response;
   void response.body?.cancel().catch(() => {});
   return tooLarge();
