@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.56.0](https://github.com/The-Vibe-Company/armada/compare/v2.55.0...v2.56.0) (2026-11-18)
+
+
+### Features
+
+* **api:** accept explicit runtime launches on the canonical route ([#2673](https://github.com/The-Vibe-Company/armada/issues/2673)) ([fff817c](https://github.com/The-Vibe-Company/armada/commit/fff817c2244c1a8fd89f4ef85d3985a3ee332066))
+* **docker-host:** report daemon version skew ([#2650](https://github.com/The-Vibe-Company/armada/issues/2650)) ([b1d5700](https://github.com/The-Vibe-Company/armada/commit/b1d570059833eee91d56aa008911a0db878ea609))
+* **lifecycle:** journal Modal and Boat sandbox transitions ([#2651](https://github.com/The-Vibe-Company/armada/issues/2651)) ([66a7006](https://github.com/The-Vibe-Company/armada/commit/66a7006a5a14daa54a2f3bf8460cb2360c0ff41b))
+* **observability:** retain correlated sandbox failure diagnostics ([#2668](https://github.com/The-Vibe-Company/armada/issues/2668)) ([4c78a45](https://github.com/The-Vibe-Company/armada/commit/4c78a45da09efd9810e1f2a22b817d6ce1bf4a83))
+* **outputs:** collect and stream document-sized sandbox files ([#2656](https://github.com/The-Vibe-Company/armada/issues/2656)) ([fbc69d7](https://github.com/The-Vibe-Company/armada/commit/fbc69d7dbca26d78033fd0086fa76f0a541c6fe9))
+
+
+### Bug Fixes
+
+* **langfuse:** export a separate trace for each turn ([#2663](https://github.com/The-Vibe-Company/armada/issues/2663)) ([97d722a](https://github.com/The-Vibe-Company/armada/commit/97d722aaeda2b81942c20d4717eb92f181fb8c40))
+* **langfuse:** preserve native steer exports across downtime ([#2661](https://github.com/The-Vibe-Company/armada/issues/2661)) ([0f10ea1](https://github.com/The-Vibe-Company/armada/commit/0f10ea10d8d0e46823e538f5c3d711482b89f3ca))
+* **outputs:** isolate stalled collection by provider ([#2664](https://github.com/The-Vibe-Company/armada/issues/2664)) ([fac767a](https://github.com/The-Vibe-Company/armada/commit/fac767ac847ff221d15b248595e151aab3bb2f4f))
+* **outputs:** share Bun descriptor capability checks ([#2662](https://github.com/The-Vibe-Company/armada/issues/2662)) ([5aa1959](https://github.com/The-Vibe-Company/armada/commit/5aa1959d2bdaa926ccb0e8ee534d1912b4ac4945))
+* **smoke:** diagnose invalid resume wait responses ([#2649](https://github.com/The-Vibe-Company/armada/issues/2649)) ([542c167](https://github.com/The-Vibe-Company/armada/commit/542c1672585b9ac21dbd573ddbbd15590399bcc8))
+* **snapshots:** resolve GitHub defaults and explain outdated Docker hosts ([#2665](https://github.com/The-Vibe-Company/armada/issues/2665)) ([07a85ca](https://github.com/The-Vibe-Company/armada/commit/07a85cad4f484ad65310943289c90b2edae766a4))
+
+
+### Performance Improvements
+
+* **ci:** remove the duplicate staging smoke push trigger ([#2672](https://github.com/The-Vibe-Company/armada/issues/2672)) ([e92fe22](https://github.com/The-Vibe-Company/armada/commit/e92fe22f9b3ef8d4b3e51e79b7a9b62783410822))
+
 ## [2.55.0](https://github.com/The-Vibe-Company/armada/compare/v2.54.0...v2.55.0) (2026-11-18)
 
 
