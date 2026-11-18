@@ -42,9 +42,10 @@ function runCollector(root: string) {
 test("the real collector bounds admitted files in name order, so excluded entries never hide a deliverable", () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
-    expect(parseCollectorOutput(runCollector(root).stdout.toString())).toEqual([]);
+    expect(runCollector(root).exitCode).not.toBe(0);
     const outputs = join(root, "outputs");
     mkdirSync(outputs);
+    expect(parseCollectorOutput(runCollector(root).stdout.toString())).toEqual([]);
     // Excluded entries enumerated around the deliverables: subdirectories, a link, an oversized file.
     for (let i = 0; i < 128; i++) mkdirSync(join(outputs, `dir${String(i).padStart(3, "0")}`));
     symlinkSync("/etc/hostname", join(outputs, "a-link"));
