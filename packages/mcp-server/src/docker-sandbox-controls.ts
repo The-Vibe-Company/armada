@@ -905,7 +905,10 @@ export function createDockerSandboxControls(
         // status/logs only read Armada's database: only host-side controls get a Docker record, and
         // only when they admit new work (a retried request_id is answered from the database).
         return DOCKER_HOST_CONTROLS.has(name)
-          ? await observeProviderCall("docker", name, dispatch, undefined, { replayable: true })
+          ? await observeProviderCall("docker", name, dispatch, undefined, {
+              replayable: true,
+              sandboxId: () => row.id,
+            })
           : await dispatch();
       } catch (error) {
         // ToolError is Armada request validation (Docker send admission) with public guidance.

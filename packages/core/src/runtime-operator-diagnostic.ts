@@ -13,7 +13,7 @@ const classes: ReadonlySet<string> = new Set([
 ]);
 const sourceLocation =
   /^(?:runtime|main|codex|claude|opencode|acp|dialout|artifact-cache|harness-cache|enrolled-harness|native-auth|exec-env|state|journal)\.ts:[1-9]\d{0,5}:[1-9]\d{0,4}$/;
-const bundledLocation = /^main\.js:[1-9]\d{0,6}:[1-9]\d{0,5}$/;
+const bundledLocation = /^(?:main\.js|armada-runtime):[1-9]\d{0,6}:[1-9]\d{0,6}$/;
 const isSourceLocation = (frame: string) => sourceLocation.test(frame) || bundledLocation.test(frame);
 const runnerReasons: ReadonlySet<string> = new Set([
   "harness_process_lost",

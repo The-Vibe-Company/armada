@@ -149,7 +149,7 @@ export async function observeProviderCall<T>(
 export function observeProvider<T extends object>(
   provider: Provider,
   adapter: T,
-  options: { replayable?: boolean } = {},
+  options: { replayable?: boolean; sandboxId?: () => string | undefined } = {},
 ): T {
   return new Proxy(adapter, {
     get(instance, property) {

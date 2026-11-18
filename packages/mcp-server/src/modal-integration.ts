@@ -236,8 +236,15 @@ export async function createModalIntegration(options: {
     };
     // Stored reads skip the App lookup and every live Modal call: they read Armada's database, so no provider record.
     if (storedReads) return (await createComposedModalProvider(composed)).provider;
-    const { provider } = await observeProviderCall("modal", "initialize", () => createComposedModalProvider(composed));
-    return observeProvider("modal", provider);
+    const sandbox = { sandboxId: () => ("harness" in context.target ? context.target.id : undefined) };
+    const { provider } = await observeProviderCall(
+      "modal",
+      "initialize",
+      () => createComposedModalProvider(composed),
+      undefined,
+      sandbox,
+    );
+    return observeProvider("modal", provider, sandbox);
   };
   async function goldenTarget(
     target: Omit<ProviderTarget, "modal">,

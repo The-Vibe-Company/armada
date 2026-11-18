@@ -126,7 +126,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
       sandbox,
       { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
     );
-    const host = typeof apiKey === "string" ? createObservedBoatProvider({ apiKey }) : apiKey;
+    const host = typeof apiKey === "string" ? createObservedBoatProvider({ apiKey }, sandbox.id) : apiKey;
     // Native Modal stop expects its private listener. This lane may retain disk
     // only after the common journal checkpoint committed, never on a host ACK.
     const compute =

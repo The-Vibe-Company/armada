@@ -116,16 +116,21 @@ test("overlapping requests correlate provider outcomes, response headers and saf
   const lines: string[] = [];
   const blocked = Promise.withResolvers<void>();
   const privateValue = "private_request_data";
-  const provider = observeProvider("boat", {
-    async get(fail: boolean) {
-      if (fail) {
-        await blocked.promise;
-        const error = Object.assign(new TypeError(privateValue), { code: "ECONNRESET" });
-        error.stack += `\n    at transport (/srv/${privateValue}/packages/provider-boat/src/provider.ts:12:3)`;
-        throw error;
-      }
+  const sandboxId = crypto.randomUUID();
+  const provider = observeProvider(
+    "boat",
+    {
+      async get(fail: boolean) {
+        if (fail) {
+          await blocked.promise;
+          const error = Object.assign(new TypeError(privateValue), { code: "ECONNRESET" });
+          error.stack += `\n    at transport (/srv/${privateValue}/packages/provider-boat/src/provider.ts:12:3)`;
+          throw error;
+        }
+      },
     },
-  });
+    { sandboxId: () => sandboxId },
+  );
   const handle = handler({
     log: (line) => lines.push(line),
     routes: [
@@ -155,6 +160,7 @@ test("overlapping requests correlate provider outcomes, response headers and saf
       event: "operator_failure",
       phase: "get",
       requestId: failedId,
+      sandboxId,
       errorClass: "TypeError",
       message: "ECONNRESET",
       stack: expect.arrayContaining(["provider.ts:12:3"]),

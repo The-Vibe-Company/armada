@@ -12,7 +12,7 @@ export function boatRuntimeResume(options: RuntimeResumeOptions & { modelAuth: M
         orgId: sandbox.orgId,
         visibility: sandbox.sourceGoldenVisibility ?? sandbox.visibility ?? "private",
       });
-      return createObservedBoatProvider({ apiKey: management.key });
+      return createObservedBoatProvider({ apiKey: management.key }, sandbox.id);
     },
     retained(current) {
       if (current.state !== "stopped" || current.physicalExitConfirmed)
