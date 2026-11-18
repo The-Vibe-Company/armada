@@ -8,6 +8,10 @@
  * and lists one optional dependency per target. `@the-vibe-company/armada-<target>` holds that
  * target's binary, restricted by `os` and `cpu`, so npm and Bun install only the one that runs.
  * Platform packages are returned first: they are published before the package that needs them.
+ *
+ * `stageSdk` stages `@the-vibe-company/armada-sdk` beside them (dist/npm/sdk): the workspace
+ * `@armada/sdk` bundled with the browser-safe core values it uses, and a declaration file whose
+ * core types are expanded, so the published package depends on no private workspace package.
  */
 import { chmodSync, copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -15,6 +19,7 @@ import { parseArgs } from "node:util";
 import { TARGETS, type Target } from "./build.ts";
 
 export const NPM_PACKAGE = "@the-vibe-company/armada";
+export const SDK_PACKAGE = "@the-vibe-company/armada-sdk";
 
 const ROOT = join(import.meta.dir, "..");
 const VERSION: string = (await Bun.file(join(ROOT, "packages/core/package.json")).json()).version;
@@ -104,6 +109,107 @@ export function stageNpm(options: StageOptions): StagedPackage[] {
   return staged;
 }
 
+/** Bundles the SDK into `<out>/sdk`, which must contain no reference to a workspace package. */
+export async function stageSdk(options: { out: string; version?: string }): Promise<StagedPackage> {
+  const version = options.version ?? VERSION;
+  const entry = join(ROOT, "packages/sdk/src/index.ts");
+  const dir = join(options.out, "sdk");
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const built = await Bun.build({ entrypoints: [entry], target: "browser", format: "esm" });
+  const [output] = built.outputs;
+  if (!built.success || built.outputs.length !== 1 || !output) {
+    throw new AggregateError(built.logs, "The SDK bundle failed.");
+  }
+  const code = await output.text();
+  // A bare import resolves against the consumer's node_modules, where no workspace package exists.
+  if (/^\s*import\b|\bfrom\s*["']|\bimport\(|\brequire\(/m.test(code)) {
+    throw new Error("The SDK bundle must not import other modules.");
+  }
+  writeFileSync(join(dir, "index.js"), code);
+  writeFileSync(join(dir, "index.d.ts"), await sdkDeclarations(entry));
+  copyFileSync(LICENSE, join(dir, "LICENSE"));
+  writeFileSync(
+    join(dir, "README.md"),
+    `# ${SDK_PACKAGE}\n\nA small fetch-based TypeScript client for the Armada \`/api/v1\` API. See the [SDK guide](https://github.com/The-Vibe-Company/armada/blob/main/docs/sdk.md).\n`,
+  );
+  writeJson(join(dir, "package.json"), {
+    name: SDK_PACKAGE,
+    version,
+    description: "TypeScript client for the Armada sandbox API: launch, send, wait, logs, stop, files and webhooks.",
+    keywords: ["armada", "agents", "sandbox", "sdk"],
+    ...COMMON,
+    repository: { ...COMMON.repository, directory: "packages/sdk" },
+    type: "module",
+    exports: { ".": { types: "./index.d.ts", default: "./index.js" } },
+    types: "./index.d.ts",
+    files: ["index.js", "index.d.ts"],
+    sideEffects: false,
+    engines: { node: ">=20.3" },
+  });
+  return { name: SDK_PACKAGE, dir };
+}
+
+/** Emits the SDK declarations, replacing each imported core type by the literal union it names. */
+async function sdkDeclarations(entry: string): Promise<string> {
+  const ts = (await import("typescript")).default;
+  const program = ts.createProgram([entry], {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.Preserve,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    lib: ["lib.es2023.d.ts", "lib.dom.d.ts"],
+    types: [],
+    strict: true,
+    exactOptionalPropertyTypes: true,
+    allowImportingTsExtensions: true,
+    skipLibCheck: true,
+    declaration: true,
+    emitDeclarationOnly: true,
+  });
+  const source = program.getSourceFile(entry);
+  if (!source) throw new Error(`Missing ${entry}.`);
+  let declarations = "";
+  const emitted = program.emit(source, (_name, text) => {
+    declarations = text;
+  });
+  if (emitted.emitSkipped || !declarations) throw new Error("The SDK declarations were not emitted.");
+  const checker = program.getTypeChecker();
+  const aliases = new Map<string, string>();
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const element of bindings.elements) {
+      const local = checker.getSymbolAtLocation(element.name);
+      if (!local || !(local.flags & ts.SymbolFlags.Alias)) continue;
+      const target = checker.getAliasedSymbol(local);
+      if (!(target.flags & ts.SymbolFlags.TypeAlias)) continue;
+      const text = checker.typeToString(
+        checker.getDeclaredTypeOfSymbol(target),
+        undefined,
+        ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.InTypeAlias,
+      );
+      aliases.set(element.name.text, `type ${element.name.text} = ${text};\n`);
+    }
+  }
+  const result = declarations.replace(/^import\s*\{([^}]*)\}\s*from\s*["'][^"']+["'];\n/gm, (_line, names: string) =>
+    names
+      .split(",")
+      .map((name) => name.replace(/^\s*type\s+/, "").trim())
+      .filter(Boolean)
+      .map((name) => {
+        const alias = aliases.get(name);
+        if (!alias) throw new Error(`The SDK declarations import ${name}, which is not a type alias.`);
+        return alias;
+      })
+      .join(""),
+  );
+  if (/^\s*import\b|\bfrom\s*["']|\bimport\(/m.test(result)) {
+    throw new Error("The SDK declarations must not import other modules.");
+  }
+  return result;
+}
+
 function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -126,5 +232,6 @@ if (import.meta.main) {
     out: values.out,
     ...(values.target ? { targets: values.target as Target[] } : {}),
   });
+  staged.push(await stageSdk({ out: values.out }));
   for (const { name, dir } of staged) console.log(`${name}\t${dir}`);
 }

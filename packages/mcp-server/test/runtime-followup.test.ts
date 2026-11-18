@@ -90,6 +90,14 @@ test("uncertain send reconciles the same durable identity/lease; changed input a
     await f.db.query("update credentials set status='revoked' where id=$1", [f.account.id]);
     await expect(f.send(f.caller, f.input())).rejects.toMatchObject({ code: "not_found" });
     await f.db.query("update credentials set status='active' where id=$1", [f.account.id]);
+    // A checkpoint fences new turns, never the stored reply of an admitted one.
+    await f.db.query("insert into runtime_checkpoints(sandbox_id,epoch,request_id) values($1,$2,$3)", [
+      f.row.id,
+      f.active.epoch,
+      crypto.randomUUID(),
+    ]);
+    expect(await f.send(f.caller, input)).toEqual(recovered);
+    await expect(f.send(f.caller, f.input())).rejects.toThrow("Runtime checkpoint is pending or complete");
     await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.row.id]);
     await expect(f.send(f.caller, f.input())).rejects.toMatchObject({ code: "conflict" });
     expect(f.starts).toHaveLength(2);
