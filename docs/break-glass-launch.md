@@ -40,13 +40,16 @@ staging_armada --version
 staging_armada login --url https://armada-mcp-staging.up.railway.app --provider github
 staging_armada org list
 staging_armada snapshot list --org "$staging_org" --provider modal
+```
+
+Once the version matches the pin and the org and snapshot are visible, launch
+the rehearsal worker. During an incident, replace the prompt with the repair
+task and include the assigned branch and acceptance criteria.
+
+```bash
 staging_armada launch "$staging_snapshot" --org "$staging_org" --provider modal \
   --agent codex "Summarize the repository without changing any files."
 ```
-
-Check that the version matches the pin and that the org and snapshot are visible
-before launching. The prompt above is for the rehearsal. During an incident use
-the repair task and include the assigned branch and acceptance criteria.
 
 Use the launch response's sandbox ID for the commands below. Read the result
 and confirm the task completed. If the launch response was lost, reconcile the
@@ -55,8 +58,8 @@ launch.
 
 ```bash
 read -r -p 'Returned sandbox ID: ' sandbox_id
-staging_armada status "$sandbox_id"
-staging_armada logs "$sandbox_id" --follow
+staging_armada status "$sandbox_id" --org "$staging_org"
+staging_armada logs "$sandbox_id" --org "$staging_org" --follow
 ```
 
 ### Coordinator rehearsal record
@@ -77,15 +80,32 @@ path 1. See the [Docker host quickstart](own-machine-quickstart.md) for setup.
 staging_armada host list --org "$staging_org" --json
 read -r -p 'Owner staging Docker host UUID: ' staging_host
 read -r -p 'Repository and ref (owner/repo@ref): ' worker_repo
-staging_armada launch "Summarize the repository without changing any files." \
-  --provider docker --host "$staging_host" --org "$staging_org" \
-  --agent codex --repo "$worker_repo"
+docker_prompt='Summarize the repository without changing any files.'
+docker_request_id="$(node -p 'require("node:crypto").randomUUID()')"
+printf '%s\n' "$docker_request_id" > "$break_glass_dir/docker-request-id"
 ```
 
-During an incident, substitute the repair task and the intended repository/ref.
-Use the returned sandbox ID with the same status and logs commands. Check the
-worker's result before handing it work. Reconcile uncertain launches using the
-org, host and start time before retrying.
+During an incident, set `docker_prompt` to the repair task before submitting
+the launch. Record the request ID, org, host, repo and exact prompt in your
+incident notes so you can recover the submission if you lose the terminal.
+Keep credentials out of the prompt and notes.
+
+```bash
+staging_armada launch "$docker_prompt" \
+  --provider docker --host "$staging_host" --org "$staging_org" \
+  --agent codex --repo "$worker_repo" --request-id "$docker_request_id"
+```
+
+Use the returned sandbox ID with the same status and logs commands. If the
+response was lost, first inspect the existing staging workers.
+
+```bash
+staging_armada list --org "$staging_org" --json
+```
+
+If you still need the receipt, recover `docker_request_id` from the saved file
+or incident notes and rerun the exact launch command above with the original
+inputs and request ID. Keep that ID for this attempt.
 
 ## 3. Run a local Codex worker
 
@@ -97,16 +117,23 @@ both logins on the workstation and use a separate checkout for the repair.
 ```bash
 codex login status
 # If signed out, run: codex login
-git_dir="$(mktemp -d)"
-git clone git@github.com:The-Vibe-Company/armada.git "$git_dir/armada"
-cd "$git_dir/armada"
-read -r -p 'Assigned repair branch: ' repair_branch
-git switch --create "$repair_branch"
-codex
 ```
 
-If the assigned branch already exists remotely, use
-`git switch --track "origin/$repair_branch"` in place of the create command.
+Use HTTPS with a Git credential helper. If your workstation uses an SSH key,
+set `repo_url=git@github.com:The-Vibe-Company/armada.git` instead. If the
+assigned branch already exists remotely, replace the branch creation command
+with `git switch --track "origin/$repair_branch"`.
+
+```bash
+repo_url=https://github.com/The-Vibe-Company/armada.git
+read -r -p 'Assigned repair branch: ' repair_branch
+git_dir="$(mktemp -d)" &&
+  git clone "$repo_url" "$git_dir/armada" &&
+  cd "$git_dir/armada" &&
+  git switch --create "$repair_branch" &&
+  codex
+```
+
 In Codex, give the worker the issue, branch and verification requirements. Use
 the workstation's normal approvals and Git access to review and publish the
 work. This path needs neither an Armada session nor an Armada sandbox.
@@ -119,8 +146,8 @@ stopped. Once all workers are accounted for, sign out of the temporary staging
 session and close the dedicated shell.
 
 ```bash
-staging_armada stop "$sandbox_id"
-staging_armada status "$sandbox_id"
+staging_armada stop "$sandbox_id" --org "$staging_org"
+staging_armada status "$sandbox_id" --org "$staging_org"
 staging_armada logout
 ```
 
