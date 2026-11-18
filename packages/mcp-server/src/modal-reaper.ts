@@ -14,6 +14,7 @@ type OpenInventory = (
   registration: ModalInventoryRegistration,
   binding: ModalBinding,
   deploymentId: string,
+  signal: AbortSignal,
 ) => Promise<ProviderReaperSource["inventory"] & { close(): void }>;
 
 function reaperQuery<T>(sql: Sql, query: string, params?: unknown[]) {
@@ -92,7 +93,7 @@ export function createModalReaper(
           inventory: {
             async *listInventory() {
               signal.throwIfAborted();
-              const connection = await openInventory(registration, binding, deploymentId);
+              const connection = await openInventory(registration, binding, deploymentId, signal);
               try {
                 signal.throwIfAborted();
                 yield* connection.listInventory(signal);

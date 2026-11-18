@@ -288,12 +288,24 @@ export async function createModalIntegration(options: {
       createModalReaper(
         options.sql,
         options.publicUrl,
-        async (registration, binding, deploymentId) => {
+        async (registration, binding, deploymentId, shutdown) => {
           const { tokenId, tokenSecret } = await resolveManagementCredentials({
             credentialScope: registration.authority_scope,
             credentialOwnerId: registration.authority_owner_id,
           });
-          const client = new ModalClient({ tokenId, tokenSecret, timeoutMs: 10_000, maxRetries: 0 });
+          shutdown.throwIfAborted();
+          const client = new ModalClient({
+            tokenId,
+            tokenSecret,
+            maxThrottleWaitSecs: 0,
+            grpcMiddleware: [
+              async function* (call, options) {
+                const deadline = AbortSignal.timeout(10_000);
+                const signal = AbortSignal.any([shutdown, deadline, ...(options.signal ? [options.signal] : [])]);
+                return yield* call.next(call.request, { ...options, signal });
+              },
+            ],
+          });
           return {
             ...createModalInventory(client, registration.app_name, binding, deploymentId),
             close: () => client.close(),
