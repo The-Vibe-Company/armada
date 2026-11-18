@@ -38,6 +38,9 @@ test("only send resumes preserved stopped cloud sandboxes", () => {
 test("retained Docker idle pauses accept a fresh send but terminal Docker stops do not", () => {
   const row = { provider: "docker", status: "stopped", statusReason: "idle_paused", expiresAt: "2026-11-17T00:00:00Z" };
   expect(sandboxControlRefusal(row, now, "send")).toBeNull();
+  // A merge stop is admitted through the same retained idle checkpoint.
+  expect(sandboxControlRefusal({ ...row, statusReason: "work_merged" }, now, "send")).toBeNull();
+  expect(sandboxControlRefusal({ ...row, statusReason: "agent_finished" }, now, "send")).toContain("same branch");
   for (const operation of ["steer", "exec", "interrupt"])
     expect(sandboxControlRefusal(row, now, operation)).toContain(
       "Send a message to resume its retained idle checkpoint",
