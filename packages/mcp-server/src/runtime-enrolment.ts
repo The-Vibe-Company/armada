@@ -10,7 +10,7 @@ const SESSION_PATH = "/api/runtime/session";
 const UNSUPPORTED_PROTOCOL = "runtime_protocol_unsupported";
 const SOURCE_TRANSACTION = Symbol("runtime_source_transaction");
 
-import { currentRequestId, recordOperatorFailure } from "./request-observability.ts";
+import { currentRequestId, recordOperatorDiagnostic } from "./request-observability.ts";
 
 export class RuntimeEnrolmentDenied extends Error {
   constructor() {
@@ -164,6 +164,10 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     return { enrolmentToken, ...receipt };
   }
   async function enrol(enrolmentToken: string, wireProtocol: string | null = String(PROTOCOL_VERSION)) {
+    // The original v1 wire request had no protocol header. This encoding ages out with v1.
+    const version = wireProtocol ?? "1";
+    const previous = PROTOCOL_VERSION > 1 && version === String(PROTOCOL_VERSION - 1);
+    const supported = version === String(PROTOCOL_VERSION) || previous;
     if (!valid(enrolmentToken, "enrol")) throw new RuntimeEnrolmentDenied();
     const hash = await sha256Hex(enrolmentToken);
     const runtimeToken = token("runtime");
@@ -178,18 +182,17 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!candidate) throw new RuntimeEnrolmentDenied();
       const sandbox = await lockSandbox(tx, candidate.sandbox_id);
       const row = (
-        await tx.query<{ configuration_enc: Uint8Array<ArrayBuffer> }>(
-          `select configuration_enc from public.runtime_enrolments where sandbox_id=$1 and enrolment_hash=$2
+        await tx.query<{ configuration_enc: Uint8Array<ArrayBuffer> | null }>(
+          `select case when $5::boolean then configuration_enc end as configuration_enc
+         from public.runtime_enrolments where sandbox_id=$1 and enrolment_hash=$2
          and lifecycle_generation=$3 and enrolment_expires_at>now()
          and docker_issuer_fence is not distinct from $4::text for update`,
-          [sandbox.id, hash, sandbox.lifecycle_generation, sandbox.docker_issuer_fence],
+          [sandbox.id, hash, sandbox.lifecycle_generation, sandbox.docker_issuer_fence, supported],
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
-      // The original v1 wire request had no protocol header. This encoding ages out with v1.
-      const version = wireProtocol ?? "1";
-      const previous = PROTOCOL_VERSION > 1 && version === String(PROTOCOL_VERSION - 1);
-      if (version !== String(PROTOCOL_VERSION) && !previous) throw new RuntimeProtocolUnsupported(sandbox.id);
+      if (!supported) throw new RuntimeProtocolUnsupported(sandbox.id);
+      if (!row.configuration_enc) throw new RuntimeEnrolmentDenied();
       const configuration: unknown = JSON.parse(await decryptSecret(row.configuration_enc, encryptionKey));
       const updated = (
         await tx.query<{ epoch: string }>(
@@ -298,7 +301,11 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       return Response.json(result, { headers });
     } catch (error) {
       if (error instanceof RuntimeProtocolUnsupported) {
-        recordOperatorFailure("runtime.enrol.protocol", error, { sandboxId: error.sandboxId });
+        recordOperatorDiagnostic(
+          "runtime.enrol.protocol",
+          { errorClass: "RuntimeProtocolUnsupported", message: UNSUPPORTED_PROTOCOL, stack: [] },
+          { sandboxId: error.sandboxId },
+        );
         return runtimeHttpFailure(409, UNSUPPORTED_PROTOCOL);
       }
       return runtimeHttpFailure(error instanceof RuntimeEnrolmentDenied ? 401 : 503);
