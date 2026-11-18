@@ -6,8 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
-    "e2e": "bun ../../scripts/fixture-runner.ts playwright"
+    "start": "next start"
   },
   "dependencies": {
     "@armada/core": "workspace:*",
