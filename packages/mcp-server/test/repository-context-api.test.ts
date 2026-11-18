@@ -8,6 +8,9 @@ import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
 
+// The CI shard planner can make this the first SQL suite in a fresh worker, where
+// harness() pays the one-time migrated-template build (~5s on CI runners) before
+// any launch work starts. Budget for that cold start instead of the 5s default.
 test("CLI/shared launch prepares persisted native repo cwd before idle/first prompts, retaining plain sends and models across resume", async () => {
   const server = await harness();
   try {
@@ -233,4 +236,4 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
   } finally {
     await server.close();
   }
-});
+}, 30_000);
