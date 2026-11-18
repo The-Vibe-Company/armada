@@ -164,7 +164,7 @@ test("the Langfuse connection test checks keys without exporting a trace or pers
     people.org,
     await encryptConfig(),
   ]);
-  const attempts: { url: string; init?: RequestInit }[] = [];
+  const attempts: { url: string; init: RequestInit | undefined }[] = [];
   let upstream: number | null = 200;
   const route = createLangfuse(db, key, noNativeProvider, (async (url, init) => {
     attempts.push({ url: String(url), init });
