@@ -168,6 +168,24 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         [key, name, sourceId, imageId],
       );
     },
+    async takeImage(name, sourceId, imageId, token) {
+      await authorize();
+      // Five minutes bounds one image deletion; a crashed holder's claim is then recoverable.
+      const result = await sql.query(
+        `update public.modal_images set record=record||jsonb_build_object('collectToken',$5::text,'collectUntil',extract(epoch from now()+interval '5 minutes'))
+         where scope=$1 and name=$2 and source_id=$3 and record->>'imageId'=$4 and record->>'deleted'='true' and record->>'collecting'='true'
+         and (record->>'collectUntil' is null or (record->>'collectUntil')::double precision<extract(epoch from now())) returning name`,
+        [key, name, sourceId, imageId, token],
+      );
+      return result.rows.length > 0;
+    },
+    async releaseImage(name, sourceId, imageId, token) {
+      await authorize();
+      await sql.query(
+        `update public.modal_images set record=record-'collectToken'-'collectUntil' where scope=$1 and name=$2 and source_id=$3 and record->>'imageId'=$4 and record->>'collectToken'=$5`,
+        [key, name, sourceId, imageId, token],
+      );
+    },
     async images(sourceId) {
       await get(sourceId);
       const result = await sql.query<{ record: SavedImage }>(

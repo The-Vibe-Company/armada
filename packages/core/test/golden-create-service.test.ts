@@ -342,6 +342,72 @@ test("a persist failure deletes only a confirmed unreferenced ready snapshot and
   expect(log).toEqual(["delete:golden-bx", "stop"]);
 });
 
+test.each([
+  [
+    "pending",
+    undefined,
+    "pending",
+    ["record:golden-bx", "persist", "delete:golden-bx", "collect:golden-bx", "stop"],
+    false,
+  ],
+  ["refused", "delete", "pending", ["record:golden-bx", "persist", "delete:golden-bx", "stop"], false],
+  [
+    "collected",
+    undefined,
+    "collected",
+    ["record:golden-bx", "persist", "delete:golden-bx", "collect:golden-bx", "stop"],
+    true,
+  ],
+  // Unrecorded, the candidate is never published and never retired: a retired artifact nobody names
+  // could never be collected. It stays live for the job's fenced recovery write.
+  ["unrecorded", "record", "collected", ["record:golden-bx", "record:golden-bx", "stop"], false],
+] as const)(
+  "an unpublished artifact is recorded before publication and reports cleanup safe only once collected (%s)",
+  async (_, refused, collection, expected, safe) => {
+    const log: string[] = [];
+    const safety: boolean[] = [];
+    const s = new GoldenCreateService({
+      canDiscardSnapshot: async () => true,
+      execution: {
+        id: "job",
+        cleaned: (safe) => void safety.push(safe),
+        candidate: async (name) => {
+          log.push(`record:${name}`);
+          if (refused === "record") throw new Error("lease lost");
+        },
+        phase: async () => {},
+        builder: async () => {},
+      },
+      authorize: async () => ({ repos: [repo], token: "caller-token" }),
+      ssh: async () => {},
+      scan: async () => {},
+      persist: async () => {
+        log.push("persist");
+        throw new Error("database is down");
+      },
+    });
+    const p: any = {
+      id: "boat",
+      createGolden: async () => ({ id: "bx" }),
+      snapshot: async ({ name }: any) => ({ name, status: "ready" }),
+      deleteSnapshot: async (name: string) => {
+        log.push(`delete:${name}`);
+        if (refused === "delete") throw new Error("source busy");
+      },
+      collectRetiredSnapshot: async (name: string) => {
+        log.push(`collect:${name}`);
+        return collection;
+      },
+      stop: async () => void log.push("stop"),
+    };
+    await expect(s.create(p, actor, { name: "x", visibility: "org", repos: ["acme/web"] })).rejects.toMatchObject({
+      code: "build_failed",
+    });
+    expect(log).toEqual([...expected]);
+    expect(safety).toEqual([safe]);
+  },
+);
+
 test("uses normalized branches, directories, and init commands after canonical authorization", async () => {
   let script = "";
   let authorized: string[] = [];
