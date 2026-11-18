@@ -337,7 +337,7 @@ const prompt = z.object({
     .optional(),
   promptId: z.string(),
   conversationId: z.string().nullable(),
-  state: z.enum(["running", "finished", "interrupted", "failed"]),
+  state: z.enum(["queued", "running", "finished", "interrupted", "failed"]),
   reason: z.string().nullable(),
   requestedModel: z.string().nullable().optional(),
   observedModel: z.string().nullable().optional(),
@@ -1553,7 +1553,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       title: "Sandbox status",
       description:
         "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
-        "running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
+        "queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
         "the reason. settled is true when the agent is not working.",
       input: {
         id,

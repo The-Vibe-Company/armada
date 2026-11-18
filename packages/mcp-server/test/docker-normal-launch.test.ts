@@ -768,18 +768,8 @@ test("normal publication uses the runtime epoch rather than the independent life
   ).toEqual({ generation: "7", epoch: "1", runtime_generation: "7" });
 });
 
-test("the normal HTTP route accepts the dashboard body and returns a launched sandbox readable through normal controls", async () => {
-  const f = await fixture();
-  const body = dockerLaunchBody({
-    org: f.actor.orgId,
-    hostId: f.hostId,
-    harness: "codex",
-    credentialId: f.body.credentialId,
-    requestId: f.body.requestId,
-    model: "normal-http-model",
-    reasoningEffort: "high",
-    prompt: f.body.prompt,
-  });
+/** The public REST control surface over a fixture's Docker services, authenticated as its owner. */
+function restControl(f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<ControlOptions> = {}) {
   const options: ControlOptions = {
     store: createSqlVaultStore(sql),
     encryptionKey: key,
@@ -798,6 +788,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
       anonKey: "fixture-anon",
       fetch: async () => Response.json({ id: f.actor.userId }),
     },
+    ...overrides,
   };
   const bearer = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ sub: f.actor.userId })).toString("base64url")}.sig`;
   async function post(path: string, input: object) {
@@ -810,10 +801,27 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
       options,
     );
     if (!response) throw Error("Missing normal control route");
-    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect({ path, status: response.status, result }).toMatchObject({ path, status: 200 });
     expect(response.headers.get("cache-control")).toBe("no-store");
-    return response.json();
+    return result;
   }
+  return { options, bearer, post };
+}
+
+test("the normal HTTP route accepts the dashboard body and returns a launched sandbox readable through normal controls", async () => {
+  const f = await fixture();
+  const body = dockerLaunchBody({
+    org: f.actor.orgId,
+    hostId: f.hostId,
+    harness: "codex",
+    credentialId: f.body.credentialId,
+    requestId: f.body.requestId,
+    model: "normal-http-model",
+    reasoningEffort: "high",
+    prompt: f.body.prompt,
+  });
+  const { options, bearer, post } = restControl(f);
   // An acknowledged timeout must preserve the dashboard's stable request key.
   f.setDrive(false);
   options.dockerLaunch = f.service(sql, true, 250);
@@ -1183,6 +1191,18 @@ test.each([false, true])(
       handled: true,
       result: { prompt: { promptId: queued.promptId, state: "queued" }, settled: false },
     });
+    // The public REST routes (and so the SDK) observe the queued turn within the published contract.
+    const rest = restControl(f, { dockerControls: controls });
+    const ref = { org: f.actor.orgId, id: f.body.requestId, prompt_id: queued.promptId };
+    for (const [route, input] of [
+      ["sandbox/status", ref],
+      ["sandbox/detail", ref],
+      ["sandbox/wait", { ...ref, timeout_seconds: 0 }],
+    ] as const) {
+      const report = await rest.post(route, input);
+      expect(report).toMatchObject({ prompt: { promptId: queued.promptId, state: "queued" }, settled: false });
+      publishedResponse(route).parse(report);
+    }
     // Logs report the queued turn. The published REST response and the MCP `logs` output schema
     // (closed, as MCP clients validate it) both accept it.
     const queuedLogs = await readLogs({ dockerControls: controls }, f.caller, f.body.requestId, {});
@@ -2562,6 +2582,17 @@ test.each(["private", "org"] as const)(
       expect(f.resolutions()).toBe(resolutions);
     }
     const { hostId: _, ...body } = f.body;
+    // The published launch contract and the handler agree on the Docker source shapes:
+    // a snapshot body without hostId is valid; no source, or a snapshot with repos, is refused by both.
+    const published = publishedRequest("sandbox/launch");
+    published.parse({ ...body, snapshotId: id });
+    published.parse({ ...f.body, snapshotId: id });
+    const repos = [{ url: "https://github.com/example/project.git" }];
+    for (const refused of [body, { ...body, snapshotId: id, repos }, { ...f.body, snapshotId: id, repos }]) {
+      const attempt = { ...refused, requestId: randomUUID() };
+      expect(published.safeParse(attempt).success).toBe(false);
+      await rejected(f.service().launch(f.caller, attempt), "invalid_request");
+    }
     const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
     expect(launched.sandbox).toMatchObject({ image, snapshotId: id, hostId: f.hostId });
     expect(f.jobs[0]).toMatchObject({ request: { image, snapshot: { id, ownerId: creator.userId, visibility } } });

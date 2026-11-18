@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { z } from "zod";
 import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
-import { DOCKER_LAUNCH_REQUEST } from "./docker-launch-request-schema.ts";
+import { DOCKER_HOST_LAUNCH_REQUEST, DOCKER_SNAPSHOT_LAUNCH_REQUEST } from "./docker-launch-request-schema.ts";
 import {
   GOLDEN_LIST_RESPONSE,
   LAUNCH_OPTIONS_RESPONSE,
@@ -120,10 +120,13 @@ export async function generateOpenApi() {
       if (route === "sandbox/launch") {
         // One public path, two handlers: provider "docker" is dispatched to the normal Docker launch.
         const { $schema: _golden, ...golden } = input as Record<string, unknown>;
-        const { $schema: _docker, ...docker } = requestJsonSchema(DOCKER_LAUNCH_REQUEST);
-        request = { oneOf: [golden, docker] };
+        const docker = [DOCKER_HOST_LAUNCH_REQUEST, DOCKER_SNAPSHOT_LAUNCH_REQUEST].map((variant) => {
+          const { $schema: _docker, ...schema } = requestJsonSchema(variant);
+          return schema;
+        });
+        request = { oneOf: [golden, ...docker] };
         description +=
-          ' Docker hosts use the second request variant: provider "docker" with no golden. launch/options reports each provider\'s launch sources.';
+          ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources.';
       }
       paths[`/api/v1/${route}`] = {
         post: {

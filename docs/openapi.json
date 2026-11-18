@@ -1670,7 +1670,7 @@
     "/api/v1/sandbox/detail": {
       "post": {
         "operationId": "sandbox_detail",
-        "description": "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is running, finished, interrupted or failed; failed includes a usage limit or an expired login, with the reason. settled is true when the agent is not working.",
+        "description": "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with the reason. settled is true when the agent is not working.",
         "security": [
           {
             "serviceToken": []
@@ -2414,6 +2414,7 @@
                             "state": {
                               "type": "string",
                               "enum": [
+                                "queued",
                                 "running",
                                 "finished",
                                 "interrupted",
@@ -2544,7 +2545,7 @@
     "/api/v1/sandbox/status": {
       "post": {
         "operationId": "sandbox_status",
-        "description": "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is running, finished, interrupted or failed; failed includes a usage limit or an expired login, with the reason. settled is true when the agent is not working.",
+        "description": "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with the reason. settled is true when the agent is not working.",
         "security": [
           {
             "serviceToken": []
@@ -3288,6 +3289,7 @@
                             "state": {
                               "type": "string",
                               "enum": [
+                                "queued",
                                 "running",
                                 "finished",
                                 "interrupted",
@@ -5142,6 +5144,7 @@
                             "state": {
                               "type": "string",
                               "enum": [
+                                "queued",
                                 "running",
                                 "finished",
                                 "interrupted",
@@ -5656,7 +5659,7 @@
     "/api/v1/sandbox/launch": {
       "post": {
         "operationId": "sandbox_launch",
-        "description": "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. Docker hosts use the second request variant: provider \"docker\" with no golden. launch/options reports each provider's launch sources.",
+        "description": "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. Docker uses the other request variants: provider \"docker\" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider's launch sources.",
         "security": [
           {
             "serviceToken": []
@@ -5797,15 +5800,172 @@
                         "type": "string",
                         "const": "docker"
                       },
-                      "hostId": {
-                        "description": "Docker host UUID. Required unless snapshotId selects the host.",
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "credentialId": {
+                        "description": "Omit to use the caller's compatible personal default, frozen at admission.",
                         "type": "string",
                         "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
                       },
-                      "snapshotId": {
-                        "description": "Docker snapshot UUID; cannot be combined with repos.",
+                      "credentialVersion": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "requestId": {
                         "type": "string",
-                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "description": "Caller-chosen UUID; replaying it returns the same launch."
+                      },
+                      "prompt": {
+                        "description": "First prompt. The whole request body is limited to 128 KiB.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "reasoningEffort": {
+                        "type": "string"
+                      },
+                      "ttlSeconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 86400
+                      },
+                      "visibility": {
+                        "type": "string",
+                        "const": "private"
+                      },
+                      "skills": {
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                        }
+                      },
+                      "skipSkillDefaults": {
+                        "type": "boolean"
+                      },
+                      "connections": {
+                        "description": "MCP connection UUIDs.",
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                        }
+                      },
+                      "variables": {
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {
+                              "type": "string"
+                            },
+                            "variableId": {
+                              "type": "string",
+                              "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "key",
+                            "variableId",
+                            "version"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "secrets": {
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {
+                              "type": "string"
+                            },
+                            "secretId": {
+                              "type": "string",
+                              "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "key",
+                            "secretId",
+                            "version"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "hostId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "description": "Docker host UUID."
+                      },
+                      "repos": {
+                        "description": "GitHub repositories to check out as shallow single-branch clones.",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "url": {
+                              "type": "string"
+                            },
+                            "branch": {
+                              "type": "string"
+                            },
+                            "dir": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "url"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "org",
+                      "provider",
+                      "harness",
+                      "requestId",
+                      "hostId"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Launch on a registered Docker host from the official Armada environment. There is no golden."
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "org": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "description": "Organization UUID."
+                      },
+                      "provider": {
+                        "type": "string",
+                        "const": "docker"
                       },
                       "harness": {
                         "type": "string",
@@ -5870,28 +6030,6 @@
                           "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
                         }
                       },
-                      "repos": {
-                        "description": "GitHub repositories to check out as shallow single-branch clones.",
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "url": {
-                              "type": "string"
-                            },
-                            "branch": {
-                              "type": "string"
-                            },
-                            "dir": {
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "url"
-                          ],
-                          "additionalProperties": false
-                        }
-                      },
                       "variables": {
                         "maxItems": 64,
                         "type": "array",
@@ -5945,16 +6083,27 @@
                           ],
                           "additionalProperties": false
                         }
+                      },
+                      "snapshotId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "description": "Docker snapshot UUID. It selects the host and workspace."
+                      },
+                      "hostId": {
+                        "description": "Optional; when present it must be the snapshot's host.",
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
                       }
                     },
                     "required": [
                       "org",
                       "provider",
                       "harness",
-                      "requestId"
+                      "requestId",
+                      "snapshotId"
                     ],
                     "additionalProperties": false,
-                    "description": "Launch on a registered Docker host from the official Armada environment. There is no golden."
+                    "description": "Launch from a Docker snapshot on the host that holds it. There is no golden and no repos."
                   }
                 ]
               }

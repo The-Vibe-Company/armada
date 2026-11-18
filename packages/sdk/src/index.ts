@@ -82,14 +82,9 @@ export interface GoldenLaunchInput {
   skipSkillDefaults?: boolean;
   connections?: string[];
 }
-/** Launch on a registered Docker host from the official Armada environment. There is no golden. */
-export interface DockerLaunchInput {
+interface DockerLaunchFields {
   org: string;
   provider: "docker";
-  /** Required unless `snapshotId` selects the host. */
-  hostId?: string;
-  /** Cannot be combined with `repos`. */
-  snapshotId?: string;
   harness: "claude" | "codex" | "opencode";
   /** Omit to use the caller's compatible personal default, frozen at admission. */
   credentialId?: string;
@@ -105,11 +100,24 @@ export interface DockerLaunchInput {
   skipSkillDefaults?: boolean;
   /** MCP connection UUIDs. */
   connections?: string[];
-  /** Shallow single-branch checkouts. */
-  repos?: { url: string; branch?: string; dir?: string }[];
   variables?: { key: string; variableId: string; version: number }[];
   secrets?: { key: string; secretId: string; version: number }[];
 }
+/** Launch on a registered Docker host from the official Armada environment. There is no golden. */
+export interface DockerHostLaunchInput extends DockerLaunchFields {
+  hostId: string;
+  snapshotId?: never;
+  /** Shallow single-branch checkouts. */
+  repos?: { url: string; branch?: string; dir?: string }[];
+}
+/** Launch from a Docker snapshot, which selects its host and workspace; repos are refused. */
+export interface DockerSnapshotLaunchInput extends DockerLaunchFields {
+  snapshotId: string;
+  /** Optional; when present it must be the snapshot's host. */
+  hostId?: string;
+  repos?: never;
+}
+export type DockerLaunchInput = DockerHostLaunchInput | DockerSnapshotLaunchInput;
 export type LaunchInput = GoldenLaunchInput | DockerLaunchInput;
 export interface GoldenLaunchResult {
   sandbox: { id: string; provider: string; status: string; [key: string]: unknown };

@@ -109,6 +109,34 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
   expect(sent).toEqual(input);
 });
 
+test("the SDK Docker launch type admits exactly the host and snapshot sources the server accepts", () => {
+  const {
+    hostId,
+    repos: _repos,
+    ...common
+  } = {
+    org: "00000000-0000-4000-8000-000000000001",
+    provider: "docker",
+    hostId: "00000000-0000-4000-8000-000000000002",
+    harness: "codex",
+    requestId: "00000000-0000-4000-8000-000000000003",
+    repos: [{ url: "https://github.com/acme/app" }],
+  } as const;
+  const snapshotId = "00000000-0000-4000-8000-000000000004";
+  const accepted: DockerLaunchInput[] = [
+    { ...common, hostId },
+    { ...common, hostId, repos: [{ url: "https://github.com/acme/app" }] },
+    { ...common, snapshotId },
+    { ...common, snapshotId, hostId },
+  ];
+  for (const body of accepted) expect(DOCKER_LAUNCH_REQUEST.safeParse(body).success).toBe(true);
+  // @ts-expect-error A Docker launch needs a host or a snapshot.
+  const noSource: DockerLaunchInput = { ...common };
+  // @ts-expect-error A snapshot carries its own workspace, so repos are refused.
+  const snapshotRepos: DockerLaunchInput = { ...common, snapshotId, repos: [{ url: "https://github.com/acme/app" }] };
+  for (const body of [noSource, snapshotRepos]) expect(DOCKER_LAUNCH_REQUEST.safeParse(body).success).toBe(false);
+});
+
 test("status exposes the selected prompt by its promptId", async () => {
   const prompt = { promptId: "prompt_placeholder", conversationId: null, state: "queued", reason: null };
   const client = new Armada({
