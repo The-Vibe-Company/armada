@@ -36,6 +36,7 @@ import {
   decryptSecret,
   encryptSecret,
   isLaunchTtlSeconds,
+  prepareLaunchPlan,
   prepareLaunchWorkspace,
   resolveLaunchConnections,
   resolveLaunchSecrets,
@@ -462,11 +463,14 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     let dispatchPossible = false;
     let reason = "request_validation";
     let diagnosticSandboxId: string | undefined;
-    try {
+    const validate = () => {
       const snapshotId = body.snapshotId === undefined ? undefined : identifier(body.snapshotId);
       if (snapshotId && (body.image !== undefined || body.repos !== undefined)) throw failure("invalid_request");
       const org = identifier(body.org);
       if (!caller.orgs.some((member) => member.orgId === org)) throw failure("not_found");
+      return { snapshotId, org };
+    };
+    const resolve = async ({ snapshotId, org }: ReturnType<typeof validate>) => {
       reason = "launch_receipt_lookup";
       // Until the read succeeds, a retry may refer to an already dispatched launch.
       dispatchPossible = true;
@@ -521,64 +525,74 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
       const hash = dockerLaunchRequestHash(request);
       reason = "membership_and_launch_state";
-      let state = await transaction((tx) => load(tx, actor, request, hash));
+      const state = await transaction((tx) => load(tx, actor, request, hash));
       dispatchPossible ||= Boolean(state.row);
-      if (state.row && state.receipt) return envelope(state.row, state.receipt);
+      const plan = { request, actor, hash, state };
+      if (state.row && state.receipt)
+        return { ...plan, kind: "retained" as const, row: state.row, receipt: state.receipt };
       reason = "runtime_configuration";
-      if (options.enabled !== true || !options.bootstrap) throw failure("unavailable");
-      if (!state.manifest) {
-        const needsRepositoryPreflight = Boolean(
-          (request.repos && (!options.deferLaunch || admission)) || source?.config.repos.length,
-        );
-        // Resolve outside the reservation transaction; only the binding is retained.
-        reason = "credential_resolution";
-        const { resolved, binding } = await resolveDockerLaunchAccount(
-          options.credentials,
-          { ...actor, role: state.membership.role },
-          request,
-        );
-        const launchActor = { ...actor, role: state.membership.role };
-        if (needsRepositoryPreflight) {
-          const repositories = request.repos ?? source?.config.repos ?? [];
-          await options.credentials.authorizeRepositories?.(launchActor, resolved, repositories);
-          if (request.repos) {
-            if (!options.github) throw failure("unavailable");
-            await options.github.preflightRepositories(caller, request.org, repositories);
-          }
+      const { bootstrap } = options;
+      if (options.enabled !== true || !bootstrap) throw failure("unavailable");
+      if (state.manifest) return { ...plan, kind: "active" as const, bootstrap, fresh: null };
+      const needsRepositoryPreflight = Boolean(
+        (request.repos && (!options.deferLaunch || admission)) || source?.config.repos.length,
+      );
+      // Resolve outside the reservation transaction; only the binding is retained.
+      reason = "credential_resolution";
+      const { resolved, binding } = await resolveDockerLaunchAccount(
+        options.credentials,
+        { ...actor, role: state.membership.role },
+        request,
+      );
+      const launchActor = { ...actor, role: state.membership.role };
+      if (needsRepositoryPreflight) {
+        const repositories = request.repos ?? source?.config.repos ?? [];
+        await options.credentials.authorizeRepositories?.(launchActor, resolved, repositories);
+        if (request.repos) {
+          if (!options.github) throw failure("unavailable");
+          await options.github.preflightRepositories(caller, request.org, repositories);
         }
-        reason = "skill_defaults";
-        const skills = await resolveLaunchSkills(
-          request,
-          () => createSkillDefaultsService(sql).resolve(launchActor, null),
-          () => failure("invalid_request"),
-        );
-        reason = "mcp_defaults";
-        const connections = await resolveLaunchConnections(
-          request.connections,
-          () => createSqlMcpLaunchPort(sql, createSqlMcpRegistry(sql, key)).defaults(actor, "private"),
-          async (ids) => {
-            if (!ids.length) return;
-            if (!options.mcp) throw failure("unavailable");
-            await options.mcp.connections.validate(actor, ids, "private");
-          },
-        );
-        const correlationId = currentRequestId();
-        const manifest: Manifest = {
-          ...(source ? { snapshotConfig: source.config } : {}),
-          request,
-          credentialId: binding.credentialId,
-          credentialVersion: binding.credentialVersion,
-          bootstrapId: randomUUID(),
-          healthId: randomUUID(),
-          promptId: randomUUID(),
-          conversationId: randomUUID(),
-          preparation: { skills, connections },
-          ...(correlationId ? { correlationId } : {}),
-        };
+      }
+      reason = "skill_defaults";
+      const skills = await resolveLaunchSkills(
+        request,
+        () => createSkillDefaultsService(sql).resolve(launchActor, null),
+        () => failure("invalid_request"),
+      );
+      reason = "mcp_defaults";
+      const connections = await resolveLaunchConnections(
+        request.connections,
+        () => createSqlMcpLaunchPort(sql, createSqlMcpRegistry(sql, key)).defaults(actor, "private"),
+        async (ids) => {
+          if (!ids.length) return;
+          if (!options.mcp) throw failure("unavailable");
+          await options.mcp.connections.validate(actor, ids, "private");
+        },
+      );
+      const correlationId = currentRequestId();
+      const manifest: Manifest = {
+        ...(source ? { snapshotConfig: source.config } : {}),
+        request,
+        credentialId: binding.credentialId,
+        credentialVersion: binding.credentialVersion,
+        bootstrapId: randomUUID(),
+        healthId: randomUUID(),
+        promptId: randomUUID(),
+        conversationId: randomUUID(),
+        preparation: { skills, connections },
+        ...(correlationId ? { correlationId } : {}),
+      };
+      return { ...plan, kind: "active" as const, bootstrap, fresh: { resolved, binding, manifest } };
+    };
 
+    const dockerPlacement = {
+      async admit(plan: Awaited<ReturnType<typeof resolve>>, launchAdmission: typeof admission) {
+        const { actor, request, hash, state } = plan;
+        if (plan.kind === "retained" || !plan.fresh) return state;
+        const { resolved, binding, manifest } = plan.fresh;
         // The transaction queues host work atomically; a lost commit reply is ambiguous.
         reason = "reservation";
-        state = await transaction(async (connection) => {
+        return transaction(async (connection) => {
           const tx = reservationSql(connection);
           await tx.query(`select pg_advisory_xact_lock(hashtextextended($1,0))`, [
             `docker-normal-launch:${request.requestId}`,
@@ -605,8 +619,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
               ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
             },
-            admission?.beforeReserve,
-            snapshotId,
+            launchAdmission?.beforeReserve,
+            request.snapshotId,
           );
           if (resolved.usagePricing)
             await createSqlSandboxStore(scopedRuntimeSql(tx), { turnModels: true }).recordUsagePricingContext?.(
@@ -632,14 +646,25 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           const current = await member(tx, actor);
           await tx.query(
             `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc,async_launch) values($1,$2,$3,$4,$5)`,
-            [request.requestId, current.epoch, hash, encrypted, options.deferLaunch === true && !admission],
+            [request.requestId, current.epoch, hash, encrypted, options.deferLaunch === true && !launchAdmission],
           );
           const reserved = await load(tx, actor, request, hash);
           // Only a fully completed callback can reach COMMIT. Earlier failures roll back host work.
           dispatchPossible = true;
           return reserved;
         });
+      },
+    };
+
+    try {
+      const launchPlan = await prepareLaunchPlan(validate, resolve, () => dockerPlacement);
+      const { actor, request, hash } = launchPlan.resolved;
+      if (launchPlan.resolved.kind === "retained") {
+        const { row, receipt } = launchPlan.resolved;
+        return envelope(row, receipt);
       }
+      const { bootstrap } = launchPlan.resolved;
+      const state = await launchPlan.admit(admission);
       if (state.row && state.receipt) return envelope(state.row, state.receipt);
       const manifest = state.manifest;
       diagnosticSandboxId = state.row?.id;
@@ -696,7 +721,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         await live();
         await admission?.beforeStart();
         reason = "runtime_bootstrap";
-        await options.bootstrap.bootstrap(actor, request.requestId, manifest.bootstrapId);
+        await bootstrap.bootstrap(actor, request.requestId, manifest.bootstrapId);
         await acknowledged(manifest.bootstrapId);
         reason = "runtime_readiness";
         let receipt: Receipt;

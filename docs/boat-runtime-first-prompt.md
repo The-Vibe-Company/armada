@@ -21,13 +21,12 @@ plus capability versions for diagnostics/follow-up/checkpoint/resume/GitHub/MCP.
 Preflight the versions required by your check **before** allocating. Disabling
 new launches does not remove existing runtime read/cleanup routing.
 
-Launch through `POST /api/v1/sandbox/launch-runtime-v1` with
+Launch through `POST /api/v1/sandbox/launch` with
 `runtimeVersion:1`, `boatRuntime:true`, `provider:"boat"`, `harness:"codex"`,
 authorized org/golden/account; the initial prompt is optional. Skip skill defaults; remote
 HTTP/SSE MCP uses the standard `connections` selection or registry
-`defaultForLaunch` defaults as described below. Ordinary `sandbox/launch` does not
-accept runtime selection;
-there is no CLI launch flag. The versioned route fails closed on old servers.
+`defaultForLaunch` defaults as described below. There is no CLI launch flag. On older servers, use
+`sandbox/launch-runtime-v1`. See the [launch route compatibility window](launch-idempotency.md#launch-route-compatibility).
 
 The immutable `sandboxes.boat_runtime` decision is recorded at insert. Persisted
 owner, model/account version, cwd and provider identity govern later routing;

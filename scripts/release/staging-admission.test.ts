@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 interface Workflow {
-  on: { push: { branches: string[] }; workflow_run: { workflows: string[]; types: string[] } };
+  on: { push?: { branches: string[] }; workflow_run?: { workflows: string[]; types: string[] } };
   concurrency: { group: string; queue?: string; "cancel-in-progress": boolean };
   jobs: { staging: { concurrency: Workflow["concurrency"]; steps: { id?: string; run?: string; if?: string }[] } };
 }
@@ -10,10 +10,11 @@ interface Workflow {
 const release = Bun.YAML.parse(readFileSync(".github/workflows/release.yml", "utf8")) as Workflow;
 const staging = Bun.YAML.parse(readFileSync(".github/workflows/staging-gated-production.yml", "utf8")) as Workflow;
 
-test("push, quick Release and completion wakeup retain serialized newest-main admission", () => {
-  // Scheduler contract: both events coalesce, completion always wakes, and an
+test("only Release completion automatically wakes serialized newest-main staging", () => {
+  // Main pushes enter through Release completion, and an
   // admitted job cannot turn stale API queue rows into a terminal no-op.
-  expect(staging.on.push.branches).toEqual(["main"]);
+  expect(release.on.push?.branches).toEqual(["main"]);
+  expect(Object.keys(staging.on).sort()).toEqual(["workflow_call", "workflow_dispatch", "workflow_run"]);
   expect(staging.on.workflow_run).toEqual({ workflows: ["Release"], types: ["completed"] });
   expect(staging.concurrency["cancel-in-progress"]).toBe(false);
   expect(staging.concurrency.group).toContain("staging-main-latest");
