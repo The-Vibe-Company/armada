@@ -37,20 +37,10 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Label } from "@/components/ui/label";
-import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
-import {
-  type ChatItem,
-  conversationsOf,
-  eventsOf,
-  projectChat,
-  STEER_RESTARTS_TURN,
-  type ToolActivity,
-  toolSummary,
-  toolText,
-} from "@/lib/chat";
+import { type ChatItem, projectChat, STEER_RESTARTS_TURN, type ToolActivity, toolSummary, toolText } from "@/lib/chat";
 import {
   composerAdmission,
   INCOMPLETE_MODEL,
@@ -96,8 +86,6 @@ type Props = {
   harness: Harness;
   catalog: ModelCatalog;
   launchedModel: string | null;
-  /** Conversation ids Armada recorded for the sandbox, oldest first. */
-  conversations: string[];
   /** The Armada server is configured: messages can be sent. */
   configured: boolean;
   /** Why this sandbox takes no messages from here whatever its status (a Docker sandbox, for now): shown instead. */
@@ -194,14 +182,12 @@ export function SandboxChat(props: Props) {
     rateLimit?: { waiting: boolean; message: string; retryCount: number; totalWaitMs: number } | null;
     state?: string;
     promptId?: string;
-    conversationId?: string | null;
     requestedModel?: string | null;
     observedModel?: string | null;
     modelSelectionReason?: string | null;
     modelSelectionMessage?: string | null;
   } | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const [chosen, setChosen] = useState<string | null>(null);
   const cursor = useRef<string | null>(null);
   const olderCursor = useRef<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -450,14 +436,10 @@ export function SandboxChat(props: Props) {
     };
   }, [tick]);
 
-  const conversations = useMemo(() => conversationsOf(events, props.conversations), [events, props.conversations]);
-  const selected = chosen && conversations.includes(chosen) ? chosen : (conversations.at(-1) ?? null);
-  const shownConversation = conversations.length > 1 ? selected : null;
-  const chat = useMemo(() => projectChat(eventsOf(events, shownConversation)), [events, shownConversation]);
+  const chat = useMemo(() => projectChat(events), [events]);
   // A stopped or failed machine runs no turn, whatever its last prompt event said before it stopped.
-  const observedTurn = turnModel && (!selected || turnModel.conversationId === selected) ? turnModel : null;
   const turnRunning =
-    (observedTurn?.state ? ["queued", "running"].includes(observedTurn.state) : chat.running) && LIVE.includes(status);
+    (turnModel?.state ? ["queued", "running"].includes(turnModel.state) : chat.running) && LIVE.includes(status);
   const pauseMessage = idlePauseMessage({ status, idlePaused, expiresAt: props.expiresAt ?? null }, new Date());
   const failure = [...chat.items].reverse().find((item) => item.kind === "outcome" && item.status === "failed");
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;
@@ -465,12 +447,6 @@ export function SandboxChat(props: Props) {
   return (
     <div data-fit="chat" className="space-y-2 sm:space-y-4">
       <Card data-fit="card" className="gap-0 overflow-hidden rounded-none border-0 bg-transparent py-0 shadow-none">
-        {conversations.length > 1 && (
-          <div className="px-4 py-3 sm:px-6">
-            <ConversationPicker conversations={conversations} selected={selected} onChange={(id) => setChosen(id)} />
-          </div>
-        )}
-
         {status === "running" && statusMessage && (
           <p className="px-4 py-2 text-xs text-muted-foreground sm:px-6">{statusMessage}</p>
         )}
@@ -508,7 +484,6 @@ export function SandboxChat(props: Props) {
         <Notices status={status} reason={reason} poll={poll} onRetry={retryPolling} />
 
         <Transcript
-          key={selected ?? "all"}
           items={chat.items}
           running={turnRunning}
           loaded={loaded}
@@ -528,7 +503,6 @@ export function SandboxChat(props: Props) {
               {...props}
               status={status}
               idlePaused={idlePaused}
-              conversation={selected && props.conversations.includes(selected) ? selected : null}
               running={turnRunning}
               onDone={() => {
                 router.refresh();
@@ -539,37 +513,6 @@ export function SandboxChat(props: Props) {
       </Card>
 
       <TechnicalEvents events={chat.technical} />
-    </div>
-  );
-}
-
-function ConversationPicker({
-  conversations,
-  selected,
-  onChange,
-}: {
-  conversations: string[];
-  selected: string | null;
-  onChange: (id: string) => void;
-}) {
-  const id = useId();
-  return (
-    <div className="flex items-center gap-2">
-      <Label htmlFor={id} className="sr-only">
-        Conversation
-      </Label>
-      <NativeSelect
-        id={id}
-        value={selected ?? ""}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-8 w-auto text-xs"
-      >
-        {conversations.map((conversation, index) => (
-          <option key={conversation} value={conversation}>
-            {`Conversation ${index + 1}`}
-          </option>
-        ))}
-      </NativeSelect>
     </div>
   );
 }
@@ -1045,7 +988,6 @@ function Composer({
   launchedModel,
   pinnedModel,
   status,
-  conversation,
   running,
   onDone,
   idlePaused,
@@ -1056,7 +998,6 @@ function Composer({
   statusReason,
 }: Props & {
   status: SandboxStatus;
-  conversation: string | null;
   running: boolean;
   idlePaused: boolean;
   onDone: () => void;
@@ -1178,7 +1119,6 @@ function Composer({
       aria-label="Message the agent"
     >
       <input type="hidden" name="sandbox" value={sandboxId} />
-      <input type="hidden" name="conversation" value={conversation ?? ""} />
       <Label htmlFor={`${fieldId}-message`} className="sr-only">
         Message
       </Label>

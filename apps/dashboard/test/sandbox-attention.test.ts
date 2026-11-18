@@ -31,7 +31,7 @@ describe("summarizeEvents", () => {
       status: "failed",
       reason: "usage_limit",
       promptId: "p2",
-      prompt: { text: "Second", conversationId: null },
+      prompt: "Second",
     });
   });
 
@@ -200,7 +200,7 @@ describe("attentionOf", () => {
 });
 
 describe("sandbox attention projection", () => {
-  const sandbox = { id: "00000000-0000-4000-8000-000000000030", status: "ready" as const, conversation_ids: ["c1"] };
+  const sandbox = { id: "00000000-0000-4000-8000-000000000030", status: "ready" as const };
   test("keeps legacy acknowledgement keys but a new turn needs acknowledgement again", () => {
     const first = sandboxAttention(sandbox, { ...turn("finished"), promptId: "p1" }, NOW);
     expect(first.ackKey).toBe(`${sandbox.id}.382207ad`);
@@ -228,17 +228,8 @@ describe("sandbox attention projection", () => {
     expect(after.attention).toBeNull();
     expect(after.state).toMatchObject({ kind: "ready", label: "Merged", outcome: { merged: true } });
   });
-  test("resend keeps a recorded conversation and drops an unrecorded native reference", () => {
-    for (const [conversationId, expected] of [
-      ["c1", "c1"],
-      ["native-only", null],
-    ] as const) {
-      const result = sandboxAttention(
-        sandbox,
-        { ...turn("failed", BOX_MOVED), prompt: { text: "Resume the work", conversationId } },
-        NOW,
-      );
-      expect(result.resend).toEqual({ text: "Resume the work", conversationId: expected });
-    }
+  test("interruption recovery keeps the prompt to resend to the sandbox", () => {
+    const result = sandboxAttention(sandbox, { ...turn("failed", BOX_MOVED), prompt: "Resume the work" }, NOW);
+    expect(result.resend).toBe("Resume the work");
   });
 });

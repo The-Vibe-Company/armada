@@ -41,24 +41,6 @@ const STOP_EVENTS = new Set(["usage_limit", "auth_expiry"]);
 const RESULT_PLACEHOLDER = "tool_result";
 
 /**
- * The conversations a sandbox has, in the order they were opened: those Armada recorded, then any the events
- * name that the record does not know yet.
- */
-export function conversationsOf(events: readonly ChatEvent[], recorded: readonly string[]): string[] {
-  const ids = [...recorded];
-  for (const event of events) {
-    if (event.conversationId && !ids.includes(event.conversationId)) ids.push(event.conversationId);
-  }
-  return ids;
-}
-
-/** The events of one conversation. Events that name none belong to the sandbox and show in every view. */
-export function eventsOf(events: readonly ChatEvent[], conversationId: string | null): ChatEvent[] {
-  if (conversationId === null) return [...events];
-  return events.filter((event) => !event.conversationId || event.conversationId === conversationId);
-}
-
-/**
  * Projects the event stream onto a conversation:
  * - one user message per prompt (`promptId`), whatever number of status events it has, with the latest status;
  * - one assistant message per `(conversationId, promptId, messageId)`: `delta` text is appended, `snapshot` text

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type ChatItem, conversationsOf, eventsOf, projectChat, toolText } from "../src/lib/chat.ts";
+import { type ChatItem, projectChat, toolText } from "../src/lib/chat.ts";
 import { type ChatEvent, mergeEvents } from "../src/lib/events.ts";
 import { describeFailure } from "../src/lib/failure.ts";
 
@@ -126,16 +126,5 @@ describe("chat projection", () => {
       title: "Account expired",
       fix: { href: "/harness" },
     });
-  });
-
-  test("each conversation shows its own events and the sandbox's, recorded conversations first", () => {
-    const events: ChatEvent[] = [
-      prompt("a", "finished", { conversationId: "c2", promptId: "q" }),
-      prompt("b", "finished"),
-      { id: "s", at: 1, kind: "other", type: "sandbox", data: {} },
-    ];
-    expect(conversationsOf(events, ["c1"])).toEqual(["c1", "c2"]);
-    expect(eventsOf(events, "c1").map((event) => event.id)).toEqual(["b", "s"]);
-    expect(eventsOf(events, null)).toHaveLength(3);
   });
 });
