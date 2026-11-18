@@ -1,37 +1,14 @@
-import { launchReadyPercentiles } from "@armada/core";
+import type { LaunchPercentiles } from "@armada/core";
 import type { Supabase } from "@/lib/supabase/server";
 
-/** Bounded sample: the latest stage rows of the last 30 days, within PostgREST's default 1000-row page. */
-const WINDOW_DAYS = 30;
-const MAX_ROWS = 1000;
+export type ProviderLaunchTimes = LaunchPercentiles[];
 
-export type ProviderLaunchTimes = ReturnType<typeof launchReadyPercentiles>;
-
-/**
- * #2560: p50/p90 accepted-to-ready time per provider, launches and resumes apart, for the organization. Row level security limits the sample to
- * sandboxes the viewer may open (all of them for an admin). Diagnostic: a failed read returns null and hides the section.
- */
+/** Complete activations accepted in the last 30 days, scoped to sandboxes visible to the viewer. */
 export async function readLaunchTimes(supabase: Supabase, orgId: string): Promise<ProviderLaunchTimes | null> {
-  const since = new Date(Date.now() - WINDOW_DAYS * 86_400_000).toISOString();
-  const { data, error } = await supabase
-    .from("sandbox_launch_stages")
-    .select("sandbox_id,activation,stage,at,sandboxes!inner(provider,org_id)")
-    .in("stage", ["accepted", "harness_ready"])
-    .eq("sandboxes.org_id", orgId)
-    .gte("at", since)
-    .order("at", { ascending: false })
-    .limit(MAX_ROWS);
+  const { data, error } = await supabase.rpc("sandbox_launch_percentiles", { target_org: orgId });
   if (error) {
     console.error("Launch times unavailable.");
     return null;
   }
-  return launchReadyPercentiles(
-    (data ?? []).map((row) => ({
-      sandbox_id: row.sandbox_id,
-      activation: row.activation,
-      stage: row.stage,
-      at: row.at,
-      provider: row.sandboxes.provider,
-    })),
-  );
+  return data ?? [];
 }
