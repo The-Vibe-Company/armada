@@ -91,7 +91,10 @@ export function createSandboxLifecycle(
             or (recovery.retained_resume and coalesce(candidate.lifecycle_error,'') not like $4))
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
-          order by candidate.reconcile_after limit 1 for update of candidate skip locked
+          order by case when recovery.retained_resume
+            then coalesce(candidate.reconcile_lease_until,candidate.stop_requested_at)
+            else candidate.reconcile_after end
+          limit 1 for update of candidate skip locked
         ) due
         where s.id=due.id
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
