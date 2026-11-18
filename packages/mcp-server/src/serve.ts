@@ -558,12 +558,11 @@ export async function startServer(
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
-  const langfuse = createLangfuse(sql, config.encryptionKey);
+  const langfuse = createLangfuse(sql, config.encryptionKey, createHistoricalSandboxProviderResolver(providers));
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
     config.encryptionKey,
     createRuntimeNativeAuth(sql, config.encryptionKey),
-    langfuse.enqueue,
   );
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
   const commitSha = sourceIdentity.commit ?? env.RAILWAY_GIT_COMMIT_SHA;
@@ -721,6 +720,7 @@ export async function startServer(
     () => pruneServerRetention(sql, control.applicationVault, new Date()),
     [
       webhooks,
+      langfuse,
       createNativeWebhookPrompts(sql, createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true })),
       delegatedAccess.childWorker,
       createFinishedDockerCleanup(sql, config.encryptionKey),

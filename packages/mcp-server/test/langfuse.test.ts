@@ -1,10 +1,20 @@
-import { expect, spyOn, test } from "bun:test";
-import type { AgentEvent } from "@armada/core";
-import { decryptSecret } from "@armada/core/server";
+import { expect, test } from "bun:test";
+import type { AgentEvent, Provider } from "@armada/core";
+import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { createLangfuse, langfuseSpans } from "../src/langfuse.ts";
+import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
 const database = rowOnlyDatabase();
+const noNativeProvider = async () => {
+  throw Error("unexpected native provider read");
+};
+const key = Buffer.alloc(32, 1).toString("base64");
+const encryptConfig = () =>
+  encryptSecret(
+    JSON.stringify({ host: "https://langfuse.test", publicKey: "public_placeholder", secretKey: "secret_placeholder" }),
+    key,
+  );
 
 const events: AgentEvent[] = [
   { id: "start", at: 1000, promptId: "turn", kind: "prompt", status: "running", text: "customer_prompt" },
@@ -43,7 +53,6 @@ test("completed turns use stable OTLP identities, durations and opt-in content",
   expect(full[0]?.traceId).toBe(metadata[0]?.traceId);
   for (const text of ["customer_prompt", "customer_reply", "customer_argument", "customer_result", "customer_failure"])
     expect(JSON.stringify(full)).toContain(text);
-  expect(langfuseSpans("sandbox", events.slice(1), [], true)).toEqual([]);
 });
 test("tool results retain the invoked tool identity and input", () => {
   const result: AgentEvent = {
@@ -61,7 +70,6 @@ test("tool results retain the invoked tool identity and input", () => {
   expect(JSON.stringify(spans[1])).toContain("customer_argument");
 });
 test("only an org admin can store encrypted configuration and keys are never returned", async () => {
-  const key = Buffer.alloc(32, 1).toString("base64");
   const calls: unknown[][] = [];
   const exporter = createLangfuse(
     {
@@ -71,6 +79,7 @@ test("only an org admin can store encrypted configuration and keys are never ret
       },
     },
     key,
+    noNativeProvider,
   );
   const orgId = "00000000-0000-0000-0000-000000000001";
   const request = () =>
@@ -103,38 +112,72 @@ test("only an org admin can store encrypted configuration and keys are never ret
   });
 });
 
-test("export scheduling never waits for settings and drops overload while counting worker failures", async () => {
-  const scheduled: (() => Promise<void>)[] = [];
-  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => Promise<void>) => {
-    scheduled.push(callback);
-    return 0;
-  }) as unknown as typeof setTimeout);
-  let reads = 0;
-  const exporter = createLangfuse(
-    {
-      query: async () => {
-        reads++;
-        throw Error("offline");
-      },
-    },
-    "unused",
+test("native settlement exports once and a new server reads only its organization's durable totals", async () => {
+  const { db, people } = await database();
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,task_prompt_id)
+     select $1,id,org_id,owner_id,'native_export','claude','ready','turn'
+     from goldens where owner_id=$2 and visibility='private' limit 1`,
+    [id, people.owner],
   );
-  try {
-    for (let i = 0; i < 65; i++) exporter.enqueue("sandbox", events, 3);
-    expect(reads).toBe(0);
-    expect(exporter.counters.dropped).toBe(1);
-    await scheduled[0]!();
-    expect(exporter.counters.failed).toBe(64);
-    expect(reads).toBe(64);
-  } finally {
-    timer.mockRestore();
-  }
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+    people.org,
+    await encryptConfig(),
+  ]);
+  const provider = {
+    id: "boat",
+    getPrompt: async () => ({ promptId: "turn", status: "failed", done: true }),
+    events: async () => ({ events: events.slice(1), cursor: "native", hasMore: false }),
+  } satisfies Pick<Provider, "id" | "events" | "getPrompt">;
+  const signal = new AbortController().signal;
+  const native = createNativeWebhookPrompts(db, async () => provider);
+  expect(await native.reconcileOne(signal)).toBe(true);
+
+  let payload = "";
+  const exporter = createLangfuse(
+    db,
+    key,
+    async () => ({ provider: provider as Provider, providerSandboxId: "native_export" }),
+    (async (_url, init) => {
+      payload = String(init?.body);
+      return new Response(null, { status: 200 });
+    }) as typeof fetch,
+  );
+  expect(await exporter.reconcileOne(signal)).toBe(true);
+  expect(payload).toContain("customer_reply");
+  expect(payload).toContain("customer_prompt");
+  expect(payload).toContain("timing_incomplete");
+  await db.query("select public.enqueue_webhook_turn($1,'turn','failed')", [id]);
+  expect(await exporter.reconcileOne(signal)).toBe(false);
+
+  const restarted = createLangfuse(db, key, noNativeProvider);
+  const read = async (orgId: string) => {
+    const route = restarted.route(async () => ({
+      ok: true,
+      caller: {
+        userId: orgId === people.org ? people.admin : people.member,
+        via: "service",
+        orgs: [{ orgId, role: "admin" }],
+      },
+    }));
+    return (await route(new Request(`https://armada.test/api/v1/orgs/${orgId}/langfuse`)))?.json();
+  };
+  expect(await read(people.org)).toEqual({
+    enabled: true,
+    content_mode: "full",
+    counters: { exported: 1, failed: 0, dropped: 0 },
+    lastExportAt: expect.any(String),
+  });
+  expect(await read(people.otherOrg)).toEqual({
+    enabled: false,
+    counters: { exported: 0, failed: 0, dropped: 0 },
+    lastExportAt: null,
+  });
 });
 
 test("worker exports the persisted usage envelope and reconstructed archive through OTLP", async () => {
-  const { encryptSecret } = await import("@armada/core/server");
   const { db, people } = await database();
-  const key = Buffer.alloc(32, 1).toString("base64");
   const id = crypto.randomUUID();
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime,usage_turns)
@@ -150,13 +193,9 @@ test("worker exports the persisted usage envelope and reconstructed archive thro
       }),
     ],
   );
-  const encrypted = await encryptSecret(
-    JSON.stringify({ host: "https://langfuse.test", publicKey: "public_placeholder", secretKey: "secret_placeholder" }),
-    key,
-  );
   await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
     people.org,
-    encrypted,
+    await encryptConfig(),
   ]);
   const archive: AgentEvent[] = [
     events[0]!,
@@ -190,23 +229,13 @@ test("worker exports the persisted usage envelope and reconstructed archive thro
       index + 1,
       await encryptSecret(JSON.stringify(event), key),
     ]);
-  const scheduled: (() => Promise<void>)[] = [];
-  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => Promise<void>) => {
-    scheduled.push(callback);
-    return 0;
-  }) as unknown as typeof setTimeout);
+  await db.query("select public.enqueue_webhook_turn($1,'turn','failed')", [id]);
   const requests: Request[] = [];
-  const exporter = createLangfuse(db, key, (async (url, init) => {
+  const exporter = createLangfuse(db, key, noNativeProvider, (async (url, init) => {
     requests.push(url instanceof Request ? new Request(url, init) : new Request(String(url), init));
     return new Response(null, { status: 200 });
   }) as typeof fetch);
-  try {
-    exporter.enqueue(id, [events[2]!], 4);
-    await scheduled[0]!();
-  } finally {
-    timer.mockRestore();
-  }
-  expect(exporter.counters).toEqual({ exported: 1, failed: 0, dropped: 0 });
+  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
   expect(requests[0]?.url).toBe("https://langfuse.test/api/public/otel/v1/traces");
   expect(requests[0]?.headers.get("x-langfuse-ingestion-version")).toBe("4");
   const body = (await requests[0]!.json()) as {

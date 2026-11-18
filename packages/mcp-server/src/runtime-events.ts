@@ -85,7 +85,6 @@ export function createRuntimeEvents(
   authority: ReturnType<typeof createRuntimeEnrolments>,
   key: string,
   publishNativeAuth?: (input: RuntimeNativePublication) => Promise<{ authRevision: number; committed: boolean }>,
-  exportEvents?: (sandboxId: string, events: AgentEvent[], ack: number) => void,
 ) {
   async function append(
     token: string,
@@ -119,7 +118,6 @@ export function createRuntimeEvents(
         expectedRevision: value.nativeAuth.expectedRevision as number,
       });
     }
-    let exported: { sandboxId: string; events: AgentEvent[]; ack: number } | undefined;
     let first: { sandboxId: string; epoch: string } | undefined;
     const result = await authority.withSession(token, epoch, async (tx, scope) => {
       if (value.sandboxId !== scope.sandboxId || value.generation !== scope.epoch) throw new RuntimeEnrolmentDenied();
@@ -293,16 +291,10 @@ export function createRuntimeEvents(
       // reconnect keeps its model time, not the upload time). Output before the activation was accepted is
       // ignored; the earliest report wins.
       await recordFirstTokenSql(tx, scope.sandboxId, fresh);
-      exported = { sandboxId: scope.sandboxId, events: fresh, ack };
       if (initialAck === 0 && fresh.length) first = scope;
       return { acknowledgedSequence: ack };
     });
     if (first) logRuntimeStage(first, "first_event"); // Only after encrypted archive/usage commit.
-    try {
-      if (exported) exportEvents?.(exported.sandboxId, exported.events, exported.ack);
-    } catch {
-      /* Export never changes the durable ACK. */
-    }
     return result;
   }
   const route: Route = async (request) => {

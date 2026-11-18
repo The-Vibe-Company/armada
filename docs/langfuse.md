@@ -1,8 +1,8 @@
 # Sandbox traces in Langfuse
 
-Export is server-side, organization-scoped and off by default. It consumes only
-newly committed runtime terminal events; it never gates event acknowledgement,
-launch, or usage accounting. No project key is delivered to a sandbox.
+Export is server-side, organization-scoped and off by default. Armada records export jobs in the same database transaction that settles a
+turn. Delivery runs in a background worker and requires no Langfuse request
+during event acknowledgement, launch, or usage accounting. No project key is delivered to a sandbox.
 
 Create a Langfuse project in [Cloud](https://langfuse.com) (choose your region),
 or follow the [self-hosting guide](https://langfuse.com/self-hosting). For a
@@ -17,7 +17,8 @@ An organization admin sends an authenticated `PUT` to
 Send this body from a protected file or stdin, never keys in command arguments.
 Both keys and host are encrypted together with ARMADA_ENCRYPTION_KEY. RLS and
 explicit privilege revocation deny all user-JWT table access. GET returns only
-enabled/content mode and process-wide export counters, never the host or keys.
+enabled/content mode, durable organization counters, and `lastExportAt` (the
+last successful export time, or null). It omits the host and keys.
 DELETE removes configuration and disables future exports. PUT replaces the
 complete configuration, so include keys again when changing the mode.
 
@@ -31,19 +32,32 @@ estimates, not invoices; unavailable costs are omitted.
 
 Each sandbox has a stable trace ID, each completed turn a stable observation
 ID and each tool a child observation. Terminal failures are exported too.
-A missing start event prevents export rather than inventing a duration.
-Only runtime event ingest is covered; historical events and native paths that
-do not use that endpoint are not backfilled.
+Coverage and available content vary by placement and harness.
 
-The process holds at most 64 queued jobs and one active export. Each job reads
-at most 2000 archive records / 4 MiB ciphertext; larger sandbox histories drop.
-Requests time out after five seconds, reject redirects, and have no retries.
-The GET counters `dropped`, `failed`, `exported` reset on server restart and are
-process-wide. Overload, shutdown and outages can lose traces; this is best-effort
-observability, not an audit archive. Disabling does not cancel an in-flight
-request. Settings are resolved at drain time. Runtime replay ACKs do not enqueue
-exports again. Start/end time reflects harness-reported timestamps.
+| Placement and path | Harnesses | Available evidence |
+| --- | --- | --- |
+| Boat native | Codex, Claude Code | Normalized Boat prompt, response, model, and tool fields when the provider supplies them. Boat rewrites prompt status in place, so the original start can be absent. |
+| Modal native | Codex, Claude Code | Stored normalized prompt and response events, tool fields emitted by the harness, and recorded usage and cost when available. |
+| Boat and Modal runtime | Codex, Claude Code, OpenCode | Encrypted runtime journal with prompt and response events, harness-emitted tool fields, and recorded usage and cost when available. |
+| Docker host runtime | Codex, Claude Code, OpenCode | The same runtime journal and usage projection as Boat and Modal runtime. |
 
-Deployment requires the new org_langfuse migration, the normal encryption key,
-and outbound HTTPS to the chosen Langfuse origin. Apply migrations only through
+OpenCode uses the shared runtime. An export includes only the fields found in
+the applicable history. When start timing is unavailable, Armada emits an
+instant observation marked `timing_incomplete`. If the terminal event is
+missing, Armada uses the recorded settlement status and observation time.
+Turns settled before export was enabled are not backfilled.
+
+Pending export identities survive server restarts. A worker leases each job and
+records the outcome and organization counters together. An unfinished lease
+can be reclaimed after expiry. Runtime history is bounded at 2,000 records
+and 4 MiB of ciphertext, and each outbound payload is bounded at 4 MiB.
+Oversized exports and jobs whose settings were disabled before delivery count
+as `dropped`. Transport, decryption and export-processing failures count as
+`failed`. Requests time out after five seconds, reject redirects, and failed
+requests are counted without an automatic retry. A restart during delivery
+can replay the same stable observation ID. Disabling may leave an in-flight
+request running. Settings are resolved when the job is claimed.
+
+Deployment requires the Langfuse export migration, the normal encryption key,
+and outbound HTTPS to the chosen Langfuse origin. Apply migrations through
 the normal validated deployment path.
