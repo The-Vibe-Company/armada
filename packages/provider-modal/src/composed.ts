@@ -165,6 +165,7 @@ async function composeModalProvider(options: ComposedModalOptions) {
   const provider = createModalProvider({
     ...options,
     ...connection,
+    deploymentId: JSON.stringify([options.scope.binding.environment, ingestUrl.origin]),
     managementAuthority: provenance,
     source: { scope: sourceScope, store: sourceStore },
     store,
