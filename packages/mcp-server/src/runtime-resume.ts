@@ -339,7 +339,9 @@ export function createRuntimeResume(
           ).rows[0];
           if (live?.live && live.epoch === admitted.op.target_epoch) return false;
           const changed = await tx.query(
-            `update public.sandboxes set status='failed',status_reason='Runtime resume failed before a restored worker was confirmed; cleanup requested.',stop_requested_at=coalesce(stop_requested_at,now()),activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,reconcile_after=now()
+            `update public.sandboxes set status='failed',
+          transition_context=jsonb_build_object('actor','runtime_resume','code','restore_unconfirmed'),
+          status_reason='Runtime resume failed before a restored worker was confirmed; cleanup requested.',stop_requested_at=coalesce(stop_requested_at,now()),activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,reconcile_after=now()
           where id=$1 and activity_lease_id=$2 and lifecycle_generation=$3 and stop_requested_at is null returning id`,
             [found.id, requestId, admitted.current.lifecycleGeneration],
           );

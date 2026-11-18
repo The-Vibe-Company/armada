@@ -125,7 +125,8 @@ export function createMcpLifecycle(options: {
       if (!row) throw Error("Sandbox is no longer authorized for MCP configuration.");
       if (row.status === "stopped" || row.status === "starting") {
         const restored = await tx.query(
-          `update public.sandboxes s set status='ready',stopped_at=null
+          `update public.sandboxes s set status='ready',stopped_at=null,
+          transition_context=jsonb_build_object('actor','mcp_bootstrap','code','provider_ready')
           where s.id=$1::uuid and s.mcp_generation=$2 and s.status in ('stopped','starting') and s.deleted_at is null
           and s.org_id=$3::uuid and s.owner_id=$4::uuid
           and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) returning s.id`,

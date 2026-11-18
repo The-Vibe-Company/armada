@@ -4448,6 +4448,47 @@ export type Database = {
           },
         ];
       };
+      sandbox_transitions: {
+        Row: {
+          id: number;
+          sandbox_id: string;
+          from_status: Database["public"]["Enums"]["sandbox_status"];
+          to_status: Database["public"]["Enums"]["sandbox_status"];
+          actor: string;
+          code: string;
+          generation: number;
+          at: string;
+        };
+        Insert: {
+          id: number;
+          sandbox_id: string;
+          from_status: Database["public"]["Enums"]["sandbox_status"];
+          to_status: Database["public"]["Enums"]["sandbox_status"];
+          actor: string;
+          code: string;
+          generation: number;
+          at?: string;
+        };
+        Update: {
+          id?: number;
+          sandbox_id?: string;
+          from_status?: Database["public"]["Enums"]["sandbox_status"];
+          to_status?: Database["public"]["Enums"]["sandbox_status"];
+          actor?: string;
+          code?: string;
+          generation?: number;
+          at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_transitions_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_turn_models: {
         Row: {
           sandbox_id: string;
@@ -4612,6 +4653,7 @@ export type Database = {
           pull_request_check_after: string;
           pull_request_merge_proof: Json | null;
           stop_when_work_merged: boolean;
+          transition_context: Json | null;
         };
         Insert: {
           id?: string;
@@ -4686,6 +4728,7 @@ export type Database = {
           pull_request_check_after?: string;
           pull_request_merge_proof?: Json | null;
           stop_when_work_merged?: boolean;
+          transition_context?: Json | null;
         };
         Update: {
           id?: string;
@@ -4760,6 +4803,7 @@ export type Database = {
           pull_request_check_after?: string;
           pull_request_merge_proof?: Json | null;
           stop_when_work_merged?: boolean;
+          transition_context?: Json | null;
         };
         Relationships: [
           {
@@ -5058,6 +5102,7 @@ export type RuntimeResumeRow = Database["public"]["Tables"]["runtime_resumes"]["
 export type SandboxAccountUsagePricingRow = Database["public"]["Tables"]["sandbox_account_usage_pricing"]["Row"];
 export type SandboxLaunchStageRow = Database["public"]["Tables"]["sandbox_launch_stages"]["Row"];
 export type SandboxOutputRow = Database["public"]["Tables"]["sandbox_outputs"]["Row"];
+export type SandboxTransitionRow = Database["public"]["Tables"]["sandbox_transitions"]["Row"];
 export type SandboxTurnModelRow = Database["public"]["Tables"]["sandbox_turn_models"]["Row"];
 export type SandboxUsagePricingRow = Database["public"]["Tables"]["sandbox_usage_pricing"]["Row"];
 export type SandboxWorkRecovery = Database["public"]["Tables"]["sandbox_work_recovery"]["Row"];

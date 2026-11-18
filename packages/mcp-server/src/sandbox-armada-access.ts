@@ -71,7 +71,8 @@ export function createSandboxArmadaAccess(input: { sql: Sql; encryptionKey: stri
     // activation; publish that verified transition before issuing authority.
     if (restore)
       await sql.query(
-        `update public.sandboxes s set status='ready',stopped_at=null
+        `update public.sandboxes s set status='ready',stopped_at=null,
+          transition_context=jsonb_build_object('actor','armada_access','code','provider_ready')
         where s.id=$1 and s.status='stopped' and s.stop_requested_at is null and s.deleted_at is null
         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)`,
         [parent.sandbox_id],
