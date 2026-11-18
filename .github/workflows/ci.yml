@@ -36,6 +36,9 @@ jobs:
         if: matrix.shard == 1
       - run: bun run typecheck
         if: matrix.shard == 1
+      - name: Typecheck npm smoke against emitted SDK declarations
+        if: matrix.shard == 1
+        run: bun scripts/ci/sdk-declarations.ts
       - name: Check complete unit shard coverage
         if: matrix.shard == 1
         run: bun scripts/ci/unit-shards.ts --check
