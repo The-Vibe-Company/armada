@@ -95,14 +95,14 @@ describe("http", () => {
     const { token, client, auth, people } = await start();
     const secret = await token(people.member);
     const mcp = await client(secret);
-    expect((await call(mcp, "golden_list")).isError).toBe(false);
+    expect((await call(mcp, "list")).isError).toBe(false);
     const [row] = (await auth.listServiceTokens(people.member)) as { id: string }[];
     await auth.revokeToken("service", {
       id: row?.id ?? "",
       userId: people.member,
       revokedAt: new Date().toISOString(),
     });
-    await expect(mcp.callTool({ name: "golden_list", arguments: {} })).rejects.toThrow();
+    await expect(mcp.callTool({ name: "list", arguments: {} })).rejects.toThrow();
   });
 
   test("the dashboard's plain JSON-RPC calls work: initialize, then tools/call", async () => {
@@ -207,11 +207,9 @@ describe("when the auth lookup fails", () => {
   test("the memberships of a Supabase session come from the server's own database connection", async () => {
     const { handler, session, people } = await start({ authStore: (db) => createSqlAuthStore(db) });
     const jwt = session(people.member, []);
-    const listed = await rpc(handler, jwt).tool("golden_list", {});
-    expect(listed.result?.isError).toBeUndefined();
-    const content = listed.result?.structuredContent as { goldens: { name: string }[] };
-    const names = content.goldens.map((g) => g.name);
-    expect(names.sort()).toEqual(["elsewhere", "shared"]);
+    const started = await rpc(handler, jwt).tool("launch", { golden: "shared", harness: "claude" });
+    expect(started.result?.isError).toBeUndefined();
+    expect(started.result?.structuredContent).toMatchObject({ id: expect.any(String) });
   });
 });
 
@@ -223,8 +221,6 @@ describe("on the database client production uses", () => {
     });
     const mcp = await client(session(people.member, []));
 
-    const goldens = await call(mcp, "golden_list");
-    expect(goldens.isError).toBe(false);
     const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
     expect(launched.isError).toBe(false);
 
@@ -659,17 +655,9 @@ describe("tools", () => {
     expect(JSON.stringify(exhausted.data)).not.toContain("private-vendor-body");
   });
 
-  test("a session in several orgs sees each org's goldens, and launch takes the org that has the golden", async () => {
+  test("launch takes the org that has the golden for a session in several orgs", async () => {
     const { session, client, people, boat, db } = await start();
     const mcp = await client(session(people.member, [people.org, people.otherOrg]));
-    const goldens = await call(mcp, "golden_list");
-    expect(goldens.data.goldens).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: "shared", orgId: people.org }),
-        expect.objectContaining({ name: "elsewhere", orgId: people.otherOrg }),
-      ]),
-    );
-
     const elsewhere = await call(mcp, "launch", { golden: "elsewhere", harness: "claude" });
     expect(elsewhere.isError).toBe(true);
     expect(elsewhere.text).toContain("error code: missing_credential");
@@ -1503,14 +1491,13 @@ describe("tools", () => {
     expect(row.rows[0]?.seconds).toBe(12);
   });
 
-  test("a member of another org sees none of this org's goldens or sandboxes", async () => {
+  test("a member of another org sees none of this org's sandboxes", async () => {
     const { token, client, people } = await start();
     const launched = await call(await client(await token(people.member)), "launch", {
       golden: "shared",
       harness: "claude",
     });
     const other = await client(await token(people.member, people.otherOrg));
-    expect((await call(other, "golden_list")).data.goldens).toMatchObject([{ name: "elsewhere" }]);
     expect((await call(other, "list")).data.sandboxes).toEqual([]);
     expect((await call(other, "stop", { id: launched.data.id })).isError).toBe(true);
   });
@@ -1544,12 +1531,6 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
       "exec",
       "work_recovery",
       "github_refresh",
-      "golden_build_status",
-      "golden_create",
-      "golden_list",
-      "golden_snapshot",
-      "golden_size_policy",
-      "golden_update",
       "interrupt",
       "launch",
       "list",
@@ -1574,20 +1555,4 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
   const launch = tools.find((tool) => tool.name === "launch");
   expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string" });
   expect(launch?.inputSchema.required ?? []).not.toContain("repo");
-  const goldenUpdate = tools.find((tool) => tool.name === "golden_update");
-  const goldenSnapshot = tools.find((tool) => tool.name === "golden_snapshot");
-  expect(goldenUpdate?.annotations).toMatchObject({
-    readOnlyHint: false,
-    destructiveHint: false,
-    openWorldHint: true,
-  });
-  expect(goldenSnapshot?.annotations).toMatchObject({
-    readOnlyHint: false,
-    destructiveHint: false,
-    openWorldHint: true,
-  });
-  expect(goldenUpdate?.inputSchema).toBeDefined();
-  expect(goldenUpdate?.outputSchema).toBeDefined();
-  expect(goldenSnapshot?.inputSchema).toBeDefined();
-  expect(goldenSnapshot?.outputSchema).toBeDefined();
 });

@@ -6,8 +6,8 @@ production by this change.** The unique indexes deliberately fail if existing sl
 bindings already violate global uniqueness. Investigate manually; do not delete,
 merge, rename, or widen ACLs to make a migration succeed.
 
-Select the exact existing golden UUID from authenticated `golden_list` (MCP)
-or `POST /api/v1/golden/list`. Do not select by name alone. Only private owners
+Select the exact existing golden UUID from authenticated
+`POST /api/v1/golden/list`. Do not select by name alone. Only private owners
 and org admins can adopt; membership is required. Other historical goldens,
 their snapshots, histories and ACLs remain untouched. Adoption does not make
 those other goldens usable through the canonical binding.

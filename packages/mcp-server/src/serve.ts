@@ -619,12 +619,10 @@ export async function startServer(
     vault: store,
     encryptionKey: config.encryptionKey,
     github: { store, app: githubApp },
-    goldenBuilds,
     providerFor,
     modalProviderFor,
     storedProviderFor: modal.storedProviderFor,
     modalTokensFor: modal.modalTokensFor,
-    goldenTarget: modal.goldenTarget,
     routes: [
       outputs.route((request) =>
         authenticateCaller(request.headers.get("authorization"), {

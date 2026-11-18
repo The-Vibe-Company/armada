@@ -27,7 +27,6 @@ type ProviderControlOptions = Pick<ControlOptions, "providers" | "providerFor" |
 type GoldenControlOptions = ProviderControlOptions &
   Pick<ControlOptions, "goldenBuilds" | "goldenTarget" | "data" | "launch" | "listGoldenRecords">;
 
-/** The same visibility-filtered representation returned by MCP golden_list. */
 export async function listGoldens(
   options: GoldenControlOptions,
   caller: Caller,

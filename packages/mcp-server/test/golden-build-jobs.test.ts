@@ -12,7 +12,7 @@ import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { call, ENCRYPTION_KEY, GITHUB_APP, harness, PUBLIC_URL, type TestServer } from "./support.ts";
+import { ENCRYPTION_KEY, GITHUB_APP, harness, PUBLIC_URL, type TestServer } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
@@ -94,7 +94,7 @@ async function fixture({
   return { ...server, builds, http, deleted, allocations: () => allocations };
 }
 
-test("HTTP durable admission, idempotent acknowledgement recovery and MCP status outlive the request", async () => {
+test("REST durable admission, idempotent acknowledgement recovery and status outlive the request", async () => {
   const s = await fixture();
   try {
     const token = await s.token(s.people.admin);
@@ -118,8 +118,6 @@ test("HTTP durable admission, idempotent acknowledgement recovery and MCP status
       idempotencyKey: body.idempotencyKey,
     });
     expect(await recover.json()).toEqual(job);
-    const client = await s.client(token);
-    expect((await call(client, "golden_build_status", { jobId: job.jobId })).data).toMatchObject({ state: "queued" });
     // The original HTTP response is already consumed. A separately scheduled worker owns execution.
     expect(await s.builds.runOne()).toBe(true);
     const done = await s.http(token, "golden/build/status", { jobId: job.jobId });
@@ -143,20 +141,19 @@ test("HTTP durable admission, idempotent acknowledgement recovery and MCP status
   }
 });
 
-test("MCP admission and rebuild failure retain last-good config/pointer and release only the build reservation", async () => {
+test("REST admission and rebuild failure retain last-good config/pointer and release only the build reservation", async () => {
   const s = await fixture({ isolated: true });
   const logs = spyOn(console, "error").mockImplementation(() => {});
   try {
     const token = await s.token(s.people.admin);
-    const client = await s.client(token);
-    const created = await call(client, "golden_create", {
+    const created = await s.http(token, "golden/create", {
       name: "retained",
       org: s.people.org,
       repos: ["acme/web"],
       idempotencyKey: crypto.randomUUID(),
     });
-    expect(created.isError).toBe(false);
-    const id = (created.data as unknown as GoldenBuildStatus).jobId;
+    expect(created.status).toBe(202);
+    const id = ((await created.json()) as GoldenBuildStatus).jobId;
     await s.builds.runOne();
     expect((await s.builds.status(s.people.admin, id)).state).toBe("succeeded");
     const before = (await s.db.query("select * from goldens where name='retained'")).rows[0];
@@ -311,8 +308,6 @@ test("authorization denials allocate no work; private status is owner-only; capa
     const body = { name: "private-build", org: s.people.org, repos: ["acme/web"], idempotencyKey: crypto.randomUUID() };
     expect((await s.http("", "golden/create", body)).status).toBe(401);
     expect((await s.http(member, "golden/create", body)).status).toBe(403);
-    const deniedMcp = await call(await s.client(member), "golden_create", body);
-    expect(deniedMcp.isError).toBe(true);
     expect((await s.db.query("select 1 from golden_build_jobs")).rows).toEqual([]);
     expect(s.boat.keys).toEqual([]);
     const admitted = await s.http(owner, "golden/create", { ...body, private: true });
@@ -324,7 +319,6 @@ test("authorization denials allocate no work; private status is owner-only; capa
     ]);
     const otherScope = await s.token(s.people.owner, s.people.otherOrg);
     expect((await s.http(otherScope, "golden/build/status", { jobId: job.jobId })).status).toBe(404);
-    expect((await call(await s.client(otherScope), "golden_build_status", { jobId: job.jobId })).isError).toBe(true);
     expect((await s.http(admin, "golden/build/status", { jobId: job.jobId })).status).toBe(404);
     expect((await s.http(member, "golden/build/status", { jobId: job.jobId })).status).toBe(404);
     expect((await s.http(admin, "golden/create", { ...body, idempotencyKey: crypto.randomUUID() })).status).toBe(409);
@@ -471,11 +465,6 @@ test.each([false, true])(
         state: keepSource ? "recovery_required" : "failed",
         failureReason: keepSource ? null : "provider_payment_required",
         result: null,
-      });
-      const mcp = await call(await s.client(token), "golden_build_status", { jobId: job.jobId });
-      expect(mcp.data).toMatchObject({
-        state: keepSource ? "recovery_required" : "failed",
-        failureReason: keepSource ? null : "provider_payment_required",
       });
       expect((await s.db.query("select 1 from golden_backend_slots")).rows).toHaveLength(keepSource ? 1 : 0);
       expect((await s.db.query("select 1 from goldens where name='billing-refused'")).rows).toEqual([]);

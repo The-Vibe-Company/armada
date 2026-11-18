@@ -1,8 +1,6 @@
 import {
   GITHUB_REFRESH_MODAL_NATIVE,
   GitHubHydrationError,
-  goldenForSettings,
-  goldenResponse,
   idlePauseMessage,
   isExternalRef,
   LAUNCH_STAGES,
@@ -10,17 +8,13 @@ import {
   launchResponse,
   MACHINE_SIZES,
   MAX_MCP_CONNECTIONS,
-  parseMachineSizePolicy,
   providerRateLimitDetails,
   SANDBOX_PLACEMENT_PROVIDERS,
   USAGE_UNAVAILABLE_CODES,
 } from "@armada/core";
 import {
-  assertGoldenMutation,
-  connectGolden,
   DEFAULT_LAUNCH_TTL_SECONDS,
   EncryptionKeyError,
-  type GoldenBuildJobs,
   GoldenError,
   type GoldenRecord,
   goldenForLaunch,
@@ -47,11 +41,8 @@ import {
   type SandboxProviderId,
   type SandboxStatus,
   type SkillDefaultsService,
-  scanGoldenSandbox,
-  snapshotGolden,
   type TemplateService,
   VaultError,
-  type Visibility,
 } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -109,14 +100,11 @@ export interface ToolContext {
   provider(target: ProviderTarget): Promise<Provider>;
   /** Authorized lifecycle management: resolve the sandbox owner's immutable source management authority after authorization. */
   deletionProvider?(sandbox: SandboxView): Promise<Provider>;
-  goldenTarget?: (target: Omit<ProviderTarget, "modal">) => Promise<ProviderTarget>;
   now(): Date;
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
   ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   connections?: LaunchStores["connections"];
-  /** Secure, server-orchestrated multi-repo golden creation. Absent: `golden_create` refuses. */
-  goldenBuilds?: GoldenBuildJobs;
   /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */
   logError?: (line: string) => void;
 }
@@ -125,8 +113,6 @@ export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "st
 export const DEFAULT_WAIT_SECONDS = 60;
 export const MAX_WAIT_SECONDS = 600;
 const OUTPUT_LIMIT = 20_000;
-/** Mirrors `GoldenCreateService`'s own limit: one GitHub App installation token covers at most this many repos. */
-const MAX_CREATE_REPOS = 16;
 
 export class ToolError extends Error {
   override readonly name = "ToolError";
@@ -146,16 +132,6 @@ export function assertSendConversation(requested: unknown, current: string | und
 }
 
 export const serverInfo = { name: "armada" } as const;
-
-const buildOutput = {
-  jobId: z.string(),
-  provider: z.enum(SANDBOX_PROVIDERS).optional(),
-  state: z.enum(["queued", "running", "recovery_required", "succeeded", "failed"]),
-  phase: z.string(),
-  errorCode: z.literal("build_failed").nullable(),
-  failureReason: z.string().max(1024).nullable().optional(),
-  result: z.object({ name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() }).nullable(),
-};
 
 const id = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
 const conversationId = z.string().min(1).optional().describe("A conversation of the sandbox. Default: the latest.");
@@ -180,40 +156,7 @@ const providerOutput = z.enum(SANDBOX_PROVIDERS).describe("The sandbox provider 
 const compat = (name: string) =>
   z.string().nullable().describe(`The same as ${name} on a Boat golden or sandbox; null on any other provider.`);
 
-const golden = z.object({
-  id: z.string(),
-  name: z.string(),
-  orgId: z.string(),
-  visibility: z.enum(["org", "private"]),
-  ownerId: z.string(),
-  provider: providerOutput,
-  providerSnapshotId: z.string().nullable(),
-  baselineVersion: z
-    .number()
-    .int()
-    .positive()
-    .nullable()
-    .describe("The developer baseline version the golden's snapshot was verified against; null when not recorded."),
-  baselineOutdated: z
-    .boolean()
-    .describe("True when the golden has a snapshot built against an older developer baseline than this server's."),
-  providerSandboxId: z.string().nullable(),
-  modal: z
-    .object({ workspace: z.string(), environment: z.string(), appId: z.string() })
-    .nullable()
-    .describe("The Modal workspace, environment and App id a Modal golden is pinned to."),
-  boatSnapshotId: compat("providerSnapshotId"),
-  boatSandboxId: compat("providerSandboxId"),
-  repos: z.number().int(),
-  config: z.object({
-    repos: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),
-    init: z.array(z.string()),
-  }),
-});
-
 /** The golden record shared by the MCP tools and the REST golden list. */
-export { golden as GOLDEN_OUTPUT };
-
 const taskOutcome = z.discriminatedUnion("state", [
   z
     .object({
@@ -497,7 +440,7 @@ export function createArmadaServer(context: ToolContext, version: string, option
       instructions:
         "Armada launches Claude Code, Codex and OpenCode agents in sandboxes. " +
         "Provider and agent availability depend on server configuration. In these tools, a golden is a snapshot. " +
-        "Typical flow: golden_list, launch (with a prompt to start at once), then wait or status, logs to read " +
+        "Find a golden with the dashboard or POST /api/v1/golden/list. Then launch with a prompt, use wait or status, and use logs to read " +
         "what the agent did, send for the next instruction, and stop when done. Ids are Armada sandbox ids.",
     },
   );
@@ -845,215 +788,6 @@ export function createArmadaServer(context: ToolContext, version: string, option
   );
 
   tool(
-    "golden_list",
-    {
-      title: "List goldens",
-      description:
-        "The goldens you can launch from: your orgs', and your own private ones. A golden without a " +
-        "providerSnapshotId cannot be launched yet. The same name may exist on several providers.",
-      input: {},
-      output: { goldens: z.array(golden) },
-      readOnly: true,
-    },
-    async () => {
-      const goldens: GoldenRecord[] = [];
-      for (const orgId of orgIds) goldens.push(...(await data.goldens.list(orgId)));
-      return { goldens: goldens.map(goldenResponse) };
-    },
-  );
-
-  tool(
-    "golden_build_status",
-    {
-      title: "Golden build status",
-      description: "Read a durable build job. Poll this bounded request; never resubmit a disconnected build.",
-      input: {
-        jobId: z.string().uuid().optional(),
-        idempotencyKey: z.string().min(16).max(128).optional(),
-        org: z.string().optional(),
-      },
-      readOnly: true,
-      output: buildOutput,
-    },
-    async ({ jobId, idempotencyKey, org }) => {
-      if (!context.goldenBuilds) throw new ToolError("unsupported", "Durable golden builds are not configured.");
-      if (!jobId && !idempotencyKey) throw new ToolError("invalid", "Pass jobId or idempotencyKey.");
-      return context.goldenBuilds.status(
-        caller.userId,
-        jobId ?? "",
-        idempotencyKey ? resolveCreateOrg(caller.orgs, org).orgId : undefined,
-        idempotencyKey,
-        caller.orgs.map((org) => org.orgId),
-      );
-    },
-  );
-
-  tool(
-    "golden_create",
-    {
-      title: "Create a golden",
-      description:
-        "Admits a durable build job; poll golden_build_status. Builds from one or more GitHub repositories you can access, in a disposable sandbox " +
-        "with none of the boat.dev account's credentials: clones each over your own cached GitHub connection " +
-        "(see `launch`'s `github`), optionally runs a setup script, scans the builder for leaked GitHub tokens, " +
-        "and only saves the snapshot when that scan passes. All repos must share one GitHub App installation.",
-      input: {
-        provider: z.enum(["boat", "modal"]).optional(),
-        idempotencyKey: z.string().min(16).max(128),
-        name: z.string().min(1).describe("The golden's name."),
-        repos: z
-          .array(z.string().min(1))
-          .min(1)
-          .max(MAX_CREATE_REPOS)
-          .describe("owner/repo, repeated, from one GitHub App installation."),
-        org: z
-          .string()
-          .optional()
-          .describe("The orgId to create it in, as in golden_list. Needed only when you belong to more than one."),
-        private: z.boolean().optional().describe("Default false: visible to your whole org. True: only you."),
-        setup: z.string().optional().describe("A shell script run in the builder after cloning, before the snapshot."),
-      },
-      output: buildOutput,
-    },
-    async (args) => {
-      if (!context.goldenBuilds) {
-        throw new ToolError("unsupported", "Secure golden creation is not configured on this server.");
-      }
-      const visibility: Visibility = args.private ? "private" : "org";
-      const member = resolveCreateOrg(caller.orgs, args.org);
-      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-      assertGoldenMutation(actor, { orgId: member.orgId, visibility, ownerId: caller.userId, name: args.name });
-      const input = { orgId: member.orgId, visibility, provider: args.provider ?? "boat" } as const;
-      const target = context.goldenTarget ? await context.goldenTarget(input) : { ...input, modal: null };
-      const provider = await context.provider(target);
-      return context.goldenBuilds.admit(
-        provider,
-        actor,
-        {
-          ...(target.modal ? { modal: target.modal } : {}),
-          name: args.name,
-          visibility,
-          repos: args.repos,
-          ...(args.setup ? { setup: args.setup } : {}),
-        },
-        args.idempotencyKey,
-      );
-    },
-  );
-
-  tool(
-    "golden_update",
-    {
-      title: "Rebuild a golden",
-      description:
-        "Admits a durable rebuild job; poll golden_build_status. Private goldens require their owner; org goldens require an org admin.",
-      input: {
-        provider: z.enum(["boat", "modal"]).optional(),
-        idempotencyKey: z.string().min(16).max(128),
-        name: z.string().min(1),
-        org: z.string().optional(),
-        repos: z.array(z.string().min(1)).min(1).max(MAX_CREATE_REPOS),
-        setup: z.string().optional(),
-      },
-      output: buildOutput,
-    },
-    async (args) => {
-      if (!context.goldenBuilds)
-        throw new ToolError("unsupported", "Secure golden creation is not configured on this server.");
-      const member = resolveCreateOrg(caller.orgs, args.org);
-      const rows = (await data.goldens.findByName(member.orgId, args.name)).filter(
-        (row) => !args.provider || row.provider === args.provider,
-      );
-      if (rows.length > 1) throw new ToolError("conflict", "Golden exists on multiple providers; select a provider.");
-      if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
-      const existingGolden = rows[0];
-      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-      assertGoldenMutation(actor, existingGolden);
-      const provider = await context.provider(existingGolden);
-      return context.goldenBuilds.admit(
-        provider,
-        actor,
-        {
-          name: existingGolden.name,
-          visibility: existingGolden.visibility,
-          repos: args.repos,
-          ...(args.setup ? { setup: args.setup } : {}),
-          existingGolden,
-        },
-        args.idempotencyKey,
-      );
-    },
-  );
-
-  tool(
-    "golden_snapshot",
-    {
-      title: "Snapshot a golden",
-      description: "Restores the golden master if needed, scans it for leaked GitHub tokens, then saves a snapshot.",
-      input: { name: z.string().min(1), org: z.string().optional(), provider: z.enum(SANDBOX_PROVIDERS).optional() },
-      output: { name: z.string(), snapshot: z.string() },
-    },
-    async (args) => {
-      const member = resolveCreateOrg(caller.orgs, args.org);
-      const rows = (await data.goldens.findByName(member.orgId, args.name)).filter(
-        (row) => !args.provider || row.provider === args.provider,
-      );
-      if (rows.length > 1) throw new ToolError("conflict", "Golden exists on multiple providers; select a provider.");
-      if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
-      const golden = rows[0];
-      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-      assertGoldenMutation(actor, golden);
-      const provider = await context.provider(golden);
-      await data.goldens.assertBackendBinding?.(golden, provider);
-      const target = (await connectGolden(provider, data.goldens, actor, golden.name)).golden;
-      if (!target.providerSandboxId) throw new ToolError("conflict", `Golden '${target.name}' has no sandbox yet.`);
-      await scanGoldenSandbox(provider, target.providerSandboxId);
-      const saved = await snapshotGolden(provider, data.goldens, actor, target.name, context.launch ?? {});
-      return { name: saved.golden.name, snapshot: saved.snapshotName };
-    },
-  );
-
-  tool(
-    "golden_size_policy",
-    {
-      title: "Golden machine size policy",
-      description:
-        "Read or replace defaults for this provider golden only. Org writes require admin; private writes require owner. Does not rebuild snapshots or resize machines.",
-      input: {
-        golden: z.string(),
-        org: z.string().optional(),
-        provider: z.enum(SANDBOX_PROVIDERS).optional(),
-        policy: z.unknown().optional(),
-      },
-      output: {
-        goldenId: z.string(),
-        provider: providerOutput,
-        repositories: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),
-        policy: z.unknown().nullable(),
-      },
-    },
-    async (args) => {
-      const actor = await launchActor(args.golden, args.org);
-      const golden = await goldenForSettings(data.goldens, actor, args.golden, args.provider);
-      if (args.policy !== undefined) {
-        const policy = parseMachineSizePolicy(
-          args.policy,
-          golden.config.repos.map((r) => r.dir),
-        );
-        if (!data.goldens.setSizePolicy) throw new GoldenError("conflict", "Policy writes are unavailable.");
-        await data.goldens.setSizePolicy(golden, actor, policy);
-        return { goldenId: golden.id, provider: golden.provider, repositories: golden.config.repos, policy };
-      }
-      return {
-        goldenId: golden.id,
-        provider: golden.provider,
-        repositories: golden.config.repos,
-        policy: golden.sizePolicy ?? null,
-      };
-    },
-  );
-
-  tool(
     "launch",
     {
       title: "Launch an agent",
@@ -1077,11 +811,11 @@ export function createArmadaServer(context: ToolContext, version: string, option
         skipSkillDefaults: z.boolean().optional(),
         helperCapabilities: z.array(z.string().max(64)).max(8).optional(),
         connections: z.array(z.string().uuid()).max(MAX_MCP_CONNECTIONS).optional(),
-        golden: z.string().min(1).describe("The golden's name, as in golden_list."),
+        golden: z.string().min(1).describe("The golden's name, as in golden/list."),
         org: z
           .string()
           .optional()
-          .describe("The golden's orgId, as in golden_list. Needed only when the name is in several of your orgs."),
+          .describe("The golden's orgId, as in golden/list. Needed only when the name is in several of your orgs."),
         provider: z
           .enum(SANDBOX_PROVIDERS)
           .optional()
@@ -2219,22 +1953,6 @@ const providerLimitsText = SANDBOX_PROVIDERS.map((provider) => {
 
 function fail(): never {
   throw new ToolError("internal", INTERNAL_FAILURE_MESSAGE);
-}
-
-/** The org `golden_create` acts in: the given one, else the caller's only org. There is no existing golden to disambiguate by. */
-function resolveCreateOrg(
-  orgs: readonly { orgId: string; role: MemberRole }[],
-  org: string | undefined,
-): { orgId: string; role: MemberRole } {
-  if (org !== undefined) {
-    const found = orgs.find((item) => item.orgId === org);
-    if (!found) throw new ToolError("not_found", `You are not a member of org '${org}'.`);
-    return found;
-  }
-  const [first] = orgs;
-  if (!first) throw new ToolError("not_found", "You are not a member of any org.");
-  if (orgs.length > 1) throw new ToolError("invalid_request", "You belong to more than one org. Pass org (an orgId).");
-  return first;
 }
 
 async function readLogs(
