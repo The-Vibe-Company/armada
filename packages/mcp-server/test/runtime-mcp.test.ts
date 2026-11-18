@@ -503,6 +503,24 @@ test("a connected pinned stdio definition reaches the runtime without a gateway 
   }
 });
 
+test("runtime admission rejects pinned stdio arguments that exceed the runtime configuration limit", async () => {
+  const { f, registry, service } = await fixture();
+  try {
+    const local = await registry.save(f.people.owner, f.people.org, {
+      name: "oversized local",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["@example/mcp@1.2.3", ...Array(62).fill("input")],
+    });
+    await expect(service.preflight(f.caller, { org: f.people.org, connections: [local.id] })).rejects.toMatchObject({
+      code: "invalid",
+    });
+  } finally {
+    await f.close();
+  }
+});
+
 test.each(["boat", "modal"] as const)(
   "epoch replacement durably revokes an already delivered MCP lease (%s)",
   async (provider) => {
