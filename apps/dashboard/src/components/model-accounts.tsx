@@ -1089,7 +1089,7 @@ function ReplaceDialog({
             </div>
           </DialogDescription>
         </DialogHeader>
-        <form ref={formRef} key={generation} action={formAction} className="space-y-4">
+        <form ref={formRef} key={`${generation}:${account.version}`} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
           <input type="hidden" name="kind" value={account.kind} />
           <input type="hidden" name="name" value={account.name} />
@@ -2128,7 +2128,7 @@ function PersonalDefaultSentence({
                   !MODEL_CATALOG[harness].models.some(
                     (model) => model.id === (current.model ?? modelsPageModel(account, harness)),
                   ) && "font-mono",
-                  "text-[13px]",
+                  "wrap-anywhere text-[13px]",
                 )}
                 onClick={(event) => {
                   opener.current = event.currentTarget;
