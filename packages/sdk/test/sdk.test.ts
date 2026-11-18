@@ -112,6 +112,8 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     golden: null,
     helper: null,
     github: { status: "none" },
+    promptId: null,
+    conversationId: null,
     runtime: null,
     ttlSeconds: 3600,
     expiresAt: "2026-11-18T00:00:00.000Z",
@@ -129,7 +131,7 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
   const golden: null = launched.golden;
   expect(golden).toBeNull();
   expect(launched.sandbox.hostId).toBe(input.hostId);
-  expect(launched.promptId).toBeUndefined();
+  expect(launched.promptId).toBeNull();
   expect(sent).toEqual(input);
 });
 

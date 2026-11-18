@@ -29,6 +29,7 @@ import {
   listOrgs,
   mutateCredentialAccount,
   type Provider,
+  ProviderError,
   type ProviderRegistry,
   type ProviderTarget,
   parseCredentialKind,
@@ -60,6 +61,7 @@ import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts
 import { listControlCredentials } from "./credential-list.ts";
 import type { createSqlCredentialList } from "./credential-list-sql.ts";
 import type { DataSource, ScopedData } from "./data.ts";
+import { DOCKER_LAUNCH_REQUEST } from "./docker-launch-request-schema.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import {
   connectGoldenRoute,
@@ -73,6 +75,8 @@ import type { Invitations } from "./invitations.ts";
 import { launchActor, launchRoute, templateRuntime } from "./launch-control.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions, launchProviderOptions } from "./launch-options.ts";
+import { GOLDEN_LAUNCH_REQUEST } from "./launch-request-schema.ts";
+import { canonicalLaunchResponse } from "./launch-response-schemas.ts";
 import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
 import { type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
 import type { ModelUsageApi } from "./model-usage.ts";
@@ -652,10 +656,25 @@ export async function dispatchControlCommand(
   const org = scopedOrg(caller, optional(body, "org"));
   // Canonical runtime requests use the same admission checks as the compatibility routes.
   let operation = route;
-  if (route === "sandbox/launch" && body.provider !== "docker") {
-    if (body.runtimeTransport !== undefined) operation = "sandbox/launch-modal-runtime-v1";
-    else if (body.boatRuntime !== undefined || body.runtimeVersion !== undefined)
-      operation = "sandbox/launch-runtime-v1";
+  if (route === "sandbox/launch") {
+    if (body.provider === "docker") {
+      if (!DOCKER_LAUNCH_REQUEST.safeParse(body).success)
+        throw new ProviderError({
+          provider: "docker",
+          code: "invalid_request",
+          retryable: false,
+          message: Object.hasOwn(body, "image")
+            ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
+            : "Invalid Docker launch request.",
+        });
+    } else {
+      if (body.id !== undefined && body.runtimeTransport === "dialout")
+        throw new VaultError("invalid", "Use sandbox/launch-modal-runtime-v1 for pinned Modal runtime templates.");
+      if (!GOLDEN_LAUNCH_REQUEST.safeParse(body).success)
+        throw new VaultError("invalid", "Invalid golden launch request. See the sandbox/launch request schema.");
+      if (body.runtimeTransport !== undefined) operation = "sandbox/launch-modal-runtime-v1";
+      else if (body.boatRuntime !== undefined) operation = "sandbox/launch-runtime-v1";
+    }
   }
   switch (operation) {
     case "skillpack/catalog":
@@ -902,8 +921,6 @@ export async function dispatchControlCommand(
       if (body.prompt === undefined && !options.runtimeSend)
         throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
       if (body.id !== undefined) {
-        if (route === "sandbox/launch")
-          throw new VaultError("invalid", "Use sandbox/launch-modal-runtime-v1 for pinned Modal runtime templates.");
         const standard = [
           "org",
           "id",
@@ -963,7 +980,9 @@ export async function dispatchControlCommand(
           options: { ...base.options, runtime: options.modalRuntimeLaunch },
         });
       }
-      return launchRoute(options, caller, body, "modal");
+      return launchRoute(options, caller, body, "modal").then((result) =>
+        route === "sandbox/launch" ? canonicalLaunchResponse(result) : result,
+      );
     case "sandbox/launch-runtime-v1":
       if (
         body.runtimeVersion !== 1 ||
@@ -977,7 +996,9 @@ export async function dispatchControlCommand(
         throw new VaultError("invalid", "Runtime v1 requires explicit Boat Codex, Claude or OpenCode snapshot launch.");
       if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
         throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-      return launchRoute(options, caller, body, true);
+      return launchRoute(options, caller, body, true).then((result) =>
+        route === "sandbox/launch" ? canonicalLaunchResponse(result) : result,
+      );
     case "sandbox/launch-access-v1":
       if (body.armadaAccessVersion !== 1 || !parseSandboxArmadaAccess(body.armadaAccess))
         throw new VaultError("invalid", "The access launch route requires armadaAccessVersion 1 and armadaAccess.");
@@ -989,9 +1010,11 @@ export async function dispatchControlCommand(
     case "sandbox/launch":
       if (body.provider === "docker") {
         if (!options.dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
-        return options.dockerLaunch.launch(await selectedCaller(options, caller, optional(body, "org")), body);
+        return canonicalLaunchResponse(
+          await options.dockerLaunch.launch(await selectedCaller(options, caller, optional(body, "org")), body),
+        );
       }
-      return launchRoute(options, caller, body);
+      return canonicalLaunchResponse(await launchRoute(options, caller, body));
     case "launch/resolve":
       throw new VaultError("unavailable", "Client-side credential resolution is retired; use sandbox/launch.");
     case "logs/read":

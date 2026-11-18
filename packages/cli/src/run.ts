@@ -1044,7 +1044,19 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     ),
   );
   io.out(
-    flag(args, "--json") ? `${JSON.stringify(launchResponse(result), null, 2)}\n` : launchText(result, auth.now()),
+    flag(args, "--json")
+      ? `${JSON.stringify(
+          {
+            ...launchResponse(result),
+            sandbox: result.sandbox,
+            runtime: result.runtime ?? null,
+            helper: result.helper ?? null,
+            conversationId: result.conversationId ?? null,
+          },
+          null,
+          2,
+        )}\n`
+      : launchText(result, auth.now()),
   );
   if (
     size !== undefined &&

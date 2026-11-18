@@ -55,7 +55,7 @@ never finds it. Instead:
   `snapshotId` names a Docker snapshot, which selects its own host.
 
 The launch call returns once Armada admits the launch, normally with
-`"status":"starting"` and no `promptId` or `conversationId`. A worker starts
+`sandbox.status: "starting"` and null `promptId` and `conversationId`. A worker starts
 the sandbox and sends the prompt afterwards. A replay with the same
 `requestId` and body never launches twice:
 
@@ -121,6 +121,20 @@ never re-dispatched.
 
 Signed [outbound webhooks](outbound-webhooks.md) include `externalRef` in
 each payload, with null when the sandbox has no reference.
+
+## Canonical launch API
+
+The [OpenAPI contract](openapi.json) describes the validated request variants for
+`POST /api/v1/sandbox/launch`: golden, explicit Boat runtime, explicit Modal
+runtime, Docker host and Docker snapshot. Unknown fields are rejected. Use
+`ttlSeconds` and `reasoningEffort` for REST launch requests. Provider-specific
+settings and server opt-ins still apply.
+
+All three providers return the same envelope. Read the placement and Armada ID
+at `sandbox.provider` and `sandbox.id`. The `golden` record is null for Docker.
+`promptId`, `conversationId`, `runtime` and `helper` are null when unavailable.
+CLI JSON includes `sandbox.id` and the top-level `id` alias on all three
+providers. The CLI's `golden` field remains a name or null.
 
 ## Launch route compatibility
 
