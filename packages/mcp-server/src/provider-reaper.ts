@@ -1,4 +1,5 @@
-import type { Provider, ProviderInventoryMachine, SandboxProviderId, SandboxStatus } from "@armada/core";
+import type { Provider, ProviderInventoryMachine, SandboxStatus } from "@armada/core";
+import type { SandboxPlacementProviderId } from "@armada/core/sandbox-provider";
 import type { ServerLifecycleLane } from "./server-workers.ts";
 
 const UNKNOWN_GRACE_MS = 15 * 60_000;
@@ -13,7 +14,7 @@ type DeleteReason = "unknown" | "terminal";
 type Decision = "keep" | "unknown_young" | DeleteReason;
 
 export interface ProviderReaperSource {
-  provider: SandboxProviderId;
+  provider: SandboxPlacementProviderId;
   /** Stable, nonsecret identity unique to the provider account/binding or host within this deployment. */
   sourceId: string;
   /** Stable environment + server identity used when tagging machines. */
