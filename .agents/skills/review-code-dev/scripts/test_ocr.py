@@ -66,6 +66,7 @@ class BootstrapTests(unittest.TestCase):
                 "v1.13.12/opencodereview-linux-arm64",
                 timeout=60,
             )
+            self.assertEqual(binary, Path(tmp).resolve() / "1.13.12/linux-arm64/ocr")
             binary.write_bytes(b"corrupted")
             with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
                 ocr.ensure_binary()
