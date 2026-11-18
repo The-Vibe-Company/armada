@@ -540,22 +540,20 @@ export async function dispatchControlCommand(
   }
   const toolName = CONTROL_TOOL_ROUTES[route];
   if (toolName) {
-    if (
-      route === "sandbox/extend" &&
-      Number.isSafeInteger(body.ttl_seconds) &&
-      Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS
-    )
-      throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
-    if (
-      route === "sandbox/extend" &&
-      (!Number.isSafeInteger(body.ttl_seconds) ||
-        Number(body.ttl_seconds) < 1 ||
-        Number(body.ttl_seconds) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
-    )
-      throw new VaultError(
-        "invalid",
-        "ttl_seconds must be a positive whole number of seconds within the server maximum.",
-      );
+    if (route === "sandbox/extend") {
+      if (Object.hasOwn(body, "ttlSeconds") && Object.hasOwn(body, "ttl_seconds"))
+        throw new VaultError("invalid", "Send one lifetime field: ttlSeconds.");
+      const { ttlSeconds, ...fields } = body;
+      const ttl = Object.hasOwn(body, "ttlSeconds") ? ttlSeconds : fields.ttl_seconds;
+      if (Number.isSafeInteger(ttl) && Number(ttl) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
+        throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
+      if (!Number.isSafeInteger(ttl) || Number(ttl) < 1)
+        throw new VaultError(
+          "invalid",
+          "ttlSeconds must be a positive whole number of seconds within the server maximum.",
+        );
+      body = { ...fields, ttl_seconds: ttl };
+    }
     if (
       route === "golden/capabilities" &&
       optional(body, "provider") !== undefined &&

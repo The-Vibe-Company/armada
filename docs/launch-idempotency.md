@@ -156,13 +156,20 @@ runtime admission checks and server opt-ins apply on both the canonical and
 compatibility routes. Pinned Modal runtime templates still use
 `sandbox/launch-modal-runtime-v1`.
 
-| Compatibility route | Known callers to migrate |
-| --- | --- |
-| `sandbox/launch-sized-v1` | CLI size and repository flags via the SDK, dashboard, iOS |
-| `sandbox/launch-access-v1` | CLI scoped access via the SDK, dashboard, post-deploy smoke and scoped-access staging probe |
-| `sandbox/launch-runtime-v1` | Boat runtime probe and direct API integrations following the runtime guide |
-| `sandbox/launch-modal-runtime-v1` | Modal runtime probe and direct API integrations following the runtime guide |
+For REST extensions, use `ttlSeconds` on `POST /api/v1/sandbox/extend`
+as well. The server accepts the older `ttl_seconds` spelling for existing
+clients. Send only one field.
 
-The aliases remain available throughout client migration and for at least 90
-days after the first release that migrates all first-party callers. Review
-remaining released-client usage before scheduling removal.
+| Compatibility route | Known released or external callers |
+| --- | --- |
+| `sandbox/launch-sized-v1` | Released CLI, dashboard and iOS builds with sizing or repository selection |
+| `sandbox/launch-access-v1` | Released CLI and dashboard builds with scoped access, and older scoped-access probes |
+| `sandbox/launch-runtime-v1` | Older Boat runtime probes and direct API integrations |
+| `sandbox/launch-modal-runtime-v1` | Older Modal runtime probes, direct API integrations and pinned Modal runtime template requests |
+
+The CLI, dashboard, iOS app and direct golden smoke probes now send these
+selectors to `sandbox/launch`. Pinned Modal runtime templates keep their
+versioned entry point. Keep golden launch aliases available for at least 90
+days after the first release carrying the first-party golden launch migration.
+Review remaining released-client usage and migrate the pinned template
+entry point before retiring its alias.

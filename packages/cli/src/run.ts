@@ -991,7 +991,6 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
       },
       { signal: AbortSignal.timeout(10 * 60_000) },
-      flag(args, "--armada-access") ? "access" : sized ? "sized" : undefined,
     ),
   );
   io.out(

@@ -608,11 +608,7 @@ try {
     mcpMode || variablesMode
       ? `Remember token ${memory}. ${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} After it succeeds, reply exactly ${answer}. Do not change files.`
       : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`;
-  const route = ordinaryMode
-    ? templateSource
-      ? "templates/launch"
-      : "sandbox/launch"
-    : "sandbox/launch-modal-runtime-v1";
+  const route = templateSource ? "templates/launch" : "sandbox/launch";
   const raw = await api(route, {
     ...(!ordinaryMode
       ? { runtimeVersion: 1, runtimeTransport: "dialout", provider: "modal", harness }
