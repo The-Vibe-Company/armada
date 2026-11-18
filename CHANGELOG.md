@@ -1,5 +1,77 @@
 # Changelog
 
+## [3.0.0](https://github.com/The-Vibe-Company/armada/compare/v2.57.2...v3.0.0) (2026-11-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **launch:** refuse unbound legacy credentials with migration guidance ([#2917](https://github.com/The-Vibe-Company/armada/issues/2917))
+* **mcp:** remove checkpoint, sized launch, receipt, advice, recovery and delete tools from MCP ([#2948](https://github.com/The-Vibe-Company/armada/issues/2948))
+* **mcp:** remove checkpoint, sized launch, receipt, advice, recovery and delete tools from MCP ([#2939](https://github.com/The-Vibe-Company/armada/issues/2939))
+* **mcp:** remove golden, template, variable, secret and skill-default tools from MCP ([#2932](https://github.com/The-Vibe-Company/armada/issues/2932))
+* **mcp:** remove golden, template, variable, secret and skill-default tools from MCP ([#2929](https://github.com/The-Vibe-Company/armada/issues/2929))
+* **api:** one launch schema in @armada/core/contract ([#2912](https://github.com/The-Vibe-Company/armada/issues/2912))
+* **api:** one conversation per sandbox ([#2907](https://github.com/The-Vibe-Company/armada/issues/2907))
+* **cli:** delete dead snapshot-maintenance commands and launch size-policy flags ([#2900](https://github.com/The-Vibe-Company/armada/issues/2900))
+* **launch:** refuse unbound legacy credentials with migration guidance ([#2901](https://github.com/The-Vibe-Company/armada/issues/2901))
+* **mcp:** remove golden, template, variable, secret and skill-default tools from MCP ([#2897](https://github.com/The-Vibe-Company/armada/issues/2897))
+* **mcp:** remove checkpoint, sized launch, receipt, advice, recovery and delete tools from MCP ([#2899](https://github.com/The-Vibe-Company/armada/issues/2899))
+* **mcp:** remove golden, template, variable, secret and skill-default tools from MCP ([#2862](https://github.com/The-Vibe-Company/armada/issues/2862))
+* **api:** delete the -v1 launch routes and their version keys ([#2865](https://github.com/The-Vibe-Company/armada/issues/2865))
+
+### Features
+
+* **api:** one conversation per sandbox ([#2907](https://github.com/The-Vibe-Company/armada/issues/2907)) ([d725bb0](https://github.com/The-Vibe-Company/armada/commit/d725bb0fadfa82d7fa11bfb691ef96e2f341d6ac))
+* **docker-host:** container inventory for the reaper ([#2891](https://github.com/The-Vibe-Company/armada/issues/2891)) ([f6c3e22](https://github.com/The-Vibe-Company/armada/commit/f6c3e224ac7eb759ed15672223efdb0bd66415ab))
+* **launch:** refuse unbound legacy credentials with migration guidance ([#2901](https://github.com/The-Vibe-Company/armada/issues/2901)) ([22f9482](https://github.com/The-Vibe-Company/armada/commit/22f9482bd24c29cb456d30315d99872ac239f6b6))
+* **launch:** refuse unbound legacy credentials with migration guidance ([#2917](https://github.com/The-Vibe-Company/armada/issues/2917)) ([be2aaa9](https://github.com/The-Vibe-Company/armada/commit/be2aaa98ab740c11b0b514c401fb97170b539a24))
+* **models:** one generated model catalog ([#2911](https://github.com/The-Vibe-Company/armada/issues/2911)) ([41d5beb](https://github.com/The-Vibe-Company/armada/commit/41d5beb9c9284b7c12f1e43750ce7298b11be791))
+* **provider-boat:** inventory listing for the reaper ([#2893](https://github.com/The-Vibe-Company/armada/issues/2893)) ([d97aa69](https://github.com/The-Vibe-Company/armada/commit/d97aa69e726bd4992203576c82a936d3784f6624))
+* **provider-boat:** inventory listing for the reaper ([#2935](https://github.com/The-Vibe-Company/armada/issues/2935)) ([309934c](https://github.com/The-Vibe-Company/armada/commit/309934c3b3fc3a7178c659b9d2d0293b1ed6605e))
+* **provider-boat:** inventory listing for the reaper ([#2941](https://github.com/The-Vibe-Company/armada/issues/2941)) ([f54318e](https://github.com/The-Vibe-Company/armada/commit/f54318e5f168f69d2d6514edc5f45933e23ead4d))
+* **provider-modal:** inventory listing for the reaper ([#2898](https://github.com/The-Vibe-Company/armada/issues/2898)) ([15b019e](https://github.com/The-Vibe-Company/armada/commit/15b019e7f83cf55a6b747bf38b1c0cad63a8e70f))
+* **provider-modal:** inventory listing for the reaper ([#2938](https://github.com/The-Vibe-Company/armada/issues/2938)) ([ab95e24](https://github.com/The-Vibe-Company/armada/commit/ab95e2421e5d6954f4864f4296dcd9004599be24))
+* **runtime:** allow pinned stdio MCP servers on the runtime path ([#2905](https://github.com/The-Vibe-Company/armada/issues/2905)) ([a978042](https://github.com/The-Vibe-Company/armada/commit/a97804288fae7c8679771e41f21880aeda9d63a3))
+* **runtime:** allow pinned stdio MCP servers on the runtime path ([#2949](https://github.com/The-Vibe-Company/armada/issues/2949)) ([ed2e437](https://github.com/The-Vibe-Company/armada/commit/ed2e437822c0dc582a0b0f3fed2c31f28a87d06a))
+* **runtime:** deliver raw application secrets through the runtime on Modal ([#2908](https://github.com/The-Vibe-Company/armada/issues/2908)) ([e25fe10](https://github.com/The-Vibe-Company/armada/commit/e25fe108e14ac53964a10174d9fc4d6c8b1cb0d7))
+* **runtime:** deliver raw application secrets through the runtime on Modal ([#2924](https://github.com/The-Vibe-Company/armada/issues/2924)) ([e590a96](https://github.com/The-Vibe-Company/armada/commit/e590a9641d9a1f5eb82337b5118f8122c93901c5))
+* **runtime:** deliver raw application secrets through the runtime on Modal ([#2943](https://github.com/The-Vibe-Company/armada/issues/2943)) ([d8a9b04](https://github.com/The-Vibe-Company/armada/commit/d8a9b043c5b4b4345a5123e272b44f31fd5301ac))
+* **runtime:** refuse an older runtime protocol and re-bootstrap on resume ([#2902](https://github.com/The-Vibe-Company/armada/issues/2902)) ([defe896](https://github.com/The-Vibe-Company/armada/commit/defe896d01a48d399e3fc4afa975004366ac3b10))
+* **runtime:** refuse an older runtime protocol and re-bootstrap on resume ([#2950](https://github.com/The-Vibe-Company/armada/issues/2950)) ([be59f9f](https://github.com/The-Vibe-Company/armada/commit/be59f9f6bc9163d2d6457ee023425250c01e6414))
+* **server:** provider inventory reaper ([#2872](https://github.com/The-Vibe-Company/armada/issues/2872)) ([b684c89](https://github.com/The-Vibe-Company/armada/commit/b684c894f26d14cca2cbd7a67f1b6582bd26e8c6))
+* **server:** provider inventory reaper ([#2936](https://github.com/The-Vibe-Company/armada/issues/2936)) ([3521cdc](https://github.com/The-Vibe-Company/armada/commit/3521cdc91a1a2abf5cb8c3421fd7050f30667465))
+* **server:** provider inventory reaper ([#2946](https://github.com/The-Vibe-Company/armada/issues/2946)) ([8f097ba](https://github.com/The-Vibe-Company/armada/commit/8f097baff2eec5f4da83918a41b6443062d00561))
+* **server:** provider inventory reaper ([#2953](https://github.com/The-Vibe-Company/armada/issues/2953)) ([6dbe821](https://github.com/The-Vibe-Company/armada/commit/6dbe821f375879c2a2e367cf53be783027214e65))
+
+
+### Bug Fixes
+
+* **outputs:** name the cause of collector_failed on running Modal sandboxes ([#2895](https://github.com/The-Vibe-Company/armada/issues/2895)) ([c3fcd77](https://github.com/The-Vibe-Company/armada/commit/c3fcd776f458bbb286d561c3248a742ad8744658))
+* **provider-modal:** create is idempotent on the sandbox id (salvaged from [#2684](https://github.com/The-Vibe-Company/armada/issues/2684)) ([#2952](https://github.com/The-Vibe-Company/armada/issues/2952)) ([161ad10](https://github.com/The-Vibe-Company/armada/commit/161ad10c7a0549c2aaa1908702ae195cf64a762c))
+* **runtime:** recover an unenrolled Boat resume ([#2919](https://github.com/The-Vibe-Company/armada/issues/2919)) ([7ddb709](https://github.com/The-Vibe-Company/armada/commit/7ddb7098ee8b886e4b70afbdc7a63e8f8e3bd9c4))
+
+
+### Performance Improvements
+
+* **launch:** attribute every second of a Modal launch ([#2877](https://github.com/The-Vibe-Company/armada/issues/2877)) ([af3427a](https://github.com/The-Vibe-Company/armada/commit/af3427ae0c251067ff1ff54cdf4e7da85de1acce))
+* **runtime:** flush runtime events on write with 50 ms coalescing ([#2863](https://github.com/The-Vibe-Company/armada/issues/2863)) ([0a19647](https://github.com/The-Vibe-Company/armada/commit/0a196473cb8cedfb8565f02bbf60dfcb6fe736ea))
+* **server:** in-process wakes for runtime and Docker host long polls ([#2903](https://github.com/The-Vibe-Company/armada/issues/2903)) ([e78ccca](https://github.com/The-Vibe-Company/armada/commit/e78cccadb54078597195abd0739a01582c275d3a))
+* **server:** in-process wakes for the runtime socket pump and the command reply wait ([#2874](https://github.com/The-Vibe-Company/armada/issues/2874)) ([9217e27](https://github.com/The-Vibe-Company/armada/commit/9217e2776649ed7c2df88d9a53dee5b27321c7ba))
+
+
+### Code Refactoring
+
+* **api:** delete the -v1 launch routes and their version keys ([#2865](https://github.com/The-Vibe-Company/armada/issues/2865)) ([842d9db](https://github.com/The-Vibe-Company/armada/commit/842d9dbfd2cf171e70421929737bcd9c54eb7ba0))
+* **api:** one launch schema in @armada/core/contract ([#2912](https://github.com/The-Vibe-Company/armada/issues/2912)) ([dc473b6](https://github.com/The-Vibe-Company/armada/commit/dc473b6a94379521cbafe75781df99a683faca5a))
+* **cli:** delete dead snapshot-maintenance commands and launch size-policy flags ([#2900](https://github.com/The-Vibe-Company/armada/issues/2900)) ([00c099c](https://github.com/The-Vibe-Company/armada/commit/00c099c14a6f64ec4812023901de91af15dda4f0))
+* **mcp:** remove checkpoint, sized launch, receipt, advice, recovery and delete tools from MCP ([#2899](https://github.com/The-Vibe-Company/armada/issues/2899)) ([fb45a1b](https://github.com/The-Vibe-Company/armada/commit/fb45a1bf1eeb2565a34642a2b875fa96cbbc6ee1))
+* **mcp:** remove checkpoint, sized launch, receipt, advice, recovery and delete tools from MCP ([#2939](https://github.com/The-Vibe-Company/armada/issues/2939)) ([a7f2d85](https://github.com/The-Vibe-Company/armada/commit/a7f2d85718e22e41f3b8244714c08519ceaf11e9))
+* **mcp:** remove checkpoint, sized launch, receipt, advice, recovery and delete tools from MCP ([#2948](https://github.com/The-Vibe-Company/armada/issues/2948)) ([279ac41](https://github.com/The-Vibe-Company/armada/commit/279ac41cbb1f133e8049fa1c4fa358e560d4d3b8))
+* **mcp:** remove golden, template, variable, secret and skill-default tools from MCP ([#2862](https://github.com/The-Vibe-Company/armada/issues/2862)) ([d1b466e](https://github.com/The-Vibe-Company/armada/commit/d1b466e6b33455364e082d87f789e158827b36ca))
+* **mcp:** remove golden, template, variable, secret and skill-default tools from MCP ([#2897](https://github.com/The-Vibe-Company/armada/issues/2897)) ([c274df3](https://github.com/The-Vibe-Company/armada/commit/c274df3614e4873d4232b68fc5d356b5795dfddc))
+* **mcp:** remove golden, template, variable, secret and skill-default tools from MCP ([#2929](https://github.com/The-Vibe-Company/armada/issues/2929)) ([b82d6a0](https://github.com/The-Vibe-Company/armada/commit/b82d6a09b29477b47c59276204edbe74eecc6d09))
+* **mcp:** remove golden, template, variable, secret and skill-default tools from MCP ([#2932](https://github.com/The-Vibe-Company/armada/issues/2932)) ([0d014d4](https://github.com/The-Vibe-Company/armada/commit/0d014d452de6518f1506fd083a70bed21b3093a2))
+
 ## [2.57.2](https://github.com/The-Vibe-Company/armada/compare/v2.57.1...v2.57.2) (2026-11-18)
 
 
