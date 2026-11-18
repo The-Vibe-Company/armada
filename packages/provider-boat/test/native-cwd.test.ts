@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -145,7 +146,8 @@ exit 23
 
 test("Codex wrapper enforces Boat's thread/turn protocol cwd, not only process cwd", async () => {
   const { fakeBoat } = await import("./support.ts");
-  const base = mkdtempSync(join(tmpdir(), "armada-boat-protocol-"));
+  // os.getcwd() reports the resolved path; macOS tmpdir() sits behind the /var symlink.
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "armada-boat-protocol-")));
   try {
     const cwd = join(base, "repo B ' $ `");
     mkdirSync(cwd);

@@ -37,16 +37,14 @@ without a repo selector retain their existing behavior.
 ## Regression checks
 
 - `bun run verify`: full repository lint, typecheck and tests.
-- The SDK-boundary test executes the real serialized `/commands` installation
-  payload against a temporary native harness, then sends Boat-shaped JSON-RPC
-  messages. It proves the actual child `pwd` uses the selected repo even when
-  requests explicitly supply the wrong cwd. It covers start, resume, turn,
-  argument/field preservation, unrelated messages, malformed input, stderr, EOF
-  and native exit status.
-- The synthetic cwd sentinel in `native-cwd.test.ts` replaces the native
-  binary with a stdio peer that reports its process cwd and the cwd it received.
-  It proves the selected repo is both the process cwd and the rewritten
+- The synthetic cwd sentinel in `native-cwd.test.ts` executes the real
+  serialized `/commands` installation payload, then replaces the native binary
+  with a stdio peer that reports its process cwd and the cwd it received.
+  Boat-shaped JSON-RPC messages explicitly supply the wrong cwd. The test proves
+  the selected repo is both the peer's process cwd and the rewritten
   `thread/start`, `thread/resume` and `turn/start` cwd, without a real binary.
+  It also covers argument/field preservation, unrelated messages, malformed
+  input, stderr, EOF and native exit status.
 - The former opt-in real-binary cwd test ("real Codex app-server reports the
   selected thread cwd") was removed from unit CI in #2622. It started pinned Codex
   twice inside a five-second test and failed the release check intermittently.

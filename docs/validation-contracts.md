@@ -35,7 +35,10 @@ protocol peer. It verifies that the wrapper rewrites explicit thread and turn
 cwd parameters and starts the peer inside the selected repository. The
 pinned Codex credential-rotation contract runs once in the explicit release
 runner, verifies that the pinned Codex process holds its managed writer lock,
-and fails if the native binary is missing.
+and fails if the native binary is missing. The Claude MCP refresh test in
+`packages/provider-boat/test/native-claude-mcp.test.ts` stays in the unit suite:
+it runs the wrapper against a synthetic stream-JSON peer, starts no pinned
+harness and finishes in about 0.1 s.
 
 ## Local process conformance
 
@@ -44,8 +47,6 @@ These Linux guest-process checks run only when explicitly invoked with
 
 - `packages/mcp-server/test/boat-delegated-access-provider.conformance.ts`
   checks SSH authorization cleanup on guest-script success and conflict.
-- `packages/provider-boat/test/native-claude-mcp.conformance.ts` checks
-  refresh acknowledgement and session continuity with a stream-JSON peer.
 - `packages/provider-boat/test/native-install-race.conformance.ts` checks
   concurrent native installation with real lock and rename primitives.
 - `packages/provider-boat/test/native-writer.conformance.ts` checks
