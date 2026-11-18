@@ -842,6 +842,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     assertMachineSource(row);
   }
   async function retainBuilder(row: Machine): Promise<boolean> {
+    // A deleted machine has no compute, and its deletion removed its recovery images. Only images
+    // still recorded with it as source (published, saving or tombstoned) need it retained; its
+    // snapshot history alone must not strand a job whose rolled-back artifact was collected.
+    if (row.phase === "deleted") return (await store.images(row.info.id)).length > 0;
     return (
       row.generation !== 1 ||
       !!row.goldenRestore ||
