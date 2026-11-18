@@ -8,7 +8,7 @@ import {
   type Sql,
   workPreservationError,
 } from "@armada/core/server";
-import { captureFinalOutputs } from "./sandbox-outputs.ts";
+import { captureFinalOutputs, recordOutputFailure } from "./sandbox-outputs.ts";
 
 function closedFailure(stage: string, reason: string, diagnostic?: ReturnType<typeof workPreservationError>): string {
   return `${stage}_${reason}${diagnostic ? `_${diagnostic.errorClass === reason ? "" : `${diagnostic.errorClass}_`}${diagnostic.providerStatus === null ? "no_status" : `http_${diagnostic.providerStatus}`}` : ""}`;
@@ -98,14 +98,15 @@ const FINAL_OUTPUT_MAX_MS = 12_000;
 async function finalOutputs(sql: Sql, provider: Provider, id: string, started: number): Promise<void> {
   const remaining = Math.min(FINAL_OUTPUT_MAX_MS, PRE_STOP_BUDGET_MS - (Date.now() - started));
   if (remaining < 1_000) {
-    console.warn(JSON.stringify({ event: "sandbox_output_final_capture_skipped", sandboxId: id }));
+    void recordOutputFailure(sql, id, "sandbox_output_final_capture_skipped", "pre_stop_budget_exhausted").catch(
+      () => {},
+    );
     return;
   }
   try {
     await captureFinalOutputs(sql, provider, id, { signal: AbortSignal.timeout(remaining) });
   } catch {
     // The previous snapshot stays readable; never block a stop on optional deliverables.
-    console.warn(JSON.stringify({ event: "sandbox_output_final_capture_failed", sandboxId: id }));
   }
 }
 

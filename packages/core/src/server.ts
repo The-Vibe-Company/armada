@@ -82,9 +82,12 @@ export {
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
   OUTPUT_MAX_FILES,
+  OutputCollectionError,
+  type OutputFailureReason,
   type OutputFile,
   parseCollectorOutput,
   parseOutputFiles,
+  readCollectorResult,
 } from "./sandbox-outputs.ts";
 export {
   createUsagePricingContext,

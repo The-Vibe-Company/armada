@@ -396,7 +396,7 @@ describe("launch", () => {
         {
           sandboxId: "bx_1",
           harness: kind === "opencode" ? "opencode" : "codex",
-          text: "runtime answer",
+          text: expect.stringContaining("runtime answer\n\nSave any deliverable files directly in /home/user/outputs."),
           model: kind === "opencode" ? "opencode/model" : "gpt-5.4",
           reasoningEffort: kind === "opencode" ? "default" : "high",
         },
@@ -618,7 +618,7 @@ describe("launch", () => {
         harness: "opencode",
         model: "armada/deepseek-flash",
         reasoningEffort: "default",
-        text: "hello",
+        text: expect.stringContaining("hello\n\nSave any deliverable files directly in /home/user/outputs."),
       }),
     );
     expect(JSON.stringify(launched.sandbox)).not.toContain("fake-opencode-key");
@@ -745,7 +745,7 @@ describe("launch", () => {
         signal: expect.any(AbortSignal),
         sandboxId: "bx_1",
         harness: "claude",
-        text: "Fix the build",
+        text: expect.stringContaining("Fix the build\n\nSave any deliverable files directly in /home/user/outputs."),
         model: "claude-opus-5-5",
         reasoningEffort: "medium",
       },
@@ -1621,7 +1621,7 @@ function prompt(status: PromptStatus, reason?: string): AgentEvent {
     at: 1,
     promptId: "p1",
     kind: "prompt",
-    text: "go",
+    text: expect.stringContaining("go\n\nSave any deliverable files directly in /home/user/outputs."),
     status,
     ...(reason ? { reason } : {}),
   };

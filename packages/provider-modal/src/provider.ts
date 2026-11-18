@@ -18,7 +18,7 @@ import {
   parseMachineSize,
   resolveModelChoice,
 } from "@armada/core";
-import { OUTPUT_COLLECTOR, parseCollectorOutput, runtimeBootstrapScript } from "@armada/core/server";
+import { OUTPUT_COLLECTOR, readCollectorResult, runtimeBootstrapScript } from "@armada/core/server";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
@@ -1130,8 +1130,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       await child.stdin.close();
       // The caller's budget (the shared pre-stop deadline) bounds the wait, not only the exec timeout.
       const [status, stdout] = await abortable(Promise.all([child.wait(), output]), signal);
-      if (status !== 0) return null;
-      return parseCollectorOutput(stdout);
+      return readCollectorResult(status, stdout);
     },
     async observeResources(id) {
       await bound();

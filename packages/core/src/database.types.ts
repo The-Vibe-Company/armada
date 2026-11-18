@@ -4590,6 +4590,7 @@ export type Database = {
           external_ref: string | null;
           outputs_checked_at: string | null;
           outputs_published_scan: string | null;
+          outputs_failure_reasons: string[];
         };
         Insert: {
           id?: string;
@@ -4654,6 +4655,7 @@ export type Database = {
           external_ref?: string | null;
           outputs_checked_at?: string | null;
           outputs_published_scan?: string | null;
+          outputs_failure_reasons?: string[];
         };
         Update: {
           id?: string;
@@ -4718,6 +4720,7 @@ export type Database = {
           external_ref?: string | null;
           outputs_checked_at?: string | null;
           outputs_published_scan?: string | null;
+          outputs_failure_reasons?: string[];
         };
         Relationships: [
           {

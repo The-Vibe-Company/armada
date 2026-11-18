@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { admitOutputs, OUTPUT_COLLECTOR, OUTPUT_MAX_ENTRIES, parseCollectorOutput } from "../src/sandbox-outputs.ts";
+import { shellQuote } from "../src/shell-quote.ts";
 
 const bytes = (n: number) => new Uint8Array(n);
 
@@ -31,15 +32,22 @@ test("server admission bounds any provider's read by count, size and unique name
 
 /** Runs the real collector against a fixture directory standing in for `/home/user/outputs`. */
 function collectorFor(outputs: string) {
-  return OUTPUT_COLLECTOR.replace('"/home/user/outputs"', JSON.stringify(outputs));
+  const executable = shellQuote(process.execPath);
+  return OUTPUT_COLLECTOR.replaceAll("/opt/armada/runtime-bun/bun", executable).replace(
+    '"/home/user/outputs"',
+    JSON.stringify(outputs),
+  );
 }
 
 function runCollector(root: string) {
-  const script = collectorFor(join(root, "outputs"));
-  return Bun.spawnSync(["bash", "-c", script], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } });
+  // Exercise the provider command in a guest PATH with no Python or other interpreters.
+  const bin = join(root, "bin");
+  mkdirSync(bin, { recursive: true });
+  const script = collectorFor(join(root, "outputs")).replaceAll("/usr/local/bin:/usr/bin:/bin", bin);
+  return Bun.spawnSync(["/bin/sh", "-c", script], { env: { PATH: bin } });
 }
 
-test("the real collector bounds admitted files in name order, so excluded entries never hide a deliverable", () => {
+test("the Python-free collector bounds admitted files in name order", () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
     expect(runCollector(root).exitCode).not.toBe(0);
@@ -71,17 +79,18 @@ test("the real collector bounds admitted files in name order, so excluded entrie
   }
 });
 
-test("the real collector ignores modules in the caller's working directory and PYTHONPATH", () => {
+test("the collector isolates its working directory and environment", () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
     mkdirSync(join(root, "outputs"));
     writeFileSync(join(root, "outputs", "memo.txt"), "document");
     const shadow = join(root, "shadow");
     mkdirSync(shadow);
-    writeFileSync(join(shadow, "json.py"), "raise SystemExit('shadowed stdlib')\n");
+    writeFileSync(join(shadow, "preload.js"), "throw Error('unexpected preload');\n");
+    writeFileSync(join(shadow, "bunfig.toml"), 'preload = ["./preload.js"]\n');
     const run = Bun.spawnSync(["bash", "-c", collectorFor(join(root, "outputs"))], {
       cwd: shadow,
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONPATH: shadow },
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", NODE_OPTIONS: `--require=${join(shadow, "preload.js")}` },
     });
     expect(run.stderr.toString()).toBe("");
     expect(run.exitCode).toBe(0);

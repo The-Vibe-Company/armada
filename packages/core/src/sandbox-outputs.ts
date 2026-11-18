@@ -1,4 +1,5 @@
 /** Declared sandbox outputs (#2570): one fixed directory, bounded snapshot, no caller-supplied path. */
+
 import {
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
@@ -6,6 +7,7 @@ import {
   OUTPUT_MAX_FILES,
   validOutputName,
 } from "./sandbox-output-limits.ts";
+import { shellQuote } from "./shell-quote.ts";
 
 export {
   OUTPUT_DIRECTORY,
@@ -20,57 +22,155 @@ export interface OutputFile {
   bytes: Uint8Array;
 }
 
-// No caller-controlled command, root, traversal, symlink following or special files. Every entry is
-// inspected before any limit applies: the count and byte bounds count admitted files only, in name
-// order, so excluded entries (subdirectories, links, oversized files) never hide a deliverable.
-// The interpreter runs isolated (-I: no working directory, user site or PYTHON* variables on its
-// import path) from a fixed PATH and working directory, so a stray module never shadows the stdlib.
-export const OUTPUT_COLLECTOR = `cd / && PATH=/usr/local/bin:/usr/bin:/bin exec python3 -I - <<'PY'
-import os,stat,json,base64,sys
-files=[]
-try:
- flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
- directory=os.open('/',flags)
- for part in ${JSON.stringify(OUTPUT_DIRECTORY)}.strip('/').split('/'):
-  parent=directory
-  try: directory=os.open(part,flags,dir_fd=parent)
-  finally: os.close(parent)
-# A missing directory is unavailable, so a path cutover cannot erase the last snapshot.
-except FileNotFoundError: sys.exit(4)
-try:
- names=[]
- for index,entry in enumerate(os.scandir(directory)):
-  if index>=${OUTPUT_MAX_ENTRIES}: sys.exit(3)
-  name=entry.name
-  # Skip names the server would refuse so one bad entry never freezes the snapshot.
-  if len(name)>255 or '\\\\' in name or any(ord(c)<32 or ord(c)==127 for c in name): continue
-  try: name.encode('utf-8')
-  except UnicodeEncodeError: continue
-  names.append(name)
- names.sort()
- total=0
- budget=2
- for name in names:
-  if len(files)==${OUTPUT_MAX_FILES}: break
-  try: fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
-  except OSError: continue
-  try:
-   info=os.fstat(fd)
-   if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>${OUTPUT_MAX_BYTES}-total: continue
-   data=os.read(fd,${OUTPUT_MAX_BYTES + 1})
-   if len(data)>${OUTPUT_MAX_BYTES}-total: continue
-   item={'name':name,'base64':base64.b64encode(data).decode()}
-   size=len(json.dumps(item))+2
-   # Escaped names count toward the transport budget like bytes: skipped, never truncated output.
-   if budget+size>59000: continue
-   total+=len(data)
-   budget+=size
-   files.append(item)
-  except OSError: continue
-  finally: os.close(fd)
-finally: os.close(directory)
-print(json.dumps(files))
-PY`;
+// The managed Modal image ships Bun under /opt. Boat's golden baseline also installs Bun.
+// Use only fixed paths and clear the environment before starting the collector. In a privileged
+// exec context, do not fall back to the agent's home executable.
+const collectorShell = (program: string) => `cd / || exit 5
+if [ -x /opt/armada/runtime-bun/bun ]; then
+  bun=/opt/armada/runtime-bun/bun
+elif [ -x /usr/local/bin/bun ]; then
+  bun=/usr/local/bin/bun
+elif [ -x /usr/bin/bun ]; then
+  bun=/usr/bin/bun
+elif [ "$(id -u)" != 0 ] && [ -x /home/user/.bun/bin/bun ]; then
+  bun=/home/user/.bun/bin/bun
+else
+  exit 86
+fi
+exec /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin "$bun" --no-env-file --no-install -e ${shellQuote(program)}`;
+
+// Linux glibc and /proc/self/fd are part of the managed VM/container baseline. Read each
+// directory entry incrementally and anchor each path component to an open directory descriptor,
+// so even a concurrent rename cannot redirect an open through a symlink.
+const collectorSetup = String.raw`
+const fs = require("node:fs");
+const { dlopen, FFIType, ptr, toArrayBuffer } = require("bun:ffi");
+const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+const parentFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
+const descriptor = (fd) => "/proc/self/fd/" + fd;
+let libc;
+try {
+  libc = dlopen("libc.so.6", {
+    opendir: { args: [FFIType.ptr], returns: FFIType.ptr },
+    readdir: { args: [FFIType.ptr], returns: FFIType.ptr },
+    closedir: { args: [FFIType.ptr], returns: FFIType.i32 },
+    strlen: { args: [FFIType.ptr], returns: FFIType.u64 },
+  }).symbols;
+  const root = fs.openSync("/", parentFlags);
+  try {
+    const stream = libc.opendir(ptr(Buffer.from(descriptor(root) + "\0")));
+    if (!stream) process.exit(86);
+    libc.closedir(stream);
+  } finally {
+    fs.closeSync(root);
+  }
+} catch {
+  process.exit(86);
+}
+`;
+
+export const OUTPUT_COLLECTOR_PROBE = collectorShell(collectorSetup);
+export const OUTPUT_COLLECTOR = collectorShell(
+  collectorSetup +
+    String.raw`
+const files = [];
+const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+let directory = fs.openSync("/", parentFlags);
+try {
+  for (const part of ${JSON.stringify(OUTPUT_DIRECTORY)}.slice(1).split("/")) {
+    const next = fs.openSync(descriptor(directory) + "/" + part, parentFlags);
+    fs.closeSync(directory);
+    directory = next;
+  }
+  const base = descriptor(directory);
+  const stream = libc.opendir(ptr(Buffer.from(base + "\0")));
+  if (!stream) process.exit(5);
+  const names = [];
+  let count = 0;
+  try {
+    for (let entry; (entry = libc.readdir(stream)); ) {
+      // d_name is at byte 19 of Linux's 64-bit dirent (x64 and arm64).
+      const start = entry + 19;
+      const raw = new Uint8Array(toArrayBuffer(start, 0, Number(libc.strlen(start))));
+      if (raw[0] === 46 && (raw.length === 1 || (raw.length === 2 && raw[1] === 46))) continue;
+      if (++count > ${OUTPUT_MAX_ENTRIES}) process.exit(3);
+      let name;
+      try {
+        name = decoder.decode(raw);
+      } catch {
+        continue;
+      }
+      if ((${validOutputName.toString()})(name)) names.push(name);
+    }
+  } finally {
+    libc.closedir(stream);
+  }
+  let total = 0;
+  let budget = 2;
+  for (const name of names.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
+    if (files.length === ${OUTPUT_MAX_FILES}) break;
+    let fd;
+    try {
+      fd = fs.openSync(base + "/" + name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+      const info = fs.fstatSync(fd);
+      if (!info.isFile() || info.nlink !== 1 || info.size > ${OUTPUT_MAX_BYTES} - total) continue;
+      const buffer = Buffer.alloc(${OUTPUT_MAX_BYTES + 1});
+      const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      if (length > ${OUTPUT_MAX_BYTES} - total) continue;
+      const item = { name, base64: buffer.subarray(0, length).toString("base64") };
+      const size = Buffer.byteLength(JSON.stringify(item)) + 2;
+      if (budget + size > 59000) continue;
+      total += length;
+      budget += size;
+      files.push(item);
+    } catch {
+      // Entries can vanish or become unreadable while the agent is writing.
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  }
+} catch (error) {
+  process.exit(error.code === "ENOENT" ? 4 : 5);
+} finally {
+  fs.closeSync(directory);
+}
+console.log(JSON.stringify(files));
+`,
+);
+
+export type OutputFailureReason =
+  | "collector_unsupported"
+  | "output_directory_missing"
+  | "output_limit"
+  | "collector_failed"
+  | "output_unavailable"
+  | "output_timeout"
+  | "output_busy"
+  | "pre_stop_budget_exhausted";
+
+export class OutputCollectionError extends Error {
+  constructor(readonly reason: OutputFailureReason) {
+    super(reason);
+  }
+}
+
+/** Both cloud adapters interpret the same fixed collector exit codes. */
+export function readCollectorResult(status: number | null, stdout: string): OutputFile[] {
+  switch (status) {
+    case 0:
+      return parseCollectorOutput(stdout);
+    case 86:
+    case 126:
+    case 127:
+      throw new OutputCollectionError("collector_unsupported");
+    case 4:
+      throw new OutputCollectionError("output_directory_missing");
+    case 3:
+      throw new OutputCollectionError("output_limit");
+    default:
+      throw new OutputCollectionError("collector_failed");
+  }
+}
 
 /** Parse the fixed collector's stdout. Throws on anything the collector cannot have produced. */
 export function parseCollectorOutput(stdout: string): OutputFile[] {
@@ -78,7 +178,7 @@ export function parseCollectorOutput(stdout: string): OutputFile[] {
   return parseOutputFiles(JSON.parse(stdout));
 }
 
-/** Parse a collector's `[{name, base64}]` list (Python collector or the agent runtime's read). */
+/** Parse a collector's `[{name, base64}]` list (cloud collector or the agent runtime's read). */
 export function parseOutputFiles(values: unknown): OutputFile[] {
   if (!Array.isArray(values)) throw Error("invalid_output");
   return values.map((value) => {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { OutputFile, Provider, Sql } from "@armada/core/server";
+import { OutputCollectionError, type OutputFile, type Provider, type Sql } from "@armada/core/server";
 import { captureFinalOutputs, createSandboxOutputs, drainFinalOutputs } from "../src/sandbox-outputs.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
 import { preserveBeforeStop } from "../src/work-preservation.ts";
@@ -103,6 +103,39 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   // Only a well-formed UUID reaches the uuid-typed query; anything else is not this route.
   const malformed = `https://armada.example/api/v1/sandboxes/${"-".repeat(36)}/outputs`;
   expect(await routeFor(service, people.owner, people.org)(new Request(malformed))).toBeNull();
+});
+
+test("an unsupported collector is reported once and skipped by both sampling and final capture", async () => {
+  const { db, people, id, sql } = await fixture();
+  let attempts = 0;
+  const provider = {
+    async readOutputs() {
+      attempts++;
+      throw new OutputCollectionError("collector_unsupported");
+    },
+  };
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  const lines: unknown[] = [];
+  const warn = console.warn;
+  console.warn = (line) => lines.push(JSON.parse(line));
+  try {
+    expect(await sample(service)).toBe(true);
+    await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
+    expect(await sample(service)).toBe(false);
+    await captureFinalOutputs(sql, provider, id, { key: KEY });
+  } finally {
+    console.warn = warn;
+  }
+  expect(attempts).toBe(1);
+  expect(lines).toEqual([
+    { event: "sandbox_output_collection_failed", sandboxId: id, reason: "collector_unsupported" },
+  ]);
+  const route = routeFor(service, people.owner, people.org);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+  expect(await (await route(new Request(url)))?.json()).toMatchObject({
+    unavailable: "collector_unsupported",
+    files: [],
+  });
 });
 
 test("stop captures files written after the last sample, for native and enrolled-runtime sandboxes", async () => {
@@ -442,7 +475,7 @@ test("an in-flight sample still publishes when the newer final capture fails", a
   const final = disks();
   final.state.stopped = true;
   await expect(captureFinalOutputs(sql, final.provider, id, { key: KEY, signal: signal() })).rejects.toThrow(
-    "output_collection_unavailable",
+    "output_unavailable",
   );
   periodic.state.live = [file("memo.txt", "draft")];
   release();

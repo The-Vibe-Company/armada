@@ -42,7 +42,8 @@ import {
 import {
   isNonMutatingProviderRefusal,
   OUTPUT_COLLECTOR,
-  parseCollectorOutput,
+  OutputCollectionError,
+  readCollectorResult,
   sshReadableVariables,
 } from "@armada/core/server";
 import {
@@ -429,8 +430,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
           if (error instanceof ProviderError && error.code === "sandbox_not_ready") return null;
           throw error;
         });
-      if (!result || result.detached || result.exitCode !== 0 || result.truncated || result.timedOut) return null;
-      return parseCollectorOutput(result.stdout);
+      if (!result) return null;
+      if (result.detached) throw new OutputCollectionError("collector_failed");
+      if (result.timedOut) throw new OutputCollectionError("output_timeout");
+      if (result.truncated) throw new OutputCollectionError("collector_failed");
+      return readCollectorResult(result.exitCode, result.stdout);
     },
 
     async observeResources(sandboxId) {
