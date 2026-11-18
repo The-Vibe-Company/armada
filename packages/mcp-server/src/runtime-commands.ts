@@ -135,6 +135,8 @@ export function createRuntimeCommands(
         await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
           `select request_enc from public.runtime_commands c where sandbox_id=$1 and epoch=$2 and result_enc is null
            and not ${expiredOutputRead("request_id", "$3")}
+           and not (starts_with(request_id,'outputs_') and exists(select 1 from public.sandboxes s
+             where s.id=c.sandbox_id and s.application_secret_tainted))
            and not (starts_with(request_id,'outputs_') and exists(select 1 from public.runtime_commands later
              where later.sandbox_id=c.sandbox_id and later.epoch=c.epoch and later.sequence>c.sequence
              and later.result_enc is not null))
@@ -168,8 +170,25 @@ export function createRuntimeCommands(
       throw new RuntimeCommandConflict();
     const serialized = JSON.stringify(value);
     if (Buffer.byteLength(serialized) > MAX_REPLY) throw new RuntimeCommandConflict();
-    const sealed = await encryptSecret(serialized, key);
+    let sealed = await encryptSecret(serialized, key);
     return authority.withSession(token, epoch, async (tx, scope) => {
+      // An output read issued before application-secret taint committed: the session holds the
+      // sandbox row lock, so this sees committed taint. Acknowledge it (the runtime's ordered queue
+      // advances) but never retain its file bytes.
+      if (
+        String(value.requestId).startsWith("outputs_") &&
+        (await tx.query("select 1 from public.sandboxes where id=$1 and application_secret_tainted", [scope.sandboxId]))
+          .rows.length
+      )
+        sealed = await encryptSecret(
+          JSON.stringify({
+            epoch: value.epoch,
+            requestId: value.requestId,
+            status: 410,
+            body: { requestId: value.requestId, error: "application_secret_tainted" },
+          }),
+          key,
+        );
       const row = (
         await tx.query<{ request_id: string; result_enc: Uint8Array<ArrayBuffer> }>(
           `update public.runtime_commands set result_enc=coalesce(result_enc,$4)

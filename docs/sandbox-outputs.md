@@ -19,7 +19,7 @@ Docker sandboxes have no provider exec: the host daemon only manages the machine
 
 Files written or changed after the last capture are not collected. This covers files written between the last 30-second sample and a stop Armada did not initiate (Boat TTL, Docker host expiry or uninstall, or a provider-initiated stop), and a background writer that finishes after the final pre-stop capture. Armada does not reread a stopped sandbox's retained workspace (Boat disk snapshots, Modal recovery images); that is tracked in #2609. Until then, finish writing deliverables before the agent's turn ends.
 
-Application-secret exposed (tainted) sandboxes are never read. Their existing snapshots are purged when taint is recorded, and their outputs routes return 404, matching the exec and work-recovery refusal.
+Application-secret exposed (tainted) sandboxes are never read. Their existing snapshots are purged when taint is recorded, and their outputs routes return 404, matching the exec and work-recovery refusal. Taint is checked again immediately before every provider read, after the scan claim. Under the runtime session lock, Docker never dispatches an output read once taint has committed. A reply to a read issued before taint is acknowledged so the runtime queue advances, but its file bytes are not kept.
 
 ## API
 

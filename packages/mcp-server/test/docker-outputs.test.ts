@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Sql } from "@armada/core/server";
+import { decryptSecret, type Sql } from "@armada/core/server";
 import { readOutputDirectory } from "../../agent-runtime/src/outputs.ts";
 import { captureDockerStopOutputs, createDockerOutputReader } from "../src/docker-outputs.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
@@ -315,6 +315,41 @@ test("an output read is never dispatched once a later command was answered, what
       body: { requestId: "answered" },
     });
     expect((await f.runtime.next(f.session.runtimeToken, f.session.epoch)).command).toBeNull();
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("taint committed after a Docker read was queued stops its dispatch and redacts an issued read's reply", async () => {
+  const f = await fixture();
+  try {
+    const issued = `outputs_${Date.now() + 25_000}_issued`;
+    const queued = `outputs_${Date.now() + 25_000}_queued`;
+    await f.runtime.enqueue(f.people.owner, { version: 1, requestId: issued, sandboxId: f.id, op: "readOutputs" });
+    await f.runtime.enqueue(f.people.owner, { version: 1, requestId: queued, sandboxId: f.id, op: "readOutputs" });
+    // The first read reaches the runtime before taint commits.
+    expect((await f.runtime.next(f.session.runtimeToken, f.session.epoch)).command?.requestId).toBe(issued);
+    await f.db.query(`update sandboxes set application_secret_tainted=true where id=$1`, [f.id]);
+    // Once taint committed, no output read is (re)dispatched.
+    expect((await f.runtime.next(f.session.runtimeToken, f.session.epoch)).command).toBeNull();
+    // A reply to a read issued before taint is acknowledged (the runtime's queue advances) without its bytes.
+    for (const requestId of [issued, queued])
+      await f.runtime.complete(f.session.runtimeToken, f.session.epoch, {
+        epoch: f.session.epoch,
+        requestId,
+        status: 200,
+        body: { version: 1, requestId, result: { files: [{ name: "memo.txt", content: "c2VjcmV0" }] } },
+      });
+    const rows = await f.db.query<{ request_id: string; result_enc: Uint8Array<ArrayBuffer> }>(
+      `select request_id,result_enc from runtime_commands where sandbox_id=$1 and request_id like 'outputs_%'`,
+      [f.id],
+    );
+    expect(rows.rows).toHaveLength(2);
+    for (const row of rows.rows) {
+      const stored = await decryptSecret(row.result_enc, ENCRYPTION_KEY);
+      expect(stored).not.toContain("c2VjcmV0");
+      expect(JSON.parse(stored)).toMatchObject({ status: 410, requestId: row.request_id });
+    }
   } finally {
     f.cleanup();
   }

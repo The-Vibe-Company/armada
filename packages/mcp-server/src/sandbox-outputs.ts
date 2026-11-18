@@ -45,6 +45,14 @@ async function collect(
   key: string,
   signal?: AbortSignal,
 ) {
+  // Taint can commit after the scan claim (e.g. while the provider resolves): admit the read only
+  // against current taint, immediately before dispatch (the same check-then-act fence exec uses).
+  // Docker additionally refuses dispatch and redacts replies under the runtime session lock.
+  const admitted = await sql.query(`select 1 from public.sandboxes where id=$1 and not application_secret_tainted`, [
+    id,
+  ]);
+  if (!admitted.rows.length) throw Error("output_collection_tainted");
+  signal?.throwIfAborted();
   const read = provider.readOutputs
     ? await provider.readOutputs({ sandboxId: providerId, ...(signal ? { signal } : {}) })
     : null;

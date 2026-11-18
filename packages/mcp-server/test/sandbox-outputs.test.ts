@@ -164,6 +164,20 @@ test("application-secret taint forbids output sampling, final capture, late pers
   expect((await route(new Request(`${url}/memo.pdf`)))?.status).toBe(404);
 });
 
+test("taint committed after a sample claimed its row never reaches the provider read", async () => {
+  const { db, id, sql } = await fixture({ boatId: "tainted_after_claim" });
+  const { state, provider } = disks();
+  state.live = [file("memo.pdf", "secret")];
+  // Taint commits while the claimed sample resolves its provider.
+  const service = createSandboxOutputs(sql, KEY, async () => {
+    await db.query(`update sandboxes set application_secret_tainted=true where id=$1`, [id]);
+    return provider;
+  });
+  expect(await sample(service)).toBe(true);
+  expect(state.reads).toBe(0);
+  expect((await db.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
+});
+
 test("a failed or out-of-bounds read keeps the previous snapshot and never fails the shared worker tick", async () => {
   const { db, id, sql } = await fixture({ boatId: "failing_fixture" });
   const { state, provider } = disks();
