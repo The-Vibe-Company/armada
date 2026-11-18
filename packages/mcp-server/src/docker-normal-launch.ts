@@ -13,7 +13,6 @@ import {
   type Harness,
   type LaunchCredentialResolver,
   LaunchError,
-  MAX_MCP_CONNECTIONS,
   normalizeGitHubGoldenConfig,
   officialSandboxImage,
   ProviderError,
@@ -35,12 +34,15 @@ import {
   createSqlSandboxStore,
   decryptSecret,
   encryptSecret,
+  isLaunchTtlSeconds,
   mergeSkillPins,
   prepareLaunchWorkspace,
   resolveLaunchSecrets,
   resolveLaunchVariables,
+  validateLaunchSkillPins,
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
+import { isLaunchConnectionList, UUID } from "./control-input.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
@@ -153,7 +155,6 @@ type Options = {
   clock?: Clock;
   timeoutMs?: number;
 };
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function failure(
   code: "invalid_request" | "not_found" | "conflict" | "unavailable" | "sandbox_not_ready",
   message?: string,
@@ -175,7 +176,7 @@ function failure(
   });
 }
 function identifier(value: unknown): string {
-  if (typeof value !== "string" || !uuid.test(value)) throw failure("invalid_request");
+  if (typeof value !== "string" || !UUID.test(value)) throw failure("invalid_request");
   return value.toLowerCase();
 }
 function normalize(body: Record<string, unknown>, image: string): Request {
@@ -201,24 +202,17 @@ function normalize(body: Record<string, unknown>, image: string): Request {
   )
     throw failure("invalid_request");
   const ttlSeconds = body.ttlSeconds === undefined ? DEFAULT_LAUNCH_TTL_SECONDS : body.ttlSeconds;
-  if (typeof ttlSeconds !== "number" || !Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 86400)
-    throw failure("invalid_request");
+  if (!isLaunchTtlSeconds("docker", ttlSeconds)) throw failure("invalid_request");
   if (body.skipSkillDefaults !== undefined && typeof body.skipSkillDefaults !== "boolean")
     throw failure("invalid_request");
   if (body.skills !== undefined) {
     try {
-      validateSkillPins(body.skills);
+      validateLaunchSkillPins(body.skills);
     } catch {
       throw failure("invalid_request");
     }
   }
-  if (
-    body.connections !== undefined &&
-    (!Array.isArray(body.connections) ||
-      body.connections.length > MAX_MCP_CONNECTIONS ||
-      body.connections.some((id) => typeof id !== "string" || !uuid.test(id)))
-  )
-    throw failure("invalid_request");
+  if (body.connections !== undefined && !isLaunchConnectionList(body.connections)) throw failure("invalid_request");
   let choice: ReturnType<typeof resolveModelChoice>;
   try {
     choice = resolveModelChoice(body.harness as Harness, {
@@ -285,7 +279,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
     ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
     ...(body.connections === undefined
       ? {}
-      : { connections: [...new Set((body.connections as string[]).map((id) => id.toLowerCase()))].sort() }),
+      : { connections: [...new Set(body.connections.map((id) => id.toLowerCase()))].sort() }),
   };
 }
 /** A launch that did not become ready, in the host's own words when it could not fetch the image (#1507). */
@@ -361,16 +355,16 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       !manifest.request ||
       !matchesDockerLaunchRequestHash(manifest.request, claim.request_hash) ||
       dockerLaunchRequestHash(manifest.request) !== hash ||
-      (manifest.credentialId !== undefined && !uuid.test(manifest.credentialId)) ||
+      (manifest.credentialId !== undefined && !UUID.test(manifest.credentialId)) ||
       (!claim.result_enc &&
         (row.credential_version !== manifest.credentialVersion ||
           row.credential_id !== (manifest.credentialId ?? manifest.request.credentialId))) ||
       (manifest.conversationId !== undefined &&
-        (typeof manifest.conversationId !== "string" || !uuid.test(manifest.conversationId))) ||
+        (typeof manifest.conversationId !== "string" || !UUID.test(manifest.conversationId))) ||
       !Number.isSafeInteger(manifest.credentialVersion) ||
       manifest.credentialVersion < 1 ||
       ![manifest.bootstrapId, manifest.healthId, manifest.promptId].every(
-        (id) => typeof id === "string" && uuid.test(id),
+        (id) => typeof id === "string" && UUID.test(id),
       )
     )
       throw failure("conflict");
@@ -380,12 +374,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       } catch {
         throw failure("conflict");
       }
-      if (
-        !Array.isArray(manifest.preparation.connections) ||
-        manifest.preparation.connections.length > MAX_MCP_CONNECTIONS ||
-        manifest.preparation.connections.some((id) => typeof id !== "string" || !uuid.test(id))
-      )
-        throw failure("conflict");
+      if (!isLaunchConnectionList(manifest.preparation.connections)) throw failure("conflict");
     } else if (manifest.request.skills !== undefined || manifest.request.connections !== undefined)
       throw failure("conflict");
     if (
@@ -393,9 +382,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       (!receipt ||
         typeof receipt.epoch !== "string" ||
         !/^[1-9][0-9]{0,18}$/.test(receipt.epoch) ||
-        (receipt.promptId !== undefined && (typeof receipt.promptId !== "string" || !uuid.test(receipt.promptId))) ||
+        (receipt.promptId !== undefined && (typeof receipt.promptId !== "string" || !UUID.test(receipt.promptId))) ||
         (receipt.conversationId !== undefined &&
-          (typeof receipt.conversationId !== "string" || !uuid.test(receipt.conversationId))) ||
+          (typeof receipt.conversationId !== "string" || !UUID.test(receipt.conversationId))) ||
         (receipt.promptId === undefined) !== (receipt.conversationId === undefined))
     )
       throw failure("conflict");

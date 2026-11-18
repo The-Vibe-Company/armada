@@ -4,7 +4,6 @@ import {
   isExternalRef,
   isHarness,
   launchGitHubResponse,
-  MAX_MCP_CONNECTIONS,
   parseMachineSize,
   sandboxIdentity,
 } from "@armada/core";
@@ -26,7 +25,7 @@ import type { z } from "zod";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { scopedOrg } from "./control-caller.ts";
-import { optional, required, requiredNumber, UUID } from "./control-input.ts";
+import { isLaunchConnectionList, optional, required, requiredNumber } from "./control-input.ts";
 import type { ScopedData } from "./data.ts";
 import { providerForGolden } from "./golden-control.ts";
 import { launchCredentials } from "./launch-credentials.ts";
@@ -72,12 +71,8 @@ export async function launchRoute(
     throw new VaultError("unavailable", "Launching is not configured on this server.");
   if (body.visibility !== undefined && body.visibility !== "private" && body.visibility !== "org")
     throw new VaultError("invalid", "Visibility is private or org.");
-  if (
-    body.connections !== undefined &&
-    (!Array.isArray(body.connections) ||
-      body.connections.length > MAX_MCP_CONNECTIONS ||
-      body.connections.some((id) => typeof id !== "string" || !UUID.test(id)))
-  )
+  const connections = body.connections;
+  if (connections !== undefined && !isLaunchConnectionList(connections))
     throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");
   const idempotencyKey = body.idempotencyKey;
   if (
@@ -168,7 +163,7 @@ export async function launchRoute(
         ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
         ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
         ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities as string[] }),
-        ...(body.connections === undefined ? {} : { connections: body.connections as string[] }),
+        ...(connections === undefined ? {} : { connections }),
         ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
         harness,
         ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
