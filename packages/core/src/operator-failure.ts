@@ -14,7 +14,7 @@ const sourceFrame =
 const bundledFrame = /^\s*at (?:[^\n]*? \()?[^\s?#()]*\/(main\.js:[1-9]\d{0,6}:[1-9]\d{0,6})\)?$/;
 // Bun standalone names the bundled entry after the executable under its virtual filesystem.
 const compiledFrame =
-  /^\s*at (?:[^\n]*? \()?\/\$bunfs\/root\/((?:armada-runtime|armada-server)(?:\.exe)?:[1-9]\d{0,6}:[1-9]\d{0,6})\)?$/;
+  /^\s*at (?:[^\n]*? \()?\/\$bunfs\/root\/((?:armada-runtime|armada-server(?:-(?:linux|darwin)-(?:x64|arm64))?)(?:\.exe)?:[1-9]\d{0,6}:[1-9]\d{0,6})\)?$/;
 const internalMessages = new Set([
   "connection terminated unexpectedly",
   "runtime_startup_deadline",

@@ -26,6 +26,7 @@ import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
+import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { REQUEST_BODY_LIMIT_BYTES, withRequestBodyCeiling } from "./request-body-ceiling.ts";
 import { observeRequest, recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
@@ -285,11 +286,7 @@ export function providerRegistry(
       const provider = runtime
         ? await runtime(key, target, caller)
         : native(
-            options.providerFor(
-              key,
-              { userId: caller.userId, orgId: target.orgId },
-              "harness" in target ? target.id : undefined,
-            ),
+            options.providerFor(key, { userId: caller.userId, orgId: target.orgId }, diagnosticSandboxId(target)),
             target,
           );
       const authority = Object.freeze({ scope, ownerId: scope === "org" ? target.orgId : caller.userId });
