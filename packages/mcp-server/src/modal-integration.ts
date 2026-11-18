@@ -301,7 +301,7 @@ export async function createModalIntegration(options: {
         let client = clients.get(slot);
         const { tokenId, tokenSecret } = await resolveManagementCredentials(authority, vault).catch(
           (error: unknown) => {
-            if (error instanceof VaultError && error.code === "missing_credential") {
+            if (error instanceof VaultError && (error.code === "missing_credential" || error.code === "unavailable")) {
               client?.close();
               clients.delete(slot);
             }
@@ -327,7 +327,17 @@ export async function createModalIntegration(options: {
         }
         return createModalInventory(client, registration.app_name, binding, deploymentId);
       },
-      log,
+      {
+        log,
+        onRegistrations(registrations) {
+          const active = new Set(registrations.map((row) => `${row.authority_scope}:${row.authority_owner_id}`));
+          for (const [slot, client] of clients) {
+            if (active.has(slot)) continue;
+            client.close();
+            clients.delete(slot);
+          }
+        },
+      },
     );
     return {
       ...lane,

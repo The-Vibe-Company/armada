@@ -351,8 +351,7 @@ test("the Modal reaper discovers bound Apps and reports only machines without a 
         },
       };
     },
-    (line) => logs.push(JSON.parse(line)),
-    () => 16 * 60_000,
+    { log: (line) => logs.push(JSON.parse(line)), now: () => 16 * 60_000 },
   );
 
   await lane.reconcileOne(new AbortController().signal);

@@ -74,8 +74,11 @@ export function createModalReaper(
   sql: Sql,
   publicUrl: string,
   openInventory: OpenInventory,
-  log?: (line: string) => void,
-  now?: () => number,
+  options: {
+    log?: ((line: string) => void) | undefined;
+    now?: () => number;
+    onRegistrations?: (registrations: readonly ModalInventoryRegistration[]) => void;
+  } = {},
 ) {
   return createProviderReaperLane(
     async (signal) => {
@@ -84,6 +87,8 @@ export function createModalReaper(
        from public.modal_server_apps
        where authority_scope='user' or authority_owner_id=org_id`,
       );
+      signal.throwIfAborted();
+      options.onRegistrations?.(rows);
       return rows.map((registration) => {
         const { app_id: appId, environment } = registration;
         const binding: ModalBinding = { workspace: `app:${appId}`, appId, environment };
@@ -104,7 +109,7 @@ export function createModalReaper(
         } satisfies ProviderReaperSource;
       });
     },
-    log,
-    now,
+    options.log,
+    options.now,
   );
 }
