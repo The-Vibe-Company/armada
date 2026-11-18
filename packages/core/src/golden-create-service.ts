@@ -302,12 +302,12 @@ export class GoldenCreateService {
       const settled = started.status === "ready" ? started : await waitSnapshot(provider, snapshot, limits);
       uncertainSnapshot = false;
       artifactSettled = true;
-      // Publication never starts unless a recovery could name the candidate it might strand.
-      if (!(await recordCandidate(snapshot)))
-        throw new GoldenError("build_failed", "The build could not record its snapshot before publication.");
       if (settled.status !== "ready") {
         throw new GoldenError("snapshot_failed", settled.error ?? `Snapshot '${snapshot}' failed.`);
       }
+      // Publication never starts unless a recovery could name the candidate it might strand.
+      if (!(await recordCandidate(snapshot)))
+        throw new GoldenError("build_failed", "The build could not record its snapshot before publication.");
       // The persist phase fences retirement too: old source stays canonical until commit.
       await enter("persist");
       // Quiesce the prior connected master while it is still canonical and last-good is intact.

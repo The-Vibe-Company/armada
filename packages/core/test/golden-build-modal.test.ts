@@ -65,7 +65,12 @@ async function fixture() {
         await snapshot?.();
         return { name, status: "ready", sourceSandboxId: sandboxId };
       },
-      getSnapshot: async (name) => ({ name, status: "ready" }),
+      // A retired image is gone from the image service's view: recovery only collects it.
+      getSnapshot: async (name) => {
+        if (retired.includes(name))
+          throw new ProviderError({ provider: "modal", code: "not_found", retryable: false, message: "gone" });
+        return { name, status: "ready" };
+      },
       deleteSnapshot: async (name) => {
         retired.push(name);
       },
@@ -478,8 +483,8 @@ test("a lease that expires during rollback cleanup hands the recorded artifact t
     expect((await row()).state).toBe("recovery_required");
     available = true;
     await f.jobs.reconcileOne();
-    // Recovery resumes the idempotent retirement and collection, then the builder and the job.
-    expect(f.retired).toEqual(Array(3).fill(handed.snapshot!));
+    // Recovery never retires the already-retired image again; it resumes collection, then the builder and the job.
+    expect(f.retired).toEqual([handed.snapshot!]);
     expect(f.collections).toEqual(Array(3).fill(handed.snapshot!));
     expect(f.deleted).toEqual(["modal-builder-1", "modal-builder-1"]);
     expect((await f.jobs.status(f.actor.userId, job.jobId)).state).toBe("failed");
