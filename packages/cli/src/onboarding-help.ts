@@ -192,8 +192,6 @@ Boat/Modal options:
   --model <id> --reasoning-effort <level> Model settings also apply to later turns.
   --credential-id UUID                   Model account; otherwise personal/org default.
   --repo <configured-dir|owner/repo>      Initial repository cwd, not confinement.
-  --size small|medium|large|xlarge        Override server size policy.
-  --sized                               Resolve server sizing defaults.
   --ttl <duration>                       Sandbox lifetime, for example 4h.
   --skill org/slug@version|slug@version   Repeat for multiple skills.
   --connections <id,...>                 Explicit MCP connections.
@@ -202,10 +200,6 @@ Boat/Modal options:
   --armada-access                        Enable scoped Armada child access.
   --max-active-children <1..100>          Requires --armada-access.
   --org <org> --json                     Organization selector and machine output.
-
-Sizing resolves as explicit size > repository default > snapshot default > legacy.
---repo, --size and --sized require sizing support; unsupported servers are not retried
-with legacy launch. Size labels do not imply equal performance or billing.
 
 Docker form:
   armada launch [prompt] --provider docker --agent claude|codex|opencode [--org NAME|UUID]
@@ -726,8 +720,6 @@ Boat/Modal:
   build-find   Find an active build by name.
   build-status Inspect a job or recover admission using its saved key.
   build-cancel Cancel your queued, never-started build.
-  connect      Prepare the canonical master for maintenance.
-  snapshot     Scan the master sandbox and save it as a snapshot.
   capabilities Read server-authoritative capacity.
   size-policy  Inspect or replace future-launch size defaults.
   remove       Remove from launch selection, retaining children/provider artifacts.
@@ -932,16 +924,6 @@ Read server-authoritative snapshot capacity after Armada login.
 A null maximum means unbounded or unknown, not zero available snapshots.
 Docker is not supported by this command.
 Example: armada snapshot capabilities --provider modal --org my-team --json
-`,
-  "snapshot connect": `Usage: armada snapshot connect <name> [--provider boat|modal] [--org <org>] [--json]
-Prepare the canonical master sandbox for maintenance after Armada login.
-Prints the sandbox ID and a web URL when available; does not open your browser.
-Example: armada snapshot connect starter --provider modal --org my-team
-`,
-  "snapshot snapshot": `Usage: armada snapshot snapshot <name> [--provider boat|modal] [--org <org>] [--json]
-Scan the master sandbox after maintenance and save it as a snapshot. Requires Armada login.
-Do not leave secrets in the master; the server scans before saving.
-Example: armada snapshot snapshot starter --provider modal --org my-team
 `,
   "snapshot remove": `Usage: armada snapshot remove <name-or-id> [--provider boat|modal] [--org <org>] [--json]
 Remove a snapshot after Armada login and server authorization.
@@ -1226,8 +1208,6 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
       "build-cancel",
       "list",
       "capabilities",
-      "connect",
-      "snapshot",
       "remove",
       "visibility",
     ].includes(parts[1] ?? "")

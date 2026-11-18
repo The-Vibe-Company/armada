@@ -76,7 +76,7 @@ test("usage and authentication failures give relevant recovery", async () => {
   expect(usage.err).not.toContain("inspect armada list");
   for (const args of [
     ["creds", "set", "bogus"],
-    ["launch", "starter", "--agent", "codex", "--size", "bad"],
+    ["launch", "starter", "--agent", "codex", "--ttl", "bad"],
     ["frobnicate"],
   ]) {
     const invalid = await invoke(args);

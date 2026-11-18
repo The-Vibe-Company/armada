@@ -14,7 +14,6 @@ import {
   type Provider,
   ProviderError,
   ProviderRoutingError,
-  parseMachineSize,
   parseSnapshotConfig,
   resolveModelChoice,
   type SandboxProviderId,
@@ -376,26 +375,9 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     return sizePolicyCommand(rest, authOf(io, deps), (path) =>
       path ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path) : (deps.readStdin ?? (() => Bun.stdin.text()))(),
     );
-  const args = parseArgs(
-    rest,
-    subcommand === "retirement" ? ["--limit"] : ["--host", "--request-id"],
-    subcommand === "update" ? ["--replace"] : [],
-  );
-  if (args.options.has("--add-repo") && subcommand !== "update")
-    throw new GoldenError("invalid_config", "--add-repo is only supported by snapshot update.");
-  if (single(args, "--provider") === "docker") {
-    const auth = authOf(io, deps);
-    return dockerSnapshotCommand(
-      subcommand,
-      args,
-      io,
-      { ...auth, fetch: deps.fetch ?? auth.fetch },
-      subcommand === "create" ? await readConfig(args, deps) : undefined,
-    );
-  }
   const snapshotOptions: Record<string, readonly string[]> = {
     capabilities: ["--provider"],
-    retirement: ["--limit", ...(args.positionals[0] === "reconcile" ? ["--file"] : [])],
+    retirement: ["--limit"],
     remove: ["--provider"],
     visibility: ["--visibility"],
     "build-cancel": [],
@@ -413,11 +395,35 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       "--idempotency-key",
       "--timeout",
     ],
-    connect: ["--provider"],
-    snapshot: ["--provider"],
+    get: [],
+    rebuild: [],
     list: ["--provider"],
   };
-  acceptedOptions(args, `snapshot ${subcommand}`, ["--org", "--json", ...(snapshotOptions[subcommand] ?? [])]);
+  if (!Object.hasOwn(snapshotOptions, subcommand))
+    throw new AuthError(`unknown command 'snapshot ${subcommand}'. Run 'armada --help'.`, "usage");
+  const args = parseArgs(
+    rest,
+    subcommand === "retirement" ? ["--limit"] : ["--host", "--request-id"],
+    subcommand === "update" ? ["--replace"] : [],
+  );
+  if (args.options.has("--add-repo") && subcommand !== "update")
+    throw new GoldenError("invalid_config", "--add-repo is only supported by snapshot update.");
+  if (single(args, "--provider") === "docker") {
+    const auth = authOf(io, deps);
+    return dockerSnapshotCommand(
+      subcommand,
+      args,
+      io,
+      { ...auth, fetch: deps.fetch ?? auth.fetch },
+      subcommand === "create" ? await readConfig(args, deps) : undefined,
+    );
+  }
+  acceptedOptions(args, `snapshot ${subcommand}`, [
+    "--org",
+    "--json",
+    ...(snapshotOptions[subcommand] ?? []),
+    ...(subcommand === "retirement" && args.positionals[0] === "reconcile" ? ["--file"] : []),
+  ]);
   const provider = providerFlag(args);
   switch (subcommand) {
     case "capabilities": {
@@ -601,10 +607,6 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       return create(args.positionals, args, io, deps);
     case "update":
       return update(args.positionals, args, io, deps);
-    case "connect":
-      return connect(args, io, deps);
-    case "snapshot":
-      return snapshot(args, io, deps);
     case "list":
       return list(args, io, deps);
     default:
@@ -814,43 +816,6 @@ async function create(positionals: string[], args: ReturnType<typeof parseArgs>,
   return 0;
 }
 
-async function connect(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
-  const name = oneName(args.positionals);
-  const auth = authOf(io, deps);
-  const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
-  const result = await client.golden<{ golden: string; sandboxId: string; webUrl: string | null }>("connect", {
-    name,
-    ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-    ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-  });
-  if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
-  else
-    io.out(
-      `Snapshot ${result.golden} is ready for setup.\nSandbox: ${result.sandboxId}${result.webUrl ? `\nURL: ${result.webUrl}` : ""}\n`,
-    );
-  return 0;
-}
-async function snapshot(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
-  const name = oneName(args.positionals);
-  const auth = authOf(io, deps);
-  const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
-  const saved = await client.golden<{ name: string; snapshot: string }>(
-    "snapshot",
-    {
-      name,
-      ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-    },
-    AbortSignal.timeout(10 * 60_000),
-  );
-  if (flag(args, "--json")) {
-    io.out(`${JSON.stringify(saved)}\n`);
-    return 0;
-  }
-  io.out(`Saved snapshot ${saved.name}.\nSaved snapshot: ${saved.snapshot}\n`);
-  return 0;
-}
-
 async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
   if (args.positionals.length > 0) throw new GoldenError("invalid_config", "golden list takes no name.");
   const auth = authOf(io, deps);
@@ -893,7 +858,6 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   const args = parseArgs(
     argv,
     [
-      "--size",
       "--skill",
       "--max-active-children",
       "--host",
@@ -904,7 +868,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       "--secret",
       "--golden",
     ],
-    ["--sized", "--armada-access", "--keep-after-merge"],
+    ["--armada-access", "--keep-after-merge"],
   );
   if (single(args, "--provider") === "docker") {
     const auth = authOf(io, deps);
@@ -925,8 +889,6 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       "invalid_config",
       "--max-active-children requires --armada-access and a limit from 1 to 100.",
     );
-  const rawSize = single(args, "--size");
-  const size = rawSize === undefined ? undefined : parseMachineSize(rawSize);
   if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
     throw new GoldenError("invalid_config", "Use --connections or --no-connections, not both.");
   const legacyVisibility = single(args, "--visibility");
@@ -959,7 +921,6 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     session: auth.session,
     ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
   });
-  const sized = size !== undefined || repo !== undefined || flag(args, "--sized");
   const result = decodeLaunchResult(
     await client.sandboxes.launch<LaunchWireResult>(
       {
@@ -977,8 +938,6 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
           : {}),
         credentialId: single(args, "--credential-id"),
         golden: name,
-        ...(sized ? { sizePolicyVersion: 1 } : {}),
-        ...(size === undefined ? {} : { size }),
         ...(repo === undefined ? {} : { repo }),
         ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
         harness,
@@ -1008,20 +967,6 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         )}\n`
       : launchText(result, auth.now()),
   );
-  if (
-    size !== undefined &&
-    (result.sandbox.machineSize?.requested !== size ||
-      result.sandbox.machineSize?.effective !== size ||
-      result.sandbox.machineSize?.source !== "override")
-  ) {
-    const message =
-      "The sandbox was created, but the server did not confirm the requested size. Do not retry launch; inspect this sandbox and check server rollout compatibility.";
-    io.err(
-      flag(args, "--json")
-        ? `${JSON.stringify({ warning: { code: "size_unconfirmed", message } })}\n`
-        : `Warning: ${message}\n`,
-    );
-  }
   if (!flag(args, "--json"))
     await printOptionalResourceAdvice(client, result.sandbox.id, single(args, "--org"), io.err);
   return 0;

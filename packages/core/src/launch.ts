@@ -1,3 +1,4 @@
+import { LAUNCH_CREDENTIAL_BINDING_GUIDANCE } from "./api-failure.ts";
 import { CLAUDE_ENDPOINT_ENV } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV } from "./codex-endpoint.ts";
 import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
@@ -39,6 +40,7 @@ import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS
 import { OUTPUT_DIRECTORY } from "./sandbox-output-limits.ts";
 import * as placement from "./sandbox-provider.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
+import { VaultError } from "./vault-error.ts";
 
 export { prepareLaunchWorkspace } from "./launch-workspace.ts";
 
@@ -421,6 +423,8 @@ async function resolveGoldenLaunch(
   if (golden.provider === "modal") timing.mark("launch_plan");
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
   if (golden.provider === "modal") timing.mark("credential_resolution");
+  if (runtime && !credentials.binding)
+    throw new VaultError("credential_binding_required", LAUNCH_CREDENTIAL_BINDING_GUIDANCE);
   if (
     [CLAUDE_ENDPOINT_ENV, CODEX_ENDPOINT_ENV].some((name) => {
       const raw = credentials.env[name];
@@ -451,11 +455,6 @@ async function resolveGoldenLaunch(
       timing,
     );
   }
-  if (defaultRuntime && !credentials.binding)
-    throw new LaunchError(
-      "invalid_request",
-      `${placement.SANDBOX_PLACEMENT_LABELS[golden.provider]} runtime default requires a bound model account; no native fallback.`,
-    );
   const customEndpoint =
     (credentials.env[CLAUDE_ENDPOINT_ENV] && "Claude gateways") ||
     (credentials.env[CODEX_ENDPOINT_ENV] && "Codex endpoints");
