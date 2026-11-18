@@ -293,7 +293,7 @@ Run one journey with `bun run e2e -- tests/dashboard/sandboxes.e2e.ts:39 --targe
 Trace pages and Markdown traces are in `.e2e/results/`; the machine-readable
 report is `.e2e/report.json` and app output is `.e2e/logs/dashboard.log`. These
 artifacts are ignored. There are no agent steps or replay recordings in slice 1.
-[Legacy spec retirement plan](docs/e2e-retirement.md) tracks the later slices.
+[Dashboard browser tests](docs/e2e-retirement.md) documents the current runner and shared fixtures.
 
 
 The sandbox journeys run for both Acme and the existing **Large** fixture (600
