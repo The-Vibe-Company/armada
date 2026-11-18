@@ -614,7 +614,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
 }
 
 async function admitGoldenBuild(
-  client: import("./armada-api.ts").ArmadaApiClient,
+  client: import("./armada-api.ts").ArmadaCommandClient,
   args: ReturnType<typeof parseArgs>,
   io: Io,
   deps: Deps,

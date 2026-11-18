@@ -8,7 +8,7 @@ import {
 } from "@armada/core";
 import { decryptSecret, encryptSecret, OutputCollectionError, type Provider, type Sql } from "@armada/core/server";
 
-export type ChunkedOutputReader = Required<Pick<Provider, "listOutputEntries" | "readOutputChunk">> &
+type ChunkedOutputReader = Required<Pick<Provider, "listOutputEntries" | "readOutputChunk">> &
   Pick<Provider, "outputReadBytes" | "outputReadConcurrency">;
 
 const CAN_WRITE_LIVE = `status in ('ready','running','stopping')

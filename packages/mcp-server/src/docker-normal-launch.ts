@@ -801,44 +801,42 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           if (!options.github) throw failure("unavailable");
           const github = await options.github.prepare(caller, request.requestId);
           receipt.github = { status: "connected", login: github.login };
-          if (manifest.request.repos) {
-            reason = "repository_checkout";
-            phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
-            const command = dockerRepositoryCheckout(manifest.request.repos, "/home/user");
-            const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
-            const id = `docker_checkout_${request.requestId}`;
-            await commands.enqueue(
-              actor.userId,
-              {
-                version: 1,
-                requestId: id,
-                sandboxId: request.requestId,
-                op: "exec",
-                input: { sandboxId: request.requestId, command, cwd: "/home/user", timeoutSeconds: 600 },
-              },
-              receipt.epoch,
-            );
-            for (;;) {
-              await live();
-              const response = await commands.result(actor.userId, request.requestId, id, receipt.epoch);
-              if (response.state === "finished") {
-                const result = response.reply.body.result as Record<string, unknown> | undefined;
-                if (
-                  response.reply.status !== 200 ||
-                  !result ||
-                  result.detached !== false ||
-                  result.exitCode !== 0 ||
-                  result.timedOut !== false
-                )
-                  throw failure("sandbox_not_ready");
-                break;
-              }
-              if (response.state !== "pending") throw failure("sandbox_not_ready");
-              await wait();
+          reason = "repository_checkout";
+          phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
+          const command = dockerRepositoryCheckout(manifest.request.repos, "/home/user");
+          const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
+          const id = `docker_checkout_${request.requestId}`;
+          await commands.enqueue(
+            actor.userId,
+            {
+              version: 1,
+              requestId: id,
+              sandboxId: request.requestId,
+              op: "exec",
+              input: { sandboxId: request.requestId, command, cwd: "/home/user", timeoutSeconds: 600 },
+            },
+            receipt.epoch,
+          );
+          for (;;) {
+            await live();
+            const response = await commands.result(actor.userId, request.requestId, id, receipt.epoch);
+            if (response.state === "finished") {
+              const result = response.reply.body.result as Record<string, unknown> | undefined;
+              if (
+                response.reply.status !== 200 ||
+                !result ||
+                result.detached !== false ||
+                result.exitCode !== 0 ||
+                result.timedOut !== false
+              )
+                throw failure("sandbox_not_ready");
+              break;
             }
-            // #2560: the requested repositories were cloned successfully.
-            await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
+            if (response.state !== "pending") throw failure("sandbox_not_ready");
+            await wait();
           }
+          // #2560: the requested repositories were cloned successfully.
+          await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
         }
         reason = "skills";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.preparation;

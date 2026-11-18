@@ -10,7 +10,7 @@ import {
   validDockerHostResources,
 } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { type ArmadaApiClient, createArmadaApiClient } from "./armada-api.ts";
+import { type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -20,7 +20,7 @@ const invalid = (message: string): never => {
   throw new GoldenError("invalid_config", message);
 };
 
-export async function listHosts(client: ArmadaApiClient, org: string): Promise<DockerHostListResponse> {
+export async function listHosts(client: ArmadaCommandClient, org: string): Promise<DockerHostListResponse> {
   const value = await client.dockerHost<unknown>("list", { org });
   if (!record(value) || typeof value.placement !== "boolean" || !Array.isArray(value.hosts))
     return invalid("The server returned an invalid host list.");
@@ -56,7 +56,7 @@ export async function listHosts(client: ArmadaApiClient, org: string): Promise<D
   return value as unknown as DockerHostListResponse;
 }
 
-export async function resolveHost(client: ArmadaApiClient, org: string, selector: string): Promise<string> {
+export async function resolveHost(client: ArmadaCommandClient, org: string, selector: string): Promise<string> {
   if (UUID.test(selector)) return selector.toLowerCase();
   const matches = (await listHosts(client, org)).hosts.filter(
     (host) => host.name === selector && host.state !== "revoked",
