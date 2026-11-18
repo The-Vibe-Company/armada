@@ -55,6 +55,8 @@ export async function getSandbox(supabase: Supabase, id: string) {
   return data;
 }
 
+export type SandboxDetailRow = NonNullable<Awaited<ReturnType<typeof getSandbox>>>;
+
 /**
  * The kind of each readable account among `ids`, by id. Row level security returns an org account to its members and a
  * personal one to its owner: an account the viewer cannot read is absent, and its sandbox's cost is "API-equivalent".

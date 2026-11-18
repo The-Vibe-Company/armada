@@ -15,7 +15,7 @@ const prUrl = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\
 const repos = z
   .array(z.object({ url: z.string(), dir: z.string().min(1) }))
   .min(1)
-  .max(10);
+  .max(16);
 const githubPull = z.object({
   number: z.number().int().positive(),
   state: z.enum(["open", "closed"]),
@@ -29,6 +29,11 @@ const githubPull = z.object({
 });
 
 type Report = { prNumber?: number; prUrl?: string };
+type Identity = { repository: string; number: number };
+type Scan = {
+  pushes: Record<string, [string, string][]>;
+  discovered: Identity[];
+};
 type Target = {
   id: string;
   owner_id: string;
@@ -43,11 +48,13 @@ type Target = {
   github_id: string;
   membership_epoch: string;
   repositories: unknown;
-  pull_requests: SandboxPullRequest[];
+  repository_dir: string | null;
+  pull_request_scan: Scan | null;
   pull_request_reports: Record<string, Report>;
 };
 
-const maxBranches = 16;
+const maxBranches = 32;
+const maxKnownPulls = 64;
 
 // A local branch name or matching SHA alone also describes a checkout made by
 // another sandbox. Only reflog records written by a push qualify for discovery.
@@ -87,16 +94,19 @@ export function createSandboxPullRequests(
           join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null
           join lateral (
             select repositories from (
-              select binding->'repositories' as repositories, revision
+              select s.pull_request_source->'repositories' as repositories, 3 as priority, 0::bigint as revision
+              where s.pull_request_source->>'connectionEpoch'=c.connection_epoch::text
+              union all
+              select binding->'repositories', 2, revision
               from public.runtime_github_capabilities
               where sandbox_id=s.id and delivered_at is not null
                 and binding->>'connectionEpoch'=c.connection_epoch::text
                 and binding->>'membershipEpoch'=e.epoch::text
               union all
-              select binding->'identity'->'repositories', revision from public.github_runtime_capabilities
+              select binding->'identity'->'repositories', 1, revision from public.github_runtime_capabilities
               where sandbox_id=s.id and binding->'identity'->>'connectionEpoch'=c.connection_epoch::text
                 and binding->'identity'->>'membershipEpoch'=e.epoch::text
-            ) grants order by revision desc limit 1
+            ) grants order by priority desc, revision desc limit 1
           ) grant_row on true
           where s.status in ('ready','running') and s.stop_requested_at is null
             and s.activity_lease_id is null and not s.application_secret_tainted
@@ -108,12 +118,13 @@ export function createSandboxPullRequests(
         returning s.id,s.owner_id,s.provider::text,s.provider_sandbox_id,s.harness::text,
           (s.boat_runtime or s.runtime_transport is not distinct from 'dialout' or s.provider='docker') as runtime,
           s.created_at::text,s.lifecycle_generation::text,s.task_prompt_id,due.connection_epoch::text,
-          due.github_id::text,due.membership_epoch::text,due.repositories,s.pull_requests,s.pull_request_reports`,
+          due.github_id::text,due.membership_epoch::text,due.repositories,s.repository_dir,s.pull_request_scan,s.pull_request_reports`,
       )
     ).rows[0];
     if (!row) return;
     try {
       const configured = repos.parse(row.repositories);
+      const scan = row.pull_request_scan ?? { pushes: {}, discovered: [] };
       const branches = new Map<string, Map<string, string>>();
       for (const repo of configured) {
         signal.throwIfAborted();
@@ -139,7 +150,7 @@ export function createSandboxPullRequests(
         });
         if (result.detached || result.exitCode !== 0 || result.truncated || result.timedOut) return;
         const lines = result.stdout.trimEnd() ? result.stdout.trimEnd().split("\n") : [];
-        const names = branches.get(repository) ?? new Map<string, string>();
+        const names = branches.get(repository) ?? new Map(scan.pushes[repository] ?? []);
         for (const line of lines) {
           const [ref, sha] = line.split("\t");
           if (!ref || ref.length > 255 || /\s/.test(ref) || [...ref].some((char) => char.charCodeAt(0) < 32)) return;
@@ -148,11 +159,27 @@ export function createSandboxPullRequests(
         }
         branches.set(repository, names);
       }
-      const numbers = new Map<string, { repository: string; number: number }>();
-      for (const pr of row.pull_requests) numbers.set(pr.url, pr);
+      // Retain push evidence when Git prunes a tracking ref or expires its reflog.
+      scan.pushes = Object.fromEntries([...branches].map(([repo, names]) => [repo, [...names]]));
+      const claim = await sql.query(
+        `update public.sandboxes set pull_request_scan=$2::text::jsonb
+         where id=$1 and lifecycle_generation=$3 and stop_requested_at is null and activity_lease_id is null returning id`,
+        [row.id, JSON.stringify(scan), row.lifecycle_generation],
+      );
+      if (!claim.rows.length) return;
+      const numbers = new Map<string, Identity>();
+      const discovered = new Map<string, Identity>();
+      const urlFor = ({ repository, number }: Identity) => `https://github.com/${repository}/pull/${number}`;
+      for (const identity of scan.discovered) {
+        numbers.set(urlFor(identity), identity);
+        discovered.set(urlFor(identity), identity);
+      }
+      const selected =
+        configured.length === 1 ? configured[0] : configured.find(({ dir }) => dir === row.repository_dir);
+      const defaultRepo = selected && repoUrl.exec(selected.url)?.[1]?.toLowerCase();
       for (const report of Object.values(row.pull_request_reports)) {
         const match = report.prUrl ? prUrl.exec(report.prUrl) : undefined;
-        const repository = match?.[1]?.toLowerCase() ?? (branches.size === 1 ? [...branches.keys()][0] : undefined);
+        const repository = match?.[1]?.toLowerCase() ?? defaultRepo;
         const number = match ? Number(match[2]) : report.prNumber;
         if (
           !repository ||
@@ -164,13 +191,15 @@ export function createSandboxPullRequests(
           (report.prNumber !== undefined && report.prNumber !== number)
         )
           return;
-        numbers.set(`https://github.com/${repository}/pull/${number}`, { repository, number });
+        const identity = { repository, number };
+        numbers.set(urlFor(identity), identity);
       }
-      if ([...branches.values()].reduce((sum, refs) => sum + refs.size, numbers.size) > maxBranches) return;
+      const branchCount = [...branches.values()].reduce((sum, refs) => sum + refs.size, 0);
+      if (branchCount > maxBranches || numbers.size > maxKnownPulls) return;
       const found = new Map<string, SandboxPullRequest>();
       let complete = true;
       const checkedAt = new Date().toISOString();
-      if (numbers.size || [...branches.values()].some((refs) => refs.size)) {
+      if (numbers.size || branchCount) {
         const request = github.fetch ?? fetch;
         const access = await resolveGitHubAccess(
           {
@@ -184,11 +213,19 @@ export function createSandboxPullRequests(
           },
           row.owner_id,
         );
-        if (access.status !== "connected" || String(access.identity.id) !== row.github_id) return;
+        if (
+          access.status !== "connected" ||
+          String(access.identity.id) !== row.github_id ||
+          access.connectionEpoch !== row.connection_epoch
+        )
+          return;
         const token = access.token;
+        let requests = 0;
         async function get(repository: string, path: string) {
           if (!repoName.test(repository) || !branches.has(repository))
             throw Error("Repository is outside the sandbox grant.");
+          // A large scan costs capacity from subsequent scans, even on failure.
+          next = Math.max(next, Date.now() + ++requests * 1000);
           const response = await request(`https://api.github.com/repos/${repository}/pulls${path}`, {
             signal,
             redirect: "error",
@@ -218,25 +255,33 @@ export function createSandboxPullRequests(
           if (pull.number !== number) return;
           record(repository, pull);
         }
-        for (const [repository, refs] of branches) {
+        for (const [headRepository, refs] of branches) {
           for (const [ref, sha] of refs) {
             const params = new URLSearchParams({
               state: "all",
-              head: `${repository.split("/")[0]}:${ref}`,
-              per_page: "30",
+              head: `${headRepository.split("/")[0]}:${ref}`,
+              per_page: "100",
             });
-            const pulls = z
-              .array(githubPull)
-              .max(30)
-              .parse(await get(repository, `?${params}`));
-            const candidates = pulls.filter(
-              (pull) =>
-                pull.head.repo?.full_name.toLowerCase() === repository &&
-                pull.head.ref === ref &&
-                (pull.head.sha === sha || pull.state === "open"),
-            );
-            if (!candidates.some((pull) => pull.head.sha === sha)) complete = false;
-            for (const pull of candidates) record(repository, pull);
+            let matched = false;
+            for (const repository of branches.keys()) {
+              const pulls = z
+                .array(githubPull)
+                .max(30)
+                .parse(await get(repository, `?${params}`));
+              for (const pull of pulls) {
+                if (pull.head.repo?.full_name.toLowerCase() !== headRepository || pull.head.ref !== ref) continue;
+                if (pull.head.sha === sha) {
+                  const identity = { repository, number: pull.number };
+                  discovered.set(urlFor(identity), identity);
+                  record(repository, pull);
+                  matched = true;
+                } else if (pull.state === "open") {
+                  // A moved open head blocks stopping without becoming work of this sandbox.
+                  complete = false;
+                }
+              }
+            }
+            complete &&= matched;
           }
         }
       }
@@ -253,10 +298,10 @@ export function createSandboxPullRequests(
             }
           : null;
       await sql.query(
-        `update public.sandboxes s set pull_requests=$2::jsonb,pull_request_merge_proof=$3::jsonb,
-          pull_request_check_after=now()+interval '5 minutes'
+        `update public.sandboxes s set pull_requests=$2::text::jsonb,pull_request_merge_proof=$3::text::jsonb,
+          pull_request_check_after=now()+interval '5 minutes',pull_request_scan=$9::text::jsonb
           where s.id=$1 and s.lifecycle_generation=$4 and s.task_prompt_id is not distinct from $5
-            and s.pull_request_reports=$6::jsonb and s.activity_lease_id is null
+            and s.pull_request_reports=$6::text::jsonb and s.activity_lease_id is null
             and s.stop_requested_at is null
             and exists(select 1 from public.github_connections c where c.user_id=s.owner_id
               and c.revoked_at is null and c.connection_epoch=$7)
@@ -272,6 +317,7 @@ export function createSandboxPullRequests(
           JSON.stringify(row.pull_request_reports),
           row.connection_epoch,
           row.membership_epoch,
+          JSON.stringify({ ...scan, discovered: [...discovered.values()] }),
         ],
       );
     } catch {

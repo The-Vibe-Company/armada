@@ -252,7 +252,7 @@ export async function readStatus(
     next === "failed"
       ? (failureReason(info) ?? sandbox.statusReason)
       : (next === "stopped" || next === "stopping") &&
-          ["expired", "idle_paused", "agent_finished"].includes(sandbox.statusReason ?? "")
+          ["expired", "idle_paused", "agent_finished", "work_merged"].includes(sandbox.statusReason ?? "")
         ? sandbox.statusReason
         : null;
   // Stored projections never acquire activity/lifecycle leases or publish over a

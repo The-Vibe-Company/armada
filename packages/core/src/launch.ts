@@ -533,6 +533,14 @@ export async function launchSandbox(
             : { runtimeTransport: "dialout" as const }
           : {}),
         ...credentials.binding,
+        ...(!runtime && connected?.connectionEpoch
+          ? {
+              pullRequestSource: {
+                connectionEpoch: connected.connectionEpoch,
+                repositories: golden.config.repos.map(({ url, dir }) => ({ url, dir })),
+              },
+            }
+          : {}),
         id,
         provider: golden.provider,
         providerSandboxId: forked.id,

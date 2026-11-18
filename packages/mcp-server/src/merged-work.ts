@@ -6,6 +6,8 @@ export function mergedWorkProof(alias: "s" | "sandboxes"): string {
     and (${alias}.pull_request_merge_proof->>'checkedAt')::timestamptz > now()-interval '5 minutes'
     and ${alias}.pull_request_merge_proof->>'generation'=${alias}.lifecycle_generation::text
     and (${alias}.pull_request_merge_proof->>'promptId') is not distinct from ${alias}.task_prompt_id
+    and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=${alias}.id
+      and q.state in ('queued','dispatching'))
     and exists(select 1 from public.github_connections c where c.user_id=${alias}.owner_id
       and c.revoked_at is null and c.connection_epoch::text=${alias}.pull_request_merge_proof->>'connectionEpoch')
     and exists(select 1 from public.mcp_actor_epochs e join public.members m

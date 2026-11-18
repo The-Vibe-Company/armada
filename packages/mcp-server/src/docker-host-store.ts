@@ -70,7 +70,7 @@ type Sandbox = {
 };
 type Selection = { requestId: string } & (
   | { operation: "create" | "delete" }
-  | { operation: "stop"; idleCheckpointRequest?: string; workMerged?: boolean; onlyIfIdle?: boolean }
+  | { operation: "stop"; idleCheckpointRequest?: string; onlyIfIdle?: boolean }
   | { operation: "bootstrap" | "resume"; bootstrapDescriptor: BootstrapDescriptor }
 );
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -923,11 +923,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ...(selection.operation === "stop" && selection.idleCheckpointRequest !== undefined
             ? ["idleCheckpointRequest"]
             : []),
-          ...(selection.operation === "stop" &&
-          selection.idleCheckpointRequest !== undefined &&
-          selection.workMerged !== undefined
-            ? ["workMerged"]
-            : []),
           ...(selection.operation === "bootstrap" || selection.operation === "resume" ? ["bootstrapDescriptor"] : []),
         ]);
         id(selection.requestId);
@@ -975,19 +970,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
           if (draining.rows.length) throw new DockerHostDraining();
         }
         if (!known) await state(tx, row, selection.operation);
+        let workMerged = false;
         if (!known && selection.operation === "stop" && selection.idleCheckpointRequest !== undefined) {
           id(selection.idleCheckpointRequest);
-          const proof = await tx.query(
-            `select 1 from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
+          const proof = await tx.query<{ work_merged: boolean }>(
+            `select ${mergedWorkProof("s")} as work_merged from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
              join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
              where s.id=$1 and p.request_id=$2 and p.watermark is not null
              and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
              and s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at>now()
-             and s.activity_lease_id is null and not s.application_secret_tainted
-             and (not $3 or ${mergedWorkProof("s")})`,
-            [sandboxId, selection.idleCheckpointRequest, selection.workMerged === true],
+             and s.activity_lease_id is null and not s.application_secret_tainted`,
+            [sandboxId, selection.idleCheckpointRequest],
           );
           if (!proof.rows.length) deny();
+          workMerged = proof.rows[0]?.work_merged === true;
         }
         const request = await machine(tx, row, selection.operation);
         const job: Job =
@@ -1034,11 +1030,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
            lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running')`,
             [
               sandboxId,
-              selection.idleCheckpointRequest === undefined
-                ? null
-                : selection.workMerged
-                  ? "work_merged"
-                  : "idle_paused",
+              selection.idleCheckpointRequest === undefined ? null : workMerged ? "work_merged" : "idle_paused",
             ],
           );
         return enqueue();

@@ -1,4 +1,6 @@
 alter table public.sandboxes
+  add column pull_request_source jsonb,
+  add column pull_request_scan jsonb,
   add column pull_requests jsonb not null default '[]'::jsonb,
   add column pull_request_reports jsonb not null default '{}'::jsonb,
   add column pull_request_check_after timestamptz not null default now(),

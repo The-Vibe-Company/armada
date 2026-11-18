@@ -404,79 +404,89 @@ test.each(["boat", "modal"])("%s owner stop refuses old receipts but a fresh own
   await f.worker.drain();
 });
 
-test.each(["merged", "open", "closed", "no push", "other commit", "revoked", "opted out", "running-turn"] as const)(
-  "GitHub observation and idle admission agree for %s work",
-  async (state) => {
-    const f = await fixture(state === "running-turn" ? state : "quiet");
-    const owner = f.caller.userId;
-    const org = f.caller.orgs[0]!.orgId;
-    const repository = "example/repo";
-    const sha = "a".repeat(40);
-    await f.db.query(
-      `insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+test.each([
+  "merged",
+  "open",
+  "closed",
+  "no push",
+  "other commit",
+  "revoked",
+  "opted out",
+  "running-turn",
+  "corrected report",
+] as const)("GitHub observation and idle admission agree for %s work", async (state) => {
+  const f = await fixture(state === "running-turn" ? state : "quiet");
+  const owner = f.caller.userId;
+  const repository = "example/repo";
+  const sha = "a".repeat(40);
+  await f.db.query(
+    `insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
        values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
-      [
-        owner,
-        await encryptSecret("fixture_refresh", ENCRYPTION_KEY),
-        await encryptSecret("fixture_access", ENCRYPTION_KEY),
-      ],
-    );
-    await f.db.query(
-      `insert into github_runtime_capabilities(hash,sandbox_id,binding,expires_at)
-       select repeat('a',64), $1, jsonb_build_object('identity', jsonb_build_object(
-         'connectionEpoch',c.connection_epoch,'membershipEpoch',e.epoch,'repositories',$4::jsonb)),
-         now()+interval '1 hour'
-       from github_connections c join mcp_actor_epochs e on e.user_id=c.user_id and e.org_id=$3
-       where c.user_id=$2`,
-      [f.id, owner, org, JSON.stringify([{ url: `https://github.com/${repository}.git`, dir: "repo" }])],
-    );
-    const pull = {
-      number: 12,
-      state: state === "open" ? "open" : "closed",
-      merged_at: state === "open" || state === "closed" ? null : new Date(f.at).toISOString(),
-      head: { ref: "topic", sha: state === "other commit" ? "b".repeat(40) : sha, repo: { full_name: repository } },
-      base: { repo: { full_name: repository } },
-    };
-    const fetchGitHub = Object.assign(
-      async (url: Parameters<typeof fetch>[0]) => {
-        if (String(url) === "https://api.github.com/user")
-          return Response.json({ id: 123, login: "owner", name: "Owner" });
-        expect(String(url)).toContain(`/repos/${repository}/pulls?`);
-        return Response.json([pull]);
-      },
-      { preconnect: fetch.preconnect },
-    );
-    const observer = createSandboxPullRequests(
-      f.sql,
-      {
-        store: createSqlVaultStore(f.sql),
-        encryptionKey: ENCRYPTION_KEY,
-        app: { clientId: "fixture_app", clientSecret: "fixture_client" },
-        fetch: fetchGitHub,
-      },
-      async () => ({
-        detached: false,
-        exitCode: 0,
-        stdout: state === "no push" ? "" : `topic\t${sha}\n`,
-        stderr: "",
-        timedOut: false,
-        truncated: false,
-      }),
-    );
-    await observer.reconcileOne(new AbortController().signal);
-    await observer.drain();
-    if (state === "revoked")
-      await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
-    if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
-    await f.tick();
-    const sandbox = await f.data.sandboxes.get(f.id);
-    expect(f.stops()).toBe(state === "merged" ? 1 : 0);
-    if (state === "merged") expect(sandbox?.statusReason).toBe("work_merged");
-    expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
-      state === "no push" || state === "other commit"
-        ? []
-        : [state === "open" || state === "closed" ? state : "merged"],
-    );
-    await f.worker.drain();
-  },
-);
+    [
+      owner,
+      await encryptSecret("fixture_refresh", ENCRYPTION_KEY),
+      await encryptSecret("fixture_access", ENCRYPTION_KEY),
+    ],
+  );
+  await f.db.query(
+    `update sandboxes s set pull_request_source=jsonb_build_object(
+         'connectionEpoch',c.connection_epoch,'repositories',$3::jsonb)
+       from github_connections c where s.id=$1 and c.user_id=$2`,
+    [f.id, owner, JSON.stringify([{ url: `https://github.com/${repository}.git`, dir: "repo" }])],
+  );
+  if (state === "corrected report") {
+    await f.db.query("update sandboxes set status='ready' where id=$1", [f.id]);
+    await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 4 });
+    await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 12 });
+  }
+  const pull = {
+    number: 12,
+    state: state === "open" ? "open" : "closed",
+    merged_at: state === "open" || state === "closed" ? null : new Date(f.at).toISOString(),
+    head: { ref: "topic", sha: state === "other commit" ? "b".repeat(40) : sha, repo: { full_name: repository } },
+    base: { repo: { full_name: repository } },
+  };
+  const fetchGitHub = Object.assign(
+    async (url: Parameters<typeof fetch>[0]) => {
+      if (String(url) === "https://api.github.com/user")
+        return Response.json({ id: 123, login: "owner", name: "Owner" });
+      if (state === "corrected report") {
+        expect(String(url)).toBe(`https://api.github.com/repos/${repository}/pulls/12`);
+        return Response.json(pull);
+      }
+      expect(String(url)).toContain(`/repos/${repository}/pulls?`);
+      return Response.json([pull]);
+    },
+    { preconnect: fetch.preconnect },
+  );
+  const observer = createSandboxPullRequests(
+    f.sql,
+    {
+      store: createSqlVaultStore(f.sql),
+      encryptionKey: ENCRYPTION_KEY,
+      app: { clientId: "fixture_app", clientSecret: "fixture_client" },
+      fetch: fetchGitHub,
+    },
+    async () => ({
+      detached: false,
+      exitCode: 0,
+      stdout: state === "no push" || state === "corrected report" ? "" : `topic\t${sha}\n`,
+      stderr: "",
+      timedOut: false,
+      truncated: false,
+    }),
+  );
+  await observer.reconcileOne(new AbortController().signal);
+  await observer.drain();
+  if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
+  if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
+  await f.tick();
+  const sandbox = await f.data.sandboxes.get(f.id);
+  const shouldStop = state === "merged" || state === "corrected report";
+  expect(f.stops()).toBe(shouldStop ? 1 : 0);
+  if (shouldStop) expect(sandbox?.statusReason).toBe("work_merged");
+  expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
+    state === "no push" || state === "other commit" ? [] : [state === "open" || state === "closed" ? state : "merged"],
+  );
+  await f.worker.drain();
+});

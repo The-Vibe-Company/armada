@@ -4423,6 +4423,8 @@ export type Database = {
           docker_snapshot_id: string | null;
           docker_retention_deadline: string | null;
           external_ref: string | null;
+          pull_request_source: Json | null;
+          pull_request_scan: Json | null;
           pull_requests: Json;
           pull_request_reports: Json;
           pull_request_check_after: string;
@@ -4490,6 +4492,8 @@ export type Database = {
           docker_snapshot_id?: string | null;
           docker_retention_deadline?: string | null;
           external_ref?: string | null;
+          pull_request_source?: Json | null;
+          pull_request_scan?: Json | null;
           pull_requests?: Json;
           pull_request_reports?: Json;
           pull_request_check_after?: string;
@@ -4557,6 +4561,8 @@ export type Database = {
           docker_snapshot_id?: string | null;
           docker_retention_deadline?: string | null;
           external_ref?: string | null;
+          pull_request_source?: Json | null;
+          pull_request_scan?: Json | null;
           pull_requests?: Json;
           pull_request_reports?: Json;
           pull_request_check_after?: string;

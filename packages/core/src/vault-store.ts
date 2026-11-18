@@ -531,6 +531,7 @@ function mapWriteError(error: unknown): Error {
 }
 
 type GitHubConnectionRow = {
+  connection_epoch: string;
   user_id: string;
   github_id: string | number;
   login: string;
@@ -545,7 +546,7 @@ type GitHubConnectionRow = {
 async function readGitHubConnection(sql: Sql, userId: string): Promise<StoredGitHubConnection | null> {
   const result = await sql.query<GitHubConnectionRow>(
     `select user_id, github_id, login, name, refresh_token_enc, refresh_expires_at,
-      access_token_enc, access_expires_at, revoked_at
+      access_token_enc, access_expires_at, revoked_at, connection_epoch
      from public.github_connections where user_id = $1`,
     [userId],
   );
@@ -554,6 +555,7 @@ async function readGitHubConnection(sql: Sql, userId: string): Promise<StoredGit
   return {
     userId: row.user_id,
     githubId: Number(row.github_id),
+    connectionEpoch: row.connection_epoch,
     login: row.login,
     name: row.name,
     refreshTokenEnc: new Uint8Array(row.refresh_token_enc),

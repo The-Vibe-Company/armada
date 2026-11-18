@@ -29,12 +29,7 @@ export function createRuntimeIdle(
   options: {
     delayMs?: number;
     now?: () => number;
-    dockerStop?: (
-      actor: { userId: string; orgId: string },
-      id: string,
-      checkpointRequest: string,
-      workMerged: boolean,
-    ) => Promise<unknown>;
+    dockerStop?: (actor: { userId: string; orgId: string }, id: string, checkpointRequest: string) => Promise<unknown>;
   } = {},
 ) {
   const delay = options.delayMs ?? 600_000;
@@ -43,14 +38,10 @@ export function createRuntimeIdle(
   let next = 0;
   let cursor: string | null = null;
   const pending = new Set<Promise<unknown>>();
-  async function guard(tx: Sql, id: string, requireMerged?: boolean) {
+  async function guard(tx: Sql, id: string) {
     const target = (
-      await tx.query<{ task_prompt_id: string | null; work_merged: boolean }>(
-        `select task_prompt_id, ${mergedWorkProof("s")} as work_merged from public.sandboxes s where id=$1`,
-        [id],
-      )
+      await tx.query<{ task_prompt_id: string | null }>("select task_prompt_id from public.sandboxes where id=$1", [id])
     ).rows[0];
-    const workMerged = requireMerged ?? target?.work_merged === true;
     if (!target?.task_prompt_id) throw Error("No settled task identity.");
     const busy = await tx.query(
       `select 1 from public.runtime_commands c join public.runtime_enrolments r
@@ -70,14 +61,8 @@ export function createRuntimeIdle(
         [id, target.task_prompt_id],
       )
     ).rows[0];
-    if (
-      !evidence?.eligible ||
-      evidence.last_activity <= 0 ||
-      (requireMerged && !target.work_merged) ||
-      (!workMerged && now() - evidence.last_activity < delay)
-    )
+    if (!evidence?.eligible || evidence.last_activity <= 0 || now() - evidence.last_activity < delay)
       throw Error("Runtime is not idle.");
-    return workMerged;
   }
   return {
     async drain() {
@@ -133,32 +118,34 @@ export function createRuntimeIdle(
               if (Number(legacy?.sequence) > 0)
                 await projectRuntimeIdle(tx, row.id, key, Number(legacy!.sequence), [], Number(legacy!.sequence));
             });
-            const workMerged = await guard(sql, row.id);
+            // A runtime checkpoint freezes the worker irreversibly. Require
+            // ordinary idle eligibility before checkpoint admission so loss of
+            // GitHub proof still has the safe idle-pause completion path.
+            await guard(sql, row.id);
             const requestId = row.request_id ?? crypto.randomUUID();
             await checkpoint(
               { userId: row.owner_id, orgs: [{ orgId: row.org_id, role: "member" }], via: "service" },
               { id: row.id, request_id: requestId, runtimeVersion: 1 },
               async (tx) => {
-                await guard(tx, row.id, workMerged);
+                await guard(tx, row.id);
               },
             );
             signal.throwIfAborted();
             if (row.provider === "docker") {
               // Host store rechecks checkpoint identity under its own ordered locks
               // and atomically commits both the idle marker and durable stop job.
-              await options.dockerStop?.({ userId: row.owner_id, orgId: row.org_id }, row.id, requestId, workMerged);
+              await options.dockerStop?.({ userId: row.owner_id, orgId: row.org_id }, row.id, requestId);
               continue;
             }
             // Leave expiry unchanged. Existing lifecycle owns fenced provider shutdown.
             await sql.query(
-              `update public.sandboxes set status='stopping',status_reason=case when $3 then 'work_merged' else 'idle_paused' end,stop_requested_at=coalesce(stop_requested_at,now()),
+              `update public.sandboxes set status='stopping',status_reason=case when ${mergedWorkProof("sandboxes")} then 'work_merged' else 'idle_paused' end,stop_requested_at=coalesce(stop_requested_at,now()),
                stop_generation=stop_generation+1,reconcile_after=now()
                where id=$1 and status in ('ready','running') and stop_requested_at is null
-               and (not $3 or (activity_lease_id is null and expires_at>now() and ${mergedWorkProof("sandboxes")}))
                and exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
                  on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch where p.sandbox_id=$1 and p.request_id=$2::uuid and p.watermark is not null
                  and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=$1))`,
-              [row.id, requestId, workMerged],
+              [row.id, requestId],
             );
           } catch {
             // Pending checkpoints retain their request ID and retry next sweep.
