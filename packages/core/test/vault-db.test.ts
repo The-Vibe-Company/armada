@@ -393,7 +393,8 @@ describe("named model accounts", () => {
         const owner = scope === "user" ? people.stan : org.id;
         for (const kind of ["morph", "openai"] as const) {
           const expected = kind === "morph" ? 2 : null;
-          const write = () => store.upsertCredential(scope, owner, kind, new Uint8Array([1]), people.stan);
+          const write = () =>
+            setCredential(store, KEY, people.stan, { scope, org: org.id, kind, value: "model_key_placeholder" });
           const current = async () =>
             (await store.listCredentials(scope, owner)).find((row) => row.kind === kind && row.status !== "deleted")!;
           await write();

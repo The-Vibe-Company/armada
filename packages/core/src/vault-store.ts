@@ -13,7 +13,7 @@ import { VaultError } from "./vault-error.ts";
 // These SQL fragments contain only catalog-owned enum labels, never caller input.
 const MODEL_KIND_SQL = MODEL_CREDENTIAL_KINDS.map((kind) => `'${kind}'`).join(",");
 async function preserveMorphModels(previous: Uint8Array, replacement: Uint8Array, encryptionKey: string | undefined) {
-  const apiKey = await decryptSecret(replacement, encryptionKey);
+  const apiKey = await decryptSecret(new Uint8Array(replacement), encryptionKey);
   if (apiKey.trimStart().startsWith("{")) return replacement;
   const raw = await decryptSecret(new Uint8Array(previous), encryptionKey);
   if (!raw.trimStart().startsWith("{")) return replacement;
