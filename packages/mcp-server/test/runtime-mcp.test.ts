@@ -10,6 +10,7 @@ import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
@@ -20,9 +21,14 @@ import { runtimeFixture } from "./runtime-fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
+type RuntimeBridge = Awaited<ReturnType<typeof runtimeFixture>>["bridge"];
 
-async function fixture(provider: "boat" | "modal" = "boat") {
+async function fixture(
+  provider: "boat" | "modal" = "boat",
+  wrap: (bridge: RuntimeBridge) => RuntimeBridge = (bridge) => bridge,
+) {
   const f = await runtimeFixture(await sharedDatabase(), provider),
+    commands = wrap(f.bridge),
     registry = createSqlMcpRegistry(f.sql, ENCRYPTION_KEY);
   const secret = `upstream-private-${crypto.randomUUID()}`;
   const c = await registry.save(f.people.owner, f.people.org, {
@@ -39,13 +45,13 @@ async function fixture(provider: "boat" | "modal" = "boat") {
     sql: f.sql,
     key: ENCRYPTION_KEY,
     origin: "https://armada.test",
-    commands: f.bridge,
+    commands,
     probe: async () => ({ status: "connected", toolNames: ["read_counter"] }),
   });
   const input = { id: f.row.id, connections: [c.id] };
   await service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [c.id], "org");
   await service.connections.bind(f.row.id, [c.id]);
-  const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare);
+  const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, commands, service.prepare);
   const authStore = createMemoryAuthStore();
   authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Fixture", role: "member" });
   const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;
@@ -277,6 +283,40 @@ test.each(["boat", "modal"] as const)(
           )
         ).rows[0]?.revoked,
       ).toBe(true);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.each(["boat", "modal"] as const)(
+  "a refused MCP configuration on send records runtime outcomes under the HTTP request ID (%s)",
+  async (provider) => {
+    const x = await fixture(provider, (bridge) => ({
+        ...bridge,
+        async call(owner, command, options) {
+          const reply = await bridge.call(owner, command, options);
+          return command.op === "configureMcp" ? { ...reply, status: 503 } : reply;
+        },
+      })),
+      { f } = x,
+      lines: string[] = [];
+    try {
+      const response = await observeRequest(
+        () => x.api("sandbox/send", f.input("use configured MCP")),
+        (line) => lines.push(line),
+      );
+      expect(response.status).toBe(503);
+      const requestId = response.headers.get("x-request-id");
+      expect(requestId).toBeTruthy();
+      const events = lines.map((line) => JSON.parse(line));
+      expect(events.filter((event) => event.event === "provider_call")).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ requestId, provider, operation: "runtime.health", outcome: "ok" }),
+          expect.objectContaining({ requestId, provider, operation: "runtime.configureMcp", outcome: "error" }),
+        ]),
+      );
+      expect(events.at(-1)).toMatchObject({ event: "http_request", requestId, status: 503 });
     } finally {
       await f.close();
     }

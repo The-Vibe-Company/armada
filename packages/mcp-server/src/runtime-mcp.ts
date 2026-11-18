@@ -11,6 +11,7 @@ import {
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { observeProviderCall } from "./request-observability.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { selfFinishToken } from "./sandbox-finish.ts";
@@ -75,8 +76,8 @@ export function createRuntimeMcp(options: {
   }
   async function owner(caller: Caller, id: string) {
     const docker = (
-      await sql.query<{ id: string; orgId: string; ownerId: string; harness: Harness }>(
-        `select s.id,s.org_id as "orgId",s.owner_id as "ownerId",s.harness from public.sandboxes s
+      await sql.query<{ id: string; orgId: string; ownerId: string; harness: Harness; provider: "docker" }>(
+        `select s.id,s.org_id as "orgId",s.owner_id as "ownerId",s.harness,'docker' as provider from public.sandboxes s
        join public.members m on m.org_id=s.org_id and m.user_id=$2
        where s.id=$1 and s.provider='docker' and s.owner_id=$2 and s.org_id=any($3::uuid[])`,
         [id, caller.userId, caller.orgs.map((org) => org.orgId)],
@@ -170,6 +171,26 @@ export function createRuntimeMcp(options: {
     connections: selection,
     servers: Object.keys(p.configuration.servers),
   });
+  type Reply = Awaited<ReturnType<typeof options.commands.call>>;
+  /** One provider-attributed runtime boundary: the outcome is recorded after the reply is validated. */
+  const call = (
+    s: Awaited<ReturnType<typeof owner>>,
+    request: Parameters<typeof options.commands.call>[1],
+    expectedEpoch: string,
+    signal: AbortSignal | undefined,
+    failure: string,
+    accepted: (reply: Reply) => boolean,
+  ) =>
+    observeProviderCall(s.provider, `runtime.${request.op}`, async () => {
+      const reply = await options.commands.call(s.ownerId, request, { expectedEpoch, ...(signal ? { signal } : {}) });
+      if (
+        reply.status !== 200 ||
+        reply.body.version !== 1 ||
+        reply.body.requestId !== request.requestId ||
+        !accepted(reply)
+      )
+        throw new VaultError("unavailable", failure);
+    });
   async function prepare(caller: Caller, id: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const s = await owner(caller, id);
@@ -198,21 +219,24 @@ export function createRuntimeMcp(options: {
     if (!initial || initial.cached) return initial?.cached;
     // Feature evidence is bound to this epoch before any private configuration.
     const healthCommand = { version: 1 as const, sandboxId: s.id, requestId: randomUUID(), op: "health" as const };
-    const health = await options.commands.call(s.ownerId, healthCommand, {
-      expectedEpoch: initial.epoch,
-      ...(signal ? { signal } : {}),
-    });
-    const evidence = health.body.result as { ready?: unknown; generation?: unknown; mcpVersion?: unknown } | undefined;
-    if (
-      health.status !== 200 ||
-      health.body.version !== 1 ||
-      health.body.requestId !== healthCommand.requestId ||
-      health.epoch !== initial.epoch ||
-      evidence?.ready !== true ||
-      evidence.generation !== initial.epoch ||
-      evidence.mcpVersion !== 1
-    )
-      throw new VaultError("unavailable", "Runtime MCP v1 requires an updated runtime artifact.");
+    await call(
+      s,
+      healthCommand,
+      initial.epoch,
+      signal,
+      "Runtime MCP v1 requires an updated runtime artifact.",
+      (health) => {
+        const evidence = health.body.result as
+          | { ready?: unknown; generation?: unknown; mcpVersion?: unknown }
+          | undefined;
+        return (
+          health.epoch === initial.epoch &&
+          evidence?.ready === true &&
+          evidence.generation === initial.epoch &&
+          evidence.mcpVersion === 1
+        );
+      },
+    );
     const prepared = await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
       if (live.epoch !== initial.epoch) return deny();
       const p = await plan(tx, caller, s, live.epoch, initial.selection),
@@ -263,17 +287,15 @@ export function createRuntimeMcp(options: {
       await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(s.ownerId, wire, live.epoch);
       return { ...p, epoch: live.epoch, wire };
     });
-    const acknowledged = await options.commands.call(s.ownerId, prepared.wire, {
-      expectedEpoch: prepared.epoch,
-      ...(signal ? { signal } : {}),
-    });
-    if (
-      acknowledged.status !== 200 ||
-      acknowledged.body.version !== 1 ||
-      acknowledged.body.requestId !== prepared.wire.requestId ||
-      (acknowledged.body.result as { revision?: unknown } | undefined)?.revision !== prepared.configuration.revision
-    )
-      throw new VaultError("unavailable", "Runtime MCP configuration was not acknowledged.");
+    await call(
+      s,
+      prepared.wire,
+      prepared.epoch,
+      signal,
+      "Runtime MCP configuration was not acknowledged.",
+      (acknowledged) =>
+        (acknowledged.body.result as { revision?: unknown } | undefined)?.revision === prepared.configuration.revision,
+    );
     await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
       const p = await plan(tx, caller, s, live.epoch, initial.selection);
       if (live.epoch !== prepared.epoch || JSON.stringify(p.configuration) !== JSON.stringify(prepared.configuration))
