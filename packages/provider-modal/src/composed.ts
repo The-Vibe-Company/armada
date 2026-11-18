@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ModalBinding, Sql } from "@armada/core";
 import { HARNESS_CAPABILITIES } from "@armada/core";
 import { chooseManagementAuthority } from "./authority.ts";
@@ -165,7 +166,10 @@ async function composeModalProvider(options: ComposedModalOptions) {
   const provider = createModalProvider({
     ...options,
     ...connection,
-    deploymentId: JSON.stringify([options.scope.binding.environment, ingestUrl.origin]),
+    // Keep the deployment identity stable without spending a variable share of Modal's tag budget.
+    deploymentId: createHash("sha256")
+      .update(JSON.stringify([options.scope.binding.environment, ingestUrl.origin]))
+      .digest("hex"),
     managementAuthority: provenance,
     source: { scope: sourceScope, store: sourceStore },
     store,
