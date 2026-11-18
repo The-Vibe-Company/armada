@@ -31,6 +31,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
+import { Armada, ArmadaError, type DockerSendInput, type SendInput } from "../../sdk/src/index.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
@@ -808,6 +809,66 @@ function restControl(f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<
   }
   return { options, bearer, post };
 }
+
+test("SDK sends to a Docker sandbox meet the published Docker variant exactly when Docker admission accepts them", async () => {
+  const f = await fixture();
+  // A running sandbox: the keyed send is admitted natively, so no queued work outlives this test.
+  await f.service().launch(f.caller, f.body);
+  const controls = createDockerSandboxControls(sql, key, {
+    clock: f.clock,
+    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
+  });
+  const { options, bearer } = restControl(f, { dockerControls: controls });
+  const sdk = new Armada({
+    token: bearer,
+    url: "https://armada.example",
+    fetch: async (url, init) => {
+      const response = await handleControlRequest(new Request(String(url), init), options);
+      if (!response) throw Error("Missing normal control route");
+      return response;
+    },
+  });
+  const published = publishedRequest("sandbox/send");
+  const docker = publishedRequest("sandbox/send", "Docker sandbox send");
+  const ref = { org: f.actor.orgId, id: f.body.requestId };
+  const keyed: DockerSendInput = { ...ref, prompt: "Keyed follow-up", request_id: randomUUID() };
+  expect(docker.safeParse(keyed).success).toBe(true);
+  expect(await sdk.send(keyed)).toMatchObject({ requestId: keyed.request_id, promptId: expect.any(String) });
+  expect(f.native.at(-1)).toMatchObject({ op: "prompt", input: { text: keyed.prompt } });
+  const refused: SendInput[] = [
+    { ...ref, prompt: "No request key" },
+    { ...ref, prompt: "Per-turn model", request_id: randomUUID(), model: "normal-http-model" },
+  ];
+  for (const input of refused) {
+    // Both stay valid golden sends, so only the Docker variant can tell the caller in advance.
+    expect(published.safeParse(input).success).toBe(true);
+    expect(docker.safeParse(input).success).toBe(false);
+    const error = await sdk.send(input).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ArmadaError);
+    expect(error).toMatchObject({ code: "invalid_request", status: 400, outcomeUnknown: false });
+  }
+  // A REST caller reads Docker send guidance, not the generic launch-settings help.
+  const raw = await handleControlRequest(
+    new Request("https://armada.example/api/v1/sandbox/send", {
+      method: "POST",
+      headers: { authorization: `Bearer ${bearer}` },
+      body: JSON.stringify(refused[0]),
+    }),
+    options,
+  );
+  expect(raw?.status).toBe(400);
+  expect(await raw?.json()).toEqual({
+    error: {
+      code: "invalid_request",
+      message: expect.stringContaining("Docker send requires a lowercase UUID request_id"),
+    },
+  });
+  // @ts-expect-error A Docker send needs its request_id.
+  const unkeyed: DockerSendInput = { ...ref, prompt: "No request key" };
+  // @ts-expect-error A Docker sandbox keeps the model chosen at launch.
+  const override: DockerSendInput = { ...keyed, model: "normal-http-model" };
+  void [unkeyed, override];
+});
 
 test("the normal HTTP route accepts the dashboard body and returns a launched sandbox readable through normal controls", async () => {
   const f = await fixture();

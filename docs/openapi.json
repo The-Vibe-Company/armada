@@ -3610,7 +3610,7 @@
     "/api/v1/sandbox/send": {
       "post": {
         "operationId": "sandbox_send",
-        "description": "Gives the agent its next instruction as a new turn. Without conversation_id the first send of an idle sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is still running, use steer. The turn runs with the model and effort chosen at launch; model and reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch.",
+        "description": "Gives the agent its next instruction as a new turn. Without conversation_id the first send of an idle sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is still running, use steer. The turn runs with the model and effort chosen at launch; model and reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch. A Docker sandbox admits only the Docker sandbox send variant: request_id (a lowercase UUID) is required, and model and reasoning_effort are refused because they remain pinned to launch.",
         "security": [
           {
             "serviceToken": []
@@ -3621,47 +3621,132 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                "anyOf": [
+                  {
+                    "title": "Golden sandbox send",
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                      },
+                      "request_id": {
+                        "description": "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      "prompt": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The instruction."
+                      },
+                      "conversation_id": {
+                        "description": "A conversation of the sandbox. Default: the latest.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "model": {
+                        "description": "The model, by id. claude: claude-opus-5-5 (low|medium|high|xhigh|max), claude-sonnet-5-5 (low|medium|high|xhigh|max); default claude-opus-5-5 medium. codex: gpt-6.2-sol (low|medium|high|xhigh|max|ultra), gpt-6.2-astra (low|medium|high|xhigh|max|ultra), gpt-6.1-sol (low|medium|high|xhigh|max|ultra), gpt-6.1-terra (low|medium|high|xhigh|max|ultra), gpt-6-astra (low|medium|high|xhigh|max|ultra), gpt-6-sol (low|medium|high|xhigh|max|ultra), gpt-6-luna (low|medium|high|xhigh|max); default gpt-6.2-sol medium. opencode: armada/deepseek-flash (default); default armada/deepseek-flash default.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "reasoning_effort": {
+                        "description": "The reasoning effort; one the model accepts (see model).",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "org": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "prompt"
+                    ]
                   },
-                  "request_id": {
-                    "description": "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
-                    "type": "string",
-                    "format": "uuid",
-                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                  },
-                  "prompt": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "The instruction."
-                  },
-                  "conversation_id": {
-                    "description": "A conversation of the sandbox. Default: the latest.",
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "model": {
-                    "description": "The model, by id. claude: claude-opus-5-5 (low|medium|high|xhigh|max), claude-sonnet-5-5 (low|medium|high|xhigh|max); default claude-opus-5-5 medium. codex: gpt-6.2-sol (low|medium|high|xhigh|max|ultra), gpt-6.2-astra (low|medium|high|xhigh|max|ultra), gpt-6.1-sol (low|medium|high|xhigh|max|ultra), gpt-6.1-terra (low|medium|high|xhigh|max|ultra), gpt-6-astra (low|medium|high|xhigh|max|ultra), gpt-6-sol (low|medium|high|xhigh|max|ultra), gpt-6-luna (low|medium|high|xhigh|max); default gpt-6.2-sol medium. opencode: armada/deepseek-flash (default); default armada/deepseek-flash default.",
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "reasoning_effort": {
-                    "description": "The reasoning effort; one the model accepts (see model).",
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "org": {
-                    "type": "string"
+                  {
+                    "title": "Docker sandbox send",
+                    "allOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
+                          },
+                          "request_id": {
+                            "description": "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "prompt": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "The instruction."
+                          },
+                          "conversation_id": {
+                            "description": "A conversation of the sandbox. Default: the latest.",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "model": {
+                            "description": "The model, by id. claude: claude-opus-5-5 (low|medium|high|xhigh|max), claude-sonnet-5-5 (low|medium|high|xhigh|max); default claude-opus-5-5 medium. codex: gpt-6.2-sol (low|medium|high|xhigh|max|ultra), gpt-6.2-astra (low|medium|high|xhigh|max|ultra), gpt-6.1-sol (low|medium|high|xhigh|max|ultra), gpt-6.1-terra (low|medium|high|xhigh|max|ultra), gpt-6-astra (low|medium|high|xhigh|max|ultra), gpt-6-sol (low|medium|high|xhigh|max|ultra), gpt-6-luna (low|medium|high|xhigh|max); default gpt-6.2-sol medium. opencode: armada/deepseek-flash (default); default armada/deepseek-flash default.",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "reasoning_effort": {
+                            "description": "The reasoning effort; one the model accepts (see model).",
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "org": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "prompt"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "prompt": {
+                            "type": "string",
+                            "maxLength": 262144,
+                            "pattern": "\\S",
+                            "description": "The instruction: not blank, at most 256 KiB of UTF-8."
+                          },
+                          "request_id": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                            "description": "Required lowercase UUID. The prompt is queued durably under it; retry uncertain delivery with the same request_id and identical input, and use a new one for a new turn."
+                          },
+                          "conversation_id": {
+                            "description": "A lowercase conversation UUID of the sandbox. Default: the latest.",
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                          },
+                          "model": {
+                            "description": "Refused: a Docker sandbox keeps the model chosen at launch.",
+                            "not": {}
+                          },
+                          "reasoning_effort": {
+                            "description": "Refused: a Docker sandbox keeps the effort chosen at launch.",
+                            "not": {}
+                          }
+                        },
+                        "required": [
+                          "prompt",
+                          "request_id"
+                        ],
+                        "description": "Docker admission rules: request_id is required, and model and reasoning_effort are refused because they remain pinned to launch."
+                      }
+                    ]
                   }
-                },
-                "required": [
-                  "id",
-                  "prompt"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }

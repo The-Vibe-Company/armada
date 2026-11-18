@@ -19,11 +19,18 @@ export function publishedFailure(): z.ZodType {
 
 type RequestOperation = { post: { requestBody: { content: { "application/json": { schema: unknown } } } } };
 
-/** The checked-in OpenAPI request schema of a route, as a validator for the bodies real clients send. */
-export function publishedRequest(route: string): z.ZodType {
+/**
+ * The checked-in OpenAPI request schema of a route, as a validator for the bodies real clients send.
+ * With `variant`, only the `anyOf` alternative of that title.
+ */
+export function publishedRequest(route: string, variant?: string): z.ZodType {
   const operation = (published.paths as Record<string, RequestOperation>)[`/api/v1/${route}`];
   if (!operation) throw new Error(`No published route ${route}`);
-  return z.fromJSONSchema(
-    operation.post.requestBody.content["application/json"].schema as Parameters<typeof z.fromJSONSchema>[0],
-  );
+  let schema = operation.post.requestBody.content["application/json"].schema as { anyOf?: object[] };
+  if (variant !== undefined) {
+    const found = schema.anyOf?.find((alternative) => (alternative as { title?: string }).title === variant);
+    if (!found) throw new Error(`No published ${route} variant ${variant}`);
+    schema = found;
+  }
+  return z.fromJSONSchema(schema as Parameters<typeof z.fromJSONSchema>[0]);
 }

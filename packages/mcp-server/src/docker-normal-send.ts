@@ -4,10 +4,11 @@ import type { Caller } from "./caller.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { createDockerQueuedPrompts } from "./docker-queued-prompts.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
+import { DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { ToolError } from "./tools.ts";
 
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Normal send shares the preview's fenced, idempotent native admission boundary. */
 export function createDockerNormalSend(
   sql: Sql,
@@ -46,23 +47,21 @@ export function createDockerNormalSend(
     ) {
       if (!options.enabled) throw failure("unavailable", "Docker send is not enabled.");
       if (row.owner_id !== caller.userId) throw failure("conflict", "Only the Docker sandbox owner can send prompts.");
-      if (
-        typeof args.request_id !== "string" ||
-        !uuid.test(args.request_id) ||
-        typeof args.prompt !== "string" ||
-        !args.prompt.trim() ||
-        Buffer.byteLength(args.prompt) > 262144 ||
-        args.model !== undefined ||
-        args.reasoning_effort !== undefined ||
-        (args.conversation_id !== undefined &&
-          (typeof args.conversation_id !== "string" || !uuid.test(args.conversation_id)))
-      )
-        throw failure("invalid_request", "Docker send requires request_id and prompt; model and effort remain pinned.");
+      // The published Docker sandbox/send variant includes this same schema.
+      const parsed = DOCKER_SEND_REQUEST.safeParse(args);
+      // Armada's own request validation, not a provider diagnostic: its message is the public
+      // guidance (a ProviderError invalid_request would be replaced by generic launch help).
+      if (!parsed.success)
+        throw new ToolError(
+          "invalid_request",
+          "Docker send requires a lowercase UUID request_id and a non-blank prompt of at most 256 KiB; model and reasoning_effort are refused because they stay pinned to launch.",
+        );
+      const input = parsed.data;
       if (!options.dispatchQueued) {
         const queued = await createDockerQueuedPrompts(sql, key).accept(caller, row.id, row.org_id, {
-          request_id: args.request_id,
-          prompt: args.prompt,
-          ...(args.conversation_id === undefined ? {} : { conversation_id: args.conversation_id as string }),
+          request_id: input.request_id,
+          prompt: input.prompt,
+          ...(input.conversation_id === undefined ? {} : { conversation_id: input.conversation_id }),
         });
         if (queued) return queued;
         const current = (
@@ -81,7 +80,7 @@ export function createDockerNormalSend(
       const previous = (
         await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
           "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
-          [row.id, `docker_prompt_${args.request_id}`],
+          [row.id, `docker_prompt_${input.request_id}`],
         )
       ).rows[0];
       if (!["ready", "running"].includes(row.status)) {
@@ -91,7 +90,7 @@ export function createDockerNormalSend(
           const pendingResume = await sql.query(
             `select request_id from public.docker_host_jobs where bound_sandbox_id=$1 and request_id=$2
              and bound_operation='resume' and bound_actor_id=$3 and outcome is distinct from 'failed'`,
-            [row.id, args.request_id, caller.userId],
+            [row.id, input.request_id, caller.userId],
           );
           if (!pendingResume.rows.length)
             throw failure(
@@ -104,7 +103,7 @@ export function createDockerNormalSend(
           throw failure("conflict", "Docker sandbox resume is still pending.");
       }
       await options.prepareMcp?.(caller, row.id);
-      let conversationId = args.conversation_id ?? row.conversation_ids.at(-1);
+      let conversationId = input.conversation_id ?? row.conversation_ids.at(-1);
       if (conversationId === undefined && !previous) {
         const launch = (
           await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
@@ -119,7 +118,7 @@ export function createDockerNormalSend(
       }
       // Reconcile durable admission without requiring GitHub to be healthy again.
       // runtime.prompt still validates exact input, current owner and epoch.
-      if (args.conversation_id === undefined && previous)
+      if (input.conversation_id === undefined && previous)
         conversationId = JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId;
       if (!previous) {
         await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id);
@@ -130,8 +129,8 @@ export function createDockerNormalSend(
         let result: Awaited<ReturnType<typeof runtime.prompt>>;
         try {
           result = await runtime.prompt({ userId: caller.userId, orgId: row.org_id }, row.id, {
-            requestId: args.request_id,
-            text: args.prompt,
+            requestId: input.request_id,
+            text: input.prompt,
             ...(conversationId === undefined ? {} : { conversationId: conversationId as string }),
           });
         } catch {
@@ -143,7 +142,7 @@ export function createDockerNormalSend(
         if (result.state === "admitted")
           return {
             id: row.id,
-            requestId: args.request_id,
+            requestId: input.request_id,
             runtime: { kind: "armada" as const, epoch: result.epoch },
             ...result.receipt,
           };

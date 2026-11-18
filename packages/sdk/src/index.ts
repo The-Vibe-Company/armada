@@ -202,12 +202,28 @@ export interface WaitInput extends SandboxRef {
   prompt_id?: string;
   timeout_seconds?: number;
 }
+/** A send to a golden (Boat or Modal) sandbox. A Docker sandbox refuses this shape unless it is a `DockerSendInput`. */
 export interface SendInput extends SandboxRef {
   prompt: string;
   request_id?: string;
   conversation_id?: string;
+  /** Per-turn override; a Docker sandbox refuses it. */
   model?: string;
+  /** Per-turn override; a Docker sandbox refuses it. */
   reasoning_effort?: string;
+}
+/**
+ * A send to a Docker sandbox. `request_id` (a lowercase UUID) is required: the prompt is queued durably
+ * under it, so retry uncertain delivery with the same `request_id` and identical input. Model and effort
+ * stay pinned to launch, so per-turn overrides are refused.
+ */
+export interface DockerSendInput extends SandboxRef {
+  prompt: string;
+  request_id: string;
+  /** A lowercase conversation UUID of the sandbox. Default: the latest. */
+  conversation_id?: string;
+  model?: never;
+  reasoning_effort?: never;
 }
 export interface SendResult {
   id: string;
@@ -333,7 +349,7 @@ export class Armada {
   launchFromTemplate(input: TemplateLaunchInput, options?: RequestOptions): Promise<TemplateLaunchResult> {
     return this.request("templates/launch", input, false, options);
   }
-  send(input: SendInput, options?: RequestOptions): Promise<SendResult> {
+  send(input: SendInput | DockerSendInput, options?: RequestOptions): Promise<SendResult> {
     return this.request("sandbox/send", input, false, options);
   }
   status(input: StatusInput, options?: RequestOptions): Promise<SandboxStatus> {

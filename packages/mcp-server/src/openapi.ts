@@ -4,6 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { z } from "zod";
 import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import { DOCKER_HOST_LAUNCH_REQUEST, DOCKER_SNAPSHOT_LAUNCH_REQUEST } from "./docker-launch-request-schema.ts";
+import { DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
 import {
   GOLDEN_LIST_RESPONSE,
   LAUNCH_OPTIONS_RESPONSE,
@@ -127,6 +128,21 @@ export async function generateOpenApi() {
         request = { oneOf: [golden, ...docker] };
         description +=
           ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources.';
+      }
+      if (route === "sandbox/send") {
+        // One public path, two admissions chosen by the sandbox's provider: Docker
+        // also applies its own admission rules (docker-normal-send.ts).
+        const { $schema: _shared, ...shared } = input as Record<string, unknown>;
+        const { $schema: _docker, ...docker } = requestJsonSchema(DOCKER_SEND_REQUEST);
+        // A Docker body must satisfy the shared send input and Docker admission.
+        request = {
+          anyOf: [
+            { title: "Golden sandbox send", ...shared },
+            { title: "Docker sandbox send", allOf: [shared, docker] },
+          ],
+        };
+        description +=
+          " A Docker sandbox admits only the Docker sandbox send variant: request_id (a lowercase UUID) is required, and model and reasoning_effort are refused because they remain pinned to launch.";
       }
       paths[`/api/v1/${route}`] = {
         post: {
