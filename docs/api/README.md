@@ -120,6 +120,17 @@ service token to call `POST /api/v1/sandbox/viewer-token` with
 browser. The token expires after five minutes and is bound to one sandbox.
 Renew it through the same backend authorization flow.
 
+Minting needs only read access: the token's issuer must be able to read the
+sandbox's logs. Every viewer call then runs as that issuer. `viewer/status`,
+`viewer/logs` and `viewer/events` work for anyone who can read the sandbox, but
+`viewer/send` succeeds only when the issuing service token belongs to the
+sandbox owner. Otherwise it returns HTTP 404 `not_found` ("No owned sandbox"),
+even for an organization admin who can read an organization-visible sandbox.
+For an interactive embed, mint with a service token created by the sandbox
+owner, and check that your product user may send prompts to this sandbox
+before you hand over the token. For a read-only embed, any service token that
+can read the sandbox works.
+
 | Viewer route | Input |
 | --- | --- |
 | `POST /api/v1/viewer/status` | `{}` |
@@ -161,7 +172,10 @@ Send rules depend on the sandbox:
 Before the queue or the provider sees a send, Armada checks the sandbox, in
 this order:
 
-1. HTTP 404 `not_found` when the caller cannot see the sandbox.
+1. HTTP 404 `not_found` when the caller does not own the sandbox. Read access
+   is not enough: an organization member or admin who can read an
+   organization-visible sandbox still gets 404 on send. Send with a service
+   token created by the sandbox owner.
 2. HTTP 409 `credential_binding_required` for a Modal sandbox without a model
    account binding that could otherwise accept the send, including a stopped
    and retained one. A `request_id` does not bypass this check. The sandbox
