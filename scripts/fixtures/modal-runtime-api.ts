@@ -62,7 +62,8 @@ const inventoryReject = defects.some((d) =>
   ["opencode-mcp-collision", "opencode-mcp-duplicate-name", "opencode-mcp-inventory-missing"].includes(d),
 );
 const proofReject = defects.some((d) => ["opencode-mcp-inventory-drift", "opencode-mcp-display-only"].includes(d));
-const templateId = "22222222-2222-4222-8222-222222222222",
+const orgId = "55555555-5555-4555-8555-555555555555",
+  templateId = "22222222-2222-4222-8222-222222222222",
   accountId = variables ? "33333333-3333-4333-8333-333333333333" : "account",
   mcpId = "11111111-1111-4111-8111-111111111111",
   mcpServer = "armada_" + mcpId.replaceAll("-", "_");
@@ -253,7 +254,7 @@ const templateReceipt = (body: RequestBody, idle: boolean) => ({
     requestKey: body.requestKey,
     revision: 2,
     revisionId: "44444444-4444-4444-8444-444444444444",
-    golden: { id: "golden-id", orgId: "org-id", provider: "modal" },
+    golden: { id: "golden-id", orgId, provider: "modal" },
     account: defects.includes("variables-receipt-mismatch")
       ? { id: "foreign", version: 1 }
       : templateDefinition.modelAccount,
@@ -290,26 +291,22 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     });
   if (path.endsWith("/golden/list")) {
     if (++goldenReads !== 1) throw Error("golden resolved twice");
-    return Response.json({ goldens: [{ id: "golden-id", name: "golden", provider: "modal", orgId: "org-id" }] });
+    return Response.json({ goldens: [{ id: "golden-id", name: "golden", provider: "modal", orgId }] });
   }
   if (path.endsWith("/templates/get")) {
-    if (body.org !== "org-id" || body.id !== templateId || Object.hasOwn(body, "revision"))
+    if (body.org !== orgId || body.id !== templateId || Object.hasOwn(body, "revision"))
       throw Error("wrong template lookup");
     return Response.json({
       item: {
         id: defects.includes("variables-wrong-template") ? "foreign" : templateId,
         status: "active",
-        orgId: "org-id",
+        orgId,
       },
       revision: { id: "44444444-4444-4444-8444-444444444444", revision: 2, definition: templateDefinition },
     });
   }
   if (path.endsWith("/sandbox/mcp-preflight-v1")) {
-    if (
-      body.org !== "org-id" ||
-      body.runtimeVersion !== 1 ||
-      JSON.stringify(body.connections) !== JSON.stringify([mcpId])
-    )
+    if (body.org !== orgId || body.runtimeVersion !== 1 || JSON.stringify(body.connections) !== JSON.stringify([mcpId]))
       throw Error("wrong MCP preflight");
     if (opencode && body.toolInventory !== true) throw Error("missing inventory admission");
     mcpPreflights++;
@@ -335,7 +332,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
   if (path.endsWith("/skills/defaults/get")) {
     defaultReads++;
     if (
-      body.org !== "org-id" ||
+      body.org !== orgId ||
       (body.scope === "golden" ? body.goldenId !== "golden-id" : Object.hasOwn(body, "goldenId"))
     )
       throw Error("wrong defaults scope");
@@ -370,7 +367,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     });
   }
   if (path.endsWith("/sandbox/github-preflight-v1")) {
-    if (body.org !== "org-id" || body.repository !== "example/web") throw Error("bad preflight");
+    if (body.org !== orgId || body.repository !== "example/web") throw Error("bad preflight");
     return Response.json({
       githubReady: true,
       provider: defects.includes("github-old-preflight") ? undefined : "modal",
@@ -398,9 +395,20 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       credentialRequests: defects.includes("github-no-acquisition") ? 0 : 1,
     });
   }
-  if (path.endsWith("/sandbox/launch") || path.endsWith("/templates/launch")) {
-    if (path !== (variables ? "/api/v1/templates/launch" : "/api/v1/sandbox/launch"))
-      throw Error("wrong default launch route");
+  if (
+    path === "/api/v1/sandbox/launch" ||
+    path === "/api/v1/templates/launch" ||
+    path === "/api/v1/sandbox/launch-modal-runtime-v1"
+  ) {
+    if (
+      path === "/api/v1/templates/launch" &&
+      ["runtimeVersion", "runtimeTransport"].some((key) => Object.hasOwn(body, key))
+    )
+      throw Error("templates/launch rejects explicit runtime selection");
+    if (variables) {
+      if (path !== (ordinary ? "/api/v1/templates/launch" : "/api/v1/sandbox/launch-modal-runtime-v1"))
+        throw Error("wrong pinned template launch route");
+    } else if (path !== "/api/v1/sandbox/launch") throw Error("direct golden launch must use the canonical route");
     if (ordinary && ["runtimeVersion", "runtimeTransport", "boatRuntime"].some((key) => Object.hasOwn(body, key)))
       throw Error("ordinary launch must not opt itself in");
     launches++;
@@ -425,7 +433,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
         body.id !== templateId ||
         body.revision !== 2 ||
         !body.requestKey ||
-        body.org !== "org-id" ||
+        body.org !== orgId ||
         ["golden", "credentialId", "model", "connections"].some((key) => Object.hasOwn(body, key))
       )
         throw Error("ambiguous template launch");
