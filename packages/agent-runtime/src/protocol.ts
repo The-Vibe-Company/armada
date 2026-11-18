@@ -129,7 +129,7 @@ export type RunnerRequest = { version: 1; requestId: string; sandboxId: string }
       expectedSessionId: string;
       input: Omit<RuntimePromptRequest, "text">;
     }
-  | { op: "configureReadableVariables"; harness: Harness; variables: Record<string, string> }
+  | { op: "configureReadableVariables"; harness: Harness; variables: Record<string, string>; secretKeys?: string[] }
   | { op: "workspaceExec"; input: import("./workspace-exec.ts").WorkspaceExec }
   | { op: "installSkills"; input: import("./skills.ts").SkillInstallInput }
   | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
