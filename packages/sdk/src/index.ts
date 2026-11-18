@@ -6,7 +6,7 @@ import {
   type ProviderErrorCode,
   type VaultErrorCode,
 } from "@armada/core";
-import { apiUrl, jsonPost, requestApi } from "./request.ts";
+import { apiUrl, jsonPost, requestApi, TEMPLATE_LAUNCH_ROUTE } from "./request.ts";
 import { sandboxClient } from "./sandboxes.ts";
 
 export type FailureCode =
@@ -319,7 +319,7 @@ export class Armada {
     return this.#sandboxes.launch(input, options);
   }
   launchFromTemplate(input: TemplateLaunchInput, options?: RequestOptions): Promise<TemplateLaunchResult> {
-    return this.request("templates/launch", input, false, options);
+    return this.request(TEMPLATE_LAUNCH_ROUTE, input, false, options);
   }
   send(input: SendInput | DockerSendInput, options?: RequestOptions): Promise<SendResult> {
     return this.#sandboxes.send(input, options);

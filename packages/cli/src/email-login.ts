@@ -1,4 +1,5 @@
 import { AuthError, createPkce } from "@armada/auth";
+import { authClient } from "@armada/sdk/auth";
 import type { AuthIo } from "./auth-commands.ts";
 import type { SessionDto } from "./browser-login.ts";
 
@@ -16,21 +17,17 @@ export async function emailLogin(io: AuthIo, email: string, origin: string): Pro
   });
   let exchanging = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const post = async (path: string, body: unknown): Promise<Response> => {
+  const client = authClient(origin, (input, init) => io.fetch(input, init));
+  type EmailOperation = Parameters<typeof client.email>[0];
+  const post = async (operation: EmailOperation, body: unknown): Promise<Response> => {
     try {
-      return await io.fetch(new URL(path, origin), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-        redirect: "error",
-      });
+      return await client.email(operation, body, controller.signal);
     } catch {
       throw new AuthError("Armada could not reach the server.", "unavailable");
     }
   };
-  const sessionFrom = async (path: string, body: unknown, failure: string): Promise<SessionDto> => {
-    const response = await post(path, body);
+  const sessionFrom = async (operation: EmailOperation, body: unknown, failure: string): Promise<SessionDto> => {
+    const response = await post(operation, body);
     const value = (await response.json().catch(() => null)) as
       | (Partial<SessionDto> & { error?: { code?: string; message?: string } })
       | null;
@@ -80,7 +77,7 @@ export async function emailLogin(io: AuthIo, email: string, origin: string): Pro
       exchanging = true;
       try {
         const session = await sessionFrom(
-          "/api/v1/auth/exchange",
+          "exchange",
           { code: url.searchParams.get("code"), verifier: pkce.verifier },
           "Email link was refused. Enter the email code in the terminal or request a new email.",
         );
@@ -108,7 +105,7 @@ export async function emailLogin(io: AuthIo, email: string, origin: string): Pro
       );
     });
     const attempt = async () => {
-      const response = await post("/api/v1/auth/email/start", {
+      const response = await post("email/start", {
         email,
         redirect_uri: `http://127.0.0.1:${server.port}/callback`,
         code_challenge: pkce.challenge,
@@ -135,11 +132,7 @@ export async function emailLogin(io: AuthIo, email: string, origin: string): Pro
       );
       const numeric = (async () => {
         if (!io.readCode) throw new AuthError("Email code input is unavailable.", "usage");
-        return sessionFrom(
-          "/api/v1/auth/email/verify",
-          { email, code: await io.readCode(controller.signal) },
-          CODE_REFUSAL,
-        );
+        return sessionFrom("email/verify", { email, code: await io.readCode(controller.signal) }, CODE_REFUSAL);
       })();
       return Promise.race([numeric, link]);
     };

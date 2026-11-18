@@ -151,11 +151,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     try {
       if (argv.length === 0) {
         const client = await createArmadaApiClient(auth);
-        await client.request("/api/v1/account/status", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: "{}",
-        });
+        await client.control("account/status", {});
       }
       return await dispatch(argv, io, deps);
     } catch (error) {
@@ -433,13 +429,9 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         fetch: deps.fetch ?? auth.fetch,
         session: auth.session,
       });
-      const payload = await client.request<unknown>("/api/v1/golden/capabilities", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ...(provider === undefined ? {} : { provider }),
-          ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-        }),
+      const payload = await client.golden<unknown>("capabilities", {
+        ...(provider === undefined ? {} : { provider }),
+        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
       });
       const data =
         payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
@@ -464,7 +456,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     }
     case "retirement": {
       const [action, id, ...extra] = args.positionals;
-      if (!["dry-run", "reconcile"].includes(action ?? "") || !id || extra.length)
+      if ((action !== "dry-run" && action !== "reconcile") || !id || extra.length)
         throw new GoldenError("invalid_config", "Use snapshot retirement dry-run|reconcile SNAPSHOT_UUID.");
       const client = await createArmadaApiClient({
         env: authOf(io, deps).env,
@@ -489,15 +481,11 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
           throw new GoldenError("invalid_config", "Supply reviewed dry-run JSON on stdin or --file.");
         }
       }
-      const result = await client.request(`/api/v1/golden/retirement/${action}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          id,
-          org: single(args, "--org"),
-          limit: Number(single(args, "--limit") ?? 20),
-          ...(action === "reconcile" ? { receipts } : {}),
-        }),
+      const result = await client.golden(`retirement/${action}`, {
+        id,
+        org: single(args, "--org"),
+        limit: Number(single(args, "--limit") ?? 20),
+        ...(action === "reconcile" ? { receipts } : {}),
       });
       io.out(`${JSON.stringify(result)}\n`);
       return 0;
@@ -512,10 +500,8 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       let id = oneName(args.positionals);
       let org = single(args, "--org");
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-        const { goldens } = await client.request<{ goldens: GoldenRecord[] }>("/api/v1/golden/list", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...(org === undefined ? {} : { org }) }),
+        const { goldens } = await client.golden<{ goldens: GoldenRecord[] }>("list", {
+          ...(org === undefined ? {} : { org }),
         });
         const matches = goldens.filter(
           (row) => row.name === id && (provider === undefined || row.provider === provider),
@@ -532,11 +518,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         id = match.id;
         org ??= match.orgId;
       }
-      const result = await client.request("/api/v1/golden/remove", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id, org }),
-      });
+      const result = await client.golden("remove", { id, org });
       io.out(`${JSON.stringify(result)}
 `);
       return 0;
@@ -551,10 +533,10 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         fetch: deps.fetch ?? auth.fetch,
         session: auth.session,
       });
-      const result = await client.request("/api/v1/golden/visibility", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: oneName(args.positionals), visibility, org: single(args, "--org") }),
+      const result = await client.golden("visibility", {
+        id: oneName(args.positionals),
+        visibility,
+        org: single(args, "--org"),
       });
       io.out(`${JSON.stringify(result)}\n`);
       return 0;
@@ -566,12 +548,11 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         fetch: deps.fetch ?? auth.fetch,
         session: auth.session,
       });
-      const job = await client.request<GoldenBuildStatus>("/api/v1/golden/build/cancel", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jobId: oneName(args.positionals), org: single(args, "--org") }),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const job = await client.golden<GoldenBuildStatus>(
+        "build/cancel",
+        { jobId: oneName(args.positionals), org: single(args, "--org") },
+        AbortSignal.timeout(10_000),
+      );
       if (flag(args, "--json")) io.out(JSON.stringify(job) + "\n");
       else io.out(`Build ${job.jobId}: ${snapshotText(goldenBuildFailureText(job))}\n`);
       return 0;
@@ -583,12 +564,11 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         { env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session },
         { preserveServerErrors: true },
       );
-      const result = await client.request<{ build: GoldenBuildStatus | null }>("/api/v1/golden/build/find", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, provider, org: single(args, "--org") }),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const result = await client.golden<{ build: GoldenBuildStatus | null }>(
+        "build/find",
+        { name, provider, org: single(args, "--org") },
+        AbortSignal.timeout(10_000),
+      );
       if (flag(args, "--json")) io.out(JSON.stringify(result) + "\n");
       else if (result.build) {
         io.out(
@@ -604,16 +584,15 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         fetch: deps.fetch ?? auth.fetch,
         session: auth.session,
       });
-      const job = await client.request<GoldenBuildStatus>("/api/v1/golden/build/status", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+      const job = await client.golden<GoldenBuildStatus>(
+        "build/status",
+        {
           jobId: args.positionals[0],
           idempotencyKey: single(args, "--idempotency-key"),
           org: single(args, "--org"),
-        }),
-        signal: AbortSignal.timeout(10_000),
-      });
+        },
+        AbortSignal.timeout(10_000),
+      );
       if (!flag(args, "--json") && (job.state === "failed" || job.state === "recovery_required"))
         io.err(`Build ${job.jobId}: ${snapshotText(goldenBuildFailureText(job))}\n`);
       io.out(JSON.stringify(job) + "\n");
@@ -639,18 +618,19 @@ async function admitGoldenBuild(
   args: ReturnType<typeof parseArgs>,
   io: Io,
   deps: Deps,
-  path: string,
-  init: RequestInit,
+  operation: "create" | "update" | "update-add-repos",
+  body: Record<string, unknown>,
 ): Promise<NonNullable<GoldenBuildStatus["result"]> | undefined> {
   const key = single(args, "--idempotency-key") ?? crypto.randomUUID();
   const seconds = Number(single(args, "--timeout") ?? "60");
   if (!Number.isInteger(seconds) || seconds < 0 || seconds > 600)
     throw new GoldenError("invalid_config", "Build --timeout must be 0–600 seconds (local polling only).");
   io.err(`Build admission key: ${key}. Recover with snapshot build-status --idempotency-key ${key} --org <org>.\n`);
-  const job = await client.request<GoldenBuildStatus>(path, {
-    ...init,
-    body: JSON.stringify({ ...JSON.parse(String(init.body)), idempotencyKey: key }),
-  });
+  const job = await client.golden<GoldenBuildStatus>(
+    operation,
+    { ...body, idempotencyKey: key },
+    AbortSignal.timeout(10_000),
+  );
   if (
     !job ||
     typeof job.jobId !== "string" ||
@@ -681,12 +661,11 @@ async function admitGoldenBuild(
         );
       deadline.throwIfAborted();
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(2000);
-      current = await client.request<GoldenBuildStatus>("/api/v1/golden/build/status", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jobId: job.jobId }),
-        signal: AbortSignal.any([deadline, AbortSignal.timeout(10_000)]),
-      });
+      current = await client.golden<GoldenBuildStatus>(
+        "build/status",
+        { jobId: job.jobId },
+        AbortSignal.any([deadline, AbortSignal.timeout(10_000)]),
+      );
     }
   } catch (error) {
     if (error instanceof GoldenError) throw error;
@@ -757,25 +736,13 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
   );
   let result: Awaited<ReturnType<typeof admitGoldenBuild>>;
   try {
-    result = await admitGoldenBuild(
-      client,
-      args,
-      io,
-      deps,
-      additions.length ? "/api/v1/golden/update-add-repos" : "/api/v1/golden/update",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          name,
-          ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-          ...(additions.length ? { addRepos: additions } : { config }),
-          ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-          ...(setup === undefined ? {} : { setup }),
-        }),
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
+    result = await admitGoldenBuild(client, args, io, deps, additions.length ? "update-add-repos" : "update", {
+      name,
+      ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+      ...(additions.length ? { addRepos: additions } : { config }),
+      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+      ...(setup === undefined ? {} : { setup }),
+    });
   } catch (error) {
     if (error instanceof ArmadaApiError) {
       const help =
@@ -829,18 +796,13 @@ async function create(positionals: string[], args: ReturnType<typeof parseArgs>,
     { env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session },
     { preserveServerErrors: true },
   );
-  const result = await admitGoldenBuild(client, args, io, deps, "/api/v1/golden/create", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      name,
-      ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-      config,
-      ...(flag(args, "--private") ? { private: true } : {}),
-      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-      ...(setup === undefined ? {} : { setup }),
-    }),
-    signal: AbortSignal.timeout(10_000),
+  const result = await admitGoldenBuild(client, args, io, deps, "create", {
+    name,
+    ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+    config,
+    ...(flag(args, "--private") ? { private: true } : {}),
+    ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+    ...(setup === undefined ? {} : { setup }),
   });
   if (!result) return 0;
   if (flag(args, "--json")) {
@@ -857,18 +819,11 @@ async function connect(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): 
   const name = oneName(args.positionals);
   const auth = authOf(io, deps);
   const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
-  const result = await client.request<{ golden: string; sandboxId: string; webUrl: string | null }>(
-    "/api/v1/golden/connect",
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        name,
-        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-      }),
-    },
-  );
+  const result = await client.golden<{ golden: string; sandboxId: string; webUrl: string | null }>("connect", {
+    name,
+    ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+    ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+  });
   if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
   else
     io.out(
@@ -880,16 +835,15 @@ async function snapshot(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps):
   const name = oneName(args.positionals);
   const auth = authOf(io, deps);
   const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
-  const saved = await client.request<{ name: string; snapshot: string }>("/api/v1/golden/snapshot", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
+  const saved = await client.golden<{ name: string; snapshot: string }>(
+    "snapshot",
+    {
       name,
       ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
       ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-    }),
-    signal: AbortSignal.timeout(10 * 60_000),
-  });
+    },
+    AbortSignal.timeout(10 * 60_000),
+  );
   if (flag(args, "--json")) {
     io.out(`${JSON.stringify(saved)}\n`);
     return 0;
@@ -907,10 +861,8 @@ async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Pro
     session: auth.session,
     ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
   });
-  const result = await client.request<{ goldens: GoldenRecord[] }>("/api/v1/golden/list", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }) }),
+  const result = await client.golden<{ goldens: GoldenRecord[] }>("list", {
+    ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
   });
   const provider = providerFlag(args);
   const rows = result.goldens.filter((row) => provider === undefined || row.provider === provider);
