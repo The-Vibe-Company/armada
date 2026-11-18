@@ -128,14 +128,23 @@ Sends to a sandbox with a pinned model account, which includes every Docker
 sandbox, pass through the account turn queue first. For runtime and Docker
 sandboxes, the queue returns HTTP 400 `invalid` for a refused override or a
 `conversation_id` that names no recorded conversation. It returns HTTP 409
-`conflict` when the sandbox cannot accept a prompt now. A direct runtime send,
-without a pinned model account, returns HTTP 400 `invalid` for the same
-refusals and for a missing UUID `request_id`. An admitted send returns
-`queued` with its `requestId`, and Armada dispatches it later. Docker applies
-its own checks at dispatch. A prompt that waits for the launch or an earlier
-prompt stays queued, and a prompt that Docker rejects is marked failed. Call
+`conflict` when the sandbox cannot accept a prompt now, for example while a
+Docker launch is still `starting`. It also returns 409 `conflict` for a reused
+`request_id` with different input, or for one whose queued send has failed.
+
+An admitted send returns `queued` with its `requestId`. Until the conversation
+is recorded, the returned `conversationId` is a placeholder. Omit
+`conversation_id` instead of sending the placeholder back. Armada dispatches
+the prompt after earlier prompts for the sandbox finish. Docker applies its
+own checks at dispatch, and a prompt rejected there is marked failed. Call
 `sandbox/status` with the `requestId` as `prompt_id` to follow a queued send.
-Runtime and Docker
+Until dispatch, status reports the turn as `running`, with the queue message
+in `statusMessage`. A rejected send reports `failed` with the reason.
+
+A runtime sandbox without a pinned model account accepts a send only while it
+is stopped and resumable. Otherwise the send returns 409 `conflict`. Such a
+send returns HTTP 400 `invalid` for a refused override or a missing UUID
+`request_id`. Runtime and Docker
 sends keep the model and reasoning effort selected at launch. When Armada
 generates the request ID, it returns it as `requestId`. If that answer is lost,
 the send cannot be replayed, so send your own.
