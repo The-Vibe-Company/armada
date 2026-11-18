@@ -19,8 +19,8 @@ import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { nativeLaunch } from "./launch-native.ts";
 import { goldenLaunchPlacements } from "./launch-placement.ts";
 import {
-  admitLaunchPlan,
   applyLaunchAccountDefaults,
+  prepareLaunchPlan,
   resolveLaunchConnections,
   resolveLaunchSkills,
 } from "./launch-plan.ts";
@@ -31,7 +31,7 @@ import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
 import { PrivateSkillError } from "./private-skill-error.ts";
-import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
+import { type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import { isExternalRef, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
@@ -264,14 +264,8 @@ export interface LaunchPlan {
   secrets: HarnessCredentials["secrets"];
 }
 
-async function resolveLaunchPlan(
-  provider: Provider,
-  stores: LaunchStores,
-  actor: GoldenActor,
-  request: LaunchRequest,
-  options: LaunchOptions,
-): Promise<LaunchPlan> {
-  // #2560: the request is accepted here; the sandbox row (and so the stage table) exists only after the fork.
+function validateGoldenLaunch(request: LaunchRequest) {
+  // The sandbox row (and so the stage table) exists only after the fork (#2560).
   const acceptedAt = performance.now();
   validateLaunchSkillPins(request.skills ?? []);
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
@@ -280,6 +274,18 @@ async function resolveLaunchPlan(
     throw new LaunchError("invalid_request", "stopWhenWorkMerged must be a boolean.");
   if (request.externalRef !== undefined && !isExternalRef(request.externalRef))
     throw new LaunchError("invalid_request", "externalRef must be 1 to 200 characters without control characters.");
+  return { request, acceptedAt };
+}
+
+async function resolveGoldenLaunch(
+  provider: Provider,
+  stores: LaunchStores,
+  actor: GoldenActor,
+  validated: ReturnType<typeof validateGoldenLaunch>,
+  options: LaunchOptions,
+): Promise<LaunchPlan> {
+  let { request } = validated;
+  const { acceptedAt } = validated;
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId)
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
@@ -404,7 +410,7 @@ async function resolveLaunchPlan(
   if (!runtime && (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) && endpointRuntime) {
     // Re-enter through the shared runtime selection before allocating compute.
     // Its resolver excludes native GitHub/model environment delivery.
-    return resolveLaunchPlan(provider, stores, actor, request, {
+    return resolveGoldenLaunch(provider, stores, actor, validateGoldenLaunch(request), {
       ...options,
       boatRuntimeDefault: endpointRuntime,
     });
@@ -499,7 +505,12 @@ export async function launchSandbox(
   initialRequest: LaunchRequest,
   initialOptions: LaunchOptions = {},
 ): Promise<LaunchResult> {
-  const plan = await resolveLaunchPlan(initialProvider, initialStores, actor, initialRequest, initialOptions);
+  const launch = await prepareLaunchPlan(
+    () => validateGoldenLaunch(initialRequest),
+    (validated) => resolveGoldenLaunch(initialProvider, initialStores, actor, validated, initialOptions),
+    (plan) => goldenLaunchPlacements[plan.golden.provider],
+  );
+  const plan = launch.resolved;
   const {
     acceptedAt,
     provider,
@@ -511,13 +522,11 @@ export async function launchSandbox(
     prompt,
     choice,
     ttlSeconds,
-    allocationTtlSeconds,
     repositoryDir,
     resourceProject,
     machineSize,
     visibility,
     connectionIds,
-    snapshot,
     credentials,
     secrets,
   } = plan;
@@ -531,44 +540,14 @@ export async function launchSandbox(
   let childRecorded = false;
   let noAllocation = true;
   try {
-    await admitLaunchPlan(
-      () => stores.credentials.admit?.(actor, credentials, id, choice.model),
-      () => options.beforeFork?.(id),
-    );
-    noAllocation = false;
-    const forked = await provider
-      .fork({
-        from: snapshot,
-        ...(machineSize.effective ? { size: machineSize.effective } : {}),
-        noEnv: true,
-        env: strategy.forkEnv(plan),
-        ttlSeconds: allocationTtlSeconds,
-        labels: {
-          armada: "sandbox",
-          sandbox: id,
-          org: actor.orgId,
-          owner: actor.userId,
-          golden: golden.name,
-          visibility,
-          harness,
-          ...(credentials.binding
-            ? {
-                credentialId: credentials.binding.credentialId,
-                credentialVersion: String(credentials.binding.credentialVersion),
-              }
-            : {}),
-        },
-      })
-      .catch((error) => {
-        noAllocation = isNonMutatingProviderRefusal(error);
-        if (!noAllocation)
-          throw new LaunchError(
-            "outcome_unknown",
-            "The provider fork outcome is unknown. Check sandbox status before retrying.",
-            { cause: error },
-          );
-        throw error;
-      });
+    const forked = await launch.admit({
+      actor,
+      id,
+      forkEnv: () => strategy.forkEnv(plan),
+      allocationRisk: (risk) => {
+        noAllocation = !risk;
+      },
+    });
 
     const claimedAt = performance.now();
     const activityLeaseId = stores.sandboxes.activityOwnership ? crypto.randomUUID() : undefined;
