@@ -16,6 +16,10 @@ export interface RuntimeSessionScope {
   sandboxId: string;
   epoch: string;
 }
+/** Owner scopes also name the locked sandbox's provider for request-correlated command records. */
+export interface RuntimeOwnerScope extends RuntimeSessionScope {
+  provider?: "boat" | "modal" | "docker";
+}
 
 /** Reenter an owner-held transaction without opening another connection or changing the callback's SQL object. */
 export const runtimeTransaction = (tx: Sql): Sql => ({
@@ -241,7 +245,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
   async function withOwner<T>(
     sandboxId: string,
     ownerId: string,
-    work: (tx: Sql, scope: RuntimeSessionScope) => Promise<T>,
+    work: (tx: Sql, scope: RuntimeOwnerScope) => Promise<T>,
     expectedLifecycleGeneration?: string,
   ) {
     return transaction(async (tx) => {
@@ -257,7 +261,11 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
-      return work(tx, { sandboxId: sandbox.id, epoch: row.epoch });
+      return work(tx, {
+        sandboxId: sandbox.id,
+        epoch: row.epoch,
+        provider: sandbox.provider as NonNullable<RuntimeOwnerScope["provider"]>,
+      });
     });
   }
   const route: Route = async (request) => {

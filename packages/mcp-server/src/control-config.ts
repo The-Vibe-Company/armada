@@ -13,7 +13,6 @@ import {
   githubAppFromEnv,
   githubInstallationAppFromEnv,
 } from "@armada/core/server";
-import { createBoatProvider } from "@armada/provider-boat";
 import { databasePoolMax } from "./config.ts";
 import type { ConfiguredControlOptions } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
@@ -29,6 +28,7 @@ import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
+import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
@@ -72,7 +72,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       prepareReadableVariables: templates.prepare,
     });
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) =>
-    createBoatProvider({
+    createObservedBoatProvider({
       apiKey,
       beforePrompt: async (provider, id) => {
         if (caller) await lifecycle().beforePrompt(provider, id, caller);

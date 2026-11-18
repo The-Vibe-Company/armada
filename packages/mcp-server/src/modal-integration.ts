@@ -30,6 +30,7 @@ import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import { projectModalEventUsage } from "./modal-event-usage.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
+import { observeProvider, observeProviderCall } from "./request-observability.ts";
 import { measureProviderPhase } from "./request-timing.ts";
 import { createRuntimeServing } from "./runtime-serving.ts";
 
@@ -233,7 +234,10 @@ export async function createModalIntegration(options: {
         ...(options.github ? { github: options.github } : {}),
       }),
     };
-    return (await createComposedModalProvider(composed)).provider;
+    // Stored reads skip the App lookup and every live Modal call: they read Armada's database, so no provider record.
+    if (storedReads) return (await createComposedModalProvider(composed)).provider;
+    const { provider } = await observeProviderCall("modal", "initialize", () => createComposedModalProvider(composed));
+    return observeProvider("modal", provider);
   };
   async function goldenTarget(
     target: Omit<ProviderTarget, "modal">,
@@ -250,7 +254,9 @@ export async function createModalIntegration(options: {
     const environment = "main";
     const client = new ModalClient({ tokenId: resolved.tokenId, tokenSecret: resolved.tokenSecret });
     try {
-      const app = await client.apps.fromName(appName, { environment, createIfMissing: true });
+      const app = await observeProviderCall("modal", "app.fromName", () =>
+        client.apps.fromName(appName, { environment, createIfMissing: true }),
+      );
       const modal: ModalBinding = { workspace: `app:${app.appId}`, environment, appId: app.appId };
       await options.sql.query(
         "insert into public.modal_server_apps(org_id,authority,app_name,app_id,environment,authority_scope,authority_owner_id) values($1,$2,$3,$4,$5,$6,$7) on conflict(org_id,authority,environment) do nothing",

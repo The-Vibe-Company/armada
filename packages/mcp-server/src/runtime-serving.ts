@@ -7,8 +7,8 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import { createBoatProvider } from "@armada/provider-boat";
 import { createSqlData } from "./data.ts";
+import { createObservedBoatProvider } from "./observed-boat.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -51,6 +51,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
       {
         async call(ownerId, request, options) {
           // This serving adapter uses private health only for connection checks.
+          let admitted = false;
           if (request.op === "steer" || request.op === "testModelConnection" || request.op === "health") {
             if (!sql.transaction) throw new VaultError("unavailable", "Transactional runtime control unavailable.");
             await sql.transaction(async (tx) => {
@@ -104,21 +105,22 @@ export function createRuntimeServing(sql: Sql, key: string) {
                   throw new VaultError("conflict", "Runtime connection binding is no longer current.");
               }
               const local = runtimeTransaction(tx);
-              await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
+              ({ fresh: admitted } = await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(
                 ownerId,
                 request,
                 options?.expectedEpoch,
-              );
+              ));
             });
           }
-          return commands.call(ownerId, request, options);
+          // A reply may land before the first result read; carry this fenced admission to the observer.
+          return commands.call(ownerId, request, { ...options, admitted });
         },
       },
       sandbox.ownerId,
       sandbox,
       { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
     );
-    const host = typeof apiKey === "string" ? createBoatProvider({ apiKey }) : apiKey;
+    const host = typeof apiKey === "string" ? createObservedBoatProvider({ apiKey }) : apiKey;
     // Native Modal stop expects its private listener. This lane may retain disk
     // only after the common journal checkpoint committed, never on a host ACK.
     const compute =

@@ -83,6 +83,8 @@ export async function runtimeFixture(
   let nextDone: Promise<"finished" | "interrupted"> | undefined;
   let checkpointFault: "generation" | "prefix" | "ack" | undefined;
   let afterProbe: (() => Promise<void>) | undefined;
+  // Ops whose runner reply is answered as an HTTP 503 refusal, as a failing guest would.
+  const refused = new Set<RunnerRequest["op"]>();
   let githubConfiguration:
     | ((value: import("@armada/core").GitHubRuntimeConfiguration | null) => Promise<void>)
     | undefined;
@@ -177,7 +179,7 @@ export async function runtimeFixture(
       await bridge.complete(active.runtimeToken, active.epoch, {
         epoch: active.epoch,
         requestId: command.requestId,
-        status: reply.status,
+        status: refused.has(command.op) ? 503 : reply.status,
         body: responseBody,
       });
       if (afterProbe && command.op === "getPrompt") {
@@ -345,6 +347,9 @@ export async function runtimeFixture(
     },
     race(work: () => Promise<void>) {
       afterProbe = work;
+    },
+    refuse(op: RunnerRequest["op"]) {
+      refused.add(op);
     },
     lose() {
       lost = true;
