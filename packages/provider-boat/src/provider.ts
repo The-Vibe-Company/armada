@@ -152,6 +152,8 @@ export interface BoatProviderOptions {
 
   /** The boat API key. It stays in this object: no error or event carries it. */
   apiKey: string;
+  /** Stable, nonsecret environment + server identity. Omit to leave inventory unbound. */
+  deploymentId?: string;
   /** Recheck/fence stopped authority before resume; false skips a stale observed resume. */
   resumeRefused?: (provider: Provider, sandboxId: string) => Promise<void>;
   beforeResume?: (provider: Provider, sandboxId: string) => Promise<boolean>;
@@ -200,6 +202,11 @@ interface BoatRuntimeHost {
 
 /** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
 export interface BoatProvider extends Provider {
+  /** Report-only observations from Boat's label-filtered sandbox API. The timestamps
+   * and IDs describe logical sandboxes. Resume can replace the underlying machine. */
+  listSandboxInventory(
+    signal?: AbortSignal,
+  ): AsyncIterable<{ sandboxId: string; deploymentId: string; createdAt: Date }>;
   /** Ordinary VM activation only. Does not restore or verify a native harness session. */
   resumeBestEffort(sandboxId: string): Promise<void>;
   /** One ordinary stop dispatch followed by bounded reads of its exact archival operation. */
@@ -212,8 +219,12 @@ export interface BoatProvider extends Provider {
   ): Promise<readonly { id: string; running: boolean; lastHarness: string | null; lastModel: string | null }[]>;
 }
 
+const DEPLOYMENT_LABEL = "armada.deployment";
+
 export function createBoatProvider(options: BoatProviderOptions): BoatProvider & BoatRuntimeHost {
   const defaultTtl = options.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS;
+  const deploymentId = options.deploymentId?.trim();
+  const deploymentLabel = deploymentId ? createHash("sha256").update(deploymentId).digest("hex") : undefined;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const api = new BoatApi(
     new Configuration({
@@ -232,6 +243,12 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
   }
 
   async function start(body: CreateSandboxRequest, idempotencyKey: string | undefined): Promise<SandboxInfo> {
+    if (body.labels) {
+      const labels = { ...body.labels };
+      delete labels[DEPLOYMENT_LABEL];
+      if (body.from && deploymentLabel && labels.armada === "sandbox") labels[DEPLOYMENT_LABEL] = deploymentLabel;
+      body = { ...body, labels };
+    }
     try {
       const response = await call(() =>
         api.create({ createSandboxRequest: body, ...(idempotencyKey ? { idempotencyKey } : {}) }),
@@ -662,6 +679,40 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         }),
       );
       return page((response.sandboxes ?? []).map(sandboxInfo), response.pageInfo);
+    },
+
+    async *listSandboxInventory(signal) {
+      if (!deploymentId || !deploymentLabel) return;
+      const seenCursors = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        signal?.throwIfAborted();
+        const timeout = AbortSignal.timeout(10_000);
+        const response = await call(() =>
+          api.sandboxes(
+            { label: [`${DEPLOYMENT_LABEL}=${deploymentLabel}`], sort: "desc", ...(cursor ? { cursor } : {}) },
+            { signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
+          ),
+        );
+        for (const sandbox of response.sandboxes ?? []) {
+          signal?.throwIfAborted();
+          if (
+            sandbox.labels?.[DEPLOYMENT_LABEL] === deploymentLabel &&
+            sandbox.labels.armada === "sandbox" &&
+            sandbox.machineProvider &&
+            sandbox.id?.trim() &&
+            sandbox.createdAt &&
+            Number.isFinite(sandbox.createdAt.getTime())
+          ) {
+            yield { sandboxId: sandbox.id, deploymentId, createdAt: sandbox.createdAt };
+          }
+        }
+        if (!response.pageInfo?.hasMore) return;
+        const next = response.pageInfo.nextCursor;
+        if (!next || seenCursors.has(next)) throw unexpectedAnswer("sandbox inventory cursor");
+        seenCursors.add(next);
+        cursor = next;
+      } while (cursor);
     },
 
     async configureReadableVariables({ sandboxId, harness, variables }) {
