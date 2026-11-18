@@ -997,7 +997,23 @@ test("scoped child message settles through the native receipt worker into Langfu
       p.org,
       await encryptSecret("{}", ENCRYPTION_KEY),
     ]);
+    // A previous blocked report must not be re-announced under the follow-up's prompt identity.
+    await db.query(
+      `update sandboxes set task_prompt_id='prior',task_outcome='{"state":"blocked","reason":"agent_blocked"}'::jsonb where id=$1`,
+      [child.id],
+    );
+    await db.query(
+      "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
+      [p.org, new Uint8Array([1])],
+    );
     expect((await services.childWorker.message(token, "idle-child", child.id, "follow up")).state).toBe("succeeded");
+    expect(
+      (
+        await db.query<{ type: string }>(
+          "select payload->>'type' as type from outbound_webhook_deliveries where payload->>'promptId'='prompt_1'",
+        )
+      ).rows,
+    ).toEqual([]);
     expect(fake.prompts).toHaveLength(1);
     const promptId = "prompt_1";
     expect(
@@ -1006,7 +1022,8 @@ test("scoped child message settles through the native receipt worker into Langfu
     ).toBe(promptId);
     fake.finish(physical.id, promptId, "finished");
     const native = createNativeWebhookPrompts(sql, async () => fake.provider);
-    expect(await native.reconcileOne(new AbortController().signal)).toBe(true);
+    // The earlier report's receipt is also registered; drain both.
+    while (await native.reconcileOne(new AbortController().signal));
     expect(
       (
         await db.query<{ terminal_status: string }>(
