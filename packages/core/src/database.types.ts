@@ -4175,6 +4175,7 @@ export type Database = {
           request_enc: string;
           result_enc: string | null;
           correlation_id: string | null;
+          created_at: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4184,6 +4185,7 @@ export type Database = {
           request_enc: string;
           result_enc?: string | null;
           correlation_id?: string | null;
+          created_at?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4193,6 +4195,7 @@ export type Database = {
           request_enc?: string;
           result_enc?: string | null;
           correlation_id?: string | null;
+          created_at?: string | null;
         };
         Relationships: [
           {
@@ -4258,6 +4261,7 @@ export type Database = {
           epoch: number;
           counted_prompt_id: string | null;
           event_enc: string;
+          created_at: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4265,6 +4269,7 @@ export type Database = {
           epoch: number;
           counted_prompt_id?: string | null;
           event_enc: string;
+          created_at?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4272,6 +4277,7 @@ export type Database = {
           epoch?: number;
           counted_prompt_id?: string | null;
           event_enc?: string;
+          created_at?: string | null;
         };
         Relationships: [
           {
