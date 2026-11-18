@@ -1,7 +1,5 @@
 /** REST routes dispatched through the validated MCP contracts. */
 export const CONTROL_TOOL_ROUTES: Readonly<Record<string, string>> = {
-  "golden/capabilities": "golden_capabilities",
-  "golden/adopt": "golden_adopt",
   "github/refresh": "github_refresh",
   "github/runtime-status": "runtime_github_status",
   "sandbox/list": "list",

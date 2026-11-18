@@ -25,7 +25,6 @@ import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
-import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { REQUEST_BODY_LIMIT_BYTES, withRequestBodyCeiling } from "./request-body-ceiling.ts";
 import { observeRequest, recordOperatorFailure } from "./request-observability.ts";
@@ -84,7 +83,6 @@ export interface HandlerOptions {
   github?: GitHubLaunchOptions;
   /** Secure, server-orchestrated multi-repo golden creation (`golden_create`). Absent: the tool refuses. */
   goldenBuilds?: GoldenBuildJobs;
-  goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   /** A provider for one boat.dev key. The key is used in this process only. */
   providerFor(apiKey: string, caller?: { userId: string; orgId: string }, sandboxId?: string): Provider;
   /**
@@ -107,7 +105,6 @@ export interface HandlerOptions {
     target: ProviderTarget,
     caller: { userId: string },
   ) => Promise<ModalTokenPair & { scope: "user" | "org" }>;
-  providerMetadata?: ProviderMetadataFor;
   goldenTarget?: (target: Omit<ProviderTarget, "modal">, caller: { userId: string }) => Promise<ProviderTarget>;
   /** Mounted after the OAuth routes and before `/mcp`, for example #461's control API. */
   routes?: readonly Route[];
@@ -213,11 +210,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.goldenTarget
           ? { goldenTarget: (target: Omit<ProviderTarget, "modal">) => options.goldenTarget!(target, caller) }
           : {}),
-        ...(options.providerMetadata
-          ? {
-              providerMetadata: (selection) => options.providerMetadata!(selection, caller),
-            }
-          : {}),
         storedProviders: options.storedProviderFor
           ? { modal: (target) => options.storedProviderFor!(target, caller) }
           : {},
@@ -228,7 +220,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         logError: log,
         ...(options.ordinaryLaunchReceipts ? { ordinaryLaunchReceipts: options.ordinaryLaunchReceipts } : {}),
         ...(options.launch ? { launch: options.launch } : {}),
-        ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),
       },
       VERSION,
