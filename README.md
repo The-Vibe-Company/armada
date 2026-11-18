@@ -251,8 +251,11 @@ use `error.code`; integrations migrating old code comparisons can use
 `error.legacyCode // error.code` in jq. Versioned API reasons (such as `extension_not_found`) are retained. Stop
 previously collapsed service/outcome reasons into `unavailable`; these now retain
 the versioned reason with `legacyCode: "unavailable"`. Exit 2 means a usage/invalid-request
-failure; exit 1 means access, state, unsupported operation or service failure.
-Exit 3 means bare `armada` requires sign-in and no interactive sign-in took place.
+failure. Exit 3 means authentication is required: any command exits 3 with
+`unauthorized` when there is no valid session or service token (or the API
+answers HTTP 401) and no interactive sign-in took place. For example, signed-out
+`armada list` and `armada list --json` exit 3, and so does bare `armada`.
+Exit 1 means access denial, state, unsupported operation or service failure.
 Check `armada list --json` for visible IDs and state; verify your org selection
 with `armada org current` or pass `--org UUID`.
 
