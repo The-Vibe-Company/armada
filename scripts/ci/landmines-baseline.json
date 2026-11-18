@@ -1264,7 +1264,6 @@
     "scripts/ci/sdk-declarations.ts": 2,
     "scripts/ci/table-owners.ts": 1,
     "scripts/ci/tables.ts": 2,
-    "scripts/ci/unit-shards.test.ts": 1,
     "scripts/ci/unit-shards.ts": 14,
     "scripts/cleanup-staging-smoke.ts": 3,
     "scripts/dashboard-read-smoke.test.ts": 2,
