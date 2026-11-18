@@ -7,7 +7,7 @@ const root = resolve(import.meta.dir, "../..");
 const identifier = String.raw`(?:"[a-z_]\w*"|[a-z_]\w*\b)`;
 const publicTable = String.raw`(?:(?:"public"|public)\s*\.\s*)?(${identifier})(?![\w"]|\s*\.)`;
 const sqlWrites = [
-  ["insert", new RegExp(String.raw`\binsert\s+into\s+${publicTable}`, "gi")],
+  ["insert", new RegExp(String.raw`\binsert\s+into\s+(?:only\s+)?${publicTable}`, "gi")],
   [
     "update",
     new RegExp(String.raw`\bupdate\s+(?:only\s+)?${publicTable}(?:\s+(?:as\s+)?${identifier})?\s+set\b`, "gi"),
@@ -83,9 +83,9 @@ function git(...args: string[]) {
 }
 
 function* repositorySources() {
-  const paths = git("ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.ts");
+  const paths = git("ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.ts", "*.tsx");
   for (const path of new Set(paths.split("\0"))) {
-    if (!path || /(?:^|\/)(?:test|tests|__tests__|e2e|fixtures)\/|\.(?:d|spec|test)\.ts$/.test(path)) continue;
+    if (!path || /(?:^|\/)(?:test|tests|__tests__|e2e|fixtures)\/|\.(?:d|spec|test)\.tsx?$/.test(path)) continue;
     try {
       yield [path, readFileSync(resolve(root, path), "utf8")] as const;
     } catch (error) {

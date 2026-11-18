@@ -7,14 +7,14 @@ const sandboxUpdate = "UPDATE public.sandboxes SET status = 'running'";
 const exception = `${writer}\tsandboxes\tupdate`;
 
 test.each([
-  ["insert", 'INSERT INTO "public"."sandboxes" (id) VALUES (1)'],
-  ["update", sandboxUpdate],
-  ["delete", "DELETE\nFROM sandboxes WHERE id = 1"],
-  ["insert", "supabase.from('sandboxes').insert({})"],
+  ["insert", 'INSERT INTO ONLY "public"."sandboxes" (id) VALUES (1)', 1],
+  ["update", sandboxUpdate, 1],
+  ["delete", "DELETE\nFROM sandboxes WHERE id = 1", 1],
+  ["insert", "supabase.from('sandboxes').insert({})", 1],
   ["update", 'supabase\n.from("sandboxes")\n.update({})', 2],
-  ["upsert", 'supabase.from("sandboxes").upsert({})'],
-  ["delete", 'supabase.from("sandboxes").delete()'],
-])("reports a cross-module %s with its file, table and owner", (verb, source, line = 1) => {
+  ["upsert", 'supabase.from("sandboxes").upsert({})', 1],
+  ["delete", 'supabase.from("sandboxes").delete()', 1],
+])("reports a cross-module %s with its file, table and owner", (verb, source, line) => {
   const errors = checkTableOwners([[writer, source]], []);
   expect(errors).toEqual([expect.stringContaining(`${writer}:${line}: ${verb} on sandboxes belongs to`)]);
   expect(errors[0]).toContain(sandboxOwner);
