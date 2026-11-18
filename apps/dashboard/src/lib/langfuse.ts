@@ -62,7 +62,9 @@ export function parseLangfuseTest(input: unknown): LangfuseTest {
   throw new Error("Invalid Langfuse test result");
 }
 
-export function readLangfuseForm(form: FormData): LangfuseInput | null {
+export type LangfuseEditable = Pick<LangfuseAdmin, "host" | "publicKey" | "contentMode">;
+
+export function readLangfuseForm(form: FormData, baseline?: LangfuseEditable): LangfuseInput | null {
   const host = form.get("host");
   const publicKey = form.get("publicKey");
   const secretKey = form.get("secretKey");
@@ -77,9 +79,9 @@ export function readLangfuseForm(form: FormData): LangfuseInput | null {
   )
     return null;
   return {
-    host: host.trim(),
-    publicKey: publicKey.trim(),
+    ...(host.trim() === baseline?.host ? {} : { host: host.trim() }),
+    ...(publicKey.trim() === baseline?.publicKey ? {} : { publicKey: publicKey.trim() }),
     ...(secretKey === null ? {} : { secretKey: secretKey.trim() }),
-    contentMode,
+    ...(contentMode === baseline?.contentMode ? {} : { contentMode }),
   };
 }

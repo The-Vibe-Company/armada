@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { ControlError } from "@/lib/control";
 import { viewerLangfuse } from "@/lib/data/langfuse";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { type LangfuseTest, readLangfuseForm } from "@/lib/langfuse";
+import { type LangfuseEditable, type LangfuseTest, readLangfuseForm } from "@/lib/langfuse";
 
 type Result = { ok: true; test?: LangfuseTest } | { ok: false; error: string };
 
@@ -12,6 +12,7 @@ export async function updateLangfuse(
   org: string,
   change: "connect" | "edit" | "test" | "test-stored" | "enable" | "disable" | "disconnect",
   form?: FormData,
+  baseline?: LangfuseEditable,
 ): Promise<Result> {
   const selected = await selectedOrganization();
   if (selected?.org.id !== org) return { ok: false, error: "Switch to that organization first." };
@@ -23,12 +24,13 @@ export async function updateLangfuse(
       case "connect":
       case "edit":
       case "test": {
-        const input = form && readLangfuseForm(form);
+        const input = form && readLangfuseForm(form, change === "edit" ? baseline : undefined);
         if (!input || (change === "connect" && !input.secretKey)) {
           return { ok: false, error: "Enter the host and keys from your Langfuse project settings." };
         }
         if (change === "test") return { ok: true, test: await control.test(input) };
-        await control.save(change === "connect" ? { ...input, enabled: true } : input);
+        if (change === "connect") await control.save({ ...input, enabled: true });
+        else if (Object.keys(input).length) await control.save(input);
         break;
       }
       case "test-stored":

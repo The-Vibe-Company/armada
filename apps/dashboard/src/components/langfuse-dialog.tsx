@@ -58,8 +58,8 @@ export function LangfuseTestResult({ result, host }: { result: LangfuseTest; hos
           </>
         ) : (
           <>
-            <strong>Armada could not reach this host.</strong> No answer from {host} within 5 seconds. Check the
-            address, and that it accepts HTTPS from the Armada server.
+            <strong>Armada could not reach this host.</strong> The connection test did not get a successful HTTPS
+            response from {host}. Check the address, and that it accepts HTTPS from the Armada server.
           </>
         )}
       </span>
@@ -120,6 +120,11 @@ function LangfuseForm({
   close: () => void;
   setBusy: (value: boolean) => void;
 }) {
+  const [baseline] = useState(() => ({
+    host: settings.host,
+    publicKey: settings.publicKey,
+    contentMode: settings.contentMode,
+  }));
   const edit = settings.configured;
   const id = useId();
   const [replace, setReplace] = useState(!edit);
@@ -141,7 +146,12 @@ function LangfuseForm({
     setBusy(true);
     start(async () => {
       try {
-        const result = await updateLangfuse(org, testing ? "test" : edit ? "edit" : "connect", data);
+        const result = await updateLangfuse(
+          org,
+          testing ? "test" : edit ? "edit" : "connect",
+          data,
+          edit && !testing ? baseline : undefined,
+        );
         if (!result.ok) setError(result.error);
         else if (result.test) {
           const host = String(data.get("host"));
@@ -190,7 +200,7 @@ function LangfuseForm({
             name="host"
             type="url"
             required
-            defaultValue={settings.host}
+            defaultValue={baseline.host}
             aria-invalid={test?.status === "unreachable"}
             aria-describedby={`${id}-host-hint`}
             spellCheck={false}
@@ -205,7 +215,7 @@ function LangfuseForm({
             id={`${id}-public`}
             name="publicKey"
             required
-            defaultValue={settings.publicKey ?? ""}
+            defaultValue={baseline.publicKey ?? ""}
             placeholder="pk-lf-…"
             spellCheck={false}
             autoComplete="off"
@@ -257,7 +267,7 @@ function LangfuseForm({
           </legend>
           <RadioGroup
             name="contentMode"
-            defaultValue={settings.contentMode}
+            defaultValue={baseline.contentMode}
             aria-labelledby={`${id}-mode`}
             onValueChange={() => {
               setTest(undefined);

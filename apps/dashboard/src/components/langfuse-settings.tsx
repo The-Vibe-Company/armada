@@ -91,7 +91,6 @@ export function LangfuseSettingsCard({ org, settings, now }: { org: string; sett
         </div>
         {admin && (
           <LangfuseControls
-            key={String(connected)}
             org={org}
             settings={admin}
             onSaved={() => setTestGeneration((generation) => generation + 1)}
