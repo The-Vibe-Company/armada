@@ -61,7 +61,7 @@ const defaultRuntime = {
 
 const explicitRuntime = {
   runtimeVersion: z.literal(1),
-  helperCapabilities: z.tuple([]).optional(),
+  helperCapabilities: z.array(z.string()).max(0).optional(),
   armadaAccess: z.literal(false).optional(),
 };
 

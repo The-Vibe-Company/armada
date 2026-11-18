@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { launch } from "@armada/core/contract";
+import { z } from "zod";
 
 const schema = launch.input.body;
 const id = "12345678-1234-1234-1234-123456789abc";
@@ -49,4 +50,16 @@ test.each([
   ["Modal TTL beyond its provider limit", { ...modal, ttlSeconds: 86401 }],
 ] as const)("rejects %s", (_name, input) => {
   expect(schema.safeParse(input).success).toBe(false);
+});
+
+test("publishes the explicit runtime helper limit as a valid JSON Schema array", () => {
+  const projected = z.toJSONSchema(schema, { io: "input" });
+  const runtimeVariants = projected.anyOf?.filter(
+    (variant) => variant.properties?.golden && variant.properties.runtimeVersion,
+  );
+  expect(runtimeVariants).toHaveLength(2);
+  for (const variant of runtimeVariants ?? []) {
+    expect(variant.properties?.helperCapabilities).toMatchObject({ type: "array", maxItems: 0 });
+    expect(variant.properties?.helperCapabilities).not.toHaveProperty("prefixItems");
+  }
 });
