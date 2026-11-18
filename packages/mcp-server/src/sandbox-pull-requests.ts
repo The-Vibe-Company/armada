@@ -35,6 +35,7 @@ const githubPull = z.object({
   }),
   base: z.object({ repo: z.object({ full_name: z.string() }) }),
 });
+const githubCompare = z.object({ status: z.enum(["ahead", "behind", "identical", "diverged"]) });
 
 type Report = { prNumber?: number; prUrl?: string };
 type Identity = { repository: string; number: number };
@@ -76,6 +77,8 @@ const launchBranch = /^(?!-)[A-Za-z0-9._/-]{1,255}$/;
 const maxBranches = 32;
 const maxKnownPulls = 64;
 const maxPushesPerBranch = 16;
+// Ancestry lookups per scan for pull requests whose head moved past a push.
+const maxLineageChecks = 32;
 
 // A local branch name or matching SHA alone also describes a checkout made by
 // another sandbox. Only pushes qualify for discovery: the launch-installed
@@ -427,7 +430,9 @@ export function createSandboxPullRequests(
           return;
         const token = access.token;
         let requests = 0;
-        async function get(repository: string, path: string, missing = false) {
+        let lineageChecks = 0;
+        // `paged`: only the response's status matters, not a complete page.
+        async function get(repository: string, path: string, missing = false, paged = false) {
           if (!repoName.test(repository) || !branches.has(repository))
             throw Error("Repository is outside the sandbox grant.");
           // A large scan costs capacity from subsequent scans, even on failure.
@@ -442,9 +447,17 @@ export function createSandboxPullRequests(
           });
           // An unknown commit is an answer, not a failed observation.
           if (missing && (response.status === 404 || response.status === 422)) return undefined;
-          if (!response.ok || response.headers.get("link")?.includes('rel="next"'))
+          if (!response.ok || (!paged && response.headers.get("link")?.includes('rel="next"')))
             throw Error("Incomplete pull request observation.");
           return response.json();
+        }
+        // Whether a pushed commit is in a pull request's head history. An unknown
+        // commit (say, garbage-collected after a force push) is not.
+        async function contains(repository: string, pushed: string, head: string) {
+          const body = await get(repository, `/compare/${pushed}...${head}?per_page=1`, true, true);
+          if (body === undefined) return false;
+          const { status } = githubCompare.parse(body);
+          return status === "ahead" || status === "identical";
         }
         function record(repository: string, pull: z.infer<typeof githubPull>) {
           if (pull.base.repo.full_name.toLowerCase() !== repository) throw Error("Pull request repository changed.");
@@ -502,7 +515,35 @@ export function createSandboxPullRequests(
                   discovered.set(urlFor(identity), identity);
                   record(repository, pull);
                   if (latest.has(pull.head.sha)) matched.add(pull.head.sha);
-                } else if (
+                  continue;
+                }
+                // Someone may have advanced the head past this sandbox's push
+                // before the first scan (a reviewer's commit, then the merge).
+                // A pull request that was still open at launch and whose head
+                // history holds a push is this sandbox's work. A pull request
+                // closed before launch froze its head before any push from here.
+                if (pull.state === "open" || !(Date.parse(pull.closed_at ?? "") < launchedAt)) {
+                  let associated = false;
+                  // Latest pushes first: one inside the head is merged with it.
+                  for (const pushed of new Set([...latest, ...shas])) {
+                    if (associated && !latest.has(pushed)) break;
+                    if (++lineageChecks > maxLineageChecks) {
+                      // Ambiguous: the relationship stays unproven, so no stop.
+                      complete = false;
+                      break;
+                    }
+                    if (!(await contains(headRepository, pushed, pull.head.sha))) continue;
+                    associated = true;
+                    if (latest.has(pushed)) matched.add(pushed);
+                  }
+                  if (associated) {
+                    const identity = { repository, number: pull.number };
+                    discovered.set(urlFor(identity), identity);
+                    record(repository, pull);
+                    continue;
+                  }
+                }
+                if (
                   pull.state === "open" ||
                   (!pull.merged_at &&
                     (attempts.includes(pull.head.sha) || !(Date.parse(pull.closed_at ?? "") < launchedAt)))

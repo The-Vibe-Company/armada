@@ -424,6 +424,8 @@ test.each([
   "closed",
   "no push",
   "other commit",
+  "merged after head advanced",
+  "merged after head advanced past an unknown push",
   "revoked",
   "opted out",
   "running-turn",
@@ -502,7 +504,12 @@ test.each([
     number: 12,
     state: state === "open" ? "open" : "closed",
     merged_at: state === "open" || state === "closed" ? null : new Date(f.at).toISOString(),
-    head: { ref: "topic", sha: state === "other commit" ? "b".repeat(40) : sha, repo: { full_name: repository } },
+    // A moved head: another commit, or a reviewer's commit on top of the push.
+    head: {
+      ref: "topic",
+      sha: state === "other commit" || state.startsWith("merged after head advanced") ? "b".repeat(40) : sha,
+      repo: { full_name: repository },
+    },
     base: { repo: { full_name: repository } },
   };
   // A merged PR at an older head: the later push to its branch has no PR yet.
@@ -529,6 +536,13 @@ test.each([
       if (String(url) === `https://api.github.com/repos/${repository}/pulls/12`) return Response.json(pull);
       // A corrected report needs no branch lookup.
       expect(state).not.toBe("corrected report");
+      // The pushed commit is in the advanced head's history; an unrelated head diverged.
+      if (String(url).includes(`/repos/${repository}/compare/`)) {
+        const advanced = String(url).endsWith(`/compare/${sha}...${"b".repeat(40)}?per_page=1`);
+        if (advanced && state === "merged after head advanced past an unknown push")
+          return new Response("", { status: 404 });
+        return Response.json({ status: advanced && state === "merged after head advanced" ? "ahead" : "diverged" });
+      }
       // Only the rejected attempt's commit is unknown to GitHub.
       if (String(url).includes(`/repos/${repository}/commits/`))
         return String(url).endsWith("9".repeat(40)) ? new Response("", { status: 404 }) : Response.json({});
@@ -613,13 +627,17 @@ test.each([
   const shouldStop =
     state === "merged" ||
     state === "merged with scratch push" ||
+    state === "merged after head advanced" ||
     state === "merged after closed before launch" ||
     state === "corrected report" ||
     state === "rejected attempt";
   expect(f.stops()).toBe(shouldStop ? 1 : 0);
   if (shouldStop) expect(sandbox?.statusReason).toBe("work_merged");
   expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
-    state === "no push" || state === "other commit" || state === "rejected recreation"
+    state === "no push" ||
+      state === "other commit" ||
+      state === "merged after head advanced past an unknown push" ||
+      state === "rejected recreation"
       ? []
       : state === "merged after closed"
         ? ["merged", "closed"]
