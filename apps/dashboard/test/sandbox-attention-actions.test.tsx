@@ -16,7 +16,7 @@ test.each(["interrupted", "unconcluded"] as const)(
       configured: true,
       busy: false,
       attention,
-      resend: { text: "original instruction", conversationId: "conversation_one" },
+      resend: "original instruction",
       ackKey: "episode_one",
       dismissed: false,
     };
@@ -48,7 +48,7 @@ test("interrupted recovery replaces identity for changed submitted input within 
     configured: true,
     busy: false,
     attention: "interrupted" as const,
-    resend: { text: "original instruction", conversationId: "conversation_one" },
+    resend: "original instruction",
     ackKey: "episode_one",
     dismissed: false,
   };
@@ -57,17 +57,17 @@ test("interrupted recovery replaces identity for changed submitted input within 
     renderer = create(createElement(SandboxAttentionActions, props));
   });
   const key = () => renderer.root.findByProps({ name: "send_key" }).props.value;
-  let previous = key();
-  for (const resend of [
-    { ...props.resend, text: "changed instruction" },
-    { text: "changed instruction", conversationId: "conversation_two" },
-  ]) {
-    await act(async () => {
-      renderer.update(createElement(SandboxAttentionActions, { ...props, resend }));
-    });
-    expect(key()).not.toBe(previous);
-    previous = key();
-  }
+  const original = key();
+  await act(async () => {
+    renderer.update(createElement(SandboxAttentionActions, { ...props, resend: "changed instruction" }));
+  });
+  expect(key()).not.toBe(original);
+  const fields = renderer.root.findAllByType("input").map(({ props }) => [props.name, props.value]);
+  expect(Object.fromEntries(fields)).toEqual({
+    send_key: key(),
+    sandbox: props.sandboxId,
+    prompt: "changed instruction",
+  });
   await act(async () => {
     renderer.unmount();
   });

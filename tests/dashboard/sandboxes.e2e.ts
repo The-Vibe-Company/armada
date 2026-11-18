@@ -52,17 +52,17 @@ for (const organization of [
     await expect(browser.locator('[role="log"][aria-label="Messages"]')).toBeVisible();
   });
 
-  test(`${organization.name}: send two messages and stop the sandbox`, { session: organization.session }, async ({
-    app,
-    screen,
-    browser,
-  }) => {
+  test(`${organization.name}: send two messages, interrupt the turn and stop the sandbox`, {
+    session: organization.session,
+  }, async ({ app, screen, browser }) => {
     await app.open(`/sandboxes/${organization.id}`);
     for (const message of ["Inspect the fixture task", "Summarize the fixture result"]) {
       await screen.getByRole("textbox", "Message").fill(message);
       await screen.getByRole("button", /^(Send|Send as new turn)$/).tap();
       await expect(browser.locator('[role="log"][aria-label="Messages"]')).toContainText(message);
     }
+    await screen.getByRole("button", "Interrupt").tap();
+    await expect(browser.locator('[role="log"][aria-label="Messages"]')).toContainText("Interrupted");
     await screen.getByRole("button", "Stop").tap();
     await screen.getByRole("button", "Stop sandbox").tap();
     await expect(screen.getByRole("textbox", "Message")).toHaveAttribute(
