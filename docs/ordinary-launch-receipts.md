@@ -1,6 +1,6 @@
 # Ordinary MCP launch receipts
 
-For `launch` and `launch_sized_v1`, send a stable `idempotencyKey` (16–128
+For MCP `launch`, send a stable `idempotencyKey` (16–128
 characters) and reuse the identical request on transport retries. Keys are
 scoped to the launching owner and organization. Omitting a key creates a
 server-generated receipt but cannot correlate a retry after a lost reply.
@@ -18,26 +18,16 @@ of the request fingerprint, so a golden recreated under the same name returns
 returns `outcome_unknown` and the stable UUID.
 It does not claim that the machine is stopped or safe to recreate.
 
-Use `launch_receipt` with `id` (the receipt UUID) and, when the caller belongs
-to several organizations, `org` (the organization UUID). A replay that answers
-`outcome_unknown` or `conflict` names the receipt UUID. Only the launching owner can read the receipt.
-The lookup uses the provider binding stored on the receipt at admission
-(provider target, backend identity and management identity), not the source
-golden, and returns physical IDs even if sandbox registration never happened.
-If the current provider configuration no longer matches that binding, the
-outcome is `authority_blocked`. Empty results do not establish non-allocation (provider visibility
-can lag). A server crash before receipt completion remains unknown even when
-an Armada row exists: no agent effects are replayed automatically.
+If replay returns an unknown outcome, look for registered sandboxes by
+`externalRef`. Escalate unregistered allocations to an authorized operator
+with the organization, original key, external reference and receipt UUID
+when available. The provider's `sandbox` ownership label carries the receipt
+UUID. Confirm the first call is no longer active before retiring a machine
+through provider controls. Keep the original key through incident recovery.
 
-For an unregistered orphan, an authorized operator can retire the returned
-physical ID using provider controls, after confirming the original call is no
-longer active. Do not issue another launch with a new key to recover unknown
-work. Registered machines retain the normal status/stop lifecycle. Deleting the
-source golden does not block `launch_receipt`, but it makes a replay fail
-preflight before the receipt is read, so a caller whose first reply was lost
-never learns the receipt UUID. Without that UUID there is no self-service
-lookup: keep the original key and escalate to an operator with the
-organization, the key and the external reference.
+Keys from the retired versioned sizing tool can conflict because their
+fingerprints include the sizing version field. Treat that conflict as a
+reference to the original receipt and follow the same recovery steps.
 
 The new migration must be deployed by the normal validated release path before
 the server version. No provider calls are made by unit CI. Deployed fault
