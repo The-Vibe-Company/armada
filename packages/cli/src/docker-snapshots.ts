@@ -8,7 +8,7 @@ export async function dockerSnapshotCommand(
   args: Args,
   io: Pick<AuthIo, "out" | "err">,
   auth: AuthIo,
-  config?: GoldenConfig,
+  config?: GoldenConfig<string | undefined>,
 ) {
   const allowed = new Set([
     "--org",
@@ -41,7 +41,7 @@ export async function dockerSnapshotCommand(
         : rows
             .map(
               (r) =>
-                `${r.id}\t${r.name}\t${r.status}\t${r.visibility}\t${r.hostName ?? r.hostId}${r.failureReason ? `\t${r.failureReason}` : ""}\tBuilt on Armada ${r.builtOnVersion ?? "unknown version"}${snapshotUpdateAvailable(r.builtOnVersion, currentVersion) ? ` · Update to ${currentVersion}: armada snapshot rebuild ${r.id} --provider docker --org ${org}` : ""}`,
+                `${r.id}\t${r.name}\t${r.status}\t${r.visibility}\t${r.hostName ?? r.hostId}${r.failureReason ? `\t${r.failureReason}` : ""}${r.baselineWarning ? `\t${r.baselineWarning}` : ""}\tBuilt on Armada ${r.builtOnVersion ?? "unknown version"}${snapshotUpdateAvailable(r.builtOnVersion, currentVersion) ? ` · Update to ${currentVersion}: armada snapshot rebuild ${r.id} --provider docker --org ${org}` : ""}`,
             )
             .join("\n") + "\n",
     );
@@ -68,7 +68,7 @@ export async function dockerSnapshotCommand(
     io.out(
       flag(args, "--json")
         ? JSON.stringify(row, null, 2) + "\n"
-        : `New Docker snapshot: ${row.id}\nBuild: ${row.status}\nBuilt on Armada: ${row.builtOnVersion ?? "unknown version"}\nOriginal snapshot unchanged: ${id}\n`,
+        : `New Docker snapshot: ${row.id}\nBuild: ${row.status}\nBuilt on Armada: ${row.builtOnVersion ?? "unknown version"}\n${row.baselineWarning ? `${row.baselineWarning}\n` : ""}Original snapshot unchanged: ${id}\n`,
     );
     return 0;
   }
@@ -104,7 +104,7 @@ export async function dockerSnapshotCommand(
   io.out(
     flag(args, "--json")
       ? JSON.stringify(row, null, 2) + "\n"
-      : `Docker snapshot: ${row.id}\nName: ${row.name}\nBuild: ${row.status}\nBuilt on Armada: ${row.builtOnVersion ?? "unknown version"}\nRead: armada snapshot get ${row.id} --provider docker --org ${org}\n`,
+      : `Docker snapshot: ${row.id}\nName: ${row.name}\nBuild: ${row.status}\nBuilt on Armada: ${row.builtOnVersion ?? "unknown version"}\n${row.baselineWarning ? `${row.baselineWarning}\n` : ""}Read: armada snapshot get ${row.id} --provider docker --org ${org}\n`,
   );
   return 0;
 }

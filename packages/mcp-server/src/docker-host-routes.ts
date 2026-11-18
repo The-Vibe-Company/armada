@@ -7,7 +7,7 @@ import { VERSION } from "../../core/src/version.ts";
 import type { CallerResult } from "./caller.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
-import type { DockerSnapshots } from "./docker-snapshots.ts";
+import { DockerSnapshotHostUpgradeRequired, type DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
 
 const machinePaths = [
@@ -185,6 +185,7 @@ export function createDockerHostRoutes(
               ...("imageId" in body ? ["imageId"] : []),
               ...("baselineVersion" in body ? ["baselineVersion"] : []),
               ...("baselineTool" in body ? ["baselineTool"] : []),
+              ...("missingRefIndex" in body ? ["missingRefIndex"] : []),
             ]
           : path.endsWith("/poll") && "version" in body
             ? [
@@ -384,6 +385,17 @@ export function createDockerHostRoutes(
       const baselineTool = body.baselineTool;
       if ("baselineTool" in body && (reason !== "snapshot_build_failed" || !isSnapshotBaselineTool(baselineTool)))
         throw new InvalidInput();
+      const missingRefIndex = body.missingRefIndex;
+      if (
+        "missingRefIndex" in body &&
+        (reason !== "snapshot_build_failed" ||
+          "baselineTool" in body ||
+          typeof missingRefIndex !== "number" ||
+          !Number.isInteger(missingRefIndex) ||
+          missingRefIndex < 1 ||
+          missingRefIndex > 16)
+      )
+        throw new InvalidInput();
       const baselineVersion = body.baselineVersion;
       if (
         "baselineVersion" in body &&
@@ -401,9 +413,15 @@ export function createDockerHostRoutes(
         ...("imageId" in body ? { imageId: string(body.imageId) } : {}),
         ...(typeof baselineVersion === "number" ? { baselineVersion } : {}),
         ...(isSnapshotBaselineTool(baselineTool) ? { baselineTool } : {}),
+        ...(typeof missingRefIndex === "number" ? { missingRefIndex } : {}),
       });
       return Response.json({ requestId }, { headers });
     } catch (error) {
+      if (error instanceof DockerSnapshotHostUpgradeRequired)
+        return Response.json(
+          { error: { code: "docker_host_upgrade_required", message: error.message } },
+          { status: 409, headers },
+        );
       if (error instanceof DockerLimitsRefused)
         return Response.json(
           { error: { code: error.code, message: error.message } },

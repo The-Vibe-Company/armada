@@ -25,13 +25,19 @@ export interface GoldenGitHubAdapterOptions {
  * with the caller's OAuth token: an App installation can see more than the person who requested a
  * golden, and must never be used to elevate that person's repository access.
  */
-export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<GoldenCreateDeps, "authorize" | "mint"> {
+type GoldenGitHubAdapter = Pick<GoldenCreateDeps, "mint"> & {
+  authorize(
+    ...args: Parameters<GoldenCreateDeps["authorize"]>
+  ): Promise<{ repos: (AuthorizedRepo & { branch: string })[]; token: string }>;
+};
+
+export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): GoldenGitHubAdapter {
   const fetchImpl = options.fetch ?? fetch;
-  const adapter: Pick<GoldenCreateDeps, "authorize" | "mint"> = {
+  const adapter: GoldenGitHubAdapter = {
     async authorize(actor, _visibility, requested) {
       const token = await options.accessToken(actor);
       const installations = await fetchGitHubInstallations(token, { fetch: fetchImpl });
-      const repos: AuthorizedRepo[] = [];
+      const repos: (AuthorizedRepo & { branch: string })[] = [];
       for (const value of requested) {
         const { owner, repo } = requestedRepo(value);
         const repository = await userRepository(token, owner, repo, fetchImpl);

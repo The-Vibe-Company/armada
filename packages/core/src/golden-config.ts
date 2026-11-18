@@ -15,7 +15,13 @@ export const GOLDEN_SNAPSHOT_POLLS = 1800;
 const CLONE_TIMEOUT_SECONDS = 600;
 const INIT_TIMEOUT_SECONDS = 600;
 
-const BRANCH = /^(?![-/.])(?!.*\.\.)(?!.*@)[A-Za-z0-9._/-]{1,255}$/;
+// Older Docker daemons use this branch grammar to parse snapshot jobs.
+const LEGACY_BRANCH = /^(?![-/.])(?!.*\.\.)(?!.*@)[A-Za-z0-9._/-]{1,255}$/;
+
+export function isLegacySnapshotRef(ref: string): boolean {
+  return LEGACY_BRANCH.test(ref);
+}
+
 const DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
 
 /**
@@ -60,9 +66,9 @@ export class GoldenError extends Error {
   }
 }
 
-export interface GoldenRepo {
+export interface GoldenRepo<Branch extends string | undefined = string> {
   url: string;
-  branch: string;
+  branch: Branch;
   /** A single directory under {@link GOLDEN_ROOT}. */
   dir: string;
   /** Explicit per-repository checkout history; omission preserves the provider's existing default. */
@@ -70,14 +76,14 @@ export interface GoldenRepo {
 }
 
 /** The versionable golden file, and the `goldens.config` object. No secrets. */
-export interface GoldenConfig {
-  repos: GoldenRepo[];
+export interface GoldenConfig<Branch extends string | undefined = string> {
+  repos: GoldenRepo<Branch>[];
   init: string[];
 }
 
 /** A GitHub-only representation safe to hand to the server's checkout authorization layer. */
-export interface GitHubGoldenConfig {
-  repos: { owner: string; repo: string; branch: string; dir: string; history?: "full" | "shallow" }[];
+export interface GitHubGoldenConfig<Branch extends string | undefined = string> {
+  repos: { owner: string; repo: string; branch: Branch; dir: string; history?: "full" | "shallow" }[];
   init: string[];
 }
 
@@ -85,7 +91,9 @@ export interface GitHubGoldenConfig {
  * Converts an already-validated v2 golden config into GitHub repository identities. This intentionally
  * accepts no arbitrary git host or credential-bearing URL: checkout authorization owns the token.
  */
-export function normalizeGitHubGoldenConfig(config: GoldenConfig): GitHubGoldenConfig {
+export function normalizeGitHubGoldenConfig<Branch extends string | undefined>(
+  config: GoldenConfig<Branch>,
+): GitHubGoldenConfig<Branch> {
   return {
     repos: config.repos.map((repo) => ({
       ...githubRepoIdentity(repo.url),
@@ -158,7 +166,9 @@ export function splitRepoArg(arg: string): { url: string; branch?: string } {
     if (!isBranch(branch)) throw badBranch(branch);
     return { url, branch };
   }
-  const at = arg.lastIndexOf("@");
+  const scheme = arg.indexOf("://");
+  const path = scheme === -1 ? -1 : arg.indexOf("/", scheme + 3);
+  const at = path === -1 ? -1 : arg.indexOf("@", path + 1);
   if (at > 0) {
     const url = arg.slice(0, at);
     const branch = arg.slice(at + 1);
@@ -170,26 +180,39 @@ export function splitRepoArg(arg: string): { url: string; branch?: string } {
   return { url: arg };
 }
 
-export function configFromFlags(repos: readonly string[], init: readonly string[]): GoldenConfig {
+export function configFromFlags(repos: readonly string[], init: readonly string[]): GoldenConfig;
+export function configFromFlags(
+  repos: readonly string[],
+  init: readonly string[],
+  mode: "snapshot",
+): GoldenConfig<string | undefined>;
+export function configFromFlags(repos: readonly string[], init: readonly string[], mode?: "snapshot") {
   if (repos.length === 0) throw new GoldenError("invalid_config", "A golden needs at least one --repo.");
-  return parseGoldenConfig({
+  const input = {
     repos: repos.map((arg) => {
       const split = splitRepoArg(arg);
       return split.branch === undefined ? { url: split.url } : { url: split.url, branch: split.branch };
     }),
     init: [...init],
-  });
+  };
+  return mode === "snapshot" ? parseSnapshotConfig(input) : parseGoldenConfig(input);
 }
 
 /** Add repositories without replacing stored branches, directories or initialization commands.
  * Repeating the same addition is a no-op so a successful admission remains recoverable.
  */
-export function addGoldenRepositories(existing: GoldenConfig, additions: readonly string[]): GoldenConfig {
+export function addGoldenRepositories(existing: GoldenConfig, additions: readonly string[]): GoldenConfig;
+export function addGoldenRepositories(
+  existing: GoldenConfig,
+  additions: readonly string[],
+  mode: "snapshot",
+): GoldenConfig<string | undefined>;
+export function addGoldenRepositories(existing: GoldenConfig, additions: readonly string[], mode?: "snapshot") {
   if (!additions.length) throw new GoldenError("invalid_config", "Pass at least one --add-repo URL.");
   const current = parseGoldenConfig(existing);
-  const requested = configFromFlags(additions, []);
-  const repos = [...current.repos];
-  const identities = new Map(
+  const requested = mode === "snapshot" ? configFromFlags(additions, [], mode) : configFromFlags(additions, []);
+  const repos: GoldenRepo<string | undefined>[] = [...current.repos];
+  const identities = new Map<string, GoldenRepo<string | undefined>>(
     normalizeGitHubGoldenConfig(current).repos.map((repo, index) => [
       `${repo.owner}/${repo.repo}`.toLowerCase(),
       current.repos[index]!,
@@ -200,7 +223,7 @@ export function addGoldenRepositories(existing: GoldenConfig, additions: readonl
     const prior = identities.get(key);
     const addition = requested.repos[index]!;
     if (prior) {
-      if (prior.branch !== addition.branch)
+      if (addition.branch !== undefined && prior.branch !== addition.branch)
         throw new GoldenError(
           "invalid_config",
           "This repository already has a different branch in the golden. Use --config with the complete desired repository list to change it.",
@@ -211,7 +234,8 @@ export function addGoldenRepositories(existing: GoldenConfig, additions: readonl
     identities.set(key, addition);
   }
   try {
-    return parseGoldenConfig({ repos, init: current.init });
+    const config = { repos, init: current.init };
+    return mode === "snapshot" ? parseSnapshotConfig(config) : parseGoldenConfig(config);
   } catch (error) {
     if (error instanceof GoldenError)
       throw new GoldenError(
@@ -223,6 +247,18 @@ export function addGoldenRepositories(existing: GoldenConfig, additions: readonl
 }
 
 export function parseGoldenConfig(input: unknown): GoldenConfig {
+  return parseConfig(input, "main");
+}
+
+/** Snapshot build requests retain an omitted branch until the server resolves it through GitHub. */
+export function parseSnapshotConfig(input: unknown): GoldenConfig<string | undefined> {
+  return parseConfig(input, undefined);
+}
+
+function parseConfig<Branch extends string | undefined>(
+  input: unknown,
+  defaultBranch: Branch,
+): GoldenConfig<string | Branch> {
   if (!isRecord(input)) throw new GoldenError("invalid_config", "Golden config must be a JSON object.");
   const secret = secretKeyPath(input);
   if (secret) {
@@ -237,7 +273,7 @@ export function parseGoldenConfig(input: unknown): GoldenConfig {
   if (input.repos.length < 1 || input.repos.length > MAX_REPOS) {
     throw new GoldenError("invalid_config", `A golden needs 1 to ${MAX_REPOS} repositories.`);
   }
-  const drafts = input.repos.map((repo) => parseRepo(repo));
+  const drafts = input.repos.map((repo) => parseRepo(repo, defaultBranch));
   const init = parseInit(input.init);
   for (const command of init) {
     const assigned = secretAssignment(command);
@@ -383,7 +419,10 @@ export function initCommand(command: string): ShellCommand {
   return { command, cwd: GOLDEN_ROOT, timeoutSeconds: INIT_TIMEOUT_SECONDS };
 }
 
-function parseRepo(input: unknown): { url: string; branch: string; dir?: string; history?: "full" | "shallow" } {
+function parseRepo<Branch extends string | undefined>(
+  input: unknown,
+  defaultBranch: Branch,
+): { url: string; branch: string | Branch; dir?: string; history?: "full" | "shallow" } {
   if (!isRecord(input)) throw new GoldenError("invalid_config", "A repository must be an object.");
   for (const key of Object.keys(input)) {
     if (key !== "url" && key !== "branch" && key !== "dir" && key !== "history") {
@@ -392,8 +431,10 @@ function parseRepo(input: unknown): { url: string; branch: string; dir?: string;
   }
   if (typeof input.url !== "string") throw new GoldenError("invalid_config", "A repository needs a url.");
   const url = parseRepoUrl(input.url);
-  const branch = input.branch === undefined ? "main" : input.branch;
-  if (typeof branch !== "string" || !isBranch(branch)) throw badBranch(typeof branch === "string" ? branch : "");
+  const requested = input.branch;
+  if (requested !== undefined && (typeof requested !== "string" || !isBranch(requested)))
+    throw badBranch(typeof requested === "string" ? requested : "");
+  const branch = typeof requested === "string" ? requested : defaultBranch;
   if (input.history !== undefined && input.history !== "full" && input.history !== "shallow")
     throw new GoldenError("invalid_config", 'Repository history must be "full" or "shallow".');
   const history = input.history === undefined ? {} : { history: input.history as "full" | "shallow" };
@@ -424,9 +465,9 @@ function parseInit(input: unknown): string[] {
 }
 
 /** Assigns each repo a single-segment directory: its own `dir`, else the URL's basename, with a `-2`, `-3`, ... suffix on collision. */
-export function assignDirs(
-  repos: { url: string; branch: string; dir?: string; history?: "full" | "shallow" }[],
-): GoldenRepo[] {
+export function assignDirs<Branch extends string | undefined>(
+  repos: { url: string; branch: Branch; dir?: string; history?: "full" | "shallow" }[],
+): GoldenRepo<Branch>[] {
   const used = new Set<string>();
   return repos.map((repo) => {
     let dir = repo.dir ?? basename(repo.url);
@@ -478,7 +519,23 @@ function parseRepoUrl(value: string): string {
 }
 
 function isBranch(value: string): boolean {
-  return BRANCH.test(value);
+  return (
+    isLegacySnapshotRef(value) ||
+    (value.length > 0 &&
+      value.length <= 255 &&
+      value !== "@" &&
+      !value.startsWith("-") &&
+      !value.endsWith(".") &&
+      !/[\p{Cc} ~^:?*[\\]/u.test(value) &&
+      !value.includes("..") &&
+      !value.includes("@{") &&
+      value.split("/").every((part) => part && !part.startsWith(".") && !part.endsWith(".lock")))
+  );
+}
+
+/** Format a missing checkout ref using the validated request, never raw Git output. */
+export function snapshotMissingRefMessage(repository: string, ref: string): string {
+  return `Ref '${ref}' was not found in ${repository}. Check the branch or tag and retry.`;
 }
 
 function badBranch(branch: string): GoldenError {
