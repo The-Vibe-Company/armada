@@ -1101,3 +1101,35 @@ test.each(["accepted", "rejected"] as const)(
     ]);
   },
 );
+
+test("a retried runtime command answered by its stored reply records no second provider call", async () => {
+  const { observeRequest } = await import("../src/request-observability.ts");
+  const f = await fixture();
+  const active = await f.enrol();
+  const command = f.command("retried-reply");
+  f.onWait(async () => {
+    await f.bridge().complete(active.runtimeToken, active.epoch, {
+      epoch: active.epoch,
+      requestId: command.requestId,
+      status: 200,
+      body: { version: 1, requestId: command.requestId, result: {} },
+    });
+  });
+  const calls = async () => {
+    const lines: Record<string, unknown>[] = [];
+    let reply: unknown;
+    await observeRequest(
+      async () => {
+        reply = await f.bridge().call(f.people.owner, command);
+        return new Response(null, { status: 204 });
+      },
+      (line) => lines.push(JSON.parse(line)),
+    );
+    return { reply, records: lines.filter((line) => line.event === "provider_call") };
+  };
+  const first = await calls();
+  expect(first.records).toEqual([expect.objectContaining({ operation: `runtime.${command.op}`, outcome: "ok" })]);
+  const retried = await calls();
+  expect(retried.reply).toEqual(first.reply);
+  expect(retried.records).toEqual([]);
+});

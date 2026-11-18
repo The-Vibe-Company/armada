@@ -249,7 +249,8 @@ export function createRuntimeCommands(
    *
    * This is the shared request-correlated observation point for awaited runtime commands: one
    * `runtime.<op>` record per call, attributed to the provider of the locked sandbox, `ok` only
-   * for a validated reply (`accept` adds a caller check). Callers keep their public fallbacks.
+   * for a validated reply (`accept` adds a caller check), and none for a retry answered by a stored
+   * reply. Callers keep their public fallbacks.
    * Docker launch, send, resume and preview runtime routes admit some commands in their own
    * transaction (enqueue + result); those are recorded by the enclosing Docker provider record.
    */
@@ -286,6 +287,8 @@ export function createRuntimeCommands(
           signal.throwIfAborted();
           if (response.state === "finished") return response.reply;
           if (response.state !== "pending") throw new RuntimeCommandConflict();
+          // Waiting on a live reply is runtime work even for a retried ID; a stored reply is not.
+          noteAdmission();
           const remaining = deadline - time.now();
           if (remaining <= 0) throw new RuntimeCommandPending();
           await time.wait(Math.min(250, remaining), signal);
@@ -297,6 +300,8 @@ export function createRuntimeCommands(
         reply.body.requestId === request.requestId &&
         reply.body.error === undefined &&
         (options.accept?.(reply) ?? true),
+      // A retried request ID whose reply is already stored is answered from the database.
+      { replayable: true },
     );
   }
   const route: Route = async (request) => {
