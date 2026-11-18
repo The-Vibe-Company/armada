@@ -113,6 +113,17 @@ test("published launch request is either a golden launch or a Docker launch, nev
   expect(launch.safeParse({ golden: "web", harness: "codex", provider: "docker" }).success).toBe(false);
 });
 
+test("published Docker launch request accepts the mixed-case UUIDs launch admission normalizes", async () => {
+  const { publishedRequest } = await import("./published-response.ts");
+  const launch = publishedRequest("sandbox/launch");
+  // JSON Schema drops regex flags, so the published pattern itself must allow both cases.
+  const id = "ABCDEF12-0000-4000-8000-00000000000a";
+  const base = { org: id, provider: "docker", harness: "codex", requestId: id };
+  expect(launch.safeParse({ ...base, hostId: id }).success).toBe(true);
+  expect(launch.safeParse({ ...base, snapshotId: id }).success).toBe(true);
+  expect(launch.safeParse({ ...base, hostId: "ABCDEF12-0000-4000-8000-00000000000g" }).success).toBe(false);
+});
+
 test("published template launch request lists exactly the fields the template service accepts", async () => {
   const { publishedRequest } = await import("./published-response.ts");
   type Operation = { post: { requestBody: { content: { "application/json": { schema: { properties: object } } } } } };

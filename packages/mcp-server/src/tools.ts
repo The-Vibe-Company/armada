@@ -211,7 +211,7 @@ const taskOutcome = z.discriminatedUnion("state", [
       prUrl: z.url().max(2048).optional(),
       headSha: z
         .string()
-        .regex(/^[a-f0-9]{40}$/i)
+        .regex(/^[A-Fa-f0-9]{40}$/)
         .optional(),
     })
     .strict(),

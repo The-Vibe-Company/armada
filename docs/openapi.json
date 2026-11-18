@@ -1594,7 +1594,7 @@
                                       },
                                       "headSha": {
                                         "type": "string",
-                                        "pattern": "^[a-f0-9]{40}$"
+                                        "pattern": "^[A-Fa-f0-9]{40}$"
                                       }
                                     },
                                     "required": [
@@ -2400,7 +2400,7 @@
                                 },
                                 "headSha": {
                                   "type": "string",
-                                  "pattern": "^[a-f0-9]{40}$"
+                                  "pattern": "^[A-Fa-f0-9]{40}$"
                                 }
                               },
                               "required": [
@@ -3288,7 +3288,7 @@
                                 },
                                 "headSha": {
                                   "type": "string",
-                                  "pattern": "^[a-f0-9]{40}$"
+                                  "pattern": "^[A-Fa-f0-9]{40}$"
                                 }
                               },
                               "required": [
@@ -4174,7 +4174,7 @@
                           },
                           "headSha": {
                             "type": "string",
-                            "pattern": "^[a-f0-9]{40}$"
+                            "pattern": "^[A-Fa-f0-9]{40}$"
                           }
                         },
                         "required": [
@@ -4249,7 +4249,7 @@
                             },
                             "headSha": {
                               "type": "string",
-                              "pattern": "^[a-f0-9]{40}$"
+                              "pattern": "^[A-Fa-f0-9]{40}$"
                             }
                           },
                           "required": [
@@ -5346,7 +5346,7 @@
                                 },
                                 "headSha": {
                                   "type": "string",
-                                  "pattern": "^[a-f0-9]{40}$"
+                                  "pattern": "^[A-Fa-f0-9]{40}$"
                                 }
                               },
                               "required": [
@@ -6155,7 +6155,7 @@
                     "properties": {
                       "org": {
                         "type": "string",
-                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
                         "description": "Organization UUID."
                       },
                       "provider": {
@@ -6173,7 +6173,7 @@
                       "credentialId": {
                         "description": "Omit to use the caller's compatible personal default, frozen at admission.",
                         "type": "string",
-                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                       },
                       "credentialVersion": {
                         "type": "integer",
@@ -6182,7 +6182,7 @@
                       },
                       "requestId": {
                         "type": "string",
-                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
                         "description": "Caller-chosen UUID; replaying it returns the same launch."
                       },
                       "prompt": {
@@ -6223,7 +6223,7 @@
                         "type": "array",
                         "items": {
                           "type": "string",
-                          "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                          "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                         }
                       },
                       "variables": {
@@ -6237,7 +6237,7 @@
                             },
                             "variableId": {
                               "type": "string",
-                              "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                              "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                             },
                             "version": {
                               "type": "integer",
@@ -6264,7 +6264,7 @@
                             },
                             "secretId": {
                               "type": "string",
-                              "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                              "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                             },
                             "version": {
                               "type": "integer",
@@ -6282,7 +6282,7 @@
                       },
                       "hostId": {
                         "type": "string",
-                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
                         "description": "Docker host UUID."
                       },
                       "repos": {
@@ -6323,7 +6323,7 @@
                     "properties": {
                       "org": {
                         "type": "string",
-                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
                         "description": "Organization UUID."
                       },
                       "provider": {
@@ -6341,7 +6341,7 @@
                       "credentialId": {
                         "description": "Omit to use the caller's compatible personal default, frozen at admission.",
                         "type": "string",
-                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                       },
                       "credentialVersion": {
                         "type": "integer",
@@ -6350,7 +6350,7 @@
                       },
                       "requestId": {
                         "type": "string",
-                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
                         "description": "Caller-chosen UUID; replaying it returns the same launch."
                       },
                       "prompt": {
@@ -6391,7 +6391,7 @@
                         "type": "array",
                         "items": {
                           "type": "string",
-                          "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                          "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                         }
                       },
                       "variables": {
@@ -6405,7 +6405,7 @@
                             },
                             "variableId": {
                               "type": "string",
-                              "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                              "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                             },
                             "version": {
                               "type": "integer",
@@ -6432,7 +6432,7 @@
                             },
                             "secretId": {
                               "type": "string",
-                              "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                              "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                             },
                             "version": {
                               "type": "integer",
@@ -6450,13 +6450,13 @@
                       },
                       "snapshotId": {
                         "type": "string",
-                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$",
                         "description": "Docker snapshot UUID. It selects the host and workspace."
                       },
                       "hostId": {
                         "description": "Optional; when present it must be the snapshot's host.",
                         "type": "string",
-                        "pattern": "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"
+                        "pattern": "^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$"
                       }
                     },
                     "required": [

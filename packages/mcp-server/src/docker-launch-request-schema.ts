@@ -2,7 +2,8 @@ import { type DockerLaunchRequest, HARNESSES, MAX_MCP_CONNECTIONS, SKILL_PIN_PAT
 import { z } from "zod";
 import { DOCKER_PROMPT } from "./docker-send-request-schema.ts";
 
-const uuid = z.string().regex(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i);
+// Explicit case classes: JSON Schema patterns drop regex flags, so an `/i` flag would not be published.
+const uuid = z.string().regex(/^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$/);
 const binding = (idField: "variableId" | "secretId") =>
   z.strictObject({ key: z.string(), [idField]: uuid, version: z.number().int().min(1) });
 
