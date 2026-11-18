@@ -21,7 +21,7 @@ import {
   goldenBuildStatus,
   recoverGoldenBuild,
 } from "@/app/actions/goldens";
-import { SnapshotPlacementWord, useSnapshotPlacement } from "@/components/docker-snapshot-forms";
+import { SnapshotDetails, SnapshotPlacementWord, useSnapshotPlacement } from "@/components/docker-snapshot-forms";
 import { LaunchDialog } from "@/components/launch-dialog";
 import { LaunchChoice } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
@@ -74,6 +74,7 @@ type Props = {
    */
   canStart?: boolean;
   embedded?: {
+    repository: string;
     name: string;
     onBuilding: (name: string) => void;
     onSaved: (result: NonNullable<GoldenBuildStatus["result"]>, provider: SandboxProviderId) => Promise<void>;
@@ -91,22 +92,14 @@ const BUILD_OUTCOME_UNKNOWN =
  * request's outcome; while it runs every field is locked, so the same build cannot be sent twice.
  */
 /** The form's build scope: this org's create form, or the rebuild of one stored golden (its id never changes). */
-function buildScope(props: { mode: Props["mode"]; orgId: string; goldenId?: string | undefined }): string {
-  return props.mode === "create" ? `create.${props.orgId}` : `rebuild.${props.goldenId ?? ""}`;
-}
-
-/**
- * Keyed by its build scope, so switching organization in place (the page re-renders with another org) mounts a new
- * form: the previous org's job, lock, polling and saved key are left behind with the old one, never carried over.
- */
-export function SnapshotDetails({ openInComposer, children }: { openInComposer: boolean; children: React.ReactNode }) {
-  if (!openInComposer) return children;
-  return (
-    <details className="space-y-3">
-      <summary className="cursor-pointer text-sm font-medium">More options</summary>
-      {children}
-    </details>
-  );
+function buildScope({
+  mode,
+  orgId,
+  goldenId,
+  embedded,
+}: Pick<Props, "mode" | "orgId" | "goldenId" | "embedded">): string {
+  if (mode === "update") return `rebuild.${goldenId ?? ""}`;
+  return embedded ? `composer.${orgId}.${embedded.repository}` : `create.${orgId}`;
 }
 
 function RepositoryDetails({ embedded, children }: { embedded: boolean; children: React.ReactNode }) {
@@ -153,7 +146,7 @@ function ScopedGoldenForm({
   }, [router, embedded]);
   // Each form tracks its own build in the page URL: this org's create form, or the rebuild of this one golden.
   // Another org's form or another golden's never reads, polls or resubmits it.
-  const scope = buildScope({ mode, orgId, goldenId });
+  const scope = buildScope({ mode, orgId, ...(goldenId ? { goldenId } : {}), ...(embedded ? { embedded } : {}) });
   const jobParam = `build.${scope}`;
   const keyParam = `build-key.${scope}`;
   const providerParam = `build-provider.${scope}`;

@@ -122,7 +122,7 @@ export function LaunchSentence({
             }}
           >
             <span className="min-w-0 break-all">{option.label}</span>
-            {option.id === entry.defaultModel && (
+            {option.id === (chosen?.models?.[0]?.model ?? entry.defaultModel) && (
               <span className="shrink-0 text-xs text-muted-foreground">Default</span>
             )}
             {option.id === model && !other && <CheckIcon aria-label="Selected model" className="ml-auto" />}
@@ -289,7 +289,9 @@ export function LaunchSentence({
                       onSelect={() => {
                         onAccount(group.account.id);
                         chooseModel(
-                          group.options.find((option) => option.id === entry.defaultModel)?.id ??
+                          group.options.find(
+                            (option) => option.id === (chosen?.models?.[0]?.model ?? entry.defaultModel),
+                          )?.id ??
                             group.options[0]?.id ??
                             entry.defaultModel,
                         );

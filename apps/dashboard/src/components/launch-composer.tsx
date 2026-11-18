@@ -485,7 +485,7 @@ export function LaunchComposer({
           <div className="flex max-w-full flex-wrap gap-2">{location}</div>
           <div className="ml-auto flex max-w-full flex-wrap justify-end gap-2">{options}</div>
         </div>
-        {label === "Launch idle" && chooser}
+        {!task.trim() && !template && chooser}
       </div>
     </ChipFocus.Provider>
   );

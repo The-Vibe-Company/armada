@@ -15,7 +15,6 @@ import {
   useState,
 } from "react";
 import { buildDockerSnapshot, rebuildDockerSnapshot } from "@/app/actions/docker-snapshots";
-import { SnapshotDetails } from "@/components/golden-form";
 import { LaunchDialog } from "@/components/launch-dialog";
 import { LaunchChoice } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
@@ -56,7 +55,9 @@ export type EmbeddedSnapshotBuild = {
   repository: string;
   name: string;
   onBuilding: (name: string) => void;
-  readDocker: (id: string) => Promise<{ building?: boolean; failed?: boolean; reason?: string } | undefined>;
+  readDocker: (
+    id: string,
+  ) => Promise<{ golden: string; building?: boolean; failed?: boolean; reason?: string } | undefined>;
 };
 
 export function SnapshotCreateChoice({
@@ -121,6 +122,16 @@ export function SnapshotCreateChoice({
   );
 }
 
+export function SnapshotDetails({ openInComposer, children }: { openInComposer: boolean; children: ReactNode }) {
+  if (!openInComposer) return children;
+  return (
+    <details className="space-y-3">
+      <summary className="cursor-pointer text-sm font-medium">More options</summary>
+      {children}
+    </details>
+  );
+}
+
 function DockerRepositoryDetails({ embedded, children }: { embedded: boolean; children: ReactNode }) {
   if (embedded) return children;
   return (
@@ -156,6 +167,7 @@ function DockerSnapshotForm({
   const [config, setConfig] = useState("");
   const [buildName, setBuildName] = useState(embedded?.name ?? "");
   const [embeddedFailed, setEmbeddedFailed] = useState("");
+  const [embeddedReceipt, setEmbeddedReceipt] = useState("");
   const [advanced, setAdvanced] = useState(false);
   const [repos, setRepos] = useState<(RepoRow & { key: string })[]>([
     { key: "first", url: embedded?.repository ?? "", branch: "", dir: "", history: "full" },
@@ -186,15 +198,21 @@ function DockerSnapshotForm({
     close = useRef<HTMLButtonElement>(null);
   const router = useRouter(),
     id = useId(),
-    param = `snapshot-build-key.${orgId}`;
+    param = embedded ? `composer-docker-build-key.${orgId}.${embedded.repository}` : `snapshot-build-key.${orgId}`;
+  const receiptParam = embedded ? `composer-docker-build-id.${orgId}.${embedded.repository}` : "";
+  const readDocker = embedded?.readDocker;
+  const onBuilding = embedded?.onBuilding;
   useEffect(() => {
-    const stored = new URL(window.location.href).searchParams.get(param);
+    const params = new URL(window.location.href).searchParams;
+    const stored = params.get(param);
+    const receipt = receiptParam && params.get(receiptParam);
+    if (receipt && isUuid(receipt)) setEmbeddedReceipt(receipt);
     setRequestId(stored && isUuid(stored) ? stored : crypto.randomUUID());
     const keep = (event: Event) => event.preventDefault();
     const node = form.current;
     node?.addEventListener("reset", keep);
     return () => node?.removeEventListener("reset", keep);
-  }, [param]);
+  }, [param, receiptParam]);
   useEffect(() => {
     if (!result?.ok || embedded) return;
     const url = new URL(window.location.href);
@@ -205,24 +223,36 @@ function DockerSnapshotForm({
     router.refresh();
   }, [result, param, router, embedded]);
   useEffect(() => {
-    if (!embedded || !result?.ok) return;
+    if (!receiptParam || !result?.ok) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set(receiptParam, result.snapshotId);
+    window.history.replaceState(window.history.state, "", url);
+    setEmbeddedReceipt(result.snapshotId);
+  }, [result, receiptParam]);
+  useEffect(() => {
+    if (!readDocker || !embeddedReceipt) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     async function follow() {
+      if (!readDocker) return;
       try {
-        const target = await embedded?.readDocker(result && result.ok ? result.snapshotId : "");
-        if (!active || !target) {
-          if (active) timer = setTimeout(follow, 2000);
-          return;
-        }
-        if (target.building) timer = setTimeout(follow, 2000);
-        else if (target.failed) {
+        const target = await readDocker(embeddedReceipt);
+        if (!active) return;
+        if (!target || target.building) {
+          if (target) onBuilding?.(target.golden);
+          timer = setTimeout(follow, 4000);
+        } else if (target.failed) {
+          const url = new URL(window.location.href);
+          url.searchParams.delete(receiptParam);
+          url.searchParams.delete(param);
+          window.history.replaceState(window.history.state, "", url);
           setEmbeddedFailed(target.reason ?? "The build did not finish.");
-          embedded?.onBuilding("");
+          onBuilding?.("");
+          setEmbeddedReceipt("");
           setRequestId(crypto.randomUUID());
         }
       } catch {
-        if (active) timer = setTimeout(follow, 2000);
+        if (active) timer = setTimeout(follow, 4000);
       }
     }
     void follow();
@@ -230,11 +260,11 @@ function DockerSnapshotForm({
       active = false;
       clearTimeout(timer);
     };
-  }, [embedded, result]);
+  }, [readDocker, onBuilding, embeddedReceipt, param, receiptParam]);
 
   useEffect(() => {
-    if (embedded && result && !result.ok) embedded.onBuilding("");
-  }, [embedded, result]);
+    if (result && !result.ok) onBuilding?.("");
+  }, [onBuilding, result]);
   const built = result?.ok ? snapshots.find((row) => row.id === result.snapshotId) : null;
   useEffect(() => {
     if (built?.status === "failed") setRequestId(crypto.randomUUID());
@@ -288,7 +318,9 @@ function DockerSnapshotForm({
           </p>
         )}
         <fieldset
-          disabled={pending || (result?.ok && built?.status !== "failed" && !embeddedFailed)}
+          disabled={
+            pending || Boolean(embeddedReceipt) || (result?.ok && built?.status !== "failed" && !embeddedFailed)
+          }
           className="space-y-4"
         >
           <div className="text-lg leading-loose">
@@ -492,6 +524,7 @@ function DockerSnapshotForm({
               !(advanced ? config : generated) ||
               !githubConnected ||
               !requestId ||
+              Boolean(embeddedReceipt) ||
               pending ||
               (result?.ok && built?.status !== "failed" && !embeddedFailed)
             }
@@ -501,7 +534,7 @@ function DockerSnapshotForm({
         </div>
         <DialogClose ref={close} className="hidden" aria-label="Close snapshot build" />
       </form>
-      {result?.ok && (
+      {(result?.ok || embeddedReceipt || embeddedFailed) && (
         <div role="status" className="space-y-3 text-sm">
           <p>
             {embeddedFailed ||

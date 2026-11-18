@@ -211,6 +211,10 @@ export function LaunchStart(
   const selectedTarget = useRef(fallback);
   const startRoot = useRef<HTMLDivElement>(null);
   const focusStart = useRef(false);
+  const focusTaskOnMount = Boolean(props.initialOptions);
+  useLayoutEffect(() => {
+    if (focusTaskOnMount) startRoot.current?.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]')?.focus();
+  }, [focusTaskOnMount]);
   useLayoutEffect(() => {
     if (!focusStart.current) return;
     focusStart.current = false;
@@ -228,6 +232,7 @@ export function LaunchStart(
       setOptions(next);
       selectedTarget.current = source;
       setSelected(source.id);
+      setRepository((current) => (launchRepositoryFolder(source, current) === undefined ? "" : current));
       setBuilding("");
       setShowBuild(false);
       setAnnouncement(`${source.golden} is ready and selected.`);
@@ -273,7 +278,7 @@ export function LaunchStart(
   const freshSelection = options?.targets.find((item) => item.id === selected);
   const missing = {
     ...selectedTarget.current,
-    reason: MISSING_LAUNCH_START,
+    reason: selectedTarget.current.reason ?? MISSING_LAUNCH_START,
   };
   const starts = options ? (freshSelection ? options.targets : [missing, ...options.targets]) : [fallback];
   const pinnedTarget = freshSelection ?? (options ? missing : fallback);

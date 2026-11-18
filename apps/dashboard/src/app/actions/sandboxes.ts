@@ -15,7 +15,7 @@ import {
   STEER_KEEPS_MODEL,
 } from "@/lib/composer";
 import { CONNECTION_CHOICE_FIELD, launchSelection } from "@/lib/connections";
-import { ControlError } from "@/lib/control";
+import { CAPABILITIES_TIMEOUT_MS, ControlError, createControlClient, readGoldenCapabilities } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
 import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readSelectedDockerSnapshots } from "@/lib/data/docker-snapshots";
@@ -34,7 +34,7 @@ import { dockerHarnesses, dockerLaunchBlocker } from "@/lib/docker-launch";
 import { snapshotLaunchEnabled } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { createGateway, GatewayError } from "@/lib/gateway";
-import { goldenLaunchReadiness, PROVIDER_LABELS } from "@/lib/golden-form";
+import { goldenLaunchReadiness, goldenRowState, PROVIDER_LABELS, providerCapacity } from "@/lib/golden-form";
 import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
 import {
   decodeLaunchAttempt,
@@ -438,7 +438,7 @@ async function accountChoice(
 }
 
 /** Read the selected organization's visible launch sources only, using the viewer's JWT. */
-export async function readLaunchDialogOptions() {
+export async function readLaunchDialogOptions(includeBuildCapacity = false) {
   const selected = await selectedOrganization();
   if (!selected) throw new Error("Choose an organization first.");
   const supabase = await createClient();
@@ -556,6 +556,35 @@ export async function readLaunchDialogOptions() {
     templateList.state === "ready"
       ? templateList.items.flatMap((item) => launchTarget(item, goldens, lookups) ?? [])
       : [];
+  const buildProviders = connected ?? [];
+  const viewer = includeBuildCapacity && buildProviders.length ? await requireViewer() : null;
+  const serverUrl = mcpUrl();
+  const client =
+    viewer?.token && serverUrl
+      ? createControlClient({ serverUrl, token: viewer.token, timeoutMs: CAPABILITIES_TIMEOUT_MS })
+      : null;
+  const capacities = client
+    ? Object.fromEntries(
+        await Promise.all(
+          buildProviders.map(
+            async (provider) =>
+              [
+                provider,
+                providerCapacity(goldens, await readGoldenCapabilities(client, selected.org.id, provider), provider),
+              ] as const,
+          ),
+        ),
+      )
+    : undefined;
+  const replacements = viewer
+    ? goldens
+        .filter(
+          (golden) =>
+            golden.provider === "boat" &&
+            goldenRowState(golden, goldens, { id: viewer.id, isAdmin: selected.role === "admin" }).canRebuild,
+        )
+        .map(({ id, name, visibility }) => ({ id, name, visibility }))
+    : [];
   return {
     orgId: selected.org.id,
     targets,
@@ -564,7 +593,9 @@ export async function readLaunchDialogOptions() {
       orgName: selected.org.name,
       isAdmin: selected.role === "admin",
       githubConnected: Boolean(github && !github.revoked_at),
-      providers: connected ?? [],
+      providers: buildProviders,
+      capacities,
+      replacements,
       hosts:
         hostRead.state === "ready" &&
         hostRead.list.placement &&

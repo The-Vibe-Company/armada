@@ -42,7 +42,7 @@ import {
   LaunchComposer,
 } from "@/components/launch-composer";
 import { DiscoveredLaunchStart } from "@/components/launch-dialog";
-import { LaunchChoice, LaunchDialogContent } from "@/components/launch-surface";
+import { LaunchChoice, LaunchDialogContent, LaunchDialogHeader } from "@/components/launch-surface";
 import { MachineSizeField } from "@/components/machine-size-field";
 import type { ModelCatalog } from "@/components/model-fields";
 import { SkillPicker } from "@/components/skill-picker";
@@ -936,6 +936,7 @@ function DirectTemplateLaunchStart({
   const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
   const [remove, setRemove] = useState(false);
   const [error, setError] = useState("");
+  const [request, setRequest] = useState({ retry: false });
   useEffect(() => {
     let active = true;
     void readLaunchDialogOptions()
@@ -948,12 +949,17 @@ function DirectTemplateLaunchStart({
         }
       })
       .catch(() => {
-        if (active) setError("Other snapshots and Docker hosts could not be loaded. Close and reopen to try again.");
+        if (active)
+          setError(
+            request.retry
+              ? "Starting points could not be reloaded. Close and reopen to try again."
+              : "Other snapshots and Docker hosts could not be loaded. Close and reopen to try again.",
+          );
       });
     return () => {
       active = false;
     };
-  }, [target.orgId]);
+  }, [target.orgId, request]);
 
   if (options) {
     const start = templateStartAfterRemoval(target, options.targets);
@@ -968,12 +974,17 @@ function DirectTemplateLaunchStart({
       />
     );
   }
+  if (!error) return <LaunchDialogHeader title={`Launch from ${target.name}`} description="Loading starting points…" />;
   return (
     <TemplateLaunchForm
       target={target}
       task={task}
       onTask={setTask}
-      onRemove={() => setRemove(true)}
+      onRemove={() => {
+        setRemove(true);
+        setError("");
+        setRequest({ retry: true });
+      }}
       loadingError={error}
       dockerLimits={dockerLimits}
     />
