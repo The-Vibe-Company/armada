@@ -7,7 +7,7 @@ import type { LaunchStage } from "./launch-stages.ts";
 import type { MachineSizeEvidence } from "./machine-size.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
 import { type SandboxUsage, withUsageTotals } from "./sandbox-usage.ts";
-import type { TaskOutcome } from "./task-outcome.ts";
+import type { SandboxPullRequest, TaskOutcome } from "./task-outcome.ts";
 import type { UsagePricingContext } from "./usage-pricing.ts";
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
@@ -26,6 +26,7 @@ export interface SandboxRecord {
   usage?: SandboxUsage | null;
   preservationNote?: string | null;
   taskOutcome?: TaskOutcome | null;
+  pullRequests?: SandboxPullRequest[] | null;
   /** Actual accepted run ID; empty only after successful steer (resolve via events), null when unreportable. */
   taskPromptId?: string | null;
   resourceProject?: ResourceProject | null;
@@ -159,6 +160,8 @@ export interface SandboxStore {
     visibility?: "private" | "org";
     /** Validated with `isExternalRef` before any provider allocation. */
     externalRef?: string;
+    stopWhenWorkMerged?: boolean;
+    pullRequestSource?: { connectionEpoch: string; repositories: { url: string; dir: string; branch?: string }[] };
   }): Promise<SandboxRecord>;
   update(id: string, patch: SandboxPatch): Promise<void>;
 }
@@ -169,6 +172,7 @@ export interface SandboxRow {
   usage?: SandboxUsage | null;
   preservation_note?: string | null;
   task_outcome?: TaskOutcome | null;
+  pull_requests?: SandboxPullRequest[];
   task_prompt_id?: string | null;
   machine_size?: MachineSizeEvidence | null;
   resource_project?: ResourceProject | null;
@@ -222,8 +226,8 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
         `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport, external_ref)
-         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, coalesce($20::timestamptz, now() + $14::integer * interval '1 second'), $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb, $21::boolean,$22::text,$23::text)
+           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport, external_ref, stop_when_work_merged, pull_request_source)
+         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, coalesce($20::timestamptz, now() + $14::integer * interval '1 second'), $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb, $21::boolean,$22::text,$23::text,$24::boolean,$25::text::jsonb)
          returning ${COLUMNS}`,
         [
           input.id,
@@ -249,6 +253,8 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
           input.boatRuntime === true,
           input.runtimeTransport ?? null,
           input.externalRef ?? null,
+          input.stopWhenWorkMerged ?? true,
+          JSON.stringify(input.pullRequestSource ?? null),
         ],
       );
       const row = result.rows[0];
@@ -306,6 +312,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
     usage: withUsageTotals(row.usage),
     preservationNote: row.preservation_note ?? null,
     taskOutcome: row.task_outcome ?? null,
+    ...(row.pull_requests ? { pullRequests: row.pull_requests } : {}),
     taskPromptId: row.task_prompt_id ?? null,
     id: row.id,
     provider: row.provider,
@@ -339,7 +346,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
  */
 export function statusReasonOf(patch: SandboxPatch): string | null | undefined {
   if (
-    ["expired", "idle_paused", "agent_finished"].includes(patch.statusReason ?? "") &&
+    ["expired", "idle_paused", "agent_finished", "work_merged"].includes(patch.statusReason ?? "") &&
     (patch.status === "stopped" || patch.status === "stopping")
   )
     return patch.statusReason;

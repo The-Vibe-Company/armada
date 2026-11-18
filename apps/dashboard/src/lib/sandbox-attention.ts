@@ -5,6 +5,7 @@ import { type ChatEvent, isActiveStatus } from "./events.ts";
 import { describeFailure } from "./failure.ts";
 import { formatDuration, readLifecycle } from "./lifecycle.ts";
 import { type OutcomeView, outcomeView, type PreservationView, parseTaskOutcome, preservationView } from "./outcome.ts";
+import { parsePullRequests } from "./pull-requests.ts";
 
 /** Existing attention and recovery semantics, now shown on the authorized sandbox detail rather than a separate board. */
 /** Under this much time left, a live sandbox's deadline is highlighted and its unfinished work needs the operator. */
@@ -219,6 +220,8 @@ export function attentionOf(
 ): Attention | null {
   switch (state.kind) {
     case "ready":
+      // GitHub confirms the reported pull request merged: nothing is left for the operator to merge.
+      return state.outcome?.kind === "ready" && state.outcome.merged ? null : "ready";
     case "blocked":
     case "failed":
       return state.kind;
@@ -255,7 +258,7 @@ export function sandboxAttention(
         Sandbox,
         "status_reason" | "task_outcome" | "preservation_note" | "conversation_ids" | "expires_at" | "lifecycle_error"
       >
-    >,
+    > & { pull_requests?: unknown },
   turn: TurnSummary | null,
   now: Date,
 ) {
@@ -268,7 +271,7 @@ export function sandboxAttention(
       statusReason: sandbox.status_reason ?? null,
       lifecycleError: lifecycle.lifecycleError,
     },
-    outcomeView(outcome),
+    outcomeView(outcome, parsePullRequests(sandbox.pull_requests)),
   );
   const expiry = expiryView(sandbox.status, lifecycle.expiresAt, now);
   const preservation = preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true);

@@ -35,6 +35,7 @@ export function runtimeWorkspace(
         progress,
         sleep,
         (request, step) => agent.workspaceExec(request, step, epoch, signal),
+        access.status === "connected",
       );
       return warnings.length ? { ...access, message: [access.message, ...warnings].filter(Boolean).join(" ") } : access;
     },

@@ -86,6 +86,7 @@ export interface LaunchRequest {
   reasoningEffort?: string;
   /** Opaque caller reference stored on the sandbox (#2568). Refused before any allocation when malformed. */
   externalRef?: string;
+  stopWhenWorkMerged?: boolean;
 }
 
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
@@ -277,6 +278,8 @@ export async function launchSandbox(
   }
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
+  if (request.stopWhenWorkMerged !== undefined && typeof request.stopWhenWorkMerged !== "boolean")
+    throw new LaunchError("invalid_request", "stopWhenWorkMerged must be a boolean.");
   if (request.externalRef !== undefined && !isExternalRef(request.externalRef))
     throw new LaunchError("invalid_request", "externalRef must be 1 to 200 characters without control characters.");
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
@@ -531,6 +534,14 @@ export async function launchSandbox(
             : { runtimeTransport: "dialout" as const }
           : {}),
         ...credentials.binding,
+        ...(!runtime && connected?.connectionEpoch
+          ? {
+              pullRequestSource: {
+                connectionEpoch: connected.connectionEpoch,
+                repositories: golden.config.repos.map(({ url, dir, branch }) => ({ url, dir, branch })),
+              },
+            }
+          : {}),
         id,
         provider: golden.provider,
         providerSandboxId: forked.id,
@@ -567,6 +578,7 @@ export async function launchSandbox(
         model: choice.model,
         reasoningEffort: choice.reasoningEffort,
         visibility,
+        ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
         ...(request.externalRef === undefined ? {} : { externalRef: request.externalRef }),
       });
       childRecorded = true;
@@ -644,6 +656,8 @@ export async function launchSandbox(
           secrets,
           progress,
           options.sleep,
+          undefined,
+          connected !== null,
         );
         if (warnings.length) launchGithub.message = [launchGithub.message, ...warnings].filter(Boolean).join(" ");
         await mark("checkout_done");
@@ -951,6 +965,7 @@ export async function prepareLaunchWorkspace(
     request: Parameters<Provider["exec"]>[0],
     step: { phase: "repository" | "init"; index: number; attempt: number },
   ) => ReturnType<Provider["exec"]>,
+  trackPushes = false,
 ): Promise<string[]> {
   const runner = (phase: "repository" | "init", index: number) => {
     let attempt = 0;
@@ -967,7 +982,7 @@ export async function prepareLaunchWorkspace(
     const warning = await run(
       runner("repository", index),
       sandboxId,
-      pullCommand(repo),
+      pullCommand(repo, trackPushes),
       `git pull of ${repo.dir}`,
       secrets,
       {

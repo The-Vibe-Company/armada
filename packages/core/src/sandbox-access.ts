@@ -3,7 +3,7 @@ import type { SandboxStatus } from "./database.types.ts";
 import type { MachineSize } from "./machine-size.ts";
 import type { SandboxPlacementProviderId } from "./sandbox-provider.ts";
 import type { SandboxUsage } from "./sandbox-usage.ts";
-import type { TaskOutcome } from "./task-outcome.ts";
+import type { SandboxPullRequest, TaskOutcome } from "./task-outcome.ts";
 
 /** Version 1 organization list contract. Never extend from the interior SandboxRecord. */
 export interface SandboxListMetadata {
@@ -14,6 +14,7 @@ export interface SandboxListMetadata {
   preservationNote?: string | null;
   /** Interior-only: null for organization metadata-only viewers. */
   taskOutcome?: TaskOutcome | null;
+  pullRequests?: SandboxPullRequest[] | null;
   /** Interior-only opaque launch reference (#2568); absent when none or not visible. */
   externalRef?: string;
   id: string;

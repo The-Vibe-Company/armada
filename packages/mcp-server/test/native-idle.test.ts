@@ -1,12 +1,20 @@
 import { expect, test } from "bun:test";
 import type { Provider, SandboxInfo, Sql } from "@armada/core";
+import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
 import { nativeQuiescent } from "../src/native-idle.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
+import { createSandboxPullRequests } from "../src/sandbox-pull-requests.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import {
+  lostConfirmation,
+  recreatedAtFetchedCommit,
+  rejectedRecreation,
+  unrecordedUrlPush,
+} from "./push-ledger-git.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { bunLikeSql } from "./support.ts";
+import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 async function fixture(mode = "quiet") {
@@ -317,6 +325,40 @@ test("an expired native idle pause refuses wake before provider work", async () 
   ).rejects.toMatchObject({ code: "sandbox_terminal", status: 409 });
 });
 
+test.each(["idle_paused", "work_merged"])(
+  "a native %s stop still checkpointing refuses send before provider work",
+  async (reason) => {
+    const f = await fixture(`stopping-${reason}`);
+    await f.data.sandboxes.update(f.id, {
+      status: "stopping",
+      statusReason: reason,
+      expiresAt: new Date(f.at + 3_600_000).toISOString(),
+    });
+    await expect(
+      callSharedTool(
+        {
+          caller: f.caller,
+          data: f.data,
+          provider: async () => {
+            throw Error("Provider must not be resolved while the idle checkpoint is stopping");
+          },
+          launchCredentials: {
+            resolve: async () => {
+              throw Error("No credentials while stopping");
+            },
+          },
+          exposedSecrets: async () => [],
+          now: () => new Date(f.at),
+          sleep: async () => {},
+        },
+        "send",
+        { id: f.id, prompt: "wake" },
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect((await f.data.sandboxes.get(f.id))?.status).toBe("stopping");
+  },
+);
+
 test("native Modal retries its already-fenced stop phase without active-only observation", async () => {
   const f = await fixture("modal-retry");
   f.setClock(f.at + 600_000);
@@ -399,5 +441,293 @@ test.each(["boat", "modal"])("%s owner stop refuses old receipts but a fresh own
   expect((await f.data.sandboxes.get(f.id))?.status).toBe("running");
   expect(f.stops()).toBe(1);
   expect(f.promptCalls()).toBe(1);
+  await f.worker.drain();
+});
+
+test.each([
+  "merged",
+  "merged with scratch push",
+  "merged with later push",
+  "merged with scratch PR closed before launch",
+  "merged after closed",
+  "merged after many pushes",
+  "merged after closed at moved head",
+  "merged after closed before launch",
+  "merged before launch at pushed commit",
+  "reported PR merged before launch",
+  "ledger gap",
+  "ledger hook missing",
+  "ledger hook restored",
+  "open",
+  "closed",
+  "no push",
+  "other commit",
+  "merged after head advanced",
+  "merged after head advanced past an unknown push",
+  "closed after head advanced",
+  "revoked",
+  "opted out",
+  "running-turn",
+  "scan during turn",
+  "unsettled turn after scan",
+  "corrected report",
+  "out-of-grant report",
+  "rejected recreation",
+  "recreated at fetched commit",
+  "pending attempt",
+  "unmerged PR at attempt",
+  "lost confirmation",
+  "rejected attempt",
+  "unrecorded URL push",
+  "later push in first checkout",
+  "later push in second checkout",
+  "later push in dropped checkout",
+] as const)("GitHub observation and idle admission agree for %s work", async (state) => {
+  const f = await fixture(state === "running-turn" ? state : "quiet");
+  const owner = f.caller.userId;
+  const repository = "example/repo";
+  // Real Git evidence: the reader output that reaches admission.
+  const git =
+    state === "rejected recreation"
+      ? rejectedRecreation()
+      : state === "recreated at fetched commit"
+        ? (({ stdout, first }) => ({ stdout, sha: first }))(recreatedAtFetchedCommit())
+        : state === "lost confirmation"
+          ? (({ stdout, first }) => ({ stdout, sha: first }))(lostConfirmation())
+          : state === "unrecorded URL push"
+            ? // Discovery sees only the merged PR; the open one left by URL with --no-verify.
+              (({ stdout, first }) => ({ stdout, sha: first }))(unrecordedUrlPush())
+            : undefined;
+  const sha = git?.sha ?? "a".repeat(40);
+  await f.db.query(
+    `insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+       values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
+    [
+      owner,
+      await encryptSecret("fixture_refresh", ENCRYPTION_KEY),
+      await encryptSecret("fixture_access", ENCRYPTION_KEY),
+    ],
+  );
+  await f.db.query(
+    `update sandboxes s set pull_request_source=jsonb_build_object(
+         'connectionEpoch',c.connection_epoch,'repositories',$3::jsonb)
+       from github_connections c where s.id=$1 and c.user_id=$2`,
+    [
+      f.id,
+      owner,
+      JSON.stringify(
+        state.startsWith("later push in")
+          ? [
+              { url: `https://github.com/${repository}.git`, dir: "repo" },
+              { url: `https://github.com/${repository}.git`, dir: "copy" },
+            ]
+          : [{ url: `https://github.com/${repository}.git`, dir: "repo" }],
+      ),
+    ],
+  );
+  if (state === "corrected report") {
+    await f.db.query("update sandboxes set status='ready' where id=$1", [f.id]);
+    await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 4 });
+    await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 12 });
+  }
+  if (state === "reported PR merged before launch") {
+    // The agent names an old PR whose head it recreated: not this sandbox's work.
+    await f.db.query("update sandboxes set status='ready' where id=$1", [f.id]);
+    await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 12 });
+  }
+  if (state === "out-of-grant report") {
+    // A report outside the launch grant vetoes the stop but must not hide the
+    // pushed, verified and merged pull request in the grant.
+    await f.db.query("update sandboxes set status='ready' where id=$1", [f.id]);
+    await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", {
+      state: "ready",
+      prUrl: "https://github.com/example/another/pull/99",
+    });
+  }
+  const pull = {
+    number: 12,
+    state: state === "open" ? "open" : "closed",
+    merged_at:
+      state === "open" || state === "closed" || state === "closed after head advanced"
+        ? null
+        : new Date(f.at).toISOString(),
+    // A moved head: another commit, or a reviewer's commit on top of the push.
+    head: {
+      ref: "topic",
+      sha: state === "other commit" || state.includes("after head advanced") ? "b".repeat(40) : sha,
+      repo: { full_name: repository },
+    },
+    // A PR merged a day before launch whose branch the sandbox recreated at its
+    // head commit: an exact match that is not this sandbox's work.
+    ...(state === "merged before launch at pushed commit" || state === "reported PR merged before launch"
+      ? { merged_at: new Date(f.at - 86_400_000).toISOString(), closed_at: new Date(f.at - 86_400_000).toISOString() }
+      : {}),
+    base: { repo: { full_name: repository } },
+  };
+  // A merged PR at an older head: the later push to its branch has no PR yet.
+  const laterPull = { ...pull, number: 13, head: { ...pull.head, ref: "scratch", sha: "d".repeat(40) } };
+  // A PR on the scratch branch that closed a day before launch: history, not this sandbox's work.
+  const stalePull = {
+    ...laterPull,
+    number: 10,
+    merged_at: null,
+    closed_at: new Date(f.at - 86_400_000).toISOString(),
+    head: { ...laterPull.head, sha: "7".repeat(40) },
+  };
+  // An earlier push to the same branch whose PR closed without merging. In the
+  // moved-head cases another checkout advanced the branch before the close, so
+  // its head is none of this sandbox's pushes.
+  const movedHead = state === "merged after closed at moved head" || state === "merged after closed before launch";
+  const closedPull = {
+    ...pull,
+    number: 11,
+    state: "closed",
+    merged_at: null,
+    closed_at: new Date(f.at + (state === "merged after closed before launch" ? -86_400_000 : 300_000)).toISOString(),
+    head: { ...pull.head, sha: (movedHead ? "8" : "e").repeat(40) },
+  };
+  // A closed-unmerged PR at an unconfirmed attempt.
+  const attemptPull = { ...closedPull, number: 14, head: { ...closedPull.head, ref: "other", sha: "f".repeat(40) } };
+  const fetchGitHub = Object.assign(
+    async (url: Parameters<typeof fetch>[0]) => {
+      if (String(url) === "https://api.github.com/user")
+        return Response.json({ id: 123, login: "owner", name: "Owner" });
+      // A pull request already known from an earlier scan is read by number.
+      if (String(url) === `https://api.github.com/repos/${repository}/pulls/12`) return Response.json(pull);
+      // A corrected report needs no branch lookup.
+      expect(state).not.toBe("corrected report");
+      // The pushed commit is in the advanced head's history; an unrelated head diverged.
+      if (String(url).includes(`/repos/${repository}/compare/`)) {
+        const advanced = String(url).endsWith(`/compare/${sha}...${"b".repeat(40)}?per_page=1`);
+        if (advanced && state === "merged after head advanced past an unknown push")
+          return new Response("", { status: 404 });
+        return Response.json({
+          status:
+            advanced && (state === "merged after head advanced" || state === "closed after head advanced")
+              ? "ahead"
+              : "diverged",
+        });
+      }
+      // Only the rejected attempt's commit is unknown to GitHub.
+      if (String(url).includes(`/repos/${repository}/commits/`))
+        return String(url).endsWith("9".repeat(40)) ? new Response("", { status: 404 }) : Response.json({});
+      expect(String(url)).toContain(`/repos/${repository}/pulls?`);
+      const head = new URL(String(url)).searchParams.get("head");
+      if (head === "example:scratch")
+        return Response.json(
+          state === "merged with later push"
+            ? [laterPull]
+            : state === "merged with scratch PR closed before launch"
+              ? [stalePull]
+              : [],
+        );
+      if (head === "example:main") return Response.json([]);
+      if (head === "example:other") return Response.json(state === "unmerged PR at attempt" ? [attemptPull] : []);
+      return Response.json(state.startsWith("merged after closed") ? [pull, closedPull] : [pull]);
+    },
+    { preconnect: fetch.preconnect },
+  );
+  const observe = async (stdout: string) => {
+    const observer = createSandboxPullRequests(
+      f.sql,
+      {
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        app: { clientId: "fixture_app", clientSecret: "fixture_client" },
+        fetch: fetchGitHub,
+      },
+      async (_target, request) => ({
+        detached: false,
+        exitCode: 0,
+        // Two checkouts of one repository pushed `topic`: one at the merged PR's
+        // head, the other later at a commit with no PR yet. Their ledgers carry
+        // no order between them, whichever checkout is configured first.
+        stdout: state.startsWith("later push in")
+          ? request.cwd === (state === "later push in second checkout" ? "/home/user/copy" : "/home/user/repo")
+            ? `topic\t${"b".repeat(40)}\n`
+            : stdout
+          : stdout,
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      }),
+    );
+    await observer.reconcileOne(new AbortController().signal);
+    await observer.drain();
+  };
+  // The lifecycle worker settles the finished turn before a scan may prove a
+  // stop; its timer is not due yet, so this tick stops nothing.
+  if (state !== "scan during turn") await f.tick();
+  expect(f.stops()).toBe(0);
+  if (state === "ledger hook restored") {
+    // The reader reported the missing hook and reinstalled it, then the scan
+    // was abandoned. The next read is clean, but a push made while the hook
+    // was missing may have been pruned: coverage stays unprovable.
+    await observe(`!unproven\ntopic\tnot-a-sha\n`);
+    expect(
+      (await f.db.query("select pull_request_scan->'untracked' as u from sandboxes where id=$1", [f.id])).rows[0],
+    ).toEqual({ u: true });
+    await f.db.query("update sandboxes set pull_request_check_after=now() where id=$1", [f.id]);
+  }
+  if (state === "later push in dropped checkout") {
+    // A revised grant drops the checkout whose later push has no PR yet. Its
+    // latest push, read before, still has to be at a pull request head.
+    await observe(`topic\t${sha}\n`);
+    await f.db.query(
+      `update sandboxes set pull_request_check_after=now(),
+         pull_request_source=jsonb_set(pull_request_source,'{repositories}',$2::jsonb) where id=$1`,
+      [f.id, JSON.stringify([{ url: `https://github.com/${repository}.git`, dir: "copy" }])],
+    );
+  }
+  await observe(
+    git
+      ? git.stdout
+      : state === "no push" || state === "corrected report"
+        ? ""
+        : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : state === "pending attempt" ? "!pending\n" : ""}topic\t${sha}\n${state.startsWith("merged after closed") ? `topic\t${"e".repeat(40)}\n` : ""}${
+            // More older pushes to the branch than one scan looks up: the newest
+            // ones are still observed, but the observation is incomplete.
+            state === "merged after many pushes"
+              ? Array.from({ length: 16 }, (_, i) => `topic\t${i.toString(16).padStart(40, "1")}\n`).join("")
+              : ""
+          }${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`,
+  );
+  if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
+  if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
+  // A turn the proof did not see is in flight: stop admission rechecks settlement.
+  if (state === "unsettled turn after scan")
+    await f.db.query("insert into runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,'later',false)", [f.id]);
+  await f.tick();
+  // The read above preceded the turn's settlement (the tick that just settled
+  // it), so the turn could still have pushed after it: no stop on a later tick.
+  if (state === "scan during turn") await f.tick();
+  const sandbox = await f.data.sandboxes.get(f.id);
+  const shouldStop =
+    state === "merged" ||
+    state === "merged with scratch push" ||
+    state === "merged with scratch PR closed before launch" ||
+    state === "merged after head advanced" ||
+    state === "merged after closed before launch" ||
+    state === "corrected report" ||
+    state === "rejected attempt";
+  expect(f.stops()).toBe(shouldStop ? 1 : 0);
+  if (shouldStop) expect(sandbox?.statusReason).toBe("work_merged");
+  expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
+    state === "no push" ||
+      state === "other commit" ||
+      state === "merged before launch at pushed commit" ||
+      state === "merged after head advanced past an unknown push" ||
+      state === "rejected recreation"
+      ? []
+      : state === "merged after closed"
+        ? ["merged", "closed"]
+        : [
+            state === "open" || state === "closed"
+              ? state
+              : state === "closed after head advanced"
+                ? "closed"
+                : "merged",
+          ],
+  );
   await f.worker.drain();
 });

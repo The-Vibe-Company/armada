@@ -83,6 +83,8 @@ export async function launchRoute(
     (typeof idempotencyKey !== "string" || idempotencyKey.length < 16 || idempotencyKey.length > 128)
   )
     throw new VaultError("invalid", "idempotencyKey must be 16 to 128 characters.");
+  if (body.stopWhenWorkMerged !== undefined && typeof body.stopWhenWorkMerged !== "boolean")
+    throw new VaultError("invalid", "stopWhenWorkMerged must be a boolean.");
   if (body.externalRef !== undefined && !isExternalRef(body.externalRef))
     throw new VaultError("invalid", "externalRef must be 1 to 200 characters without control characters.");
   if (idempotencyKey !== undefined && !options.ordinaryLaunchReceipts)
@@ -169,6 +171,7 @@ export async function launchRoute(
         harness,
         ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
         ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: requiredNumber(body, "ttlSeconds") }),
+        ...(body.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
         ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef as string }),
       },
       {

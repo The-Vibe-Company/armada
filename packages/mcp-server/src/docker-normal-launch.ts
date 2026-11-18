@@ -80,6 +80,7 @@ type Request = {
   skills?: string[];
   connections?: string[];
   skipSkillDefaults?: boolean;
+  stopWhenWorkMerged?: boolean;
 };
 type Manifest = {
   variables?: Record<string, string>;
@@ -207,9 +208,11 @@ function normalize(body: Record<string, unknown>, image: string): Request {
           "skills",
           "connections",
           "skipSkillDefaults",
+          "stopWhenWorkMerged",
         ].includes(field),
     ) ||
     body.provider !== "docker" ||
+    (body.stopWhenWorkMerged !== undefined && typeof body.stopWhenWorkMerged !== "boolean") ||
     !HARNESSES.includes(body.harness as Harness) ||
     (body.visibility !== undefined && body.visibility !== "private") ||
     (body.credentialVersion !== undefined &&
@@ -301,6 +304,7 @@ function normalize(body: Record<string, unknown>, image: string): Request {
     ttlSeconds,
     prompt: (body.prompt as string | undefined) ?? null,
     ...(body.skills === undefined ? {} : { skills: [...(body.skills as string[])] }),
+    ...(body.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
     ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
     ...(body.connections === undefined
       ? {}
@@ -633,6 +637,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               credentialVersion: manifest.credentialVersion,
               model: request.model,
               reasoningEffort: request.reasoningEffort,
+              ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
               ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
             },
             admission?.beforeReserve,
@@ -786,6 +791,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               await live();
               return agent.workspaceExec(command, step, receipt.epoch);
             },
+            receipt.github?.status === "connected",
           );
           if (warnings.length)
             receipt.github = {

@@ -18,7 +18,7 @@ import { selectedOrganization } from "./selected-org";
 
 // Explicit JWT projection: schema additions must be reviewed before becoming dashboard data.
 const SANDBOXES_COLUMNS =
-  "id,boat_id,golden_id,org_id,owner_id,harness,status,conversation_ids,created_at,stopped_at,deleted_at,status_reason,model,reasoning_effort,provider,provider_sandbox_id,visibility,source_golden_visibility,access_owner_id,mcp_generation,repository_dir,requested_ttl_seconds,effective_ttl_seconds,expires_at,lifecycle_generation,last_observed_at,lifecycle_error,reconcile_after,stop_requested_at,activity_lease_id,activity_until,reconcile_lease,reconcile_lease_until,credential_id,credential_version,machine_size,resource_project,resource_sampling_claim_id,resource_sampling_after,resource_sampling_generation,orchestrator_native_generation,task_outcome,task_prompt_id,preservation_note,usage_runtime_seconds,usage_running_since,usage_turns,skills,stop_generation,preservation_stop_generation,application_secret_tainted,boat_runtime,docker_host_id,docker_installation_id,docker_generation,docker_image,runtime_transport,docker_snapshot_id";
+  "id,boat_id,golden_id,org_id,owner_id,harness,status,conversation_ids,created_at,stopped_at,deleted_at,status_reason,model,reasoning_effort,provider,provider_sandbox_id,visibility,source_golden_visibility,access_owner_id,mcp_generation,repository_dir,requested_ttl_seconds,effective_ttl_seconds,expires_at,lifecycle_generation,last_observed_at,lifecycle_error,reconcile_after,stop_requested_at,activity_lease_id,activity_until,reconcile_lease,reconcile_lease_until,credential_id,credential_version,machine_size,resource_project,resource_sampling_claim_id,resource_sampling_after,resource_sampling_generation,orchestrator_native_generation,task_outcome,pull_requests,task_prompt_id,preservation_note,usage_runtime_seconds,usage_running_since,usage_turns,skills,stop_generation,preservation_stop_generation,application_secret_tainted,boat_runtime,docker_host_id,docker_installation_id,docker_generation,docker_image,runtime_transport,docker_snapshot_id";
 
 /** The listed metadata of one sandbox of the selected organization, or null when the server lists no such sandbox. */
 export async function getSandboxMetadata(supabase: Supabase, id: string): Promise<SandboxListMetadata | null> {
@@ -51,6 +51,12 @@ export type SandboxDetail = Omit<
   | "outputs_failure_reasons"
   | "outputs_probe_at"
   | "outputs_collector_supported"
+  | "pull_request_source"
+  | "pull_request_scan"
+  | "pull_request_reports"
+  | "pull_request_check_after"
+  | "pull_request_merge_proof"
+  | "stop_when_work_merged"
 >;
 
 /** The interior row. Row level security returns it only to its owner or a current organization admin. */

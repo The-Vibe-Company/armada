@@ -1,4 +1,11 @@
-import { ArchiveIcon, GitPullRequestIcon, InfoIcon, OctagonPauseIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  GitMergeIcon,
+  GitPullRequestIcon,
+  InfoIcon,
+  OctagonPauseIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { CopyButton } from "@/components/copy-button";
 import type { OutcomeView, PreservationView } from "@/lib/outcome";
 import { TONE_BADGE } from "@/lib/status-tone";
@@ -9,9 +16,9 @@ const OUTCOME_TONES: Record<OutcomeView["kind"], string> = {
   blocked: TONE_BADGE.warning,
 };
 
-/** The outcome as a badge: "Ready to merge" or "Blocked". */
+/** The outcome as a badge: "Ready to merge" (or "Merged" once GitHub confirms it) or "Blocked". */
 export function OutcomeBadge({ outcome }: { outcome: OutcomeView }) {
-  const Icon = outcome.kind === "ready" ? GitPullRequestIcon : OctagonPauseIcon;
+  const Icon = outcome.kind === "ready" ? (outcome.merged ? GitMergeIcon : GitPullRequestIcon) : OctagonPauseIcon;
   return (
     <span
       data-outcome={outcome.kind}

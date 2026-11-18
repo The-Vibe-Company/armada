@@ -480,7 +480,7 @@ test.each(["codex", "claude", "opencode"] as const)(
   },
 );
 
-test("idle checkpoint precedes Docker stop and its restore proof gates readiness without extending expiry", async () => {
+test.each([false, true])("idle checkpoint fences Docker stop and retained restore (merge stop=%s)", async (merged) => {
   const db = database();
   const f = await fixture();
   const authority = createRuntimeEnrolments(sql, key);
@@ -525,12 +525,28 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
     session.epoch,
     await encryptSecret(JSON.stringify(event), key),
   ]);
+  if (merged) {
+    await db.query(
+      `insert into github_connections(user_id,github_id,login,name,refresh_token_enc)
+       values($1,123,'owner','Owner',$2)`,
+      [f.actor.userId, await encryptSecret("fixture_refresh", key)],
+    );
+    await db.query(
+      `update sandboxes s set pull_request_merge_proof=jsonb_build_object(
+         'checkedAt',now(),'generation',s.lifecycle_generation::text,'promptId',s.task_prompt_id,
+         'connectionEpoch',c.connection_epoch,'membershipEpoch',e.epoch::text)
+       from github_connections c join mcp_actor_epochs e on e.user_id=c.user_id
+       where s.id=$1 and c.user_id=s.owner_id and e.org_id=s.org_id`,
+      [f.sandbox.id],
+    );
+  }
   let clock = 600_999;
   const bridge = createRuntimeCommands(authority, key, {
     now: () => clock,
     async wait() {
       const command = (await commands.next(session.runtimeToken, session.epoch)).command;
       if (command?.op !== "checkpoint") throw Error("missing checkpoint");
+      if (merged) await db.query("update github_connections set revoked_at=now() where user_id=$1", [f.actor.userId]);
       expect(
         (
           await db.query("select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='stop'", [
@@ -574,9 +590,11 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
       hosts.enqueueSandbox(actor, id, { requestId, operation: "stop", idleCheckpointRequest: requestId }),
   });
   await idle.reconcileOne(new AbortController().signal);
-  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
-  clock += 60_000;
-  await idle.reconcileOne(new AbortController().signal);
+  if (!merged) {
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
+    clock += 60_000;
+    await idle.reconcileOne(new AbortController().signal);
+  }
   const stop = await hosts.poll(f.hostToken, f.installationId);
   if (stop?.operation !== "stop") throw Error("missing idle stop");
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopping");
@@ -588,12 +606,16 @@ test("idle checkpoint precedes Docker stop and its restore proof gates readiness
     )
   ).rows[0]!;
   expect(stored.status).toBe("stopped");
-  expect(stored.status_reason).toBe("idle_paused");
+  expect(stored.status_reason).toBe(merged ? "work_merged" : "idle_paused");
   const detail = await createDockerSandboxControls(sql, key).invoke(
     { userId: f.actor.userId, orgs: [{ orgId: f.actor.orgId, role: "member" }], via: "service" },
     "status",
     { id: f.sandbox.id },
   );
+  if (merged) {
+    expect(detail).toMatchObject({ handled: true, result: { statusReason: "work_merged" } });
+    return;
+  }
   expect(detail.handled && (detail.result as { statusMessage?: string }).statusMessage).toBe(
     "Paused — wakes on your next message",
   );

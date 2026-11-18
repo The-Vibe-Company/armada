@@ -4047,6 +4047,7 @@ export type Database = {
           watermark: number | null;
           created_at: string;
           completed_at: string | null;
+          merge_stop: boolean;
         };
         Insert: {
           sandbox_id: string;
@@ -4055,6 +4056,7 @@ export type Database = {
           watermark?: number | null;
           created_at?: string;
           completed_at?: string | null;
+          merge_stop?: boolean;
         };
         Update: {
           sandbox_id?: string;
@@ -4063,6 +4065,7 @@ export type Database = {
           watermark?: number | null;
           created_at?: string;
           completed_at?: string | null;
+          merge_stop?: boolean;
         };
         Relationships: [
           {
@@ -4602,6 +4605,13 @@ export type Database = {
           outputs_failure_reasons: string[];
           outputs_probe_at: string | null;
           outputs_collector_supported: boolean;
+          pull_request_source: Json | null;
+          pull_request_scan: Json | null;
+          pull_requests: Json;
+          pull_request_reports: Json;
+          pull_request_check_after: string;
+          pull_request_merge_proof: Json | null;
+          stop_when_work_merged: boolean;
         };
         Insert: {
           id?: string;
@@ -4669,6 +4679,13 @@ export type Database = {
           outputs_failure_reasons?: string[];
           outputs_probe_at?: string | null;
           outputs_collector_supported?: boolean;
+          pull_request_source?: Json | null;
+          pull_request_scan?: Json | null;
+          pull_requests?: Json;
+          pull_request_reports?: Json;
+          pull_request_check_after?: string;
+          pull_request_merge_proof?: Json | null;
+          stop_when_work_merged?: boolean;
         };
         Update: {
           id?: string;
@@ -4736,6 +4753,13 @@ export type Database = {
           outputs_failure_reasons?: string[];
           outputs_probe_at?: string | null;
           outputs_collector_supported?: boolean;
+          pull_request_source?: Json | null;
+          pull_request_scan?: Json | null;
+          pull_requests?: Json;
+          pull_request_reports?: Json;
+          pull_request_check_after?: string;
+          pull_request_merge_proof?: Json | null;
+          stop_when_work_merged?: boolean;
         };
         Relationships: [
           {

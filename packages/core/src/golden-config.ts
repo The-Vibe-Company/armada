@@ -251,11 +251,131 @@ export function parseGoldenConfig(input: unknown): GoldenConfig {
 export const REPOSITORY_FETCH_FAILED_EXIT = 75;
 export const REPOSITORY_FETCH_FAILED_MARKER = "ARMADA_REPOSITORY_FETCH_FAILED";
 
+/** First line of the hook that records pushes; the observer requires it before trusting the ledger. */
+export const PUSH_LEDGER_MARKER = "# armada-push-ledger v1";
+/**
+ * Per-repository ledger in the common Git directory, one `<unix time>\t<branch>\t<sha>`
+ * line per confirmed push. A `<unix time>\t!push\t<pid>\t<branch>\t<sha>` line
+ * records an attempt before the remote answers; a `<unix time>\t!gap` line
+ * records a push the ledger could not attribute.
+ */
+export const PUSH_LEDGER_FILE = "armada-pushes";
+/** Hooks that must all carry the marker for the ledger to prove coverage. */
+export const PUSH_LEDGER_HOOKS = ["reference-transaction", "pre-push"] as const;
+/**
+ * Armada's hooks directory in the common Git directory. `core.hooksPath` points
+ * to it; its `chained` file names the repository's own hooks directory, whose
+ * hooks still run with their arguments, input and exit status.
+ */
+export const PUSH_LEDGER_HOOKS_DIR = "armada-hooks";
+// Client-side hooks other than the ledger's, forwarded unchanged. Receiving-side
+// hooks (push-to-checkout changes behaviour by merely existing) are left out.
+const forwardedHooks = [
+  "applypatch-msg",
+  "pre-applypatch",
+  "post-applypatch",
+  "pre-commit",
+  "pre-merge-commit",
+  "prepare-commit-msg",
+  "commit-msg",
+  "post-commit",
+  "pre-rebase",
+  "post-checkout",
+  "post-merge",
+  "post-rewrite",
+  "pre-auto-gc",
+  "post-index-change",
+  "sendemail-validate",
+];
+// The repository's own hook of the same name, when it would have run.
+const chainedHook = `chain="$(cat "\${0%/*}/chained" 2>/dev/null)" && [ -n "$chain" ] && chain="$chain/\${0##*/}" && [ -x "$chain" ] || chain=`;
+const forwardHook = `#!/bin/sh
+${chainedHook}
+[ -n "$chain" ] || exit 0
+exec "$chain" "$@"
+`;
+// Runs the repository's own hook with the same input; exits with its status.
+const runChained = `if [ -n "$input" ]; then printf '%s\\n' "$input"; fi | "$chain" "$@"`;
+
+// Git updates the tracking ref only for a ref the remote accepted, in the same
+// process that ran pre-push, even when the tracking ref already held the SHA
+// (recreating a deleted branch). That update confirms the attempt pre-push
+// recorded for this process. A reference-transaction hook cannot be skipped
+// with --no-verify and runs after the tracking ref's reflog entry is written, so
+// without an attempt "update by push" still separates a push from a fetch. The
+// ledger survives pruning or deleting the tracking ref, which also deletes that
+// ref's reflog. An origin-tracking update without its reflog entry (reflogs
+// disabled) cannot be told apart from a push: it is a gap.
+const referenceTransactionHook = `#!/bin/sh
+${PUSH_LEDGER_MARKER}
+input=$(cat)
+if [ "$1" = committed ] && ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}"; then
+  printf '%s\\n' "$input" | while read -r old new ref; do
+    case "$ref" in refs/remotes/origin/HEAD) continue ;; refs/remotes/origin/*) ;; *) continue ;; esac
+    case "$new" in ref:*) continue ;; *[!0]*) ;; *) continue ;; esac
+    entry="$(git reflog show --format='%H %gs' -n 1 "$ref" -- 2>/dev/null)"
+    if [ -f "$ledger" ] && awk -F '\\t' -v pid="$PPID" -v ref="\${ref#refs/remotes/origin/}" -v sha="$new" -v since="$(($(date +%s) - 3600))" \\
+      '$2 == "!push" && $3 == pid && $4 == ref && $5 == sha && $1 + 0 >= since { found = 1 } END { exit !found }' "$ledger"; then
+      printf '%s\\t%s\\t%s\\n' "$(date +%s)" "\${ref#refs/remotes/origin/}" "$new" >>"$ledger"
+    elif [ "$entry" = "$new update by push" ]; then
+      printf '%s\\t%s\\t%s\\n' "$(date +%s)" "\${ref#refs/remotes/origin/}" "$new" >>"$ledger"
+    elif [ "\${entry%% *}" != "$new" ]; then
+      printf '%s\\t!gap\\n' "$(date +%s)" >>"$ledger"
+    fi
+  done
+fi
+${chainedHook}
+[ -n "$chain" ] || exit 0
+${runChained}
+`;
+
+// The reference-transaction hook only sees pushes that update an origin-tracking
+// ref. A push to a URL or another remote, or through origin without the wide
+// tracking refspec, updates none: record it as a gap before it happens. Every
+// branch update the repository's own hook allowed is recorded as an attempt
+// with this push's process; only the tracking update above confirms it, so a
+// rejected push is never push evidence.
+const prePushHook = `#!/bin/sh
+${PUSH_LEDGER_MARKER}
+input=$(cat)
+${chainedHook}
+if [ -n "$chain" ]; then ${runChained} || exit; fi
+ledger="$(git rev-parse --git-common-dir)/${PUSH_LEDGER_FILE}" || exit 0
+if [ "$1" != origin ] || ! git config --get-all remote.origin.fetch | grep -qx '+\\{0,1\\}refs/heads/\\*:refs/remotes/origin/\\*'; then
+  printf '%s\\t!gap\\n' "$(date +%s)" >>"$ledger"
+  exit 0
+fi
+printf '%s\\n' "$input" | while read -r lref sha remote old; do
+  case "$remote" in refs/heads/*) ;; *) continue ;; esac
+  case "$sha" in *[!0]*) ;; *) continue ;; esac
+  printf '%s\\t!push\\t%s\\t%s\\t%s\\n' "$(date +%s)" "$PPID" "\${remote#refs/heads/}" "$sha" >>"$ledger"
+done
+exit 0
+`;
+
+const writeHook = (name: string, body: string) =>
+  `printf '%s' ${shQuote(body)} >"$own/${name}" && chmod +x "$own/${name}"`;
+
+/**
+ * Installs the push ledger hooks in the current repository without touching its
+ * own hooks: Armada's hooks directory forwards to them, and `core.hooksPath` is
+ * switched only once every hook is written. Reinstalling after a tool moved
+ * `core.hooksPath` chains the new directory. A relative `core.hooksPath` is
+ * chained as written: Git runs hooks from the root of the invoking worktree,
+ * so each linked worktree keeps resolving it against its own checkout.
+ */
+export const pushLedgerInstall = `{ own="$(git rev-parse --git-common-dir)" && own="$(cd "$own" && pwd -P)/${PUSH_LEDGER_HOOKS_DIR}" && hooks="$(git rev-parse --git-path hooks)" && configured="$(git config --type=path --get core.hooksPath || :)" && case "$configured" in /*) configured= ;; esac && case "$hooks" in /*) ;; *) hooks="$(pwd)/$hooks" ;; esac && { [ ! -d "$hooks" ] || hooks="$(cd "$hooks" && pwd -P)"; } && mkdir -p "$own" && { [ "$hooks" = "$own" ] || printf '%s\\n' "\${configured:-$hooks}" >"$own/chained"; } && ${[...forwardedHooks.map((name) => writeHook(name, forwardHook)), writeHook("reference-transaction", referenceTransactionHook), writeHook("pre-push", prePushHook)].join(" && ")} && git config --local core.hooksPath "$own"; } >/dev/null 2>&1 || :`;
+
 /** Fast-forward refresh using the caller-authorized helper already installed by launch. Never prompts. */
-export function pullCommand(repo: GoldenRepo): ShellCommand {
+export function pullCommand(repo: GoldenRepo, trackPushes = false): ShellCommand {
   // Fetch cannot mutate the checkout. Only its completed failures may safely
   // fall back to the snapshot; merge/filter failures can have partial effects.
-  const command = `if env GIT_TERMINAL_PROMPT=0 git fetch origin ${shQuote(repo.branch)}; then env GIT_TERMINAL_PROMPT=0 git merge --ff-only FETCH_HEAD; else printf '%s\\n' ${REPOSITORY_FETCH_FAILED_MARKER} >&2; exit ${REPOSITORY_FETCH_FAILED_EXIT}; fi`;
+  // Upgrade the default narrow clone mapping while preserving custom refspecs.
+  const singleBranch = shQuote(`+refs/heads/${repo.branch}:refs/remotes/origin/${repo.branch}`);
+  const tracking = trackPushes
+    ? `if [ "$(git config --local --get-all remote.origin.fetch 2>/dev/null)" = ${singleBranch} ]; then git config --local --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 || :; fi; ${pushLedgerInstall}; `
+    : "";
+  const command = `${tracking}if env GIT_TERMINAL_PROMPT=0 git fetch origin ${shQuote(repo.branch)}; then env GIT_TERMINAL_PROMPT=0 git merge --ff-only FETCH_HEAD; else printf '%s\\n' ${REPOSITORY_FETCH_FAILED_MARKER} >&2; exit ${REPOSITORY_FETCH_FAILED_EXIT}; fi`;
   return { command, cwd: `${GOLDEN_ROOT}/${repo.dir}`, timeoutSeconds: CLONE_TIMEOUT_SECONDS };
 }
 

@@ -32,6 +32,8 @@ beforeAll(async () => {
       conversation_ids text[],visibility text default 'private',status_reason text,preservation_note text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
       activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 0,reconcile_lease_until timestamptz);
     create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
+    create table runtime_enrolments(sandbox_id uuid,epoch bigint);
+    create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid);
     create table runtime_resumes(sandbox_id uuid,request_id uuid);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean);
@@ -69,7 +71,7 @@ beforeAll(async () => {
 afterAll(() => db.close());
 beforeEach(async () => {
   await db.exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -912,4 +914,18 @@ test("expired native post-admission claims fail visibly without replay after res
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
   expect(calls).toBe(0);
   expect((await queue.status(caller, input.id, input.request_id))?.failed).toBe(true);
+});
+
+test("an admitted merge stop fences new queued work until a retained native runtime stops", async () => {
+  const id = ids[0]!;
+  const input = { id, request_id: requests[0]!, prompt: "continue retained work" };
+  await db.query("update sandboxes set provider='boat',boat_runtime=true where id=$1", [id]);
+  await db.query("insert into runtime_enrolments values($1,1)", [id]);
+  await db.query("insert into runtime_checkpoints values($1,1,true)", [id]);
+
+  await expect(queue.accept(caller, input)).rejects.toThrow("stopping after its pull requests were merged");
+  await db.query("update sandboxes set status='stopped',status_reason='work_merged',stopped_at=now() where id=$1", [
+    id,
+  ]);
+  expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
 });

@@ -34,6 +34,7 @@ type Reservation = {
   model?: string;
   reasoningEffort?: string;
   ttlSeconds?: number;
+  stopWhenWorkMerged?: boolean;
 };
 type Row = {
   id: string;
@@ -95,6 +96,7 @@ function normalize(input: Reservation) {
           "model",
           "reasoningEffort",
           "ttlSeconds",
+          "stopWhenWorkMerged",
         ].includes(key),
     )
   )
@@ -112,6 +114,7 @@ function normalize(input: Reservation) {
     deny();
   const harness = input.harness ?? "codex";
   if (!HARNESSES.includes(harness)) deny();
+  if (input.stopWhenWorkMerged !== undefined && typeof input.stopWhenWorkMerged !== "boolean") deny();
   const ttlSeconds = input.ttlSeconds === undefined ? DEFAULT_LAUNCH_TTL_SECONDS : input.ttlSeconds;
   if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 86400) deny();
   return { ...input, ...resolveModelChoice(harness, input), harness, ttlSeconds };
@@ -289,9 +292,9 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
             await tx.query<Row>(
               `insert into public.sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,visibility,access_owner_id,
            docker_host_id,docker_installation_id,docker_generation,docker_image,model,reasoning_effort,
-           credential_id,credential_version,effective_ttl_seconds,expires_at,requested_ttl_seconds,docker_snapshot_id)
+           credential_id,credential_version,effective_ttl_seconds,expires_at,requested_ttl_seconds,docker_snapshot_id,stop_when_work_merged)
            values($1,$2,$3,'docker',$4,$15,'starting','private',$3,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-           now()+$13::integer*interval '1 second',$14,$16) returning *`,
+           now()+$13::integer*interval '1 second',$14,$16,$17) returning *`,
               [
                 request.requestId,
                 actor.orgId,
@@ -309,6 +312,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
                 input.ttlSeconds ?? null,
                 request.harness,
                 snapshotId ?? null,
+                request.stopWhenWorkMerged ?? true,
               ],
             )
           ).rows[0] ?? deny();

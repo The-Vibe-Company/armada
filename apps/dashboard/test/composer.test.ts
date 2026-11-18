@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   chosenConversation,
+  composerAdmission,
   drivingFailureMessage,
   messageKeyFor,
   modelChange,
@@ -83,4 +84,33 @@ test("terminal sandbox refusal keeps actionable guidance for keyed and ordinary 
     "Cannot control docker sandbox: stopped. Its container is removed; start a new sandbox on the same branch.";
   for (const keyed of [true, false])
     expect(drivingFailureMessage({ code: "sandbox_terminal", message }, true, keyed)).toBe(message);
+});
+
+describe("composer admission", () => {
+  const now = new Date("2026-11-18T08:00:00Z");
+  const docker = {
+    provider: "docker",
+    status: "stopped",
+    renderedStatus: "stopped",
+    renderedStatusReason: "work_merged",
+    idlePaused: false,
+    preservationNote: null,
+    expiresAt: "2026-11-19T08:00:00Z",
+  };
+
+  test("a Docker merge stop takes a message that wakes its retained checkpoint; a finished one does not", () => {
+    expect(composerAdmission(docker, now)).toEqual({ refusal: null, wakes: true });
+    const finished = composerAdmission({ ...docker, renderedStatusReason: "agent_finished" }, now);
+    expect(finished.refusal).toContain("container is removed");
+    expect(finished.wakes).toBe(false);
+  });
+
+  test("a rendered stop reason is ignored once a poll reports another status", () => {
+    const polled = composerAdmission(
+      { ...docker, renderedStatus: "running", renderedStatusReason: "work_merged" },
+      now,
+    );
+    expect(polled.refusal).toContain("container is removed");
+    expect(polled.wakes).toBe(false);
+  });
 });

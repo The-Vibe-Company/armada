@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { outcomeView, parseTaskOutcome, preservationView, safeHref, settledOutcome } from "../src/lib/outcome.ts";
+import type { SandboxPullRequest } from "@armada/core";
+import {
+  outcomeView,
+  parseTaskOutcome,
+  preservationView,
+  reportedPullRequest,
+  safeHref,
+  settledOutcome,
+} from "../src/lib/outcome.ts";
 
 const SHA = "0123456789abcdef0123456789ABCDEF01234567";
 const ID = "00000000-0000-4000-8000-000000000032";
@@ -47,6 +55,7 @@ describe("outcomeView", () => {
       label: "Ready to merge",
       pr: { label: "PR #768", href: "https://github.com/acme/web/pull/768" },
       sha: "0123456",
+      merged: false,
     });
     expect(outcomeView({ state: "ready", prUrl: "https://github.com/acme/web/pull/9" })).toMatchObject({
       pr: { label: "Pull request", href: "https://github.com/acme/web/pull/9" },
@@ -75,6 +84,39 @@ describe("outcomeView", () => {
       reason: "Needs review",
     });
     expect(outcomeView(null)).toBeNull();
+  });
+});
+
+describe("reported pull request confirmed by GitHub", () => {
+  const confirmed = (state: SandboxPullRequest["state"], repository = "acme/web", number = 42): SandboxPullRequest => ({
+    repository,
+    number,
+    url: `https://github.com/${repository}/pull/${number}`,
+    headBranch: "topic",
+    state,
+    checkedAt: "2026-11-18T08:00:00.000Z",
+  });
+  const ready = { state: "ready", prNumber: 42, prUrl: "https://github.com/acme/web/pull/42" } as const;
+
+  test("a reported ready pull request reads Merged once GitHub confirms that same pull request merged", () => {
+    expect(outcomeView(ready, [confirmed("open")])).toMatchObject({ label: "Ready to merge", merged: false });
+    expect(outcomeView(ready, [confirmed("merged")])).toMatchObject({ kind: "ready", label: "Merged", merged: true });
+    expect(settledOutcome("stopped", ready, [confirmed("merged")])).toMatchObject({ label: "Merged", merged: true });
+    expect(outcomeView(ready, [confirmed("closed")])).toMatchObject({ label: "Ready to merge", merged: false });
+  });
+
+  test("matches on the link's repository and number, never on a different pull request", () => {
+    expect(outcomeView(ready, [confirmed("merged", "acme/other")])).toMatchObject({ merged: false });
+    expect(outcomeView(ready, [confirmed("merged", "acme/web", 43)])).toMatchObject({ merged: false });
+    expect(reportedPullRequest(ready, [confirmed("merged", "ACME/Web")])?.state).toBe("merged");
+    // The link and the number disagree: the outcome names no single pull request.
+    expect(reportedPullRequest({ ...ready, prNumber: 43 }, [confirmed("merged")])).toBeNull();
+    // A number without a link names no repository: another repository's merged #42 never reads as this one.
+    expect(outcomeView({ state: "ready", prNumber: 42 }, [confirmed("merged", "acme/other")])).toMatchObject({
+      merged: false,
+    });
+    expect(outcomeView({ state: "ready", prNumber: 42 }, [confirmed("merged")])).toMatchObject({ merged: false });
+    expect(outcomeView({ state: "ready" }, [confirmed("merged")])).toMatchObject({ merged: false });
   });
 });
 

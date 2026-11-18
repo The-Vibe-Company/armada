@@ -15,6 +15,7 @@ import { Suspense } from "react";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
+import { PullRequestList } from "@/components/pull-requests";
 import { RowCost } from "@/components/sandbox-cost";
 import { SandboxLaunchAction } from "@/components/sandbox-launch-action";
 import { SandboxActivityTabs, SandboxListTabs } from "@/components/sandbox-list-tabs";
@@ -415,13 +416,15 @@ function LifecycleHint({ view }: { view: LifecycleView }) {
  * from other members), and a stopped sandbox's work-preservation receipt. The recovery command is on its page.
  */
 function OutcomeHint({ sandbox }: { sandbox: SandboxListMetadata }) {
-  const outcome = settledOutcome(sandbox.status, sandbox.taskOutcome);
+  const pullRequests = sandbox.canOpen ? sandbox.pullRequests : null;
+  const outcome = settledOutcome(sandbox.status, sandbox.taskOutcome, pullRequests);
   const preservation = preservationView(sandbox.preservationNote, sandbox.status, sandbox.id, sandbox.canOpen);
-  if (!outcome && !preservation) return null;
+  if (!outcome && !preservation && !pullRequests?.length) return null;
   return (
     <div className="mt-1 max-w-56 space-y-1 whitespace-normal" data-list-outcome={outcome?.kind}>
       {outcome && <OutcomeBadge outcome={outcome} />}
       {outcome && <OutcomeDetail outcome={outcome} className="line-clamp-2 text-xs" />}
+      <PullRequestList pullRequests={pullRequests} />
       {preservation && (
         <p
           data-preservation={preservation.kind}
