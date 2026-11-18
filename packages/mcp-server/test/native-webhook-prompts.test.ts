@@ -288,3 +288,26 @@ test("ordinary native settlement proceeds with stalled steer recovery at capacit
     await worker.steerRecovery.drain();
   }
 });
+
+test("a newly eligible steer gets a recovery pass ahead of an old cursor's retry", async () => {
+  const { db, sql, id } = await fixture();
+  const oldId = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
+     select $1,golden_id,org_id,owner_id,'old_steer_fixture',harness,'ready' from sandboxes where id=$2`,
+    [oldId, id],
+  );
+  await db.query(
+    `insert into native_steer_cursors(sandbox_id,steer_id,pending_since,pending_steers,lease_until)
+     values ($1,gen_random_uuid(),now()-interval '1 minute',1,null),
+            ($2,gen_random_uuid(),now()-interval '2 hours',1,now()-interval '1 second')`,
+    [id, oldId],
+  );
+  const observed: string[] = [];
+  const worker = createNativeWebhookPrompts(sql, async (sandboxId) => {
+    observed.push(sandboxId);
+    throw Error("history unavailable");
+  });
+  expect(await worker.steerRecovery.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(observed).toEqual([id]);
+});

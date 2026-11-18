@@ -31,7 +31,10 @@ export function createNativeWebhookPrompts(
           where c.pending_since is not null and (c.lease_until is null or c.lease_until<now())
             and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
             and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
-          order by c.pending_since for update of c skip locked limit 1
+          -- Schedule by eligibility so an old cursor that keeps retrying
+          -- cannot starve newer cursors.
+          order by coalesce(c.lease_until,c.pending_since),c.sandbox_id
+          for update of c skip locked limit 1
         ) update public.native_steer_cursors c set lease_id=$1::uuid,lease_until=now()+interval '60 seconds'
           from candidate x join public.sandboxes s on s.id=x.sandbox_id where c.sandbox_id=x.sandbox_id
           returning c.sandbox_id,c.steer_id::text as steer_id,c.after_prompt_id,s.provider::text as provider,s.provider_sandbox_id`,
