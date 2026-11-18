@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import type { Sql } from "@armada/core/server";
+import { encryptSecret } from "@armada/core/server";
 import { controlFailureResponse } from "../src/control-errors.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
@@ -380,12 +381,13 @@ test.each(["timeout", "abort", "replacement", "stop"] as const)(
       expect((await f.bridge().next(active.runtimeToken, active.epoch)).command).toEqual(command);
       if (scenario === "abort") abort.abort();
       if (scenario === "replacement") {
-        await f.bridge().complete(active.runtimeToken, active.epoch, {
-          epoch: active.epoch,
-          requestId: command.requestId,
-          status: 200,
-          body: {},
-        });
+        // Simulate a remote commit followed by rotation before the local fallback tick.
+        const staleReply = { epoch: active.epoch, requestId: command.requestId, status: 200, body: {} };
+        await f.db.query("update runtime_commands set result_enc=$1 where sandbox_id=$2 and request_id=$3", [
+          await encryptSecret(JSON.stringify(staleReply), ENCRYPTION_KEY),
+          f.id,
+          command.requestId,
+        ]);
         await f.enrol();
         // Historical readback stays available, but it is not a current call reply.
         expect((await f.bridge().result(f.people.owner, f.id, command.requestId)).state).toBe("finished");
