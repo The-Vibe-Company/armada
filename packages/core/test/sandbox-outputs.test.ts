@@ -33,10 +33,12 @@ test("server admission bounds any provider's read by count, size and unique name
 /** Runs the real collector against a fixture directory standing in for `/home/user/outputs`. */
 function collectorFor(outputs: string) {
   const executable = shellQuote(process.execPath);
-  return OUTPUT_COLLECTOR.replaceAll("/opt/armada/runtime-bun/bun", executable).replace(
-    '"/home/user/outputs"',
-    JSON.stringify(outputs),
-  );
+  // Pin the test Bun as the unprivileged guest's system executable. Disable the managed
+  // path so the test cannot pick a different Bun on a developer's machine.
+  return OUTPUT_COLLECTOR.replaceAll("/opt/armada/runtime-bun/bun", "/armada-test-missing-bun")
+    .replaceAll("/usr/local/bin/bun", executable)
+    .replace("/usr/bin/id -u", "printf 1001")
+    .replace('"/home/user/outputs"', JSON.stringify(outputs));
 }
 
 function runCollector(root: string) {

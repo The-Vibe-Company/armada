@@ -27,7 +27,16 @@ export interface OutputFile {
 // exec context, do not fall back to the agent's home executable.
 const collectorShell = (program: string) => `cd / || exit 5
 uid=$(/usr/bin/id -u) || exit 86
-if [ -x /opt/armada/runtime-bun/bun ]; then
+protected_bun() {
+  for component in /opt /opt/armada /opt/armada/runtime-bun /opt/armada/runtime-bun/bun; do
+    [ ! -L "$component" ] || return 1
+    metadata=$(/usr/bin/stat -c '%u %a' -- "$component") || return 1
+    set -- $metadata
+    [ "$1" = 0 ] && [ "$((0$2 & 022))" = 0 ] || return 1
+  done
+  [ -f /opt/armada/runtime-bun/bun ] && [ -x /opt/armada/runtime-bun/bun ]
+}
+if protected_bun 2>/dev/null; then
   bun=/opt/armada/runtime-bun/bun
 elif [ "$uid" = 0 ]; then
   exit 86

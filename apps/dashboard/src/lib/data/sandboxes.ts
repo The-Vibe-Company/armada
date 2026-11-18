@@ -42,11 +42,7 @@ function logSkipped(skipped: readonly SkippedSandboxRow[]) {
     console.error(`Sandbox list row left out: ${row.reason} does not match the contract (id ${row.id ?? "unknown"}).`);
 }
 
-/** The interior row. Row level security returns it only to its owner or a current organization admin. */
-export async function getSandbox(
-  supabase: Supabase,
-  id: string,
-): Promise<Omit<
+export type SandboxDetail = Omit<
   Sandbox,
   | "docker_retention_deadline"
   | "external_ref"
@@ -55,7 +51,10 @@ export async function getSandbox(
   | "outputs_failure_reasons"
   | "outputs_probe_at"
   | "outputs_collector_supported"
-> | null> {
+>;
+
+/** The interior row. Row level security returns it only to its owner or a current organization admin. */
+export async function getSandbox(supabase: Supabase, id: string): Promise<SandboxDetail | null> {
   const selected = await selectedOrganization();
   if (!selected) return null;
   const { data, error } = await supabase

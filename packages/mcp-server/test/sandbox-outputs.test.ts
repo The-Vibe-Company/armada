@@ -128,7 +128,7 @@ test("an unsupported collector is reported once and skipped by both sampling and
     },
     async readOutputs() {
       reads++;
-      return [];
+      throw new OutputCollectionError("collector_unsupported");
     },
   };
   const service = createSandboxOutputs(sql, KEY, async () => provider);
@@ -151,9 +151,9 @@ test("an unsupported collector is reported once and skipped by both sampling and
     console.warn = warn;
   }
   expect(attempts).toBe(1);
-  expect(reads).toBe(0);
+  expect(reads).toBe(1);
   expect(lines).toEqual([
-    { event: "sandbox_output_collection_failed", sandboxId: id, reason: "collector_unsupported" },
+    { event: "sandbox_output_final_capture_failed", sandboxId: id, reason: "collector_unsupported" },
   ]);
   const route = routeFor(service, people.owner, people.org);
   const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
@@ -161,6 +161,33 @@ test("an unsupported collector is reported once and skipped by both sampling and
     unavailable: "collector_unsupported",
     files: [],
   });
+});
+
+test("final capture publishes deliverables while the first periodic capability probe is in flight", async () => {
+  const { people, id, sql } = await fixture();
+  const probeEntered = Promise.withResolvers<void>();
+  const probeReleased = Promise.withResolvers<boolean>();
+  const provider = {
+    async probeOutputs() {
+      probeEntered.resolve();
+      return probeReleased.promise;
+    },
+    async readOutputs() {
+      return [file("final.txt", "deliverable")];
+    },
+  };
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  try {
+    expect(await service.reconcileOne(signal())).toBe(true);
+    await probeEntered.promise;
+    await captureFinalOutputs(sql, provider, id, { key: KEY });
+    const route = routeFor(service, people.owner, people.org);
+    const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/final.txt`;
+    expect(await (await route(new Request(url)))?.text()).toBe("deliverable");
+  } finally {
+    probeReleased.resolve(true);
+    await service.drain();
+  }
 });
 
 test("stop captures files written after the last sample, for native and enrolled-runtime sandboxes", async () => {

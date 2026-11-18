@@ -1,4 +1,4 @@
-import { dockerWorkspaceReclaimedMessage, type Sandbox } from "@armada/core";
+import { dockerWorkspaceReclaimedMessage } from "@armada/core";
 import Link from "next/link";
 import {
   AddSandboxTime,
@@ -10,6 +10,7 @@ import {
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
 import { viewerGateway } from "@/lib/data/gateway";
+import type { SandboxDetail } from "@/lib/data/sandboxes";
 import { listMemberships, type Viewer } from "@/lib/data/viewer";
 import { parseEventPage } from "@/lib/events";
 import { GatewayError } from "@/lib/gateway";
@@ -18,16 +19,7 @@ import { sandboxAttention, summarizeEvents, type TurnSummary } from "@/lib/sandb
 import { createClient } from "@/lib/supabase/server";
 
 /** One bounded, authorized event read; the highest-priority recovery owns the single banner. */
-export async function SandboxAttention({
-  sandbox,
-  viewer,
-}: {
-  sandbox: Omit<
-    Sandbox,
-    "docker_retention_deadline" | "external_ref" | "outputs_checked_at" | "outputs_published_scan"
-  >;
-  viewer: Viewer;
-}) {
+export async function SandboxAttention({ sandbox, viewer }: { sandbox: SandboxDetail; viewer: Viewer }) {
   const gateway = viewerGateway(viewer);
   let turn: TurnSummary | null = null;
   if (gateway) {

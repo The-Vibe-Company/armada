@@ -105,9 +105,9 @@ async function collect(
   providerId: string,
   scan: string,
   key: string,
-  signal?: AbortSignal,
-  writes?: Set<Promise<unknown>>,
+  options: { signal?: AbortSignal | undefined; writes?: Set<Promise<unknown>>; final?: boolean },
 ) {
+  const { signal, writes } = options;
   // A cancelled read never writes again (the worker's drain relies on it); readers stop at their next check.
   signal?.throwIfAborted();
   // Taint can commit after the scan claim (e.g. while the provider resolves): admit the read only
@@ -121,7 +121,14 @@ async function collect(
   ).rows[0];
   if (!admitted) return;
   if (provider.probeOutputs && !admitted.outputs_collector_supported) {
-    if (!(await probeOutputCapability(sql, provider, id, providerId, signal))) return;
+    const supported = await probeOutputCapability(sql, provider, id, providerId, signal);
+    if (!supported) {
+      // A parallel probe should not cost the last chance to collect a deliverable.
+      // Final capture can use its regular bounded read without starting another probe.
+      if (!options.final) return;
+      const eligible = await sql.query(`select 1 from public.sandboxes where id=$1 and ${ELIGIBLE}`, [id]);
+      if (!eligible.rows.length) return;
+    }
   }
   signal?.throwIfAborted();
   const read = provider.readOutputs
@@ -231,7 +238,7 @@ export async function captureFinalOutputs(
     if (!row) return;
     signal?.throwIfAborted();
     try {
-      await collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, signal);
+      await collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, { signal, final: true });
     } catch (error) {
       if (error instanceof OutputCollectionError && error.reason === "collector_unsupported") {
         await recordOutputFailure(sql, id, "sandbox_output_final_capture_failed", error.reason);
@@ -287,7 +294,9 @@ export function createSandboxOutputs(
       const deadline = AbortSignal.any([signal, AbortSignal.timeout(SAMPLE_DEADLINE_MS)]);
       const reader = row.provider === "docker" ? Promise.resolve(docker?.(row.id) ?? {}) : providerFor(row.id);
       const work = reader
-        .then((provider) => collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, deadline, writes))
+        .then((provider) =>
+          collect(sql, provider, row.id, row.provider_sandbox_id, row.scan, key, { signal: deadline, writes }),
+        )
         .catch((error: unknown) =>
           recordOutputFailure(sql, row.id, "sandbox_output_collection_failed", failureReason(error, deadline)).catch(
             () => {},
