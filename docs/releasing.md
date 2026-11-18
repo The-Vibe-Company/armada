@@ -287,9 +287,9 @@ sole automatic ordinary staging trigger. The wakeup resolves current main
 after acquiring the shared lock. The deploy step rechecks the SHA before
 mutation. Repeated wakeups share the latest-main group. A wakeup coalesces
 when a trusted ordinary run successfully deployed and smoked the checked-out
-SHA and staging health still identifies it as live. For a failed or cancelled
-Release, that deployment must have started after the Release finished to rule
-out partial changes from the failed attempt. This includes existing push runs
+SHA after the triggering Release finished and staging health still identifies
+it as live. This protects recovery when a newer completion supersedes the
+wakeup from a failed or cancelled Release. This includes existing push runs
 during the transition. Coalescing reports a neutral summary. Unavailable or
 ambiguous evidence falls back to deployment. Pinned release calls always require
 fresh exact-schema acceptance and never use this optimization.

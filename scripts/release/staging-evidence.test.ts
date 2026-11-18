@@ -88,11 +88,11 @@ test("repeated Release completions coalesce only when the successfully smoked so
     steps,
   };
   const health = { ok: true, version: "2.49.6", commit: sha };
-  const accepts = (live: unknown = health, jobs = [job], deployedAfter?: string) =>
+  const accepts = (live: unknown = health, jobs = [job], deployedAfter = "2026-11-16T20:54:10Z") =>
     authenticWakeupEvidence(run, jobs, "owner/repo", sha, live, "2.49.6", deployedAfter);
   expect(accepts()).toBe(true);
   expect(accepts(health, [job], "2026-11-16T20:54:15Z")).toBe(false);
-  expect(accepts(health, [job], "2026-11-16T20:54:10Z")).toBe(true);
+  expect(accepts(health, [job], "")).toBe(false);
   expect(
     accepts(health, [
       { ...job, steps: [{ ...steps[0]!, name: "Migrate then deploy pinned server and dashboard" }, steps[1]!] },

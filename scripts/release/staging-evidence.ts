@@ -55,7 +55,7 @@ export function authenticWakeupEvidence(
   sha: string,
   health: unknown,
   version: string,
-  deployedAfter?: string,
+  deployedAfter: string,
 ): boolean {
   return (
     authenticStagingEvidence(run, jobs, repository, sha, deployedAfter) && matchesDeploymentHealth(health, version, sha)
@@ -78,8 +78,9 @@ if (import.meta.main) {
       return (await response.json()) as T;
     };
     const release = (await Bun.file(process.env.GITHUB_EVENT_PATH as string).json()).workflow_run;
-    // A failed or cancelled Release can leave staging partially deployed.
-    const deployedAfter = release?.conclusion === "success" ? undefined : String(release?.updated_at ?? "");
+    // A newer completion can supersede a failed Release's queued wakeup.
+    // Evidence must postdate the surviving completion to cover earlier writes.
+    const deployedAfter = String(release?.updated_at ?? "");
     const response = await fetch(`${process.env.ARMADA_SERVER_URL?.replace(/\/$/, "")}/healthz`, {
       signal: AbortSignal.timeout(15_000),
     });
