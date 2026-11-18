@@ -41,10 +41,12 @@ async function rows() {
   return { db, sql: bunLikeSql(db), ids };
 }
 
-test("server lifecycle drains multiple rows while a golden build is pending; stop tracks both lanes", async () => {
+test("server lifecycle drains multiple rows while independent work is pending; stop drains all lanes", async () => {
   const { db, sql, ids } = await rows();
   const build = deferred<boolean>();
   const retirement = deferred<boolean>();
+  const exportJob = deferred<boolean>();
+  let exportSignal: AbortSignal | undefined;
   let retirementSignal: AbortSignal | undefined;
   const progress = deferred<void>();
   let buildRunning = false;
@@ -84,10 +86,22 @@ test("server lifecycle drains multiple rows while a golden build is pending; sto
         return retirement.promise;
       },
     },
+    undefined,
+    [],
+    [
+      {
+        reconcileOne: async (signal) => {
+          exportSignal = signal;
+          return exportJob.promise;
+        },
+        async drain() {},
+      },
+    ],
   );
   try {
     await progress.promise;
     expect(retirementSignal).toBeDefined();
+    expect(exportSignal).toBeDefined();
     expect(buildRunning).toBe(true);
     const records = await db.query<{ status: string }>("select status from sandboxes where id=any($1::uuid[])", [ids]);
     expect(records.rows.map((row) => row.status)).toEqual(["stopped", "stopped"]);
@@ -101,8 +115,12 @@ test("server lifecycle drains multiple rows while a golden build is pending; sto
     build.resolve(true);
     await workers.goldenWorker.done;
     expect(retirementSignal?.aborted).toBe(true);
+    expect(exportSignal?.aborted).toBe(true);
     expect(done).toBe(false);
     retirement.resolve(false);
+    await workers.retirementWorker.done;
+    expect(done).toBe(false);
+    exportJob.resolve(false);
     await workers.done;
     expect(done).toBe(true);
     const count = reconciled;
@@ -112,6 +130,7 @@ test("server lifecycle drains multiple rows while a golden build is pending; sto
     workers.stop();
     build.resolve(false);
     retirement.resolve(false);
+    exportJob.resolve(false);
     await workers.done;
   }
 });
