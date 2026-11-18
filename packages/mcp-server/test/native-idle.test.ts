@@ -434,6 +434,8 @@ test.each([
   "lost confirmation",
   "rejected attempt",
   "unrecorded URL push",
+  "later push in first checkout",
+  "later push in second checkout",
 ] as const)("GitHub observation and idle admission agree for %s work", async (state) => {
   const f = await fixture(state === "running-turn" ? state : "quiet");
   const owner = f.caller.userId;
@@ -464,7 +466,18 @@ test.each([
     `update sandboxes s set pull_request_source=jsonb_build_object(
          'connectionEpoch',c.connection_epoch,'repositories',$3::jsonb)
        from github_connections c where s.id=$1 and c.user_id=$2`,
-    [f.id, owner, JSON.stringify([{ url: `https://github.com/${repository}.git`, dir: "repo" }])],
+    [
+      f.id,
+      owner,
+      JSON.stringify(
+        state.startsWith("later push in")
+          ? [
+              { url: `https://github.com/${repository}.git`, dir: "repo" },
+              { url: `https://github.com/${repository}.git`, dir: "copy" },
+            ]
+          : [{ url: `https://github.com/${repository}.git`, dir: "repo" }],
+      ),
+    ],
   );
   if (state === "corrected report") {
     await f.db.query("update sandboxes set status='ready' where id=$1", [f.id]);
@@ -528,7 +541,21 @@ test.each([
         app: { clientId: "fixture_app", clientSecret: "fixture_client" },
         fetch: fetchGitHub,
       },
-      async () => ({ detached: false, exitCode: 0, stdout, stderr: "", timedOut: false, truncated: false }),
+      async (_target, request) => ({
+        detached: false,
+        exitCode: 0,
+        // Two checkouts of one repository pushed `topic`: one at the merged PR's
+        // head, the other later at a commit with no PR yet. Their ledgers carry
+        // no order between them, whichever checkout is configured first.
+        stdout: state.startsWith("later push in")
+          ? request.cwd === (state === "later push in first checkout" ? "/home/user/repo" : "/home/user/copy")
+            ? `topic\t${"b".repeat(40)}\n`
+            : stdout
+          : stdout,
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      }),
     );
     await observer.reconcileOne(new AbortController().signal);
     await observer.drain();

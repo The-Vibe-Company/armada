@@ -225,6 +225,10 @@ export function createSandboxPullRequests(
       // push, or an accepted one whose tracking update failed (a held ref lock,
       // a killed process). Only the commit's absence from GitHub tells them apart.
       const unresolved = new Set<string>();
+      // Each checkout's own latest push per branch. Checkouts of one repository
+      // keep separate ledgers with no order between them, so any of these may be
+      // the branch's latest push, and every one must be at a pull request head.
+      const heads = new Map<string, Map<string, Set<string>>>();
       let pending = false;
       let uncovered = false;
       // GitHub's head filter receives the owner as configured, not lowercased.
@@ -301,7 +305,12 @@ export function createSandboxPullRequests(
           pushed.set(ref, [...(pushed.get(ref) ?? []), sha]);
         }
         // This read is newer than the retained evidence; a re-pushed SHA moves first.
-        for (const [ref, shas] of pushed) names.set(ref, [...new Set([...shas, ...(names.get(ref) ?? [])])]);
+        const latest = heads.get(repository) ?? new Map<string, Set<string>>();
+        heads.set(repository, latest);
+        for (const [ref, shas] of pushed) {
+          names.set(ref, [...new Set([...shas, ...(names.get(ref) ?? [])])]);
+          latest.set(ref, (latest.get(ref) ?? new Set()).add(shas[0] as string));
+        }
       }
       // Retain push evidence when Git prunes a tracking ref or expires its reflog.
       scan.pushes = Object.fromEntries([...branches].map(([repo, names]) => [repo, [...names]]));
@@ -448,7 +457,9 @@ export function createSandboxPullRequests(
               per_page: "100",
             });
             let named = false;
-            let matched = false;
+            // Retained evidence alone (no checkout read this branch) has one order.
+            const latest = heads.get(headRepository)?.get(ref) ?? new Set(shas.slice(0, 1));
+            const matched = new Set<string>();
             const batch = await Promise.allSettled(
               [...branches.keys()].map(async (repository) => ({
                 repository,
@@ -470,7 +481,7 @@ export function createSandboxPullRequests(
                   const identity = { repository, number: pull.number };
                   discovered.set(urlFor(identity), identity);
                   record(repository, pull);
-                  if (pull.head.sha === shas[0]) matched = true;
+                  if (latest.has(pull.head.sha)) matched.add(pull.head.sha);
                 } else if (pull.state === "open" || (attempts.includes(pull.head.sha) && !pull.merged_at)) {
                   // A moved open head blocks stopping without becoming work of
                   // this sandbox. So does an unmerged PR at an unconfirmed
@@ -484,7 +495,7 @@ export function createSandboxPullRequests(
             // unfinished work; the merge proof still needs one merged PR. A
             // push after the branch's pull requests (none at the latest pushed
             // head) is unmerged work and blocks stopping.
-            if (named && shas.length && !matched) complete = false;
+            if (named && shas.length && matched.size < latest.size) complete = false;
           }
         }
         // GitHub never received a rejected push's commit. A commit it has may be
