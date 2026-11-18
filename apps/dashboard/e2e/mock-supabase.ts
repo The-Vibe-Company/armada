@@ -30,7 +30,6 @@ const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")
 const ALICE = id(1);
 const BOB = id(2);
 const ACME = id(10);
-const ORION = id(13);
 const LARGE = id(14);
 const LARGE_HOST = id(9000);
 // Conservative 8 KiB request-target budget (Kong/Nginx buffer default); not a verified hosted gateway setting.
@@ -52,110 +51,34 @@ type State = {
   github_connections: Row[];
   githubInstallations: Row[];
   events: Map<string, Row[]>;
-  sent: string[];
-  /** The arguments of every send, steer and interrupt, as the dashboard serialized them. */
-  toolCalls: { name: string; args: Row }[];
-  /** The next send, steer or interrupt fails with this message, once. */
-  failNextTool: string | null;
-  /** Named model accounts (#603) as `creds/list` returns them: safe metadata, never a value. */
-  /** Every `sandbox/bind-credential` body, and the next refusal to answer with, once. */
-  bindCalls: Row[];
-  failNextBind: { status: number; code: string; message: string } | null;
-  /** Every CLI GitHub callback the dashboard relayed, with the credentials headers it carried (none expected). */
-  githubCliCalls: { body: Row; authorization: string | null; cookie: string | null }[];
   /** Every launch body that reached allocation, as the dashboard sent it. */
   launches: Row[];
-  /** The route of each of `launches`, in order. */
-  launchRoutes: string[];
-  skillCatalogUnavailable?: boolean | string;
-  skillCatalogMalformed?: boolean;
-  skillCatalogLongDescription?: boolean;
-  /** Golden build and capability requests contain metadata only, never tokens. */
-  goldenCalls: { route: string; body: Row; authorized: boolean }[];
-  goldenGate: {
-    hold: boolean;
-    /** Keep admission queued for cancellation checks, without advancing to a running builder. */
-    holdQueued?: boolean;
-    fail: { status: number; code?: string; message: string } | null;
-    /** The job is admitted, then a gateway in front of the server loses the answer (a 504 without a code). */
-    loseAnswer?: boolean;
-    /** Status reads fail (a 503) while set; the jobs themselves are unaffected. */
-    failStatus?: boolean;
-  };
-  /** Every `golden/size-policy` body (#653), as the dashboard sent it. */
-  sizePolicyCalls: Row[];
-  /** A launch asking for this size is refused by the provider, as Boat refuses a plan-gated size. */
-  refuseSize: string | null;
-  /** The database has #653's columns but the server predates it: `size` is ignored and its routes are unknown. */
-  olderServer: boolean;
-  /** Sized launches refused before allocation (an older replica's 404, a missing version's 400). */
-  sizedRefusals: Row[];
-  /** Every `golden/remove` body, as the dashboard sent it, and whether it carried a session. */
-  goldenRemoveCalls: { body: Row; authorized: boolean }[];
-  /** Every `golden/build/status` body, as the dashboard sent it. */
-  goldenStatusCalls: Row[];
-  capabilityCalls: { body: Row; authorized: boolean }[];
-  /** Per provider: the limit the server reads for the org, or why it cannot (such as not configured). */
+  /** Per-provider snapshot capacity returned by the mock. */
   capabilities: Record<
     "boat" | "modal",
     {
       maxGoldens: number | null;
-      bindings?: Row[] | null | undefined;
-      fail: { status: number; code?: string; message: string } | null;
     }
   >;
-  otpEmails: string[];
   /** The registry's connections. `authentication` is the write-only value; no response ever includes it. */
   connections: Row[];
-  /** Every `creds/list` and `creds/accounts/*` call. A pasted value is recorded as sent, never stored as text. */
-  accountCalls: { route: string; body: Row }[];
   agentDefaults: Record<string, Row[]>;
-  /** When set, `creds/list` answers as a server older than named accounts: kinds and dates only. */
-  legacyAccounts: boolean;
-  /** `creds/accounts/usage` per account id: a report, or a failure. An account with none: the route is unknown. */
-  usage: Record<string, Row | { fail: number }>;
-  /** `creds/accounts/auth-capabilities` (#604): what this deployment offers, or null for a server without the route. */
-  authCapabilities: Row | null;
-  /** `creds/accounts/models` (#1483): declared models per account id; an account not listed declares none. */
-  connectionModels: Record<string, Row[]>;
-  /** Every control API call, with its operation and body, for the tests to check what the dashboard sent. */
-  controlCalls: { operation: string; body: Row }[];
-  /** Every `org/provider/*` call (#576): its route, the body as sent and whether it carried a session. */
-  providerCalls: { route: string; body: Row; authorized: boolean }[];
-  /** While set, `org/provider/status` answers this failure instead of the stored state; `html` is an edge page body. */
-  providerStatusFail: { status: number; code?: string; message: string; html?: string } | null;
   /** Organization invitations (#640 contract v1). `token` is what the email link carries; no response includes it. */
   invitations: Row[];
-  /** The delivery state the next create or resend records: what the mail transport answered. */
-  nextDelivery: "not_configured" | "pending" | "sent" | "failed";
-  /** Every `org/invitations/*` call: its route, the body as sent and whether it carried a session. */
-  invitationCalls: { route: string; body: Row; authorized: boolean }[];
-  /** Accounts whose email address is not verified yet. */
-  unverifiedEmails: string[];
-  /** GoTrue calls that establish or check an identity (`/verify`, `/token`, `/user`), in order. */
-  authCalls: string[];
   /**
    * #921's application vault: readable variables (`value`) and write-only secrets (`sealed`, which no response ever
-   * includes; a deleted or revoked item has none). `vaultCalls` records each `variables/*`/`secrets/*` route with the
-   * body's field names only, so a test can check what was sent without the mock keeping a submitted value around.
+   * includes; a deleted or revoked item has none).
    */
   vault: Row[];
-  vaultCalls: { route: string; fields: string[]; authorized: boolean }[];
   /**
-   * #938's launch templates: headers (`deleted` tombstones kept), their immutable revisions, every `templates/*` call
-   * and the launch requests by key. `templateOutcome` makes the next launch answer this state instead of starting.
+   * #938's launch templates: headers (`deleted` tombstones kept), their immutable revisions
+   * and the launch requests by key.
    */
   templates: Row[];
   templateRevisions: Row[];
-  templateCalls: { route: string; body: Row; authorized: boolean }[];
   templateRequests: Map<string, Row>;
-  templateOutcome: Row | null;
   routines: Row[];
   routineHistory: Row[];
-  routineCalls: { route: string; body: Row; authorized: boolean }[];
-  routineFailure: Fail | null;
-  routineHoldCreate: boolean;
-  routineCreateWaiters: (() => void)[];
 };
 
 function seed(): State {
@@ -255,7 +178,6 @@ function seed(): State {
       vaultItem(id(83), "secret", "personal", ALICE, "OLD_WEBHOOK_SECRET", { status: "revoked", version: 2 }),
       vaultItem(id(84), "variable", "personal", BOB, "BOB_NOTES_URL", { value: "https://notes.bob.test" }),
     ],
-    vaultCalls: [],
     templates: [
       templateRow(id(90), "org", ALICE, "Backend with docs", 2),
       templateRow(id(91), "personal", ALICE, "Modal quick fix", 1),
@@ -285,9 +207,7 @@ function seed(): State {
       }),
       templateRevision(id(92), 1, { goldenId: id(22), provider: "boat", harness: "claude" }),
     ],
-    templateCalls: [],
     templateRequests: new Map(),
-    templateOutcome: null,
     routines: [
       routineRow(id(2200), "org", ALICE, "Morning review", "enabled", id(90), 2),
       routineRow(id(2201), "personal", ALICE, "Release notes", "paused", id(91), 1),
@@ -344,10 +264,6 @@ function seed(): State {
         updatedAt: now,
       },
     ],
-    routineCalls: [],
-    routineFailure: null,
-    routineHoldCreate: false,
-    routineCreateWaiters: [],
     githubInstallations: [
       {
         id: 4242,
@@ -367,33 +283,11 @@ function seed(): State {
       },
     ],
     events: new Map(),
-    sent: [],
-    toolCalls: [],
-    failNextTool: null,
-    bindCalls: [],
-    failNextBind: null,
     launches: [],
-    accountCalls: [],
     agentDefaults: {},
-    legacyAccounts: false,
-    usage: {},
-    // #604 v1 contract (root-native-auth-contract.json): an additive base map, no --name placeholder.
-    authCapabilities: { hostedOAuth: false, nativeCLI: { codex_auth: "armada creds login codex" } },
-    connectionModels: {},
-    goldenCalls: [],
-    goldenRemoveCalls: [],
-    goldenStatusCalls: [],
-    goldenGate: { hold: false, fail: null },
-    capabilityCalls: [],
     // A Boat account holds one golden; Modal is unbounded.
-    capabilities: { boat: { maxGoldens: 1, fail: null }, modal: { maxGoldens: null, fail: null } },
-    githubCliCalls: [],
-    otpEmails: [],
+    capabilities: { boat: { maxGoldens: 1 }, modal: { maxGoldens: null } },
     invitations: [],
-    nextDelivery: "sent",
-    invitationCalls: [],
-    unverifiedEmails: [],
-    authCalls: [],
     connections: [
       mcpConnection(id(60), "Acme Docs", ACME, "org", ALICE, {
         url: "https://docs.acme.test/mcp",
@@ -441,14 +335,6 @@ function seed(): State {
         lastError: "The refresh token was revoked upstream. Reconnect to sign in again.",
       }),
     ],
-    controlCalls: [],
-    providerCalls: [],
-    sizePolicyCalls: [],
-    refuseSize: null,
-    olderServer: false,
-    sizedRefusals: [],
-    launchRoutes: [],
-    providerStatusFail: null,
   };
   // The org golden records two repositories, so its launch form offers a working directory.
   const shared = state.goldens[0];
@@ -766,16 +652,6 @@ function largeHostSnapshots(): Row[] {
 }
 
 let state = seed();
-let dockerHosts: Row[] | null = null;
-let skillpackActionFailure: string | null = null;
-let vaultActionFailure: { status: number; code?: string; message: string } | null = null;
-let invitationListFailure: string | null = null;
-let invitationActionFailure: string | null = null;
-let snapshotListFailure: string | null = null;
-let dockerSnapshotCreateFailure: string | null = null;
-let templateListFailure: { unsupported: boolean; message: string } | null = null;
-let vaultListFailure: { unsupported: boolean; message: string } | null = null;
-let accountListFailure: string | null = null;
 let sequence = 100;
 const sessions = new Map<string, string>();
 
@@ -1210,9 +1086,7 @@ function rpc(name: string, args: Row, userId: string): Response {
 
 function auth(request: Request, url: URL, body: Row): Response {
   const path = url.pathname.replace("/auth/v1", "");
-  if (path === "/verify" || path === "/token" || path === "/user") state.authCalls.push(path);
   if (path === "/otp") {
-    state.otpEmails.push(String(body.email));
     return json({});
   }
   if (path === "/verify") {
@@ -1266,17 +1140,11 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   const args = (message.params?.arguments ?? {}) as Row;
   const name = String(message.params?.name);
   const driving = name === "send" || name === "steer" || name === "interrupt";
-  if (driving) state.toolCalls.push({ name, args });
   const target = state.sandboxes.find((row) => row.id === args.id);
   const visible = visibleRows("sandboxes", userId).some((row) => row === target);
   const text = (value: unknown, isError = false) =>
     reply({ content: [{ type: "text", text: JSON.stringify(value) }], isError });
   if (!target || !visible) return text("not found", true);
-  if ((driving || name === "stop") && state.failNextTool) {
-    const failure = state.failNextTool;
-    state.failNextTool = null;
-    return reply({ content: [{ type: "text", text: failure }], isError: true });
-  }
   if (driving && target.provider === "modal" && target.credential_id === null) {
     // As #603's server answers a legacy unbound Modal sandbox: a typed refusal, never a silent default account.
     return reply({
@@ -1296,11 +1164,6 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 
   switch (message.params?.name) {
     case "status":
-      if (target.test_status_read_unavailable) return text("Status unavailable", true);
-      if (target.test_delayed_usage) {
-        target.usage_turns = target.test_delayed_usage;
-        delete target.test_delayed_usage;
-      }
       return text({
         status: target.status,
         prompt: null,
@@ -1311,13 +1174,11 @@ function mcp(message: RpcMessage, userId: string | null): Response {
         },
       });
     case "logs": {
-      if (target.test_logs_unavailable) return text("Logs unavailable", true);
       const since = typeof args.since_cursor === "string" ? Number(args.since_cursor) : 0;
       return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
     }
     case "send": {
       // As the server does: the named conversation, else the latest, else a new one; the sandbox is running after.
-      state.sent.push(String(args.prompt));
       const conversationId =
         typeof args.conversation_id === "string"
           ? args.conversation_id
@@ -1373,13 +1234,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 /** Fixture transport only: supported owner account changes retain the logical workspace, without a provider probe. */
 function bindCredential(body: Row, userId: string | null): Response {
   if (!userId) return json({ error: "Unauthorized." }, 401);
-  state.bindCalls.push({ ...body });
   const refuse = (status: number, code: string, message: string) => json({ error: { code, message } }, status);
-  if (state.failNextBind) {
-    const failure = state.failNextBind;
-    state.failNextBind = null;
-    return refuse(failure.status, failure.code, failure.message);
-  }
   const target = state.sandboxes.find((row) => row.id === body.id);
   if (
     !target ||
@@ -1433,16 +1288,6 @@ function skillCatalogRoute(route: string, body: Row, request: Request): Response
   const user = viewer(request);
   if (!user) return controlFail(401, "unauthorized", "Sign in again.");
   if (!isMember(body.org, user)) return controlFail(404, "not_found", "No such organization.");
-  if (state.skillCatalogUnavailable)
-    return controlFail(
-      503,
-      "unavailable",
-      typeof state.skillCatalogUnavailable === "string"
-        ? state.skillCatalogUnavailable
-        : "The Skillpack catalog is unavailable.",
-    );
-  if (state.skillCatalogMalformed)
-    return json(route === "skillpack/versions" ? { versions: "invalid" } : { items: [{}], nextOffset: null });
   if (route === "skillpack/versions")
     return json({
       versions:
@@ -1455,9 +1300,7 @@ function skillCatalogRoute(route: string, body: Row, request: Request): Response
             {
               reference: "review-code",
               name: "Code review",
-              description: state.skillCatalogLongDescription
-                ? "Additional context. ".repeat(200)
-                : "Review changes for correctness, security and test coverage.",
+              description: "Review changes for correctness, security and test coverage.",
               visibility: "private",
               versions: ["2.1.0"],
             },
@@ -1482,10 +1325,9 @@ function skillCatalogRoute(route: string, body: Row, request: Request): Response
   });
 }
 
-function launchRoute(body: Row, userId: string | null, route = "sandbox/launch"): Response {
+function launchRoute(body: Row, userId: string | null): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   state.launches.push(body);
-  state.launchRoutes.push(route);
   // #681: omitted connections are the caller's enabled defaults, snapshotted here; every one must be connected.
   const ids = Array.isArray(body.connections)
     ? body.connections.map(String)
@@ -1504,7 +1346,7 @@ function launchRoute(body: Row, userId: string | null, route = "sandbox/launch")
   }
   if (body.provider === "docker") {
     if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Only organization members can launch.");
-    const host = (dockerHosts ?? (body.org === LARGE ? largeHosts() : [])).find((row) => row.id === body.hostId);
+    const host = (body.org === LARGE ? largeHosts() : []).find((row) => row.id === body.hostId);
     if (!host) return controlFail(404, "not_found", "No such host.");
     if (host.state !== "online") return controlFail(409, "conflict", "The host is not online.");
     const account = state.credentials.find(
@@ -1559,12 +1401,9 @@ function launchRoute(body: Row, userId: string | null, route = "sandbox/launch")
     if (account?.status !== "active" || MODEL_KINDS[String(account.kind)] !== body.harness)
       return controlFail(400, "invalid", "That account cannot run this agent.");
   }
-  const sized = "size_policy" in source && !state.olderServer;
+  const sized = "size_policy" in source;
   if (sized && body.size !== undefined && !SIZES.includes(String(body.size)))
     return controlFail(400, "invalid_request", "Size must be small, medium, large or xlarge.");
-  // As the server maps Boat's `machine_class_plan_required` ProviderError: 403 forbidden, nothing allocated.
-  if (sized && body.size !== undefined && body.size === state.refuseSize)
-    return controlFail(403, "forbidden", "Requested size cannot be allocated.");
   const row = sandbox(
     crypto.randomUUID(),
     `bx_launched_${++sequence}`,
@@ -1649,7 +1488,6 @@ function vaultDto(row: Row): Row {
 /** `POST /api/v1/{variables,secrets}/<operation>`, with the server's membership, admin and version rules. */
 function vaultRoute(route: string, body: Row, request: Request): Response {
   const userId = viewer(request);
-  state.vaultCalls.push({ route, fields: Object.keys(body).sort(), authorized: userId !== null });
   if (!userId) return json({ error: "Unauthorized." }, 401);
   const [resource, operation] = route.split("/");
   const kind = resource === "variables" ? "variable" : "secret";
@@ -1658,17 +1496,6 @@ function vaultRoute(route: string, body: Row, request: Request): Response {
   const denied = () => refuse(403, "forbidden", "Application vault access denied.");
   if (kind === "secret" && operation === "read") return invalid();
   if (!isMember(body.org, userId)) return denied();
-  if (operation !== "list" && vaultActionFailure) {
-    const failure = vaultActionFailure;
-    vaultActionFailure = null;
-    return failure.code
-      ? refuse(failure.status, failure.code, failure.message)
-      : json({ error: failure.message }, failure.status);
-  }
-  if (operation === "list" && vaultListFailure)
-    return vaultListFailure.unsupported
-      ? json({ error: vaultListFailure.message }, 404)
-      : refuse(503, "unavailable", vaultListFailure.message);
   const visible = (row: Row) =>
     row.kind === kind && row.org_id === body.org && (row.scope === "org" || row.owner_id === userId);
   const nameOk = (value: unknown) =>
@@ -1763,10 +1590,7 @@ function routineRow(
 /** Browser protocol peer for the real routine API, not a scheduler simulation. */
 async function routineRoute(route: string, body: Row, request: Request): Promise<Response> {
   const userId = viewer(request);
-  state.routineCalls.push({ route, body, authorized: userId !== null });
   if (!userId) return controlFail(401, "unauthorized", "Sign in.");
-  if (state.routineFailure)
-    return controlFail(state.routineFailure.status, state.routineFailure.code, state.routineFailure.message);
   const operation = route.slice("routines/".length);
   const fields: Record<string, string[]> = {
     list: ["org"],
@@ -1794,7 +1618,6 @@ async function routineRoute(route: string, body: Row, request: Request): Promise
   if (operation === "list") return json({ items: state.routines.filter((r) => visible(r) && r.status !== "deleted") });
   const admin = state.members.some((m) => m.org_id === body.org && m.user_id === userId && m.role === "admin");
   if (operation === "create") {
-    if (state.routineHoldCreate) await new Promise<void>((resolve) => state.routineCreateWaiters.push(resolve));
     if (!["personal", "org"].includes(String(body.scope)) || (body.scope === "org" && !admin))
       return controlFail(403, "forbidden", "Routine administrator permission required.");
     const template = state.templates.find(
@@ -1907,7 +1730,6 @@ function templateRevision(templateId: string, revision: number, definition: Row)
  */
 function templateRoute(route: string, body: Row, request: Request): Response {
   const userId = viewer(request);
-  state.templateCalls.push({ route, body, authorized: userId !== null });
   if (!userId) return json({ error: "Unauthorized." }, 401);
   const operation = route.slice("templates/".length);
   const allowed: Record<string, string[]> = {
@@ -1922,10 +1744,6 @@ function templateRoute(route: string, body: Row, request: Request): Response {
   const fields = allowed[operation];
   if (!fields || Object.keys(body).some((key) => !fields.includes(key))) return invalid();
   if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Template access denied.");
-  if (operation === "list" && templateListFailure)
-    return templateListFailure.unsupported
-      ? json({ error: templateListFailure.message }, 404)
-      : controlFail(503, "unavailable", templateListFailure.message);
   const visible = (row: Row) =>
     row.orgId === body.org && row.status === "active" && (row.scope === "org" || row.ownerId === userId);
   // The `launch_templates_name` unique index: one active name per org and scope (per owner when personal).
@@ -2040,10 +1858,7 @@ function templateRoute(route: string, body: Row, request: Request): Response {
     const def = revision.definition as Row;
     const golden = liveGoldens(userId).find((g) => g.id === def.goldenId);
     let result: Row;
-    if (state.templateOutcome) {
-      result = { requestId: crypto.randomUUID(), id: crypto.randomUUID(), ...state.templateOutcome };
-      state.templateOutcome = null;
-    } else if (!golden) {
+    if (!golden) {
       result = {
         requestId: crypto.randomUUID(),
         state: "failed",
@@ -2096,9 +1911,6 @@ const DASHBOARD = process.env.DASHBOARD_ORIGIN ?? "http://127.0.0.1:3100";
 const OAUTH_HOST = "oauth.test";
 const ISSUER = `http://127.0.0.1:${PORT}`;
 /** Pending browser sign-ins by state: the API, not the URL, knows which user and connection a state is for. */
-let failSandboxConnections = false;
-let failConnectionList = false;
-let mcpReadFailures: Partial<Record<"list" | "catalog" | "status", string>> = {};
 const pendingOAuth = new Map<string, { connection: string; user: string; code: string | null }>();
 
 function visibleConnections(orgId: string, userId: string): Row[] {
@@ -2124,7 +1936,6 @@ const invitationDto = (row: Row) => {
  */
 function invitations(route: string, body: Row, request: Request): Response {
   const userId = viewer(request);
-  state.invitationCalls.push({ route, body, authorized: Boolean(userId) });
   if (!userId) return controlFail(401, "unauthorized", "Sign in.");
   const fresh = () => `mock-invitation-${++sequence}-0123456789abcdef`;
   if (route === "preview" || route === "accept") {
@@ -2134,7 +1945,6 @@ function invitations(route: string, body: Row, request: Request): Response {
     const checks: [boolean, string][] = [
       [!row, "not_found"],
       [row?.email !== email, "wrong_email"],
-      [state.unverifiedEmails.includes(String(email)), "unverified_email"],
       [row?.status === "revoked", "revoked"],
       [row?.status === "accepted", "used"],
       [Date.parse(String(row?.expiresAt)) <= Date.now(), "expired"],
@@ -2166,13 +1976,7 @@ function invitations(route: string, body: Row, request: Request): Response {
   const org = state.orgs.find((item) => item.id === body.org);
   if (!org || !isAdmin(org.id, userId)) return controlFail(403, "forbidden", "Only an org admin manages invitations.");
   if (route === "list") {
-    if (invitationListFailure) return controlFail(503, "unavailable", invitationListFailure);
     return json({ invitations: state.invitations.filter((row) => row.orgId === org.id).map(invitationDto) });
-  }
-  if (invitationActionFailure) {
-    const message = invitationActionFailure;
-    invitationActionFailure = null;
-    return controlFail(503, "unavailable", message);
   }
   if (route === "create") {
     const email = String(body.email ?? "").toLowerCase();
@@ -2202,7 +2006,7 @@ function invitations(route: string, body: Row, request: Request): Response {
       role: body.role,
       expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
       status: "pending",
-      delivery: state.nextDelivery,
+      delivery: "sent",
       token: fresh(),
     };
     state.invitations.push(row);
@@ -2212,7 +2016,7 @@ function invitations(route: string, body: Row, request: Request): Response {
   if (row?.status !== "pending") return controlFail(404, "not_found", "Invitation not found.");
   if (route === "resend") {
     row.token = fresh();
-    row.delivery = state.nextDelivery;
+    row.delivery = "sent";
     return json({ invitation: invitationDto(row) });
   }
   if (route === "revoke") {
@@ -2311,29 +2115,19 @@ const CATALOG = [
     setupMessage: "Registered confidential OAuth client required; not configured on this deployment.",
   },
 ];
-let failCatalog = false;
-let failConnect = false;
 
 function mcpControl(operation: string, body: Row, userId: string | null): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
-  state.controlCalls.push({ operation, body });
   if (operation === "oauth/callback") return oauthCallback(body, userId);
   const org = String(body.org ?? "");
   if (!isMember(org, userId)) return controlFail(403, "forbidden", "You are not a member of that organization.");
-  if (operation === "list" || operation === "catalog" || operation === "status") {
-    const failure = mcpReadFailures[operation];
-    if (failure) return controlFail(503, "unavailable", failure);
-  }
   if (operation === "list") {
-    if (failConnectionList) return controlFail(503, "unavailable", "The registry is unavailable.");
     return json({ connections: visibleConnections(org, userId).map(connectionDto) });
   }
   if (operation === "catalog") {
-    if (failCatalog) return controlFail(404, "not_found", "Unknown route.");
     return json({ services: CATALOG });
   }
   if (operation === "sandbox-connections") {
-    if (failSandboxConnections) return controlFail(503, "unavailable", "The registry is unavailable.");
     const sandboxRow = visibleRows("sandboxes", userId).find((item) => item.id === body.id && item.org_id === org);
     if (!sandboxRow) return controlFail(404, "not_found", "That sandbox does not exist.");
     const bound = Array.isArray(sandboxRow.connections) ? sandboxRow.connections.map(String) : [];
@@ -2394,7 +2188,6 @@ function mcpControl(operation: string, body: Row, userId: string | null): Respon
       return json({ connection: connectionDto(row) });
     }
     case "connect": {
-      if (failConnect) return controlFail(503, "unavailable", "The authorization server did not answer.");
       const authorizationUrl = probe(row);
       const pending = authorizationUrl ? new URL(authorizationUrl).searchParams.get("state") : null;
       const entry = pending ? pendingOAuth.get(pending) : undefined;
@@ -2485,7 +2278,7 @@ function oauth(url: URL): Response {
 /**
  * Durable golden build jobs, as `docs/golden-build-jobs.md` describes the server: `golden/create` and
  * `golden/update` check the request at admission and answer 202 with a queued job; the build itself publishes
- * later, here on a status read (`golden/build/status`) once the gate is open. The same requester, org and
+ * later, here on the first status read (`golden/build/status`). The same requester, org and
  * idempotency key with the same request return the same job; the same key with another request is a 409.
  * Status is read by `{jobId}` or `{org, idempotencyKey}`, by the job's owner only, and carries only the safe
  * fields: jobId, state, phase, errorCode and the public result.
@@ -2507,15 +2300,7 @@ function jobJson(job: GoldenJob): Row {
 
 async function goldenBuild(route: string, body: Row, request: Request): Promise<Response> {
   const userId = viewer(request);
-  state.goldenCalls.push({ route, body, authorized: Boolean(userId) });
   if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
-  // Admission never waits for the build: a held gate keeps the admitted job running until it is released.
-  const failure = state.goldenGate.fail;
-  // A failure without a code is a gateway's own answer (a timeout in front of the server), not the server's.
-  if (failure)
-    return failure.code
-      ? json({ error: { code: failure.code, message: failure.message } }, failure.status)
-      : new Response(failure.message, { status: failure.status, headers: { "content-type": "text/plain" } });
   const key = String(body.idempotencyKey ?? "");
   if (!IDEMPOTENCY_KEY.test(key))
     return json({ error: { code: "invalid", message: "idempotencyKey is required." } }, 400);
@@ -2541,16 +2326,11 @@ async function goldenBuild(route: string, body: Row, request: Request): Promise<
     status: { state: "queued", phase: "queued", errorCode: null, result: null },
   };
   goldenJobs.set(job.id, job);
-  if (state.goldenGate.loseAnswer)
-    return new Response("Gateway Timeout", { status: 504, headers: { "content-type": "text/plain" } });
   return json(jobJson(job), 202);
 }
 
 async function goldenJobStatus(body: Row, request: Request): Promise<Response> {
   const userId = viewer(request);
-  state.goldenStatusCalls.push(body);
-  if (state.goldenGate.failStatus)
-    return json({ error: { code: "unavailable", message: "Status is unavailable." } }, 503);
   if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
   const job =
     body.jobId !== undefined
@@ -2561,15 +2341,10 @@ async function goldenJobStatus(body: Row, request: Request): Promise<Response> {
   if (!job || job.owner !== userId || !isMember(job.body.org, userId))
     return json({ error: { code: "not_found", message: "No such build." } }, 404);
   if (job.status.state === "queued" || job.status.state === "running") {
-    if (state.goldenGate.holdQueued && job.status.state === "queued") return json(jobJson(job));
-    if (state.goldenGate.hold)
-      job.status = { state: "running", phase: "checkout_baseline", errorCode: null, result: null };
-    else {
-      const result = publishGoldenBuild(job.route, job.body, job.owner);
-      job.status = result
-        ? { state: "succeeded", phase: "complete", errorCode: null, result }
-        : { state: "failed", phase: "publish", errorCode: "build_failed", result: null };
-    }
+    const result = publishGoldenBuild(job.route, job.body, job.owner);
+    job.status = result
+      ? { state: "succeeded", phase: "complete", errorCode: null, result }
+      : { state: "failed", phase: "publish", errorCode: "build_failed", result: null };
   }
   return json(jobJson(job));
 }
@@ -2628,10 +2403,8 @@ function admitGoldenBuild(route: string, body: Row, userId: string): Response | 
     return json({ error: { code: "invalid", message: "Provider is boat or modal." } }, 400);
   const name = String(body.name);
   if (route === "golden/create") {
-    // Absent means Boat, as on the server. A provider not configured for the org is refused, never redirected.
+    // Absent means Boat, as on the server.
     const provider = (body.provider ?? "boat") as "boat" | "modal";
-    const unconfigured = state.capabilities[provider].fail;
-    if (unconfigured) return json({ error: { code: "provider_not_configured", message: unconfigured.message } }, 503);
     if (!body.private && !isAdmin(org, userId))
       return json({ error: { code: "forbidden", message: "Only an admin can create an org golden." } }, 403);
     if (state.goldens.some((row) => row.org_id === org && row.name === name && row.provider === provider))
@@ -2695,8 +2468,6 @@ const SIZES = ["small", "medium", "large", "xlarge"];
  */
 function goldenSizePolicy(body: Row, request: Request): Response {
   const userId = viewer(request);
-  state.sizePolicyCalls.push(body);
-  if (state.olderServer) return controlFail(404, "not_found", "Unknown route.");
   if (!userId) return controlFail(401, "unauthorized", "Sign in.");
   const row = liveGoldens(userId).find(
     (item) => item.name === body.golden && item.org_id === body.org && item.provider === (body.provider ?? "boat"),
@@ -2728,7 +2499,6 @@ function goldenSizePolicy(body: Row, request: Request): Response {
  */
 function goldenRemove(body: Row, request: Request): Response {
   const userId = viewer(request);
-  state.goldenRemoveCalls.push({ body, authorized: Boolean(userId) });
   if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
   const row = liveGoldens(userId).find(
     (item) => item.id === body.id && (body.org === undefined || item.org_id === body.org),
@@ -2744,7 +2514,6 @@ function goldenRemove(body: Row, request: Request): Response {
 /** `golden/capabilities {org, provider}`: the server's scoped read of the org's limit on that provider. */
 function goldenCapabilities(body: Row, request: Request): Response {
   const userId = viewer(request);
-  state.capabilityCalls.push({ body, authorized: Boolean(userId) });
   if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
   if (!isMember(body.org, userId))
     return json({ error: { code: "forbidden", message: "You are not a member of this org." } }, 403);
@@ -2752,56 +2521,19 @@ function goldenCapabilities(body: Row, request: Request): Response {
   if (provider !== "boat" && provider !== "modal")
     return json({ error: { code: "invalid", message: "Provider is boat or modal." } }, 400);
   const entry = state.capabilities[provider];
-  const failure = entry.fail;
-  if (failure)
-    return json(
-      failure.code ? { error: { code: failure.code, message: failure.message } } : { error: failure.message },
-      failure.status,
-    );
   return json(
     {
       provider,
       maxGoldens: entry.maxGoldens,
-      ...(entry.bindings === null
-        ? {}
-        : {
-            bindings:
-              entry.bindings ??
-              state.goldens
-                .filter(
-                  (g) =>
-                    g.org_id === body.org &&
-                    g.provider === provider &&
-                    (g.visibility === "org" || g.owner_id === userId),
-                )
-                .map((g) => ({ goldenId: g.id, relation: "current_backend" })),
-          }),
+      bindings: state.goldens
+        .filter(
+          (g) => g.org_id === body.org && g.provider === provider && (g.visibility === "org" || g.owner_id === userId),
+        )
+        .map((g) => ({ goldenId: g.id, relation: "current_backend" })),
     },
     200,
     { "cache-control": "no-store" },
   );
-}
-
-/**
- * The API's public `POST /api/v1/github/oauth/callback {state, code}` for the CLI's GitHub sign-in. The flow state is
- * the API's own one-use record (the actor is bound there), so the request carries no cookie and no bearer. Unknown,
- * used, cancelled or mismatched flows are refused with the API's error shape; success is fixed metadata.
- */
-const githubCliFlows = new Map<string, { code: string; status: "pending" | "used" | "canceled" }>();
-
-function githubCliCallback(request: Request, body: Row): Response {
-  state.githubCliCalls.push({
-    body,
-    authorization: request.headers.get("authorization"),
-    cookie: request.headers.get("cookie"),
-  });
-  const keys = Object.keys(body).sort().join(",");
-  if (keys !== "code,state") return controlFail(400, "invalid", "The body is {state, code}.");
-  const flow = githubCliFlows.get(String(body.state));
-  if (flow?.status !== "pending") return controlFail(400, "invalid", "That sign-in is not pending.");
-  if (flow.code !== body.code) return controlFail(400, "invalid", "That sign-in is not pending.");
-  flow.status = "used";
-  return json({ ok: true, provider: "github" });
 }
 
 /** GitHub's token and user endpoints, reached by the app server through e2e/github-fetch.cjs. */
@@ -2844,19 +2576,9 @@ function orgCredential(cid: string, owner: string, kind: string): Row {
  */
 function orgProvider(route: string, body: Row, request: Request): Response {
   const userId = viewer(request);
-  state.providerCalls.push({ route, body, authorized: Boolean(userId) });
   if (!userId) return controlFail(401, "unauthorized", "Sign in.");
   const org = state.orgs.find((row) => row.id === body.org);
   if (!org || !isMember(org.id, userId)) return controlFail(403, "forbidden", "You are not a member of this org.");
-  if (route === "org/provider/status" && state.providerStatusFail) {
-    const failure = state.providerStatusFail;
-    if (failure.html !== undefined)
-      return new Response(failure.html, { status: failure.status, headers: { "content-type": "text/html" } });
-    return json(
-      failure.code ? { error: { code: failure.code, message: failure.message } } : { error: failure.message },
-      failure.status,
-    );
-  }
   if (route === "org/provider/connect") {
     if (!isAdmin(org.id, userId))
       return controlFail(403, "forbidden", "Only an org admin connects a sandbox provider.");
@@ -2919,7 +2641,6 @@ const MODEL_KINDS: Record<string, Harness | undefined> = Object.fromEntries(
 
 /** The safe DTO: never `value_enc`, never the owner. Scope is where the row sits in `creds/list`. */
 function accountDto(row: Row): Row {
-  if (state.legacyAccounts) return { kind: row.kind, createdAt: row.created_at };
   return {
     id: row.id,
     kind: row.kind,
@@ -2950,11 +2671,6 @@ function skillpackDto(row: Row): Row {
 
 function singleton(route: string, body: Row, scope: "user" | "org", owner: string): Response {
   if (body.kind !== "skillpack") return controlFail(400, "invalid", "Unknown credential.");
-  if (skillpackActionFailure) {
-    const message = skillpackActionFailure;
-    skillpackActionFailure = null;
-    return controlFail(503, "unavailable", message);
-  }
   const mine = (row: Row) => row.scope === scope && row.owner_id === owner && row.kind === "skillpack";
   const now = new Date().toISOString();
   if (route === "creds/rm") {
@@ -2985,15 +2701,11 @@ function singleton(route: string, body: Row, scope: "user" | "org", owner: strin
   return json({ ok: true });
 }
 
-let modelActionFailure: { operation: string; message: string } | null = null;
-
 function accounts(route: string, body: Row, request: Request): Response {
   const userId = viewer(request);
-  state.accountCalls.push({ route, body: { ...body, ...(body.value === undefined ? {} : { value: "[sent]" }) } });
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   const model = (row: Row) => String(row.kind) in MODEL_KINDS;
   if (route === "creds/list") {
-    if (accountListFailure) return controlFail(503, "unavailable", accountListFailure);
     const org = state.orgs.find((row) => row.id === body.org && isMember(row.id, userId));
     // As the server: every kind of the scope, the Skillpack key (#957) as kind and dates only.
     const listed = (row: Row) => model(row) || row.kind === "skillpack";
@@ -3033,30 +2745,16 @@ function accounts(route: string, body: Row, request: Request): Response {
     return json({ ok: true });
   }
   if (route === "creds/accounts/auth-capabilities") {
-    return state.authCapabilities ? json(state.authCapabilities) : json({ error: { message: "Unknown route." } }, 404);
+    return json({ hostedOAuth: false, nativeCLI: { codex_auth: "armada creds login codex" } });
   }
-  if (route === "creds/accounts/models") {
-    return json({
-      connections: Object.entries(state.connectionModels).map(([id, models]) => ({ id, models })),
-    });
-  }
-  if (route === "creds/accounts/usage") {
-    const report = state.usage[String(body.id)];
-    if (!report) return json({ error: { code: undefined, message: "Unknown route." } }, 404);
-    if ("fail" in report) return controlFail(Number(report.fail), "unavailable", "Usage could not be read.");
-    return json({ usage: report });
-  }
+  if (route === "creds/accounts/models") return json({ connections: [] });
+  if (route === "creds/accounts/usage") return json({ error: { message: "Unknown route." } }, 404);
   const scope = body.scope === "org" ? "org" : body.scope === "user" ? "user" : null;
   if (!scope) return controlFail(400, "invalid", "Scope is user or org.");
   if (scope === "org" && !isAdmin(body.org, userId))
     return controlFail(403, "forbidden", "Only an org admin can do that.");
   const owner = scope === "org" ? body.org : userId;
   if (route === "creds/set" || route === "creds/rm") return singleton(route, body, scope, String(owner));
-  if (modelActionFailure && route === `creds/accounts/${modelActionFailure.operation}`) {
-    const message = modelActionFailure.message;
-    modelActionFailure = null;
-    return controlFail(503, "unavailable", message);
-  }
   const mine = (row: Row) => row.scope === scope && row.owner_id === owner && model(row) && row.status !== "deleted";
   const target = body.id === undefined ? undefined : state.credentials.find((row) => row.id === body.id && mine(row));
   if (body.id !== undefined && !target) return controlFail(404, "not_found", "No such account.");
@@ -3121,342 +2819,20 @@ function accounts(route: string, body: Row, request: Request): Response {
 
 function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
-    for (const release of state.routineCreateWaiters) release();
     state = seed();
-    templateListFailure = null;
-    vaultListFailure = null;
-    vaultActionFailure = null;
-    accountListFailure = null;
-    modelActionFailure = null;
-    skillpackActionFailure = null;
-    dockerHosts = Array.isArray(body.dockerHosts) ? body.dockerHosts : null;
-    invitationListFailure = typeof body.invitationListFailure === "string" ? body.invitationListFailure : null;
-    invitationActionFailure = null;
-    snapshotListFailure = typeof body.snapshotListFailure === "string" ? body.snapshotListFailure : null;
-    dockerSnapshotCreateFailure =
-      typeof body.dockerSnapshotCreateFailure === "string" ? body.dockerSnapshotCreateFailure : null;
-    if (body.emptyGoldens) state.goldens = [];
-    // Keep a visible header but make its current revision unreadable, as a partial control API read can be.
-    if (body.missingTemplateRevision)
-      state.templateRevisions = state.templateRevisions.filter((row) => row.templateId !== id(91));
-    if (body.templateReferenceExtras || body.longTemplateKeys) {
-      const revision = state.templateRevisions.find((row) => row.templateId === id(90) && row.revision === 2);
-      if (revision)
-        Object.assign(revision.definition as Row, {
-          skills: ["notes@1.0.0"],
-          secrets: [{ key: body.longTemplateKeys ? "S".repeat(128) : "STRIPE_API_KEY", secretId: id(81), version: 1 }],
-          ...(body.longTemplateKeys ? { variables: [{ key: "V".repeat(128), variableId: id(80), version: 3 }] } : {}),
-        });
-    }
     pendingOAuth.clear();
-    githubCliFlows.clear();
-    failSandboxConnections = false;
-    failConnectionList = false;
-    mcpReadFailures = {};
-    failCatalog = false;
-    failConnect = false;
-    if (body.missingUsage) {
-      const running = state.sandboxes.find((row) => row.id === id(30));
-      if (running)
-        running.usage_turns = {
-          turnCount: 2,
-          turns: [
-            {
-              promptId: "p-1",
-              model: "claude-opus-5-5",
-              inputTokens: 12000,
-              outputTokens: 9500,
-              cachedTokens: 480000,
-              cacheWriteTokens: 100000,
-            },
-            {
-              promptId: "p-2",
-              model: "claude-opus-5-5",
-              inputTokens: 3000,
-              outputTokens: null,
-              cachedTokens: 610000,
-              cacheWriteTokens: 0,
-            },
-          ],
-        };
-    }
-    if (body.multiOrg) {
-      const now = "2026-11-08T10:00:00.000Z";
-      state.orgs.push({ id: id(11), name: "Zenith", created_at: now, boat_api_key_enc: "\\x0102" });
-      state.members.push({ org_id: id(11), user_id: ALICE, role: "member", created_at: now });
-      state.goldens.push({ ...golden(id(23), "zenith-golden", "org", ALICE, "snap-zenith"), org_id: id(11) });
-      state.sandboxes.push({ ...sandbox(id(33), "bx_zenith", id(23), ALICE, "codex", "ready", now), org_id: id(11) });
-      // Carol's, in an org where Alice is a plain member: listed to Alice there, never opened by her.
-      state.sandboxes.push({
-        ...sandbox(id(34), "bx_zenith_carol", id(23), id(3), "claude", "ready", now),
-        org_id: id(11),
-      });
-      state.connections.push(
-        mcpConnection(id(64), "Zenith Search", id(11), "org", ALICE, {
-          url: "https://search.zenith.test/mcp",
-          authType: "none",
-          status: "connected",
-        }),
-      );
-    }
-    if (body.large) {
-      // A realistic Acme for the #808 screens and its filter: ten environments and a dozen tools in every state.
-      const repos = (...names: string[]) => ({
-        repos: names.map((name) => ({ url: `https://github.com/acme/${name}.git`, branch: "main", dir: name })),
-        init: ["bun install"],
-      });
-      const more: [string, string, string, string | null, string[], "boat" | "modal"][] = [
-        ["web-frontend", "org", ALICE, "snap-web", ["web", "design-system"], "boat"],
-        ["api-backend", "org", ALICE, "snap-api", ["api", "proto"], "boat"],
-        ["data-pipeline", "org", BOB, "snap-data", ["pipeline"], "boat"],
-        ["mobile-app", "private", ALICE, null, ["mobile"], "boat"],
-        ["docs-site", "org", ALICE, "snap-docs", ["docs"], "boat"],
-        ["infra-terraform", "private", ALICE, "snap-infra", ["infra", "modules"], "boat"],
-        ["ml-research", "org", ALICE, null, ["research"], "modal"],
-      ];
-      more.forEach(([name, visibility, owner, snapshot, names, provider], index) => {
-        const row = { ...golden(id(140 + index), name, visibility, owner, snapshot), config: repos(...names) };
-        state.goldens.push(provider === "modal" ? { ...row, provider, boat_snapshot_id: null } : row);
-      });
-      const tools: [string, "personal" | "org", Row][] = [
-        [
-          "GitHub Issues",
-          "org",
-          {
-            url: "https://mcp.github.test/mcp",
-            authType: "oauth",
-            status: "connected",
-            accountLabel: "acme-bot",
-            toolCount: 34,
-          },
-        ],
-        [
-          "Postgres Prod",
-          "org",
-          { url: "https://db.acme.test/mcp", authType: "bearer", status: "connected", toolCount: 6 },
-        ],
-        [
-          "Figma",
-          "personal",
-          {
-            url: "https://mcp.figma.test/mcp",
-            authType: "oauth",
-            status: "connected",
-            accountLabel: "alice@acme.test",
-            toolCount: 9,
-          },
-        ],
-        [
-          "Datadog",
-          "org",
-          {
-            url: "https://mcp.datadog.test/mcp",
-            authType: "oauth",
-            status: "needs_reconnect",
-            lastError: "The grant expired.",
-          },
-        ],
-        [
-          "Browser",
-          "personal",
-          {
-            transport: "stdio",
-            command: "npx",
-            args: ["-y", "@playwright/mcp@0.0.41"],
-            authType: "none",
-            status: "connected",
-          },
-        ],
-        ["Old Wiki", "org", { url: "https://wiki.acme.test/mcp", authType: "none", status: "disabled" }],
-      ];
-      for (const [index, [name, scope, fields]] of tools.entries())
-        state.connections.push(mcpConnection(id(170 + index), name, ACME, scope, ALICE, fields));
-    }
-    if (body.sizePolicies) {
-      // The server has #653's column: every golden reads `size_policy`; the Boat org golden has defaults.
-      for (const row of state.goldens) row.size_policy = null;
-      const shared = state.goldens.find((row) => row.name === "shared-golden" && row.provider === "boat");
-      if (shared) shared.size_policy = { version: 1, golden: "medium", repositories: { api: "large" } };
-      state.refuseSize = typeof body.refuseSize === "string" ? body.refuseSize : null;
-      state.olderServer = body.olderServer === true;
-    }
-    if (body.modalTwin) {
-      // A Modal golden with the same name as the Boat `shared-golden`, recording another repository.
-      state.goldens.push({
-        ...golden(id(24), "shared-golden", "org", ALICE, null),
-        provider: "modal",
-        provider_snapshot_id: "modal-snap-1",
-        config: {
-          repos: [{ url: "https://github.com/acme/docs.git", branch: "main", dir: "docs" }],
-          init: [],
-        },
-        ...(body.sizePolicies ? { size_policy: null } : {}),
-      });
-    }
-    if (body.novaOrg) {
-      // An org with no golden yet, administered by carol, with its own Boat key.
-      state.orgs.push({
-        id: id(12),
-        name: "Nova",
-        created_at: "2026-11-08T10:00:00.000Z",
-        boat_api_key_enc: "\\x0102",
-      });
-      state.members.push({ org_id: id(12), user_id: id(3), role: "admin", created_at: "2026-11-08T10:00:00.000Z" });
-    }
-    // Modal connected for the organization as well (#598): new work may then choose it.
-    if (body.acmeModal) state.credentials.push(orgCredential(id(45), ACME, "modal"));
-    if (body.novaModal) state.credentials.push(orgCredential(id(46), id(12), "modal"));
-    if (body.orionOrg) {
-      // An org that never finished its provider setup (#576): carol is its admin, bob a member, nothing configured.
-      const now = "2026-11-08T10:00:00.000Z";
-      state.orgs.push({ id: ORION, name: "Orion", created_at: now });
-      state.members.push({ org_id: ORION, user_id: id(3), role: "admin", created_at: now });
-      state.members.push({ org_id: ORION, user_id: BOB, role: "member", created_at: now });
-      // Carol's personal Boat key: it must never make Orion ready.
-      state.credentials.push({ ...orgCredential(id(43), id(3), "boat"), scope: "user" });
-      if (body.orionModal) state.credentials.push(orgCredential(id(44), ORION, "modal"));
-      if (body.orionSandbox) {
-        state.goldens.push({ ...golden(id(25), "orion-golden", "org", id(3), "snap-orion"), org_id: ORION });
-        state.sandboxes.push({
-          ...sandbox(id(34), "bx_orion_running", id(25), id(3), "claude", "running", now),
-          org_id: ORION,
-        });
-      }
-    }
-    if (body.skillpackWarning) {
-      const shared = state.goldens.find((row) => row.name === "shared-golden" && row.provider === "boat");
-      if (shared) shared.build_warnings = ["skillpack_download_unavailable"];
-    }
     sessions.clear();
     goldenJobs.clear();
     return json({ ok: true });
   }
-  if (url.pathname === "/__test/clear-legacy-boat") {
-    // An operator cleared the org's legacy Boat column (the key was revoked): the org is no longer ready.
-    for (const org of state.orgs) if (org.id === body.org) org.boat_api_key_enc = null;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/delayed-usage") {
-    const target = state.sandboxes.find((row) => row.id === id(30));
-    if (!target) return json({ error: "Not found" }, 404);
-    if (body.collect) {
-      // Like readStatus: commit newly available counters during the next status
-      // read, after the dashboard route has already read the old row.
-      target.test_delayed_usage = {
-        turnCount: 1,
-        turns: [
-          {
-            promptId: "late",
-            model: "gpt-6.1-sol",
-            inputTokens: Number(body.inputTokens ?? 13136),
-            outputTokens: 5,
-            cachedTokens: 0,
-            cacheWriteTokens: 0,
-          },
-        ],
-      };
-      if (body.persisted) {
-        target.usage_turns = target.test_delayed_usage;
-        delete target.test_delayed_usage;
-      }
-      if (body.stopped) target.status = "stopped";
-      target.test_status_read_unavailable = body.failStatus === true;
-      target.test_logs_unavailable = body.failLogs === true;
-    } else {
-      target.status = body.running ? "running" : "ready";
-      target.harness = "codex";
-      target.usage_turns = { turnCount: 1, turns: [] };
-      for (const event of state.events.get(String(target.id)) ?? [])
-        if (event.kind === "prompt") event.status = "finished";
-    }
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/provider-status-fail") {
-    state.providerStatusFail = body.fail ? (body.fail as State["providerStatusFail"]) : null;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/golden-gate") {
-    state.goldenGate = {
-      loseAnswer: body.loseAnswer === true,
-      failStatus: body.failStatus === true,
-      hold: body.hold === true,
-      holdQueued: body.holdQueued === true,
-      fail: body.fail ? (body.fail as State["providerStatusFail"]) : null,
-    };
-    return json({ ok: true });
-  }
   if (url.pathname === "/__test/capabilities") {
     const provider = body.provider === "modal" ? "modal" : "boat";
-    state.capabilities[provider] = {
-      bindings: body.bindings as Row[] | null | undefined,
-      maxGoldens: body.maxGoldens === null ? null : Number(body.maxGoldens ?? 1),
-      fail: body.fail ? (body.fail as State["providerStatusFail"]) : null,
-    };
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/golden-release") {
-    state.goldenGate.hold = false;
-    state.goldenGate.holdQueued = false;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/snapshot-list-failure") {
-    snapshotListFailure = typeof body.message === "string" ? body.message : null;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/goldens") {
-    return json(state.goldens.map((row) => ({ ...row })));
-  }
-  if (url.pathname === "/__test/remove-zenith-membership") {
-    state.members = state.members.filter((row) => row.org_id !== id(11));
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/append-event") {
-    const events = state.events.get(String(body.sandbox)) ?? [];
-    events.push({
-      id: `live-${events.length}`,
-      at: Date.now(),
-      kind: "message",
-      text: String(body.text),
-      partial: false,
-      tools: [],
-    });
-    state.events.set(String(body.sandbox), events);
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/fail-next-skillpack") {
-    skillpackActionFailure = String(body.message);
+    state.capabilities[provider].maxGoldens = body.maxGoldens === null ? null : Number(body.maxGoldens ?? 1);
     return json({ ok: true });
   }
   if (url.pathname === "/__test/accounts") {
-    if (body.actionFailure !== undefined) modelActionFailure = body.actionFailure as typeof modelActionFailure;
-    if (body.listFailure !== undefined)
-      accountListFailure = typeof body.listFailure === "string" ? body.listFailure : null;
-    if (body.legacy !== undefined) state.legacyAccounts = body.legacy === true;
-    Object.assign(state.usage, (body.usage as Record<string, Row> | undefined) ?? {});
-    if (body.authCapabilities !== undefined) state.authCapabilities = body.authCapabilities as Row | null;
-    Object.assign(state.connectionModels, (body.connectionModels as Record<string, Row[]> | undefined) ?? {});
     for (const row of (body.seed as Row[] | undefined) ?? []) state.credentials.push(row);
-    // `{user, org}`: the viewer's and Acme's model accounts as `creds/list` DTOs, replacing the seeded ones.
-    if (body.user !== undefined || body.org !== undefined) {
-      state.credentials = state.credentials.filter((row) => !(String(row.kind) in MODEL_KINDS));
-      const rows = (items: unknown, scope: "user" | "org", owner: string) =>
-        ((items as Row[] | undefined) ?? []).map((dto) => ({
-          id: dto.id,
-          scope,
-          owner_id: owner,
-          kind: dto.kind,
-          value_enc: "\\x0102",
-          created_at: dto.createdAt ?? dto.updatedAt,
-          name: dto.name,
-          is_default: dto.isDefault === true,
-          version: dto.version,
-          status: dto.status ?? "active",
-          expires_at: dto.expiresAt ?? null,
-          updated_at: dto.updatedAt,
-        }));
-      state.credentials.push(...rows(body.user, "user", ALICE), ...rows(body.org, "org", ACME));
-    }
-    return json({ calls: state.accountCalls });
+    return json({ ok: true });
   }
   if (url.pathname === "/__test/credentials") {
     return json(state.credentials.map((row) => ({ ...row })));
@@ -3476,226 +2852,11 @@ function control(url: URL, body: Row): Response {
     });
     return json({ ok: true });
   }
-  if (url.pathname === "/__test/github-installations") {
-    state.githubInstallations = Array.isArray(body.installations) ? (body.installations as Row[]) : [];
-    return json({ ok: true });
-  }
   if (url.pathname === "/__test/github-connections") {
     return json(state.github_connections.map((row) => ({ ...row })));
   }
-  if (url.pathname === "/__test/github-cli-flow") {
-    // Only the shape the API issues: `armada_cli_` and 72 lowercase hex or hyphen characters.
-    if (!/^armada_cli_[0-9a-f-]{72}$/.test(String(body.state))) return json({ message: "unrealistic state" }, 400);
-    githubCliFlows.set(String(body.state), {
-      code: String(body.code),
-      status: body.canceled ? "canceled" : "pending",
-    });
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/skill-catalog-long-description") {
-    state.skillCatalogLongDescription = body.enabled === true;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/skill-catalog-malformed") {
-    state.skillCatalogMalformed = body.malformed === true;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/skill-catalog-unavailable") {
-    state.skillCatalogUnavailable =
-      body.unavailable === true ? (typeof body.message === "string" ? body.message : true) : false;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/sandbox-lifecycle") {
-    // The additive #565 fields on one sandbox row, as the database would hold them; the status is left alone.
-    const row = state.sandboxes.find((item) => item.id === body.id);
-    if (!row) return json({ message: "no sandbox" }, 404);
-    Object.assign(row, body.fields as Row);
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/add-sandboxes") {
-    // Extra Acme sandboxes for a busy board (#801): each row's fields over Alice's running sandbox's defaults.
-    for (const fields of (body.rows as Row[]) ?? []) {
-      state.sandboxes.push({
-        ...sandbox(
-          String(fields.id),
-          String(fields.provider_sandbox_id ?? fields.id),
-          id(20),
-          ALICE,
-          "claude",
-          "ready",
-          new Date().toISOString(),
-        ),
-        ...fields,
-      });
-      if (Array.isArray(fields.events)) state.events.set(String(fields.id), fields.events as Row[]);
-      delete state.sandboxes.at(-1)?.events;
-    }
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/fail-connect") {
-    failConnect = true;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/fail-catalog") {
-    failCatalog = true;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/sandbox-events") {
-    state.events.set(String(body.sandbox), (body.events as Row[]) ?? []);
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/fail-next-bind") {
-    state.failNextBind = body as State["failNextBind"];
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/fail-next-tool") {
-    state.failNextTool = String(body.message);
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/mcp-read-failure") {
-    const operation = body.operation;
-    if (operation !== "list" && operation !== "catalog" && operation !== "status")
-      return json({ error: "Unknown read" }, 400);
-    if (typeof body.message === "string") mcpReadFailures[operation] = body.message;
-    else delete mcpReadFailures[operation];
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/fail-connection-list") {
-    failConnectionList = true;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/fail-sandbox-connections") {
-    failSandboxConnections = true;
-    return json({ ok: true });
-  }
-  /**
-   * What GoTrue's `/verify` hands the browser for #649's email OTP (sent without a PKCE challenge): a live session for
-   * the address, which the redirect puts in the URL fragment. The tests build the incoming URL from it to prove the
-   * dashboard never uses it. No email is sent.
-   */
-  if (url.pathname === "/__test/email-link-session") {
-    const user = [...users.values()].find((candidate) => candidate.email === body.email);
-    return user ? json(session(user.id)) : json({ error: "unknown user" }, 404);
-  }
-  if (url.pathname === "/__test/unverified-email") {
-    state.unverifiedEmails.push(String(body.email));
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/fail-next-invitation") {
-    invitationActionFailure = String(body.message);
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/invitation-list-failure") {
-    invitationListFailure = typeof body.message === "string" ? body.message : null;
-    return json({ ok: true });
-  }
-  /** Marks an invitation as the server would after a revoke or an acceptance elsewhere. */
-  if (url.pathname === "/__test/invitation-status") {
-    const row = state.invitations.find((item) => item.token === body.token);
-    if (row) row.status = body.status;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/invitation-delivery") {
-    state.nextDelivery = body.delivery as State["nextDelivery"];
-    return json({ ok: true });
-  }
-  /** The link an invitation email would carry right now: the current token of that address's pending invitation. */
-  if (url.pathname === "/__test/invitation-link") {
-    const row = state.invitations.find((item) => item.email === body.email && item.status === "pending");
-    return json({ token: row?.token ?? null });
-  }
-  /** A pending invitation as the server would hold it, for the recipient pages (expired ones included). */
-  if (url.pathname === "/__test/seed-invitation") {
-    const row: Row = {
-      id: id(++sequence),
-      orgId: ACME,
-      email: body.email,
-      role: body.role ?? "member",
-      expiresAt: new Date(Date.now() + Number(body.expiresInMs ?? 7 * 86_400_000)).toISOString(),
-      status: "pending",
-      delivery: "sent",
-      token: body.token,
-    };
-    state.invitations.push(row);
-    return json({ ok: true });
-  }
-  /** Another tab or the CLI revokes a vault item: the page still holds the version it loaded. */
-  if (url.pathname === "/__test/fail-next-vault") {
-    vaultActionFailure = {
-      status: Number(body.status ?? 503),
-      message: String(body.message),
-      ...(typeof body.code === "string" ? { code: body.code } : {}),
-    };
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/vault-list-failure") {
-    vaultListFailure =
-      typeof body.message === "string" ? { unsupported: body.unsupported === true, message: body.message } : null;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/template-list-failure") {
-    templateListFailure =
-      typeof body.message === "string" ? { unsupported: body.unsupported === true, message: body.message } : null;
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/vault-revoke") {
-    const row = state.vault.find((item) => item.id === body.id);
-    if (!row) return json({ error: "unknown item" }, 404);
-    Object.assign(row, { status: "revoked", version: Number(row.version) + 1, epoch: Number(row.epoch) + 1 });
-    delete row.sealed;
-    return json({ ok: true });
-  }
-  /** The next template launch answers this state (failed with a reason, or reconciling) instead of starting. */
-  if (url.pathname === "/__test/routines") {
-    if (typeof body.holdCreate === "boolean") {
-      state.routineHoldCreate = body.holdCreate;
-      if (!body.holdCreate) for (const release of state.routineCreateWaiters.splice(0)) release();
-    }
-    if ("failure" in body) state.routineFailure = body.failure as Fail | null;
-    if (body.empty) state.routines = [];
-    if (body.templatesEmpty) for (const template of state.templates) template.status = "deleted";
-    if (body.stale) {
-      const item = state.routines.find((r) => r.id === body.stale);
-      if (item) item.version = Number(item.version) + 1;
-    }
-    return json({ ok: true });
-  }
-  if (url.pathname === "/__test/template-outcome") {
-    state.templateOutcome = body;
-    return json({ ok: true });
-  }
   if (url.pathname === "/__test/state") {
-    return json({
-      orgBoatKeys: state.orgs.filter((org) => org.boat_api_key_enc).map((org) => org.id),
-      otpEmails: state.otpEmails,
-      sent: state.sent,
-      toolCalls: state.toolCalls,
-      bindCalls: state.bindCalls,
-      launches: state.launches,
-      goldenCalls: state.goldenCalls,
-      goldenStatusCalls: state.goldenStatusCalls,
-      goldenRemoveCalls: state.goldenRemoveCalls,
-      sizePolicyCalls: state.sizePolicyCalls,
-      sizedRefusals: state.sizedRefusals,
-      launchRoutes: state.launchRoutes,
-      capabilityCalls: state.capabilityCalls,
-      githubCliCalls: state.githubCliCalls,
-      controlCalls: state.controlCalls,
-      providerCalls: state.providerCalls,
-      invitationCalls: state.invitationCalls,
-      authCalls: state.authCalls,
-      invitations: state.invitations.map(invitationDto),
-      members: state.members,
-      connections: state.connections.map((row) => ({ ...row })),
-      vaultCalls: state.vaultCalls,
-      templateCalls: state.templateCalls,
-      routines: state.routines,
-      routineCalls: state.routineCalls,
-      templates: state.templates,
-      templateRevisions: state.templateRevisions,
-      // Whether the mock holds a sealed value for each secret, never the value itself.
-      vault: state.vault.map(({ sealed, value, ...row }) => ({ ...row, sealed: sealed !== undefined, value })),
-    });
+    return json({ launches: state.launches });
   }
   return json({ message: "not found" }, 404);
 }
@@ -3717,7 +2878,6 @@ const server = Bun.serve({
     if (url.pathname === "/api/v1/sandbox/launch" && request.method === "POST")
       return launchRoute(body, viewer(request));
     if (url.pathname === "/api/v1/sandbox/launch-access-v1" && request.method === "POST") {
-      if (state.olderServer) return controlFail(404, "not_found", "Unknown route.");
       if (
         body.armadaAccessVersion !== 1 ||
         body.harness !== "codex" ||
@@ -3729,20 +2889,14 @@ const server = Bun.serve({
           "invalid",
           "Armada access requires an explicit Codex account and bounded child access.",
         );
-      return launchRoute(body, viewer(request), "sandbox/launch-access-v1");
+      return launchRoute(body, viewer(request));
     }
     if (url.pathname === "/api/v1/sandbox/launch-sized-v1" && request.method === "POST") {
       // #653's fail-closed route (ea501bd): an older replica does not know it, a newer one checks the version first.
       // Either refusal comes before anything is allocated.
-      state.sizedRefusals.push(body);
-      if (state.olderServer) return controlFail(404, "not_found", "Unknown route.");
       if (body.sizePolicyVersion !== 1)
         return controlFail(400, "invalid", "The sized launch route requires sizePolicyVersion 1.");
-      state.sizedRefusals.pop();
-      return launchRoute(body, viewer(request), "sandbox/launch-sized-v1");
-    }
-    if (url.pathname === "/api/v1/github/oauth/callback" && request.method === "POST") {
-      return githubCliCallback(request, body);
+      return launchRoute(body, viewer(request));
     }
     if (url.pathname.startsWith("/api/v1/mcp/") && request.method === "POST") {
       return mcpControl(url.pathname.slice("/api/v1/mcp/".length), body, viewer(request));
@@ -3750,34 +2904,26 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/oauth/")) return oauth(url);
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
-      if (route === "docker/hosts/list" && (dockerHosts !== null || body.org === LARGE)) {
+      if (route === "docker/hosts/list" && body.org === LARGE) {
         const caller = viewer(request);
         if (!caller || !isMember(body.org, caller))
           return controlFail(403, "forbidden", "Only organization members can list hosts.");
-        return json({ placement: true, hosts: dockerHosts ?? largeHosts() });
+        return json({ placement: true, hosts: largeHosts() });
       }
-      if (route === "docker/snapshots/create" && dockerSnapshotCreateFailure) {
-        const caller = viewer(request);
-        if (!caller || !isMember(body.org, caller))
-          return controlFail(403, "forbidden", "Only organization members can build snapshots.");
-        return controlFail(503, "unavailable", dockerSnapshotCreateFailure);
-      }
-      if (route === "docker/snapshots/list" && (dockerHosts !== null || body.org === LARGE)) {
+      if (route === "docker/snapshots/list" && body.org === LARGE) {
         const caller = viewer(request);
         if (!caller || !isMember(body.org, caller))
           return controlFail(403, "forbidden", "Only organization members can list snapshots.");
-        return snapshotListFailure
-          ? controlFail(503, "unavailable", snapshotListFailure)
-          : json({ snapshots: body.org === LARGE ? largeHostSnapshots() : [] });
+        return json({ snapshots: largeHostSnapshots() });
       }
-      if (route === "launch/options" && (dockerHosts !== null || isMember(LARGE, viewer(request) ?? ""))) {
+      if (route === "launch/options" && isMember(LARGE, viewer(request) ?? "")) {
         if (!viewer(request)) return controlFail(401, "unauthorized", "Sign in again.");
         return json({
           providers: [
             {
               id: "docker",
               enabled: true,
-              launchSources: dockerSnapshotCreateFailure || dockerHosts === null ? ["image", "golden"] : ["image"],
+              launchSources: ["image", "golden"],
               harnesses: ["claude", "codex"],
               capabilities: {
                 launch: true,
@@ -3786,7 +2932,7 @@ const server = Bun.serve({
                 delete: true,
                 status: true,
                 logs: true,
-                ...(dockerSnapshotCreateFailure || dockerHosts === null ? { goldens: true } : {}),
+                goldens: true,
               },
               unsupportedReasons: {},
             },
@@ -3830,7 +2976,6 @@ const server = Bun.serve({
         )
           return controlFail(409, "conflict", "The bound sandbox/account is not ready.");
         // No live credentials: fixed native-wire outcomes prove UI transport/rendering only.
-        state.controlCalls.push({ operation: route, body });
         return json({
           id: body.id,
           test:

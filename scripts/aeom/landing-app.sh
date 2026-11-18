@@ -9,7 +9,7 @@ APP="$ROOT/apps/dashboard"
 PORT="${PORT:-4317}"
 MOCK_PORT="${AEOM_MOCK_PORT:-54399}"
 
-# The same throwaway values as apps/dashboard/playwright.config.ts: nothing here is a secret.
+# Throwaway fixture values for the e2e mock: nothing here is a secret.
 export NEXT_PUBLIC_SUPABASE_URL="http://127.0.0.1:$MOCK_PORT"
 export NEXT_PUBLIC_SUPABASE_ANON_KEY="e2e-anon-key"
 export NEXT_PUBLIC_AUTH_PROVIDERS="github,google"
