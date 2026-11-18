@@ -8,9 +8,9 @@ import { validateAzureOpenAIAddress } from "./azure-endpoint.ts";
 import { parseCredentialValue } from "./credentials.ts";
 import type { ModelPriceOverrides } from "./model-price-overrides.ts";
 import { CONNECTION_MODEL_ID, MAX_CONNECTION_MODELS, OPENCODE_CONNECTION_PROVIDER } from "./opencode-endpoint.ts";
-// Read the catalog only inside functions: a top-level read keeps this JSON in every bundle of the core index,
-// including the GitHub broker, whose private transport budget is 64 KiB (packages/mcp-server/src/github-boat.ts).
-import catalog from "./pricing/model-catalog.json";
+// Keep this generated browser projection behind a function so consumers such as the
+// GitHub broker can omit it when bundling the core index.
+import { CONNECTION_MODELS } from "./pricing/model-options.generated.ts";
 import { validRate } from "./pricing/rates.ts";
 import { VaultError } from "./vault-error.ts";
 
@@ -27,7 +27,7 @@ export type ConnectionPresetId =
   | "openrouter"
   | "openai-compatible";
 
-type CatalogProvider = keyof typeof catalog.snapshot.providers;
+type CatalogProvider = keyof typeof CONNECTION_MODELS;
 
 export interface ConnectionPreset {
   id: ConnectionPresetId;
@@ -191,9 +191,7 @@ export interface CatalogModel {
 
 /** The known agent-capable models of a preset, newest first; empty when it has no catalog. */
 export function presetModels(preset: ConnectionPreset): readonly CatalogModel[] {
-  return preset.catalog && !preset.deploymentNames
-    ? (catalog.snapshot.providers[preset.catalog] as CatalogModel[])
-    : [];
+  return preset.catalog && !preset.deploymentNames ? CONNECTION_MODELS[preset.catalog] : [];
 }
 
 /**
