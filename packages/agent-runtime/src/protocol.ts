@@ -128,6 +128,7 @@ export type RunnerRequest = { version: 1; requestId: string; sandboxId: string }
   | { op: "installSkills"; input: import("./skills.ts").SkillInstallInput }
   | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
   | { op: "resourceObservation" }
+  | { op: "readOutputs" }
   | ConfigureMcpRequest
   | InstallOrchestratorEpochRequest
   | ScrubOrchestratorEpochRequest

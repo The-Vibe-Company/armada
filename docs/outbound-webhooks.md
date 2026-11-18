@@ -18,10 +18,12 @@ Secrets use Armada's existing AES-256-GCM encryption under
 through direct database access.
 
 Events are `turn.finished`, `turn.failed`, `sandbox.stopped`, `sandbox.expired`,
+`sandbox.output.available` (see [sandbox outputs](sandbox-outputs.md); carries the
+agent-chosen output filename, size and SHA-256, never file bytes),
 `sandbox.reclaimed`, `agent.report.ready`, and `agent.report.blocked`. Payloads
 contain delivery/event identity, organization/sandbox/prompt IDs, state, occurrence
 time, a public reason code, links, and **always** `externalRef` (null when absent).
-There is no message, prompt, agent report text, or provider diagnostic by default.
+Apart from output filenames, there is no message, prompt, agent report text, or provider diagnostic by default.
 Repeated terminal observations of one prompt are deduplicated durably per endpoint
 and event type. Runtime archive ingestion enqueues terminal prompts atomically;
 native prompt publication retains a durable receipt identity ledger. A bounded

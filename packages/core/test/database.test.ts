@@ -208,6 +208,7 @@ describe("database", () => {
         "runtime_enrolments.configuration_enc",
         "runtime_events.event_enc",
         "runtime_idle_evidence.latest_prompt_enc",
+        "sandbox_outputs.content_enc",
         "sandbox_work_recovery.archive_enc",
       ]);
 

@@ -414,6 +414,7 @@ export {
   MAX_SANDBOX_EXTENSION_TTL_SECONDS,
   SANDBOX_STOP_MARGIN_SECONDS,
 } from "./sandbox-lifetime.ts";
+export * from "./sandbox-output-limits.ts";
 export {
   assertProviderOf,
   createProviderRegistry,

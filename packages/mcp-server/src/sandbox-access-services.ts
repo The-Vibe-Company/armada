@@ -12,6 +12,7 @@ import {
   sandboxActivity,
 } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
+import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { launchSandboxChild } from "./sandbox-access-child-launch.ts";
@@ -37,6 +38,8 @@ export function createSandboxAccessServices(input: {
   connections: LaunchStores["connections"];
   encryptionKey: string;
   scopedMcpUrl: string;
+  /** Docker final output capture before agent-finished stops (tests inject the runtime reader). */
+  outputs?: Parameters<typeof captureDockerStopOutputs>[3];
 }) {
   const { sql } = input;
   const authority = new DelegatedAuthority(sql, async (tx, account) => {
@@ -244,6 +247,18 @@ export function createSandboxAccessServices(input: {
   };
   const children = createSandboxChildren(sql, authority, executor);
   async function finish(token: string) {
+    // Docker: capture declared outputs before the stop is admitted (the runtime then refuses
+    // commands). This read-only admission only resolves the target; the real one follows.
+    const target = await authority
+      .admit(token, { method: "finish" }, async (tx, principal) => {
+        const parent = await tx.query<{ sandbox_id: string }>(
+          "select sandbox_id from public.armada_access_parents where id=$1 and kind='sandbox'",
+          [principal.orchestratorId],
+        );
+        return parent.rows[0]?.sandbox_id;
+      })
+      .catch(() => undefined);
+    if (target) await captureDockerStopOutputs(sql, input.encryptionKey, target, input.outputs);
     return authority.admit(token, { method: "finish" }, async (tx, principal) => {
       const row = (
         await tx.query<{ sandbox_id: string }>(
@@ -256,7 +271,11 @@ export function createSandboxAccessServices(input: {
     });
   }
   return {
-    scopedToolsRoute: createSandboxScopedGateway(children, finish, createRuntimeSelfFinish(sql, input.encryptionKey)),
+    scopedToolsRoute: createSandboxScopedGateway(
+      children,
+      finish,
+      createRuntimeSelfFinish(sql, input.encryptionKey, input.outputs),
+    ),
     childWorker: children,
   };
 }
