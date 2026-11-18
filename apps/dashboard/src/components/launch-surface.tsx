@@ -273,7 +273,10 @@ export function LaunchChoice({
       <CommandList>
         <CommandEmpty>No matches.</CommandEmpty>
         {[...new Set(options.map((option) => option.group ?? ""))].map((group) => (
-          <CommandGroup key={group} heading={group || undefined}>
+          <CommandGroup
+            key={group}
+            heading={group.replace(/ · your own server(?= · |$)/, " · Docker host") || undefined}
+          >
             {options
               .filter((option) => (option.group ?? "") === group)
               .map((option) => (

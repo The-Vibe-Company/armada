@@ -161,7 +161,7 @@ export default async function SandboxPage({ params }: Props) {
     ["Snapshot", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
     ["Org", org?.org.name ?? "Unknown"],
     ["Provider", sandbox.provider === "boat" ? "Boat cloud" : "Modal cloud"],
-    ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+    ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Account", account.name],
     ["Billing type", account.billing],
     ["Model", sandbox.model ?? "Provider default"],
@@ -260,7 +260,7 @@ export default async function SandboxPage({ params }: Props) {
             <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
             <Facts
               facts={[
-                ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+                ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
                 ["Model", sandbox.model ?? "Provider default"],
                 ["Effort", sandbox.reasoning_effort ?? "Provider default"],
               ]}
@@ -420,7 +420,7 @@ function DockerSandbox({
     [DOCKER_HOST_LABEL, host],
     ["Image", image.label, image.detail ?? undefined],
     ...(sandbox.provider_sandbox_id ? [["Container", sandbox.provider_sandbox_id] as Fact] : []),
-    ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+    ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Account", billing.name],
     ["Billing type", billing.billing],
     ["Model", sandbox.model ?? "Provider default"],
@@ -536,7 +536,7 @@ function DockerSandbox({
             <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
             <Facts
               facts={[
-                ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+                ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
                 ["Model", sandbox.model ?? "Provider default"],
                 ["Effort", sandbox.reasoning_effort ?? "Provider default"],
               ]}
@@ -551,7 +551,6 @@ function DockerSandbox({
                 ["Who can open it", "Owner and organization admins"],
               ]}
             />
-            <p className="text-muted-foreground">MCP tools are unavailable on Docker host sandboxes.</p>
           </section>
           <details className="text-sm">
             <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
@@ -612,7 +611,7 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
       "Provider",
       sandbox.provider === "boat" ? "Boat cloud" : sandbox.provider === "modal" ? "Modal cloud" : DOCKER_HOST_LABEL,
     ],
-    ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+    ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoningEffort ?? "Provider default"],
     ["Machine size", sandbox.machineSize ? machineSizeLabel(sandbox.machineSize) : "Not recorded"],
