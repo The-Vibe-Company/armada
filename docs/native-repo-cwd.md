@@ -52,7 +52,11 @@ without a repo selector retain their existing behavior.
   twice inside a five-second test and failed the release check intermittently.
   The real executable now runs only in the publishing contract
   `packages/mcp-server/test/mcp-codex-bridge.release.ts`, which runs the pinned
-  executable behind the managed wrapper and checks its exclusive writer lock. Post-deploy
-  smoke still checks the first native `pwd` in a new sandbox.
+  executable behind the managed wrapper and checks its exclusive writer lock.
+- Automated post-deploy smoke excludes Boat (see
+  [Deployed checks](post-deploy-smoke.md)), so a green smoke run gives no Boat
+  result for the first native `pwd`. Checking it in a real Boat sandbox is a
+  separate on-demand verification: the coordinator-only production Boat parity
+  run described in that document.
 
 Protocol reference: [Codex App Server](https://developers.openai.com/codex/app-server).
