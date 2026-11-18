@@ -5,6 +5,7 @@ import { ArrowUpIcon, CheckIcon, ChevronDownIcon, CircleAlertIcon, Loader2Icon, 
 import Link from "next/link";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
+import { useLaunchViewport } from "@/components/launch-surface";
 import { SubmitShortcut } from "@/components/mod-key";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -42,6 +43,7 @@ export function LaunchChip({
 }) {
   const [local, setLocal] = useState(false);
   const [phone, setPhone] = useState(false);
+  const sheetRef = useLaunchViewport(true);
   const triggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const media = matchMedia("(width < 640px)");
@@ -84,6 +86,7 @@ export function LaunchChip({
         warning && "border-warning",
       )}
       aria-label={`${label}${warning ? ", needs attention" : ""}${locked ? ", locked by template" : ""}`}
+      data-launch-chip={title}
       aria-haspopup="dialog"
       aria-expanded={open}
       onClick={phone ? () => setOpen(true) : undefined}
@@ -99,12 +102,17 @@ export function LaunchChip({
         {trigger}
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
+            ref={sheetRef}
             side="bottom"
             aria-describedby={undefined}
-            className="max-h-[85dvh] overflow-y-auto rounded-t-2xl p-4 [&_[cmdk-item]]:min-h-11 [&_button]:pointer-coarse:min-h-11"
+            className="max-h-[85dvh] overflow-y-auto rounded-t-2xl p-4
+              [&_[cmdk-item]]:min-h-11 [&_button]:pointer-coarse:min-h-11
+              [&_[data-slot=sheet-close]]:pointer-coarse:grid [&_[data-slot=sheet-close]]:pointer-coarse:size-11 [&_[data-slot=sheet-close]]:pointer-coarse:place-items-center
+              [&_a]:pointer-coarse:inline-flex [&_a]:pointer-coarse:min-h-11 [&_a]:pointer-coarse:items-center [&_input:not([type=radio])]:pointer-coarse:min-h-11
+              [&_button]:focus-visible:ring-ring"
             onCloseAutoFocus={restoreFocus}
           >
-            <SheetTitle className="pr-10">{title}</SheetTitle>
+            <SheetTitle className="pr-14">{title}</SheetTitle>
             {children}
           </SheetContent>
         </Sheet>
@@ -117,7 +125,7 @@ export function LaunchChip({
         aria-label={title}
         align="start"
         onCloseAutoFocus={restoreFocus}
-        className="max-h-[var(--radix-popover-content-available-height)] w-[min(25rem,calc(100vw-2rem))] overflow-y-auto rounded-xl p-2 [&_[cmdk-item]]:pointer-coarse:min-h-11 [&_button]:pointer-coarse:min-h-11"
+        className="max-h-[var(--radix-popover-content-available-height)] w-[min(25rem,calc(100vw-2rem))] overflow-y-auto rounded-xl p-2 [&_[cmdk-item]]:pointer-coarse:min-h-11 [&_button]:pointer-coarse:min-h-11 [&_button]:focus-visible:ring-ring"
       >
         {children}
       </PopoverContent>
@@ -159,6 +167,7 @@ export function ChoiceChip({
                     value={option.value || "default"}
                     keywords={[option.label, group, option.reason ?? ""]}
                     disabled={Boolean(option.reason)}
+                    className="data-[disabled=true]:opacity-100"
                     onSelect={() => {
                       onChange(option.value);
                       setOpen(false);
@@ -426,28 +435,37 @@ export function LaunchComposer({
   );
 }
 
+type DockerLimit = { name: string; reason: string };
+
 export function DockerLimits({
-  unavailable = [],
+  unavailable,
+  details,
 }: {
-  unavailable?: readonly { name: string; reason: string }[] | undefined;
+  unavailable?: readonly DockerLimit[] | undefined;
+  details?: ReactNode;
 }) {
   return (
     <LaunchChip label="Docker limits">
       <div className="space-y-2 p-2 text-sm">
         <p>The first launch on a Docker host downloads Armada’s base image; it can take a few minutes.</p>
-        {unavailable.length > 0 && (
-          <div data-docker-unavailable>
-            <p className="font-medium">Not available on Docker hosts yet</p>
-            <ul>
-              {unavailable.map((entry) => (
-                <li key={entry.name}>
-                  {entry.name}: {entry.reason}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        {unavailable ? <DockerLimitList unavailable={unavailable} /> : details}
       </div>
     </LaunchChip>
+  );
+}
+
+export function DockerLimitList({ unavailable }: { unavailable: readonly DockerLimit[] }) {
+  if (unavailable.length === 0) return null;
+  return (
+    <div data-docker-unavailable>
+      <p className="font-medium">Not available on Docker hosts yet</p>
+      <ul>
+        {unavailable.map((entry) => (
+          <li key={entry.name}>
+            <span className="font-medium">{entry.name}</span>: {entry.reason}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

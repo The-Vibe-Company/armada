@@ -3,11 +3,11 @@
 import { type Harness, MODEL_CATALOG } from "@armada/core";
 import { RocketIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
 import { ActionForm } from "@/components/action-form";
 import { ComposerLocation, ComposerStop, DockerLimits, LaunchChip, LaunchComposer } from "@/components/launch-composer";
-import { type LaunchConnections, LaunchStart, mcpFact, useLaunchAccess } from "@/components/launch-dialog";
+import { type LaunchConnections, LaunchStart, useLaunchAccess } from "@/components/launch-dialog";
 import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
 import { LaunchDialogContent } from "@/components/launch-surface";
 import { SkillPicker } from "@/components/skill-picker";
@@ -16,7 +16,7 @@ import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import type { ActionResult } from "@/lib/action";
 import { CONNECTION_CHOICE_FIELD } from "@/lib/connections";
 import { dockerLaunchKeyStorage, preferredHarness, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
-import { launchHoldIds } from "@/lib/launch-composer";
+import { launchHoldIds, launchToolsSummary } from "@/lib/launch-composer";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
@@ -74,6 +74,7 @@ export function DockerLaunchForm({
   hostName,
   accounts,
   unavailable,
+  dockerLimits,
   harnesses,
   initialHarness,
   starts,
@@ -90,7 +91,8 @@ export function DockerLaunchForm({
   hostId: string;
   hostName: string;
   accounts: LaunchAccounts;
-  unavailable: { name: string; reason: string }[];
+  unavailable?: readonly { name: string; reason: string }[] | undefined;
+  dockerLimits?: ReactNode;
   harnesses: Harness[];
   initialHarness: Harness;
   starts?: readonly LaunchStartTarget[];
@@ -192,7 +194,7 @@ export function DockerLaunchForm({
               tools={
                 <LaunchChip
                   title="Tools"
-                  label={`Tools · ${mcpFact(access)}`}
+                  label={`Tools · ${launchToolsSummary(access)}`}
                   warning={access.held || access.unavailable}
                 >
                   {access.fields(id)}
@@ -251,7 +253,7 @@ export function DockerLaunchForm({
               options={
                 <>
                   <ComposerStop provider="docker" idleDelaySeconds={idleDelaySeconds} />
-                  <DockerLimits unavailable={unavailable} />
+                  <DockerLimits unavailable={unavailable} details={dockerLimits} />
                 </>
               }
             />

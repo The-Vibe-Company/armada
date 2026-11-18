@@ -24,6 +24,7 @@ import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CatalogBrowser } from "@/components/catalog-browser";
 import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
+import { DockerLaunchLimitList } from "@/components/docker-launch-limit-list";
 import { SnapshotBuildRefresh, SnapshotCreateChoice, SnapshotRebuildDialog } from "@/components/docker-snapshot-forms";
 import { EnvironmentTemplates } from "@/components/environment-templates";
 import { GoldenCreateDialog } from "@/components/golden-create-dialog";
@@ -1152,7 +1153,7 @@ function SnapshotLaunchDialog({ primary = false, ...props }: LaunchProps & { pri
 /** Launch-only Boat harness discovery streams independently of the snapshot inventory. */
 async function SnapshotLaunchStart(props: LaunchProps) {
   const openCodeAvailable = props.provider === "boat" && boatOpenCodeAvailable(await readLaunchOptions());
-  return <LaunchStart {...props} boatOpenCodeAvailable={openCodeAvailable} />;
+  return <LaunchStart {...props} boatOpenCodeAvailable={openCodeAvailable} dockerLimits={<DockerLaunchLimitList />} />;
 }
 
 function HostLaunchDialog({ primary = false, ...props }: HostLaunchStart & { primary?: boolean }) {

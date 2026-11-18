@@ -2,14 +2,20 @@
 
 import { RocketIcon } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import { LaunchStart } from "@/components/launch-dialog";
 import { LaunchDialogContent } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
-export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }) {
+export function SandboxLaunchAction({
+  shortcut = false,
+  dockerLimits,
+}: {
+  shortcut?: boolean;
+  dockerLimits?: ReactNode;
+}) {
   const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -55,16 +61,18 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
               hostId={target.hostId}
               hostName={target.label.replace(/^Empty machine · /, "")}
               accounts={options.accounts}
-              unavailable={[]}
+              dockerLimits={dockerLimits}
               harnesses={target.harnesses ?? []}
               initialHarness={target.initialHarness ?? "codex"}
             />
           ) : (
             <LaunchStart
               initialOptions={options}
+              dockerLimits={dockerLimits}
               orgId={options.orgId}
               golden={target.golden}
               provider={target.provider}
+              harnesses={target.harnesses}
               {...(target.snapshotId ? { snapshotId: target.snapshotId } : {})}
               repositories={target.repositories}
               {...(target.sizing ? { sizing: target.sizing } : {})}

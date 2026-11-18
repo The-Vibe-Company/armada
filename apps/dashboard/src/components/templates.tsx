@@ -721,6 +721,7 @@ export function TemplateLaunchForm({
   onRemove,
   loadingError,
   idleDelaySeconds,
+  dockerLimits,
 }: {
   target: TemplateLaunchTarget;
   task?: string;
@@ -728,6 +729,7 @@ export function TemplateLaunchForm({
   onRemove?: () => void;
   loadingError?: string;
   idleDelaySeconds?: number | undefined;
+  dockerLimits?: ReactNode;
 }) {
   const id = useId();
   const [requestKey, setRequestKey] = useState(newRequestKey);
@@ -776,11 +778,11 @@ export function TemplateLaunchForm({
       type="button"
       variant="secondary"
       size="sm"
-      className="rounded-full"
+      className="max-w-full rounded-full"
       onClick={onRemove}
       aria-label={`${target.name}, remove template`}
     >
-      {target.name} ×
+      <span className="truncate">{target.name}</span> <span aria-hidden="true">×</span>
     </Button>
   );
 
@@ -794,7 +796,7 @@ export function TemplateLaunchForm({
       {!named && eligible.length > 0 && <input type="hidden" name="model_account" value={chosen ? account : ""} />}
       <LaunchComposer
         id={id}
-        headline={`What should we build ${chips.docker ? "on" : "in"} ${project || name}?`}
+        headline={`What should we build ${chips.docker ? "on" : "in"} ${chips.docker ? (target.hostName ?? name) : project || name}?`}
         template={target.name}
         templatePill={onRemove ? pill : <DialogClose asChild>{pill}</DialogClose>}
         docker={chips.docker}
@@ -888,7 +890,7 @@ export function TemplateLaunchForm({
         options={
           <>
             <ComposerStop provider={provider} idleDelaySeconds={idleDelaySeconds} />
-            {chips.docker && <DockerLimits />}
+            {chips.docker && <DockerLimits details={dockerLimits} />}
           </>
         }
       />
@@ -900,9 +902,11 @@ export function TemplateLaunchForm({
 export function TemplateLaunchDialog({
   target,
   size = "sm",
+  dockerLimits,
 }: {
   target: TemplateLaunchTarget;
   size?: "sm" | "default";
+  dockerLimits?: ReactNode;
 }) {
   return (
     <Dialog>
@@ -912,7 +916,7 @@ export function TemplateLaunchDialog({
         </Button>
       </DialogTrigger>
       <LaunchDialogContent>
-        <TemplateLaunchForm target={target} />
+        <TemplateLaunchForm target={target} dockerLimits={dockerLimits} />
       </LaunchDialogContent>
     </Dialog>
   );

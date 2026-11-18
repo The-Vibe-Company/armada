@@ -4,7 +4,7 @@ import type { Harness, MachineSizePolicy, SandboxPlacementProviderId } from "@ar
 import { MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
 import { CircleAlertIcon, RocketIcon } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { launchFromGolden, readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import { ActionForm } from "@/components/action-form";
@@ -29,7 +29,7 @@ import {
   unreadyDefaults,
 } from "@/lib/connections";
 import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
-import { composerChips, launchHoldIds } from "@/lib/launch-composer";
+import { composerChips, launchHoldIds, launchToolsSummary } from "@/lib/launch-composer";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
@@ -51,6 +51,7 @@ export type LaunchProps = {
   snapshotId?: string;
   hostName?: string;
   unavailable?: readonly { name: string; reason: string }[] | undefined;
+  dockerLimits?: ReactNode;
   harnesses?: readonly Harness[] | undefined;
   boatOpenCodeAvailable?: boolean;
   orgId: string;
@@ -104,7 +105,8 @@ export type HostLaunchStart = {
   hostId: string;
   hostName: string;
   accounts: LaunchAccounts;
-  unavailable: { name: string; reason: string }[];
+  unavailable?: readonly { name: string; reason: string }[] | undefined;
+  dockerLimits?: ReactNode;
   harnesses: Harness[];
   initialHarness: Harness;
 };
@@ -139,9 +141,18 @@ export function LaunchStart(
         repositories: props.repositories,
         ...(props.snapshotId ? { snapshotId: props.snapshotId } : {}),
         ...(props.hostName ? { hostName: props.hostName } : {}),
+        ...(props.harnesses ? { harnesses: [...props.harnesses] } : {}),
         ...(props.sizing ? { sizing: props.sizing } : {}),
       };
   const [selected, setSelected] = useState(fallback.id);
+  const selectedTarget = useRef(fallback);
+  const startRoot = useRef<HTMLDivElement>(null);
+  const focusStart = useRef(false);
+  useLayoutEffect(() => {
+    if (!focusStart.current) return;
+    focusStart.current = false;
+    startRoot.current?.querySelector<HTMLButtonElement>('[data-launch-chip="From"]')?.focus();
+  });
   const [templateId, setTemplateId] = useState("");
   const [task, setTask] = useState("");
   useEffect(() => {
@@ -181,7 +192,7 @@ export function LaunchStart(
   }, [props, host]);
   const freshSelection = options?.targets.find((item) => item.id === selected);
   const missing = {
-    ...fallback,
+    ...selectedTarget.current,
     reason: "This starting point is no longer available. Pick another snapshot or Docker host.",
   };
   const starts = options ? (freshSelection ? options.targets : [missing, ...options.targets]) : [fallback];
@@ -198,10 +209,10 @@ export function LaunchStart(
           type="button"
           variant={templateId === item.id ? "secondary" : "outline"}
           size="xs"
-          className="rounded-full"
+          className="max-w-full rounded-full"
           onClick={() => setTemplateId(templateId === item.id ? "" : item.id)}
         >
-          {item.name}
+          <span className="truncate">{item.name}</span>
           {templateId === item.id ? " ×" : ""}
         </Button>
       ))}
@@ -211,6 +222,10 @@ export function LaunchStart(
     starts,
     selectedStart: target.id,
     onStart: (id: string) => {
+      const next = starts.find((item) => item.id === id);
+      if (!next || id === selected) return;
+      selectedTarget.current = next;
+      focusStart.current = true;
       setSelected(id);
       setTemplateId("");
     },
@@ -221,7 +236,7 @@ export function LaunchStart(
     onTask: setTask,
   };
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div ref={startRoot} className="flex min-h-0 flex-1 flex-col">
       {template ? (
         <TemplateLaunchForm
           key={template.id}
@@ -230,6 +245,7 @@ export function LaunchStart(
           onTask={setTask}
           loadingError={loadingError}
           idleDelaySeconds={options?.idleDelaySeconds}
+          dockerLimits={props.dockerLimits}
           onRemove={() => setTemplateId("")}
         />
       ) : target.hostId ? (
@@ -242,18 +258,20 @@ export function LaunchStart(
           connections={
             options?.connections ?? (!host ? props.connections : { unavailable: "Still loading connections." })
           }
-          unavailable={host ? props.unavailable : []}
+          unavailable={props.unavailable}
+          dockerLimits={props.dockerLimits}
           harnesses={target.harnesses ?? ["codex"]}
           initialHarness={target.initialHarness ?? "codex"}
           {...common}
         />
       ) : (
         <LaunchForm
-          key={target.id}
+          key={`${target.id}:${target.harnesses?.join(",") ?? ""}`}
           golden={target.golden}
           provider={target.provider}
           hostName={target.hostName ?? DOCKER_HOST_LABEL}
           unavailable={props.unavailable}
+          dockerLimits={props.dockerLimits}
           harnesses={target.harnesses}
           orgId={props.orgId}
           {...(target.snapshotId ? { snapshotId: target.snapshotId } : {})}
@@ -280,6 +298,7 @@ function LaunchForm({
   snapshotId,
   hostName,
   unavailable,
+  dockerLimits,
   harnesses,
   boatOpenCodeAvailable = false,
   orgId,
@@ -393,7 +412,7 @@ function LaunchForm({
               tools={
                 <LaunchChip
                   title="Tools"
-                  label={`Tools · ${mcpFact(access)}`}
+                  label={`Tools · ${launchToolsSummary(access)}`}
                   warning={access.held || access.unavailable}
                 >
                   {access.fields(id)}
@@ -488,7 +507,7 @@ function LaunchForm({
                       </p>
                     </LaunchChip>
                   )}
-                  {chips.docker && <DockerLimits unavailable={unavailable} />}
+                  {chips.docker && <DockerLimits unavailable={unavailable} details={dockerLimits} />}
                 </>
               }
             />
@@ -689,11 +708,4 @@ function ConnectionOption({
       </div>
     </li>
   );
-}
-
-/** The Tools the agent can call a launch gets, as one summary fact. */
-export function mcpFact(access: { unavailable: boolean; selected: number; selectedName?: string | undefined }): string {
-  if (access.unavailable) return "Tools unavailable";
-  if (access.selected === 1 && access.selectedName) return `${access.selectedName} connected`;
-  return access.selected === 0 ? "No tools" : `${access.selected} ${access.selected === 1 ? "tool" : "tools"}`;
 }

@@ -10,9 +10,41 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { isSubmitShortcut } from "@/lib/shortcut";
 import { cn } from "@/lib/utils";
 
+/** The soft keyboard can shrink the visible viewport without changing CSS viewport units. */
+export function useLaunchViewport(sheet = false) {
+  const [content, setContent] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport || !content) return;
+    const phone = matchMedia("(width < 640px)");
+    const fit = () => {
+      const keyboard = phone.matches && viewport.scale === 1 && viewport.height < window.innerHeight;
+      if (keyboard && sheet) {
+        content.style.maxHeight = `${viewport.height * 0.85}px`;
+        content.style.bottom = `${Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)}px`;
+      } else if (keyboard) {
+        content.style.height = `${viewport.height}px`;
+        content.style.top = `${viewport.offsetTop + viewport.height / 2}px`;
+      } else {
+        for (const property of ["height", "top", "max-height", "bottom"]) content.style.removeProperty(property);
+      }
+    };
+    fit();
+    viewport.addEventListener("resize", fit);
+    viewport.addEventListener("scroll", fit);
+    return () => {
+      viewport.removeEventListener("resize", fit);
+      viewport.removeEventListener("scroll", fit);
+    };
+  }, [content, sheet]);
+  return setContent;
+}
+
 export function LaunchDialogContent({ children }: { children: ReactNode }) {
+  const dialog = useLaunchViewport();
   return (
     <DialogContent
+      ref={dialog}
       className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-y-auto overscroll-contain rounded-2xl p-0 sm:max-w-[760px] max-sm:h-dvh max-sm:max-h-dvh max-sm:w-screen max-sm:max-w-none max-sm:rounded-none [&_[data-slot=dialog-close]]:pointer-coarse:grid [&_[data-slot=dialog-close]]:pointer-coarse:size-11 [&_[data-slot=dialog-close]]:pointer-coarse:place-items-center"
       onKeyDownCapture={(event) => {
         if (!isSubmitShortcut(event.nativeEvent)) return;

@@ -35,3 +35,14 @@ export function launchStopLabel(provider: SandboxPlacementProviderId, ttl: strin
   const label = ttlOptions(provider).find((option) => option.value === ttl)?.label;
   return `Stops in ${label?.replace(/^Default \((.*)\)$/, "$1") ?? "4 hours"}`;
 }
+
+/** The Tools the agent can call a launch gets, as one summary fact. */
+export function launchToolsSummary(access: {
+  unavailable: boolean;
+  selected: number;
+  selectedName?: string | undefined;
+}): string {
+  if (access.unavailable) return "Tools unavailable";
+  if (access.selected === 1 && access.selectedName) return `${access.selectedName} connected`;
+  return access.selected === 0 ? "No tools" : `${access.selected} ${access.selected === 1 ? "tool" : "tools"}`;
+}

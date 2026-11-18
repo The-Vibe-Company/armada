@@ -2,7 +2,7 @@
 
 import type { Harness } from "@armada/core";
 import Link from "next/link";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { LaunchChip } from "@/components/launch-composer";
 import type { ModelCatalog } from "@/components/model-fields";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,11 @@ export function LaunchSentence({
   const [model, setModel] = useState(() => initialLaunchSelection(accounts, catalog, harness).model);
   const [effort, setEffort] = useState(catalog[harness].defaultReasoningEffort);
   const [other, setOther] = useState(false);
+  const [invalidOther, setInvalidOther] = useState(false);
+  const otherField = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (open && other && invalidOther) otherField.current?.focus();
+  }, [open, other, invalidOther]);
   const [query, setQuery] = useState("");
   const rows = accounts.state === "ready" ? accounts.accounts : [];
   const chosen = rows.find((row) => row.id === account);
@@ -195,7 +200,11 @@ export function LaunchSentence({
         )}
         <CommandItem
           onSelect={() => {
-            if (!other) setModel("");
+            if (!other) {
+              setModel("");
+              setInvalidOther(false);
+              setEffort(defaultEffort(harness, ""));
+            }
             setOther(true);
           }}
         >
@@ -225,12 +234,14 @@ export function LaunchSentence({
           className="sr-only"
           tabIndex={-1}
           aria-hidden="true"
-          value={model.trim()}
+          value={model}
           onChange={(event) => setModel(event.target.value)}
           required
           onInvalid={(event) => {
             event.preventDefault();
+            setInvalidOther(true);
             setOpen(true);
+            otherField.current?.focus();
           }}
         />
       )}
@@ -262,13 +273,29 @@ export function LaunchSentence({
         </fieldset>
         {picker}
         {other && (
-          <Input
-            aria-label="Other model id"
-            aria-required="true"
-            placeholder="Model id"
-            value={model}
-            onChange={(event) => setModel(event.target.value)}
-          />
+          <div className="space-y-1 p-2">
+            <Input
+              ref={(input) => {
+                otherField.current = input;
+                if (input && !model) input.focus();
+              }}
+              aria-label="Other model id"
+              aria-required="true"
+              aria-invalid={invalidOther}
+              aria-describedby={invalidOther ? `${id}-model-required` : undefined}
+              placeholder="Model id"
+              value={model}
+              onChange={(event) => {
+                setInvalidOther(false);
+                setModel(event.target.value);
+              }}
+            />
+            {invalidOther && (
+              <p id={`${id}-model-required`} role="alert" className="text-sm text-destructive">
+                Enter a model id.
+              </p>
+            )}
+          </div>
         )}
         <fieldset className="flex flex-wrap gap-x-3 border-t p-2 text-sm">
           <legend className="px-2 font-medium">Effort</legend>

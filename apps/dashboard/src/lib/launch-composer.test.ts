@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { composerChips, launchAgentSummary, launchHoldIds, launchSendLabel, launchStopLabel } from "./launch-composer";
+import {
+  composerChips,
+  launchAgentSummary,
+  launchHoldIds,
+  launchSendLabel,
+  launchStopLabel,
+  launchToolsSummary,
+} from "./launch-composer";
 
 test("shows only the settings the starting point accepts", () => {
   expect(composerChips("modal", 1, true)).toEqual({ folder: true, machine: true, access: true, docker: false });
@@ -37,4 +44,11 @@ test("summarizes the agent with the account only when it needs to be identified"
 test("summarizes default and explicit stop times", () => {
   expect(launchStopLabel("boat", "")).toBe("Stops in 4 hours");
   expect(launchStopLabel("boat", "3600")).toBe("Stops in 1 hour");
+});
+
+test("tools summary distinguishes unavailable discovery, one named tool, and empty or multiple selections", () => {
+  expect(launchToolsSummary({ unavailable: true, selected: 0 })).toBe("Tools unavailable");
+  expect(launchToolsSummary({ unavailable: false, selected: 0 })).toBe("No tools");
+  expect(launchToolsSummary({ unavailable: false, selected: 1, selectedName: "Docs" })).toBe("Docs connected");
+  expect(launchToolsSummary({ unavailable: false, selected: 2 })).toBe("2 tools");
 });
