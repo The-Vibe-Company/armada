@@ -32,10 +32,14 @@ export function checkSdkDeclarations(declarations: string, smoke: string): reado
     types: [],
   };
   const host = ts.createCompilerHost(options);
-  const { directoryExists, fileExists, readFile } = host;
-  host.directoryExists = (path) => directories.has(path) || !!directoryExists?.(path);
-  host.fileExists = (path) => files.has(path) || fileExists(path);
-  host.readFile = (path) => files.get(path) ?? readFile(path);
+  const { fileExists, readFile } = host;
+  const libDir = posix.dirname(host.getDefaultLibFileName(options).replaceAll("\\", "/"));
+  const isBundledLib = (path: string) =>
+    posix.dirname(path) === libDir && /^lib\..+\.d\.ts$/.test(posix.basename(path));
+  host.getCurrentDirectory = () => consumer;
+  host.directoryExists = (path) => directories.has(path) || path === libDir;
+  host.fileExists = (path) => files.has(path) || (isBundledLib(path) && fileExists(path));
+  host.readFile = (path) => files.get(path) ?? (isBundledLib(path) ? readFile(path) : undefined);
   return ts.getPreEmitDiagnostics(ts.createProgram([smokePath], options, host));
 }
 
