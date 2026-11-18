@@ -490,6 +490,13 @@ describe("named model accounts", () => {
         expectedVersion: account.version!,
         value: "morph_rotated_placeholder",
       });
+      const named = await resolveCredentials(store, KEY, {
+        userId: people.stan,
+        orgId: org.id,
+        harness: "codex",
+        credentialId: rotated.id!,
+      });
+      expect(named.env.OPENAI_API_KEY).toBe("morph_rotated_placeholder");
       await setCredential(store, KEY, people.stan, {
         scope: "user",
         org: undefined,
