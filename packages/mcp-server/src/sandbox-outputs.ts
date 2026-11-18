@@ -21,7 +21,7 @@ const ELIGIBLE = `provider in ('boat','modal','docker') and not application_secr
   and not ('collector_unsupported' = any(outputs_failure_reasons))`;
 
 /** The only provider surface output collection uses. */
-type OutputReader = Pick<Provider, "readOutputs">;
+type OutputReader = Pick<Provider, "readOutputs" | "probeOutputs">;
 
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
  * their signal aborts; the outstanding read stays tracked, bounded and fenced from persisting. */
@@ -62,6 +62,42 @@ function failureReason(error: unknown, signal?: AbortSignal): OutputFailureReaso
   return "collector_failed";
 }
 
+/** Claim the first capability probe across the sample and final paths. A crashed claim
+ * can be retried after the sampling interval, which is longer than either probe's deadline. */
+async function probeOutputCapability(
+  sql: Sql,
+  provider: OutputReader,
+  id: string,
+  providerId: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const claim = (
+    await sql.query<{ probe: string }>(
+      `update public.sandboxes set outputs_probe_at=clock_timestamp()
+       where id=$1 and ${ELIGIBLE} and not outputs_collector_supported
+       and (outputs_probe_at is null or outputs_probe_at<now()-interval '30 seconds')
+       returning outputs_probe_at::text as probe`,
+      [id],
+    )
+  ).rows[0];
+  if (!claim) return false;
+  signal?.throwIfAborted();
+  const ready = await provider.probeOutputs!({ sandboxId: providerId, ...(signal ? { signal } : {}) }).catch(
+    (error: unknown) => {
+      signal?.throwIfAborted();
+      throw error;
+    },
+  );
+  if (!ready) throw new OutputCollectionError("output_unavailable");
+  signal?.throwIfAborted();
+  const verified = await sql.query(
+    `update public.sandboxes set outputs_collector_supported=true
+     where id=$1 and outputs_probe_at=$2::timestamptz and ${ELIGIBLE} returning id`,
+    [id, claim.probe],
+  );
+  return verified.rows.length > 0;
+}
+
 async function collect(
   sql: Sql,
   provider: OutputReader,
@@ -77,8 +113,16 @@ async function collect(
   // Taint can commit after the scan claim (e.g. while the provider resolves): admit the read only
   // against current taint, immediately before dispatch (the same check-then-act fence exec uses).
   // Docker additionally refuses dispatch and redacts replies under the runtime session lock.
-  const admitted = await sql.query(`select 1 from public.sandboxes where id=$1 and ${ELIGIBLE}`, [id]);
-  if (!admitted.rows.length) return;
+  const admitted = (
+    await sql.query<{ outputs_collector_supported: boolean }>(
+      `select outputs_collector_supported from public.sandboxes where id=$1 and ${ELIGIBLE}`,
+      [id],
+    )
+  ).rows[0];
+  if (!admitted) return;
+  if (provider.probeOutputs && !admitted.outputs_collector_supported) {
+    if (!(await probeOutputCapability(sql, provider, id, providerId, signal))) return;
+  }
   signal?.throwIfAborted();
   const read = provider.readOutputs
     ? await provider.readOutputs({ sandboxId: providerId, ...(signal ? { signal } : {}) })

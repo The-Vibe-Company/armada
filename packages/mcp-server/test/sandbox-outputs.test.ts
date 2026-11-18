@@ -79,10 +79,18 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   );
   const { state, provider } = disks();
   state.live = [file("memo.pdf", "document")];
-  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  let probes = 0;
+  const service = createSandboxOutputs(sql, KEY, async () => ({
+    readOutputs: provider.readOutputs!,
+    async probeOutputs() {
+      probes++;
+      return true;
+    },
+  }));
   expect(await sample(service)).toBe(true);
   await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
   expect(await sample(service)).toBe(true);
+  expect(probes).toBe(1);
   expect(
     (await db.query(`select 1 from outbound_webhook_deliveries where payload->>'type'='sandbox.output.available'`))
       .rows,
@@ -108,10 +116,19 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
 test("an unsupported collector is reported once and skipped by both sampling and final capture", async () => {
   const { db, people, id, sql } = await fixture();
   let attempts = 0;
+  let reads = 0;
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
   const provider = {
-    async readOutputs() {
+    async probeOutputs() {
       attempts++;
+      entered.resolve();
+      await release.promise;
       throw new OutputCollectionError("collector_unsupported");
+    },
+    async readOutputs() {
+      reads++;
+      return [];
     },
   };
   const service = createSandboxOutputs(sql, KEY, async () => provider);
@@ -119,14 +136,22 @@ test("an unsupported collector is reported once and skipped by both sampling and
   const warn = console.warn;
   console.warn = (line) => lines.push(JSON.parse(line));
   try {
-    expect(await sample(service)).toBe(true);
+    expect(await service.reconcileOne(signal())).toBe(true);
+    await entered.promise;
+    // The first sample owns the probe, even when stop claims a separate scan.
+    await captureFinalOutputs(sql, provider, id, { key: KEY });
+    release.resolve();
+    await service.drain();
     await db.query(`update sandboxes set outputs_checked_at=null where id=$1`, [id]);
     expect(await sample(service)).toBe(false);
     await captureFinalOutputs(sql, provider, id, { key: KEY });
   } finally {
+    release.resolve();
+    await service.drain();
     console.warn = warn;
   }
   expect(attempts).toBe(1);
+  expect(reads).toBe(0);
   expect(lines).toEqual([
     { event: "sandbox_output_collection_failed", sandboxId: id, reason: "collector_unsupported" },
   ]);

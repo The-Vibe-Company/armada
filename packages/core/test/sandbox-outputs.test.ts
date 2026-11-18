@@ -47,7 +47,7 @@ function runCollector(root: string) {
   return Bun.spawnSync(["/bin/sh", "-c", script], { env: { PATH: bin } });
 }
 
-test("the Python-free collector bounds admitted files in name order", () => {
+test.skipIf(process.platform !== "linux")("the Python-free collector bounds admitted files in name order", () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
     expect(runCollector(root).exitCode).not.toBe(0);
@@ -79,7 +79,7 @@ test("the Python-free collector bounds admitted files in name order", () => {
   }
 });
 
-test("the collector isolates its working directory and environment", () => {
+test.skipIf(process.platform !== "linux")("the collector isolates its working directory and environment", () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
   try {
     mkdirSync(join(root, "outputs"));
@@ -101,16 +101,19 @@ test("the collector isolates its working directory and environment", () => {
   }
 });
 
-test("the real collector refuses a symlink in a parent of the declared directory", () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
-  try {
-    const home = join(root, "real-home");
-    mkdirSync(join(home, "outputs"), { recursive: true });
-    writeFileSync(join(home, "outputs", "memo.txt"), "document");
-    const linkedHome = join(root, "linked-home");
-    symlinkSync(home, linkedHome);
-    expect(runCollector(linkedHome).exitCode).not.toBe(0);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+test.skipIf(process.platform !== "linux")(
+  "the real collector refuses a symlink in a parent of the declared directory",
+  () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "outputs-"));
+    try {
+      const home = join(root, "real-home");
+      mkdirSync(join(home, "outputs"), { recursive: true });
+      writeFileSync(join(home, "outputs", "memo.txt"), "document");
+      const linkedHome = join(root, "linked-home");
+      symlinkSync(home, linkedHome);
+      expect(runCollector(linkedHome).exitCode).not.toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

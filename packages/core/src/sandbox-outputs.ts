@@ -26,13 +26,16 @@ export interface OutputFile {
 // Use only fixed paths and clear the environment before starting the collector. In a privileged
 // exec context, do not fall back to the agent's home executable.
 const collectorShell = (program: string) => `cd / || exit 5
+uid=$(/usr/bin/id -u) || exit 86
 if [ -x /opt/armada/runtime-bun/bun ]; then
   bun=/opt/armada/runtime-bun/bun
+elif [ "$uid" = 0 ]; then
+  exit 86
 elif [ -x /usr/local/bin/bun ]; then
   bun=/usr/local/bin/bun
 elif [ -x /usr/bin/bun ]; then
   bun=/usr/bin/bun
-elif [ "$(id -u)" != 0 ] && [ -x /home/user/.bun/bin/bun ]; then
+elif [ -x /home/user/.bun/bin/bun ]; then
   bun=/home/user/.bun/bin/bun
 else
   exit 86
@@ -42,20 +45,34 @@ exec /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin "$bun" --no-env-file --no
 // Linux glibc and /proc/self/fd are part of the managed VM/container baseline. Read each
 // directory entry incrementally and anchor each path component to an open directory descriptor,
 // so even a concurrent rename cannot redirect an open through a symlink.
-const collectorSetup = String.raw`
+const collectorSetup = `
 const fs = require("node:fs");
-const { dlopen, FFIType, ptr, toArrayBuffer } = require("bun:ffi");
+let ptr, read, toArrayBuffer;
 const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
 const parentFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
 const descriptor = (fd) => "/proc/self/fd/" + fd;
 let libc;
 try {
+  const ffi = require("bun:ffi");
+  const { dlopen, FFIType } = ffi;
+  ({ ptr, read, toArrayBuffer } = ffi);
   libc = dlopen("libc.so.6", {
     opendir: { args: [FFIType.ptr], returns: FFIType.ptr },
     readdir: { args: [FFIType.ptr], returns: FFIType.ptr },
     closedir: { args: [FFIType.ptr], returns: FFIType.i32 },
+    __errno_location: { args: [], returns: FFIType.ptr },
+    memset: { args: [FFIType.ptr, FFIType.i32, FFIType.u64], returns: FFIType.ptr },
     strlen: { args: [FFIType.ptr], returns: FFIType.u64 },
   }).symbols;
+} catch {
+  process.exit(86);
+}
+`;
+
+export const OUTPUT_COLLECTOR_PROBE = collectorShell(
+  collectorSetup +
+    String.raw`
+try {
   const root = fs.openSync("/", parentFlags);
   try {
     const stream = libc.opendir(ptr(Buffer.from(descriptor(root) + "\0")));
@@ -67,9 +84,9 @@ try {
 } catch {
   process.exit(86);
 }
-`;
-
-export const OUTPUT_COLLECTOR_PROBE = collectorShell(collectorSetup);
+console.log("[]");
+`,
+);
 export const OUTPUT_COLLECTOR = collectorShell(
   collectorSetup +
     String.raw`
@@ -88,7 +105,14 @@ try {
   const names = [];
   let count = 0;
   try {
-    for (let entry; (entry = libc.readdir(stream)); ) {
+    const errno = libc.__errno_location();
+    while (true) {
+      libc.memset(errno, 0, 4);
+      const entry = libc.readdir(stream);
+      if (!entry) {
+        if (read.i32(errno)) process.exit(5);
+        break;
+      }
       // d_name is at byte 19 of Linux's 64-bit dirent (x64 and arm64).
       const start = entry + 19;
       const raw = new Uint8Array(toArrayBuffer(start, 0, Number(libc.strlen(start))));

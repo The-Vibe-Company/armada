@@ -1621,7 +1621,7 @@ function prompt(status: PromptStatus, reason?: string): AgentEvent {
     at: 1,
     promptId: "p1",
     kind: "prompt",
-    text: expect.stringContaining("go\n\nSave any deliverable files directly in /home/user/outputs."),
+    text: "go",
     status,
     ...(reason ? { reason } : {}),
   };

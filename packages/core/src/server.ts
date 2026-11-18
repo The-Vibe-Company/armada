@@ -79,6 +79,7 @@ export { sandboxActivity } from "./sandbox-activity.ts";
 export {
   admitOutputs,
   OUTPUT_COLLECTOR,
+  OUTPUT_COLLECTOR_PROBE,
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_BYTES,
   OUTPUT_MAX_FILES,

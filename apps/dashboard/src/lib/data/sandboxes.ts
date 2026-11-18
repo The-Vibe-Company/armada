@@ -48,7 +48,13 @@ export async function getSandbox(
   id: string,
 ): Promise<Omit<
   Sandbox,
-  "docker_retention_deadline" | "external_ref" | "outputs_checked_at" | "outputs_published_scan"
+  | "docker_retention_deadline"
+  | "external_ref"
+  | "outputs_checked_at"
+  | "outputs_published_scan"
+  | "outputs_failure_reasons"
+  | "outputs_probe_at"
+  | "outputs_collector_supported"
 > | null> {
   const selected = await selectedOrganization();
   if (!selected) return null;

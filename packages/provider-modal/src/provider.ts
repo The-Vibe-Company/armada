@@ -18,7 +18,12 @@ import {
   parseMachineSize,
   resolveModelChoice,
 } from "@armada/core";
-import { OUTPUT_COLLECTOR, readCollectorResult, runtimeBootstrapScript } from "@armada/core/server";
+import {
+  OUTPUT_COLLECTOR,
+  OUTPUT_COLLECTOR_PROBE,
+  readCollectorResult,
+  runtimeBootstrapScript,
+} from "@armada/core/server";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
@@ -865,6 +870,42 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       (!onlyCollected && !!row.snapshotImages?.length)
     );
   }
+  async function collectOutputs(
+    { sandboxId, signal }: Parameters<NonNullable<Provider["readOutputs"]>>[0],
+    command: string,
+  ) {
+    await bound();
+    signal?.throwIfAborted();
+    // Observation, not lifecycle: like exec and getPrompt it reads the row without the
+    // exclusive lifecycle lease, so a periodic sample never makes a concurrent stop, prompt or
+    // the pre-stop final capture fail with lifecycle_lease_busy. A stop racing this read only
+    // makes the exec fail; the caller keeps its previous snapshot.
+    const row = await store.get(sandboxId);
+    assertMachineSource(row);
+    // Live compute only: a stopped Modal workspace is a recovery image, readable only by
+    // starting compute, which this read never does. Armada stops capture first instead.
+    if (row.golden || row.phase !== "active" || !row.physicalId) return null;
+    const sb = await physical(row);
+    signal?.throwIfAborted();
+    // Fixed collector on the physical container, not the runner: it works for native and
+    // enrolled (dial-out) runtimes alike and never carries caller input.
+    const child = await sb.exec(["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sh", "-c", command], {
+      mode: "text",
+      env: {},
+      secrets: [],
+      timeoutMs: 10_000,
+      workdir: "/",
+      stderr: "ignore",
+    });
+    const output = child.stdout.readText();
+    // Awaited below; never an unhandled rejection if closing stdin fails first.
+    output.catch(() => {});
+    await child.stdin.close();
+    // The caller's budget (the shared pre-stop deadline) bounds the wait, not only the exec timeout.
+    const [status, stdout] = await abortable(Promise.all([child.wait(), output]), signal);
+    return readCollectorResult(status, stdout);
+  }
+
   const provider: ModalProvider = {
     id: "modal",
     backendIdentity: async () => {
@@ -1104,34 +1145,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         throw error;
       }
     },
-    async readOutputs({ sandboxId, signal }) {
-      await bound();
-      signal?.throwIfAborted();
-      // Observation, not lifecycle: like exec and getPrompt it reads the row without the
-      // exclusive lifecycle lease, so a periodic sample never makes a concurrent stop, prompt or
-      // the pre-stop final capture fail with lifecycle_lease_busy. A stop racing this read only
-      // makes the exec fail; the caller keeps its previous snapshot.
-      const row = await store.get(sandboxId);
-      assertMachineSource(row);
-      // Live compute only: a stopped Modal workspace is a recovery image, readable only by
-      // starting compute, which this read never does. Armada stops capture first instead.
-      if (row.golden || row.phase !== "active" || !row.physicalId) return null;
-      const sb = await physical(row);
-      signal?.throwIfAborted();
-      // Fixed collector on the physical container, not the runner: it works for native and
-      // enrolled (dial-out) runtimes alike and never carries caller input.
-      const child = await sb.exec(
-        ["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sh", "-c", OUTPUT_COLLECTOR],
-        { mode: "text", env: {}, secrets: [], timeoutMs: 10_000, workdir: "/", stderr: "ignore" },
-      );
-      const output = child.stdout.readText();
-      // Awaited below; never an unhandled rejection if closing stdin fails first.
-      output.catch(() => {});
-      await child.stdin.close();
-      // The caller's budget (the shared pre-stop deadline) bounds the wait, not only the exec timeout.
-      const [status, stdout] = await abortable(Promise.all([child.wait(), output]), signal);
-      return readCollectorResult(status, stdout);
+    readOutputs(request) {
+      return collectOutputs(request, OUTPUT_COLLECTOR);
     },
+    async probeOutputs(request) {
+      return (await collectOutputs(request, OUTPUT_COLLECTOR_PROBE)) !== null;
+    },
+
     async observeResources(id) {
       await bound();
       return store.lease(id, async (row) => {

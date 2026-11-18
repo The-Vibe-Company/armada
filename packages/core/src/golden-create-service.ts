@@ -731,10 +731,13 @@ export function goldenScript(
     "armada_command=0",
     "armada_phase=ownership",
     "normalize_armada_build_ownership",
+    "armada_phase=output_collector",
+    // A snapshot can later be read by a privileged provider exec. Never point that reader
+    // at the agent-writeable Bun installed by the repository baseline.
+    'if [ ! -x /opt/armada/runtime-bun/bun ]; then armada_bun=$(command -v bun); sudo -n install -d -m 755 /opt/armada/runtime-bun; sudo -n install -m 555 "$armada_bun" /opt/armada/runtime-bun/bun; fi',
+    `/bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_PROBE)}`,
     "armada_phase=credential_cleanup",
     `if [ "$(id -u)" -eq 0 ]; then bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; else sudo -n bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; fi 2>/dev/null`,
-    "armada_phase=output_collector",
-    `/bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_PROBE)}`,
     // A quick, same-session check; the independent, far more thorough scan (working tree, binaries
     // and every git object, reachable or not) is `scanGoldenSandbox`, run over the provider's own
     // exec channel after this session closes, and is what actually gates the snapshot.
