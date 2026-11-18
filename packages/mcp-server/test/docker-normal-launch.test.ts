@@ -2570,7 +2570,7 @@ test("a lost Docker template response retains one reconciling claim and never re
   expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
 });
 
-async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}) {
+async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}, defaultBranch = "main") {
   const db = database();
   const f = await fixture(options);
   for (const [userId, githubId, access] of [
@@ -2592,7 +2592,7 @@ async function snapshotFixture(enabled = true, options: Parameters<typeof fixtur
             name: "project",
             owner: { login: "example" },
             private: false,
-            default_branch: "main",
+            default_branch: defaultBranch,
           })
         : Response.json({ id: admin ? 124 : 123, login: "owner", name: "Owner" });
   }) as unknown as typeof fetch;
@@ -2711,7 +2711,7 @@ test.each(["private", "org"] as const)(
   "host snapshot %s publication enforces visibility and launches the baked image without cloning again",
   async (visibility) => {
     const db = database();
-    const f = await snapshotFixture(),
+    const f = await snapshotFixture(true, {}, "trunk"),
       id = randomUUID();
     const creator = visibility === "private" ? f.caller : f.adminCaller;
     const input = {
@@ -2720,7 +2720,7 @@ test.each(["private", "org"] as const)(
       requestId: id,
       name: "local-snapshot",
       visibility,
-      config: f.config,
+      config: { ...f.config, repos: [{ url: f.config.repos[0]!.url }] },
     };
     const created = await f.snapshots.command(creator, "create", input);
     expect(created).toMatchObject({ snapshot: { id, status: "building", visibility, builtOnVersion: VERSION } });
@@ -2738,9 +2738,12 @@ test.each(["private", "org"] as const)(
     ).rejects.toThrow("Snapshot base is immutable");
     expect(JSON.stringify(created)).not.toContain("offline-snapshot-access");
     expect(await f.snapshots.command(creator, "create", input)).toMatchObject({ snapshot: { id } });
-    const build = await hosts.poll(f.hostToken, f.installationId);
+    const build = await hosts.poll(f.hostToken, f.installationId, "2.51.0");
     if (build?.operation !== "buildSnapshot") throw Error("missing snapshot build");
-    expect(build.build.config).toEqual(input.config);
+    expect(build.build.config).toEqual({
+      ...f.config,
+      repos: [{ ...f.config.repos[0], branch: "trunk" }],
+    });
     expect(build.request.image).toBe(officialSandboxImage());
     expect(build.build).toMatchObject({ armadaVersion: VERSION });
     for (const fields of [{ image: officialImage }, { baseImage: officialImage }, { builtOnVersion: "0.0.1" }])
@@ -2765,6 +2768,9 @@ test.each(["private", "org"] as const)(
         hostAvailable: true,
         baselineVersion: visibility === "private" ? 1 : null,
         baselineOutdated: visibility === "org",
+        ...(visibility === "org"
+          ? { baselineWarning: expect.stringContaining("Docker host daemon 2.51.0 is outdated") }
+          : {}),
       },
     });
     if (visibility === "private") {

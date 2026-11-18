@@ -65,6 +65,7 @@ export interface GoldenCreateDeps {
     actor: GoldenActor,
     visibility: Visibility,
     repos: string[],
+    branches?: readonly (string | undefined)[],
   ): Promise<{ repos: AuthorizedRepo[]; token: string }>;
   /**
    * Mints a short-lived, repo-scoped installation token. Optional: absent (no GITHUB_APP_PRIVATE_KEY)
@@ -135,7 +136,7 @@ export class GoldenCreateService {
       visibility: Visibility;
       repos: string[];
       setup?: string;
-      config?: GitHubGoldenConfig;
+      config?: GitHubGoldenConfig<string | undefined>;
       existingGolden?: GoldenRecord;
       /** Trusted server-resolved binding, never a client-supplied profile name. */
       modal?: ModalBinding;
@@ -167,7 +168,12 @@ export class GoldenCreateService {
       throw new GoldenError("invalid_config", `A golden needs 1 to ${MAX_REPOS} repositories.`);
     }
     const authorizationRepos = requested ? requested.map(({ owner, repo }) => `${owner}/${repo}`) : input.repos;
-    const { repos, token: callerToken } = await this.deps.authorize(actor, input.visibility, authorizationRepos);
+    const { repos, token: callerToken } = await this.deps.authorize(
+      actor,
+      input.visibility,
+      authorizationRepos,
+      requested?.map((repo) => repo.branch),
+    );
     if (!repos.length) throw new GoldenError("invalid_config", "A golden needs at least one authorized repository.");
     const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
     const reservation = await this.deps.reserve?.(provider, actor, input.existingGolden);
@@ -546,7 +552,7 @@ export function withGoldenDirs(repos: readonly AuthorizedRepo[]): PreparedRepo[]
 /** Apply validated requested branch/directory metadata only after authorization resolved canonical GitHub repos. */
 function applyRequestedRepos(
   repos: readonly AuthorizedRepo[],
-  requested: readonly GitHubGoldenConfig["repos"][number][],
+  requested: readonly GitHubGoldenConfig<string | undefined>["repos"][number][],
 ): PreparedRepo[] {
   if (repos.length !== requested.length)
     throw new GoldenError("invalid_config", "Authorized repositories did not match the request.");
@@ -557,7 +563,7 @@ function applyRequestedRepos(
     }
     return {
       ...repo,
-      branch: wanted.branch,
+      branch: wanted.branch ?? repo.branch ?? "main",
       dir: wanted.dir,
       ...(wanted.history !== undefined ? { history: wanted.history } : {}),
     };

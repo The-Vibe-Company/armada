@@ -17,6 +17,7 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
     (r.baselineVersion != null &&
       (typeof r.baselineVersion !== "number" || !Number.isSafeInteger(r.baselineVersion) || r.baselineVersion < 1)) ||
     (r.baselineOutdated !== undefined && typeof r.baselineOutdated !== "boolean") ||
+    (r.baselineWarning !== undefined && (typeof r.baselineWarning !== "string" || r.baselineWarning.length > 512)) ||
     (r.failureReason !== undefined &&
       r.failureReason !== null &&
       (typeof r.failureReason !== "string" || r.failureReason.length > 512)) ||
@@ -37,6 +38,7 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
     builtOnVersion: r.builtOnVersion as string | null,
     baselineVersion: (r.baselineVersion as number | null | undefined) ?? null,
     ...(typeof r.baselineOutdated === "boolean" ? { baselineOutdated: r.baselineOutdated } : {}),
+    ...(typeof r.baselineWarning === "string" ? { baselineWarning: r.baselineWarning } : {}),
     id: r.id as string,
     orgId: r.orgId as string,
     ownerId: r.ownerId as string,

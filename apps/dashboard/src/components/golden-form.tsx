@@ -405,7 +405,7 @@ function ScopedGoldenForm({
                         name="repo_branch"
                         value={row.branch}
                         onChange={(event) => update(row.key, "branch", event.target.value)}
-                        placeholder="main"
+                        placeholder="Default branch"
                       />
                     </div>
                     <div className="space-y-1">

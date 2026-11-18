@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { DOCKER_SNAPSHOT_FAILURE_MESSAGES, type DockerSnapshotRecord, parseGoldenConfig } from "@armada/core";
+import {
+  DOCKER_SNAPSHOT_FAILURE_MESSAGES,
+  type DockerSnapshotRecord,
+  dockerHostUpgradeMessage,
+  parseGoldenConfig,
+  VERSION,
+} from "@armada/core";
 import {
   isSnapshotBaselineTool,
   SNAPSHOT_BASELINE_VERSION,
@@ -10,7 +16,7 @@ import {
 import type { DockerHostJob } from "../../core/src/docker-host-job.ts";
 import { DockerHostDraining } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
-export const SNAPSHOT_COLUMNS = `s.*,h.name as host_name,${hostDrainingSql("h")} as host_draining,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and (h.last_seen_at>now()-interval '90 seconds') is true) as host_online,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and not ${hostDrainingSql("h")} and (h.last_seen_at>now()-interval '90 seconds') is true) as host_available`;
+export const SNAPSHOT_COLUMNS = `s.*,h.name as host_name,h.daemon_version as host_daemon_version,${hostDrainingSql("h")} as host_draining,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and (h.last_seen_at>now()-interval '90 seconds') is true) as host_online,(h.revoked_at is null and h.installation_id=s.installation_id and h.hash is not null and not ${hostDrainingSql("h")} and (h.last_seen_at>now()-interval '90 seconds') is true) as host_available`;
 export type SnapshotRow = {
   id: string;
   org_id: string;
@@ -34,15 +40,30 @@ export type SnapshotRow = {
   failure_reason?: string | null;
   created_at: Date | string;
   host_name: string | null;
+  host_daemon_version: string | null;
   host_draining: boolean;
   host_online: boolean;
   host_available: boolean;
 };
 export function snapshotRecord(row: SnapshotRow): DockerSnapshotRecord {
+  const baselineOutdated = row.status === "ready" && (row.baseline_version ?? 0) < SNAPSHOT_BASELINE_VERSION;
+  const upgrade = baselineOutdated ? dockerHostUpgradeMessage(row.host_daemon_version, VERSION) : null;
+  const baselineWarning = baselineOutdated
+    ? [
+        row.baseline_version == null
+          ? "This snapshot was built without a reported developer baseline."
+          : "This snapshot has an older developer baseline.",
+        upgrade,
+        "Rebuild the snapshot to get the current baseline.",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : undefined;
   return {
     builtOnVersion: row.built_on_version,
     baselineVersion: row.baseline_version ?? null,
-    baselineOutdated: row.status === "ready" && (row.baseline_version ?? 0) < SNAPSHOT_BASELINE_VERSION,
+    baselineOutdated,
+    ...(baselineWarning ? { baselineWarning } : {}),
     id: row.id,
     orgId: row.org_id,
     ownerId: row.owner_id,

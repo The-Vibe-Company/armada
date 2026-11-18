@@ -6,8 +6,8 @@ import {
   isSandboxProvider,
   normalizeGitHubGoldenConfig,
   SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS,
-  parseGoldenConfig,
   parseGoldenName,
+  parseSnapshotConfig,
   type SandboxProviderId,
 } from "@armada/core";
 import type { GoldenCapabilities } from "./control.ts";
@@ -43,7 +43,7 @@ export type GoldenRequest =
         private: boolean;
         provider: SandboxProviderId;
         config: {
-          repos: { url: string; branch: string; dir?: string; history?: "full" | "shallow" }[];
+          repos: { url: string; branch?: string; dir?: string; history?: "full" | "shallow" }[];
           init: string[];
         };
         setup?: string;
@@ -57,7 +57,7 @@ export type GoldenRequest =
         /** Picks this golden among same-name goldens of another provider; the server never changes it. */
         provider: SandboxProviderId;
         config: {
-          repos: { url: string; branch: string; dir?: string; history?: "full" | "shallow" }[];
+          repos: { url: string; branch?: string; dir?: string; history?: "full" | "shallow" }[];
           init: string[];
         };
         setup?: string;
@@ -70,7 +70,7 @@ type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 export const MAX_GOLDEN_REPOS = 16;
 
 /**
- * Checks the form with the same rules the server applies (`parseGoldenConfig`, GitHub identities only) so an
+ * Checks the form with the same rules the server applies (`parseSnapshotConfig`, GitHub identities only) so an
  * obvious mistake is reported before a builder is started. The server checks everything again.
  */
 export function goldenRequest(fields: GoldenFormFields): Parsed<GoldenRequest> {
@@ -99,7 +99,7 @@ export function goldenRequest(fields: GoldenFormFields): Parsed<GoldenRequest> {
     return { ok: false, error: `Repository ${invalidHistory + 1} history must be full or shallow.` };
   const repos = rows.map<GoldenRequest["body"]["config"]["repos"][number]>((row) => ({
     url: githubUrl(row.url),
-    branch: row.branch || "main",
+    ...(row.branch ? { branch: row.branch } : {}),
     ...(row.dir ? { dir: row.dir } : {}),
     ...(row.history === "full" || row.history === "shallow" ? { history: row.history } : {}),
   }));
@@ -107,7 +107,7 @@ export function goldenRequest(fields: GoldenFormFields): Parsed<GoldenRequest> {
   const config = { repos, init };
   try {
     // Same validation as the server: GitHub repositories only, branch and directory syntax, no secret keys.
-    normalizeGitHubGoldenConfig(parseGoldenConfig(config));
+    normalizeGitHubGoldenConfig(parseSnapshotConfig(config));
   } catch (error) {
     return { ok: false, error: message(error) };
   }

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { normalizeGitHubGoldenConfig, officialSandboxImage, parseGoldenConfig, VERSION } from "@armada/core";
+import { normalizeGitHubGoldenConfig, officialSandboxImage, parseSnapshotConfig, VERSION } from "@armada/core";
 import {
   type GitHubInstallationApp,
   type GitHubResolveDeps,
@@ -107,12 +107,14 @@ export function createDockerSnapshots(
     const visibility = body.visibility ?? "private";
     if (visibility === "org" && membership.role !== "admin")
       throw new VaultError("forbidden", "Only an administrator can publish an organization snapshot.");
-    const config = parseGoldenConfig(body.config),
+    const requestedConfig = parseSnapshotConfig(body.config),
       id = body.requestId,
       hostId = body.hostId,
       name = body.name;
     const digest = createHash("sha256")
-      .update(JSON.stringify({ org, hostId, name, visibility, config, ...(rebuildOf ? { rebuildOf } : {}) }))
+      .update(
+        JSON.stringify({ org, hostId, name, visibility, config: requestedConfig, ...(rebuildOf ? { rebuildOf } : {}) }),
+      )
       .digest("hex");
     const known = (await read(id))[0];
     if (known) {
@@ -142,12 +144,17 @@ export function createDockerSnapshots(
         return access.token;
       },
     });
-    const normalized = normalizeGitHubGoldenConfig(config);
+    const normalized = normalizeGitHubGoldenConfig(requestedConfig);
     const authorized = await authorizer.authorize(
       { ...actor, role: membership.role },
       visibility,
       normalized.repos.map((r) => `${r.owner}/${r.repo}`),
+      normalized.repos.map((r) => r.branch),
     );
+    const config = {
+      ...requestedConfig,
+      repos: requestedConfig.repos.map((repo, index) => ({ ...repo, branch: authorized.repos[index]!.branch })),
+    };
     let token = authorized.token;
     const installations = new Set(authorized.repos.map((r) => r.installationId));
     if (authorizer.mint && installations.size === 1 && authorized.repos[0]?.installationId)

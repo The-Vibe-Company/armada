@@ -25,14 +25,20 @@ export interface GoldenGitHubAdapterOptions {
  * with the caller's OAuth token: an App installation can see more than the person who requested a
  * golden, and must never be used to elevate that person's repository access.
  */
-export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<GoldenCreateDeps, "authorize" | "mint"> {
+type GoldenGitHubAdapter = Pick<GoldenCreateDeps, "mint"> & {
+  authorize(
+    ...args: Parameters<GoldenCreateDeps["authorize"]>
+  ): Promise<{ repos: (AuthorizedRepo & { branch: string })[]; token: string }>;
+};
+
+export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): GoldenGitHubAdapter {
   const fetchImpl = options.fetch ?? fetch;
-  const adapter: Pick<GoldenCreateDeps, "authorize" | "mint"> = {
-    async authorize(actor, _visibility, requested) {
+  const adapter: GoldenGitHubAdapter = {
+    async authorize(actor, _visibility, requested, branches) {
       const token = await options.accessToken(actor);
       const installations = await fetchGitHubInstallations(token, { fetch: fetchImpl });
-      const repos: AuthorizedRepo[] = [];
-      for (const value of requested) {
+      const repos: (AuthorizedRepo & { branch: string })[] = [];
+      for (const [index, value] of requested.entries()) {
         const { owner, repo } = requestedRepo(value);
         const repository = await userRepository(token, owner, repo, fetchImpl);
         let installation = installationFor(repository, installations, options.app?.appId);
@@ -47,6 +53,8 @@ export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<G
           if (repository.private) throw repositoryAccessError(owner, repo);
           installation = undefined; // Public checkout can safely use the caller token.
         }
+        const branch = branches?.[index] ?? repository.default_branch;
+        if (branch !== repository.default_branch) await requireCheckoutRef(token, repository, branch, fetchImpl);
         repos.push({
           owner: repository.owner.login,
           repo: repository.name,
@@ -54,7 +62,7 @@ export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<G
           // Public repositories are verified through the caller's GitHub request but need no App
           // installation; zero prevents the scoped issuer from being selected for mixed sets.
           installationId: installation?.id ?? 0,
-          branch: repository.default_branch,
+          branch,
         });
       }
       return { repos, token };
@@ -145,6 +153,38 @@ async function userRepository(
   if (!response.ok || !isRepository(body))
     throw new GitHubAuthError("unavailable", `GitHub did not return repository '${owner}/${repo}'.`);
   return body;
+}
+
+/** Git clone --branch accepts both branches and tags. Check with the caller's own access. */
+async function requireCheckoutRef(
+  token: string,
+  repository: UserRepository,
+  ref: string,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  const path = `${encodeURIComponent(repository.owner.login)}/${encodeURIComponent(repository.name)}`;
+  const encodedRef = ref.split("/").map(encodeURIComponent).join("/");
+  for (const namespace of ["heads", "tags"]) {
+    const response = await fetchImpl(`${API}/repos/${path}/git/ref/${namespace}/${encodedRef}`, {
+      headers: headers(token),
+      signal: AbortSignal.timeout(TIMEOUT),
+    }).catch((cause) => {
+      throw new GitHubAuthError("unavailable", "GitHub could not be reached while checking the snapshot ref.", {
+        cause,
+      });
+    });
+    if (response.ok) {
+      const body: unknown = await response.json().catch(() => null);
+      if (body && typeof body === "object" && "ref" in body && body.ref === `refs/${namespace}/${ref}`) return;
+    }
+    if (response.status !== 404)
+      throw new GitHubAuthError(
+        "unavailable",
+        "GitHub could not check the snapshot ref. Retry when GitHub is available.",
+      );
+  }
+  const message = `Ref '${ref}' was not found in ${repository.owner.login}/${repository.name}. Check the branch or tag and retry.`;
+  throw new GoldenError("invalid_config", message, { safeMessage: message });
 }
 
 function installationFor(

@@ -211,3 +211,20 @@ test("a private repository under only another App cannot be minted with the conf
   });
   await expect(adapter.authorize(actor, "org", ["acme/web"])).rejects.toThrow("grant the Armada GitHub App access");
 });
+
+test("names an explicit ref missing from both branches and tags", async () => {
+  const adapter = goldenGitHubAdapter({
+    app: null,
+    accessToken: async () => "user_token",
+    fetch: (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/user/installations")) return Response.json({ installations: [] });
+      if (url.includes("/git/ref/")) return new Response(null, { status: 404 });
+      return Response.json({ ...repo(), private: false });
+    }) as typeof fetch,
+  });
+  await expect(adapter.authorize(actor, "private", ["acme/web"], ["feature/missing"])).rejects.toMatchObject({
+    code: "invalid_config",
+    safeMessage: "Ref 'feature/missing' was not found in acme/web. Check the branch or tag and retry.",
+  });
+});

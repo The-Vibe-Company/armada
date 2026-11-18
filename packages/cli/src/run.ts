@@ -16,8 +16,8 @@ import {
   type Provider,
   ProviderError,
   ProviderRoutingError,
-  parseGoldenConfig,
   parseMachineSize,
+  parseSnapshotConfig,
   resolveModelChoice,
   type SandboxProviderId,
   SIZED_LAUNCH_ROUTE_V1,
@@ -725,7 +725,7 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
       "invalid_config",
       "Full replacement can drop stored repositories and init commands. Use --add-repo to append safely, or pass --replace with --repo/--config to confirm replacing the entire config.",
     );
-  let config: GoldenConfig | undefined;
+  let config: GoldenConfig<string | undefined> | undefined;
   try {
     if (additions.length)
       configFromFlags(additions, []); // Never reconstruct the stored list.
@@ -1230,7 +1230,7 @@ function jsonGolden(row: GoldenRecord) {
   return { ...goldenResponse(row), buildWarnings: row.buildWarnings ?? [] };
 }
 
-async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promise<GoldenConfig> {
+async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promise<GoldenConfig<string | undefined>> {
   const file = single(args, "--config");
   const repos = values(args, "--repo");
   // --setup is its own field now (create() reads it as a local file and sends its content),
@@ -1253,9 +1253,9 @@ async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promi
     } catch {
       throw new GoldenError("invalid_config", `Config file '${file}' is not JSON.`);
     }
-    return parseGoldenConfig(parsed);
+    return parseSnapshotConfig(parsed);
   }
-  return configFromFlags(repos, init);
+  return configFromFlags(repos, init, "snapshot");
 }
 
 function oneName(positionals: string[]): string {
